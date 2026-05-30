@@ -63,6 +63,44 @@ class Reporter {
         sb.toString()
     }
 
+    static String formatPostconditionFailure(String methodName,
+                                             String contractText,
+                                             CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append("Cannot prove postcondition of ").append(methodName)
+                  .append(" holds on this return path")
+                if (contractText) {
+                    sb.append("\n    ensured: ").append(contractText)
+                }
+                if (result.counterexample) {
+                    sb.append("\n    counterexample: ")
+                      .append(formatModel(result.counterexample))
+                }
+                break
+
+            case CheckResult.Status.UNKNOWN:
+                sb.append("Could not decide postcondition of ").append(methodName)
+                  .append(" (solver: ").append(result.reason).append(")")
+                if (contractText) {
+                    sb.append("\n    ensured: ").append(contractText)
+                }
+                break
+
+            default:
+                sb.append("Postcondition verified — no error to report")
+        }
+        sb.toString()
+    }
+
+    static String formatPostconditionSkipped(String methodName, String reason) {
+        "Skipped verification of postcondition for ${methodName} (${reason}). " +
+        "The body uses a construct or value outside the spike's supported " +
+        "fragment (straight-line code, if/else, single-assignment locals, " +
+        "linear int arithmetic). The method is allowed to proceed unchecked."
+    }
+
     static String formatSkipped(String calleeName, String reason) {
         "Skipped verification of precondition for ${calleeName} (${reason}). " +
         "The contract or one of the actual arguments is outside the spike's " +

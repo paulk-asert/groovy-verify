@@ -57,6 +57,7 @@ import org.codehaus.groovy.transform.stc.TypeCheckingExtension
 class VerifyChecker extends TypeCheckingExtension {
 
     private static final ClassNode REQUIRES_TYPE = ClassHelper.make(Requires)
+    private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
 
     private SmtBackend backend
     private PathFacts currentFacts
@@ -88,7 +89,110 @@ class VerifyChecker extends TypeCheckingExtension {
 
     @Override
     void afterVisitMethod(MethodNode node) {
-        currentFacts = null
+        try {
+            verifyPostcondition(node)
+        } finally {
+            currentFacts = null
+        }
+    }
+
+    /**
+     * Phase 2: discharge a method's own {@code @Ensures} postcondition
+     * against its body. Enumerate the body's execution paths and, for
+     * each, ask Z3 whether {@code pathFacts ∧ ¬postcondition} is
+     * satisfiable — a model is a return on which the postcondition fails.
+     */
+    private void verifyPostcondition(MethodNode node) {
+        AnnotationNode ens = findEnsures(node)
+        if (ens == null || node.code == null) return
+
+        Expression postAst = extractContractAst(ens)
+        if (postAst == null) {
+            addStaticTypeError(
+                Reporter.formatPostconditionSkipped(node.name,
+                    "contract was not captured by EnsuresTransformation"),
+                node)
+            return
+        }
+
+        // A method may use its own @Requires as an entry assumption.
+        AnnotationNode reqOwn = findRequires(node)
+        Expression reqAst = reqOwn != null ? extractContractAst(reqOwn) : null
+
+        try {
+            List<Path> paths = BodyEncoder.enumeratePaths(node.code)
+            for (Path p : paths) {
+                checkPath(node, p, postAst, reqAst)
+            }
+        } catch (UnsupportedConstructException e) {
+            addStaticTypeError(
+                Reporter.formatPostconditionSkipped(node.name, e.message), node)
+        }
+    }
+
+    private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst) {
+        SmtSession session = backend.session()
+        try {
+            Encoder enc = new Encoder(session)
+
+            if (reqAst != null) {
+                Object pre = enc.translate(reqAst)
+                if (pre == null) {
+                    throw new UnsupportedConstructException(
+                        "precondition '${reqAst.text}' is outside fragment")
+                }
+                session.assertExpr(pre)
+            }
+
+            for (Object step : p.steps) {
+                if (step instanceof Guard) {
+                    Guard g = (Guard) step
+                    Object c = enc.translate(g.cond)
+                    if (c == null) {
+                        throw new UnsupportedConstructException(
+                            "guard '${g.cond.text}' is outside fragment")
+                    }
+                    session.assertExpr(g.positive ? c : session.not(c))
+                } else if (step instanceof Assign) {
+                    Assign a = (Assign) step
+                    Object rhs = enc.translate(a.rhs)
+                    if (rhs == null) {
+                        throw new UnsupportedConstructException(
+                            "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
+                    }
+                    session.assertExpr(session.eq(enc.varFor(a.name), rhs))
+                }
+            }
+
+            Object resHandle = enc.translate(p.result)
+            if (resHandle == null) {
+                throw new UnsupportedConstructException(
+                    "return expression '${p.result?.text}' is outside fragment")
+            }
+            enc.bind('result', resHandle)
+
+            Object post = enc.translate(postAst)
+            if (post == null) {
+                throw new UnsupportedConstructException(
+                    "postcondition '${postAst.text}' is outside fragment")
+            }
+            session.assertExpr(session.not(post))
+
+            CheckResult r = session.check()
+            if (r.status == CheckResult.Status.VERIFIED) return
+
+            ASTNode anchor = (p.result != null && p.result.lineNumber > 0) ?
+                (ASTNode) p.result : (ASTNode) node
+            addStaticTypeError(
+                Reporter.formatPostconditionFailure(node.name, postAst.text, r), anchor)
+        } finally {
+            try { session.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    private static AnnotationNode findEnsures(MethodNode m) {
+        List<AnnotationNode> direct = m.getAnnotations(ENSURES_TYPE)
+        return (direct != null && !direct.isEmpty()) ? direct[0] : null
     }
 
     @Override
