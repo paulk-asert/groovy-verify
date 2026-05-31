@@ -64,7 +64,7 @@ class WalkResult {
     final List<Path> live = []
 }
 
-/** Raised when the body uses a construct outside the v2a fragment. */
+/** Raised when the body uses a construct outside the supported fragment. */
 @CompileStatic
 class UnsupportedConstructException extends RuntimeException {
     UnsupportedConstructException(String message) { super(message) }
@@ -72,16 +72,15 @@ class UnsupportedConstructException extends RuntimeException {
 
 /**
  * Enumerates the execution paths of a method body for postcondition
- * checking. Rather than the SSA-store-with-merge the roadmap sketches,
- * this forks at each {@code if} and threads a per-path step list, so no
- * join-point merge (and no {@code ite}) is ever needed: each path is
+ * checking. It forks at each {@code if} and threads a per-path step list,
+ * so no join-point merge (and no {@code ite}) is ever needed: each path is
  * straight-line by construction. Path count is exponential in the
  * number of branches — fine for small methods, and the caller can cap
  * it. Anything outside the supported fragment raises
  * {@link UnsupportedConstructException}, which the checker turns into a
  * loud "skipped postcondition" rather than a silent pass.
  *
- * Supported (v2a): blocks, {@code if}/{@code else}, single-assignment
+ * Supported: blocks, {@code if}/{@code else}, single-assignment
  * local declarations and assignments, explicit {@code return}, and the
  * Groovy implicit return (the trailing expression of the body or of a
  * branch in tail position). Loops, switch, try/catch, re-assignment and
@@ -234,7 +233,7 @@ class BodyEncoder {
         for (Object step : p.steps) {
             if (step instanceof Assign && ((Assign) step).name == name) {
                 throw new UnsupportedConstructException(
-                    "re-assignment of '${name}' (v2a supports single-assignment locals only)")
+                    "re-assignment of '${name}' (single-assignment locals only)")
             }
         }
     }

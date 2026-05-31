@@ -108,6 +108,52 @@ class Reporter {
         "The call is allowed to proceed unchecked."
     }
 
+    static String formatLoopEstablishment(String methodName, String invariantText, CheckResult result) {
+        loopFailure("Cannot prove loop invariant holds on entry in ${methodName}",
+            "invariant", invariantText,
+            "Could not decide loop-invariant establishment in ${methodName}", result)
+    }
+
+    static String formatLoopPreservation(String methodName, String invariantText, CheckResult result) {
+        loopFailure("Cannot prove loop invariant is preserved by the loop body in ${methodName}",
+            "invariant", invariantText,
+            "Could not decide loop-invariant preservation in ${methodName}", result)
+    }
+
+    static String formatLoopProgress(String methodName, String variantText, CheckResult result) {
+        loopFailure("Cannot prove loop variant decreases and stays >= 0 in ${methodName}",
+            "variant", variantText,
+            "Could not decide loop termination in ${methodName}", result)
+    }
+
+    static String formatLoopSkipped(String methodName, String reason) {
+        "Skipped loop verification for ${methodName} (${reason}). " +
+        "The loop or its surrounding code uses a construct outside the spike's " +
+        "supported fragment (a while-loop carrying @Invariant, straight-line " +
+        "prefix/body/suffix, linear int arithmetic). The method proceeds unchecked."
+    }
+
+    private static String loopFailure(String refutedHead, String label, String contractText,
+                                      String unknownHead, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append(refutedHead)
+                if (contractText) sb.append("\n    ").append(label).append(": ").append(contractText)
+                if (result.counterexample) {
+                    sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
+                }
+                break
+            case CheckResult.Status.UNKNOWN:
+                sb.append(unknownHead).append(" (solver: ").append(result.reason).append(")")
+                if (contractText) sb.append("\n    ").append(label).append(": ").append(contractText)
+                break
+            default:
+                sb.append("Verified — no error to report")
+        }
+        sb.toString()
+    }
+
     private static String formatModel(Map<String, Long> ce) {
         if (ce.isEmpty()) return "(solver gave no values)"
         ce.entrySet()

@@ -15,6 +15,8 @@
  */
 package verification
 
+import groovy.contracts.Ensures
+import groovy.contracts.Requires
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ASTNode
@@ -28,6 +30,7 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor
 import org.codehaus.groovy.transform.stc.TypeCheckingExtension
@@ -38,8 +41,15 @@ import org.codehaus.groovy.transform.stc.TypeCheckingExtension
  * Usage from consumer code:
  *   {@code @TypeChecked(extensions = 'verification.VerifyChecker')}
  *
+ * Contracts are authored as stock {@code groovy.contracts.@Requires}/
+ * {@code @Ensures}; {@link ContractExpansionTransform} captures each closure's
+ * verbatim source into a {@code @ContractSource} that this checker reads back
+ * (it survives into bytecode, so a callee compiled in another module still
+ * carries its contract).
+ *
  * What this does on every method call inside the annotated scope:
- *   1. Look up the called method's {@code @Requires} contract.
+ *   1. Look up the called method's {@code @Requires} precondition and read
+ *      its captured text from {@code @ContractSource}.
  *   2. Bind the contract's formal parameters to the actual-argument
  *      expressions at this call site.
  *   3. Harvest the path condition from enclosing {@code if}
@@ -58,6 +68,7 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private static final ClassNode REQUIRES_TYPE = ClassHelper.make(Requires)
     private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
+    private static final ClassNode CONTRACT_SOURCE_TYPE = ClassHelper.make(ContractSource)
 
     private SmtBackend backend
     private PathFacts currentFacts
@@ -90,14 +101,27 @@ class VerifyChecker extends TypeCheckingExtension {
     @Override
     void afterVisitMethod(MethodNode node) {
         try {
-            verifyPostcondition(node)
+            Statement body = (Statement) node.getNodeMetaData(
+                ContractExpansionTransform.ORIGINAL_BODY_KEY)
+            if (body == null) body = node.code
+
+            LoopSite site
+            try {
+                site = findLoopSite(body)
+            } catch (UnsupportedConstructException e) {
+                addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), node)
+                return
+            }
+
+            if (site != null) verifyLoop(node, site)
+            else verifyPostcondition(node)
         } finally {
             currentFacts = null
         }
     }
 
     /**
-     * Phase 2: discharge a method's own {@code @Ensures} postcondition
+     * Discharge a method's own {@code @Ensures} postcondition
      * against its body. Enumerate the body's execution paths and, for
      * each, ask Z3 whether {@code pathFacts ∧ ¬postcondition} is
      * satisfiable — a model is a return on which the postcondition fails.
@@ -106,21 +130,26 @@ class VerifyChecker extends TypeCheckingExtension {
         AnnotationNode ens = findEnsures(node)
         if (ens == null || node.code == null) return
 
-        Expression postAst = extractContractAst(ens)
+        Expression postAst = contractAstFor(node, 'ensures')
         if (postAst == null) {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name,
-                    "contract was not captured by EnsuresTransformation"),
+                    "contract source was not captured by ContractExpansionTransform"),
                 node)
             return
         }
 
         // A method may use its own @Requires as an entry assumption.
         AnnotationNode reqOwn = findRequires(node)
-        Expression reqAst = reqOwn != null ? extractContractAst(reqOwn) : null
+        Expression reqAst = reqOwn != null ? contractAstFor(node, 'requires') : null
 
         try {
-            List<Path> paths = BodyEncoder.enumeratePaths(node.code)
+            // Prefer the clean body snapshot taken at CONVERSION; by now
+            // groovy-contracts has rewritten node.code in place.
+            Statement body = (Statement) node.getNodeMetaData(
+                ContractExpansionTransform.ORIGINAL_BODY_KEY)
+            if (body == null) body = node.code
+            List<Path> paths = BodyEncoder.enumeratePaths(body)
             for (Path p : paths) {
                 checkPath(node, p, postAst, reqAst)
             }
@@ -195,6 +224,150 @@ class VerifyChecker extends TypeCheckingExtension {
         return (direct != null && !direct.isEmpty()) ? direct[0] : null
     }
 
+    // ---- Loops (@Invariant / @Decreases) ----
+
+    /** A body shaped as: straight-line prefix; one annotated loop; straight-line suffix. */
+    @CompileStatic
+    private static class LoopSite {
+        Statement loopStmt
+        LoopSpec spec
+        List<Statement> prefix
+        List<Statement> suffix
+    }
+
+    /**
+     * Locate the single top-level annotated loop, returning its {@link LoopSpec}
+     * plus the straight-line prefix/suffix around it, or null if there is none.
+     * Raises {@link UnsupportedConstructException} (→ "skipped") if the body has
+     * more than one — the spike models a single loop.
+     */
+    private static LoopSite findLoopSite(Statement body) {
+        List<Statement> top = topStatements(body)
+        int idx = -1
+        for (int i = 0; i < top.size(); i++) {
+            if (top.get(i).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
+                if (idx != -1) {
+                    throw new UnsupportedConstructException(
+                        "more than one annotated loop in the method body")
+                }
+                idx = i
+            }
+        }
+        if (idx == -1) return null
+        LoopSite site = new LoopSite()
+        site.loopStmt = top.get(idx)
+        site.spec = (LoopSpec) site.loopStmt.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        site.prefix = new ArrayList<Statement>(top.subList(0, idx))
+        site.suffix = new ArrayList<Statement>(top.subList(idx + 1, top.size()))
+        return site
+    }
+
+    private static List<Statement> topStatements(Statement body) {
+        if (body instanceof BlockStatement) {
+            return new ArrayList<Statement>(((BlockStatement) body).statements)
+        }
+        return body != null ? ([body] as List<Statement>) : Collections.<Statement> emptyList()
+    }
+
+    /**
+     * Discharge the inductive proof for an annotated loop: establishment,
+     * preservation, optional progress (@Decreases), and — when the method has an
+     * {@code @Ensures} — the use obligation that the post-loop state proves the
+     * postcondition. Each is an independent solver context with a fresh
+     * {@link Encoder}, so any variable a context does not bind is a fresh
+     * unconstrained value: that is exactly "havoc the loop-modified variables".
+     */
+    private void verifyLoop(MethodNode node, LoopSite site) {
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+        Expression postAst = findEnsures(node) != null ? contractAstFor(node, 'ensures') : null
+        try {
+            checkEstablishment(node, site, reqAst)
+            checkPreservation(node, site)
+            if (site.spec.variant != null) checkProgress(node, site)
+            if (postAst != null) checkUse(node, site, reqAst, postAst)
+        } catch (UnsupportedConstructException e) {
+            addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), site.loopStmt)
+        }
+    }
+
+    /** Establishment: precondition ∧ prefix ⇒ invariant. */
+    private void checkEstablishment(MethodNode node, LoopSite site, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            LoopEncoder.symExec(site.prefix, enc, s)
+            s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(
+                    Reporter.formatLoopEstablishment(node.name, invText(site), r), site.loopStmt)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Preservation: invariant ∧ guard ∧ one body iteration ⇒ invariant still holds. */
+    private void checkPreservation(MethodNode node, LoopSite site) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+            s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+            LoopEncoder.symExec(site.spec.body, enc, s)
+            // Re-translating the invariant reads the post-body bindings → inv'.
+            s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(
+                    Reporter.formatLoopPreservation(node.name, invText(site), r), site.loopStmt)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Progress: invariant ∧ guard ⇒ the variant strictly decreases and stays ≥ 0. */
+    private void checkProgress(MethodNode node, LoopSite site) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+            s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+            Object oldV = LoopEncoder.tr(enc, site.spec.variant, "variant")
+            LoopEncoder.symExec(site.spec.body, enc, s)
+            Object newV = LoopEncoder.tr(enc, site.spec.variant, "variant")
+            s.assertExpr(s.not(s.and([s.lt(newV, oldV), s.ge(newV, s.intLit(0L))])))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(
+                    Reporter.formatLoopProgress(node.name, site.spec.variant.text, r), site.loopStmt)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Use: precondition ∧ invariant ∧ ¬guard ∧ suffix ⇒ postcondition. */
+    private void checkUse(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+            s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
+            Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
+            enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
+            s.assertExpr(s.not(LoopEncoder.tr(enc, postAst, "postcondition")))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                ASTNode anchor = (resultExpr != null && resultExpr.lineNumber > 0) ?
+                    (ASTNode) resultExpr : (ASTNode) site.loopStmt
+                addStaticTypeError(
+                    Reporter.formatPostconditionFailure(node.name, postAst.text, r), anchor)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    private static String invText(LoopSite site) {
+        site.spec.invariants.collect { it.text }.join(' && ')
+    }
+
     @Override
     void onMethodSelection(Expression expression, MethodNode target) {
         // We only care about resolvable, method-call-shaped expressions.
@@ -206,12 +379,12 @@ class VerifyChecker extends TypeCheckingExtension {
         AnnotationNode req = findRequires(target)
         if (req == null) return
 
-        Expression contractAst = extractContractAst(req)
+        Expression contractAst = contractAstFor(target, 'requires')
         if (contractAst == null) {
             addStaticTypeError(
                 Reporter.formatSkipped(target.name,
-                    "contract was not captured by RequiresTransformation " +
-                    "(producer may not have been recompiled with the transformation on its classpath)"),
+                    "contract source was not captured by ContractExpansionTransform " +
+                    "(producer may not have been recompiled with :verification on its classpath)"),
                 expression as ASTNode)
             return
         }
@@ -342,20 +515,39 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /**
-     * Read the {@code contract} string member set by
-     * {@link RequiresTransformation} and parse it back to a Groovy
-     * expression AST. The annotation's {@code value} member by this
-     * point is a synthetic class reference, not a closure — but the
-     * transformation captured the body's source text into
-     * {@code contract} at producer-compile-time so we have something
-     * re-parseable here.
+     * Resolve the contract expression of the given kind ("requires" or
+     * "ensures") for a method. The verbatim source text lives on the
+     * {@link ContractSource} that {@link ContractExpansionTransform}
+     * attaches at producer-compile-time — a RUNTIME annotation, so it is
+     * present even when {@code m} comes from a decompiled, already-compiled
+     * {@link ClassNode} at a downstream call site. The text is re-parsed
+     * back into an {@link Expression} for the encoder.
      */
-    private static Expression extractContractAst(AnnotationNode anno) {
-        Expression contractMember = anno.getMember('contract')
-        if (!(contractMember instanceof ConstantExpression)) return null
-        Object v = ((ConstantExpression) contractMember).value
-        if (!(v instanceof String) || ((String) v).isEmpty()) return null
-        String contractText = (String) v
+    private static Expression contractAstFor(MethodNode m, String kind) {
+        String text = findContractText(m, kind)
+        return text != null ? parseContract(text) : null
+    }
+
+    /** Read @ContractSource's member, walking the superclass for inherited contracts. */
+    private static String findContractText(MethodNode m, String kind) {
+        List<AnnotationNode> sources = m.getAnnotations(CONTRACT_SOURCE_TYPE)
+        if (sources != null && !sources.isEmpty()) {
+            Expression member = sources[0].getMember(kind)
+            if (member instanceof ConstantExpression) {
+                Object v = ((ConstantExpression) member).value
+                if (v instanceof String && !((String) v).isEmpty()) return (String) v
+            }
+        }
+        ClassNode dc = m.declaringClass
+        ClassNode sc = dc?.superClass
+        if (sc != null && sc != ClassHelper.OBJECT_TYPE) {
+            MethodNode inherited = sc.getMethod(m.name, m.parameters)
+            if (inherited != null) return findContractText(inherited, kind)
+        }
+        return null
+    }
+
+    private static Expression parseContract(String contractText) {
         try {
             List<ASTNode> parsed = new AstBuilder().buildFromString(
                 CompilePhase.CONVERSION, true, contractText)
