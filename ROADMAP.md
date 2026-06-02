@@ -324,6 +324,19 @@ recognises and rewrites to a Z3 `mkForall` over an integer variable constrained
 `lo <= i < hi`. The closure body is the matrix; `arr[i]` becomes `(select arr i)`
 under Z3's array theory.
 
+**Read *and* write: `select` and `store`.** The syntax above covers *reading* an
+array, which is enough for read-only proofs like binary search. The natural other
+half is *writing*: model a single array's contents as a value — an immutable Z3
+array threaded through the method, each `a[i] = v` becoming `(store a i v)` — so a
+postcondition can describe the array a method *produced*. That unlocks the
+in-place-algorithm proofs (sort, partition, reverse) that are the showcase for
+code destined for Java, and that a developer who today specifies in Dafny and
+cross-compiles relies on. Crucially this needs **no general heap or aliasing**
+(the deliberate non-goal below): it assumes the array parameter is unaliased — the
+common case in algorithm code — and reasons about its contents with value
+semantics. It shares this phase's trigger cliff and the array-model
+pretty-printing flagged under cross-cutting risks.
+
 **Risks specific to this phase:**
 
 - Z3 returns UNKNOWN on quantified formulas it can't pattern-match. Triggers are
@@ -343,7 +356,8 @@ under Z3's array theory.
 Estimated work: a couple of weeks, with a real chance part of it is spent
 fighting trigger heuristics. Risk: high. Target: the bounds-and-sortedness proof
 for binary search, with sortedness as
-`Forall.range(0, arr.length - 1, { i -> arr[i] <= arr[i+1] })`.
+`Forall.range(0, arr.length - 1, { i -> arr[i] <= arr[i+1] })` — and, once
+`store` lands, the postcondition that an in-place sort *produces* a sorted array.
 
 ---
 
@@ -363,11 +377,22 @@ persuasive.
   expressive errors.
 - **Bitwise / shift operators.** The same bitvector encoding picks these up for
   free.
-- **Inter-procedural reasoning.** Use a callee's `@Ensures` as facts when
-  reasoning about the caller (currently only its `@Requires` is used). Small to
-  add, but transitively requires callees be re-verified when their contracts
-  tighten — a real build-time cost. The cross-boundary oracle binding it builds
-  on is now in place (Phase 4), so this is unblocked.
+- **Inter-procedural reasoning, and lemmas.** Use a callee's `@Ensures` as facts
+  when reasoning about the caller (today only its `@Requires` is used). The
+  cross-boundary oracle binding it builds on is in place (Phase 4), so the
+  mechanism is unblocked; the build-time cost is that callees must be re-verified
+  when their contracts tighten. Its headline payoff, though, is **lemmas** — the
+  proof-structuring primitive Dafny users lean on most, and the one feature from
+  Dafny's proof toolbox this fragment otherwise lacks. A lemma is just a ghost
+  `static` method with `@Requires`/`@Ensures` whose body the checker verifies
+  (often by recursion = induction) and which a caller *invokes purely to inject
+  its postcondition* as a fact. Once a callee's `@Ensures` is usable at the call
+  site, lemmas fall out almost for free — turning one-shot VCs into decomposable
+  proofs, and composing with the `assert … by`/`calc` decomposition of
+  [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints)b. This is
+  what lets a specify-and-prove developer scale past a single method's proof
+  without reaching for a cross-compiler. Given that, it may deserve promoting out
+  of "optional" once the read/write array fragment (Phase 6) is in.
 - **Heap/aliasing.** Don't. Groovy makes this very hard and the payoff is small
   for the fragment most developers care about.
 
@@ -442,6 +467,47 @@ push-button, diagnostics-not-dialogues", the same reasoning that rules out heap
 and concurrency. The line this phase walks: borrow *hints* (8a, 8b, Phase 6
 triggers) that keep the tool a compile-time checker; refuse the proof-term
 language that would make it a different product.
+
+---
+
+## Phase 9 — Programmer-facing diagnostics
+
+**Adoption, not capability.** Everything above is about *what* can be proved;
+this is about whether a working Groovy developer understands the answer without
+first learning formal-methods vocabulary. The engine speaks in *obligations*,
+*counterexamples*, and an internal *size oracle* (`a.size`); a programmer who just
+turned the checker on speaks in `.size()`/`.length`,
+`ArrayIndexOutOfBoundsException`, and "what input breaks it?". The goal is to meet
+them there — the same instinct that makes the rest of Groovy's static type checker
+say "Cannot invoke method size() on null object" rather than naming an internal
+AST node. A tool people understand is one they leave switched on.
+
+The distinction that scopes this phase — **two kinds of diagnostic:**
+
+- **Those with a well-known code/runtime equivalent.** Mirror it. An
+  out-of-bounds obligation should read in the vocabulary of
+  `ArrayIndexOutOfBoundsException` ("Negative array index [-1] too large for array
+  size 0"), echo the accessor the programmer actually knows — `.size()` for
+  collections/strings, `.length` for arrays (Groovy's universal size idiom) —
+  rather than the internal `a.size` symbol, and ideally surface the counterexample
+  as a **concrete failing call**: not `a.size = 0, i = -1` but `g(new int[0], -1)`
+  — a runnable repro, the way a developer would demonstrate the bug themselves.
+  The same applies to division (`ArithmeticException: Division by zero`) and null
+  dereference (`Cannot invoke method size() on null object`).
+- **Those with no code equivalent.** Loop-invariant establishment/preservation,
+  termination, "could not decide", and the quantifier obligations of
+  [Phase 6](#phase-6--quantifiers) have no runtime analogue to borrow. Forcing a
+  fake one would mislead. Here the right move is *self-explanatory* verification
+  vocabulary — name the obligation, say plainly what could not be shown and what
+  would make it provable — not a runtime costume it does not fit.
+
+**Deliberately not done early.** Until the capability set settles (Phase 6
+especially), new diagnostic shapes keep appearing, and pinning the wording now
+would only churn. The internal `a.size` vocabulary stays for the moment — it is
+accurate and internally consistent (the obligation and counterexample share the
+symbol). When the time comes this is a `Reporter`-layer change — no engine or
+solver risk — whose entire payoff is adoption: the gap between a tool people trust
+and one they turn off because its errors read like a proof transcript.
 
 ---
 
