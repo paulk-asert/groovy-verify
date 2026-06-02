@@ -350,16 +350,27 @@ and reasons with value semantics. The `a.size` oracle and the `a` array value
 share the source name, so a bounds obligation `i < a.size` and a `(select a i)`
 agree; this retires Phase 1's "array contents not modelled" limit.
 
+**In-loop `store` (shipped).** `store` is threaded through loop bodies too
+(`LoopEncoder` rebinds `a := (store a i v)` on `a[i] = v`), so a quantified
+`@Invariant` over the array's contents is preserved across the update — a
+constant-fill (`a[i] = 0` ⇒ `Forall.range(0, n) { a[i] == 0 }`) verifies, and an
+invariant the store breaks is refuted on preservation. Two surface notes the loop
+case forced: inside `@Invariant` the quantifier must be written fully-qualified
+(`verification.Forall.range(...)`) and with a typed index (`{ int j -> a[j] ... }`)
+— groovy-contracts compiles the invariant closure for its runtime check, where
+the import isn't in scope and `a[j]` needs an `int`. And loop invariants are now
+captured *as text and re-parsed* (like `@Requires`/`@Ensures`), so the verifier
+sees a clean CONVERSION AST rather than the live node later phases resolve to a
+static call / `getAt`. **Still not done:** a full *in-place sort* — that needs the
+sortedness-transitivity lemma, which is induction (Phase 7).
+
 **Known limits.** Counterexamples for array/quantifier refutations show the
 integer skeleton (`a.size`, indices) but not array contents or unconstrained
 element values — honest, not yet concrete; the array-model pretty-printer
 (cross-cutting risks) and the witness-as-failing-call idea (Phase 9) are the
-follow-ups. `store` is wired through straight-line bodies (`BodyEncoder`), not yet
-through loop bodies (`LoopEncoder`), so an *in-place sort* (store inside a loop)
-is the next increment, not done here. UNKNOWN on a stalled quantifier stays a
-loud "could not decide"; the user-supplied trigger/instantiation hint that would
-rescue it is the lightest borrow from
-[Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
+follow-ups. UNKNOWN on a stalled quantifier stays a loud "could not decide"; the
+user-supplied trigger/instantiation hint that would rescue it is the lightest
+borrow from [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
 
 ---
 

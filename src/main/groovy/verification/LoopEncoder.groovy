@@ -140,13 +140,26 @@ class LoopEncoder {
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
             BinaryExpression be = (BinaryExpression) e
-            if (!(be.leftExpression instanceof VariableExpression)) {
-                throw new UnsupportedConstructException(
-                    "assignment to a non-variable target (line ${st.lineNumber})")
+            if (be.leftExpression instanceof VariableExpression) {
+                rebind(enc, ((VariableExpression) be.leftExpression).name, be.rightExpression)
+                return
             }
-            String name = ((VariableExpression) be.leftExpression).name
-            rebind(enc, name, be.rightExpression)
-            return
+            // a[i] = v  ->  a := (store a i v): the array's contents are threaded
+            // through the loop, so an invariant over them is preserved across the
+            // body (Phase 6 store, now inside loops).
+            if (be.leftExpression instanceof BinaryExpression &&
+                ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                ((BinaryExpression) be.leftExpression).leftExpression instanceof VariableExpression) {
+                BinaryExpression sub = (BinaryExpression) be.leftExpression
+                String arr = ((VariableExpression) sub.leftExpression).name
+                Object idx = enc.translate(sub.rightExpression)
+                Object val = enc.translate(be.rightExpression)
+                if (idx == null || val == null) enc.havocArray(arr)   // unmodelable update → contents unknown (sound)
+                else enc.bindArray(arr, s.store(enc.arrayFor(arr), idx, val))
+                return
+            }
+            throw new UnsupportedConstructException(
+                "assignment to a non-variable target (line ${st.lineNumber})")
         }
         throw new UnsupportedConstructException(
             "unsupported statement in loop region (line ${st.lineNumber})")

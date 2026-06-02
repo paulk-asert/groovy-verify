@@ -144,6 +144,13 @@ class Encoder {
         env.put(name, v)
         v
     }
+
+    /** Array analogue of {@link #havoc}: re-bind {@code name}'s contents to a fresh, unconstrained array. */
+    Object havocArray(String name) {
+        Object v = session.arrayVar(name + '$havoc$' + (havocCounter++))
+        arrEnv.put(name, v)
+        v
+    }
     private int havocCounter = 0
 
     /**
@@ -327,8 +334,13 @@ class Encoder {
         List<Expression> args = argList(mce)
 
         // Forall.range(lo, hi, { i -> body }) -> bounded universal quantifier.
-        if (m == 'range' && recv instanceof VariableExpression &&
-            ((VariableExpression) recv).name == 'Forall' &&
+        // Accept both the imported `Forall` (a VariableExpression) and the
+        // fully-qualified `verification.Forall` (a PropertyExpression) — the
+        // latter is needed inside @Invariant, where groovy-contracts' loop
+        // transform doesn't carry the import.
+        boolean isForall = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Forall') ||
+                           (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Forall')
+        if (m == 'range' && isForall &&
             args.size() == 3 && args.get(2) instanceof ClosureExpression) {
             return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
         }

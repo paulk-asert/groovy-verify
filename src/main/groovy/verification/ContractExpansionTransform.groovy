@@ -17,6 +17,7 @@ package verification
 
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.ASTNode
+import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
@@ -116,7 +117,7 @@ class ContractExpansionTransform implements ASTTransformation {
             mn.addAnnotation(holder)
         }
 
-        boolean loopsFound = captureLoops(mn)
+        boolean loopsFound = captureLoops(mn, source)
 
         // Snapshot the clean body before groovy-contracts instruments it, so the
         // body analysis (postcondition paths, loop regions, AND the implicit
@@ -143,12 +144,12 @@ class ContractExpansionTransform implements ASTTransformation {
      * into a {@link LoopSpec} stashed on the loop node, before groovy-contracts'
      * loop transforms rewrite the loop body. Returns true if any was captured.
      */
-    private static boolean captureLoops(MethodNode mn) {
+    private static boolean captureLoops(MethodNode mn, SourceUnit source) {
         if (!(mn.code instanceof BlockStatement)) return false
         boolean found = false
         for (Statement st : ((BlockStatement) mn.code).statements) {
             if (st instanceof LoopingStatement) {
-                LoopSpec spec = buildLoopSpec((LoopingStatement) st)
+                LoopSpec spec = buildLoopSpec((LoopingStatement) st, source)
                 if (spec != null) {
                     st.setNodeMetaData(LOOP_SPEC_KEY, spec)
                     found = true
@@ -158,7 +159,7 @@ class ContractExpansionTransform implements ASTTransformation {
         return found
     }
 
-    private static LoopSpec buildLoopSpec(LoopingStatement loop) {
+    private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source) {
         Expression guard = loopGuard(loop)
         if (guard == null) return null   // only while/do-while guards are modelled
         List<Expression> invariants = new ArrayList<Expression>()
@@ -168,7 +169,16 @@ class ContractExpansionTransform implements ASTTransformation {
             if (simple != 'Invariant' && simple != 'Decreases') continue
             Expression value = an.getMember('value')
             if (!(value instanceof ClosureExpression)) continue
-            List<Expression> exprs = closureBoolExprs((ClosureExpression) value)
+            // Re-parse from the verbatim source so the captured expression is a
+            // clean CONVERSION AST, immune to the resolution/rewrites later phases
+            // apply to the live node — the same reason @Requires/@Ensures are
+            // captured as text. Without this, a `Forall.range(...)` / `a[i]` in the
+            // invariant reaches the verifier already resolved (static call / getAt),
+            // outside the encoder's fragment. Fall back to the live AST if re-parse
+            // fails (e.g. a multi-statement invariant closure).
+            Expression reparsed = reparse(captureSource((ClosureExpression) value, source))
+            List<Expression> exprs = reparsed != null ? [reparsed] :
+                                     closureBoolExprs((ClosureExpression) value)
             if (simple == 'Invariant') invariants.addAll(exprs)
             else if (!exprs.isEmpty()) variant = exprs.get(0)
             // Capture only — leave the closure intact. groovy-contracts generates
@@ -196,6 +206,25 @@ class ContractExpansionTransform implements ASTTransformation {
             return new ArrayList<Statement>(((BlockStatement) b).statements)
         }
         return b != null ? ([b] as List<Statement>) : Collections.<Statement> emptyList()
+    }
+
+    /** Re-parse a captured contract expression's text into a fresh CONVERSION AST. */
+    private static Expression reparse(String text) {
+        if (text == null) return null
+        try {
+            List<ASTNode> nodes = new AstBuilder().buildFromString(CompilePhase.CONVERSION, true, text)
+            if (nodes.isEmpty()) return null
+            ASTNode top = nodes.get(0)
+            if (top instanceof BlockStatement) {
+                BlockStatement bs = (BlockStatement) top
+                if (bs.statements.size() == 1 && bs.statements.get(0) instanceof ExpressionStatement) {
+                    return ((ExpressionStatement) bs.statements.get(0)).expression
+                }
+            }
+            return null
+        } catch (Throwable t) {
+            return null
+        }
     }
 
     private static List<Expression> closureBoolExprs(ClosureExpression closure) {

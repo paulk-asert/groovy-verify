@@ -52,8 +52,9 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
 | **Bounded-universal quantifiers over arrays** | `Forall.range(lo, hi) { … a[it] … }` | ✅ Phase 6 |
 | **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
+| **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
-| Lemmas by induction, unbounded quantifiers, in-loop `store` | — | ⏳ later |
+| Lemmas by induction, in-place sort, unbounded quantifiers | — | ⏳ later |
 
 Example diagnostic:
 

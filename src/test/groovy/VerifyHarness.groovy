@@ -255,6 +255,34 @@ class VerifyHarness {
                        static int g(int y) { int z = bump(y); z }
                    }''')],
 
+        // ---------- Phase 6: in-loop store (array update threaded through a loop) ----------
+        // Fill a[0..n) with 0; the content invariant is preserved across the store and
+        // proves the postcondition that the whole range is zeroed.
+        [group: 'P6 in-loop store', name: 'zero-fill verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n <= a.length })
+                       @Ensures({ Forall.range(0, n) { i -> a[i] == 0 } })
+                       static int zero(int[] a, int n) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n && verification.Forall.range(0, i, { int j -> a[j] == 0 }) })
+                           @Decreases({ n - i })
+                           while (i < n) { a[i] = 0; i = i + 1 }
+                           return 0
+                       }
+                   }''')],
+        // The body stores 1 but the invariant claims the range is 0 → preservation refuted.
+        [group: 'P6 in-loop store', name: 'store breaks invariant refuted', expect: 'invariant is preserved',
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n <= a.length })
+                       static int fill(int[] a, int n) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n && verification.Forall.range(0, i, { int j -> a[j] == 0 }) })
+                           @Decreases({ n - i })
+                           while (i < n) { a[i] = 1; i = i + 1 }
+                           return 0
+                       }
+                   }''')],
+
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',
          src: HDR + PRODUCER + tc('class C { static int go() { P.sq(-1) } }')],
