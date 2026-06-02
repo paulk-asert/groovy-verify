@@ -45,7 +45,9 @@ tasks.named('rat') {
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 
-// Patched local 6.0.0-SNAPSHOT (static @Ensures support) lives in mavenLocal.
+// Patched local 6.0.0-SNAPSHOT lives in mavenLocal: static @Ensures support plus
+// the groovy-contracts fix allowing a parameterised closure ({ i -> ... }) nested
+// inside a contract closure (the Phase 6 Forall.range quantifier syntax).
 repositories {
     mavenLocal()
     mavenCentral()

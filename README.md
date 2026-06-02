@@ -50,7 +50,9 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Cross-boundary nullity/size at call sites** | `@Requires` | ✅ Phase 4 |
 | **Value-flow: safety implied by an assignment** | *(implicit)* | ✅ Phase 5 |
 | **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
-| Quantifiers (`Forall.range`) | — | ⏳ Phase 6 |
+| **Bounded-universal quantifiers over arrays** | `Forall.range(lo, hi) { … a[it] … }` | ✅ Phase 6 |
+| **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
+| Unbounded quantifiers, existentials, in-loop `store` | — | ⏳ later |
 
 Example diagnostic:
 
@@ -62,8 +64,10 @@ Example diagnostic:
 
 ## Building & testing
 
-Requires JDK 25 and the patched local `org.apache.groovy:6.0.0-SNAPSHOT`
-(static `@Ensures` support) in `mavenLocal()`.
+Requires JDK 25 and the patched local `org.apache.groovy:6.0.0-SNAPSHOT` in
+`mavenLocal()` — it carries static `@Ensures` support and the groovy-contracts
+fix that allows a parameterised closure (`{ i -> ... }`) nested inside a contract,
+which the Phase 6 quantifier syntax relies on.
 
 ```sh
 ./gradlew verify          # compile a battery of good/bad snippets and assert diagnostics
@@ -80,9 +84,10 @@ Verification is sound *within* a deliberately small fragment and **loudly
 unsound outside it**: anything the encoder cannot model emits a "skipped"
 warning rather than passing silently. The fragment is integer-linear
 arithmetic, comparisons, boolean connectives, the size/nullity oracles above,
-and — for bodies — straight-line code, `if`/`else`, single-assignment locals,
-and a single annotated `while` loop. See `Encoder` and the roadmap for the
-exact boundaries.
+array contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
+bounded-universal quantifiers (`Forall.range`), and — for bodies — straight-line
+code, `if`/`else`, single-assignment locals, and a single annotated `while` loop.
+See `Encoder` and the roadmap for the exact boundaries.
 
 ## Architecture
 

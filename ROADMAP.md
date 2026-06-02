@@ -207,7 +207,7 @@ Each is a small `Encoder` addition; the work was choosing the right encoding.
 - **`xs.contains(y)`** — modelled as an *uninterpreted predicate*
   `contains$xs : Int -> Bool`. Sound, and `contains(y)` assumed entails
   `contains(y)` proved, but with no membership reasoning until the quantifier
-  axioms of [Phase 6](#phase-6--quantifiers). It deliberately stops short of the
+  axioms of [Phase 6](#phase-6--quantifiers-shipped). It deliberately stops short of the
   trigger cliff.
 
 The seam grew two methods — `SmtBackend.boolVar` (nullity) and
@@ -256,7 +256,7 @@ even though they are obviously safe:
 
 Both now verify. The work stayed entirely inside the QF_LIA + oracle fragment —
 no new theory, no quantifiers — the opposite of
-[Phase 6](#phase-6--quantifiers)'s trigger cliff.
+[Phase 6](#phase-6--quantifiers-shipped)'s trigger cliff.
 
 **How it works:**
 
@@ -306,58 +306,60 @@ that guard (sound, less precise). And the per-site replay multiplies solver call
 
 ---
 
-## Phase 6 — Quantifiers
+## Phase 6 — Quantifiers  *(shipped)*
 
-**The frontier.** Necessary for binary-search correctness, two-sum, sortedness
-invariants, "every element of this array satisfies P". Z3 handles bounded
-universals well if the patterns are set up right; unbounded quantifiers are
-where the trigger cliff lives.
+**The frontier — bounded universals over arrays.** "Every element satisfies P",
+sortedness, and the read/write reasoning that array algorithms need. Z3 handles
+bounded universals well when the patterns are right; unbounded quantifiers are
+where the trigger cliff lives, so the scope is **bounded universals only**
+(existentials and unbounded quantifiers are deferred).
 
-**Scope strictly to bounded universals.** Syntax for the user:
+**Syntax for the user:**
 
 ```groovy
-@Requires({ Forall.range(0, arr.length, { i -> arr[i] >= 0 }) })
+@Requires({ Forall.range(0, a.length) { a[it] >= 0 } })
 ```
 
-…where `Forall.range(lo, hi, predicate)` is a static helper the encoder
-recognises and rewrites to a Z3 `mkForall` over an integer variable constrained
-`lo <= i < hi`. The closure body is the matrix; `arr[i]` becomes `(select arr i)`
-under Z3's array theory.
+`Forall.range(lo, hi, predicate)` is a static helper the encoder recognises and
+rewrites to a Z3 `mkForall` over an integer constrained `lo <= i < hi`, with the
+closure body as the matrix; `a[i]` becomes `(select a i)` under Z3's array theory,
+and each such term becomes an instantiation trigger (one pattern per term, so a
+matrix with several distinct selects — sortedness uses `a[i]` and `a[i+1]` —
+instantiates robustly). The predicate is the trailing closure, naming the index
+with `it` or an explicit `{ i -> ... }`; `Forall.range` stays executable, so the
+groovy-contracts *runtime* check still works. It composes inside an ordinary
+boolean `@Requires`/`@Ensures` (ANDed with normal conditions), reusing
+groovy-contracts rather than a parallel annotation.
 
-**Read *and* write: `select` and `store`.** The syntax above covers *reading* an
-array, which is enough for read-only proofs like binary search. The natural other
-half is *writing*: model a single array's contents as a value — an immutable Z3
-array threaded through the method, each `a[i] = v` becoming `(store a i v)` — so a
-postcondition can describe the array a method *produced*. That unlocks the
-in-place-algorithm proofs (sort, partition, reverse) that are the showcase for
-code destined for Java, and that a developer who today specifies in Dafny and
-cross-compiles relies on. Crucially this needs **no general heap or aliasing**
-(the deliberate non-goal below): it assumes the array parameter is unaliased — the
-common case in algorithm code — and reasons about its contents with value
-semantics. It shares this phase's trigger cliff and the array-model
-pretty-printing flagged under cross-cutting risks.
+**Dependency note.** This natural `{ i -> ... }` spelling needs the patched local
+`6.0.0-SNAPSHOT`: earlier groovy-contracts builds rejected *any* parameterised
+closure (and `it`) nested inside a contract closure, which would have forced an
+awkward static-marker workaround. The method-call surface is still the spike form
+— [Phase 9](#phase-9--programmer-facing-surface-authoring--diagnostics) owns a
+closer-to-idiom spelling.
 
-**Risks specific to this phase:**
+**Read *and* write: `select` and `store`.** Reading covers proofs like binary
+search. The write side models a single array's contents as a value — an immutable
+Z3 array threaded through the method, each `a[i] = v` becoming `(store a i v)`
+(`BodyEncoder` emits an `ArrayStore` step; a later read of `a[i]` sees the
+update) — so a postcondition can describe the array a method *produced*: the
+in-place-algorithm proofs (sort, partition, reverse) that are the Dafny-to-Java
+showcase. This needs **no general heap or aliasing** (the non-goal below): it
+assumes the array parameter is unaliased — the common case in algorithm code —
+and reasons with value semantics. The `a.size` oracle and the `a` array value
+share the source name, so a bounds obligation `i < a.size` and a `(select a i)`
+agree; this retires Phase 1's "array contents not modelled" limit.
 
-- Z3 returns UNKNOWN on quantified formulas it can't pattern-match. Triggers are
-  the cliff. Mitigation: limit to the `∀ i: lo <= i < hi` shape, ensure every
-  quantified occurrence of `arr[i]` is a valid trigger, set a generous timeout.
-  This is also the first point where push-button SMT is no longer enough on its
-  own, and where a user-supplied **instantiation/trigger hint** — the lightest
-  borrow from the proof-assistant world — earns its keep: when a quantified VC
-  stalls, let the author name the witness or trigger rather than only emitting
-  "could not decide". See [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
-- Encoding arrays via Z3's array theory changes the whole VC shape. Plain
-  indexing becomes `(select arr i)`; `arr.size` becomes an uninterpreted
-  function constrained appropriately. This also retires the "array contents not
-  modelled" limit that Phase 1 lives with today.
-- Existentials are harder than universals; defer.
-
-Estimated work: a couple of weeks, with a real chance part of it is spent
-fighting trigger heuristics. Risk: high. Target: the bounds-and-sortedness proof
-for binary search, with sortedness as
-`Forall.range(0, arr.length - 1, { i -> arr[i] <= arr[i+1] })` — and, once
-`store` lands, the postcondition that an in-place sort *produces* a sorted array.
+**Known limits.** Counterexamples for array/quantifier refutations show the
+integer skeleton (`a.size`, indices) but not array contents or unconstrained
+element values — honest, not yet concrete; the array-model pretty-printer
+(cross-cutting risks) and the witness-as-failing-call idea (Phase 9) are the
+follow-ups. `store` is wired through straight-line bodies (`BodyEncoder`), not yet
+through loop bodies (`LoopEncoder`), so an *in-place sort* (store inside a loop)
+is the next increment, not done here. UNKNOWN on a stalled quantifier stays a
+loud "could not decide"; the user-supplied trigger/instantiation hint that would
+rescue it is the lightest borrow from
+[Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
 
 ---
 
@@ -496,21 +498,46 @@ The distinction that scopes this phase — **two kinds of diagnostic:**
   dereference (`Cannot invoke method size() on null object`).
 - **Those with no code equivalent.** Loop-invariant establishment/preservation,
   termination, "could not decide", and the quantifier obligations of
-  [Phase 6](#phase-6--quantifiers) have no runtime analogue to borrow. Forcing a
+  [Phase 6](#phase-6--quantifiers-shipped) have no runtime analogue to borrow. Forcing a
   fake one would mislead. Here the right move is *self-explanatory* verification
   vocabulary — name the obligation, say plainly what could not be shown and what
   would make it provable — not a runtime costume it does not fit.
 
 **Authoring vocabulary — the input side of the same coin.** "Meet the programmer
 where they are" applies to how specs are *written*, not only how failures are
-*read*. Phase 6 introduces the quantifier as `Forall.range(0, arr.length, { i ->
-... })` — a static helper the encoder recognises, deliberately a plain Groovy
+*read*. Phase 6 introduces the quantifier as `Forall.range(0, a.length) { a[it]
+>= 0 }` — a static helper the encoder recognises, deliberately a plain Groovy
 expression so it needs no language change and the runtime contract can still
-evaluate it. But a quantifier spelled as a method call may eventually read better
-as an annotation form (`@Forall(range = ...)`) or some other surface closer to how
-developers think about "for all `i` in a range". Like the diagnostic wording, the
-right form is best chosen *after* the quantifier shape settles in Phase 6; the
-helper is the spike, not the committed syntax.
+evaluate it. But that is a bespoke verification idiom, and a Groovy developer
+writing the *same thing* outside a contract would not invent it — they would
+reach for the GDK they already know:
+
+```groovy
+(0..<a.length).every { a[it] >= 0 }      // a bounded IntRange + every
+a.indices.every { a[it] >= 0 }           // the array's own index range
+a.every { it >= 0 }                      // element-wise: `it` is the element
+```
+
+The leading Phase 9 candidate is therefore to **recognise these native idioms**
+rather than `Forall.range`: `(lo..<hi).every {…}` and `xs.indices.every {…}` map
+to the same bounded universal over indices, `xs.every { it … }` to a universal
+over *elements* (`it` is `(select xs i)`), and `any` to the existential once that
+lands. They are already executable (so the runtime contract works for free) and
+read like ordinary Groovy — and they retire the `Forall` helper entirely. Cost
+and caution: `every`/`any` are pervasive, so the encoder must treat them as
+quantifiers **only in contract position** and only for the recognised
+range/indices/collection shapes, and must keep the element-vs-index distinction
+straight.
+
+If that contract-position restriction proves fragile, the fallback is an
+**annotation** surface rather than a method idiom — and there is precedent:
+jqwik already uses `@Forall` for universal quantification in property-based
+testing, so the spelling is familiar to Groovy/Java developers. An annotation is
+unambiguous by construction (it is unmistakably a spec, never confused with an
+in-the-wild `every`/`any` call), at the cost of reading less like an inline
+boolean and composing less naturally with `&&` inside a larger contract. Like the
+diagnostic wording, the right surface is best chosen *after* the quantifier shape
+settles in Phase 6; `Forall.range` is the spike, not the committed syntax.
 
 **Deliberately not done early.** Until the capability set settles (Phase 6
 especially), new diagnostic and authoring shapes keep appearing, and pinning the

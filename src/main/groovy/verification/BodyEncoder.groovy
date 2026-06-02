@@ -46,6 +46,15 @@ class Assign {
     Expression rhs
 }
 
+/** An array-element update on a path: {@code arr := (store arr index value)} (Phase 6). */
+@CompileStatic
+@TupleConstructor
+class ArrayStore {
+    String arr
+    Expression index
+    Expression value
+}
+
 /**
  * One straight-line execution path through a method body: an ordered
  * list of {@link Guard}/{@link Assign} steps and the expression whose
@@ -197,21 +206,37 @@ class BodyEncoder {
             if (e instanceof BinaryExpression &&
                 ((BinaryExpression) e).operation.type == Types.ASSIGN) {
                 BinaryExpression be = (BinaryExpression) e
-                if (!(be.leftExpression instanceof VariableExpression)) {
-                    throw new UnsupportedConstructException(
-                        "assignment to a non-variable target (line ${s.lineNumber})")
+                if (be.leftExpression instanceof VariableExpression) {
+                    String name = ((VariableExpression) be.leftExpression).name
+                    Path np = copy(prefix)
+                    ensureSingleAssign(np, name)
+                    np.steps.add(new Assign(name, be.rightExpression))
+                    if (tail) {
+                        np.result = be.leftExpression
+                        res.terminated.add(np)
+                    } else {
+                        res.live.add(np)
+                    }
+                    return res
                 }
-                String name = ((VariableExpression) be.leftExpression).name
-                Path np = copy(prefix)
-                ensureSingleAssign(np, name)
-                np.steps.add(new Assign(name, be.rightExpression))
-                if (tail) {
-                    np.result = be.leftExpression
-                    res.terminated.add(np)
-                } else {
-                    res.live.add(np)
+                // a[k] = v  ->  array-store step (Phase 6).
+                if (be.leftExpression instanceof BinaryExpression &&
+                    ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                    ((BinaryExpression) be.leftExpression).leftExpression instanceof VariableExpression) {
+                    BinaryExpression sub = (BinaryExpression) be.leftExpression
+                    String arr = ((VariableExpression) sub.leftExpression).name
+                    Path np = copy(prefix)
+                    np.steps.add(new ArrayStore(arr, sub.rightExpression, be.rightExpression))
+                    if (tail) {
+                        np.result = be.leftExpression   // the assigned element's value
+                        res.terminated.add(np)
+                    } else {
+                        res.live.add(np)
+                    }
+                    return res
                 }
-                return res
+                throw new UnsupportedConstructException(
+                    "assignment to a non-variable target (line ${s.lineNumber})")
             }
 
             // A plain expression is only meaningful as the implicit return.

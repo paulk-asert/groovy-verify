@@ -16,6 +16,7 @@
 package verification
 
 import com.microsoft.z3.ArithExpr
+import com.microsoft.z3.ArrayExpr
 import com.microsoft.z3.BoolExpr
 import com.microsoft.z3.Context
 import com.microsoft.z3.Expr
@@ -24,6 +25,7 @@ import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
 import com.microsoft.z3.Model
 import com.microsoft.z3.Params
+import com.microsoft.z3.Pattern
 import com.microsoft.z3.Solver
 import com.microsoft.z3.Sort
 import com.microsoft.z3.Status
@@ -67,6 +69,7 @@ class Z3Session implements SmtSession {
     private final Map<String, IntExpr> vars = [:]
     private final Map<String, BoolExpr> boolVars = [:]
     private final Map<String, FuncDecl> preds = [:]
+    private final Map<String, ArrayExpr> arrays = [:]
 
     Z3Session(Context ctx, Solver solver) {
         this.ctx = ctx
@@ -99,6 +102,35 @@ class Z3Session implements SmtSession {
             preds.put(name, fd)
         }
         ctx.mkApp(fd, (Expr) intArg)
+    }
+
+    @Override
+    Object arrayVar(String name) {
+        ArrayExpr cached = arrays.get(name)
+        if (cached != null) return cached
+        ArrayExpr v = (ArrayExpr) ctx.mkConst(name, ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort()))
+        arrays.put(name, v)
+        v
+    }
+
+    @Override Object select(Object arr, Object idx) { ctx.mkSelect((ArrayExpr) arr, (Expr) idx) }
+    @Override Object store(Object arr, Object idx, Object val) { ctx.mkStore((ArrayExpr) arr, (Expr) idx, (Expr) val) }
+
+    @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
+
+    @Override
+    Object forall(List<Object> bound, Object body, List<Object> triggers) {
+        Expr[] b = bound.collect { (Expr) it } as Expr[]
+        Pattern[] pats = null
+        if (triggers != null && !triggers.isEmpty()) {
+            // One pattern per trigger term (alternatives): seeing *any* select(arr, ·)
+            // ground term lets Z3 instantiate, which is more robust for matrices with
+            // several distinct selects (e.g. sortedness uses a[i] and a[i+1]) than a
+            // single conjunctive multi-pattern that requires all of them at once.
+            pats = triggers.collect { ctx.mkPattern((Expr) it) } as Pattern[]
+        }
+        // weight 1, the given patterns, no no-patterns, no quantifier/skolem id.
+        ctx.mkForall(b, (Expr) body, 1, pats, (Expr[]) null, (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null)
     }
 
     @Override Object intLit(long n) { ctx.mkInt(n) }

@@ -58,6 +58,38 @@ interface SmtSession extends AutoCloseable {
      */
     Object uninterpretedPred(String name, Object intArg)
 
+    /**
+     * Declare an integer array variable {@code Array Int -> Int}, modelling the
+     * *contents* of an array/list named {@code name}. The element at index
+     * {@code i} is {@link #select}; an update is {@link #store}. Index and value
+     * sorts are both Int — the spike's only modelled element type. (See
+     * roadmap Phase 6.)
+     */
+    Object arrayVar(String name)
+
+    /** The element {@code arr[i]} — Z3 {@code (select arr i)}. */
+    Object select(Object arr, Object idx)
+
+    /** The array equal to {@code arr} except index {@code idx} holds {@code val} — Z3 {@code (store arr idx val)}. */
+    Object store(Object arr, Object idx, Object val)
+
+    /**
+     * A fresh integer constant to be universally quantified over by {@link
+     * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
+     * loop variable to this handle while translating the quantifier body, then
+     * abstracts it away in the {@code forall}.
+     */
+    Object boundIntVar(String name)
+
+    /**
+     * Universally quantify {@code body} over {@code bound} (handles from {@link
+     * #boundIntVar}), using {@code triggers} as the instantiation patterns —
+     * typically the {@code (select arr i)} terms of the body. Scope is the
+     * bounded-universal shape {@code ∀ i. lo <= i < hi ⇒ matrix} that Z3 handles
+     * predictably; see the trigger-cliff risk in the roadmap.
+     */
+    Object forall(List<Object> bound, Object body, List<Object> triggers)
+
     /** Build expressions. Args are handles previously returned by this session. */
     Object intLit(long n)
     Object plus(Object a, Object b)

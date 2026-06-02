@@ -16,9 +16,11 @@
 package verification
 
 import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
@@ -28,6 +30,10 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
 
 /**
@@ -70,6 +76,16 @@ class Encoder {
     private final Map<String, Object> sizeEnv = [:]
     /** Cache of nullity-oracle booleans, keyed by reference name. */
     private final Map<String, Object> nullEnv = [:]
+    /** Cache of array-content handles ({@code Array Int -> Int}), keyed by source name. */
+    private final Map<String, Object> arrEnv = [:]
+    /**
+     * While translating a quantifier body, the {@code (select arr i)} terms are
+     * collected here to serve as the quantifier's instantiation triggers; null
+     * outside a quantifier.
+     */
+    private List<Object> triggerSink = null
+    /** Counter for minting unique bound-variable names across nested/multiple quantifiers. */
+    private int quantCounter = 0
 
     Encoder(SmtSession session) {
         this.session = session
@@ -131,6 +147,28 @@ class Encoder {
 
     /** True if a nullity oracle has already been minted for {@code recv}. */
     boolean hasNullityOracle(String recv) { nullEnv.containsKey(recv) }
+
+    /**
+     * Get-or-declare the array-content handle for a source-level name. Shares its
+     * key with nothing else — the size oracle ({@link #sizeOf}) bounds the valid
+     * index range, this models the element values.
+     */
+    Object arrayFor(String name) {
+        Object cached = arrEnv.get(name)
+        if (cached != null) return cached
+        Object v = session.arrayVar(name)
+        arrEnv.put(name, v)
+        v
+    }
+
+    /**
+     * Re-bind an array name to a new content handle — used to thread an array
+     * update {@code a[i] = v} as {@code a := (store a i v)}, so a later read of
+     * {@code a[i]} sees the post-update contents (value semantics, no aliasing).
+     */
+    void bindArray(String name, Object handle) {
+        arrEnv.put(name, handle)
+    }
 
     /** The nullity oracle: a boolean that is true exactly when {@code recv} is null. */
     Object nullityOf(String recv) {
@@ -213,6 +251,18 @@ class Encoder {
     private Object translateBinary(BinaryExpression be) {
         int op = be.operation.type
 
+        // Array subscript a[i] -> (select a i). The element value, modelled under
+        // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
+        if (op == Types.LEFT_SQUARE_BRACKET) {
+            if (!(be.leftExpression instanceof VariableExpression)) return null
+            Object arr = arrayFor(((VariableExpression) be.leftExpression).name)
+            Object idx = translate(be.rightExpression)
+            if (idx == null) return null
+            Object sel = session.select(arr, idx)
+            if (triggerSink != null) triggerSink.add(sel)
+            return sel
+        }
+
         // Nullity: x == null / x != null, before we try to translate `null`.
         if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
             VariableExpression ref = nullComparisonTarget(be)
@@ -254,6 +304,13 @@ class Encoder {
         Expression recv = mce.objectExpression
         List<Expression> args = argList(mce)
 
+        // Forall.range(lo, hi, { i -> body }) -> bounded universal quantifier.
+        if (m == 'range' && recv instanceof VariableExpression &&
+            ((VariableExpression) recv).name == 'Forall' &&
+            args.size() == 3 && args.get(2) instanceof ClosureExpression) {
+            return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
+        }
+
         // size() / isEmpty() / contains() need a named receiver for their oracle.
         if (!mce.implicitThis && recv instanceof VariableExpression) {
             String rn = ((VariableExpression) recv).name
@@ -276,6 +333,57 @@ class Encoder {
             return (l == null || r == null) ? null : session.eq(l, r)
         }
 
+        return null
+    }
+
+    /**
+     * Translate {@code Forall.range(lo, hi, { i -> body })} to the bounded
+     * universal {@code ∀ i. (lo <= i < hi) ⇒ body}. The closure's single
+     * parameter is bound to a fresh quantified integer while the body is
+     * translated — shadowing any same-named variable in scope, restored
+     * afterwards — and the {@code (select arr i)} terms the body produces become
+     * the quantifier's instantiation triggers.
+     */
+    private Object translateForallRange(Expression lo, Expression hi, ClosureExpression clo) {
+        // Index variable: the closure's single declared parameter (`{ i -> ... }`)
+        // or Groovy's implicit `it` (`{ a[it] >= 0 }`, whose parameter list is
+        // null or empty depending on parse phase).
+        Parameter[] ps = clo.parameters
+        String iname
+        if (ps == null || ps.length == 0) iname = 'it'
+        else if (ps.length == 1) iname = ps[0].name
+        else return null
+        Expression bodyExpr = singleExprOf(clo.code)
+        if (bodyExpr == null) return null
+
+        Object iv = session.boundIntVar(iname + '$q' + (quantCounter++))
+        Object prevBinding = env.get(iname)
+        List<Object> prevSink = triggerSink
+        List<Object> triggers = new ArrayList<Object>()
+        env.put(iname, iv)
+        triggerSink = triggers
+        try {
+            Object loH = translate(lo)
+            Object hiH = translate(hi)
+            Object bodyH = translate(bodyExpr)
+            if (loH == null || hiH == null || bodyH == null) return null
+            Object range = session.and([session.le(loH, iv), session.lt(iv, hiH)])
+            Object matrix = session.implies(range, bodyH)
+            return session.forall([iv], matrix, triggers)
+        } finally {
+            triggerSink = prevSink
+            if (prevBinding == null) env.remove(iname) else env.put(iname, prevBinding)
+        }
+    }
+
+    /** The single expression a closure/contract body reduces to, or null if it isn't a lone expression. */
+    private static Expression singleExprOf(Statement code) {
+        if (code instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) code).statements
+            return ss.size() == 1 ? singleExprOf(ss.get(0)) : null
+        }
+        if (code instanceof ExpressionStatement) return ((ExpressionStatement) code).expression
+        if (code instanceof ReturnStatement) return ((ReturnStatement) code).expression
         return null
     }
 

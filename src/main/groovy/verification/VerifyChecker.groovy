@@ -654,6 +654,16 @@ class VerifyChecker extends TypeCheckingExtension {
                             "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                     }
                     session.assertExpr(session.eq(enc.varFor(a.name), rhs))
+                } else if (step instanceof ArrayStore) {
+                    ArrayStore st = (ArrayStore) step
+                    Object idx = enc.translate(st.index)
+                    Object val = enc.translate(st.value)
+                    if (idx == null || val == null) {
+                        throw new UnsupportedConstructException(
+                            "array store '${st.arr}[${st.index.text}] = ${st.value.text}' is outside fragment")
+                    }
+                    // a := (store a idx val): subsequent reads of a see the update.
+                    enc.bindArray(st.arr, session.store(enc.arrayFor(st.arr), idx, val))
                 }
             }
 

@@ -37,6 +37,7 @@ class VerifyHarness {
         import groovy.contracts.Ensures
         import groovy.contracts.Invariant
         import groovy.contracts.Decreases
+        import verification.Forall
     '''.stripIndent()
 
     /** A contracted producer reused by the cross-call precondition cases. */
@@ -172,6 +173,52 @@ class VerifyHarness {
                            while (i < n) { i = i + 1 }
                            return a[i]
                        }
+                   }''')],
+
+        // ---------- Phase 6: quantifiers (bounded universal via Forall.range) ----------
+        // "every element >= 0" assumed entails the element at an in-range index >= 0.
+        [group: 'P6 quantifiers', name: 'forall assumed entails instance', ok: true,
+         src: tc('''class C {
+                       @Requires({ Forall.range(0, a.length) { a[it] >= 0 } && 0 <= k && k < a.length })
+                       @Ensures({ result >= 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // Without the forall, nothing constrains the element → postcondition refuted.
+        [group: 'P6 quantifiers', name: 'missing forall refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ 0 <= k && k < a.length })
+                       @Ensures({ result >= 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // Sortedness (a[i] <= a[i+1] for all i) assumed entails adjacent elements ordered.
+        [group: 'P6 quantifiers', name: 'sortedness entails adjacent order', ok: true,
+         src: tc('''class C {
+                       @Requires({ Forall.range(0, a.length - 1) { i -> a[i] <= a[i + 1] } && 0 <= k && k + 1 < a.length })
+                       @Ensures({ result <= 0 })
+                       static int diff(int[] a, int k) { a[k] - a[k + 1] }
+                   }''')],
+        // Without sortedness, adjacent elements need not be ordered → refuted.
+        [group: 'P6 quantifiers', name: 'missing sortedness refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ 0 <= k && k + 1 < a.length })
+                       @Ensures({ result <= 0 })
+                       static int diff(int[] a, int k) { a[k] - a[k + 1] }
+                   }''')],
+
+        // ---------- Phase 6: array update (store) ----------
+        // After a[k] = v, reading a[k] yields v — postcondition about the produced array.
+        [group: 'P6 store', name: 'post-store element verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= k && k < a.length })
+                       @Ensures({ a[k] == v })
+                       static int set(int[] a, int k, int v) { a[k] = v; a[k] }
+                   }''')],
+        // Storing the wrong value violates the postcondition → refuted.
+        [group: 'P6 store', name: 'wrong store value refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ 0 <= k && k < a.length })
+                       @Ensures({ a[k] == v })
+                       static int set(int[] a, int k, int v) { a[k] = v + 1; a[k] }
                    }''')],
 
         // ---------- Regression: call-site preconditions ----------
