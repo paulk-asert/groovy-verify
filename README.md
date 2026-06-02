@@ -47,6 +47,7 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **`x == null` / `x != null`** nullity in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
 | **`x.equals(y)`** (numeric `==`) | `@Requires`/`@Ensures` | ✅ Phase 4 |
 | **`xs.contains(y)`** (uninterpreted predicate) | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **Cross-boundary nullity/size at call sites** | `@Requires` | ✅ Phase 4 |
 | Quantifiers (`Forall.range`) | — | ⏳ Phase 5 |
 
 Example diagnostic:

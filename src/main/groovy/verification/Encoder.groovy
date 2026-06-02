@@ -112,6 +112,12 @@ class Encoder {
         v
     }
 
+    /** True if a size oracle has already been minted for {@code recv} (i.e. a contract referenced its size). */
+    boolean hasSizeOracle(String recv) { sizeEnv.containsKey(recv + '.size') }
+
+    /** True if a nullity oracle has already been minted for {@code recv}. */
+    boolean hasNullityOracle(String recv) { nullEnv.containsKey(recv) }
+
     /** The nullity oracle: a boolean that is true exactly when {@code recv} is null. */
     Object nullityOf(String recv) {
         Object cached = nullEnv.get(recv)

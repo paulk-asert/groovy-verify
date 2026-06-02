@@ -212,13 +212,30 @@ Each is a small `Encoder` addition; the work was choosing the right encoding.
 The seam grew two methods — `SmtBackend.boolVar` (nullity) and
 `uninterpretedPred` (contains) — both implemented once in `Z3Backend`.
 
-**Known limit (cross-boundary oracles).** Inside a unit these all work: a
-method's own `@Requires({ s != null })` is assumed when checking its body, and an
-`@Ensures` referring to `xs.size()` is checked against the body. But at a *call*
-site, a formal parameter is bound to its actual argument by integer value only —
-the size/nullity oracles of the formal and the actual are not yet tied. So a
-caller proving a callee's `@Requires({ x != null })` across the boundary needs a
-formal↔actual oracle binding that is a small, well-scoped next addition.
+**Cross-boundary oracles (shipped).** Inside a unit these all work: a method's
+own `@Requires({ s != null })` is assumed when checking its body, and an
+`@Ensures` referring to `xs.size()` is checked against the body. At a *call* site
+the formal↔actual binding now ties the **size and nullity oracles** as well as
+the integer value: when the actual is a named reference and the callee's contract
+references its size or nullity, the formal's oracle is asserted equal to the
+actual's. Two changes make this land cleanly:
+
+- The oracle is tied **only when the contract actually mints it** on the formal
+  (`Encoder.hasSizeOracle`/`hasNullityOracle`), so a purely-nullity precondition
+  doesn't fabricate an `xs.size` term in the counterexample.
+- A call site now also **assumes the enclosing method's own `@Requires`**, mirror-
+  ing what the implicit-obligation checks already did via `assumeContext`. A
+  precondition is a given throughout the body, so a method declared
+  `@Requires({ s != null }) m(String s) { callee(s) }` can discharge `callee`'s
+  `@Requires({ x != null })` from its own contract — not only from an `if`-guard.
+
+So a caller proving a callee's `@Requires({ x != null })` or
+`@Requires({ xs.size() > 0 })` across the boundary now verifies, from either a
+guard or the caller's own contract. **Residual cosmetic limit:** a refuted
+reference-typed call site still lists the formal's meaningless integer shadow
+(`s = 0`) alongside the meaningful oracle value — the integer constant minted for
+every formal so numeric counterexamples read `x = -1`. Type-aware counterexample
+filtering would suppress it; small, not yet wired.
 
 ---
 
@@ -277,8 +294,8 @@ persuasive.
 - **Inter-procedural reasoning.** Use a callee's `@Ensures` as facts when
   reasoning about the caller (currently only its `@Requires` is used). Small to
   add, but transitively requires callees be re-verified when their contracts
-  tighten — a real build-time cost. The cross-boundary oracle binding from
-  Phase 4 is a prerequisite.
+  tighten — a real build-time cost. The cross-boundary oracle binding it builds
+  on is now in place (Phase 4), so this is unblocked.
 - **Heap/aliasing.** Don't. Groovy makes this very hard and the payoff is small
   for the fragment most developers care about.
 

@@ -47,6 +47,22 @@ class VerifyHarness {
         }
     '''.stripIndent()
 
+    /** A producer whose precondition is reference nullity — exercises the cross-boundary nullity oracle. */
+    static final String NULLITY_PRODUCER = '''
+        class N {
+            @Requires({ s != null })
+            static int len(String s) { s.length() }
+        }
+    '''.stripIndent()
+
+    /** A producer whose precondition is collection size — exercises the cross-boundary size oracle. */
+    static final String SIZE_PRODUCER = '''
+        class L {
+            @Requires({ xs.size() > 0 })
+            static int first(List xs) { 0 }
+        }
+    '''.stripIndent()
+
     static final List<Map> CASES = [
 
         // ---------- Phase 1: array bounds ----------
@@ -88,6 +104,24 @@ class VerifyHarness {
          src: tc('class C { @Requires({ xs.contains(y) }) @Ensures({ xs.contains(y) }) static int f(List xs, int y) { 0 } }')],
         [group: 'P4 contains', name: 'contains unproven refuted', expect: 'Cannot prove postcondition',
          src: tc('class C { @Ensures({ xs.contains(y) }) static int f(List xs, int y) { 0 } }')],
+
+        // ---------- Phase 4: cross-boundary oracle binding (nullity + size) ----------
+        // A guard in the caller establishes non-null, which the formal↔actual
+        // nullity oracle carries across to the callee's @Requires({ s != null }).
+        [group: 'P4 cross-boundary', name: 'guard proves callee non-null', ok: true,
+         src: HDR + NULLITY_PRODUCER + tc('class C { static int go(String t) { if (t != null) return N.len(t); return 0 } }')],
+        // The caller's own @Requires (now assumed at call sites) establishes it.
+        [group: 'P4 cross-boundary', name: 'enclosing @Requires proves callee non-null', ok: true,
+         src: HDR + NULLITY_PRODUCER + tc('class C { @Requires({ t != null }) static int go(String t) { N.len(t) } }')],
+        // No guard, no enclosing contract: the argument may be null → refuted.
+        [group: 'P4 cross-boundary', name: 'possibly-null arg refuted', expect: 'Cannot prove precondition',
+         src: HDR + NULLITY_PRODUCER + tc('class C { static int go(String t) { N.len(t) } }')],
+        // Size oracle carried across via the caller's own @Requires.
+        [group: 'P4 cross-boundary', name: 'enclosing @Requires proves callee size', ok: true,
+         src: HDR + SIZE_PRODUCER + tc('class C { @Requires({ ys.size() > 0 }) static int go(List ys) { L.first(ys) } }')],
+        // No size knowledge in the caller: the list may be empty → refuted.
+        [group: 'P4 cross-boundary', name: 'unconstrained size refuted', expect: 'Cannot prove precondition',
+         src: HDR + SIZE_PRODUCER + tc('class C { static int go(List ys) { L.first(ys) } }')],
 
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',

@@ -84,6 +84,8 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private SmtBackend backend
     private PathFacts currentFacts
+    /** The method currently being type-checked; its own @Requires is a given at any call site in its body. */
+    private MethodNode currentMethod
 
     VerifyChecker(StaticTypeCheckingVisitor visitor) {
         super(visitor)
@@ -97,6 +99,7 @@ class VerifyChecker extends TypeCheckingExtension {
     @Override
     boolean beforeVisitMethod(MethodNode node) {
         currentFacts = new PathFacts()
+        currentMethod = node
         if (node.code != null) {
             try {
                 node.code.visit(currentFacts)
@@ -138,6 +141,7 @@ class VerifyChecker extends TypeCheckingExtension {
             else verifyPostcondition(node)
         } finally {
             currentFacts = null
+            currentMethod = null
         }
     }
 
@@ -620,6 +624,9 @@ class VerifyChecker extends TypeCheckingExtension {
             //    referenced by the argument is the same SMT var as one
             //    referenced by the path condition.
             Map<String, Object> formalBindings = [:]
+            // Reference-typed formals bound to a named actual: candidates for
+            // tying the size/nullity oracles across the boundary (see below).
+            Map<String, String> oracleActuals = [:]
             for (int i = 0; i < formals.length; i++) {
                 Object argHandle = enc.translate(argExprs[i])
                 if (argHandle == null) {
@@ -637,6 +644,31 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object formalVar = session.intVar(formals[i].name)
                 session.assertExpr(session.eq(formalVar, argHandle))
                 formalBindings[formals[i].name] = formalVar
+
+                // Record reference-typed formals bound to a named actual. The
+                // size/nullity oracles are tied *after* the contract is
+                // translated (below), so we tie only the oracles the contract
+                // actually uses — minting an unused `n.size` would pollute the
+                // counterexample. Primitives have no size/nullity to tie.
+                if (argExprs[i] instanceof VariableExpression &&
+                    !ClassHelper.isPrimitiveType(formals[i].type)) {
+                    oracleActuals[formals[i].name] = ((VariableExpression) argExprs[i]).name
+                }
+            }
+
+            // 1b. Assume the *enclosing* method's own @Requires, if any. A
+            //     precondition is a given throughout the method body, so it may
+            //     be used to discharge a call the body makes — exactly as the
+            //     implicit-obligation checks already do (see assumeContext).
+            //     The enclosing parameter names coincide with the actual-
+            //     argument names in scope here, so the same SMT symbols (and
+            //     their size/nullity oracles) are shared automatically.
+            if (currentMethod != null && findRequires(currentMethod) != null) {
+                Expression enclosingReq = contractAstFor(currentMethod, 'requires')
+                if (enclosingReq != null) {
+                    Object pre = enc.translate(enclosingReq)
+                    if (pre != null) session.assertExpr(pre)
+                }
             }
 
             // 2. Harvest path facts and assert them. Each fact is one
@@ -669,6 +701,22 @@ class VerifyChecker extends TypeCheckingExtension {
                     callExpr as ASTNode)
                 return
             }
+            // 3b. Tie the formal's size/nullity oracle to the actual's — but
+            //     only for oracles the contract (or assumed context) actually
+            //     minted on the formal. This carries a caller's knowledge
+            //     (`xs.size() > 0`, `x != null`) across the boundary while
+            //     keeping unused oracles out of the counterexample.
+            oracleActuals.each { String formalName, String actualName ->
+                if (enc.hasSizeOracle(formalName)) {
+                    session.assertExpr(session.eq(
+                        enc.sizeOf(formalName), enc.sizeOf(actualName)))
+                }
+                if (enc.hasNullityOracle(formalName)) {
+                    session.assertExpr(session.eq(
+                        enc.nullityOf(formalName), enc.nullityOf(actualName)))
+                }
+            }
+
             session.assertExpr(session.not(contractSmt))
 
             // 4. Check.
