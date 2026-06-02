@@ -505,8 +505,7 @@ The distinction that scopes this phase — **two kinds of diagnostic:**
 
 **Authoring vocabulary — the input side of the same coin.** "Meet the programmer
 where they are" applies to how specs are *written*, not only how failures are
-*read*. Phase 6 introduces the quantifier as `Forall.range(0, a.length) { a[it]
->= 0 }` — a static helper the encoder recognises, deliberately a plain Groovy
+*read*. Phase 6 introduces the quantifier as `Forall.range(0, a.length) { a[it] >= 0 }` — a static helper the encoder recognises, deliberately a plain Groovy
 expression so it needs no language change and the runtime contract can still
 evaluate it. But that is a bespoke verification idiom, and a Groovy developer
 writing the *same thing* outside a contract would not invent it — they would
