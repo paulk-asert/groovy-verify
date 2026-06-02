@@ -19,11 +19,13 @@ import com.microsoft.z3.ArithExpr
 import com.microsoft.z3.BoolExpr
 import com.microsoft.z3.Context
 import com.microsoft.z3.Expr
+import com.microsoft.z3.FuncDecl
 import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
 import com.microsoft.z3.Model
 import com.microsoft.z3.Params
 import com.microsoft.z3.Solver
+import com.microsoft.z3.Sort
 import com.microsoft.z3.Status
 import groovy.transform.CompileStatic
 
@@ -63,6 +65,8 @@ class Z3Session implements SmtSession {
     private final Context ctx
     private final Solver solver
     private final Map<String, IntExpr> vars = [:]
+    private final Map<String, BoolExpr> boolVars = [:]
+    private final Map<String, FuncDecl> preds = [:]
 
     Z3Session(Context ctx, Solver solver) {
         this.ctx = ctx
@@ -76,6 +80,25 @@ class Z3Session implements SmtSession {
         IntExpr v = (IntExpr) ctx.mkIntConst(name)
         vars.put(name, v)
         v
+    }
+
+    @Override
+    Object boolVar(String name) {
+        BoolExpr cached = boolVars.get(name)
+        if (cached != null) return cached
+        BoolExpr v = (BoolExpr) ctx.mkBoolConst(name)
+        boolVars.put(name, v)
+        v
+    }
+
+    @Override
+    Object uninterpretedPred(String name, Object intArg) {
+        FuncDecl fd = preds.get(name)
+        if (fd == null) {
+            fd = ctx.mkFuncDecl(name, [ctx.getIntSort()] as Sort[], ctx.getBoolSort())
+            preds.put(name, fd)
+        }
+        ctx.mkApp(fd, (Expr) intArg)
     }
 
     @Override Object intLit(long n) { ctx.mkInt(n) }

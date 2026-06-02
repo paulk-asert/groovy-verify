@@ -41,6 +41,23 @@ interface SmtSession extends AutoCloseable {
     /** Declare an integer variable; returns a backend-specific handle. */
     Object intVar(String name)
 
+    /**
+     * Declare a boolean variable; returns a backend-specific handle.
+     * Used for nullity tracking (a reference's "is null" flag) — a separate
+     * sort from the integer values the rest of the fragment lives in.
+     */
+    Object boolVar(String name)
+
+    /**
+     * Apply a named uninterpreted predicate {@code Int -> Bool} to an integer
+     * argument, declaring the predicate on first use. Two applications of the
+     * same {@code name} within a session share one declaration, so
+     * {@code p(x)} assumed entails {@code p(x)} proved. This is how
+     * {@code xs.contains(y)} is modelled without committing to the quantifier
+     * theory a full membership axiom would need (see roadmap Phase 5).
+     */
+    Object uninterpretedPred(String name, Object intArg)
+
     /** Build expressions. Args are handles previously returned by this session. */
     Object intLit(long n)
     Object plus(Object a, Object b)

@@ -19,6 +19,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.TupleConstructor
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
+import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
@@ -85,6 +86,15 @@ class PathFacts extends ClassCodeVisitorSupport {
     void visitStaticMethodCallExpression(StaticMethodCallExpression smce) {
         recordFacts(smce)
         super.visitStaticMethodCallExpression(smce)
+    }
+
+    @Override
+    void visitBinaryExpression(BinaryExpression be) {
+        // Index (arr[i]) and division (a / b) sites need the same path
+        // condition as call sites, so the implicit-obligation checks in
+        // VerifyChecker are path-sensitive too.
+        recordFacts(be)
+        super.visitBinaryExpression(be)
     }
 
     /** Look up facts for a given call. Empty list = unconditional context. */

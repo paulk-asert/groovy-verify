@@ -108,6 +108,53 @@ class Reporter {
         "The call is allowed to proceed unchecked."
     }
 
+    // ---- Implicit safety obligations (array bounds, division, null deref) ----
+
+    static String formatIndexBounds(String indexText, String receiver, CheckResult result) {
+        implicit("Cannot prove array index in bounds at this access",
+            "0 <= ${indexText} && ${indexText} < ${receiver}.size",
+            "Could not decide array index bounds", result)
+    }
+
+    static String formatDivisionByZero(String divisorText, CheckResult result) {
+        implicit("Cannot prove divisor is non-zero at this division",
+            "(${divisorText}) != 0",
+            "Could not decide divisor non-zero", result)
+    }
+
+    static String formatNullDereference(String receiver, CheckResult result) {
+        implicit("Cannot prove receiver is non-null at this dereference",
+            "${receiver} != null",
+            "Could not decide receiver non-null", result)
+    }
+
+    static String formatImplicitSkipped(String kind, String reason) {
+        "Skipped ${kind} safety check (${reason}). The expression is outside the " +
+        "spike's supported fragment (linear int arithmetic, comparisons, " +
+        ".size()/.length, nullity). The access is allowed to proceed unchecked."
+    }
+
+    private static String implicit(String refutedHead, String obligation,
+                                   String unknownHead, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append(refutedHead)
+                sb.append("\n    obligation: ").append(obligation)
+                if (result.counterexample) {
+                    sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
+                }
+                break
+            case CheckResult.Status.UNKNOWN:
+                sb.append(unknownHead).append(" (solver: ").append(result.reason).append(")")
+                sb.append("\n    obligation: ").append(obligation)
+                break
+            default:
+                sb.append("Verified — no error to report")
+        }
+        sb.toString()
+    }
+
     static String formatLoopEstablishment(String methodName, String invariantText, CheckResult result) {
         loopFailure("Cannot prove loop invariant holds on entry in ${methodName}",
             "invariant", invariantText,

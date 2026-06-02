@@ -14,23 +14,78 @@
  * limitations under the License.
  */
 
-// SMT-backed precondition verifier, bundled as a compiled
-// type-checking extension. Consumers reference it by FQN:
+// SMT-backed verification extension for Groovy, packaged as a standalone
+// library. Consumers reference the type-checking extension by FQN:
 //
 //   @TypeChecked(extensions = 'verification.VerifyChecker')
 //
-// and only need :verification on their compile classpath. The Z3
-// solver (via the z3-turnkey distribution, which bundles native libs
-// for the major platforms) runs at the consumer's compile time.
+// and only need this artifact on their compile classpath. The Z3 solver
+// (via the z3-turnkey distribution, which bundles native libs for the
+// major platforms) runs at the consumer's compile time.
+//
+// Until this is published to Maven Central, the companion blog repo
+// (groovy6-functional) consumes it via a Gradle composite build:
+//   includeBuild('../groovy-verify')
 
 plugins {
-    id 'groovy-setup'
+    id 'com.github.ben-manes.versions' version '0.54.0'
+    id 'org.nosphere.apache.rat' version '0.8.1'
+    id 'groovy'
     id 'java-library'
 }
 
+// Coordinate the companion blog repo substitutes via includeBuild (and that a
+// future Maven Central publish would keep). Group + name are what Gradle matches
+// for dependency substitution; the version is a placeholder until first release.
+group = 'au.com.asert'
+version = '0.1.0-SNAPSHOT'
+
+// Patched local 6.0.0-SNAPSHOT (static @Ensures support) lives in mavenLocal.
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
+}
+
+def groovyVersion = '6.0.0-SNAPSHOT'
+def spockVersion  = '2.4-groovy-5.0'
+
 dependencies {
-    // Z3 with bundled native libs (Linux/Mac/Windows on amd64+aarch64).
+    // Z3 with bundled native libs (linux/mac/windows, amd64+aarch64).
     // Exposed via `api` so it lands on the consumer's COMPILE classpath:
     // the type-checking extension runs Z3 while the consumer compiles.
     api 'tools.aqua:z3-turnkey:4.14.0'
+
+    // The consumer brings its own Groovy + groovy-contracts; we only need
+    // them to compile against (and at test time, to exercise the checker).
+    compileOnly "org.apache.groovy:groovy:$groovyVersion"
+    compileOnly "org.apache.groovy:groovy-contracts:$groovyVersion"
+
+    testImplementation "org.apache.groovy:groovy:$groovyVersion"
+    testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
+}
+
+tasks.withType(GroovyCompile).configureEach {
+    groovyOptions.parameters = true   // keep formal parameter names for the checker
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+// Self-test: compiles a battery of good/bad annotated snippets on the fly
+// and asserts the checker's diagnostics. Run with `./gradlew verify`.
+def verifyTask = tasks.register('verify', JavaExec) {
+    group = 'verification'
+    description = 'Compile good/bad snippets and assert VerifyChecker diagnostics'
+    dependsOn 'compileGroovy', 'compileTestGroovy'
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'VerifyHarness'
+    jvmArgs = ['--enable-native-access=ALL-UNNAMED']  // quiet the JDK25 native-access warning from z3
+}
+
+tasks.named('check') {
+    dependsOn verifyTask
 }

@@ -20,18 +20,25 @@ import groovy.contracts.Requires
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ASTNode
+import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
+import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.builder.AstBuilder
+import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
+import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.control.CompilePhase
+import org.codehaus.groovy.control.SourceUnit
+import org.codehaus.groovy.syntax.Types
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor
 import org.codehaus.groovy.transform.stc.TypeCheckingExtension
 
@@ -58,6 +65,11 @@ import org.codehaus.groovy.transform.stc.TypeCheckingExtension
  *        - UNSAT  → verified, no diagnostic.
  *        - SAT    → refuted, emit error with counterexample.
  *        - UNKNOWN → emit warning ("could not decide").
+ *
+ * Beyond explicit contracts, every method body in scope is also checked for the
+ * implicit preconditions every program carries — array index in bounds, divisor
+ * non-zero, dereferenced receiver non-null ({@link #verifyImplicitObligations}) —
+ * discharged with the same assume-facts / refute-negation machinery.
  *
  * Anything outside the supported fragment becomes a "skipped"
  * warning rather than a silent pass — borrowed from OpenJML's ESC
@@ -101,6 +113,15 @@ class VerifyChecker extends TypeCheckingExtension {
     @Override
     void afterVisitMethod(MethodNode node) {
         try {
+            // Phase 1: implicit safety obligations (array bounds, division by
+            // zero, null dereference) fire on every method in scope, regardless
+            // of whether it carries a contract or a loop.
+            try {
+                verifyImplicitObligations(node)
+            } catch (Throwable ignored) {
+                // Implicit checks are best-effort; never fail the build over them.
+            }
+
             Statement body = (Statement) node.getNodeMetaData(
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
@@ -117,6 +138,179 @@ class VerifyChecker extends TypeCheckingExtension {
             else verifyPostcondition(node)
         } finally {
             currentFacts = null
+        }
+    }
+
+    // ---- Phase 1: implicit safety obligations ----
+
+    /**
+     * Discharge the implicit preconditions that every program carries: an array
+     * index is in bounds, a divisor is non-zero, a dereferenced receiver is
+     * non-null. No annotation surface — these fire automatically on the relevant
+     * AST shapes inside the method body. Each obligation is checked exactly like a
+     * call-site precondition: assume the method's own {@code @Requires} and the
+     * enclosing path facts, assert the negation of the obligation, and ask Z3
+     * whether that is satisfiable (a model is a counterexample).
+     *
+     * The analysis is path-sensitive (it honours enclosing {@code if}s) but not
+     * value-flow-sensitive: like the call-site checker, it does not track local
+     * assignments, so the canonical demos are guard-based. Bodies are read from
+     * the clean CONVERSION snapshot so groovy-contracts' injected asserts are not
+     * mistaken for user dereferences.
+     */
+    private void verifyImplicitObligations(MethodNode node) {
+        Statement body = (Statement) node.getNodeMetaData(
+            ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return
+
+        PathFacts pf = new PathFacts()
+        try {
+            body.visit(pf)
+        } catch (Throwable t) {
+            pf = new PathFacts()
+        }
+        ObligationCollector col = new ObligationCollector()
+        try {
+            body.visit(col)
+        } catch (Throwable t) {
+            return
+        }
+        if (col.indexSites.isEmpty() && col.divideSites.isEmpty() && col.derefSites.isEmpty()) {
+            return
+        }
+
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+
+        for (IndexSite s : col.indexSites)  dischargeIndex(s, pf, reqAst)
+        for (DivideSite s : col.divideSites) dischargeDivide(s, pf, reqAst)
+        for (DerefSite s : col.derefSites)  dischargeDeref(s, pf, reqAst)
+    }
+
+    /** Assume the method's own @Requires (if encodable) plus the path facts at a site. */
+    private void assumeContext(SmtSession s, Encoder enc, Expression reqAst, ASTNode site, PathFacts pf) {
+        if (reqAst != null) {
+            Object pre = enc.translate(reqAst)
+            if (pre != null) s.assertExpr(pre)
+        }
+        for (IfFact f : pf.factsAt(site)) {
+            Object c = enc.translate(f.condition)
+            if (c == null) continue   // an unencodable fact just weakens the assumption set — safe
+            s.assertExpr(f.inThenBranch ? c : s.not(c))
+        }
+    }
+
+    private void dischargeIndex(IndexSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            Object idx = enc.translate(site.index)
+            if (idx == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("array index",
+                    "index '${site.index.text}' is outside fragment"), site.node)
+                return
+            }
+            Object size = enc.sizeOf(site.receiver)
+            Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
+            s.assertExpr(s.not(inBounds))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatIndexBounds(site.index.text, site.receiver, r), site.node)
+            }
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    private void dischargeDivide(DivideSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            Object divisor = enc.translate(site.divisor)
+            if (divisor == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("division",
+                    "divisor '${site.divisor.text}' is outside fragment"), site.node)
+                return
+            }
+            s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatDivisionByZero(site.divisor.text, r), site.node)
+            }
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    private void dischargeDeref(DerefSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
+            // check: SAT means the receiver can be null on this path.
+            s.assertExpr(enc.nullityOf(site.receiver))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatNullDereference(site.receiver, r), site.node)
+            }
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
+    @CompileStatic private static class DivideSite { ASTNode node; Expression divisor }
+    @CompileStatic private static class DerefSite  { ASTNode node; String receiver }
+
+    /**
+     * Walks a method body once, collecting the implicit-precondition sites:
+     * array/list subscripts, integer division/modulo, and instance-method
+     * dereferences on a named local/parameter receiver. Static calls, {@code this}
+     * receivers, and calls on non-variable receivers are skipped — they are either
+     * provably non-null or out of the spike's reach.
+     */
+    @CompileStatic
+    private static class ObligationCollector extends ClassCodeVisitorSupport {
+        final List<IndexSite> indexSites = []
+        final List<DivideSite> divideSites = []
+        final List<DerefSite> derefSites = []
+
+        @Override
+        protected SourceUnit getSourceUnit() { null }
+
+        @Override
+        void visitBinaryExpression(BinaryExpression be) {
+            // Match by operator text rather than token id: the parser assigns `%`
+            // a token outside the Types.MOD constant, so text is the robust key.
+            String sym = be.operation.text
+            if (be.operation.type == Types.LEFT_SQUARE_BRACKET &&
+                be.leftExpression instanceof VariableExpression) {
+                indexSites.add(new IndexSite(node: be,
+                    receiver: ((VariableExpression) be.leftExpression).name,
+                    index: be.rightExpression))
+            } else if (sym == '/' || sym == '%') {
+                divideSites.add(new DivideSite(node: be, divisor: be.rightExpression))
+            }
+            super.visitBinaryExpression(be)
+        }
+
+        @Override
+        void visitMethodCallExpression(MethodCallExpression mce) {
+            Expression recv = mce.objectExpression
+            if (!mce.implicitThis && recv instanceof VariableExpression) {
+                VariableExpression v = (VariableExpression) recv
+                Variable accessed = v.accessedVariable
+                // Only real value variables (parameters / locals) — never a class
+                // name (static call) or an unresolved dynamic reference.
+                boolean realVar = accessed instanceof Parameter || accessed instanceof VariableExpression
+                if (realVar && v.name != 'this' && v.name != 'super') {
+                    derefSites.add(new DerefSite(node: mce, receiver: v.name))
+                }
+            }
+            super.visitMethodCallExpression(mce)
         }
     }
 

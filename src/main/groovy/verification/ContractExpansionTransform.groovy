@@ -119,12 +119,16 @@ class ContractExpansionTransform implements ASTTransformation {
         boolean loopsFound = captureLoops(mn)
 
         // Snapshot the clean body before groovy-contracts instruments it, so the
-        // body analysis (postcondition paths, loop regions) sees the author's
-        // code, not the injected old-map/try-catch/assert. A shallow copy of the
-        // statement list suffices: groovy-contracts mutates the original block's
-        // list (and a loop's inner block), not the statement nodes we keep
-        // references to — and loop bodies are copied separately into the LoopSpec.
-        if ((ensures != null || loopsFound) && mn.code instanceof BlockStatement) {
+        // body analysis (postcondition paths, loop regions, AND the implicit
+        // array-bounds/division/null-deref checks) sees the author's code, not
+        // the injected old-map/try-catch/assert. A shallow copy of the statement
+        // list suffices: groovy-contracts mutates the original block's list (and a
+        // loop's inner block), not the statement nodes we keep references to — and
+        // loop bodies are copied separately into the LoopSpec. Taken for EVERY
+        // method (not just @Ensures/loop ones), because the implicit safety checks
+        // run on every method in the @TypeChecked scope, including ones whose only
+        // contract is a @Requires (which groovy-contracts also instruments).
+        if (mn.code instanceof BlockStatement) {
             BlockStatement orig = (BlockStatement) mn.code
             BlockStatement snapshot = new BlockStatement(
                 new ArrayList<Statement>(orig.statements),

@@ -1,0 +1,85 @@
+# groovy-verify
+
+An SMT-backed verification extension for Groovy, packaged as a standalone
+type-checking extension. Annotate code with stock
+[`groovy.contracts`](https://github.com/spockframework/groovy-contracts) contracts,
+compile a caller under
+
+```groovy
+@TypeChecked(extensions = 'verification.VerifyChecker')
+```
+
+and Z3 discharges the proof obligations **at compile time** — before the
+runtime contract checks would ever fire. Failed proofs surface as ordinary
+compile errors with Dafny-style counterexamples.
+
+This started life as the verification spike in the *groovy6-functional* blog
+companion repo. It was split out so it can grow on its own; that repo now
+consumes it (via a Gradle composite build) rather than vendoring it.
+
+## What's demonstrated
+
+| Capability | Authoring | Status |
+|---|---|---|
+| Preconditions discharged at call sites | `@Requires` | ✅ |
+| Postconditions vs. method body | `@Ensures` | ✅ |
+| Loop invariants & termination | `@Invariant` / `@Decreases` | ✅ |
+| **Array/list index in bounds** | *(implicit)* | ✅ Phase 1 |
+| **Division / modulo by zero** | *(implicit)* | ✅ Phase 1 |
+| **Null dereference** | *(implicit)* | ✅ Phase 1 |
+| **`xs.size()` / `xs.length` / `xs.isEmpty()`** in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **`x == null` / `x != null`** nullity in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **`x.equals(y)`** (numeric `==`) | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **`xs.contains(y)`** (uninterpreted predicate) | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| Quantifiers (`Forall.range`) | — | ⏳ Phase 5 |
+
+Example diagnostic:
+
+```
+[Static type checking] - Cannot prove array index in bounds at this access
+    obligation: 0 <= i && i < a.size
+    counterexample: a.size = 0, i = -1
+```
+
+## Building & testing
+
+Requires JDK 25 and the patched local `org.apache.groovy:6.0.0-SNAPSHOT`
+(static `@Ensures` support) in `mavenLocal()`.
+
+```sh
+./gradlew verify          # compile a battery of good/bad snippets and assert diagnostics
+VERIFY_VERBOSE=1 ./gradlew verify   # also print the counterexamples for refuted cases
+```
+
+The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
+compiles annotated snippets on the fly and asserts that good ones verify and
+bad ones fail with the expected diagnostic.
+
+## The fragment
+
+Verification is sound *within* a deliberately small fragment and **loudly
+unsound outside it**: anything the encoder cannot model emits a "skipped"
+warning rather than passing silently. The fragment is integer-linear
+arithmetic, comparisons, boolean connectives, the size/nullity oracles above,
+and — for bodies — straight-line code, `if`/`else`, single-assignment locals,
+and a single annotated `while` loop. See `Encoder` and the roadmap for the
+exact boundaries.
+
+## Architecture
+
+| File | Role |
+|---|---|
+| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks |
+| `Encoder` | Groovy expression → SMT (the fragment lives here) |
+| `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
+| `PathFacts` | enclosing-`if` path conditions per expression site |
+| `ContractExpansionTransform` | captures verbatim contract text + clean body snapshots at CONVERSION |
+| `SmtBackend` / `Z3Backend` | the solver seam and its z3-turnkey implementation |
+| `Reporter` | OpenJML-style diagnostics with inline counterexamples |
+
+`Encoder` is written against the `SmtSession` interface; `Z3Backend` is the only
+concrete binding, so an alternative solver is a drop-in.
+
+## License
+
+Apache-2.0.
