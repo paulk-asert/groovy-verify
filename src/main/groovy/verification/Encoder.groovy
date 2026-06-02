@@ -111,6 +111,28 @@ class Encoder {
     }
 
     /**
+     * Translate {@code expr} with {@code bindings} (source-name → handle) applied
+     * over the current environment, then restore it. Used to assume a callee's
+     * {@code @Ensures} in the caller's context — its formal parameters substituted
+     * by the actual-argument handles, and {@code result} by the call's result
+     * (Phase 7 inter-procedural reasoning).
+     */
+    Object translateWith(Expression expr, Map<String, Object> bindings) {
+        Map<String, Object> prev = new LinkedHashMap<String, Object>()
+        List<String> added = new ArrayList<String>()
+        for (Map.Entry<String, Object> e : bindings.entrySet()) {
+            if (env.containsKey(e.key)) prev.put(e.key, env.get(e.key)) else added.add(e.key)
+            env.put(e.key, e.value)
+        }
+        try {
+            return translate(expr)
+        } finally {
+            for (String k : added) env.remove(k)
+            for (Map.Entry<String, Object> e : prev.entrySet()) env.put(e.key, e.value)
+        }
+    }
+
+    /**
      * Re-bind {@code name} to a fresh, unconstrained integer — "havoc". Used by
      * symbolic execution when an assignment's right-hand side is outside the
      * fragment (e.g. {@code s = s + a[i]}): the variable's value becomes unknown

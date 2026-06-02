@@ -380,21 +380,35 @@ persuasive.
 - **Bitwise / shift operators.** The same bitvector encoding picks these up for
   free.
 - **Inter-procedural reasoning, and lemmas.** Use a callee's `@Ensures` as facts
-  when reasoning about the caller (today only its `@Requires` is used). The
-  cross-boundary oracle binding it builds on is in place (Phase 4), so the
-  mechanism is unblocked; the build-time cost is that callees must be re-verified
-  when their contracts tighten. Its headline payoff, though, is **lemmas** — the
-  proof-structuring primitive Dafny users lean on most, and the one feature from
-  Dafny's proof toolbox this fragment otherwise lacks. A lemma is just a ghost
-  `static` method with `@Requires`/`@Ensures` whose body the checker verifies
-  (often by recursion = induction) and which a caller *invokes purely to inject
-  its postcondition* as a fact. Once a callee's `@Ensures` is usable at the call
-  site, lemmas fall out almost for free — turning one-shot VCs into decomposable
-  proofs, and composing with the `assert … by`/`calc` decomposition of
-  [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints)b. This is
-  what lets a specify-and-prove developer scale past a single method's proof
-  without reaching for a cross-compiler. Given that, it may deserve promoting out
-  of "optional" once the read/write array fragment (Phase 6) is in.
+  when reasoning about the caller (previously only its `@Requires` was used). The
+  cross-boundary oracle binding it builds on is in place (Phase 4); the build-time
+  cost is that callees must be re-verified when their contracts tighten. Its
+  headline payoff is **lemmas** — the proof-structuring primitive Dafny users lean
+  on most, and the one feature from Dafny's proof toolbox this fragment otherwise
+  lacks. A lemma is just a `static` method with `@Requires`/`@Ensures` whose body
+  the checker verifies and which a caller *invokes to inject its postcondition* as
+  a fact; it lets a specify-and-prove developer scale past a single method's proof
+  without a cross-compiler, and composes with the `assert … by`/`calc`
+  decomposition of
+  [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints)b.
+
+  **Slice 1 — result-binding (shipped).** `int z = f(args)` now assumes `f`'s
+  `@Ensures` with `result ↦ z` and formals ↦ actuals (`Encoder.translateWith` does
+  the scoped substitution; the callee's `@Requires` is discharged separately at
+  the call site). This is the *load-bearing* form: the caller cannot see inside
+  `f`, so without the contract `z` is opaque (previously a "skipped
+  postcondition"). Reasoning is modular — the callee's *contract* is used, never
+  its body. Scope: same-class resolution by name + arity; self-calls excluded;
+  `old` and array/frame effects unmodelled.
+
+  **Not yet:** standalone void lemma calls (`lemma(args)` as a statement) — they
+  inject no value, and in the current QF_LIA + auto-instantiated-quantifier
+  fragment an empty-bodied lemma can only `@Ensures` what the caller already
+  derives, so they are not load-bearing until **recursion = induction** lands:
+  assuming a method's own `@Ensures` at a recursive call, gated on `@Decreases`
+  for well-foundedness. That is the next slice, and where lemmas earn their keep
+  (e.g. sortedness transitivity). Given all this, the item may deserve promoting
+  out of "optional".
 - **Heap/aliasing.** Don't. Groovy makes this very hard and the payoff is small
   for the fragment most developers care about.
 

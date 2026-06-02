@@ -221,6 +221,40 @@ class VerifyHarness {
                        static int set(int[] a, int k, int v) { a[k] = v + 1; a[k] }
                    }''')],
 
+        // ---------- Phase 7 (slice 1): inter-procedural @Ensures (result-binding) ----------
+        // h can't see inside absv, but assumes absv's @Ensures (result >= 0) for z.
+        [group: 'P7 inter-proc', name: 'callee @Ensures used at call site', ok: true,
+         src: tc('''class C {
+                       @Ensures({ result >= 0 })
+                       static int absv(int x) { if (x >= 0) return x; return -x }
+
+                       @Ensures({ result >= 0 })
+                       static int h(int w) { int z = absv(w); z }
+                   }''')],
+        // The callee's @Requires is discharged at the call, its @Ensures then assumed.
+        [group: 'P7 inter-proc', name: 'callee @Requires + @Ensures threaded', ok: true,
+         src: tc('''class C {
+                       @Requires({ x >= 0 })
+                       @Ensures({ result >= x })
+                       static int bump(int x) { x + 5 }
+
+                       @Requires({ y >= 0 })
+                       @Ensures({ result >= y })
+                       static int g(int y) { int z = bump(y); z }
+                   }''')],
+        // Modular reasoning: only the contract (result >= x), not the body (x + 5),
+        // is used — so the stronger bound result >= y + 1 cannot be proven.
+        [group: 'P7 inter-proc', name: 'contract not body refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ x >= 0 })
+                       @Ensures({ result >= x })
+                       static int bump(int x) { x + 5 }
+
+                       @Requires({ y >= 0 })
+                       @Ensures({ result >= y + 1 })
+                       static int g(int y) { int z = bump(y); z }
+                   }''')],
+
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',
          src: HDR + PRODUCER + tc('class C { static int go() { P.sq(-1) } }')],

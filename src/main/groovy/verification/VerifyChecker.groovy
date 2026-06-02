@@ -32,6 +32,7 @@ import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -649,11 +650,17 @@ class VerifyChecker extends TypeCheckingExtension {
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
                     Object rhs = enc.translate(a.rhs)
-                    if (rhs == null) {
+                    if (rhs != null) {
+                        session.assertExpr(session.eq(enc.varFor(a.name), rhs))
+                    } else if (isCallExpr(a.rhs) &&
+                               assumeCalleeEnsures(session, enc, a.rhs, node, enc.varFor(a.name))) {
+                        // s = f(args): s is constrained by f's @Ensures (result ↦ s,
+                        // formals ↦ actuals) — Phase 7 inter-procedural reasoning. The
+                        // callee's @Requires is discharged separately at the call site.
+                    } else {
                         throw new UnsupportedConstructException(
                             "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                     }
-                    session.assertExpr(session.eq(enc.varFor(a.name), rhs))
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step
                     Object idx = enc.translate(st.index)
@@ -1016,6 +1023,61 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally {
             try { session.close() } catch (Throwable ignored) {}
         }
+    }
+
+    private static boolean isCallExpr(Expression e) {
+        e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression
+    }
+
+    /**
+     * Resolve a same-class method call by name + arity to a {@link MethodNode}
+     * that carries an {@code @Ensures}. Self-calls are excluded — assuming a
+     * method's own postcondition at a recursive call is the inductive hypothesis,
+     * which needs {@code @Decreases} for well-foundedness and is a later slice.
+     */
+    private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity) {
+        ClassNode dc = caller?.declaringClass
+        if (dc == null || name == null) return null
+        for (MethodNode m : dc.getMethods(name)) {
+            if (m == caller) continue
+            if (m.parameters.length != arity) continue
+            if (findEnsures(m) == null) continue
+            return m
+        }
+        null
+    }
+
+    /**
+     * Assume the {@code @Ensures} of the method {@code callExpr} resolves to,
+     * substituting its formals with the actual-argument handles and {@code result}
+     * with {@code resultHandle} (null for a call whose value is unused). Returns
+     * true iff a contract was found, fully substitutable, and asserted — so the
+     * caller can fall back to "skipped" when it was not.
+     */
+    private boolean assumeCalleeEnsures(SmtSession s, Encoder enc, Expression callExpr,
+                                        MethodNode caller, Object resultHandle) {
+        if (!(callExpr instanceof MethodCall)) return false
+        String name = ((MethodCall) callExpr).methodAsString
+        List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
+        if (name == null || actuals == null) return false
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size())
+        if (callee == null) return false
+        Expression ensuresAst = contractAstFor(callee, 'ensures')
+        if (ensuresAst == null) return false
+
+        Parameter[] formals = callee.parameters
+        Map<String, Object> bindings = new LinkedHashMap<String, Object>()
+        for (int i = 0; i < formals.length; i++) {
+            Object h = enc.translate(actuals.get(i))
+            if (h == null) return false   // can't faithfully substitute → don't assume
+            bindings.put(formals[i].name, h)
+        }
+        if (resultHandle != null) bindings.put('result', resultHandle)
+
+        Object post = enc.translateWith(ensuresAst, bindings)
+        if (post == null) return false    // @Ensures outside the fragment → honest skip
+        s.assertExpr(post)
+        return true
     }
 
     /** Find a @Requires on the method, walking declared and inherited methods. */
