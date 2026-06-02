@@ -262,6 +262,11 @@ under Z3's array theory.
 - Z3 returns UNKNOWN on quantified formulas it can't pattern-match. Triggers are
   the cliff. Mitigation: limit to the `∀ i: lo <= i < hi` shape, ensure every
   quantified occurrence of `arr[i]` is a valid trigger, set a generous timeout.
+  This is also the first point where push-button SMT is no longer enough on its
+  own, and where a user-supplied **instantiation/trigger hint** — the lightest
+  borrow from the proof-assistant world — earns its keep: when a quantified VC
+  stalls, let the author name the witness or trigger rather than only emitting
+  "could not decide". See [Phase 7](#phase-7--beyond-smt-proof-by-computation-and-proof-hints).
 - Encoding arrays via Z3's array theory changes the whole VC shape. Plain
   indexing becomes `(select arr i)`; `arr.size` becomes an uninterpreted
   function constrained appropriately. This also retires the "array contents not
@@ -301,6 +306,78 @@ persuasive.
 
 ---
 
+## Phase 7 — Beyond SMT: proof by computation and proof hints
+
+**A different axis from Phases 1–6.** Everything above widens the *fragment*
+that gets encoded to Z3; the proof *mechanism* stays "collect obligations, hand
+them to the solver". But SMT has a ceiling — most visibly Phase 5's trigger
+cliff and the NIA opt-out — and the same ceiling exists in mature verifiers.
+F\*, for instance, runs SMT by default but offers two escape hatches above it:
+*symbolic computation* (prove by running an interpreter, not by equational
+reasoning in the solver) and *tactics/metaprogramming* (full user-driven proof).
+This phase records which of those are worth borrowing, and which are not — the
+ordering is, as ever, by value against cost and fit with the project's
+push-button, no-language-change identity.
+
+### 7a — Normalisation: normalise-then-SMT *(the strongest candidate)*
+
+**The escape hatch that fits Groovy's grain.** Many obligations are *closed
+computations* that need no solver at all — you just run them. Groovy, unlike a
+paper proof language, already ships an interpreter, so this is unusually cheap
+to reach. A normalisation pre-pass slots in exactly where `Encoder.translate`
+currently returns `null`:
+
+- **Constant folding (closed sub-terms).** A contract sub-expression with no
+  free variables — `2 * 2048`, `pow2(12)` over a constant — is evaluated to a
+  value instead of being sent to Z3 or rejected. This directly dissolves part of
+  the **NIA opt-out**: `a * b` with both sides constant needs arithmetic, not
+  nonlinear reasoning.
+- **Bounded symbolic unfolding (partial reduction).** Unfold a *pure,
+  terminating* user method a fixed number of times against symbolic arguments,
+  then hand the residual to Z3 — the analog of F\*'s `fuel`/`ifuel` dial. This is
+  what would let contracts mention user-defined functions, which are strictly
+  "outside fragment" today.
+
+The clean architecture is **normalise-then-SMT**: evaluate what you can, send the
+residual to the solver. One asymmetry to state plainly — normalisation helps only
+the *positive* case. It produces no counterexample when a fact is false; it
+computes a value or gets stuck. So it is a discharge *accelerator*, not a
+replacement for the SMT path, and the project's headline counterexamples stay on
+the SMT side.
+
+**Costs that keep this far down, not soon:**
+
+- **It enlarges the trusted base.** F\*'s normaliser is part of its TCB; a Groovy
+  evaluator used for proof becomes trusted too, and must agree with the
+  *compiled runtime* semantics. Fold `2 * pow2(11)` at arbitrary precision while
+  the program runs on 32-bit `int` and the "proof" diverges from reality. This
+  couples directly to the **bounded-integer / overflow** item above: evaluation
+  and encoding must commit to the *same* integer model or the tool lies.
+- **Purity and termination.** Only side-effect-free, terminating methods are safe
+  to evaluate — exactly the property `@Decreases` already reasons about, so there
+  is real synergy with [Phase 3](#phase-3--loops-invariant--decreases-shipped).
+
+### 7b — Structured proof decomposition *(opt-in, philosophy-compatible)*
+
+When one SMT shot can't reach a fact, let the author break the proof into steps
+the solver *can* each discharge — Dafny-style `assert P by { ... }` and `calc`
+chains — rather than writing a proof term. No new evaluator, no tactic language;
+each intermediate assertion is just another VC. This composes with 7a (an
+intermediate `assert` can be discharged by evaluation) and with Phase 5's
+instantiation hints. It is the bounded, defensible cousin of tactics: control
+when automation fails, without becoming a proof assistant.
+
+### Not in scope here
+
+Full interactive tactics and proof terms (the Coq/Lean/F\* `intro; split; qed`
+style) are a **non-goal** — see below. They cut against "no language change,
+push-button, diagnostics-not-dialogues", the same reasoning that rules out heap
+and concurrency. The line this phase walks: borrow *hints* (7a, 7b, Phase 5
+triggers) that keep the tool a compile-time checker; refuse the proof-term
+language that would make it a different product.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -313,6 +390,13 @@ Things deliberately not pursued, because they don't pay back:
 - **Floating point.** SMT handles FP but slowly and with surprising results. If
   the project ever targets numeric code, revisit.
 - **Generated proof certificates.** Out of scope.
+- **Interactive tactics / proof terms.** The Coq/Lean/F\* style where the user
+  drives the proof with `intro`/`split`/`qed` and builds an explicit proof term.
+  This is the opposite of a push-button compile-time checker, and adopting it
+  would make this a proof assistant rather than a better Groovy type-checker. The
+  *bounded* borrows — instantiation hints and structured `assert … by`
+  decomposition — live in [Phase 7](#phase-7--beyond-smt-proof-by-computation-and-proof-hints);
+  the full tactic engine does not.
 - **IDE squiggles.** Diagnostics go through `addStaticTypeError`, which IDEs
   surface via their Gradle integration. Going further — inline counterexample
   popups, fix suggestions — is downstream of this work, not part of it.
