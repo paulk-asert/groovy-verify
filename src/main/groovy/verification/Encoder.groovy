@@ -95,6 +95,20 @@ class Encoder {
     }
 
     /**
+     * Re-bind {@code name} to a fresh, unconstrained integer — "havoc". Used by
+     * symbolic execution when an assignment's right-hand side is outside the
+     * fragment (e.g. {@code s = s + a[i]}): the variable's value becomes unknown
+     * rather than aborting the whole analysis. Sound for the verification
+     * conditions, which only ever get harder under havoc.
+     */
+    Object havoc(String name) {
+        Object v = session.intVar(name + '$havoc$' + (havocCounter++))
+        env.put(name, v)
+        v
+    }
+    private int havocCounter = 0
+
+    /**
      * The size oracle: an integer constant {@code <recv>.size}, constrained
      * {@code >= 0} on first mint, modelling the length of an array/list/string
      * named {@code recv}. The same constant backs {@code recv.length},

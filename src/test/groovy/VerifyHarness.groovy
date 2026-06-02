@@ -123,6 +123,57 @@ class VerifyHarness {
         [group: 'P4 cross-boundary', name: 'unconstrained size refuted', expect: 'Cannot prove precondition',
          src: HDR + SIZE_PRODUCER + tc('class C { static int go(List ys) { L.first(ys) } }')],
 
+        // ---------- Phase 5a: value-flow (safety implied by an assignment) ----------
+        // j == 3 is threaded, so 0 <= 3 < a.length follows from a.length > 5.
+        [group: 'P5a value-flow', name: 'assignment-implied index verified', ok: true,
+         src: tc('class C { @Requires({ a.length > 5 }) static int f(int[] a) { int j = 3; return a[j] } }')],
+        // Same body without the precondition: a may be empty → refuted.
+        [group: 'P5a value-flow', name: 'unconstrained assignment index refuted', expect: 'array index in bounds',
+         src: tc('class C { static int f(int[] a) { int j = 3; return a[j] } }')],
+        // Aliased counter: j == i, guard bounds i, precondition bounds a — needs value-flow + guard together.
+        [group: 'P5a value-flow', name: 'aliased index under guard verified', ok: true,
+         src: tc('class C { @Requires({ a.length > 10 }) static int f(int[] a, int i) { int j = i; if (i >= 0 && i < 5) return a[j]; return 0 } }')],
+        // Modulo by an assigned value known non-zero.
+        [group: 'P5a value-flow', name: 'assignment-implied divisor verified', ok: true,
+         src: tc('class C { static int f(int x) { int d = 2; x % d } }')],
+
+        // ---------- Phase 5b: loop-fused bounds (obligation under the invariant) ----------
+        // a[i] inside the loop: i < n (guard) and n <= a.length (req) ⇒ i < a.size.
+        [group: 'P5b loop-fused', name: 'in-loop index verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n <= a.length })
+                       static int sum(int[] a, int n) {
+                           int s = 0
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           while (i < n) { s = s + a[i]; i = i + 1 }
+                           return s
+                       }
+                   }''')],
+        // Same loop without n <= a.length: the array may be shorter than n → refuted.
+        [group: 'P5b loop-fused', name: 'in-loop index unbounded refuted', expect: 'array index in bounds',
+         src: tc('''class C {
+                       @Requires({ 0 <= n })
+                       static int sum(int[] a, int n) {
+                           int s = 0
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           while (i < n) { s = s + a[i]; i = i + 1 }
+                           return s
+                       }
+                   }''')],
+        // a[i] AFTER the loop: invariant i <= n and ¬guard i >= n pin i == n; n < a.length ⇒ safe.
+        [group: 'P5b loop-fused', name: 'post-loop index verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n < a.length })
+                       static int at(int[] a, int n) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           while (i < n) { i = i + 1 }
+                           return a[i]
+                       }
+                   }''')],
+
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',
          src: HDR + PRODUCER + tc('class C { static int go() { P.sq(-1) } }')],

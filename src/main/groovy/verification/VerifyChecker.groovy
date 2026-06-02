@@ -32,9 +32,13 @@ import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.IfStatement
+import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.SourceUnit
@@ -116,15 +120,6 @@ class VerifyChecker extends TypeCheckingExtension {
     @Override
     void afterVisitMethod(MethodNode node) {
         try {
-            // Phase 1: implicit safety obligations (array bounds, division by
-            // zero, null dereference) fire on every method in scope, regardless
-            // of whether it carries a contract or a loop.
-            try {
-                verifyImplicitObligations(node)
-            } catch (Throwable ignored) {
-                // Implicit checks are best-effort; never fail the build over them.
-            }
-
             Statement body = (Statement) node.getNodeMetaData(
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
@@ -135,6 +130,17 @@ class VerifyChecker extends TypeCheckingExtension {
             } catch (UnsupportedConstructException e) {
                 addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), node)
                 return
+            }
+
+            // Implicit safety obligations (array bounds, division by zero, null
+            // dereference) fire on every method, contract or not. For an
+            // annotated loop they are discharged *with the invariant in scope*
+            // (Phase 5b); otherwise via the per-method value-flow/havoc pass
+            // (Phase 5a). Best-effort: never fail the build over them.
+            try {
+                if (site != null) verifyLoopObligations(node, site)
+                else verifyImplicitObligations(node)
+            } catch (Throwable ignored) {
             }
 
             if (site != null) verifyLoop(node, site)
@@ -168,6 +174,28 @@ class VerifyChecker extends TypeCheckingExtension {
         if (body == null) body = node.code
         if (body == null) return
 
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+
+        // Phase 5a — value-flow. When the whole body is in the value-flow
+        // fragment (straight-line + if/else + single-assignment locals, no
+        // loops), discharge each obligation under the symbolic store that
+        // *reaches* it, so safety implied by a preceding assignment — not only
+        // by a guard — is provable. Anything outside that fragment (a loop, a
+        // re-assignment, an unsupported statement) throws, and we fall back to
+        // the path-fact-only havoc pass: sound, but value-flow-blind.
+        try {
+            List<VfObligation> sites = new ArrayList<VfObligation>()
+            collectVfObligations(topStatements(body),
+                new ArrayList<Guard>(), new ArrayList<Assign>(),
+                new HashSet<String>(), sites)
+            for (VfObligation v : sites) dischargeVfObligation(node, v, reqAst)
+        } catch (UnsupportedConstructException ignored) {
+            dischargeObligationsHavoc(node, body, reqAst)
+        }
+    }
+
+    /** The value-flow-blind fallback: assume @Requires + enclosing ifs only (pre-Phase-5 behaviour). */
+    private void dischargeObligationsHavoc(MethodNode node, Statement body, Expression reqAst) {
         PathFacts pf = new PathFacts()
         try {
             body.visit(pf)
@@ -180,15 +208,136 @@ class VerifyChecker extends TypeCheckingExtension {
         } catch (Throwable t) {
             return
         }
-        if (col.indexSites.isEmpty() && col.divideSites.isEmpty() && col.derefSites.isEmpty()) {
-            return
-        }
-
-        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
-
         for (IndexSite s : col.indexSites)  dischargeIndex(s, pf, reqAst)
         for (DivideSite s : col.divideSites) dischargeDivide(s, pf, reqAst)
         for (DerefSite s : col.derefSites)  dischargeDeref(s, pf, reqAst)
+    }
+
+    /** An implicit obligation paired with the guards and single-assignment bindings that reach it. */
+    @CompileStatic
+    private static class VfObligation {
+        Object site                 // IndexSite | DivideSite | DerefSite
+        List<Guard> guards
+        List<Assign> assigns
+    }
+
+    /**
+     * Walk the value-flow fragment, snapshotting for each implicit obligation
+     * the guards and single-assignment bindings in effect at the point it is
+     * evaluated. Forks at each {@code if} (the condition's own obligations are
+     * evaluated before the branch); statements after an {@code if} continue with
+     * the pre-{@code if} store, so a variable assigned only inside a branch is
+     * havoc afterwards (sound — we never claim a merged value). Throws
+     * {@link UnsupportedConstructException} on loops, re-assignment, or any
+     * unsupported statement so the caller can fall back to the havoc pass.
+     */
+    private void collectVfObligations(List<Statement> stmts,
+                                      List<Guard> guards, List<Assign> assigns,
+                                      Set<String> assigned, List<VfObligation> out) {
+        for (Statement st : stmts) {
+            if (st instanceof BlockStatement) {
+                collectVfObligations(((BlockStatement) st).statements, guards, assigns, assigned, out)
+                continue
+            }
+            if (st instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) st
+                Expression cond = ifs.booleanExpression
+                scanObligations(cond, guards, assigns, out)
+                collectVfObligations(topStatements(ifs.ifBlock),
+                    append(guards, new Guard(cond, true)),
+                    new ArrayList<Assign>(assigns), new HashSet<String>(assigned), out)
+                Statement elseBlk = ifs.elseBlock
+                if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
+                    collectVfObligations(topStatements(elseBlk),
+                        append(guards, new Guard(cond, false)),
+                        new ArrayList<Assign>(assigns), new HashSet<String>(assigned), out)
+                }
+                continue
+            }
+            if (st instanceof ReturnStatement) {
+                scanObligations(((ReturnStatement) st).expression, guards, assigns, out)
+                return   // rest of this list is dead on this path
+            }
+            if (st instanceof ExpressionStatement) {
+                Expression e = ((ExpressionStatement) st).expression
+                if (e instanceof DeclarationExpression) {
+                    DeclarationExpression de = (DeclarationExpression) e
+                    if (!(de.leftExpression instanceof VariableExpression)) {
+                        throw new UnsupportedConstructException("multi-variable declaration")
+                    }
+                    String name = ((VariableExpression) de.leftExpression).name
+                    scanObligations(de.rightExpression, guards, assigns, out)
+                    if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
+                    if (de.rightExpression != null) assigns.add(new Assign(name, de.rightExpression))
+                    continue
+                }
+                if (e instanceof BinaryExpression &&
+                    ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+                    BinaryExpression be = (BinaryExpression) e
+                    if (!(be.leftExpression instanceof VariableExpression)) {
+                        throw new UnsupportedConstructException("assignment to a non-variable target")
+                    }
+                    String name = ((VariableExpression) be.leftExpression).name
+                    scanObligations(be.rightExpression, guards, assigns, out)
+                    if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
+                    assigns.add(new Assign(name, be.rightExpression))
+                    continue
+                }
+                scanObligations(e, guards, assigns, out)
+                continue
+            }
+            // Loops, switch, try/catch, etc. — outside the value-flow fragment.
+            throw new UnsupportedConstructException(
+                "statement ${st.class.simpleName} outside value-flow fragment")
+        }
+    }
+
+    /** Collect the implicit obligations syntactically present in {@code e}, each tagged with a snapshot of context. */
+    private void scanObligations(Expression e, List<Guard> guards, List<Assign> assigns, List<VfObligation> out) {
+        if (e == null) return
+        ObligationCollector col = new ObligationCollector()
+        try { e.visit(col) } catch (Throwable ignored) { return }
+        if (col.indexSites.isEmpty() && col.divideSites.isEmpty() && col.derefSites.isEmpty()) return
+        List<Guard> gSnap = new ArrayList<Guard>(guards)
+        List<Assign> aSnap = new ArrayList<Assign>(assigns)
+        for (IndexSite s : col.indexSites)  out.add(mkVf(s, gSnap, aSnap))
+        for (DivideSite s : col.divideSites) out.add(mkVf(s, gSnap, aSnap))
+        for (DerefSite s : col.derefSites)  out.add(mkVf(s, gSnap, aSnap))
+    }
+
+    private static List<Guard> append(List<Guard> base, Guard g) {
+        List<Guard> r = new ArrayList<Guard>(base); r.add(g); return r
+    }
+
+    private static VfObligation mkVf(Object site, List<Guard> guards, List<Assign> assigns) {
+        VfObligation v = new VfObligation()
+        v.site = site; v.guards = guards; v.assigns = assigns
+        return v
+    }
+
+    /** Discharge a value-flow obligation: assume @Requires, replay the reaching assignments and guards, then check. */
+    private void dischargeVfObligation(MethodNode node, VfObligation v, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            if (reqAst != null) {
+                Object pre = enc.translate(reqAst)
+                if (pre != null) s.assertExpr(pre)
+            }
+            // Single-assignment locals: each name is bound once, before use, so
+            // asserting the equalities in any order recovers the reaching store.
+            for (Assign a : v.assigns) {
+                Object rhs = enc.translate(a.rhs)
+                if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
+            }
+            for (Guard g : v.guards) {
+                Object c = enc.translate(g.cond)
+                if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+            }
+            dischargeObligationUnder(s, enc, v.site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
     }
 
     /** Assume the method's own @Requires (if encodable) plus the path facts at a site. */
@@ -209,19 +358,7 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = new Encoder(s)
             assumeContext(s, enc, reqAst, site.node, pf)
-            Object idx = enc.translate(site.index)
-            if (idx == null) {
-                addStaticTypeError(Reporter.formatImplicitSkipped("array index",
-                    "index '${site.index.text}' is outside fragment"), site.node)
-                return
-            }
-            Object size = enc.sizeOf(site.receiver)
-            Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
-            s.assertExpr(s.not(inBounds))
-            CheckResult r = s.check()
-            if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatIndexBounds(site.index.text, site.receiver, r), site.node)
-            }
+            dischargeObligationUnder(s, enc, site)
         } finally {
             try { s.close() } catch (Throwable ignored) {}
         }
@@ -232,17 +369,7 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = new Encoder(s)
             assumeContext(s, enc, reqAst, site.node, pf)
-            Object divisor = enc.translate(site.divisor)
-            if (divisor == null) {
-                addStaticTypeError(Reporter.formatImplicitSkipped("division",
-                    "divisor '${site.divisor.text}' is outside fragment"), site.node)
-                return
-            }
-            s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
-            CheckResult r = s.check()
-            if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatDivisionByZero(site.divisor.text, r), site.node)
-            }
+            dischargeObligationUnder(s, enc, site)
         } finally {
             try { s.close() } catch (Throwable ignored) {}
         }
@@ -253,16 +380,155 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = new Encoder(s)
             assumeContext(s, enc, reqAst, site.node, pf)
-            // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
-            // check: SAT means the receiver can be null on this path.
-            s.assertExpr(enc.nullityOf(site.receiver))
-            CheckResult r = s.check()
-            if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatNullDereference(site.receiver, r), site.node)
-            }
+            dischargeObligationUnder(s, enc, site)
         } finally {
             try { s.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /**
+     * Assert the negation of one implicit obligation against an already-seeded
+     * session (context assumptions added by the caller) and report if it is not
+     * discharged. Shared by the havoc pass and the Phase 5 value-flow pass.
+     */
+    private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+        if (site instanceof IndexSite) {
+            IndexSite ix = (IndexSite) site
+            Object idx = enc.translate(ix.index)
+            if (idx == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("array index",
+                    "index '${ix.index.text}' is outside fragment"), ix.node)
+                return
+            }
+            Object size = enc.sizeOf(ix.receiver)
+            Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
+            s.assertExpr(s.not(inBounds))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatIndexBounds(ix.index.text, ix.receiver, r), ix.node)
+            }
+            return
+        }
+        if (site instanceof DivideSite) {
+            DivideSite dv = (DivideSite) site
+            Object divisor = enc.translate(dv.divisor)
+            if (divisor == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("division",
+                    "divisor '${dv.divisor.text}' is outside fragment"), dv.node)
+                return
+            }
+            s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatDivisionByZero(dv.divisor.text, r), dv.node)
+            }
+            return
+        }
+        if (site instanceof DerefSite) {
+            DerefSite df = (DerefSite) site
+            // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
+            // check: SAT means the receiver can be null on this path.
+            s.assertExpr(enc.nullityOf(df.receiver))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatNullDereference(df.receiver, r), df.node)
+            }
+        }
+    }
+
+    /**
+     * Phase 5b — discharge a loop method's implicit obligations with the loop's
+     * {@code @Invariant} in scope. Prefix sites see {@code @Requires} and the
+     * straight-line prefix store; the guard and body sites additionally assume
+     * the invariant (and, in the body, the guard); suffix sites assume the
+     * invariant and the negated guard. Loop-modified variables are otherwise
+     * havoc, so this proves exactly what the user's invariant is strong enough
+     * to support — and honestly reports "could not decide" when it is not.
+     */
+    private void verifyLoopObligations(MethodNode node, LoopSite site) {
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+        LoopSpec spec = site.spec
+        // 1. Prefix: @Requires + the straight-line prefix store; no invariant yet.
+        dischargeRegion(site.prefix, reqAst, Collections.<Expression>emptyList(), null)
+        // 2. Guard expression: evaluated whenever the invariant holds.
+        for (Object s : sitesInExpression(spec.guard)) {
+            dischargeSeeded(s, reqAst, spec.invariants, null, Collections.<Statement>emptyList())
+        }
+        // 3. Body: invariant ∧ guard, threaded through the (straight-line) body.
+        List<Expression> bodyAssumed = new ArrayList<Expression>(spec.invariants)
+        bodyAssumed.add(spec.guard)
+        dischargeRegion(spec.body, reqAst, bodyAssumed, null)
+        // 4. Suffix: invariant ∧ ¬guard (the loop has exited).
+        dischargeRegion(site.suffix, reqAst, spec.invariants, spec.guard)
+    }
+
+    /** Discharge every obligation in a straight-line region, each under the seed plus the region's preceding statements. */
+    private void dischargeRegion(List<Statement> stmts, Expression reqAst,
+                                 List<Expression> assumePos, Expression assumeNeg) {
+        if (stmts == null) return
+        for (int i = 0; i < stmts.size(); i++) {
+            List<Object> sites = sitesInStatement(stmts.get(i))
+            if (sites.isEmpty()) continue
+            List<Statement> preceding = stmts.subList(0, i)
+            for (Object site : sites) {
+                dischargeSeeded(site, reqAst, assumePos, assumeNeg, preceding)
+            }
+        }
+    }
+
+    /**
+     * Fresh session: assume {@code @Requires}, the positive facts and the
+     * optional negated fact, then bind-thread the preceding straight-line
+     * statements (SSA semantics — correct even when the loop counter is
+     * re-assigned), and discharge the obligation.
+     */
+    private void dischargeSeeded(Object site, Expression reqAst,
+                                 List<Expression> assumePos, Expression assumeNeg,
+                                 List<Statement> preceding) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            if (reqAst != null) {
+                Object p = enc.translate(reqAst)
+                if (p != null) s.assertExpr(p)
+            }
+            if (assumePos != null) {
+                for (Expression e : assumePos) {
+                    Object h = enc.translate(e)
+                    if (h != null) s.assertExpr(h)
+                }
+            }
+            if (assumeNeg != null) {
+                Object h = enc.translate(assumeNeg)
+                if (h != null) s.assertExpr(s.not(h))
+            }
+            try {
+                LoopEncoder.symExec(preceding, enc, s)
+            } catch (UnsupportedConstructException ignored) {
+                // Can't model the preceding statements → leave those vars havoc (sound).
+            }
+            dischargeObligationUnder(s, enc, site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    private static List<Object> sitesInStatement(Statement st) {
+        ObligationCollector col = new ObligationCollector()
+        try { if (st != null) st.visit(col) } catch (Throwable ignored) {}
+        return combineSites(col)
+    }
+
+    private static List<Object> sitesInExpression(Expression e) {
+        ObligationCollector col = new ObligationCollector()
+        try { if (e != null) e.visit(col) } catch (Throwable ignored) {}
+        return combineSites(col)
+    }
+
+    private static List<Object> combineSites(ObligationCollector col) {
+        List<Object> r = new ArrayList<Object>()
+        r.addAll(col.indexSites); r.addAll(col.divideSites); r.addAll(col.derefSites)
+        return r
     }
 
     @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }

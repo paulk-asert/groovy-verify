@@ -93,13 +93,13 @@ class Demo {
 }
 ```
 
-**Known limit.** The implicit checks are path-sensitive (they honour enclosing
-`if`s) but not value-flow-sensitive: they do not track local assignments, so the
-discharging examples are guard- or `@Requires`-based. Index reasoning that
-depends on a loop counter (proving `a[i]` safe *after* a `while`) needs the loop
-machinery of Phase 3 fused with the bounds obligation — scheduled as
-[Phase 5](#phase-5--value-flow--loop-fused-safety-obligations).
-Counterexamples report integer values; nullity is boolean, so a
+**Path-sensitivity, and the value-flow that followed.** The implicit checks are
+path-sensitive (they honour enclosing `if`s). They were originally
+*value-flow-blind* — local assignments were not tracked, and a bounds obligation
+inside or after a loop was checked without the `@Invariant`. Both gaps are now
+closed by [Phase 5](#phase-5--value-flow--loop-fused-safety-obligations-shipped),
+which threads single-assignment locals and discharges loop obligations under the
+invariant. Counterexamples report integer values; nullity is boolean, so a
 null-dereference refutation names the obligation but not a concrete value.
 
 ---
@@ -240,60 +240,69 @@ filtering would suppress it; small, not yet wired.
 
 ---
 
-## Phase 5 — Value-flow & loop-fused safety obligations
+## Phase 5 — Value-flow & loop-fused safety obligations  *(shipped)*
 
-**Completing Phase 1 — the everyday win it currently misses.** The implicit
-safety checks (array bounds, division, null) are path-sensitive but
-*value-flow-blind*: each obligation is discharged in a fresh `Encoder` that
-assumes only the method's `@Requires` and the enclosing `if` facts (see
-`assumeContext`), so every local is havoc-by-default and the loop invariant is
-never in scope. Two recognisable patterns therefore fail today even though they
-are obviously safe:
+**Completing Phase 1 — the everyday wins it used to miss.** The implicit safety
+checks (array bounds, division, null) were path-sensitive but *value-flow-blind*:
+each obligation was discharged in a fresh `Encoder` assuming only the method's
+`@Requires` and the enclosing `if` facts, so every local was havoc-by-default and
+the loop invariant was never in scope. Two recognisable patterns therefore failed
+even though they are obviously safe:
 
 - **(a) safety from an assignment, not a guard** — `int j = 3; a[j]` under
-  `@Requires({ a.length > 5 })` is refuted, because `j = 3` is never threaded.
-- **(b) the counted loop** — `while (i < n) { ... a[i] ... }` is refuted, because
-  the bounds obligation at `a[i]` is checked without the loop's `@Invariant`.
+  `@Requires({ a.length > 5 })` was refuted, because `j = 3` was never threaded.
+- **(b) the counted loop** — `while (i < n) { ... a[i] ... }` was refuted, because
+  the bounds obligation at `a[i]` was checked without the loop's `@Invariant`.
 
-Case (b) is the single most common thing a developer tries first, so this is
-high value. And it carries **near-zero solver risk**: it stays entirely inside
-the shipped QF_LIA + oracle fragment — the opposite of
-[Phase 6](#phase-6--quantifiers), whose risk is the trigger cliff. The work is
-*wiring*, not new theory: the assignment-threading already exists and is simply
-not connected to the safety checks.
+Both now verify. The work stayed entirely inside the QF_LIA + oracle fragment —
+no new theory, no quantifiers — the opposite of
+[Phase 6](#phase-6--quantifiers)'s trigger cliff.
 
-**The fusion.** Today `verifyImplicitObligations` runs as a standalone pass with
-a thin context. The move is to discharge each obligation *during* symbolic
-execution, where the store (assignments applied) and the invariant are already
-the context:
+**How it works:**
 
-- **5a — value-flow in straight-line / `if` bodies.** Reuse `BodyEncoder`'s
-  per-path `Guard`/`Assign` steps — it already threads single-assignment locals
-  for `@Ensures` — to discharge index/division/deref obligations under the
-  threaded store. Self-contained, lower cost; kills case (a). *Guarded derived
-  locals already verify today* — `if (j >= 0 && j < a.length) a[j]` works because
-  the guard and the obligation share the same `j` handle — so 5a's marginal win
-  is specifically the *assignment-implied* facts.
-- **5b — loop-fused bounds.** Discharge the obligation inside `LoopEncoder`
-  preservation (under invariant ∧ guard, one body iteration) and after the loop
-  (under invariant ∧ ¬guard). Higher value; kills case (b). It **only** helps
-  loops carrying an `@Invariant` strong enough to bound the index — no invariant,
-  still an honest "could not decide". It rewards annotation; it is not inference.
-  The current all-in-scope havoc set ([Phase 3](#phase-3--loops-invariant--decreases-shipped)'s
-  documented looseness) compounds here, so a tighter live-modified-set analysis
-  is a natural companion.
+- **5a — value-flow in straight-line / `if` bodies.** `verifyImplicitObligations`
+  first tries a lenient walk of the body (`collectVfObligations`) that snapshots,
+  for each obligation, the single-assignment bindings and `if`-guards in effect
+  where it is *evaluated* — forking at each `if`, with the condition's own
+  obligations evaluated before the branch. Each obligation is then discharged in
+  a fresh session under `@Requires` + those reaching assignments (asserted as
+  equalities) + those guards. Anything outside the fragment (a loop, a
+  re-assignment, an unsupported statement) throws, and the original path-fact-only
+  **havoc pass** runs as a sound fallback. *Guarded derived locals already
+  verified before* — `if (j >= 0 && j < a.length) a[j]` works because the guard
+  and the obligation share the same `j` handle — so 5a's marginal win is the
+  *assignment-implied* facts.
+- **5b — loop-fused bounds.** For a method whose body is an annotated loop, the
+  obligations are discharged with the invariant in scope instead of via the havoc
+  pass (`verifyLoopObligations`): prefix sites see `@Requires` + the straight-line
+  prefix store; the guard and body sites additionally assume the invariant (and,
+  in the body, the guard); suffix sites assume the invariant ∧ ¬guard. Each region
+  is threaded with `LoopEncoder.symExec` (bind/SSA semantics — correct even when
+  the counter is re-assigned). It **only** helps loops carrying an `@Invariant`
+  strong enough to bound the index; otherwise it is an honest "could not decide".
+- **Lenient `symExec`.** So that a body which *reads* the array (`s = s + a[i]`,
+  outside the int fragment) does not abort the whole loop proof, an assignment
+  with an unmodelable right-hand side now **havocs** its target (`Encoder.havoc`)
+  rather than raising. Sound: havoc only ever makes the invariant/obligation VCs
+  harder. This also retires a class of spurious "skipped loop" diagnostics.
 
-**Risks / costs:**
+```groovy
+@Requires({ 0 <= n && n <= a.length })
+static int sum(int[] a, int n) {
+    int s = 0
+    int i = 0
+    @Invariant({ 0 <= i && i <= n })
+    while (i < n) { s = s + a[i]; i = i + 1 }   // a[i] verified: i < n <= a.length
+    return s
+}
+```
 
-- Structural refactor across `verifyImplicitObligations`, `BodyEncoder`, and
-  `LoopEncoder` — not a localised add.
-- A bounds check per site per path multiplies solver calls; see the
-  compilation-slowdown cross-cutting risk.
-
-Estimated work: 5a small–medium, 5b medium. Risk: low — no new theory, no
-quantifiers. Recommended **before** Phase 6: it hardens the shipped fragment,
-fixes the most recognisable gap, and leaves value-flow + loop bounds in QF_LIA as
-a cleaner base for the quantified array contents that follow.
+**Known limits.** Value-flow threading is single-assignment only — a
+re-assignment throws the body out to the havoc fallback. Inside a loop body 5b
+threads straight-line statements but does not fork on a nested `if`, so an
+obligation guarded by an *inner* `if` is reasoned from the invariant alone, not
+that guard (sound, less precise). And the per-site replay multiplies solver calls
+— see the compilation-slowdown cross-cutting risk.
 
 ---
 
@@ -518,8 +527,8 @@ The temptation is to do Phase 6 (quantifiers) early because the binary-search
 example is so striking. The drop-off from "works on the example" to "works on
 the next thing someone tries" is steepest there, so the foundation came first:
 Phases 1 → 2 → 3 → 4, each catching a class of bug developers viscerally
-recognise, none leaning on quantifier heuristics. With that in place, the
-recommended next step is Phase 5 (value-flow & loop-fused safety) — low-risk
-hardening that fixes the most recognisable everyday gap inside the shipped
-fragment — *before* Phase 6 (quantifiers) begins as its own multi-week effort,
-not a quick win bolted onto a demo.
+recognise, none leaning on quantifier heuristics. Phase 5 (value-flow &
+loop-fused safety) then followed — low-risk hardening that fixed the most
+recognisable everyday gap inside the shipped fragment — *before* Phase 6
+(quantifiers), which begins as its own multi-week effort, not a quick win bolted
+onto a demo.

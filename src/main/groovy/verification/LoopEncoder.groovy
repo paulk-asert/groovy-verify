@@ -135,7 +135,7 @@ class LoopEncoder {
                     "multi-variable declaration unsupported (line ${st.lineNumber})")
             }
             String name = ((VariableExpression) de.leftExpression).name
-            enc.bind(name, tr(enc, de.rightExpression, "initialiser of '${name}'"))
+            rebind(enc, name, de.rightExpression)
             return
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
@@ -145,12 +145,24 @@ class LoopEncoder {
                     "assignment to a non-variable target (line ${st.lineNumber})")
             }
             String name = ((VariableExpression) be.leftExpression).name
-            // Translate the RHS under the *current* store, then re-bind — this is
-            // the SSA step: subsequent reads of `name` see the new handle.
-            enc.bind(name, tr(enc, be.rightExpression, "assignment to '${name}'"))
+            rebind(enc, name, be.rightExpression)
             return
         }
         throw new UnsupportedConstructException(
             "unsupported statement in loop region (line ${st.lineNumber})")
+    }
+
+    /**
+     * Translate {@code rhs} under the current store and re-bind {@code name} —
+     * the SSA step, so subsequent reads see the new handle. If the RHS is
+     * outside the fragment (e.g. it reads an array element), havoc {@code name}
+     * instead of aborting: its value becomes unknown but the loop's other
+     * variables — and thus its invariant and any bounds obligation that depends
+     * only on them — can still be reasoned about.
+     */
+    private static void rebind(Encoder enc, String name, Expression rhs) {
+        Object h = enc.translate(rhs)
+        if (h == null) enc.havoc(name)
+        else enc.bind(name, h)
     }
 }

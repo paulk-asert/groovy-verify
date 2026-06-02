@@ -48,7 +48,9 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **`x.equals(y)`** (numeric `==`) | `@Requires`/`@Ensures` | ✅ Phase 4 |
 | **`xs.contains(y)`** (uninterpreted predicate) | `@Requires`/`@Ensures` | ✅ Phase 4 |
 | **Cross-boundary nullity/size at call sites** | `@Requires` | ✅ Phase 4 |
-| Quantifiers (`Forall.range`) | — | ⏳ Phase 5 |
+| **Value-flow: safety implied by an assignment** | *(implicit)* | ✅ Phase 5 |
+| **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
+| Quantifiers (`Forall.range`) | — | ⏳ Phase 6 |
 
 Example diagnostic:
 
