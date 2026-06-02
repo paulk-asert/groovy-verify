@@ -470,11 +470,11 @@ language that would make it a different product.
 
 ---
 
-## Phase 9 — Programmer-facing diagnostics
+## Phase 9 — Programmer-facing surface (authoring & diagnostics)
 
 **Adoption, not capability.** Everything above is about *what* can be proved;
-this is about whether a working Groovy developer understands the answer without
-first learning formal-methods vocabulary. The engine speaks in *obligations*,
+this is about whether a working Groovy developer understands what to write and
+what it tells them back, without first learning formal-methods vocabulary. The engine speaks in *obligations*,
 *counterexamples*, and an internal *size oracle* (`a.size`); a programmer who just
 turned the checker on speaks in `.size()`/`.length`,
 `ArrayIndexOutOfBoundsException`, and "what input breaks it?". The goal is to meet
@@ -501,9 +501,20 @@ The distinction that scopes this phase — **two kinds of diagnostic:**
   vocabulary — name the obligation, say plainly what could not be shown and what
   would make it provable — not a runtime costume it does not fit.
 
+**Authoring vocabulary — the input side of the same coin.** "Meet the programmer
+where they are" applies to how specs are *written*, not only how failures are
+*read*. Phase 6 introduces the quantifier as `Forall.range(0, arr.length, { i ->
+... })` — a static helper the encoder recognises, deliberately a plain Groovy
+expression so it needs no language change and the runtime contract can still
+evaluate it. But a quantifier spelled as a method call may eventually read better
+as an annotation form (`@Forall(range = ...)`) or some other surface closer to how
+developers think about "for all `i` in a range". Like the diagnostic wording, the
+right form is best chosen *after* the quantifier shape settles in Phase 6; the
+helper is the spike, not the committed syntax.
+
 **Deliberately not done early.** Until the capability set settles (Phase 6
-especially), new diagnostic shapes keep appearing, and pinning the wording now
-would only churn. The internal `a.size` vocabulary stays for the moment — it is
+especially), new diagnostic and authoring shapes keep appearing, and pinning the
+wording now would only churn. The internal `a.size` vocabulary stays for the moment — it is
 accurate and internally consistent (the obligation and counterexample share the
 symbol). When the time comes this is a `Reporter`-layer change — no engine or
 solver risk — whose entire payoff is adoption: the gap between a tool people trust
