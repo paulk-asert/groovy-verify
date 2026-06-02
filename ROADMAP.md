@@ -97,8 +97,9 @@ class Demo {
 `if`s) but not value-flow-sensitive: they do not track local assignments, so the
 discharging examples are guard- or `@Requires`-based. Index reasoning that
 depends on a loop counter (proving `a[i]` safe *after* a `while`) needs the loop
-machinery of Phase 3 fused with the bounds obligation, and is not yet wired
-through. Counterexamples report integer values; nullity is boolean, so a
+machinery of Phase 3 fused with the bounds obligation — scheduled as
+[Phase 5](#phase-5--value-flow--loop-fused-safety-obligations).
+Counterexamples report integer values; nullity is boolean, so a
 null-dereference refutation names the obligation but not a concrete value.
 
 ---
@@ -206,7 +207,7 @@ Each is a small `Encoder` addition; the work was choosing the right encoding.
 - **`xs.contains(y)`** — modelled as an *uninterpreted predicate*
   `contains$xs : Int -> Bool`. Sound, and `contains(y)` assumed entails
   `contains(y)` proved, but with no membership reasoning until the quantifier
-  axioms of [Phase 5](#phase-5--quantifiers). It deliberately stops short of the
+  axioms of [Phase 6](#phase-6--quantifiers). It deliberately stops short of the
   trigger cliff.
 
 The seam grew two methods — `SmtBackend.boolVar` (nullity) and
@@ -239,7 +240,64 @@ filtering would suppress it; small, not yet wired.
 
 ---
 
-## Phase 5 — Quantifiers
+## Phase 5 — Value-flow & loop-fused safety obligations
+
+**Completing Phase 1 — the everyday win it currently misses.** The implicit
+safety checks (array bounds, division, null) are path-sensitive but
+*value-flow-blind*: each obligation is discharged in a fresh `Encoder` that
+assumes only the method's `@Requires` and the enclosing `if` facts (see
+`assumeContext`), so every local is havoc-by-default and the loop invariant is
+never in scope. Two recognisable patterns therefore fail today even though they
+are obviously safe:
+
+- **(a) safety from an assignment, not a guard** — `int j = 3; a[j]` under
+  `@Requires({ a.length > 5 })` is refuted, because `j = 3` is never threaded.
+- **(b) the counted loop** — `while (i < n) { ... a[i] ... }` is refuted, because
+  the bounds obligation at `a[i]` is checked without the loop's `@Invariant`.
+
+Case (b) is the single most common thing a developer tries first, so this is
+high value. And it carries **near-zero solver risk**: it stays entirely inside
+the shipped QF_LIA + oracle fragment — the opposite of
+[Phase 6](#phase-6--quantifiers), whose risk is the trigger cliff. The work is
+*wiring*, not new theory: the assignment-threading already exists and is simply
+not connected to the safety checks.
+
+**The fusion.** Today `verifyImplicitObligations` runs as a standalone pass with
+a thin context. The move is to discharge each obligation *during* symbolic
+execution, where the store (assignments applied) and the invariant are already
+the context:
+
+- **5a — value-flow in straight-line / `if` bodies.** Reuse `BodyEncoder`'s
+  per-path `Guard`/`Assign` steps — it already threads single-assignment locals
+  for `@Ensures` — to discharge index/division/deref obligations under the
+  threaded store. Self-contained, lower cost; kills case (a). *Guarded derived
+  locals already verify today* — `if (j >= 0 && j < a.length) a[j]` works because
+  the guard and the obligation share the same `j` handle — so 5a's marginal win
+  is specifically the *assignment-implied* facts.
+- **5b — loop-fused bounds.** Discharge the obligation inside `LoopEncoder`
+  preservation (under invariant ∧ guard, one body iteration) and after the loop
+  (under invariant ∧ ¬guard). Higher value; kills case (b). It **only** helps
+  loops carrying an `@Invariant` strong enough to bound the index — no invariant,
+  still an honest "could not decide". It rewards annotation; it is not inference.
+  The current all-in-scope havoc set ([Phase 3](#phase-3--loops-invariant--decreases-shipped)'s
+  documented looseness) compounds here, so a tighter live-modified-set analysis
+  is a natural companion.
+
+**Risks / costs:**
+
+- Structural refactor across `verifyImplicitObligations`, `BodyEncoder`, and
+  `LoopEncoder` — not a localised add.
+- A bounds check per site per path multiplies solver calls; see the
+  compilation-slowdown cross-cutting risk.
+
+Estimated work: 5a small–medium, 5b medium. Risk: low — no new theory, no
+quantifiers. Recommended **before** Phase 6: it hardens the shipped fragment,
+fixes the most recognisable gap, and leaves value-flow + loop bounds in QF_LIA as
+a cleaner base for the quantified array contents that follow.
+
+---
+
+## Phase 6 — Quantifiers
 
 **The frontier.** Necessary for binary-search correctness, two-sum, sortedness
 invariants, "every element of this array satisfies P". Z3 handles bounded
@@ -266,7 +324,7 @@ under Z3's array theory.
   own, and where a user-supplied **instantiation/trigger hint** — the lightest
   borrow from the proof-assistant world — earns its keep: when a quantified VC
   stalls, let the author name the witness or trigger rather than only emitting
-  "could not decide". See [Phase 7](#phase-7--beyond-smt-proof-by-computation-and-proof-hints).
+  "could not decide". See [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
 - Encoding arrays via Z3's array theory changes the whole VC shape. Plain
   indexing becomes `(select arr i)`; `arr.size` becomes an uninterpreted
   function constrained appropriately. This also retires the "array contents not
@@ -280,7 +338,7 @@ for binary search, with sortedness as
 
 ---
 
-## Phase 6 — Optional heavy lifts
+## Phase 7 — Optional heavy lifts
 
 If the project grew into something widely used, these would be on the table.
 All expensive, none strictly necessary to make the verification story
@@ -306,11 +364,11 @@ persuasive.
 
 ---
 
-## Phase 7 — Beyond SMT: proof by computation and proof hints
+## Phase 8 — Beyond SMT: proof by computation and proof hints
 
 **A different axis from Phases 1–6.** Everything above widens the *fragment*
 that gets encoded to Z3; the proof *mechanism* stays "collect obligations, hand
-them to the solver". But SMT has a ceiling — most visibly Phase 5's trigger
+them to the solver". But SMT has a ceiling — most visibly Phase 6's trigger
 cliff and the NIA opt-out — and the same ceiling exists in mature verifiers.
 F\*, for instance, runs SMT by default but offers two escape hatches above it:
 *symbolic computation* (prove by running an interpreter, not by equational
@@ -319,7 +377,7 @@ This phase records which of those are worth borrowing, and which are not — the
 ordering is, as ever, by value against cost and fit with the project's
 push-button, no-language-change identity.
 
-### 7a — Normalisation: normalise-then-SMT *(the strongest candidate)*
+### 8a — Normalisation: normalise-then-SMT *(the strongest candidate)*
 
 **The escape hatch that fits Groovy's grain.** Many obligations are *closed
 computations* that need no solver at all — you just run them. Groovy, unlike a
@@ -357,13 +415,13 @@ the SMT side.
   to evaluate — exactly the property `@Decreases` already reasons about, so there
   is real synergy with [Phase 3](#phase-3--loops-invariant--decreases-shipped).
 
-### 7b — Structured proof decomposition *(opt-in, philosophy-compatible)*
+### 8b — Structured proof decomposition *(opt-in, philosophy-compatible)*
 
 When one SMT shot can't reach a fact, let the author break the proof into steps
 the solver *can* each discharge — Dafny-style `assert P by { ... }` and `calc`
 chains — rather than writing a proof term. No new evaluator, no tactic language;
-each intermediate assertion is just another VC. This composes with 7a (an
-intermediate `assert` can be discharged by evaluation) and with Phase 5's
+each intermediate assertion is just another VC. This composes with 8a (an
+intermediate `assert` can be discharged by evaluation) and with Phase 6's
 instantiation hints. It is the bounded, defensible cousin of tactics: control
 when automation fails, without becoming a proof assistant.
 
@@ -372,7 +430,7 @@ when automation fails, without becoming a proof assistant.
 Full interactive tactics and proof terms (the Coq/Lean/F\* `intro; split; qed`
 style) are a **non-goal** — see below. They cut against "no language change,
 push-button, diagnostics-not-dialogues", the same reasoning that rules out heap
-and concurrency. The line this phase walks: borrow *hints* (7a, 7b, Phase 5
+and concurrency. The line this phase walks: borrow *hints* (8a, 8b, Phase 6
 triggers) that keep the tool a compile-time checker; refuse the proof-term
 language that would make it a different product.
 
@@ -395,7 +453,7 @@ Things deliberately not pursued, because they don't pay back:
   This is the opposite of a push-button compile-time checker, and adopting it
   would make this a proof assistant rather than a better Groovy type-checker. The
   *bounded* borrows — instantiation hints and structured `assert … by`
-  decomposition — live in [Phase 7](#phase-7--beyond-smt-proof-by-computation-and-proof-hints);
+  decomposition — live in [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints);
   the full tactic engine does not.
 - **IDE squiggles.** Diagnostics go through `addStaticTypeError`, which IDEs
   surface via their Gradle integration. Going further — inline counterexample
@@ -428,7 +486,7 @@ Things deliberately not pursued, because they don't pay back:
   built without this library still enforces its contracts at runtime; it merely
   forgoes the consumer-side compile-time proof.
 - **Z3 model expressiveness.** Counterexamples show concrete integer values,
-  which is great for `isqrt(-1)`. Once arrays are in scope (Phase 5), showing
+  which is great for `isqrt(-1)`. Once arrays are in scope (Phase 6), showing
   "the array such that ¬P holds" gets visually awkward — Z3's array models look
   like `(store (store (as-array k!0) 0 -1) 1 0)`. A pretty-printer for array
   models is small but worth budgeting.
@@ -456,10 +514,12 @@ that does not gate the next increment.
 
 ## A note on ordering
 
-The temptation is to do Phase 5 (quantifiers) early because the binary-search
+The temptation is to do Phase 6 (quantifiers) early because the binary-search
 example is so striking. The drop-off from "works on the example" to "works on
 the next thing someone tries" is steepest there, so the foundation came first:
 Phases 1 → 2 → 3 → 4, each catching a class of bug developers viscerally
-recognise, none leaning on quantifier heuristics. With that in place, Phase 5
-can begin — but as its own multi-week effort, not a quick win bolted onto a
-demo.
+recognise, none leaning on quantifier heuristics. With that in place, the
+recommended next step is Phase 5 (value-flow & loop-fused safety) — low-risk
+hardening that fixes the most recognisable everyday gap inside the shipped
+fragment — *before* Phase 6 (quantifiers) begins as its own multi-week effort,
+not a quick win bolted onto a demo.
