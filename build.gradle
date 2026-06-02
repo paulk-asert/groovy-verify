@@ -40,6 +40,11 @@ plugins {
 group = 'au.com.asert'
 version = '0.1.0-SNAPSHOT'
 
+// Apache RAT: don't license-check generated output, IDE metadata, or the wrapper.
+tasks.named('rat') {
+    excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
+}
+
 // Patched local 6.0.0-SNAPSHOT (static @Ensures support) lives in mavenLocal.
 repositories {
     mavenLocal()
@@ -54,7 +59,7 @@ dependencies {
     // Z3 with bundled native libs (linux/mac/windows, amd64+aarch64).
     // Exposed via `api` so it lands on the consumer's COMPILE classpath:
     // the type-checking extension runs Z3 while the consumer compiles.
-    api 'tools.aqua:z3-turnkey:4.14.0'
+    api 'tools.aqua:z3-turnkey:4.14.1'
 
     // The consumer brings its own Groovy + groovy-contracts; we only need
     // them to compile against (and at test time, to exercise the checker).
