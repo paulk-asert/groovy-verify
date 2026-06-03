@@ -54,7 +54,8 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
 | **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
-| Lemmas by induction, in-place sort, unbounded quantifiers | — | ⏳ later |
+| **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
+| Standalone lemmas, in-place sort, unbounded quantifiers | — | ⏳ later |
 
 Example diagnostic:
 
@@ -67,9 +68,10 @@ Example diagnostic:
 ## Building & testing
 
 Requires JDK 25 and the patched local `org.apache.groovy:6.0.0-SNAPSHOT` in
-`mavenLocal()` — it carries static `@Ensures` support and the groovy-contracts
-fix that allows a parameterised closure (`{ i -> ... }`) nested inside a contract,
-which the Phase 6 quantifier syntax relies on.
+`mavenLocal()`. It carries: static `@Ensures` support; the groovy-contracts fix
+allowing a parameterised closure (`{ i -> ... }`) nested inside a contract (the
+Phase 6 quantifier syntax); and method-level `@Decreases` for recursion
+termination measures (GROOVY-12060), which the Phase 7 induction support reads.
 
 ```sh
 ./gradlew verify          # compile a battery of good/bad snippets and assert diagnostics

@@ -100,6 +100,7 @@ class ContractExpansionTransform implements ASTTransformation {
     private static void augment(MethodNode mn, ModuleNode module, SourceUnit source) {
         String requires = null
         String ensures = null
+        String decreases = null
         for (AnnotationNode an : mn.annotations) {
             String kind = contractKind(an, module)
             if (kind == null) continue
@@ -108,12 +109,14 @@ class ContractExpansionTransform implements ASTTransformation {
             String text = captureSource((ClosureExpression) value, source)
             if (!text) continue
             if (kind == 'requires') requires = text
-            else ensures = text
+            else if (kind == 'ensures') ensures = text
+            else decreases = text   // method-level @Decreases (recursion termination measure)
         }
-        if (requires != null || ensures != null) {
+        if (requires != null || ensures != null || decreases != null) {
             AnnotationNode holder = new AnnotationNode(ClassHelper.make(ContractSource))
             if (requires != null) holder.addMember('requires', new ConstantExpression(requires))
             if (ensures != null) holder.addMember('ensures', new ConstantExpression(ensures))
+            if (decreases != null) holder.addMember('decreases', new ConstantExpression(decreases))
             mn.addAnnotation(holder)
         }
 
@@ -255,8 +258,9 @@ class ContractExpansionTransform implements ASTTransformation {
         if (name == null) return null
         if (name == CONTRACTS_PKG + 'Requires') return 'requires'
         if (name == CONTRACTS_PKG + 'Ensures') return 'ensures'
-        if ((name == 'Requires' || name == 'Ensures') && importedFromContracts(name, module)) {
-            return name == 'Requires' ? 'requires' : 'ensures'
+        if (name == CONTRACTS_PKG + 'Decreases') return 'decreases'
+        if ((name == 'Requires' || name == 'Ensures' || name == 'Decreases') && importedFromContracts(name, module)) {
+            return name == 'Requires' ? 'requires' : (name == 'Ensures' ? 'ensures' : 'decreases')
         }
         return null
     }

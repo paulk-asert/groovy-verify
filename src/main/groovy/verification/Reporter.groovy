@@ -173,6 +173,17 @@ class Reporter {
             "Could not decide loop termination in ${methodName}", result)
     }
 
+    static String formatTerminationFailure(String methodName, String measureText, CheckResult result) {
+        loopFailure("Cannot prove recursion measure decreases and stays >= 0 at this recursive call in ${methodName}",
+            "measure", measureText,
+            "Could not decide recursion termination in ${methodName}", result)
+    }
+
+    static String formatTerminationSkipped(String methodName, String measureText) {
+        "Skipped recursion termination for ${methodName}: measure (${measureText}) is outside the " +
+        "spike's supported fragment, so the inductive hypothesis at this recursive call is not justified."
+    }
+
     static String formatLoopSkipped(String methodName, String reason) {
         "Skipped loop verification for ${methodName} (${reason}). " +
         "The loop or its surrounding code uses a construct outside the spike's " +

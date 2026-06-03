@@ -146,6 +146,14 @@ class VerifyChecker extends TypeCheckingExtension {
 
             if (site != null) verifyLoop(node, site)
             else verifyPostcondition(node)
+
+            // Phase 7 (induction): prove the @Decreases measure decreases at each recursive call,
+            // justifying the inductive hypothesis used in verifyPostcondition. No-op unless the
+            // method carries a method-level @Decreases. Best-effort.
+            try {
+                verifyTermination(node)
+            } catch (Throwable ignored) {
+            }
         } finally {
             currentFacts = null
             currentMethod = null
@@ -653,10 +661,12 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (rhs != null) {
                         session.assertExpr(session.eq(enc.varFor(a.name), rhs))
                     } else if (isCallExpr(a.rhs) &&
-                               assumeCalleeEnsures(session, enc, a.rhs, node, enc.varFor(a.name))) {
+                               assumeCalleeEnsures(session, enc, a.rhs, node, enc.varFor(a.name), hasDecreases(node))) {
                         // s = f(args): s is constrained by f's @Ensures (result ↦ s,
                         // formals ↦ actuals) — Phase 7 inter-procedural reasoning. The
                         // callee's @Requires is discharged separately at the call site.
+                        // A self-recursive call is the inductive hypothesis, enabled only when
+                        // the method declares a @Decreases measure (termination checked separately).
                     } else {
                         throw new UnsupportedConstructException(
                             "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
@@ -1029,17 +1039,118 @@ class VerifyChecker extends TypeCheckingExtension {
         e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression
     }
 
+    /** True if the method carries a method-level {@code @Decreases} termination measure. */
+    private boolean hasDecreases(MethodNode node) {
+        contractAstFor(node, 'decreases') != null
+    }
+
+    /** True if {@code expr} is a (direct, same-class) recursive call to {@code node} — by name + arity. */
+    private static boolean isSelfCall(Expression expr, MethodNode node) {
+        if (!(expr instanceof MethodCall)) return false
+        String name = ((MethodCall) expr).methodAsString
+        if (name == null || name != node.name) return false
+        List<Expression> args = collectArgumentExpressions((MethodCall) expr)
+        return args != null && args.size() == node.parameters.length
+    }
+
+    /**
+     * Phase 7 (induction) — discharge the recursion termination obligation for a method carrying a
+     * {@code @Decreases} measure: at every recursive call, prove {@code 0 <= measure[args] <
+     * measure[entry]} under the path facts. This is the well-foundedness that justifies assuming the
+     * method's own {@code @Ensures} as the inductive hypothesis at the recursive call (see
+     * {@code checkPath}); the runtime twin is groovy-contracts' method-level {@code @Decreases} check.
+     */
+    private void verifyTermination(MethodNode node) {
+        Expression measureAst = contractAstFor(node, 'decreases')
+        if (measureAst == null) return
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return
+        List<Path> paths
+        try {
+            paths = BodyEncoder.enumeratePaths(body)
+        } catch (UnsupportedConstructException ignored) {
+            return   // body outside the path fragment → checkPath skipped the IH too; stay consistent
+        }
+        for (Path p : paths) {
+            for (int i = 0; i < p.steps.size(); i++) {
+                Object step = p.steps.get(i)
+                if (step instanceof Assign && isSelfCall(((Assign) step).rhs, node)) {
+                    dischargeTermination(node, p.steps.subList(0, i), ((Assign) step).rhs, measureAst, reqAst)
+                }
+            }
+        }
+    }
+
+    /** Prove the measure strictly decreases (and stays >= 0) at one recursive call on a path. */
+    private void dischargeTermination(MethodNode node, List<Object> preceding, Expression callExpr,
+                                      Expression measureAst, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = new Encoder(s)
+            if (reqAst != null) {
+                Object pre = enc.translate(reqAst)
+                if (pre != null) s.assertExpr(pre)
+            }
+            // Replay the path facts up to the call (single-assignment, so params keep entry values).
+            for (Object step : preceding) {
+                if (step instanceof Guard) {
+                    Guard g = (Guard) step
+                    Object c = enc.translate(g.cond)
+                    if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+                } else if (step instanceof Assign) {
+                    Assign a = (Assign) step
+                    Object rhs = enc.translate(a.rhs)
+                    if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
+                } else if (step instanceof ArrayStore) {
+                    ArrayStore st = (ArrayStore) step
+                    Object idx = enc.translate(st.index)
+                    Object val = enc.translate(st.value)
+                    if (idx != null && val != null) enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val))
+                }
+            }
+            Object entry = enc.translate(measureAst)   // measure on entry (the method's parameters)
+            List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
+            Parameter[] formals = node.parameters
+            Map<String, Object> bindings = new LinkedHashMap<String, Object>()
+            boolean modelled = actuals != null
+            for (int i = 0; modelled && i < formals.length && i < actuals.size(); i++) {
+                Object h = enc.translate(actuals.get(i))
+                if (h == null) { modelled = false; break }
+                bindings.put(formals[i].name, h)
+            }
+            Object callMeasure = modelled ? enc.translateWith(measureAst, bindings) : null
+            if (entry == null || callMeasure == null) {
+                // Can't model the measure → don't silently accept the inductive hypothesis.
+                addStaticTypeError(Reporter.formatTerminationSkipped(node.name, measureAst.text), callExpr as ASTNode)
+                return
+            }
+            // Obligation: 0 <= measure[args] && measure[args] < measure[entry].
+            Object obligation = s.and([s.le(s.intLit(0L), callMeasure), s.lt(callMeasure, entry)])
+            s.assertExpr(s.not(obligation))
+            CheckResult r = s.check()
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatTerminationFailure(node.name, measureAst.text, r), callExpr as ASTNode)
+            }
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
     /**
      * Resolve a same-class method call by name + arity to a {@link MethodNode}
      * that carries an {@code @Ensures}. Self-calls are excluded — assuming a
      * method's own postcondition at a recursive call is the inductive hypothesis,
      * which needs {@code @Decreases} for well-foundedness and is a later slice.
      */
-    private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity) {
+    private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity, boolean allowSelf) {
         ClassNode dc = caller?.declaringClass
         if (dc == null || name == null) return null
         for (MethodNode m : dc.getMethods(name)) {
-            if (m == caller) continue
+            // A self-call is the inductive hypothesis; only honour it when the caller carries a
+            // termination measure (@Decreases) — its well-foundedness is checked separately.
+            if (m == caller && !allowSelf) continue
             if (m.parameters.length != arity) continue
             if (findEnsures(m) == null) continue
             return m
@@ -1055,12 +1166,12 @@ class VerifyChecker extends TypeCheckingExtension {
      * caller can fall back to "skipped" when it was not.
      */
     private boolean assumeCalleeEnsures(SmtSession s, Encoder enc, Expression callExpr,
-                                        MethodNode caller, Object resultHandle) {
+                                        MethodNode caller, Object resultHandle, boolean allowSelf) {
         if (!(callExpr instanceof MethodCall)) return false
         String name = ((MethodCall) callExpr).methodAsString
         List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
         if (name == null || actuals == null) return false
-        MethodNode callee = resolveContractedCallee(caller, name, actuals.size())
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf)
         if (callee == null) return false
         Expression ensuresAst = contractAstFor(callee, 'ensures')
         if (ensuresAst == null) return false

@@ -51,4 +51,6 @@ import java.lang.annotation.Target
     String requires() default ''
     /** Verbatim postcondition text, e.g. "result >= 0" (empty if none). */
     String ensures() default ''
+    /** Verbatim method-level termination measure text, e.g. "n" (empty if none); the recursion analogue of a loop's @Decreases. */
+    String decreases() default ''
 }

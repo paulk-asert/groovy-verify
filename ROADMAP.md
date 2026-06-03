@@ -412,14 +412,25 @@ persuasive.
   its body. Scope: same-class resolution by name + arity; self-calls excluded;
   `old` and array/frame effects unmodelled.
 
-  **Not yet:** standalone void lemma calls (`lemma(args)` as a statement) — they
-  inject no value, and in the current QF_LIA + auto-instantiated-quantifier
-  fragment an empty-bodied lemma can only `@Ensures` what the caller already
-  derives, so they are not load-bearing until **recursion = induction** lands:
-  assuming a method's own `@Ensures` at a recursive call, gated on `@Decreases`
-  for well-foundedness. That is the next slice, and where lemmas earn their keep
-  (e.g. sortedness transitivity). Given all this, the item may deserve promoting
-  out of "optional".
+  **Slice 2 — induction (shipped).** A method may now assume *its own* `@Ensures`
+  at a recursive call — the inductive hypothesis — gated on a method-level
+  `@Decreases` measure whose well-foundedness is proved separately: at each
+  recursive call `verifyTermination` discharges `0 <= measure[args] <
+  measure[entry]` (substitution via `translateWith`, the decrease/≥0 shape from
+  the loop progress check). So `sumUp(n)` with `@Ensures({ result >= n })` /
+  `@Decreases({ n })` verifies by induction. The measure rides on the *same*
+  stock `@Decreases` annotation groovy-contracts now accepts on methods
+  (GROOVY-12060), so it is runtime-meaningful too — no verifier-only surface. If
+  the measure can't be shown to decrease, or is outside the fragment, the
+  inductive hypothesis is refused (loud, not silently accepted). Without
+  `@Decreases`, a recursive call's result stays opaque → honest "skipped".
+
+  **Not yet:** standalone void lemma calls (`lemma(args)` as a statement) — now
+  *enabled* by induction (a ghost lemma proved by recursion), they need the
+  void-method/standalone-call wiring `checkPath` doesn't yet have; mutual
+  recursion across the verifier (only direct self-recursion is modelled); and
+  cross-module measures (binary super-types). Given induction has landed, the
+  item has outgrown "optional".
 - **Heap/aliasing.** Don't. Groovy makes this very hard and the payoff is small
   for the fragment most developers care about.
 
