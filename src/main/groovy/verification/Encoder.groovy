@@ -350,15 +350,8 @@ class Encoder {
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
         // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
         if (op == Types.LEFT_SQUARE_BRACKET) {
-            Object arr
-            if (be.leftExpression instanceof VariableExpression) {
-                arr = arrayFor(((VariableExpression) be.leftExpression).name)
-            } else if (be.leftExpression instanceof PropertyExpression &&
-                       isOldReceiver(((PropertyExpression) be.leftExpression).objectExpression)) {
-                arr = arrayFor('old$' + ((PropertyExpression) be.leftExpression).propertyAsString)
-            } else {
-                return null
-            }
+            Object arr = arrayHandleFor(be.leftExpression)
+            if (arr == null) return null
             Object idx = translate(be.rightExpression)
             if (idx == null) return null
             Object sel = session.select(arr, idx)
@@ -426,6 +419,16 @@ class Encoder {
         if ((m == 'every' || m == 'any') && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
+        }
+
+        // xs.count(v) / old.a.count(v) -> the occurrence-count term (Phase 12, permutation). Its
+        // value is governed by the per-store update law asserted in checkPath, not a literal value.
+        if (m == 'count' && args.size() == 1 && !(args.get(0) instanceof ClosureExpression)) {
+            Object arr = arrayHandleFor(recv)
+            if (arr != null) {
+                Object v = translate(args.get(0))
+                if (v != null) return session.count(arr, v)
+            }
         }
 
         // size() / isEmpty() / contains() need a named receiver for their oracle.
@@ -618,6 +621,17 @@ class Encoder {
     /** True if {@code e} is the {@code old} map of a postcondition ({@code old.field}). */
     static boolean isOldReceiver(Expression e) {
         e instanceof VariableExpression && ((VariableExpression) e).name == 'old'
+    }
+
+    /** The array-content handle for a named array {@code xs} or the entry snapshot {@code old.xs}; null otherwise. */
+    private Object arrayHandleFor(Expression recv) {
+        if (recv instanceof VariableExpression) {
+            return arrayFor(((VariableExpression) recv).name)
+        }
+        if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
+            return arrayFor('old$' + ((PropertyExpression) recv).propertyAsString)
+        }
+        null
     }
 
     /** The closure's single parameter name, or Groovy's implicit {@code it}; null if it has several. */

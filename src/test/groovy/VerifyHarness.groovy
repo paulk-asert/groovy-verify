@@ -339,6 +339,30 @@ class VerifyHarness {
                        void set(int j, int v) { a[j] = v }
                    }''')],
 
+        // ---------- Phase 12: permutation — multiset preserved via per-store count law ----------
+        // Building block: a swap preserves a.count(v) for an arbitrary value v (the ghost param) →
+        // the array stays a permutation. The two stores' count updates cancel.
+        [group: 'P12 perm', name: 'swap preserves count', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= i && i < a.length && 0 <= j && j < a.length })
+                       @Ensures({ a.count(v) == old.a.count(v) })
+                       void swap(int i, int j, int v) { int t = a[i]; a[i] = a[j]; a[j] = t }
+                   }''')],
+        // Soundness: a plain copy (not a swap) drops an element → some count changes → refuted.
+        [group: 'P12 perm', name: 'copy is not a permutation', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= i && i < a.length && 0 <= j && j < a.length })
+                       @Ensures({ a.count(v) == old.a.count(v) })
+                       void copy(int i, int j, int v) { a[i] = a[j] }
+                   }''')],
+        // NOTE: the recursive insertion-sort *permutation* proof is deferred to the @Modifies slice.
+        // It needs sound inter-procedural `old` (snapshot the array at the call, bind the callee's
+        // `old.a` to it) — without it, a callee's `old.a` resolves to the caller's entry snapshot,
+        // making the recursion's count @Ensures an inconsistent (vacuous) assumption. The single-store
+        // building blocks above are sound; the composition lands with @Modifies's call-site machinery.
+
         // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------
         // No size accessor written (just a[i]) → the universal Groovy idiom .size(), valid for arrays too.
         [group: 'P9 diagnostics', name: 'implicit access defaults to .size()', expect: 'a.size()',

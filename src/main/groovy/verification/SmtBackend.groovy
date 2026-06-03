@@ -78,6 +78,14 @@ interface SmtSession extends AutoCloseable {
     Object store(Object arr, Object idx, Object val)
 
     /**
+     * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
+     * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
+     * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store
+     * update law the caller asserts on each {@code a[i] = val} — there is no built-in axiom here.
+     */
+    Object count(Object arr, Object v)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

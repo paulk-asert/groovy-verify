@@ -296,6 +296,28 @@ class VerifyChecker extends TypeCheckingExtension {
         true
     }
 
+    /** The single argument of each {@code .count(arg)} call — the values a postcondition counts. */
+    private static List<Expression> countValueArgs(Expression e) {
+        List<Expression> out = new ArrayList<Expression>()
+        if (e == null) return out
+        try {
+            e.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitMethodCallExpression(MethodCallExpression mce) {
+                    Expression a = mce.arguments
+                    if (mce.methodAsString == 'count' && a instanceof ArgumentListExpression &&
+                        ((ArgumentListExpression) a).expressions.size() == 1) {
+                        out.add(((ArgumentListExpression) a).expressions.get(0))
+                    }
+                    super.visitMethodCallExpression(mce)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        out
+    }
+
     /** Field names referenced via {@code old.field} in a postcondition (groovy-contracts' old map). */
     private static Set<String> oldFieldNames(Expression e) {
         Set<String> names = new HashSet<String>()
@@ -921,6 +943,15 @@ class VerifyChecker extends TypeCheckingExtension {
                 enc.bindArray('old$' + fld, enc.arrayFor(fld))
             }
 
+            // Permutation: the values the postcondition counts (`xs.count(v)`). Each array store
+            // below maintains count(·, v) for these v via the per-store update law, so a swap (two
+            // stores) leaves every count unchanged → the array stays a permutation of its entry value.
+            List<Object> countVals = new ArrayList<Object>()
+            for (Expression vArg : countValueArgs(postAst)) {
+                Object h = enc.translate(vArg)
+                if (h != null) countVals.add(h)
+            }
+
             for (Object step : p.steps) {
                 if (step instanceof Guard) {
                     Guard g = (Guard) step
@@ -963,7 +994,17 @@ class VerifyChecker extends TypeCheckingExtension {
                             "array store '${st.arr}[${st.index.text}] = ${st.value.text}' is outside fragment")
                     }
                     // a := (store a idx val): subsequent reads of a see the update.
-                    enc.bindArray(st.arr, session.store(enc.arrayFor(st.arr), idx, val))
+                    Object oldA = enc.arrayFor(st.arr)
+                    Object newA = session.store(oldA, idx, val)
+                    // Per-store count law: count(newA, v) = count(oldA, v) - [oldA[idx]==v] + [val==v].
+                    Object one = session.intLit(1L), zero = session.intLit(0L)
+                    for (Object v : countVals) {
+                        Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
+                        Object added = session.ite(session.eq(val, v), one, zero)
+                        Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
+                        session.assertExpr(session.eq(session.count(newA, v), rhs))
+                    }
+                    enc.bindArray(st.arr, newA)
                 } else if (step instanceof LemmaCall) {
                     // Standalone call: assume the callee's @Ensures as a fact (no result). A
                     // self-call is the inductive hypothesis (enabled by @Decreases). If the call

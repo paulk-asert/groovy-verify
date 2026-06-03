@@ -124,6 +124,16 @@ class Z3Session implements SmtSession {
     @Override Object select(Object arr, Object idx) { ctx.mkSelect((ArrayExpr) arr, (Expr) idx) }
     @Override Object store(Object arr, Object idx, Object val) { ctx.mkStore((ArrayExpr) arr, (Expr) idx, (Expr) val) }
 
+    private FuncDecl countFn
+    @Override
+    Object count(Object arr, Object v) {
+        if (countFn == null) {
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
+            countFn = ctx.mkFuncDecl('count$', [arrSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        }
+        ctx.mkApp(countFn, (Expr) arr, (Expr) v)
+    }
+
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
 
     @Override

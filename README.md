@@ -66,7 +66,8 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
 | **Instance methods & field state (read + write)** | `this.count`, `count = count + 1` | ✅ Phase 10 |
 | **Pre-state `old` (field & array-content snapshots)** | `old.count`, `old.a[i]` in `@Ensures` | ✅ Phase 11 |
-| Sort *permutation* (multiset), `@Modifies` framing, class `@Invariant`, 32-bit overflow | — | ⏳ later |
+| **Multiset / `count` preservation (per-store law)** | `a.count(v) == old.a.count(v)` | ✅ Phase 12 |
+| `@Modifies` framing (+ sort permutation end-to-end), class `@Invariant`, 32-bit overflow | — | ⏳ later |
 
 ## Examples
 

@@ -657,6 +657,36 @@ fields).
 
 ---
 
+## Phase 12 — Permutation: multiset / `count`  *(building block shipped)*
+
+The half a sort is missing beyond *sortedness* is *permutation* — that the output is a rearrangement
+of the input. The tractable encoding, which sidesteps the unbounded `∀v` a multiset usually needs:
+
+- **`count`** — Groovy's GDK `a.count(v)` (occurrences of `v`) modelled as an uninterpreted
+  `count(arr, v) : (Array, Int) -> Int` (`SmtBackend.count`). `old.a.count(v)` is the entry snapshot.
+- **Per-store update law** — on every `a[i] = val`, `checkPath` asserts
+  `count(store(a,i,val), v) = count(a, v) - [a[i]==v] + [val==v]` for the values `v` the postcondition
+  counts. This is the sound semantics of `count` under one store; nothing else axiomatises it.
+- **Ghost value parameter** — a method takes a value param `v` and proves
+  `@Ensures({ a.count(v) == old.a.count(v) })`. Since `v` is an arbitrary free parameter, proving it
+  for `v` *is* proving it for all values — permutation, with **no quantifier in the SMT**.
+
+A **swap** is two stores whose count updates cancel, so it preserves every count — verified — while a
+plain copy (drops an element) refutes. That building block is sound and shipped.
+
+**Co-dependency found with `@Modifies`.** The *recursive* sort's permutation does **not** yet hold
+soundly: when a caller assumes a callee's `@Ensures` that mentions `old.a`, the assume path resolves
+`old.a` to the *caller's* entry snapshot, not the array *at the call* — so the recursion's count
+clause becomes an inconsistent (vacuous) assumption (a broken overwrite-`insert` wrongly "verified",
+which is how this was caught). Binding a callee's `old` to a *call-site* snapshot is precisely the
+`@Modifies`/havoc machinery. So permutation's recursive composition and `@Modifies` are mutually
+dependent and land together: `@Modifies` brings sound inter-procedural `old`, which makes the full
+insertion sort verify *sorted ∧ permutation* — and the permutation clause is in turn what lets
+`insert` survive the sound array-havoc (it supplies the bound on the sorted prefix that sortedness
+alone can't). The per-store `count` law built here is the standalone, sound foundation for that.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
