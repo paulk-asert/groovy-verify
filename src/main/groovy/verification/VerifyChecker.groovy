@@ -130,7 +130,9 @@ class VerifyChecker extends TypeCheckingExtension {
         r.failingCall = buildFailingCall(r.counterexample)
         Map<String, Long> display = new LinkedHashMap<String, Long>()
         r.counterexample.each { String k, Long v ->
-            if (k.endsWith('?null') || k.endsWith(']')) return   // internal nullity/element keys — via failingCall
+            // internal keys: nullity flag, array element, SSA version — surfaced via failingCall / the
+            // base (entry) variable, not shown raw.
+            if (k.endsWith('?null') || k.endsWith(']') || k.contains('#')) return
             if (k.endsWith('.size')) {
                 String recv = k.substring(0, k.length() - '.size'.length())
                 display.put(recv + sizeAccessor(recv), v)
@@ -882,6 +884,7 @@ class VerifyChecker extends TypeCheckingExtension {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
+            int ssaVersion = 0   // mints fresh versions for re-assigned names (SSA, see the Assign step)
 
             if (reqAst != null) {
                 Object pre = enc.translate(reqAst)
@@ -903,11 +906,19 @@ class VerifyChecker extends TypeCheckingExtension {
                     session.assertExpr(g.positive ? c : session.not(c))
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
+                    // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated
+                    // against the current binding (the pre-assignment value), so a mutation like
+                    // `count = count + 1` becomes `count#1 == count + 1` (not the false `count == count + 1`)
+                    // — and a method's @Requires (asserted above) saw the entry version, its @Ensures the
+                    // final one. This is what makes re-assignable state, incl. instance fields, sound.
                     Object rhs = enc.translate(a.rhs)
+                    Object fresh = session.intVar(a.name + '#' + (++ssaVersion))
                     if (rhs != null) {
-                        session.assertExpr(session.eq(enc.varFor(a.name), rhs))
+                        session.assertExpr(session.eq(fresh, rhs))
+                        enc.bind(a.name, fresh)
                     } else if (isCallExpr(a.rhs) &&
-                               assumeCalleeEnsures(session, enc, a.rhs, node, enc.varFor(a.name), hasDecreases(node))) {
+                               assumeCalleeEnsures(session, enc, a.rhs, node, fresh, hasDecreases(node))) {
+                        enc.bind(a.name, fresh)
                         // s = f(args): s is constrained by f's @Ensures (result ↦ s,
                         // formals ↦ actuals) — Phase 7 inter-procedural reasoning. The
                         // callee's @Requires is discharged separately at the call site.

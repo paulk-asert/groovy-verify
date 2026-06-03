@@ -604,6 +604,35 @@ a proof transcript.
 
 ---
 
+## Phase 10 — Instance methods & field state  *(shipped)*
+
+The fragment was static-function-shaped; this opens it to ordinary OO code, in two layers.
+
+**Layer A — instance methods, parameter contracts (already worked).** Nothing in the verifier
+gated on `static`, so a non-`static` method with `@Requires`/`@Ensures` over its parameters
+verifies exactly like a static one. Confirmed with a test; no code change.
+
+**Layer B — instance field state (shipped).** A method may now read and write its receiver's
+*scalar* fields:
+- **Reads** — `this.count` (a `PropertyExpression` on `this`) and the bare `count` both resolve to
+  the field's state variable, in contracts and bodies.
+- **Writes** — `this.count = …` / `count = …` thread the field forward, via **SSA**: each
+  assignment binds the name to a fresh version, so a method's `@Requires` sees the *entry* value
+  and its `@Ensures` the *exit* value. `count = count + 1` becomes `count#1 == count + 1`, not the
+  false `count == count + 1`. This dropped the old single-assignment-locals restriction, so
+  re-assigned locals now work too; SSA versions are hidden from the displayed counterexample.
+
+So a mutator is proven to maintain its bound — `@Requires({ count < max }) @Ensures({ count <= max })
+void inc() { count = count + 1 }` verifies, and the same without the guard refutes (`count = max`,
+the entry/exit distinction made visible). Framing within a single method is trivial (unwritten
+fields are unchanged); the receiver's fields are assumed unaliased, the same boundary arrays draw.
+
+**Not yet:** class-level `@Invariant` (object invariants — assume on entry, prove on exit; its own
+capture infrastructure); array/collection-typed fields; `old` for field pre-state; and
+*cross-method* field effects, which is the `@Modifies`/framing slice.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

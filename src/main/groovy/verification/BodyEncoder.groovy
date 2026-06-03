@@ -22,6 +22,7 @@ import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -215,7 +216,6 @@ class BodyEncoder {
                         "uninitialised local '${name}' (line ${s.lineNumber})")
                 }
                 Path np = copy(prefix)
-                ensureSingleAssign(np, name)
                 np.steps.add(new Assign(name, rhs))
                 if (tail) {
                     np.result = new VariableExpression(name)
@@ -232,7 +232,22 @@ class BodyEncoder {
                 if (be.leftExpression instanceof VariableExpression) {
                     String name = ((VariableExpression) be.leftExpression).name
                     Path np = copy(prefix)
-                    ensureSingleAssign(np, name)
+                    np.steps.add(new Assign(name, be.rightExpression))
+                    if (tail) {
+                        np.result = be.leftExpression
+                        res.terminated.add(np)
+                    } else {
+                        res.live.add(np)
+                    }
+                    return res
+                }
+                // this.field = v  ->  a scalar field write, threaded as an Assign on the field name
+                // (instance-field support). The bare `field = v` form is already a VariableExpression
+                // target above, so both spellings unify on the field's state variable.
+                if (be.leftExpression instanceof PropertyExpression &&
+                    isThisReceiver(((PropertyExpression) be.leftExpression).objectExpression)) {
+                    String name = ((PropertyExpression) be.leftExpression).propertyAsString
+                    Path np = copy(prefix)
                     np.steps.add(new Assign(name, be.rightExpression))
                     if (tail) {
                         np.result = be.leftExpression
@@ -291,13 +306,8 @@ class BodyEncoder {
             "unsupported statement ${s.class.simpleName} (line ${s.lineNumber})")
     }
 
-    private static void ensureSingleAssign(Path p, String name) {
-        for (Object step : p.steps) {
-            if (step instanceof Assign && ((Assign) step).name == name) {
-                throw new UnsupportedConstructException(
-                    "re-assignment of '${name}' (single-assignment locals only)")
-            }
-        }
+    private static boolean isThisReceiver(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == 'this'
     }
 
     private static Path copy(Path p) {

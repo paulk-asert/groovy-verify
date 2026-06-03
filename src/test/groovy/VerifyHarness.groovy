@@ -274,6 +274,46 @@ class VerifyHarness {
         [group: 'P9 any', name: 'precise contains at a valid index', ok: true,
          src: tc('class C { @Requires({ 0 <= k && k < a.length }) @Ensures({ a.contains(a[k]) }) static int f(int[] a, int k) { 0 } }')],
 
+        // ---------- Phase 10 (Layer A): instance methods with parameter-only contracts ----------
+        // No `static` — the VC machinery is instance-agnostic, so this verifies like a static method.
+        [group: 'P10 instance', name: 'instance method, param contract', ok: true,
+         src: tc('''class C {
+                       @Requires({ x >= 0 })
+                       @Ensures({ result >= x })
+                       int inc(int x) { x + 1 }
+                   }''')],
+        // Layer B — instance field READ: a getter relates result to field state.
+        [group: 'P10 instance', name: 'field read in getter', ok: true,
+         src: tc('''class C {
+                       int lo, hi
+                       @Requires({ lo <= hi })
+                       @Ensures({ result >= lo && result <= hi })
+                       int clamp(int x) { x < lo ? lo : (x > hi ? hi : x) }
+                   }''')],
+        // Layer B — instance field WRITE (SSA): the mutator reads the entry field, writes the exit field.
+        [group: 'P10 instance', name: 'field write mutator verified', ok: true,
+         src: tc('''class C {
+                       int count, max
+                       @Requires({ count < max })
+                       @Ensures({ count <= max })
+                       void inc() { count = count + 1 }
+                   }''')],
+        // Soundness: a mutator that can break the bound is refuted (no @Requires guard).
+        [group: 'P10 instance', name: 'field write mutator refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       int count, max
+                       @Ensures({ count <= max })
+                       void inc() { count = count + 1 }
+                   }''')],
+        // `this.x` spelling reads/writes the same field state as the bare name.
+        [group: 'P10 instance', name: 'this.field spelling', ok: true,
+         src: tc('''class C {
+                       int count, max
+                       @Requires({ this.count < this.max })
+                       @Ensures({ this.count <= this.max })
+                       void inc() { this.count = this.count + 1 }
+                   }''')],
+
         // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------
         // No size accessor written (just a[i]) → the universal Groovy idiom .size(), valid for arrays too.
         [group: 'P9 diagnostics', name: 'implicit access defaults to .size()', expect: 'a.size()',

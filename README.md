@@ -64,7 +64,8 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
 | **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
 | **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
-| Sort *permutation* (multiset + `old`), unbounded quantifiers, 32-bit overflow | — | ⏳ later |
+| **Instance methods & field state (read + write)** | `this.count`, `count = count + 1` | ✅ Phase 10 |
+| Sort *permutation* (multiset + `old`), `@Modifies` framing, class `@Invariant`, 32-bit overflow | — | ⏳ later |
 
 ## Examples
 
@@ -158,6 +159,20 @@ model and `old(a)`; so a "sort" that zeroed the array would still pass here. Sor
 the harder-looking half and the part the order-reasoning machinery (quantifiers + induction)
 makes reachable; permutation is tracked in the roadmap.
 
+**Object state — instance fields, read and written.** Not just static functions: a method may
+read and update its receiver's fields, and the checker threads field state across the write (so
+the contract's entry `count` and exit `count` are different values, related by the assignment).
+A mutator is proven to maintain its bound:
+
+```groovy
+class Counter {
+    int count, max
+    @Requires({ count < max })
+    @Ensures({ count <= max })
+    void increment() { count = count + 1 }
+}
+```
+
 **Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
 can't prove safe fails the build the way the JVM would name it, plus an input that triggers it:
@@ -230,10 +245,12 @@ warning rather than passing silently. In expressions the fragment is:
   bounded-universal quantifiers — `Forall.range` or the native GDK idioms
   `(lo..<hi).every{…}` / `xs.indices.every{…}` / `xs.every{ it… }`;
 - fuel-bounded inlining of contract-free pure functions (a closed call like
-  `pow2(10)` is evaluated to a literal, a symbolic one unfolded).
+  `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
+- scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.
 
-For method bodies: straight-line code, `if`/`else`, single-assignment locals, and a
-single annotated `while` loop. See `Encoder` and the roadmap for the exact boundaries.
+For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
+tracked in SSA so a mutator's pre/post state differ), and a single annotated `while` loop. See
+`Encoder` and the roadmap for the exact boundaries.
 
 ## Architecture
 

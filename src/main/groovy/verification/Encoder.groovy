@@ -277,12 +277,17 @@ class Encoder {
         }
 
         if (expr instanceof PropertyExpression) {
-            // xs.length / xs.size  ->  size oracle
             PropertyExpression pe = (PropertyExpression) expr
             String prop = pe.propertyAsString
-            if ((prop == 'length' || prop == 'size') &&
-                pe.objectExpression instanceof VariableExpression) {
-                return sizeOf(((VariableExpression) pe.objectExpression).name)
+            Expression obj = pe.objectExpression
+            // this.field -> the field's state variable (instance-field support). The bare-name form
+            // `field` is already a VariableExpression -> varFor(field), so both spellings unify.
+            if (isThisReceiver(obj)) {
+                return varFor(prop)
+            }
+            // xs.length / xs.size  ->  size oracle
+            if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
+                return sizeOf(((VariableExpression) obj).name)
             }
             return null
         }
@@ -590,6 +595,11 @@ class Encoder {
             triggerSink = prevSink
             if (prevBinding == null) env.remove(pname) else env.put(pname, prevBinding)
         }
+    }
+
+    /** True if {@code e} is the {@code this} receiver of an instance-field access. */
+    private static boolean isThisReceiver(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == 'this'
     }
 
     /** The closure's single parameter name, or Groovy's implicit {@code it}; null if it has several. */
