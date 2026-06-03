@@ -180,11 +180,9 @@ and a null receiver exact, solver-constrained array elements pinned as literals
 
 ## Building & testing
 
-Requires JDK 25 and the patched local `org.apache.groovy:6.0.0-SNAPSHOT` in
-`mavenLocal()`. It carries: static `@Ensures` support; the groovy-contracts fix
-allowing a parameterised closure (`{ i -> ... }`) nested inside a contract (the
-Phase 6 quantifier syntax); and method-level `@Decreases` for recursion
-termination measures (GROOVY-12060), which the Phase 7 induction support reads.
+Requires JDK 25. It builds against `org.apache.groovy:6.0.0-SNAPSHOT` from the
+[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots) —
+it relies on some fixes due for release in the next Groovy 6 pre-release.
 
 ```sh
 ./gradlew verify          # compile a battery of good/bad snippets and assert diagnostics
@@ -194,6 +192,24 @@ VERIFY_VERBOSE=1 ./gradlew verify   # also print the counterexamples for refuted
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and
 bad ones fail with the expected diagnostic.
+
+## Using it in your own build
+
+It isn't on Maven Central yet, but you don't need to wait for that — there are three
+ways to consume `au.com.asert:groovy-verify:0.1.0-SNAPSHOT`:
+
+- **Local install.** `./gradlew publishToMavenLocal` drops the jar into your `~/.m2`;
+  then add `mavenLocal()` and the dependency to any Gradle/Maven project.
+- **Composite build (source dependency).** Clone this repo alongside yours and add
+  `includeBuild('../groovy-verify')` to your `settings.gradle` — Gradle substitutes the
+  dependency with this project's output, so changes here are picked up without a publish.
+  (The companion *groovy6-functional* repo consumes it this way.)
+- **JitPack.** Because the build is self-contained (ASF snapshot, no local patch), JitPack
+  can build it straight from a GitHub tag/commit — add the JitPack repo and depend on
+  `com.github.<owner>:groovy-verify:<tag>`, no publishing step on your side.
+
+Either way the consumer compiles under `@TypeChecked(extensions = 'verification.VerifyChecker')`;
+the artifact carries Z3 (via z3-turnkey, native libs bundled) on the compile classpath.
 
 ## The fragment
 

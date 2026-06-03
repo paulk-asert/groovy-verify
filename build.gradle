@@ -23,15 +23,17 @@
 // (via the z3-turnkey distribution, which bundles native libs for the
 // major platforms) runs at the consumer's compile time.
 //
-// Until this is published to Maven Central, the companion blog repo
-// (groovy6-functional) consumes it via a Gradle composite build:
-//   includeBuild('../groovy-verify')
+// Not on Maven Central yet, but consumable three ways without it (see README):
+//   - composite build:  includeBuild('../groovy-verify')   (the groovy6-functional repo)
+//   - local install:    ./gradlew publishToMavenLocal      (au.com.asert:groovy-verify:…)
+//   - JitPack:          built from a GitHub tag/commit on demand
 
 plugins {
     id 'com.github.ben-manes.versions' version '0.54.0'
     id 'org.nosphere.apache.rat' version '0.8.1'
     id 'groovy'
     id 'java-library'
+    id 'maven-publish'
 }
 
 // Coordinate the companion blog repo substitutes via includeBuild (and that a
@@ -45,11 +47,13 @@ tasks.named('rat') {
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 
-// Patched local 6.0.0-SNAPSHOT lives in mavenLocal: static @Ensures support plus
-// the groovy-contracts fix allowing a parameterised closure ({ i -> ... }) nested
-// inside a contract closure (the Phase 6 Forall.range quantifier syntax).
+// Everything this project needs from Groovy 6.0.0-SNAPSHOT is now on the ASF
+// snapshot repo: static @Ensures support, the groovy-contracts fix allowing a
+// parameterised closure ({ i -> ... }) nested inside a contract (the Phase 6
+// Forall.range quantifier syntax), and method-level @Decreases (GROOVY-12060).
+// So the build is self-contained — no patched, hand-built Groovy in mavenLocal.
+// (A Groovy core dev testing a *local* patch can add mavenLocal() above these.)
 repositories {
-    mavenLocal()
     mavenCentral()
     maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
 }
@@ -79,6 +83,20 @@ tasks.withType(GroovyCompile).configureEach {
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+// Get a consumable artifact without a Maven Central release:
+//   ./gradlew publishToMavenLocal   ->  au.com.asert:groovy-verify:0.1.0-SNAPSHOT in ~/.m2
+// any local Gradle/Maven project can then depend on it. This is also what JitPack
+// runs to build the jar from a GitHub tag/commit on demand (now possible because the
+// build is self-contained — it no longer needs a hand-built Groovy in mavenLocal).
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
     }
 }
 
