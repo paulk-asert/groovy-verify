@@ -425,12 +425,24 @@ persuasive.
   inductive hypothesis is refused (loud, not silently accepted). Without
   `@Decreases`, a recursive call's result stays opaque → honest "skipped".
 
-  **Not yet:** standalone void lemma calls (`lemma(args)` as a statement) — now
-  *enabled* by induction (a ghost lemma proved by recursion), they need the
-  void-method/standalone-call wiring `checkPath` doesn't yet have; mutual
-  recursion across the verifier (only direct self-recursion is modelled); and
-  cross-module measures (binary super-types). Given induction has landed, the
-  item has outgrown "optional".
+  **Slice 3 — standalone lemmas (shipped).** A lemma is a `void` method proved by
+  induction and *called for its `@Ensures`*. Three pieces landed: `BodyEncoder`
+  enumerates void methods (paths may fall through, no `result`); a standalone call
+  statement becomes a `LemmaCall` step that assumes the callee's `@Ensures` (no
+  result binding) — refused as outside-fragment if the call has no usable
+  contract, so an unmodelled side-effecting call still "skips" rather than
+  false-passes; and the self-IH + termination VC also fire on `LemmaCall`
+  self-calls. This closes the Dafny loop: e.g. *sortedness transitivity*
+  (`a[i] <= a[j]` for `i <= j` from adjacent-`@Decreases` sortedness) is proved by
+  induction on `j - i` and then *used* at a call site to discharge a caller's
+  postcondition — quantifier instantiation and all.
+
+  **Not yet:** mutual recursion in the verifier (only direct self-recursion gives
+  an inductive-hypothesis point — a cycle needs SCC-aware reasoning over a combined
+  measure); and cross-module measure *inheritance* (an override of a precompiled
+  super's `@Decreases`), which is the upstream groovy-contracts limitation, not a
+  verifier one. Given induction and lemmas have landed, the item has outgrown
+  "optional".
 - **Heap/aliasing.** Don't. Groovy makes this very hard and the payoff is small
   for the fragment most developers care about.
 

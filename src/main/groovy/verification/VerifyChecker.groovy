@@ -622,7 +622,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Statement body = (Statement) node.getNodeMetaData(
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
-            List<Path> paths = BodyEncoder.enumeratePaths(body)
+            List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod())
             for (Path p : paths) {
                 checkPath(node, p, postAst, reqAst)
             }
@@ -681,15 +681,26 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                     // a := (store a idx val): subsequent reads of a see the update.
                     enc.bindArray(st.arr, session.store(enc.arrayFor(st.arr), idx, val))
+                } else if (step instanceof LemmaCall) {
+                    // Standalone call: assume the callee's @Ensures as a fact (no result). A
+                    // self-call is the inductive hypothesis (enabled by @Decreases). If the call
+                    // has no usable @Ensures it is an unmodelled effect → skip (outside fragment).
+                    if (!assumeCalleeEnsures(session, enc, ((LemmaCall) step).call, node, null, hasDecreases(node))) {
+                        throw new UnsupportedConstructException(
+                            "standalone call '${((LemmaCall) step).call.text}' has no usable @Ensures")
+                    }
                 }
             }
 
-            Object resHandle = enc.translate(p.result)
-            if (resHandle == null) {
-                throw new UnsupportedConstructException(
-                    "return expression '${p.result?.text}' is outside fragment")
+            // A void method (e.g. a lemma) has no result; its postcondition is over parameters.
+            if (p.result != null) {
+                Object resHandle = enc.translate(p.result)
+                if (resHandle == null) {
+                    throw new UnsupportedConstructException(
+                        "return expression '${p.result.text}' is outside fragment")
+                }
+                enc.bind('result', resHandle)
             }
-            enc.bind('result', resHandle)
 
             Object post = enc.translate(postAst)
             if (post == null) {
@@ -1069,15 +1080,17 @@ class VerifyChecker extends TypeCheckingExtension {
         if (body == null) return
         List<Path> paths
         try {
-            paths = BodyEncoder.enumeratePaths(body)
+            paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod())
         } catch (UnsupportedConstructException ignored) {
             return   // body outside the path fragment → checkPath skipped the IH too; stay consistent
         }
         for (Path p : paths) {
             for (int i = 0; i < p.steps.size(); i++) {
                 Object step = p.steps.get(i)
-                if (step instanceof Assign && isSelfCall(((Assign) step).rhs, node)) {
-                    dischargeTermination(node, p.steps.subList(0, i), ((Assign) step).rhs, measureAst, reqAst)
+                Expression call = (step instanceof Assign) ? ((Assign) step).rhs :
+                                  (step instanceof LemmaCall) ? ((LemmaCall) step).call : null
+                if (call != null && isSelfCall(call, node)) {
+                    dischargeTermination(node, p.steps.subList(0, i), call, measureAst, reqAst)
                 }
             }
         }

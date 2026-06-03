@@ -21,6 +21,8 @@ import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
@@ -53,6 +55,13 @@ class ArrayStore {
     String arr
     Expression index
     Expression value
+}
+
+/** A standalone call statement on a path, used purely to inject the callee's {@code @Ensures} as a fact (a lemma). */
+@CompileStatic
+@TupleConstructor
+class LemmaCall {
+    Expression call
 }
 
 /**
@@ -99,7 +108,21 @@ class UnsupportedConstructException extends RuntimeException {
 class BodyEncoder {
 
     static List<Path> enumeratePaths(Statement body) {
-        WalkResult r = walkStatements(asList(body), [new Path()] as List<Path>, true)
+        enumeratePaths(body, false)
+    }
+
+    /**
+     * Enumerate execution paths. For a {@code voidMethod} there is no return position: every path
+     * may fall through to the end (its {@code result} stays null), and so no statement is in
+     * "tail/return" context. This is what lets a void lemma body — e.g. {@code if (i < j)
+     * lemma(...)} — be analysed and its {@code @Ensures} (over parameters) checked.
+     */
+    static List<Path> enumeratePaths(Statement body, boolean voidMethod) {
+        WalkResult r = walkStatements(asList(body), [new Path()] as List<Path>, !voidMethod)
+        if (voidMethod) {
+            r.terminated.addAll(r.live)   // fall-through is a valid endpoint (no result)
+            r.live.clear()
+        }
         if (!r.live.isEmpty()) {
             throw new UnsupportedConstructException(
                 "method may complete without returning a value on some path")
@@ -237,6 +260,20 @@ class BodyEncoder {
                 }
                 throw new UnsupportedConstructException(
                     "assignment to a non-variable target (line ${s.lineNumber})")
+            }
+
+            // A standalone (non-tail) call is a lemma-style fact injection; a tail call is the
+            // method's implicit return value.
+            if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) {
+                Path np = copy(prefix)
+                if (tail) {
+                    np.result = e
+                    res.terminated.add(np)
+                } else {
+                    np.steps.add(new LemmaCall(e))
+                    res.live.add(np)
+                }
+                return res
             }
 
             // A plain expression is only meaningful as the implicit return.

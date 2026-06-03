@@ -55,7 +55,8 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
 | **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
-| Standalone lemmas, in-place sort, unbounded quantifiers | — | ⏳ later |
+| **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
+| In-place sort, unbounded quantifiers, mutual recursion | — | ⏳ later |
 
 Example diagnostic:
 
