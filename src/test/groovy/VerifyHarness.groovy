@@ -256,6 +256,24 @@ class VerifyHarness {
                        }
                    }''')],
 
+        // ---------- Phase 9: existential quantifier (`any`) + precise membership ----------
+        // An assumed `any` (∃) carries across to the same claim (a positive ∃ goal from a ∃ premise).
+        [group: 'P9 any', name: 'element any assumed entails', ok: true,
+         src: tc('class C { @Requires({ a.any { it < 0 } }) @Ensures({ a.any { it < 0 } }) static int f(int[] a) { 0 } }')],
+        // Existential GOAL with a witness: the element at a valid index is in the array.
+        [group: 'P9 any', name: 'any proves membership at a valid index', ok: true,
+         src: tc('class C { @Requires({ 0 <= k && k < a.length }) @Ensures({ a.any { it == a[k] } }) static int f(int[] a, int k) { 0 } }')],
+        // Range form: `(0..<n).any { … }` is the same existential over indices.
+        [group: 'P9 any', name: 'range.any entails element any', ok: true,
+         src: tc('class C { @Requires({ (0..<a.length).any { a[it] < 0 } }) @Ensures({ a.any { it < 0 } }) static int f(int[] a) { 0 } }')],
+        // Not vacuous: with nothing assumed, an existential claim cannot be proved.
+        [group: 'P9 any', name: 'unproven any refuted', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ a.any { it < 0 } }) static int f(int[] a) { 0 } }')],
+        // `contains` is now precise (relates to actual contents): a[k] is contained for a valid k —
+        // the old opaque uninterpreted predicate could not prove this.
+        [group: 'P9 any', name: 'precise contains at a valid index', ok: true,
+         src: tc('class C { @Requires({ 0 <= k && k < a.length }) @Ensures({ a.contains(a[k]) }) static int f(int[] a, int k) { 0 } }')],
+
         // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------
         // No size accessor written (just a[i]) → the universal Groovy idiom .size(), valid for arrays too.
         [group: 'P9 diagnostics', name: 'implicit access defaults to .size()', expect: 'a.size()',

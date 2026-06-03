@@ -68,7 +68,6 @@ class Z3Session implements SmtSession {
     private final Solver solver
     private final Map<String, IntExpr> vars = [:]
     private final Map<String, BoolExpr> boolVars = [:]
-    private final Map<String, FuncDecl> preds = [:]
     private final Map<String, FuncDecl> funcs = [:]
     private final Map<String, ArrayExpr> arrays = [:]
 
@@ -93,16 +92,6 @@ class Z3Session implements SmtSession {
         BoolExpr v = (BoolExpr) ctx.mkBoolConst(name)
         boolVars.put(name, v)
         v
-    }
-
-    @Override
-    Object uninterpretedPred(String name, Object intArg) {
-        FuncDecl fd = preds.get(name)
-        if (fd == null) {
-            fd = ctx.mkFuncDecl(name, [ctx.getIntSort()] as Sort[], ctx.getBoolSort())
-            preds.put(name, fd)
-        }
-        ctx.mkApp(fd, (Expr) intArg)
     }
 
     @Override
@@ -140,16 +129,43 @@ class Z3Session implements SmtSession {
     @Override
     Object forall(List<Object> bound, Object body, List<Object> triggers) {
         Expr[] b = bound.collect { (Expr) it } as Expr[]
-        Pattern[] pats = null
-        if (triggers != null && !triggers.isEmpty()) {
-            // One pattern per trigger term (alternatives): seeing *any* select(arr, ·)
-            // ground term lets Z3 instantiate, which is more robust for matrices with
-            // several distinct selects (e.g. sortedness uses a[i] and a[i+1]) than a
-            // single conjunctive multi-pattern that requires all of them at once.
-            pats = triggers.collect { ctx.mkPattern((Expr) it) } as Pattern[]
-        }
         // weight 1, the given patterns, no no-patterns, no quantifier/skolem id.
-        ctx.mkForall(b, (Expr) body, 1, pats, (Expr[]) null, (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null)
+        ctx.mkForall(b, (Expr) body, 1, patternsFor(triggers, b), (Expr[]) null, (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null)
+    }
+
+    @Override
+    Object exists(List<Object> bound, Object body, List<Object> triggers) {
+        Expr[] b = bound.collect { (Expr) it } as Expr[]
+        ctx.mkExists(b, (Expr) body, 1, patternsFor(triggers, b), (Expr[]) null, (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null)
+    }
+
+    /**
+     * One pattern per trigger term that actually mentions a bound variable. Seeing *any* such
+     * {@code (select arr ·)} ground term lets Z3 instantiate — more robust for matrices with several
+     * selects (sortedness uses {@code a[i]} and {@code a[i+1]}) than one conjunctive multi-pattern.
+     * A trigger with no bound variable (e.g. the ground {@code a[k]} in {@code any { it == a[k] }})
+     * is degenerate — Z3 rejects/ignores it — so it is dropped; null when none remain (auto-pattern).
+     */
+    private Pattern[] patternsFor(List<Object> triggers, Expr[] bound) {
+        if (triggers == null || triggers.isEmpty()) return null
+        List<Pattern> pats = new ArrayList<Pattern>()
+        for (Object t : triggers) {
+            if (mentions((Expr) t, bound)) pats.add(ctx.mkPattern((Expr) t))
+        }
+        pats.isEmpty() ? null : (pats as Pattern[])
+    }
+
+    /** True if {@code term} contains any of the {@code vars} as a subterm. */
+    private static boolean mentions(Expr term, Expr[] vars) {
+        for (Expr v : vars) {
+            if (term.equals(v)) return true
+        }
+        if (term.isApp()) {
+            for (Expr a : term.getArgs()) {
+                if (mentions(a, vars)) return true
+            }
+        }
+        false
     }
 
     @Override Object intLit(long n) { ctx.mkInt(n) }

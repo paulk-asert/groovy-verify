@@ -204,14 +204,15 @@ Each is a small `Encoder` addition; the work was choosing the right encoding.
 - **`x == null` / `x != null`** — first-class nullity via the nullity oracle,
   detected at the comparison so `null` need not itself be a fragment value.
 - **`x.equals(y)`** for numeric types — the method form of `x == y`.
-- **`xs.contains(y)`** — modelled as an *uninterpreted predicate*
-  `contains$xs : Int -> Bool`. Sound, and `contains(y)` assumed entails
-  `contains(y)` proved, but with no membership reasoning until the quantifier
-  axioms of [Phase 6](#phase-6--quantifiers-shipped). It deliberately stops short of the
-  trigger cliff.
+- **`xs.contains(y)`** — originally an *uninterpreted predicate* `contains$xs : Int -> Bool`
+  (sound, `contains(y)` assumed entails `contains(y)` proved, but no membership reasoning).
+  **Upgraded in Phase 9** to precise membership `∃ i. 0 <= i < xs.size ∧ xs[i] == y` over the
+  modelled contents, once the existential `any` landed — so `contains` now relates to actual
+  element values.
 
-The seam grew two methods — `SmtBackend.boolVar` (nullity) and
-`uninterpretedPred` (contains) — both implemented once in `Z3Backend`.
+The seam grew `SmtBackend.boolVar` (nullity) here; `contains` first rode an
+`uninterpretedPred`, since removed when Phase 9 re-modelled it as a precise
+existential over the array contents.
 
 **Cross-boundary oracles (shipped).** Inside a unit these all work: a method's
 own `@Requires({ s != null })` is assumed when checking its body, and an
@@ -578,11 +579,23 @@ a.every { it >= 0 }                   // element-wise: `it` is the element
 These need no import and stay runtime-evaluable, so they also work inside `@Invariant` (retiring
 the `verification.Forall` FQN + typed-index warts the loop case forced). Recognition is
 shape-restricted — any other `every` falls through to a loud "outside fragment" skip, never
-silently reinterpreted. Still open: the existential `any`, and full retirement of the `Forall`
-helper (migrating its remaining internal uses); `Forall.range` still works for back-compat. If
-the contract-position restriction ever proves fragile, the documented fallback is an annotation
-surface (`@Forall`, with jqwik precedent) — unambiguous by construction, at the cost of reading
-less like an inline boolean.
+silently reinterpreted.
+
+The **existential `any` is now shipped** too — `a.any { it < 0 }`, `(lo..<hi).any { … }`,
+`xs.indices.any { … }` — lowered to a bounded `∃ i. lo <= i < hi ∧ body` (a shared
+`emitQuantifier` with `every`; `Z3Backend.exists` mirrors `forall`). It also **upgrades
+`xs.contains(y)` from the opaque Phase-4 uninterpreted predicate to precise membership** —
+`∃ i. xs[i] == y` over the modelled contents — so `contains` now relates to actual element
+values (e.g. `xs.contains(xs[k])` is provable for a valid `k`). Two notes from building it: (1)
+a bounded existential *goal* needs a ground witness term for Z3 to instantiate (e-matching won't
+invent one), which the natural specs supply; (2) a quantifier trigger must mention a bound
+variable — a body that indexes by a *different*, ground index (`any { it == a[k] }` → ground
+`a[k]`) was polluting the pattern, now filtered in `Z3Backend`. Authoring relies on
+GROOVY-12059 (nested closures in contract conditions, including `@Ensures`), in the ASF
+snapshot. Still open: full retirement of the `Forall` helper (migrating its remaining internal
+uses); `Forall.range` still works for back-compat. If the contract-position restriction ever
+proves fragile, the documented fallback is an annotation surface (`@Forall`, with jqwik
+precedent) — unambiguous by construction, at the cost of reading less like an inline boolean.
 
 **Why it waited.** Pinning diagnostic/authoring wording before the capability set settled
 (Phase 6 especially) would only have churned. With the surface now landed, the payoff is

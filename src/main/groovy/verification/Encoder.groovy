@@ -405,8 +405,8 @@ class Encoder {
         // actually write, mapped to the same bounded `forall`. Only the recognised
         // range/indices/collection shapes become quantifiers; any other `every` returns
         // null and falls through to a loud "outside fragment" skip.
-        if (m == 'every' && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
-            Object q = translateEvery(recv, (ClosureExpression) args.get(0))
+        if ((m == 'every' || m == 'any') && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
+            Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
         }
 
@@ -420,8 +420,15 @@ class Encoder {
                 return session.eq(sizeOf(rn), session.intLit(0L))
             }
             if (m == 'contains' && args.size() == 1) {
-                Object a = translate(args.get(0))
-                return a == null ? null : session.uninterpretedPred('contains$' + rn, a)
+                // Precise membership: ∃ i. 0 <= i < rn.size ∧ rn[i] == y, over the modelled contents
+                // (an upgrade from the old opaque uninterpreted predicate — `contains` now relates to
+                // actual element values, e.g. `xs.contains(xs[k])`).
+                Object y = translate(args.get(0))
+                if (y == null) return null
+                Object iv = session.boundIntVar('contains$q' + (quantCounter++))
+                Object sel = session.select(arrayFor(rn), iv)
+                Object range = session.and([session.le(session.intLit(0L), iv), session.lt(iv, sizeOf(rn))])
+                return session.exists([iv], session.and([range, session.eq(sel, y)]), [sel])
             }
         }
 
@@ -509,12 +516,12 @@ class Encoder {
      * These read like ordinary Groovy and stay runtime-evaluable, so the groovy-contracts check
      * still works. Returns null for any other receiver shape — a loud skip, never a silent pass.
      */
-    private Object translateEvery(Expression recv, ClosureExpression clo) {
+    private Object translateBoundedQuantifier(Expression recv, ClosureExpression clo, boolean existential) {
         String pname = closureParamName(clo)
         Expression bodyExpr = singleExprOf(clo?.code)
         if (pname == null || bodyExpr == null) return null
 
-        // (lo..<hi).every / (lo..hi).every  -> index over the range
+        // (lo..<hi).every|any / (lo..hi).every|any  -> index over the range
         if (recv instanceof RangeExpression) {
             RangeExpression re = (RangeExpression) recv
             Object loH = translate(re.from)
@@ -522,36 +529,42 @@ class Encoder {
             if (loH == null || hiH == null) return null
             // A `..` range is inclusive; normalise to the half-open [lo, hi) the encoder uses.
             if (re.inclusive) hiH = session.plus(hiH, session.intLit(1L))
-            return emitForall(pname, loH, hiH, bodyExpr, null)
+            return emitQuantifier(pname, loH, hiH, bodyExpr, null, existential)
         }
 
-        // xs.indices.every  -> index over [0, xs.size)
+        // xs.indices.every|any  -> index over [0, xs.size)
         if (recv instanceof PropertyExpression) {
             PropertyExpression pe = (PropertyExpression) recv
             if (pe.propertyAsString == 'indices' && pe.objectExpression instanceof VariableExpression) {
                 String xs = ((VariableExpression) pe.objectExpression).name
-                return emitForall(pname, session.intLit(0L), sizeOf(xs), bodyExpr, null)
+                return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, null, existential)
             }
             return null
         }
 
-        // xs.every { it … }  -> element over [0, xs.size); the parameter is the element xs[i]
+        // xs.every|any { it … }  -> element over [0, xs.size); the parameter is the element xs[i]
         if (recv instanceof VariableExpression) {
             String xs = ((VariableExpression) recv).name
-            return emitForall(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs))
+            return emitQuantifier(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs), existential)
         }
 
         return null
     }
 
-    /**
-     * Emit {@code ∀ i. (lo <= i < hi) ⇒ body}, binding the closure's parameter while the body
-     * translates — shadowing any same-named variable in scope, restored afterwards. When
-     * {@code elementArr} is non-null the parameter is an <em>element</em>, bound to
-     * {@code (select arr i)} (also recorded as the instantiation trigger); otherwise it is the
-     * index {@code i} itself, and the body's own {@code (select arr i)} terms become the triggers.
-     */
     private Object emitForall(String pname, Object loH, Object hiH, Expression bodyExpr, Object elementArr) {
+        emitQuantifier(pname, loH, hiH, bodyExpr, elementArr, false)
+    }
+
+    /**
+     * Emit a bounded quantifier over the closure's parameter, binding it while the body translates
+     * — shadowing any same-named variable in scope, restored afterwards. {@code existential=false}
+     * gives {@code ∀ i. (lo <= i < hi) ⇒ body}; {@code existential=true} gives
+     * {@code ∃ i. (lo <= i < hi) ∧ body}. When {@code elementArr} is non-null the parameter is an
+     * <em>element</em>, bound to {@code (select arr i)} (also the instantiation trigger); otherwise it
+     * is the index {@code i} and the body's own {@code (select arr i)} terms become the triggers.
+     */
+    private Object emitQuantifier(String pname, Object loH, Object hiH, Expression bodyExpr,
+                                  Object elementArr, boolean existential) {
         if (loH == null || hiH == null) return null
         Object iv = session.boundIntVar(pname + '$q' + (quantCounter++))
         List<Object> triggers = new ArrayList<Object>()
@@ -569,8 +582,10 @@ class Encoder {
             Object bodyH = translate(bodyExpr)
             if (bodyH == null) return null
             Object range = session.and([session.le(loH, iv), session.lt(iv, hiH)])
-            Object matrix = session.implies(range, bodyH)
-            return session.forall([iv], matrix, triggers)
+            if (existential) {
+                return session.exists([iv], session.and([range, bodyH]), triggers)
+            }
+            return session.forall([iv], session.implies(range, bodyH), triggers)
         } finally {
             triggerSink = prevSink
             if (prevBinding == null) env.remove(pname) else env.put(pname, prevBinding)

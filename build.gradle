@@ -47,12 +47,11 @@ tasks.named('rat') {
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 
-// Everything this project needs from Groovy 6.0.0-SNAPSHOT is now on the ASF
-// snapshot repo: static @Ensures support, the groovy-contracts fix allowing a
-// parameterised closure ({ i -> ... }) nested inside a contract (the Phase 6
-// Forall.range quantifier syntax), and method-level @Decreases (GROOVY-12060).
-// So the build is self-contained — no patched, hand-built Groovy in mavenLocal.
-// (A Groovy core dev testing a *local* patch can add mavenLocal() above these.)
+// Everything this project needs from Groovy 6.0.0-SNAPSHOT is on the ASF snapshot repo:
+// static @Ensures, method-level @Decreases (GROOVY-12060), and nested closures in
+// contract conditions including @Ensures (GROOVY-12059) — the last enables the `any` /
+// membership existential surface. So the build is self-contained: no hand-built Groovy
+// in mavenLocal. (A Groovy core dev testing a *local* patch can add mavenLocal() above.)
 repositories {
     mavenCentral()
     maven { url = 'https://repository.apache.org/content/repositories/snapshots' }

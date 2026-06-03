@@ -49,16 +49,6 @@ interface SmtSession extends AutoCloseable {
     Object boolVar(String name)
 
     /**
-     * Apply a named uninterpreted predicate {@code Int -> Bool} to an integer
-     * argument, declaring the predicate on first use. Two applications of the
-     * same {@code name} within a session share one declaration, so
-     * {@code p(x)} assumed entails {@code p(x)} proved. This is how
-     * {@code xs.contains(y)} is modelled without committing to the quantifier
-     * theory a full membership axiom would need (see roadmap Phase 5).
-     */
-    Object uninterpretedPred(String name, Object intArg)
-
-    /**
      * Apply a named uninterpreted integer function {@code Int^n -> Int} to its
      * arguments, declaring it on first use; two applications of the same
      * {@code name}/arity share one declaration. This is the "bottom" of bounded
@@ -103,6 +93,13 @@ interface SmtSession extends AutoCloseable {
      * predictably; see the trigger-cliff risk in the roadmap.
      */
     Object forall(List<Object> bound, Object body, List<Object> triggers)
+
+    /**
+     * Existentially quantify {@code body} over {@code bound} — the mirror of {@link #forall},
+     * for the bounded-existential shape {@code ∃ i. lo <= i < hi ∧ matrix} (e.g. {@code a.any { … }},
+     * and precise {@code xs.contains(y)}). {@code triggers} are the instantiation patterns.
+     */
+    Object exists(List<Object> bound, Object body, List<Object> triggers)
 
     /** Build expressions. Args are handles previously returned by this session. */
     Object intLit(long n)
