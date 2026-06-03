@@ -280,6 +280,11 @@ class Encoder {
             PropertyExpression pe = (PropertyExpression) expr
             String prop = pe.propertyAsString
             Expression obj = pe.objectExpression
+            // old.field -> the field's *entry* snapshot variable (groovy-contracts' `old` map). The
+            // snapshot is pinned to the entry value before the body's writes (see VerifyChecker).
+            if (isOldReceiver(obj)) {
+                return varFor('old$' + prop)
+            }
             // this.field -> the field's state variable (instance-field support). The bare-name form
             // `field` is already a VariableExpression -> varFor(field), so both spellings unify.
             if (isThisReceiver(obj)) {
@@ -343,9 +348,17 @@ class Encoder {
 
         // Array subscript a[i] -> (select a i). The element value, modelled under
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
+        // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
         if (op == Types.LEFT_SQUARE_BRACKET) {
-            if (!(be.leftExpression instanceof VariableExpression)) return null
-            Object arr = arrayFor(((VariableExpression) be.leftExpression).name)
+            Object arr
+            if (be.leftExpression instanceof VariableExpression) {
+                arr = arrayFor(((VariableExpression) be.leftExpression).name)
+            } else if (be.leftExpression instanceof PropertyExpression &&
+                       isOldReceiver(((PropertyExpression) be.leftExpression).objectExpression)) {
+                arr = arrayFor('old$' + ((PropertyExpression) be.leftExpression).propertyAsString)
+            } else {
+                return null
+            }
             Object idx = translate(be.rightExpression)
             if (idx == null) return null
             Object sel = session.select(arr, idx)
@@ -600,6 +613,11 @@ class Encoder {
     /** True if {@code e} is the {@code this} receiver of an instance-field access. */
     private static boolean isThisReceiver(Expression e) {
         e instanceof VariableExpression && ((VariableExpression) e).name == 'this'
+    }
+
+    /** True if {@code e} is the {@code old} map of a postcondition ({@code old.field}). */
+    static boolean isOldReceiver(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == 'old'
     }
 
     /** The closure's single parameter name, or Groovy's implicit {@code it}; null if it has several. */

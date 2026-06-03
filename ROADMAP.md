@@ -628,8 +628,32 @@ the entry/exit distinction made visible). Framing within a single method is triv
 fields are unchanged); the receiver's fields are assumed unaliased, the same boundary arrays draw.
 
 **Not yet:** class-level `@Invariant` (object invariants — assume on entry, prove on exit; its own
-capture infrastructure); array/collection-typed fields; `old` for field pre-state; and
-*cross-method* field effects, which is the `@Modifies`/framing slice.
+capture infrastructure) and *cross-method* field effects, which is the `@Modifies`/framing slice.
+(Array-typed fields work already — `a[j] = v` on a field threads through `arrayFor` like a param.)
+
+---
+
+## Phase 11 — Pre-state: `old`  *(shipped)*
+
+A postcondition can now relate the *exit* state to the *entry* state via groovy-contracts' `old`
+map. `old.field` reads the field's value at method entry; `old.a[i]` reaches into the entry
+*contents* of an array field. The verifier captures the snapshot in `checkPath` *before* the body's
+writes SSA-rebind state forward, binding `old$field` to the entry value (scalar and array views
+both pinned). `@Ensures({ count == old.count + 1 })` verifies for `count = count + 1`, and the
+mismatched `count = count + 2` refutes.
+
+This is the keystone the framing/permutation arc needed. The headline is the **element frame**:
+a setter that writes only `a[j]` proves every other element is left alone —
+`@Ensures({ (0..<a.length).every { it == j || a[it] == old.a[it] } })` — which is exactly the
+shape `@Modifies` will lean on so that sound array-havoc-on-call doesn't lose the elements a callee
+didn't touch (the gap that would otherwise break the recursive insertion sort).
+
+`old` is instance-only upstream (GROOVY-12052: it snapshots instance state, unsupported in static
+methods), so it builds on the Phase 10 field support. It is fully dual-purpose: groovy-contracts
+*clones* `Cloneable` fields for the runtime `old` map, and arrays are `Cloneable`, so for `int[]`
+the runtime snapshot matches the verifier's entry-snapshot model. **Not yet:** `old` over a
+multiset/`count` (the permutation step), and `old` of method *parameters* (upstream models only
+fields).
 
 ---
 

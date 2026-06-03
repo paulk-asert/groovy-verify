@@ -65,7 +65,8 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
 | **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
 | **Instance methods & field state (read + write)** | `this.count`, `count = count + 1` | ✅ Phase 10 |
-| Sort *permutation* (multiset + `old`), `@Modifies` framing, class `@Invariant`, 32-bit overflow | — | ⏳ later |
+| **Pre-state `old` (field & array-content snapshots)** | `old.count`, `old.a[i]` in `@Ensures` | ✅ Phase 11 |
+| Sort *permutation* (multiset), `@Modifies` framing, class `@Invariant`, 32-bit overflow | — | ⏳ later |
 
 ## Examples
 
@@ -172,6 +173,12 @@ class Counter {
     void increment() { count = count + 1 }
 }
 ```
+
+A postcondition can relate the *exit* state to the *entry* state with `old` — `@Ensures({ count
+== old.count + 1 })` — and `old` reaches into array contents too, which is how a method frames what
+it leaves alone: a setter that touches only `a[j]` proves every other element is unchanged,
+`@Ensures({ (0..<a.length).every { it == j || a[it] == old.a[it] } })` (groovy-contracts clones the
+field for `old`, so this holds at runtime as well as in the proof).
 
 **Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker

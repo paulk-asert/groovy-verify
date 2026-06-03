@@ -314,6 +314,31 @@ class VerifyHarness {
                        void inc() { this.count = this.count + 1 }
                    }''')],
 
+        // ---------- Phase 11: old(...) pre-state — relate the result to the method's entry state ----------
+        // Scalar field delta: the exit count is the entry count plus one.
+        [group: 'P11 old', name: 'field delta vs old', ok: true,
+         src: tc('''class C {
+                       int count
+                       @Ensures({ count == old.count + 1 })
+                       void inc() { count = count + 1 }
+                   }''')],
+        // Soundness: a body that doesn't match the old-delta is refuted.
+        [group: 'P11 old', name: 'wrong old delta refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       int count
+                       @Ensures({ count == old.count + 1 })
+                       void inc() { count = count + 2 }
+                   }''')],
+        // Array element FRAME (the @Modifies enabler): a setter changes only a[j]; every other
+        // element equals its old value. `old.a[it]` is the entry snapshot of the array's contents.
+        [group: 'P11 old', name: 'array element frame via old', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= j && j < a.length })
+                       @Ensures({ (0..<a.length).every { it == j || a[it] == old.a[it] } })
+                       void set(int j, int v) { a[j] = v }
+                   }''')],
+
         // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------
         // No size accessor written (just a[i]) → the universal Groovy idiom .size(), valid for arrays too.
         [group: 'P9 diagnostics', name: 'implicit access defaults to .size()', expect: 'a.size()',

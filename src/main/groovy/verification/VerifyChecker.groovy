@@ -296,6 +296,24 @@ class VerifyChecker extends TypeCheckingExtension {
         true
     }
 
+    /** Field names referenced via {@code old.field} in a postcondition (groovy-contracts' old map). */
+    private static Set<String> oldFieldNames(Expression e) {
+        Set<String> names = new HashSet<String>()
+        if (e == null) return names
+        try {
+            e.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitPropertyExpression(PropertyExpression pe) {
+                    if (Encoder.isOldReceiver(pe.objectExpression)) names.add(pe.propertyAsString)
+                    super.visitPropertyExpression(pe)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        names
+    }
+
     VerifyChecker(StaticTypeCheckingVisitor visitor) {
         super(visitor)
     }
@@ -893,6 +911,14 @@ class VerifyChecker extends TypeCheckingExtension {
                         "precondition '${reqAst.text}' is outside fragment")
                 }
                 session.assertExpr(pre)
+            }
+
+            // old(...) snapshots: pin each `old.field` referenced by @Ensures to the field's value
+            // *now* (method entry), before the body's writes SSA-rebind it forward. Both the scalar
+            // (old$f) and array (old$f contents) views are pinned; the unused one is harmless.
+            for (String fld : oldFieldNames(postAst)) {
+                enc.bind('old$' + fld, enc.varFor(fld))
+                enc.bindArray('old$' + fld, enc.arrayFor(fld))
             }
 
             for (Object step : p.steps) {
