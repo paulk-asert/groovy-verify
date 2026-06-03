@@ -283,6 +283,56 @@ class VerifyHarness {
                        }
                    }''')],
 
+        // ---------- Phase 7 (induction): recursion via @Decreases + self-IH ----------
+        // The canonical inductive proof: assume sumUp's @Ensures at the recursive call (IH),
+        // prove it for this call; @Decreases({ n }) discharges termination (n - 1 < n, >= 0).
+        [group: 'P7 induction', name: 'recursive sumUp verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result >= n })
+                       @Decreases({ n })
+                       static int sumUp(int n) {
+                           if (n == 0) return 0
+                           int r = sumUp(n - 1)
+                           return r + n
+                       }
+                   }''')],
+        // Recurses on the same n: the measure does not decrease → termination refuted.
+        [group: 'P7 induction', name: 'non-decreasing recursion refuted', expect: 'recursion measure',
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result >= n })
+                       @Decreases({ n })
+                       static int bad(int n) {
+                           if (n == 0) return 0
+                           int r = bad(n)
+                           return r + n
+                       }
+                   }''')],
+        // The inductive hypothesis isn't strong enough for a strict postcondition (fails at n == 0).
+        [group: 'P7 induction', name: 'too-strong postcondition refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result > n })
+                       @Decreases({ n })
+                       static int sumUp(int n) {
+                           if (n == 0) return 0
+                           int r = sumUp(n - 1)
+                           return r + n
+                       }
+                   }''')],
+        // Without @Decreases the self-IH is disabled — the recursive result is opaque → skipped.
+        [group: 'P7 induction', name: 'recursion without measure skipped', expect: 'Skipped verification of postcondition',
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result >= n })
+                       static int sumUp(int n) {
+                           if (n == 0) return 0
+                           int r = sumUp(n - 1)
+                           return r + n
+                       }
+                   }''')],
+
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',
          src: HDR + PRODUCER + tc('class C { static int go() { P.sq(-1) } }')],
