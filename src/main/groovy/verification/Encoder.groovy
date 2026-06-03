@@ -16,6 +16,8 @@
 package verification
 
 import groovy.transform.CompileStatic
+import org.apache.groovy.ast.tools.ExpressionUtils
+import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
@@ -26,6 +28,7 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
@@ -87,8 +90,12 @@ class Encoder {
     /** Counter for minting unique bound-variable names across nested/multiple quantifiers. */
     private int quantCounter = 0
 
-    Encoder(SmtSession session) {
+    /** Optional closed pure-function evaluator (Phase 8a); null disables it. */
+    private final PureEvaluator pureEvaluator
+
+    Encoder(SmtSession session, PureEvaluator pureEvaluator = null) {
         this.session = session
+        this.pureEvaluator = pureEvaluator
     }
 
     /**
@@ -266,7 +273,14 @@ class Encoder {
         }
 
         if (expr instanceof MethodCallExpression) {
-            return translateMethodCall((MethodCallExpression) expr)
+            Object r = translateMethodCall((MethodCallExpression) expr)
+            return r != null ? r : tryPureEval(expr)
+        }
+
+        // Phase 8a — a resolved static call (e.g. `C.factorial(5)`) only reaches the verifier
+        // already in this form; try evaluating it as a closed pure-function call.
+        if (expr instanceof StaticMethodCallExpression) {
+            return tryPureEval(expr)
         }
 
         if (expr instanceof BinaryExpression) {
@@ -277,7 +291,34 @@ class Encoder {
         return null
     }
 
+    /**
+     * Attempt to reduce a closed (constant) expression to an SMT literal via Groovy's own
+     * constant folder ({@link ExpressionUtils#transformInlineConstants}), so the integer
+     * arithmetic matches Groovy's semantics. Returns null if it doesn't fold to an integral
+     * or boolean constant (the same value shapes {@link #translate} accepts as literals).
+     */
+    private Object tryFoldConstant(Expression e) {
+        Expression folded = ExpressionUtils.transformInlineConstants(e, ClassHelper.int_TYPE)
+        if (folded instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) folded).value
+            if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) {
+                return session.intLit(((Number) v).longValue())
+            }
+            if (v instanceof Boolean) {
+                return session.boolLit((Boolean) v)
+            }
+        }
+        return null
+    }
+
     private Object translateBinary(BinaryExpression be) {
+        // Phase 8a — normalise-then-SMT: fold a closed numeric subexpression to a
+        // literal before encoding. This dissolves the NIA opt-out for *constant*
+        // products (e.g. `(2 + 2) * (2 + 2)`), which would otherwise be skipped.
+        // Reuses Groovy's own constant folder, so the arithmetic semantics match.
+        Object folded = tryFoldConstant(be)
+        if (folded != null) return folded
+
         int op = be.operation.type
 
         // Array subscript a[i] -> (select a i). The element value, modelled under
@@ -368,6 +409,16 @@ class Encoder {
         }
 
         return null
+    }
+
+    /**
+     * Phase 8a — closed pure-function evaluation: if {@code e} is a same-class call with all-constant
+     * arguments, compute it to a literal (e.g. {@code pow2(10)} → 1024); else null.
+     */
+    private Object tryPureEval(Expression e) {
+        if (pureEvaluator == null) return null
+        Long v = pureEvaluator.tryEvaluate(e)
+        return v != null ? session.intLit(v) : null
     }
 
     /**

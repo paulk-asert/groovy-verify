@@ -56,7 +56,9 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
 | **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
 | **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
-| In-place sort, unbounded quantifiers, mutual recursion | — | ⏳ later |
+| **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
+| **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
+| Symbolic unfolding, in-place sort, unbounded quantifiers | — | ⏳ later |
 
 Example diagnostic:
 

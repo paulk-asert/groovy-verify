@@ -379,6 +379,41 @@ class VerifyHarness {
                        }
                    }''')],
 
+        // ---------- Phase 8a (normalise-then-SMT): closed-constant folding ----------
+        // (2 + 2) * (2 + 2): both operands are compound (non-literal), so the NIA opt-out would
+        // skip it; constant folding reduces it to 16 and the postcondition verifies.
+        [group: 'P8a folding', name: 'closed nonlinear product verified', ok: true,
+         src: tc('class C { @Ensures({ result == (2 + 2) * (2 + 2) }) static int f() { 16 } }')],
+        // Same fold, wrong answer → refuted (folding is correct, not vacuous).
+        [group: 'P8a folding', name: 'closed product wrong value refuted', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ result == (2 + 2) * (2 + 2) }) static int f() { 15 } }')],
+        // Folded constant used as an array index: a[(1 + 1) * 2] needs index 4 in bounds.
+        [group: 'P8a folding', name: 'folded index in bounds verified', ok: true,
+         src: tc('class C { @Requires({ a.length > 4 }) static int g(int[] a) { a[(1 + 1) * 2] } }')],
+
+        // ---------- Phase 8a (pure-function evaluation): closed calls computed to literals ----------
+        // A recursive pure function applied to a constant in a contract is evaluated: pow2(10) = 1024.
+        [group: 'P8a eval', name: 'closed recursive call in contract verified', ok: true,
+         src: tc('''class C {
+                       static int pow2(int n) { n == 0 ? 1 : 2 * pow2(n - 1) }
+                       @Ensures({ result == pow2(10) })
+                       static int f() { 1024 }
+                   }''')],
+        // Pure function call in the body (implicit return), evaluated to 120.
+        [group: 'P8a eval', name: 'closed call in body verified', ok: true,
+         src: tc('''class C {
+                       static int factorial(int n) { n <= 1 ? 1 : n * factorial(n - 1) }
+                       @Ensures({ result == 120 })
+                       static int f() { factorial(5) }
+                   }''')],
+        // Evaluation is correct, not vacuous: a wrong expected value is refuted.
+        [group: 'P8a eval', name: 'wrong evaluated value refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       static int pow2(int n) { n == 0 ? 1 : 2 * pow2(n - 1) }
+                       @Ensures({ result == pow2(10) })
+                       static int f() { 1000 }
+                   }''')],
+
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',
          src: HDR + PRODUCER + tc('class C { static int go() { P.sq(-1) } }')],

@@ -91,6 +91,13 @@ class VerifyChecker extends TypeCheckingExtension {
     private PathFacts currentFacts
     /** The method currently being type-checked; its own @Requires is a given at any call site in its body. */
     private MethodNode currentMethod
+    /** Closed pure-function evaluator over the current class (Phase 8a); null when no class context. */
+    private PureEvaluator currentEvaluator
+
+    /** New Encoder wired with the current class's pure-function evaluator. */
+    private Encoder mkEncoder(SmtSession session) {
+        new Encoder(session, currentEvaluator)
+    }
 
     VerifyChecker(StaticTypeCheckingVisitor visitor) {
         super(visitor)
@@ -105,6 +112,7 @@ class VerifyChecker extends TypeCheckingExtension {
     boolean beforeVisitMethod(MethodNode node) {
         currentFacts = new PathFacts()
         currentMethod = node
+        currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
         if (node.code != null) {
             try {
                 node.code.visit(currentFacts)
@@ -157,6 +165,7 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally {
             currentFacts = null
             currentMethod = null
+            currentEvaluator = null
         }
     }
 
@@ -328,7 +337,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void dischargeVfObligation(MethodNode node, VfObligation v, Expression reqAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             if (reqAst != null) {
                 Object pre = enc.translate(reqAst)
                 if (pre != null) s.assertExpr(pre)
@@ -365,7 +374,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void dischargeIndex(IndexSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             assumeContext(s, enc, reqAst, site.node, pf)
             dischargeObligationUnder(s, enc, site)
         } finally {
@@ -376,7 +385,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void dischargeDivide(DivideSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             assumeContext(s, enc, reqAst, site.node, pf)
             dischargeObligationUnder(s, enc, site)
         } finally {
@@ -387,7 +396,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void dischargeDeref(DerefSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             assumeContext(s, enc, reqAst, site.node, pf)
             dischargeObligationUnder(s, enc, site)
         } finally {
@@ -496,7 +505,7 @@ class VerifyChecker extends TypeCheckingExtension {
                                  List<Statement> preceding) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             if (reqAst != null) {
                 Object p = enc.translate(reqAst)
                 if (p != null) s.assertExpr(p)
@@ -635,7 +644,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst) {
         SmtSession session = backend.session()
         try {
-            Encoder enc = new Encoder(session)
+            Encoder enc = mkEncoder(session)
 
             if (reqAst != null) {
                 Object pre = enc.translate(reqAst)
@@ -796,7 +805,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void checkEstablishment(MethodNode node, LoopSite site, Expression reqAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             LoopEncoder.symExec(site.prefix, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
@@ -812,7 +821,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void checkPreservation(MethodNode node, LoopSite site) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
             LoopEncoder.symExec(site.spec.body, enc, s)
@@ -830,7 +839,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void checkProgress(MethodNode node, LoopSite site) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
             Object oldV = LoopEncoder.tr(enc, site.spec.variant, "variant")
@@ -849,7 +858,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private void checkUse(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
@@ -921,7 +930,7 @@ class VerifyChecker extends TypeCheckingExtension {
 
         SmtSession session = backend.session()
         try {
-            Encoder enc = new Encoder(session)
+            Encoder enc = mkEncoder(session)
 
             // 1. Translate each actual-argument expression into an SMT
             //    handle, sharing the encoder's env so a free variable
@@ -1101,7 +1110,7 @@ class VerifyChecker extends TypeCheckingExtension {
                                       Expression measureAst, Expression reqAst) {
         SmtSession s = backend.session()
         try {
-            Encoder enc = new Encoder(s)
+            Encoder enc = mkEncoder(s)
             if (reqAst != null) {
                 Object pre = enc.translate(reqAst)
                 if (pre != null) s.assertExpr(pre)

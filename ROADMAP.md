@@ -469,16 +469,34 @@ paper proof language, already ships an interpreter, so this is unusually cheap
 to reach. A normalisation pre-pass slots in exactly where `Encoder.translate`
 currently returns `null`:
 
-- **Constant folding (closed sub-terms).** A contract sub-expression with no
-  free variables — `2 * 2048`, `pow2(12)` over a constant — is evaluated to a
-  value instead of being sent to Z3 or rejected. This directly dissolves part of
-  the **NIA opt-out**: `a * b` with both sides constant needs arithmetic, not
-  nonlinear reasoning.
-- **Bounded symbolic unfolding (partial reduction).** Unfold a *pure,
-  terminating* user method a fixed number of times against symbolic arguments,
-  then hand the residual to Z3 — the analog of F\*'s `fuel`/`ifuel` dial. This is
-  what would let contracts mention user-defined functions, which are strictly
-  "outside fragment" today.
+- **Constant folding (closed sub-terms) — shipped.** A closed numeric
+  sub-expression — `(2 + 2) * (2 + 2)`, a folded array index `a[(1 + 1) * 2]` — is
+  reduced to a literal before encoding (`Encoder.tryFoldConstant`), dissolving the
+  **NIA opt-out** for *constant* products that would otherwise be skipped. It
+  reuses Groovy's own `ExpressionUtils.transformInlineConstants` (`NumberMath`
+  semantics), so the fold matches Groovy's arithmetic and adds no new integer
+  model — it stays consistent with the encoder's mathematical-`Int` view (the
+  runtime-overflow gap is the separate bounded-int item). It is purely an
+  accelerator: folding never produces a counterexample, so a wrong constant still
+  refutes on the SMT side (tested).
+- **Closed pure-function evaluation — shipped.** A small tree-walking interpreter
+  (`PureEvaluator`) computes a *same-class, side-effect-free* function applied to
+  *constant* arguments to a literal — `pow2(10)` → 1024, `factorial(5)` → 120 —
+  whether the call appears in a contract or a body. It evaluates the *clean*
+  CONVERSION body over the evaluable fragment (literals, parameters, `+ - * %`,
+  comparisons, boolean connectives, `?:`/`if`/`return`, single-assignment locals,
+  same-class recursive/static calls); anything else makes the call un-evaluable, so
+  the verifier falls back to "skipped" — it never guesses. Purity is the
+  conservative "body lies entirely in the fragment" proxy (no representable side
+  effects); a step budget bounds non-terminating recursion; it computes with
+  `long`, matching the encoder's mathematical-integer model (so it adds no new
+  soundness gap beyond the existing bounded-int one). It's an accelerator — a
+  wrong expected value still refutes on the SMT side (tested).
+- **Bounded symbolic unfolding — next.** Partially unfold a pure function against
+  *symbolic* arguments up to a `fuel` bound (F\*'s `fuel`/`ifuel`), handing the
+  residual to Z3, so `pow2(n)` reduces against a symbolic `n`. Termination reuses
+  the method-level `@Decreases` (Phase 7). This is the larger remaining half; the
+  closed evaluation above is the shipped, sound first cut.
 
 The clean architecture is **normalise-then-SMT**: evaluate what you can, send the
 residual to the solver. One asymmetry to state plainly — normalisation helps only
