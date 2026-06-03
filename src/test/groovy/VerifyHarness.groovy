@@ -205,6 +205,57 @@ class VerifyHarness {
                        static int diff(int[] a, int k) { a[k] - a[k + 1] }
                    }''')],
 
+        // ---------- Phase 9: native GDK quantifier idioms (same universal, no Forall helper) ----------
+        // (lo..<hi).every — a bounded IntRange + every, the form a Groovy dev would actually write.
+        [group: 'P9 native quantifiers', name: 'range.every (exclusive) entails instance', ok: true,
+         src: tc('''class C {
+                       @Requires({ (0..<a.length).every { a[it] >= 0 } && 0 <= k && k < a.length })
+                       @Ensures({ result >= 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // xs.indices.every — the array's own index range.
+        [group: 'P9 native quantifiers', name: 'indices.every entails instance', ok: true,
+         src: tc('''class C {
+                       @Requires({ a.indices.every { a[it] >= 0 } && 0 <= k && k < a.length })
+                       @Ensures({ result >= 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // xs.every { it … } — element-wise: `it` is the element a[i], not the index.
+        [group: 'P9 native quantifiers', name: 'collection.every (element-wise) entails instance', ok: true,
+         src: tc('''class C {
+                       @Requires({ a.every { it >= 0 } && 0 <= k && k < a.length })
+                       @Ensures({ result >= 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // (lo..hi).every — inclusive range normalised to the half-open [lo, hi+1).
+        [group: 'P9 native quantifiers', name: 'range.every (inclusive) covers last index', ok: true,
+         src: tc('''class C {
+                       @Requires({ (0..a.length - 1).every { a[it] >= 0 } && 0 <= k && k < a.length })
+                       @Ensures({ result >= 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // The element idiom is a faithful universal, not vacuous: >= 0 does not give > 0 → refuted.
+        [group: 'P9 native quantifiers', name: 'element-wise idiom is not vacuous', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ a.every { it >= 0 } && 0 <= k && k < a.length })
+                       @Ensures({ result > 0 })
+                       static int get(int[] a, int k) { a[k] }
+                   }''')],
+        // The native idiom works in @Invariant too — no `verification.Forall.range` FQN, no typed
+        // index param: the same zero-fill proof the Forall helper needed warts for, written plainly.
+        [group: 'P9 native quantifiers', name: 'range.every in @Invariant (zero-fill)', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n <= a.length })
+                       @Ensures({ (0..<n).every { a[it] == 0 } })
+                       static int zero(int[] a, int n) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n && (0..<i).every { a[it] == 0 } })
+                           @Decreases({ n - i })
+                           while (i < n) { a[i] = 0; i = i + 1 }
+                           return 0
+                       }
+                   }''')],
+
         // ---------- Phase 6: array update (store) ----------
         // After a[k] = v, reading a[k] yields v — postcondition about the produced array.
         [group: 'P6 store', name: 'post-store element verified', ok: true,

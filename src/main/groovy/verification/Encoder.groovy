@@ -28,6 +28,7 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
@@ -400,6 +401,15 @@ class Encoder {
             return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
         }
 
+        // Native GDK quantifier idioms (Phase 9) — the universal a Groovy developer would
+        // actually write, mapped to the same bounded `forall`. Only the recognised
+        // range/indices/collection shapes become quantifiers; any other `every` returns
+        // null and falls through to a loud "outside fragment" skip.
+        if (m == 'every' && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
+            Object q = translateEvery(recv, (ClosureExpression) args.get(0))
+            if (q != null) return q
+        }
+
         // size() / isEmpty() / contains() need a named receiver for their oracle.
         if (!mce.implicitThis && recv instanceof VariableExpression) {
             String rn = ((VariableExpression) recv).name
@@ -482,35 +492,98 @@ class Encoder {
      * the quantifier's instantiation triggers.
      */
     private Object translateForallRange(Expression lo, Expression hi, ClosureExpression clo) {
-        // Index variable: the closure's single declared parameter (`{ i -> ... }`)
-        // or Groovy's implicit `it` (`{ a[it] >= 0 }`, whose parameter list is
-        // null or empty depending on parse phase).
-        Parameter[] ps = clo.parameters
-        String iname
-        if (ps == null || ps.length == 0) iname = 'it'
-        else if (ps.length == 1) iname = ps[0].name
-        else return null
-        Expression bodyExpr = singleExprOf(clo.code)
-        if (bodyExpr == null) return null
+        String pname = closureParamName(clo)
+        Expression bodyExpr = singleExprOf(clo?.code)
+        if (pname == null || bodyExpr == null) return null
+        return emitForall(pname, translate(lo), translate(hi), bodyExpr, null)
+    }
 
-        Object iv = session.boundIntVar(iname + '$q' + (quantCounter++))
-        Object prevBinding = env.get(iname)
-        List<Object> prevSink = triggerSink
+    /**
+     * Native GDK quantifier idioms (Phase 9), each a bounded universal:
+     * <ul>
+     *   <li>{@code (lo..<hi).every { … }} / {@code (lo..hi).every { … }} — over the index range;</li>
+     *   <li>{@code xs.indices.every { … }} — over {@code [0, xs.size)};</li>
+     *   <li>{@code xs.every { it … }} — over the <em>elements</em>: the closure parameter is
+     *       {@code (select xs i)}, the universal ranging {@code i} over {@code [0, xs.size)}.</li>
+     * </ul>
+     * These read like ordinary Groovy and stay runtime-evaluable, so the groovy-contracts check
+     * still works. Returns null for any other receiver shape — a loud skip, never a silent pass.
+     */
+    private Object translateEvery(Expression recv, ClosureExpression clo) {
+        String pname = closureParamName(clo)
+        Expression bodyExpr = singleExprOf(clo?.code)
+        if (pname == null || bodyExpr == null) return null
+
+        // (lo..<hi).every / (lo..hi).every  -> index over the range
+        if (recv instanceof RangeExpression) {
+            RangeExpression re = (RangeExpression) recv
+            Object loH = translate(re.from)
+            Object hiH = translate(re.to)
+            if (loH == null || hiH == null) return null
+            // A `..` range is inclusive; normalise to the half-open [lo, hi) the encoder uses.
+            if (re.inclusive) hiH = session.plus(hiH, session.intLit(1L))
+            return emitForall(pname, loH, hiH, bodyExpr, null)
+        }
+
+        // xs.indices.every  -> index over [0, xs.size)
+        if (recv instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) recv
+            if (pe.propertyAsString == 'indices' && pe.objectExpression instanceof VariableExpression) {
+                String xs = ((VariableExpression) pe.objectExpression).name
+                return emitForall(pname, session.intLit(0L), sizeOf(xs), bodyExpr, null)
+            }
+            return null
+        }
+
+        // xs.every { it … }  -> element over [0, xs.size); the parameter is the element xs[i]
+        if (recv instanceof VariableExpression) {
+            String xs = ((VariableExpression) recv).name
+            return emitForall(pname, session.intLit(0L), sizeOf(xs), bodyExpr, arrayFor(xs))
+        }
+
+        return null
+    }
+
+    /**
+     * Emit {@code ∀ i. (lo <= i < hi) ⇒ body}, binding the closure's parameter while the body
+     * translates — shadowing any same-named variable in scope, restored afterwards. When
+     * {@code elementArr} is non-null the parameter is an <em>element</em>, bound to
+     * {@code (select arr i)} (also recorded as the instantiation trigger); otherwise it is the
+     * index {@code i} itself, and the body's own {@code (select arr i)} terms become the triggers.
+     */
+    private Object emitForall(String pname, Object loH, Object hiH, Expression bodyExpr, Object elementArr) {
+        if (loH == null || hiH == null) return null
+        Object iv = session.boundIntVar(pname + '$q' + (quantCounter++))
         List<Object> triggers = new ArrayList<Object>()
-        env.put(iname, iv)
+        Object binding = iv
+        if (elementArr != null) {
+            Object sel = session.select(elementArr, iv)
+            triggers.add(sel)
+            binding = sel
+        }
+        Object prevBinding = env.get(pname)
+        List<Object> prevSink = triggerSink
+        env.put(pname, binding)
         triggerSink = triggers
         try {
-            Object loH = translate(lo)
-            Object hiH = translate(hi)
             Object bodyH = translate(bodyExpr)
-            if (loH == null || hiH == null || bodyH == null) return null
+            if (bodyH == null) return null
             Object range = session.and([session.le(loH, iv), session.lt(iv, hiH)])
             Object matrix = session.implies(range, bodyH)
             return session.forall([iv], matrix, triggers)
         } finally {
             triggerSink = prevSink
-            if (prevBinding == null) env.remove(iname) else env.put(iname, prevBinding)
+            if (prevBinding == null) env.remove(pname) else env.put(pname, prevBinding)
         }
+    }
+
+    /** The closure's single parameter name, or Groovy's implicit {@code it}; null if it has several. */
+    private static String closureParamName(ClosureExpression clo) {
+        if (clo == null) return null
+        Parameter[] ps = clo.parameters
+        if (ps == null || ps.length == 0) return 'it'
+        if (ps.length == 1) return ps[0].name
+        return null
     }
 
     /** The single expression a closure/contract body reduces to, or null if it isn't a lone expression. */

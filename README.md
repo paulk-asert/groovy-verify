@@ -51,6 +51,7 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Value-flow: safety implied by an assignment** | *(implicit)* | ✅ Phase 5 |
 | **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
 | **Bounded-universal quantifiers over arrays** | `Forall.range(lo, hi) { … a[it] … }` | ✅ Phase 6 |
+| **Native GDK quantifier idioms** | `(lo..<hi).every{…}`, `xs.indices.every{…}`, `xs.every{ it… }` | ✅ Phase 9 |
 | **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
 | **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
@@ -93,9 +94,10 @@ unsound outside it**: anything the encoder cannot model emits a "skipped"
 warning rather than passing silently. The fragment is integer-linear
 arithmetic, comparisons, boolean connectives, the size/nullity oracles above,
 array contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
-bounded-universal quantifiers (`Forall.range`), conditional (`?:`) expressions, and
-fuel-bounded inlining of contract-free pure functions — and, for bodies, straight-line
-code, `if`/`else`, single-assignment locals, and a single annotated `while` loop.
+bounded-universal quantifiers — written either as `Forall.range` or as the native GDK
+idioms `(lo..<hi).every{…}` / `xs.indices.every{…}` / `xs.every{ it… }`, conditional
+(`?:`) expressions, and fuel-bounded inlining of contract-free pure functions — and, for
+bodies, straight-line code, `if`/`else`, single-assignment locals, and a single annotated `while` loop.
 See `Encoder` and the roadmap for the exact boundaries.
 
 ## Architecture

@@ -604,6 +604,20 @@ quantifiers **only in contract position** and only for the recognised
 range/indices/collection shapes, and must keep the element-vs-index distinction
 straight.
 
+**Native universal idioms — shipped.** `(lo..<hi).every {…}`, `(lo..hi).every {…}`
+(inclusive, normalised to half-open), `xs.indices.every {…}`, and the element-wise
+`xs.every { it … }` are all recognised in `Encoder` and lowered onto the same bounded
+`forall` as `Forall.range` (a shared `emitForall`; the element form binds the closure
+parameter to `(select xs i)` and uses that select as the trigger). They work in
+`@Requires`/`@Ensures` *and* in `@Invariant` — and in the loop case they retire the two
+warts `Forall.range` forced there: no `verification.Forall` FQN and no typed index
+parameter, because a GDK idiom needs no import and stays runtime-evaluable for the
+contract check. Recognition is shape-restricted (only the range/indices/collection
+receivers above); any other `every` returns null and falls through to a loud "outside
+fragment" skip, so an in-the-wild `every` is never silently reinterpreted. The
+existential `any` and full retirement of the `Forall` helper (migrating its remaining
+internal uses) stay open; `Forall.range` still works for back-compat.
+
 If that contract-position restriction proves fragile, the fallback is an
 **annotation** surface rather than a method idiom — and there is precedent:
 jqwik already uses `@Forall` for universal quantification in property-based
