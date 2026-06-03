@@ -58,7 +58,8 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
 | **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
 | **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
-| Symbolic unfolding, in-place sort, unbounded quantifiers | — | ⏳ later |
+| **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
+| In-place sort, unbounded quantifiers, 32-bit overflow | — | ⏳ later |
 
 Example diagnostic:
 
@@ -92,7 +93,8 @@ unsound outside it**: anything the encoder cannot model emits a "skipped"
 warning rather than passing silently. The fragment is integer-linear
 arithmetic, comparisons, boolean connectives, the size/nullity oracles above,
 array contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
-bounded-universal quantifiers (`Forall.range`), and — for bodies — straight-line
+bounded-universal quantifiers (`Forall.range`), conditional (`?:`) expressions, and
+fuel-bounded inlining of contract-free pure functions — and, for bodies, straight-line
 code, `if`/`else`, single-assignment locals, and a single annotated `while` loop.
 See `Encoder` and the roadmap for the exact boundaries.
 

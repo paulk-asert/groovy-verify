@@ -59,6 +59,20 @@ interface SmtSession extends AutoCloseable {
     Object uninterpretedPred(String name, Object intArg)
 
     /**
+     * Apply a named uninterpreted integer function {@code Int^n -> Int} to its
+     * arguments, declaring it on first use; two applications of the same
+     * {@code name}/arity share one declaration. This is the "bottom" of bounded
+     * symbolic unfolding (roadmap Phase 8a): a recursive pure-function call left
+     * unexpanded once the fuel runs out is modelled as some unknown-but-fixed
+     * integer, a sound over-approximation — the residual constrains the result
+     * only through the fuel levels actually unfolded.
+     */
+    Object uninterpretedFunc(String name, List<Object> intArgs)
+
+    /** If-then-else over integer branches — Z3 {@code (ite cond thenV elseV)}. */
+    Object ite(Object cond, Object thenV, Object elseV)
+
+    /**
      * Declare an integer array variable {@code Array Int -> Int}, modelling the
      * *contents* of an array/list named {@code name}. The element at index
      * {@code i} is {@link #select}; an update is {@link #store}. Index and value

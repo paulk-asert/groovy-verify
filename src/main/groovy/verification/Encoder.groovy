@@ -29,6 +29,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
@@ -90,8 +91,10 @@ class Encoder {
     /** Counter for minting unique bound-variable names across nested/multiple quantifiers. */
     private int quantCounter = 0
 
-    /** Optional closed pure-function evaluator (Phase 8a); null disables it. */
+    /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
+    /** Per-encoder total budget for symbolic unfolding (Phase 8a); only decrements, bounding recursion. */
+    private int unfoldFuel = 16
 
     Encoder(SmtSession session, PureEvaluator pureEvaluator = null) {
         this.session = session
@@ -261,6 +264,17 @@ class Encoder {
             return translate(((BooleanExpression) expr).expression)
         }
 
+        if (expr instanceof TernaryExpression) {
+            // cond ? a : b  ->  (ite cond a b). Also the shape an unfolded pure
+            // function takes (e.g. pow2's `n == 0 ? 1 : ...`), see translateCall.
+            TernaryExpression te = (TernaryExpression) expr
+            Object c = translate(te.booleanExpression)
+            Object t = translate(te.trueExpression)
+            Object f = translate(te.falseExpression)
+            if (c == null || t == null || f == null) return null
+            return session.ite(c, t, f)
+        }
+
         if (expr instanceof PropertyExpression) {
             // xs.length / xs.size  ->  size oracle
             PropertyExpression pe = (PropertyExpression) expr
@@ -274,13 +288,13 @@ class Encoder {
 
         if (expr instanceof MethodCallExpression) {
             Object r = translateMethodCall((MethodCallExpression) expr)
-            return r != null ? r : tryPureEval(expr)
+            return r != null ? r : translateCall(expr)
         }
 
-        // Phase 8a — a resolved static call (e.g. `C.factorial(5)`) only reaches the verifier
-        // already in this form; try evaluating it as a closed pure-function call.
+        // Phase 8a — a resolved static call (e.g. `C.pow2(n)`) only reaches the verifier
+        // already in this form; try the pure-function paths (closed eval / unfolding).
         if (expr instanceof StaticMethodCallExpression) {
-            return tryPureEval(expr)
+            return translateCall(expr)
         }
 
         if (expr instanceof BinaryExpression) {
@@ -412,13 +426,51 @@ class Encoder {
     }
 
     /**
-     * Phase 8a — closed pure-function evaluation: if {@code e} is a same-class call with all-constant
-     * arguments, compute it to a literal (e.g. {@code pow2(10)} → 1024); else null.
+     * Phase 8a — pure same-class function calls. Three cases, in order:
+     * <ol>
+     *   <li><b>Closed evaluation:</b> all arguments fold to constants → compute the call to a
+     *       literal ({@code pow2(10)} → 1024), via {@link PureEvaluator}.</li>
+     *   <li><b>Bounded symbolic unfolding:</b> a symbolic argument with fuel remaining → inline the
+     *       function's (single-expression) body, substituting the arguments, and translate that —
+     *       re-entering here for nested calls, so recursion unfolds one level per call. A ternary
+     *       body becomes an {@code ite}. (cf. F\*'s {@code fuel}.)</li>
+     *   <li><b>Uninterpreted bottom:</b> fuel exhausted, or a body we can't inline → model the call
+     *       as an unknown-but-fixed integer {@link SmtSession#uninterpretedFunc}. Sound: the result
+     *       is constrained only through the levels actually unfolded.</li>
+     * </ol>
+     * {@link #unfoldFuel} is a per-encoder (≈ per-VC) total-unfold budget; it only decrements, which
+     * guarantees termination. A consequence is that two separate applications of the same function in
+     * one obligation may unfold to different depths, so proofs that rely on syntactically equating
+     * them are not guaranteed — that is the inductive case (Phase 7), not this one.
      */
-    private Object tryPureEval(Expression e) {
+    private Object translateCall(Expression e) {
         if (pureEvaluator == null) return null
+
+        // (1) closed evaluation
         Long v = pureEvaluator.tryEvaluate(e)
-        return v != null ? session.intLit(v) : null
+        if (v != null) return session.intLit(v)
+
+        PureEvaluator.Call c = pureEvaluator.callInfo(e)
+        if (c == null) return null   // not a same-class call — outside the fragment
+
+        // (2) bounded unfolding
+        if (unfoldFuel > 0) {
+            Expression body = pureEvaluator.unfoldBody(c)
+            if (body != null) {
+                unfoldFuel--
+                Object r = translate(body)
+                if (r != null) return r   // else: body had an un-encodable construct; fall to (3)
+            }
+        }
+
+        // (3) uninterpreted bottom
+        List<Object> handles = new ArrayList<Object>()
+        for (Expression a : c.args) {
+            Object h = translate(a)
+            if (h == null) return null
+            handles.add(h)
+        }
+        return session.uninterpretedFunc(c.name, handles)
     }
 
     /**

@@ -414,6 +414,38 @@ class VerifyHarness {
                        static int f() { 1000 }
                    }''')],
 
+        // ---------- Phase 8a (bounded symbolic unfolding): inline a pure fn against symbolic args ----------
+        // A non-recursive helper applied to a symbolic argument is inlined to its body: twice(x) = x + x.
+        [group: 'P8a unfold', name: 'non-recursive helper inlined', ok: true,
+         src: tc('''class C {
+                       static int twice(int n) { n + n }
+                       @Ensures({ result == twice(x) })
+                       static int f(int x) { x + x }
+                   }''')],
+        // A ternary-bodied helper unfolds to an `ite`; the @Requires path picks the branch.
+        [group: 'P8a unfold', name: 'ternary helper unfolds to ite', ok: true,
+         src: tc('''class C {
+                       static int absV(int x) { x >= 0 ? x : -x }
+                       @Requires({ x < 0 })
+                       @Ensures({ result == -x })
+                       static int f(int x) { absV(x) }
+                   }''')],
+        // A recursive helper on a path-constrained symbolic arg unfolds until the base case fires.
+        [group: 'P8a unfold', name: 'recursive helper unfolds under path constraint', ok: true,
+         src: tc('''class C {
+                       static int pow2(int n) { n == 0 ? 1 : 2 * pow2(n - 1) }
+                       @Requires({ n == 2 })
+                       @Ensures({ result == 4 })
+                       static int f(int n) { pow2(n) }
+                   }''')],
+        // Unfolding is faithful, not vacuous: a body that differs from the inlined definition is refuted.
+        [group: 'P8a unfold', name: 'mismatched body refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       static int twice(int n) { n + n }
+                       @Ensures({ result == twice(x) })
+                       static int f(int x) { x + x + 1 }
+                   }''')],
+
         // ---------- Regression: call-site preconditions ----------
         [group: 'regression @Requires', name: 'bad literal call refuted', expect: 'Cannot prove precondition',
          src: HDR + PRODUCER + tc('class C { static int go() { P.sq(-1) } }')],

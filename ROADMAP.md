@@ -492,11 +492,21 @@ currently returns `null`:
   `long`, matching the encoder's mathematical-integer model (so it adds no new
   soundness gap beyond the existing bounded-int one). It's an accelerator — a
   wrong expected value still refutes on the SMT side (tested).
-- **Bounded symbolic unfolding — next.** Partially unfold a pure function against
-  *symbolic* arguments up to a `fuel` bound (F\*'s `fuel`/`ifuel`), handing the
-  residual to Z3, so `pow2(n)` reduces against a symbolic `n`. Termination reuses
-  the method-level `@Decreases` (Phase 7). This is the larger remaining half; the
-  closed evaluation above is the shipped, sound first cut.
+- **Bounded symbolic unfolding — shipped.** A pure same-class function applied to
+  *symbolic* arguments is inlined to its (single-expression) body with the arguments
+  substituted, and the residual handed to Z3 — so `absV(x)` becomes an `ite` and a
+  recursive `pow2(n)` reduces one level per call. A ternary body maps to Z3's `ite`
+  (`Encoder` + backend gained `ite`/`uninterpretedFunc`). Recursion is bounded by a
+  per-VC **fuel** budget (F\*'s `fuel`/`ifuel`); when it runs out — or the body isn't
+  a single expression (an `if`/`return` chain like the statement form of `factorial`)
+  — the unexpanded call is modelled as an *uninterpreted* integer function, a sound
+  over-approximation (the result is constrained only through the levels actually
+  unfolded). Inlining is faithful — a body that disagrees with the definition still
+  refutes (tested). Two limits, both by design: it fires only for *contract-free*
+  methods (a contracted callee is the inter-procedural/induction path's job, Phase 7),
+  and because fuel only decrements, two applications of the same function in one
+  obligation may unfold to different depths — proofs that rely on syntactically
+  equating them belong to induction (Phase 7), not here.
 
 The clean architecture is **normalise-then-SMT**: evaluate what you can, send the
 residual to the solver. One asymmetry to state plainly — normalisation helps only

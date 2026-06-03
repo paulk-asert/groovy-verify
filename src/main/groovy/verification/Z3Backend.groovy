@@ -69,6 +69,7 @@ class Z3Session implements SmtSession {
     private final Map<String, IntExpr> vars = [:]
     private final Map<String, BoolExpr> boolVars = [:]
     private final Map<String, FuncDecl> preds = [:]
+    private final Map<String, FuncDecl> funcs = [:]
     private final Map<String, ArrayExpr> arrays = [:]
 
     Z3Session(Context ctx, Solver solver) {
@@ -102,6 +103,24 @@ class Z3Session implements SmtSession {
             preds.put(name, fd)
         }
         ctx.mkApp(fd, (Expr) intArg)
+    }
+
+    @Override
+    Object uninterpretedFunc(String name, List<Object> intArgs) {
+        String key = name + '/' + intArgs.size()
+        FuncDecl fd = funcs.get(key)
+        if (fd == null) {
+            Sort[] domain = intArgs.collect { ctx.getIntSort() } as Sort[]
+            fd = ctx.mkFuncDecl(name, domain, ctx.getIntSort())
+            funcs.put(key, fd)
+        }
+        Expr[] a = intArgs.collect { (Expr) it } as Expr[]
+        ctx.mkApp(fd, a)
+    }
+
+    @Override
+    Object ite(Object cond, Object thenV, Object elseV) {
+        ctx.mkITE((BoolExpr) cond, (Expr) thenV, (Expr) elseV)
     }
 
     @Override
