@@ -208,6 +208,26 @@ class Z3Session implements SmtSession {
                 ce[name] = ((IntNum) v).getInt64()
             }
         }
+        // Boolean vars (e.g. the `recv?null` nullity flags) — recorded as 0/1 when the model
+        // pins them, so the failing-call reconstruction (Phase 9) can render a null argument.
+        boolVars.each { name, var ->
+            Expr v = m.evaluate(var, false)
+            if (v.isTrue()) ce[name] = 1L
+            else if (v.isFalse()) ce[name] = 0L
+        }
+        // Array contents the model committed to (Phase 9 slice 2): `recv[k]` for k in [0, size).
+        // `model_completion = false` so only *constrained* elements are pinned — unconstrained ones
+        // come back as the select term and are skipped, keeping the repro free of irrelevant values.
+        arrays.each { String name, ArrayExpr arr ->
+            Long szL = ce.get(name + '.size')
+            if (szL == null) return
+            long sz = szL
+            if (sz <= 0L || sz > 16L) return          // cap enumeration; huge/zero sizes stay size-filled
+            for (int k = 0; k < sz; k++) {
+                Expr ev = m.evaluate((Expr) select(arr, ctx.mkInt(k)), false)
+                if (ev instanceof IntNum) ce[name + '[' + k + ']'] = ((IntNum) ev).getInt64()
+            }
+        }
         CheckResult.refuted(ce)
     }
 

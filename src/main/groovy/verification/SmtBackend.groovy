@@ -152,6 +152,12 @@ class CheckResult {
     Map<String, Long> counterexample = [:]
     /** Free-text reason, populated on UNKNOWN. */
     String reason
+    /**
+     * A runnable call that exhibits the failure, reconstructed from the counterexample
+     * (Phase 9 diagnostics) — e.g. {@code g(new int[0], -1)}. Best-effort and illustrative;
+     * set by the caller, not the solver. Null when no repro could be built.
+     */
+    String failingCall
 
     static CheckResult verified() {
         new CheckResult(status: Status.VERIFIED)

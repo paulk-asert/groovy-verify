@@ -42,10 +42,7 @@ class Reporter {
                 if (contractText) {
                     sb.append("\n    required: ").append(contractText)
                 }
-                if (result.counterexample) {
-                    sb.append("\n    counterexample: ")
-                      .append(formatModel(result.counterexample))
-                }
+                appendModel(sb, result)
                 break
 
             case CheckResult.Status.UNKNOWN:
@@ -74,10 +71,7 @@ class Reporter {
                 if (contractText) {
                     sb.append("\n    ensured: ").append(contractText)
                 }
-                if (result.counterexample) {
-                    sb.append("\n    counterexample: ")
-                      .append(formatModel(result.counterexample))
-                }
+                appendModel(sb, result)
                 break
 
             case CheckResult.Status.UNKNOWN:
@@ -145,9 +139,7 @@ class Reporter {
             case CheckResult.Status.REFUTED:
                 sb.append(refutedHead)
                 sb.append("\n    obligation: ").append(obligation)
-                if (result.counterexample) {
-                    sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
-                }
+                appendModel(sb, result)
                 break
             case CheckResult.Status.UNKNOWN:
                 sb.append(unknownHead).append(" (solver: ").append(result.reason).append(")")
@@ -202,9 +194,7 @@ class Reporter {
             case CheckResult.Status.REFUTED:
                 sb.append(refutedHead)
                 if (contractText) sb.append("\n    ").append(label).append(": ").append(contractText)
-                if (result.counterexample) {
-                    sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
-                }
+                appendModel(sb, result)
                 break
             case CheckResult.Status.UNKNOWN:
                 sb.append(unknownHead).append(" (solver: ").append(result.reason).append(")")
@@ -214,6 +204,16 @@ class Reporter {
                 sb.append("Verified — no error to report")
         }
         sb.toString()
+    }
+
+    /** Append the counterexample and, when reconstructed, the runnable failing call (Phase 9). */
+    private static void appendModel(StringBuilder sb, CheckResult result) {
+        if (result.counterexample) {
+            sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
+        }
+        if (result.failingCall) {
+            sb.append("\n    fails on: ").append(result.failingCall)
+        }
     }
 
     private static String formatModel(Map<String, Long> ce) {

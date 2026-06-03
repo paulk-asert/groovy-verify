@@ -29,6 +29,7 @@ import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
@@ -36,6 +37,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -116,23 +118,120 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /**
-     * Render a {@link CheckResult}'s counterexample in the programmer's vocabulary: the internal
-     * {@code recv.size} oracle key becomes {@code recv.length} / {@code recv.size()}. Applied at the
-     * solver boundary so every diagnostic shares the rendering; a no-op when there is no model.
+     * Prepare a {@link CheckResult} for reporting (Phase 9): reconstruct a runnable failing call
+     * from the raw model ({@link #buildFailingCall}), then render the displayed counterexample in the
+     * programmer's vocabulary — the internal {@code recv.size} oracle key becomes
+     * {@code recv.length}/{@code recv.size()}, and the internal {@code recv?null} flag is dropped
+     * (it is surfaced through the failing call instead). Applied at the solver boundary so every
+     * diagnostic shares the rendering; a no-op when there is no model.
      */
     private CheckResult shown(CheckResult r) {
         if (r == null || r.counterexample == null || r.counterexample.isEmpty()) return r
-        Map<String, Long> renamed = new LinkedHashMap<String, Long>()
+        r.failingCall = buildFailingCall(r.counterexample)
+        Map<String, Long> display = new LinkedHashMap<String, Long>()
         r.counterexample.each { String k, Long v ->
+            if (k.endsWith('?null') || k.endsWith(']')) return   // internal nullity/element keys — via failingCall
             if (k.endsWith('.size')) {
                 String recv = k.substring(0, k.length() - '.size'.length())
-                renamed.put(recv + sizeAccessor(recv), v)
+                display.put(recv + sizeAccessor(recv), v)
             } else {
-                renamed.put(k, v)
+                display.put(k, v)
             }
         }
-        r.counterexample = renamed
+        r.counterexample = display
         r
+    }
+
+    private static final List<String> INT_TYPE_NAMES = [
+        'int', 'long', 'short', 'byte', 'char',
+        'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte', 'java.lang.Character']
+    private static final List<String> BOOL_TYPE_NAMES = ['boolean', 'java.lang.Boolean']
+    /** Component types whose modelled int contents can be rendered as element literals (slice 2). */
+    private static final List<String> NUMERIC_COMPONENT_NAMES = [
+        'int', 'long', 'short', 'byte', 'char', 'Integer', 'Long', 'Short', 'Byte', 'Character']
+
+    /**
+     * Reconstruct a runnable call to the current method that exhibits the failure, from the raw
+     * counterexample — e.g. {@code g(new int[0], -1)}, {@code d(0, 0)}, {@code n(null)}. Best-effort:
+     * scalars and a `null` receiver are exact; arrays/collections are rebuilt at the modelled *size*
+     * (contents are not yet pinned — that is slice 2); an unmodelled object parameter falls back to
+     * {@code null}. Returns null when there is no current method.
+     */
+    private String buildFailingCall(Map<String, Long> ce) {
+        if (currentMethod == null) return null
+        List<String> args = new ArrayList<String>()
+        for (Parameter p : currentMethod.parameters) {
+            args.add(renderArg(p, ce))
+        }
+        "${currentMethod.name}(${args.join(', ')})"
+    }
+
+    /** Render one parameter as a Groovy literal drawn from the counterexample. */
+    private static String renderArg(Parameter p, Map<String, Long> ce) {
+        ClassNode t = p.type
+        boolean nulled = ce.get(p.name + '?null') == 1L
+        if (t != null && t.isArray()) {
+            if (nulled) return 'null'
+            long n = sizeOf(p.name, ce)
+            String comp = t.componentType.nameWithoutPackage
+            List<Long> elems = pinnedElements(p.name, n, ce)
+            // Render explicit contents only when the model committed to a non-zero element and the
+            // component is numeric; otherwise `new T[n]` (which already *is* the all-zero array).
+            if (elems != null && comp in NUMERIC_COMPONENT_NAMES && elems.any { it != 0L }) {
+                return "[${elems.join(', ')}] as ${comp}[]"
+            }
+            return "new ${comp}[${n}]"
+        }
+        String tn = t?.name
+        if (tn in INT_TYPE_NAMES) {
+            Long v = ce.get(p.name)
+            return String.valueOf(v != null ? v : 0L)
+        }
+        if (tn in BOOL_TYPE_NAMES) {
+            Long v = ce.get(p.name)
+            return (v != null && v == 1L) ? 'true' : 'false'
+        }
+        if (nulled) return 'null'
+        if (tn == 'java.lang.String') return '""'
+        if (isCollectionType(t)) {
+            long n = sizeOf(p.name, ce)
+            List<Long> elems = pinnedElements(p.name, n, ce)
+            if (elems != null && elems.any { it != 0L }) return "[${elems.join(', ')}]"
+            return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
+        }
+        return 'null'   // best effort for an arbitrary object type
+    }
+
+    private static long sizeOf(String name, Map<String, Long> ce) {
+        Long sz = ce.get(name + '.size')
+        (sz != null && sz > 0L) ? sz : 0L
+    }
+
+    /**
+     * The contents the model committed to for {@code name}, as {@code name[0..n)}; missing elements
+     * default to 0. Returns null when the model pinned no element of this receiver (so the caller
+     * keeps the size-filled form).
+     */
+    private static List<Long> pinnedElements(String name, long n, Map<String, Long> ce) {
+        if (n <= 0L) return null
+        boolean any = false
+        List<Long> out = new ArrayList<Long>()
+        for (int k = 0; k < n; k++) {
+            Long v = ce.get(name + '[' + k + ']')
+            if (v != null) any = true
+            out.add(v != null ? v : 0L)
+        }
+        any ? out : null
+    }
+
+    private static boolean isCollectionType(ClassNode t) {
+        if (t == null) return false
+        try {
+            return t.name == 'java.util.Collection' || t.name == 'java.util.List' ||
+                   t.implementsInterface(ClassHelper.make(Collection))
+        } catch (Throwable ignored) {
+            return false
+        }
     }
 
     /**
@@ -390,14 +489,25 @@ class VerifyChecker extends TypeCheckingExtension {
                 if (e instanceof BinaryExpression &&
                     ((BinaryExpression) e).operation.type == Types.ASSIGN) {
                     BinaryExpression be = (BinaryExpression) e
-                    if (!(be.leftExpression instanceof VariableExpression)) {
-                        throw new UnsupportedConstructException("assignment to a non-variable target")
+                    if (be.leftExpression instanceof VariableExpression) {
+                        String name = ((VariableExpression) be.leftExpression).name
+                        scanObligations(be.rightExpression, guards, assigns, out)
+                        if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
+                        assigns.add(new Assign(name, be.rightExpression))
+                        continue
                     }
-                    String name = ((VariableExpression) be.leftExpression).name
-                    scanObligations(be.rightExpression, guards, assigns, out)
-                    if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
-                    assigns.add(new Assign(name, be.rightExpression))
-                    continue
+                    // Array-element store `a[i] = v`: not a scalar binding. Its *contents* aren't tracked
+                    // by the value-flow pass (the implicit obligations — bounds/div/null — don't depend on
+                    // them), but the LHS index access and the rhs still carry their own obligations. Handle
+                    // it rather than throwing, so a body that stores stays on the value-flow path (which
+                    // understands short-circuit guards) instead of the value-flow-blind havoc fallback.
+                    if (be.leftExpression instanceof BinaryExpression &&
+                        ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                        scanObligations(be.leftExpression, guards, assigns, out)
+                        scanObligations(be.rightExpression, guards, assigns, out)
+                        continue
+                    }
+                    throw new UnsupportedConstructException("assignment to a non-variable target")
                 }
                 scanObligations(e, guards, assigns, out)
                 continue
@@ -411,6 +521,34 @@ class VerifyChecker extends TypeCheckingExtension {
     /** Collect the implicit obligations syntactically present in {@code e}, each tagged with a snapshot of context. */
     private void scanObligations(Expression e, List<Guard> guards, List<Assign> assigns, List<VfObligation> out) {
         if (e == null) return
+
+        // Short-circuit / conditional operators carry a path condition *within* the expression: in
+        // `p && q` the right operand is evaluated only when `p` holds; in `p || q` only when `p` is
+        // false; in `c ? t : e`, `t` only when `c`, `e` only when not. So an obligation inside such a
+        // branch (e.g. the `a[i-1]` in `i > 0 && a[i] < a[i-1]`) is discharged under that extra guard —
+        // without this, the access is checked unprotected and a perfectly safe expression is refuted.
+        if (e instanceof BooleanExpression) {   // Groovy wraps if/ternary conditions
+            scanObligations(((BooleanExpression) e).expression, guards, assigns, out)
+            return
+        }
+        if (e instanceof BinaryExpression) {
+            int op = ((BinaryExpression) e).operation.type
+            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+                BinaryExpression be = (BinaryExpression) e
+                scanObligations(be.leftExpression, guards, assigns, out)
+                scanObligations(be.rightExpression,
+                    append(guards, new Guard(be.leftExpression, op == Types.LOGICAL_AND)), assigns, out)
+                return
+            }
+        }
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            scanObligations(te.booleanExpression, guards, assigns, out)
+            scanObligations(te.trueExpression, append(guards, new Guard(te.booleanExpression, true)), assigns, out)
+            scanObligations(te.falseExpression, append(guards, new Guard(te.booleanExpression, false)), assigns, out)
+            return
+        }
+
         ObligationCollector col = new ObligationCollector()
         try { e.visit(col) } catch (Throwable ignored) { return }
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() && col.derefSites.isEmpty()) return
@@ -1100,6 +1238,17 @@ class VerifyChecker extends TypeCheckingExtension {
                 session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))
             }
 
+            // 2b. Flow-sensitivity: assume the @Ensures of the unconditional calls that ran *before*
+            //     this one on its path, so a later call's precondition can rely on an earlier call's
+            //     effect — e.g. `sort(a, n-1); insert(a, n-1)`, where insert needs the prefix sort
+            //     just established. `allowSelf` lets a recursive self-call contribute its inductive
+            //     hypothesis here too (termination is verified separately).
+            if (currentMethod != null) {
+                for (Expression pc : precedingCallExprs(currentMethod, callExpr)) {
+                    assumeCalleeEnsures(session, enc, pc, currentMethod, null, hasDecreases(currentMethod))
+                }
+            }
+
             // 3. Translate the contract and assert its NEGATION. We're
             //    asking: is there a model where the path is satisfiable
             //    AND the precondition fails? If yes, that model is the
@@ -1286,6 +1435,69 @@ class VerifyChecker extends TypeCheckingExtension {
      * true iff a contract was found, fully substitutable, and asserted — so the
      * caller can fall back to "skipped" when it was not.
      */
+    /**
+     * The {@code @Ensures} we may soundly assume from a statement that ran immediately before
+     * {@code callExpr}: the single preceding sibling, when it is a standalone (void) call. Restricting
+     * to the *immediately* preceding statement is what keeps it sound — nothing executes between it and
+     * the target, so its postcondition still holds (a call further back could be invalidated by an
+     * intervening store). Lets `insert(a, n-1)`'s precondition rely on the `sort(a, n-1)` right before
+     * it. Matched by source position against the CONVERSION snapshot, so it is robust to the live
+     * body's contract instrumentation; returns 0 or 1 expressions.
+     */
+    private static List<Expression> precedingCallExprs(MethodNode node, Expression callExpr) {
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null || callExpr.lineNumber <= 0) return Collections.<Expression> emptyList()
+        Expression pc
+        try {
+            pc = precedingSiblingCall(body, callExpr.lineNumber, callExpr.columnNumber)
+        } catch (Throwable ignored) {
+            return Collections.<Expression> emptyList()
+        }
+        pc != null ? Collections.singletonList(pc) : Collections.<Expression> emptyList()
+    }
+
+    /** The standalone call in the statement immediately preceding the one that holds the target, or null. */
+    private static Expression precedingSiblingCall(Statement st, int tl, int tc) {
+        if (st instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) st).statements
+            for (int i = 0; i < ss.size(); i++) {
+                Statement child = ss.get(i)
+                if (!spans(child, tl, tc)) continue
+                if (child instanceof BlockStatement || child instanceof IfStatement) {
+                    return precedingSiblingCall(child, tl, tc)   // recurse; don't use this block's sibling
+                }
+                // child is the leaf statement directly containing the target call
+                return i > 0 ? standaloneCallOf(ss.get(i - 1)) : null
+            }
+            return null
+        }
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            Expression r = precedingSiblingCall(ifs.ifBlock, tl, tc)
+            if (r != null) return r
+            return ifs.elseBlock != null ? precedingSiblingCall(ifs.elseBlock, tl, tc) : null
+        }
+        null
+    }
+
+    private static Expression standaloneCallOf(Statement st) {
+        if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) return e
+        }
+        null
+    }
+
+    private static boolean spans(Statement st, int tl, int tc) {
+        cmp(st.lineNumber, st.columnNumber, tl, tc) <= 0 &&
+            cmp(tl, tc, st.lastLineNumber, st.lastColumnNumber) <= 0
+    }
+
+    private static int cmp(int l1, int c1, int l2, int c2) {
+        l1 != l2 ? Integer.compare(l1, l2) : Integer.compare(c1, c2)
+    }
+
     private boolean assumeCalleeEnsures(SmtSession s, Encoder enc, Expression callExpr,
                                         MethodNode caller, Object resultHandle, boolean allowSelf) {
         if (!(callExpr instanceof MethodCall)) return false

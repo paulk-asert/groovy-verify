@@ -274,6 +274,105 @@ class VerifyHarness {
                        static int f(List xs) { xs.size() }
                    }''')],
 
+        // ---------- Phase 9: counterexample reconstructed as a runnable failing call ----------
+        // Array out-of-bounds → an array rebuilt at the modelled size + the offending index.
+        [group: 'P9 repro', name: 'bounds failure reconstructs a call', expect: 'fails on: g(new int[3]',
+         src: tc('''class C {
+                       @Requires({ a.length == 3 })
+                       static int g(int[] a, int i) { a[i] }
+                   }''')],
+        // Division by zero → the divisor argument is the zero from the model.
+        [group: 'P9 repro', name: 'division failure reconstructs a call', expect: 'fails on: d(',
+         src: tc('class C { static int d(int x, int y) { x % y } }')],
+        // Null dereference → the receiver argument is rendered as null.
+        [group: 'P9 repro', name: 'null deref reconstructs a null argument', expect: 'fails on: n(null)',
+         src: tc('class C { static int n(String s) { s.length() } }')],
+        // Slice 2: a contents-dependent failure pins the array elements as a literal, not new int[n].
+        [group: 'P9 repro', name: 'contents failure pins array elements', expect: 'fails on: f([',
+         src: tc('''class C {
+                       @Requires({ a.length == 2 })
+                       @Ensures({ a[0] == a[1] })
+                       static int f(int[] a) { 0 }
+                   }''')],
+
+        // ---------- Phase 7: recursive insertion sort (sortedness, end-to-end) ----------
+        // insert places a[i] into the sorted prefix; sort composes it under induction. The driver
+        // relies on the @Ensures of the `sort(a, n-1)` call immediately before `insert(a, n-1)`.
+        [group: 'P7 recursive sort', name: 'recursive insertion sort (sortedness)', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
+                       @Ensures({ (0..<i).every { a[it] <= a[it + 1] } })
+                       @Decreases({ i })
+                       static void insert(int[] a, int i) {
+                           if (i > 0 && a[i] < a[i - 1]) {
+                               int t = a[i]; a[i] = a[i - 1]; a[i - 1] = t
+                               insert(a, i - 1)
+                           }
+                       }
+                       @Requires({ 0 <= n && n <= a.length })
+                       @Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } })
+                       @Decreases({ n })
+                       static void sort(int[] a, int n) {
+                           if (n > 1) {
+                               sort(a, n - 1)
+                               insert(a, n - 1)
+                           }
+                       }
+                   }''')],
+        // Soundness A: an intervening store invalidates the prefix → insert's precondition must NOT
+        // be assumable from the earlier sort (the immediately-preceding statement is the store).
+        [group: 'P7 recursive sort', name: 'intervening store breaks precondition', expect: 'Cannot prove precondition',
+         src: tc('''class C {
+                       @Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
+                       @Ensures({ (0..<i).every { a[it] <= a[it + 1] } })
+                       @Decreases({ i })
+                       static void insert(int[] a, int i) {
+                           if (i > 0 && a[i] < a[i - 1]) { int t = a[i]; a[i] = a[i - 1]; a[i - 1] = t; insert(a, i - 1) }
+                       }
+                       @Requires({ 2 <= n && n <= a.length })
+                       @Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } })
+                       @Decreases({ n })
+                       static void sort(int[] a, int n) {
+                           sort(a, n - 1)
+                           a[0] = 999
+                           insert(a, n - 1)
+                       }
+                   }''')],
+        // Soundness B: forget to insert → the suffix isn't placed → postcondition must refute.
+        [group: 'P7 recursive sort', name: 'missing insert refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n <= a.length })
+                       @Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } })
+                       @Decreases({ n })
+                       static void sort(int[] a, int n) {
+                           if (n > 1) { sort(a, n - 1) }
+                       }
+                   }''')],
+
+        // ---------- Phase 5a: short-circuit guard path conditions (&& / ||) ----------
+        // The `&&` left operands (`i > 0 && i <= a.length`) protect `a[i-1]` in the right operand.
+        [group: 'P5a short-circuit', name: 'and-guard protects right operand', ok: true,
+         src: tc('class C { static int g(int[] a, int i) { (i > 0 && i <= a.length && a[i - 1] > 0) ? 1 : 0 } }')],
+        // `||`: entering the right operand means the left disjuncts are false → `0 < i <= a.length`.
+        [group: 'P5a short-circuit', name: 'or-guard protects right operand', ok: true,
+         src: tc('class C { static int g(int[] a, int i) { (i <= 0 || i > a.length || a[i - 1] > 0) ? 1 : 0 } }')],
+        // Still sound: with the guard removed, the access is genuinely unprotected → refuted.
+        [group: 'P5a short-circuit', name: 'unguarded access still refuted', expect: 'IndexOutOfBoundsException',
+         src: tc('class C { static int g(int[] a, int i) { (a[i - 1] > 0) ? 1 : 0 } }')],
+        // The natural (single-&&) recursive insert now verifies — no nested-if workaround needed.
+        [group: 'P5a short-circuit', name: 'natural insert guard verifies', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
+                       @Ensures({ (0..<i).every { a[it] <= a[it + 1] } })
+                       @Decreases({ i })
+                       static void insert(int[] a, int i) {
+                           if (i > 0 && a[i] < a[i - 1]) {
+                               int t = a[i]; a[i] = a[i - 1]; a[i - 1] = t
+                               insert(a, i - 1)
+                           }
+                       }
+                   }''')],
+
         // ---------- Phase 6: array update (store) ----------
         // After a[k] = v, reading a[k] yields v — postcondition about the produced array.
         [group: 'P6 store', name: 'post-store element verified', ok: true,

@@ -271,7 +271,13 @@ no new theory, no quantifiers — the opposite of
   **havoc pass** runs as a sound fallback. *Guarded derived locals already
   verified before* — `if (j >= 0 && j < a.length) a[j]` works because the guard
   and the obligation share the same `j` handle — so 5a's marginal win is the
-  *assignment-implied* facts.
+  *assignment-implied* facts. Collection is also **short-circuit-aware**: in `p && q` the
+  right operand's obligations are discharged under `p`, in `p || q` under `not p`, and a
+  `c ? t : e` branch under `c`/`not c` — so `if (i > 0 && a[i] < a[i - 1])` proves `a[i - 1]`
+  in bounds *from the `i > 0` to its left*, no nested-`if` workaround. And an array-element
+  store (`a[i] = v`) no longer bails to the havoc fallback: its contents don't bear on the
+  bounds/div/null obligations, so the pass collects the index and rhs obligations and carries
+  on (this is what lets a recursive `insert` that swaps stay on the value-flow path).
 - **5b — loop-fused bounds.** For a method whose body is an annotated loop, the
   obligations are discharged with the invariant in scope instead of via the havoc
   pass (`verifyLoopObligations`): prefix sites see `@Requires` + the straight-line
@@ -361,8 +367,12 @@ case forced: inside `@Invariant` the quantifier must be written fully-qualified
 the import isn't in scope and `a[j]` needs an `int`. And loop invariants are now
 captured *as text and re-parsed* (like `@Requires`/`@Ensures`), so the verifier
 sees a clean CONVERSION AST rather than the live node later phases resolve to a
-static call / `getAt`. **Still not done:** a full *in-place sort* — that needs the
-sortedness-transitivity lemma, which is induction (Phase 7).
+static call / `getAt`. **Sort, revisited:** the *sortedness* half is now done — a
+recursive insertion sort (`insert` + `sort`) verifies end-to-end via induction (see
+Phase 7). What a *full* sort still needs is **permutation** (a multiset/`count` model
+plus `old(a)` to relate the result to the input — without it, "sort" that zeroes the
+array would pass) and, for a *loop*-based sort, nested-loop support; the recursive
+formulation sidesteps the latter.
 
 **Known limits.** Counterexamples for array/quantifier refutations show the
 integer skeleton (`a.size`, indices) but not array contents or unconstrained
@@ -374,77 +384,45 @@ borrow from [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints)
 
 ---
 
-## Phase 7 — Optional heavy lifts
+## Phase 7 — Inter-procedural reasoning, induction & lemmas  *(shipped)*
 
-If the project grew into something widely used, these would be on the table.
-All expensive, none strictly necessary to make the verification story
-persuasive.
+Filed as an "optional heavy lift", this turned out to be the backbone of the Dafny-style
+proofs — and it has landed. All of it reasons *modularly*: a callee's **contract** is used,
+never its body.
 
-- **Full NIA.** Lift the encoder's restriction that multiplication requires at
-  least one literal operand. Z3's `qfnia` tactic handles a lot of practical NIA
-  but is incomplete; would need timeout discipline and possibly per-VC tactic
-  selection.
-- **Bounded integer modelling.** Catch overflow as a verification failure rather
-  than silently working modulo 2³². Encode ints as fixed-width bitvectors; every
-  arithmetic VC gains a range side-condition. Cost: ~2× solver time, much more
-  expressive errors.
-- **Bitwise / shift operators.** The same bitvector encoding picks these up for
-  free.
-- **Inter-procedural reasoning, and lemmas.** Use a callee's `@Ensures` as facts
-  when reasoning about the caller (previously only its `@Requires` was used). The
-  cross-boundary oracle binding it builds on is in place (Phase 4); the build-time
-  cost is that callees must be re-verified when their contracts tighten. Its
-  headline payoff is **lemmas** — the proof-structuring primitive Dafny users lean
-  on most, and the one feature from Dafny's proof toolbox this fragment otherwise
-  lacks. A lemma is just a `static` method with `@Requires`/`@Ensures` whose body
-  the checker verifies and which a caller *invokes to inject its postcondition* as
-  a fact; it lets a specify-and-prove developer scale past a single method's proof
-  without a cross-compiler, and composes with the `assert … by`/`calc`
-  decomposition of
-  [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints)b.
+- **Use a callee's `@Ensures` as a fact.** `int z = f(args)` assumes `f`'s postcondition
+  with `result` bound to `z` and formals to actuals (same-class resolution by name + arity).
+  A precondition check also assumes the `@Ensures` of the standalone call *immediately* before
+  it, so `sort(a, n-1); insert(a, n-1)` composes — immediate-predecessor only, which is sound
+  since nothing runs in between (a store between them would invalidate it, and does refute).
+- **Induction over recursion.** A method may assume its *own* `@Ensures` at a recursive call —
+  the inductive hypothesis — gated on a method-level `@Decreases` measure proved well-founded
+  (`0 <= measure[args] < measure[entry]` at each call). It rides the stock `@Decreases`
+  (GROOVY-12060), so it stays runtime-meaningful. No measure means the recursive result is
+  opaque (honest "skipped"), never silently trusted.
+- **Lemmas.** A `void` method proved by induction and *called for its `@Ensures`* — the
+  proof-structuring primitive Dafny users lean on most. E.g. sortedness transitivity
+  (`a[i] <= a[j]` for `i <= j` from adjacent sortedness, by induction on `j - i`) proved once
+  and applied at a call site, quantifier instantiation and all.
+- **Payoff — a verified sort.** A recursive insertion sort verifies its *sortedness*
+  postcondition end-to-end: `insert` places `a[i]` into the sorted prefix (a store, by
+  induction on `i`), `sort` composes on it (by induction on `n`). The recursive shape
+  sidesteps nested loops entirely.
 
-  **Slice 1 — result-binding (shipped).** `int z = f(args)` now assumes `f`'s
-  `@Ensures` with `result ↦ z` and formals ↦ actuals (`Encoder.translateWith` does
-  the scoped substitution; the callee's `@Requires` is discharged separately at
-  the call site). This is the *load-bearing* form: the caller cannot see inside
-  `f`, so without the contract `z` is opaque (previously a "skipped
-  postcondition"). Reasoning is modular — the callee's *contract* is used, never
-  its body. Scope: same-class resolution by name + arity; self-calls excluded;
-  `old` and array/frame effects unmodelled.
+**Still not done here:** *permutation* for a real sort — needs a multiset/`count` model and
+`old(a)` (the sortedness proof above is only the "zeroing the array would pass" half); mutual
+recursion (only direct self-recursion gives an inductive-hypothesis point — a cycle needs
+SCC-aware reasoning over a combined measure); and cross-module measure *inheritance* (an
+override of a precompiled super's `@Decreases`), an upstream groovy-contracts limitation.
 
-  **Slice 2 — induction (shipped).** A method may now assume *its own* `@Ensures`
-  at a recursive call — the inductive hypothesis — gated on a method-level
-  `@Decreases` measure whose well-foundedness is proved separately: at each
-  recursive call `verifyTermination` discharges `0 <= measure[args] <
-  measure[entry]` (substitution via `translateWith`, the decrease/≥0 shape from
-  the loop progress check). So `sumUp(n)` with `@Ensures({ result >= n })` /
-  `@Decreases({ n })` verifies by induction. The measure rides on the *same*
-  stock `@Decreases` annotation groovy-contracts now accepts on methods
-  (GROOVY-12060), so it is runtime-meaningful too — no verifier-only surface. If
-  the measure can't be shown to decrease, or is outside the fragment, the
-  inductive hypothesis is refused (loud, not silently accepted). Without
-  `@Decreases`, a recursive call's result stays opaque → honest "skipped".
-
-  **Slice 3 — standalone lemmas (shipped).** A lemma is a `void` method proved by
-  induction and *called for its `@Ensures`*. Three pieces landed: `BodyEncoder`
-  enumerates void methods (paths may fall through, no `result`); a standalone call
-  statement becomes a `LemmaCall` step that assumes the callee's `@Ensures` (no
-  result binding) — refused as outside-fragment if the call has no usable
-  contract, so an unmodelled side-effecting call still "skips" rather than
-  false-passes; and the self-IH + termination VC also fire on `LemmaCall`
-  self-calls. This closes the Dafny loop: e.g. *sortedness transitivity*
-  (`a[i] <= a[j]` for `i <= j` from adjacent-`@Decreases` sortedness) is proved by
-  induction on `j - i` and then *used* at a call site to discharge a caller's
-  postcondition — quantifier instantiation and all.
-
-  **Not yet:** mutual recursion in the verifier (only direct self-recursion gives
-  an inductive-hypothesis point — a cycle needs SCC-aware reasoning over a combined
-  measure); and cross-module measure *inheritance* (an override of a precompiled
-  super's `@Decreases`), which is the upstream groovy-contracts limitation, not a
-  verifier one. Given induction and lemmas have landed, the item has outgrown
-  "optional".
-- **Heap/aliasing.** Don't. Groovy makes this very hard and the payoff is small
-  for the fragment most developers care about.
+**Genuinely still optional, not done:**
+- **Full NIA** — lift the "a product needs a literal operand" restriction (Z3's `qfnia` is
+  incomplete; needs timeout discipline, maybe per-VC tactic selection).
+- **Bounded-integer modelling** — catch overflow instead of silently working modulo 2^32
+  (fixed-width bitvectors; every arithmetic VC gains a range side-condition, ~2x solver time).
+  Bitwise / shift operators come for free with it.
+- **Heap / aliasing** — don't. Groovy makes it very hard and the payoff is small for the
+  fragment most developers care about.
 
 ---
 
@@ -560,110 +538,56 @@ them there — the same instinct that makes the rest of Groovy's static type che
 say "Cannot invoke method size() on null object" rather than naming an internal
 AST node. A tool people understand is one they leave switched on.
 
-The distinction that scopes this phase — **two kinds of diagnostic:**
+The distinction that scoped this phase — **two kinds of diagnostic:**
 
-- **Those with a well-known code/runtime equivalent.** Mirror it. An
-  out-of-bounds obligation should read in the vocabulary of
-  `ArrayIndexOutOfBoundsException` ("Negative array index [-1] too large for array
-  size 0"), echo the accessor the programmer actually knows — `.size()` for
-  collections/strings, `.length` for arrays (Groovy's universal size idiom) —
-  rather than the internal `a.size` symbol, and ideally surface the counterexample
-  as a **concrete failing call**: not `a.size = 0, i = -1` but `g(new int[0], -1)`
-  — a runnable repro, the way a developer would demonstrate the bug themselves.
-  The same applies to division (`ArithmeticException: Division by zero`) and null
-  dereference (`Cannot invoke method size() on null object`).
+- **Those with a well-known code/runtime equivalent — mirror it.** *(shipped)* Every refuted
+  implicit-safety obligation now reads in the developer's vocabulary, not the engine's:
+  - the head names the exception they'd actually hit — `Possible IndexOutOfBoundsException`,
+    `Possible ArithmeticException: Division by zero`, `Possible NullPointerException: Cannot
+    invoke method size() on null object` (the invoked method threaded from the call site;
+    `IndexOutOfBoundsException` covers both arrays and lists without inferring which);
+  - the obligation and counterexample echo the **accessor the developer wrote** — `a.length`,
+    `xs.size()` — harvested by scanning their contracts/body (first spelling wins; a bare
+    `a[i]` defaults to `.size()`, valid for arrays too), not the internal `a.size` symbol;
+  - a **`fails on:`** line reconstructs a runnable input — `g(new int[0], -1)`, `d(0, 0)`,
+    `n(null)`, and even pinned array contents (`diff([21239, 21238] as int[], 0)`) for a
+    contents-dependent failure, while contents that don't matter stay size-filled (`new int[3]`).
 
-  *Accessor vocabulary — shipped.* The array-bounds obligation and **every**
-  counterexample now render the size oracle as the accessor the developer actually
-  *wrote* — `a.length`, `xs.size()` — instead of the internal `a.size` symbol. The
-  spelling is harvested by scanning the method's contracts and body for the receiver's
-  `.length`/`.size`/`.size()` form (first seen wins); a receiver never written with a
-  size accessor (a plain `a[i]`) falls back to `.size()`, Groovy's universal idiom,
-  which is valid for arrays too. The engine keeps `a.size` internally (obligation and
-  counterexample still share one symbol); the rename is applied once at the solver
-  boundary (`shown(check())`), so it is a pure `Reporter`/presentation change with no
-  engine or solver risk. Echoing the source spelling — rather than inferring `.length`
-  from the array type — means an array a developer chose to size with `.size()` reads
-  back as they wrote it.
+  All but the array-element pinning are pure `Reporter`/presentation — the engine keeps `a.size`
+  internally and the rename is applied once at the solver boundary. The repro additionally reads
+  boolean (nullity) and `select(arr, k)` values from the model (a small, contained `Z3Backend`
+  touch) and is labelled best-effort: a field-dependent failure may not reproduce from it, and
+  String contents / arbitrary objects stay unsynthesised. The **UNKNOWN** ("could not decide")
+  head keeps its verification vocabulary — that case has no runtime analogue to borrow.
+- **Those with no code equivalent.** Loop-invariant establishment/preservation, termination, and
+  the quantifier obligations have no runtime analogue. Forcing a fake one would mislead; the
+  right move is *self-explanatory* verification vocabulary — name the obligation and say plainly
+  what could not be shown.
 
-  *Runtime-exception wording — shipped.* The refuted head of each implicit-safety
-  obligation now mirrors the exception a developer would actually hit: array/list
-  bounds → `Possible IndexOutOfBoundsException: index may be out of bounds` (the
-  superclass covers both arrays and lists without inferring which), division/modulo →
-  `Possible ArithmeticException: Division by zero`, and a null receiver → Groovy's own
-  `Possible NullPointerException: Cannot invoke method size() on null object` (the
-  invoked method name is threaded through from the call site). The obligation and
-  counterexample lines are unchanged — they carry the verification detail a bare stack
-  trace lacks. Only the *refuted* head changes; the "could not decide" (UNKNOWN) head
-  keeps its verification vocabulary, since that case has no runtime analogue (see the
-  next bullet). Still open: the concrete failing-call repro (`g(new int[0], -1)`),
-  which needs the counterexample reconstructed as a runnable call.
-- **Those with no code equivalent.** Loop-invariant establishment/preservation,
-  termination, "could not decide", and the quantifier obligations of
-  [Phase 6](#phase-6--quantifiers-shipped) have no runtime analogue to borrow. Forcing a
-  fake one would mislead. Here the right move is *self-explanatory* verification
-  vocabulary — name the obligation, say plainly what could not be shown and what
-  would make it provable — not a runtime costume it does not fit.
-
-**Authoring vocabulary — the input side of the same coin.** "Meet the programmer
-where they are" applies to how specs are *written*, not only how failures are
-*read*. Phase 6 introduces the quantifier as `Forall.range(0, a.length) { a[it] >= 0 }` — a static helper the encoder recognises, deliberately a plain Groovy
-expression so it needs no language change and the runtime contract can still
-evaluate it. But that is a bespoke verification idiom, and a Groovy developer
-writing the *same thing* outside a contract would not invent it — they would
-reach for the GDK they already know:
+**Authoring vocabulary — the input side.** *(shipped)* "Meet the programmer where they are"
+applies to how specs are *written* too. The bespoke `Forall.range(...)` helper is now joined by
+the native GDK idioms a Groovy developer already reaches for, recognised in contract position and
+lowered onto the same bounded `forall`:
 
 ```groovy
-(0..<a.length).every { a[it] >= 0 }      // a bounded IntRange + every
-a.indices.every { a[it] >= 0 }           // the array's own index range
-a.every { it >= 0 }                      // element-wise: `it` is the element
+(0..<a.length).every { a[it] >= 0 }   // bounded range over indices
+a.indices.every { a[it] >= 0 }        // the array's own index range
+a.every { it >= 0 }                   // element-wise: `it` is the element
 ```
 
-The leading Phase 9 candidate is therefore to **recognise these native idioms**
-rather than `Forall.range`: `(lo..<hi).every {…}` and `xs.indices.every {…}` map
-to the same bounded universal over indices, `xs.every { it … }` to a universal
-over *elements* (`it` is `(select xs i)`), and `any` to the existential once that
-lands. They are already executable (so the runtime contract works for free) and
-read like ordinary Groovy — and they retire the `Forall` helper entirely. Cost
-and caution: `every`/`any` are pervasive, so the encoder must treat them as
-quantifiers **only in contract position** and only for the recognised
-range/indices/collection shapes, and must keep the element-vs-index distinction
-straight.
+These need no import and stay runtime-evaluable, so they also work inside `@Invariant` (retiring
+the `verification.Forall` FQN + typed-index warts the loop case forced). Recognition is
+shape-restricted — any other `every` falls through to a loud "outside fragment" skip, never
+silently reinterpreted. Still open: the existential `any`, and full retirement of the `Forall`
+helper (migrating its remaining internal uses); `Forall.range` still works for back-compat. If
+the contract-position restriction ever proves fragile, the documented fallback is an annotation
+surface (`@Forall`, with jqwik precedent) — unambiguous by construction, at the cost of reading
+less like an inline boolean.
 
-**Native universal idioms — shipped.** `(lo..<hi).every {…}`, `(lo..hi).every {…}`
-(inclusive, normalised to half-open), `xs.indices.every {…}`, and the element-wise
-`xs.every { it … }` are all recognised in `Encoder` and lowered onto the same bounded
-`forall` as `Forall.range` (a shared `emitForall`; the element form binds the closure
-parameter to `(select xs i)` and uses that select as the trigger). They work in
-`@Requires`/`@Ensures` *and* in `@Invariant` — and in the loop case they retire the two
-warts `Forall.range` forced there: no `verification.Forall` FQN and no typed index
-parameter, because a GDK idiom needs no import and stays runtime-evaluable for the
-contract check. Recognition is shape-restricted (only the range/indices/collection
-receivers above); any other `every` returns null and falls through to a loud "outside
-fragment" skip, so an in-the-wild `every` is never silently reinterpreted. The
-existential `any` and full retirement of the `Forall` helper (migrating its remaining
-internal uses) stay open; `Forall.range` still works for back-compat.
-
-If that contract-position restriction proves fragile, the fallback is an
-**annotation** surface rather than a method idiom — and there is precedent:
-jqwik already uses `@Forall` for universal quantification in property-based
-testing, so the spelling is familiar to Groovy/Java developers. An annotation is
-unambiguous by construction (it is unmistakably a spec, never confused with an
-in-the-wild `every`/`any` call), at the cost of reading less like an inline
-boolean and composing less naturally with `&&` inside a larger contract. Like the
-diagnostic wording, the right surface is best chosen *after* the quantifier shape
-settles in Phase 6; `Forall.range` is the spike, not the committed syntax.
-
-**Deliberately not done early.** Until the capability set settles (Phase 6
-especially), new diagnostic and authoring shapes keep appearing, and pinning the
-wording now would only churn. That settling has now happened, so most of the surface
-has landed: the native authoring idioms (above), the accessor vocabulary
-(`a.length`/`xs.size()`), and the runtime-exception wording
-(`IndexOutOfBoundsException`/`ArithmeticException`/`NullPointerException`). All were
-`Reporter`/encoder-presentation changes with no solver risk — the predicted shape.
-What remains is the concrete failing-call *repro* (`g(new int[0], -1)`), whose entire
-payoff is adoption: the gap between a tool people trust and one they turn off because
-its errors read like a proof transcript.
+**Why it waited.** Pinning diagnostic/authoring wording before the capability set settled
+(Phase 6 especially) would only have churned. With the surface now landed, the payoff is
+adoption: the gap between a tool people trust and one they turn off because its errors read like
+a proof transcript.
 
 ---
 

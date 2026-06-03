@@ -50,6 +50,7 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Cross-boundary nullity/size at call sites** | `@Requires` | ✅ Phase 4 |
 | **Value-flow: safety implied by an assignment** | *(implicit)* | ✅ Phase 5 |
 | **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
+| **Short-circuit guard path conditions** | `i > 0 && a[i - 1] < a[i]` | ✅ Phase 5 |
 | **Bounded-universal quantifiers over arrays** | `Forall.range(lo, hi) { … a[it] … }` | ✅ Phase 6 |
 | **Native GDK quantifier idioms** | `(lo..<hi).every{…}`, `xs.indices.every{…}`, `xs.every{ it… }` | ✅ Phase 9 |
 | **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
@@ -57,26 +58,125 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
 | **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
 | **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
+| **Flow-sensitive precondition (use the preceding call's `@Ensures`)** | `sort(a, n-1); insert(a, n-1)` | ✅ Phase 7 (slice 4) |
+| **Recursive insertion sort — *sortedness*, end-to-end** | `insert` + `sort` by induction | ✅ Phase 7 |
 | **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
 | **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
 | **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
-| In-place sort, unbounded quantifiers, 32-bit overflow | — | ⏳ later |
+| Sort *permutation* (multiset + `old`), unbounded quantifiers, 32-bit overflow | — | ⏳ later |
 
-Example diagnostic:
+## Examples
 
+Each snippet below is compiled under `@TypeChecked(extensions = 'verification.VerifyChecker')`,
+so the proofs run at **compile time**. The contracts are stock `groovy.contracts`
+annotations, so the same `@Requires`/`@Ensures`/`@Invariant` still execute as ordinary
+runtime checks when verification is off.
+
+**Postconditions — the contract is the spec.** Z3 proves the body satisfies `@Ensures`:
+
+```groovy
+@Ensures({ result >= a && result >= b })
+static int max(int a, int b) { a >= b ? a : b }
+```
+
+Get the body wrong — return the *smaller* (`a >= b ? b : a`) — and the proof fails at compile
+time with an input that breaks it:
+
+```
+[Static type checking] - Cannot prove postcondition of max holds on this return path
+    ensured: ((result >= a) && (result >= b))
+    counterexample: a = -1, b = 0
+    fails on: max(-1, 0)
+```
+
+**Loop invariants & termination.** The invariant carries the proof across iterations and
+`@Decreases` shows the loop ends — so the postcondition `result == n` is *proven of the
+computed value*, not assumed. (Recursion is handled the same way: a method-level
+`@Decreases` lets the method's own `@Ensures` serve as the inductive hypothesis at the
+recursive call.)
+
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result == n })
+static int countUp(int n) {
+    int i = 0
+    @Invariant({ 0 <= i && i <= n })
+    @Decreases({ n - i })
+    while (i < n) { i = i + 1 }
+    return i
+}
+```
+
+**Bounded quantifiers over arrays — in the idiom you'd already write.** A *sorted*
+precondition (every element ≤ its successor) lets the checker conclude adjacent elements
+are ordered. The quantifier is plain GDK Groovy, so the runtime contract evaluates it too:
+
+```groovy
+@Requires({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && 0 <= k && k + 1 < a.length })
+@Ensures({ result <= 0 })
+static int diff(int[] a, int k) { a[k] - a[k + 1] }
+```
+
+Drop the `every { … }` precondition and the claim no longer holds — and the counterexample is
+a concrete array, with the offending elements reconstructed (here a decreasing adjacent pair):
+
+```
+[Static type checking] - Cannot prove postcondition of diff holds on this return path
+    ensured: (result <= 0)
+    counterexample: a.length = 2, k = 0
+    fails on: diff([21239, 21238] as int[], 0)
+```
+
+**Putting it together — a verified sort.** A recursive insertion sort whose result is
+*proven sorted*: `insert` places `a[i]` into the sorted prefix (a store, by induction on
+`i`), and `sort` composes it (by induction on `n`, relying on the `@Ensures` of the
+`sort(a, n-1)` call right before `insert`). No loops — the recursion *is* the proof.
+
+```groovy
+@Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
+@Ensures({ (0..<i).every { a[it] <= a[it + 1] } })
+@Decreases({ i })
+static void insert(int[] a, int i) {
+    if (i > 0 && a[i] < a[i - 1]) {
+        int t = a[i]; a[i] = a[i - 1]; a[i - 1] = t
+        insert(a, i - 1)
+    }
+}
+
+@Requires({ 0 <= n && n <= a.length })
+@Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } })
+@Decreases({ n })
+static void sort(int[] a, int n) {
+    if (n > 1) { sort(a, n - 1); insert(a, n - 1) }
+}
+```
+
+This proves *sortedness* — the elements come out in order. It does **not** yet prove
+*permutation* (that the output is a rearrangement of the input), which needs a multiset
+model and `old(a)`; so a "sort" that zeroed the array would still pass here. Sortedness is
+the harder-looking half and the part the order-reasoning machinery (quantifiers + induction)
+makes reachable; permutation is tracked in the roadmap.
+
+**Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
+safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
+can't prove safe fails the build the way the JVM would name it, plus an input that triggers it:
+
+```groovy
+static int g(int[] a, int i) { a[i] }   // index never checked
+```
 ```
 [Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
     obligation: 0 <= i && i < a.size()
     counterexample: a.size() = 0, i = -1
+    fails on: g(new int[0], -1)
 ```
 
-The headline mirrors the exception a developer would actually hit at runtime —
-`IndexOutOfBoundsException`, `ArithmeticException: Division by zero`,
-`NullPointerException: Cannot invoke method size() on null object` — while the
-obligation and counterexample add what a stack trace can't: *why* it can't be ruled
-out, and an input that triggers it. The size term echoes the accessor the developer
-wrote (`xs.size()` / `a.length`), defaulting to `.size()` — Groovy's universal size
-idiom, valid for arrays too — for an implicit access like `a[i]`. (Phase 9.)
+The headline mirrors the exception a developer would actually hit
+(`ArithmeticException: Division by zero`, `NullPointerException: Cannot invoke method
+size() on null object`, …); the `fails on:` line reconstructs a runnable input — scalars
+and a null receiver exact, solver-constrained array elements pinned as literals
+(`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
+(`new int[3]`).
 
 ## Building & testing
 
@@ -99,14 +199,24 @@ bad ones fail with the expected diagnostic.
 
 Verification is sound *within* a deliberately small fragment and **loudly
 unsound outside it**: anything the encoder cannot model emits a "skipped"
-warning rather than passing silently. The fragment is integer-linear
-arithmetic, comparisons, boolean connectives, the size/nullity oracles above,
-array contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
-bounded-universal quantifiers — written either as `Forall.range` or as the native GDK
-idioms `(lo..<hi).every{…}` / `xs.indices.every{…}` / `xs.every{ it… }`, conditional
-(`?:`) expressions, and fuel-bounded inlining of contract-free pure functions — and, for
-bodies, straight-line code, `if`/`else`, single-assignment locals, and a single annotated `while` loop.
-See `Encoder` and the roadmap for the exact boundaries.
+warning rather than passing silently. In expressions the fragment is:
+
+- integer `+`, `-`, and *linear* `*` — a product needs a constant operand, but any
+  closed constant subterm is folded first, so `(2 + 2) * (2 + 2)` and `a[(1 + 1) * 2]`
+  are fine; `/` and `%` are checked for divide-by-zero but not otherwise modelled;
+- comparisons, the boolean connectives `&&`/`||`/`!`, and the conditional `?:` — all
+  short-circuit-aware, so a guard's left operand protects accesses in its right
+  (`i > 0 && a[i - 1] < a[i]`) and a `?:` branch is checked under its condition;
+- the size / nullity / membership oracles from the table above
+  (`xs.size()`, `x == null`, `xs.contains(y)`, `x.equals(y)`, `isEmpty()`);
+- array/list contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
+  bounded-universal quantifiers — `Forall.range` or the native GDK idioms
+  `(lo..<hi).every{…}` / `xs.indices.every{…}` / `xs.every{ it… }`;
+- fuel-bounded inlining of contract-free pure functions (a closed call like
+  `pow2(10)` is evaluated to a literal, a symbolic one unfolded).
+
+For method bodies: straight-line code, `if`/`else`, single-assignment locals, and a
+single annotated `while` loop. See `Encoder` and the roadmap for the exact boundaries.
 
 ## Architecture
 
