@@ -65,10 +65,18 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 Example diagnostic:
 
 ```
-[Static type checking] - Cannot prove array index in bounds at this access
-    obligation: 0 <= i && i < a.size
-    counterexample: a.size = 0, i = -1
+[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
+    obligation: 0 <= i && i < a.size()
+    counterexample: a.size() = 0, i = -1
 ```
+
+The headline mirrors the exception a developer would actually hit at runtime —
+`IndexOutOfBoundsException`, `ArithmeticException: Division by zero`,
+`NullPointerException: Cannot invoke method size() on null object` — while the
+obligation and counterexample add what a stack trace can't: *why* it can't be ruled
+out, and an input that triggers it. The size term echoes the accessor the developer
+wrote (`xs.size()` / `a.length`), defaulting to `.size()` — Groovy's universal size
+idiom, valid for arrays too — for an implicit access like `a[i]`. (Phase 9.)
 
 ## Building & testing
 

@@ -75,9 +75,9 @@ the same taxonomy applies here.
 **Diagnostic:**
 
 ```
-Cannot prove array index in bounds at this access
-    obligation: 0 <= i && i < a.size
-    counterexample: a.size = 0, i = -1
+Possible IndexOutOfBoundsException: index may be out of bounds
+    obligation: 0 <= i && i < a.size()
+    counterexample: a.size() = 0, i = -1
 ```
 
 ```groovy
@@ -572,6 +572,32 @@ The distinction that scopes this phase — **two kinds of diagnostic:**
   — a runnable repro, the way a developer would demonstrate the bug themselves.
   The same applies to division (`ArithmeticException: Division by zero`) and null
   dereference (`Cannot invoke method size() on null object`).
+
+  *Accessor vocabulary — shipped.* The array-bounds obligation and **every**
+  counterexample now render the size oracle as the accessor the developer actually
+  *wrote* — `a.length`, `xs.size()` — instead of the internal `a.size` symbol. The
+  spelling is harvested by scanning the method's contracts and body for the receiver's
+  `.length`/`.size`/`.size()` form (first seen wins); a receiver never written with a
+  size accessor (a plain `a[i]`) falls back to `.size()`, Groovy's universal idiom,
+  which is valid for arrays too. The engine keeps `a.size` internally (obligation and
+  counterexample still share one symbol); the rename is applied once at the solver
+  boundary (`shown(check())`), so it is a pure `Reporter`/presentation change with no
+  engine or solver risk. Echoing the source spelling — rather than inferring `.length`
+  from the array type — means an array a developer chose to size with `.size()` reads
+  back as they wrote it.
+
+  *Runtime-exception wording — shipped.* The refuted head of each implicit-safety
+  obligation now mirrors the exception a developer would actually hit: array/list
+  bounds → `Possible IndexOutOfBoundsException: index may be out of bounds` (the
+  superclass covers both arrays and lists without inferring which), division/modulo →
+  `Possible ArithmeticException: Division by zero`, and a null receiver → Groovy's own
+  `Possible NullPointerException: Cannot invoke method size() on null object` (the
+  invoked method name is threaded through from the call site). The obligation and
+  counterexample lines are unchanged — they carry the verification detail a bare stack
+  trace lacks. Only the *refuted* head changes; the "could not decide" (UNKNOWN) head
+  keeps its verification vocabulary, since that case has no runtime analogue (see the
+  next bullet). Still open: the concrete failing-call repro (`g(new int[0], -1)`),
+  which needs the counterexample reconstructed as a runnable call.
 - **Those with no code equivalent.** Loop-invariant establishment/preservation,
   termination, "could not decide", and the quantifier obligations of
   [Phase 6](#phase-6--quantifiers-shipped) have no runtime analogue to borrow. Forcing a
@@ -630,11 +656,14 @@ settles in Phase 6; `Forall.range` is the spike, not the committed syntax.
 
 **Deliberately not done early.** Until the capability set settles (Phase 6
 especially), new diagnostic and authoring shapes keep appearing, and pinning the
-wording now would only churn. The internal `a.size` vocabulary stays for the moment — it is
-accurate and internally consistent (the obligation and counterexample share the
-symbol). When the time comes this is a `Reporter`-layer change — no engine or
-solver risk — whose entire payoff is adoption: the gap between a tool people trust
-and one they turn off because its errors read like a proof transcript.
+wording now would only churn. That settling has now happened, so most of the surface
+has landed: the native authoring idioms (above), the accessor vocabulary
+(`a.length`/`xs.size()`), and the runtime-exception wording
+(`IndexOutOfBoundsException`/`ArithmeticException`/`NullPointerException`). All were
+`Reporter`/encoder-presentation changes with no solver risk — the predicted shape.
+What remains is the concrete failing-call *repro* (`g(new int[0], -1)`), whose entire
+payoff is adoption: the gap between a tool people trust and one they turn off because
+its errors read like a proof transcript.
 
 ---
 

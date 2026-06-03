@@ -110,20 +110,24 @@ class Reporter {
 
     // ---- Implicit safety obligations (array bounds, division, null deref) ----
 
-    static String formatIndexBounds(String indexText, String receiver, CheckResult result) {
-        implicit("Cannot prove array index in bounds at this access",
-            "0 <= ${indexText} && ${indexText} < ${receiver}.size",
+    static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result) {
+        // Refuted heads mirror the exception a developer would actually hit (Phase 9). The general
+        // IndexOutOfBoundsException covers both arrays (AIOOBE) and lists without inferring which.
+        implicit("Possible IndexOutOfBoundsException: index may be out of bounds",
+            "0 <= ${indexText} && ${indexText} < ${sizeTerm}",
             "Could not decide array index bounds", result)
     }
 
     static String formatDivisionByZero(String divisorText, CheckResult result) {
-        implicit("Cannot prove divisor is non-zero at this division",
+        implicit("Possible ArithmeticException: Division by zero",
             "(${divisorText}) != 0",
             "Could not decide divisor non-zero", result)
     }
 
-    static String formatNullDereference(String receiver, CheckResult result) {
-        implicit("Cannot prove receiver is non-null at this dereference",
+    static String formatNullDereference(String receiver, String method, CheckResult result) {
+        // Groovy's own NPE message for a null receiver: "Cannot invoke method size() on null object".
+        String invoked = method ? "method ${method}()" : "a method"
+        implicit("Possible NullPointerException: Cannot invoke ${invoked} on null object",
             "${receiver} != null",
             "Could not decide receiver non-null", result)
     }

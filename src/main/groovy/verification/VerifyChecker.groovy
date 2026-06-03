@@ -27,13 +27,16 @@ import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.builder.AstBuilder
+import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
@@ -93,10 +96,103 @@ class VerifyChecker extends TypeCheckingExtension {
     private MethodNode currentMethod
     /** Closed pure-function evaluator over the current class (Phase 8a); null when no class context. */
     private PureEvaluator currentEvaluator
+    /**
+     * Per-method map from a size-oracle receiver name to the accessor the developer actually wrote
+     * for it ({@code .length} / {@code .size()}), harvested from the method's contracts and body
+     * (Phase 9 diagnostics). The encoder keeps its internal {@code recv.size} symbol; this is purely
+     * how it is *displayed*. Receivers with no written size accessor (e.g. a plain {@code a[i]}) fall
+     * back to {@code .size()} — Groovy's universal size idiom, valid for arrays too.
+     */
+    private Map<String, String> sizeAccessors = [:]
 
     /** New Encoder wired with the current class's pure-function evaluator. */
     private Encoder mkEncoder(SmtSession session) {
         new Encoder(session, currentEvaluator)
+    }
+
+    /** The accessor the developer wrote for {@code recv}'s size; defaults to {@code .size()}. */
+    private String sizeAccessor(String recv) {
+        sizeAccessors.getOrDefault(recv, '.size()')
+    }
+
+    /**
+     * Render a {@link CheckResult}'s counterexample in the programmer's vocabulary: the internal
+     * {@code recv.size} oracle key becomes {@code recv.length} / {@code recv.size()}. Applied at the
+     * solver boundary so every diagnostic shares the rendering; a no-op when there is no model.
+     */
+    private CheckResult shown(CheckResult r) {
+        if (r == null || r.counterexample == null || r.counterexample.isEmpty()) return r
+        Map<String, Long> renamed = new LinkedHashMap<String, Long>()
+        r.counterexample.each { String k, Long v ->
+            if (k.endsWith('.size')) {
+                String recv = k.substring(0, k.length() - '.size'.length())
+                renamed.put(recv + sizeAccessor(recv), v)
+            } else {
+                renamed.put(k, v)
+            }
+        }
+        r.counterexample = renamed
+        r
+    }
+
+    /**
+     * Harvest, into {@link #sizeAccessors}, the size accessor the developer wrote for each receiver —
+     * scanning the method's contracts (re-parsed) and its clean body for {@code recv.length},
+     * {@code recv.size} and {@code recv.size()}. First spelling seen wins; receivers never written with
+     * a size accessor keep the {@code .size()} default.
+     */
+    private void buildSizeAccessors(MethodNode node) {
+        sizeAccessors = new HashMap<String, String>()
+        for (String kind : ['requires', 'ensures', 'decreases']) {
+            try {
+                Expression c = contractAstFor(node, kind)
+                if (c != null) c.visit(accessorScanner())
+            } catch (Throwable ignored) {
+            }
+        }
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body != null) {
+            try {
+                body.visit(accessorScanner())
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** A visitor that records {@code recv.length} / {@code recv.size} / {@code recv.size()} spellings. */
+    private ClassCodeVisitorSupport accessorScanner() {
+        new ClassCodeVisitorSupport() {
+            protected SourceUnit getSourceUnit() { null }
+            @Override
+            void visitPropertyExpression(PropertyExpression pe) {
+                String r = receiverName(pe.objectExpression)
+                if (r != null) {
+                    if (pe.propertyAsString == 'length') sizeAccessors.putIfAbsent(r, '.length')
+                    else if (pe.propertyAsString == 'size') sizeAccessors.putIfAbsent(r, '.size()')
+                }
+                super.visitPropertyExpression(pe)
+            }
+            @Override
+            void visitMethodCallExpression(MethodCallExpression mce) {
+                if (mce.methodAsString == 'size' && noArgs(mce)) {
+                    String r = receiverName(mce.objectExpression)
+                    if (r != null) sizeAccessors.putIfAbsent(r, '.size()')
+                }
+                super.visitMethodCallExpression(mce)
+            }
+        }
+    }
+
+    private static String receiverName(Expression e) {
+        e instanceof VariableExpression ? ((VariableExpression) e).name : null
+    }
+
+    private static boolean noArgs(MethodCallExpression mce) {
+        Expression a = mce.arguments
+        if (a instanceof ArgumentListExpression) return ((ArgumentListExpression) a).expressions.isEmpty()
+        if (a instanceof TupleExpression) return ((TupleExpression) a).expressions.isEmpty()
+        true
     }
 
     VerifyChecker(StaticTypeCheckingVisitor visitor) {
@@ -113,6 +209,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentFacts = new PathFacts()
         currentMethod = node
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
+        buildSizeAccessors(node)
         if (node.code != null) {
             try {
                 node.code.visit(currentFacts)
@@ -166,6 +263,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentFacts = null
             currentMethod = null
             currentEvaluator = null
+            sizeAccessors = [:]
         }
     }
 
@@ -421,9 +519,10 @@ class VerifyChecker extends TypeCheckingExtension {
             Object size = enc.sizeOf(ix.receiver)
             Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, size)])
             s.assertExpr(s.not(inBounds))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatIndexBounds(ix.index.text, ix.receiver, r), ix.node)
+                addStaticTypeError(Reporter.formatIndexBounds(
+                    ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), ix.node)
             }
             return
         }
@@ -436,7 +535,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 return
             }
             s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(Reporter.formatDivisionByZero(dv.divisor.text, r), dv.node)
             }
@@ -447,9 +546,9 @@ class VerifyChecker extends TypeCheckingExtension {
             // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
             // check: SAT means the receiver can be null on this path.
             s.assertExpr(enc.nullityOf(df.receiver))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatNullDereference(df.receiver, r), df.node)
+                addStaticTypeError(Reporter.formatNullDereference(df.receiver, df.method, r), df.node)
             }
         }
     }
@@ -551,7 +650,7 @@ class VerifyChecker extends TypeCheckingExtension {
 
     @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
     @CompileStatic private static class DivideSite { ASTNode node; Expression divisor }
-    @CompileStatic private static class DerefSite  { ASTNode node; String receiver }
+    @CompileStatic private static class DerefSite  { ASTNode node; String receiver; String method }
 
     /**
      * Walks a method body once, collecting the implicit-precondition sites:
@@ -595,7 +694,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 // name (static call) or an unresolved dynamic reference.
                 boolean realVar = accessed instanceof Parameter || accessed instanceof VariableExpression
                 if (realVar && v.name != 'this' && v.name != 'super') {
-                    derefSites.add(new DerefSite(node: mce, receiver: v.name))
+                    derefSites.add(new DerefSite(node: mce, receiver: v.name, method: mce.methodAsString))
                 }
             }
             super.visitMethodCallExpression(mce)
@@ -718,7 +817,7 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             session.assertExpr(session.not(post))
 
-            CheckResult r = session.check()
+            CheckResult r = shown(session.check())
             if (r.status == CheckResult.Status.VERIFIED) return
 
             ASTNode anchor = (p.result != null && p.result.lineNumber > 0) ?
@@ -809,7 +908,7 @@ class VerifyChecker extends TypeCheckingExtension {
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             LoopEncoder.symExec(site.prefix, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopEstablishment(node.name, invText(site), r), site.loopStmt)
@@ -827,7 +926,7 @@ class VerifyChecker extends TypeCheckingExtension {
             LoopEncoder.symExec(site.spec.body, enc, s)
             // Re-translating the invariant reads the post-body bindings → inv'.
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopPreservation(node.name, invText(site), r), site.loopStmt)
@@ -846,7 +945,7 @@ class VerifyChecker extends TypeCheckingExtension {
             LoopEncoder.symExec(site.spec.body, enc, s)
             Object newV = LoopEncoder.tr(enc, site.spec.variant, "variant")
             s.assertExpr(s.not(s.and([s.lt(newV, oldV), s.ge(newV, s.intLit(0L))])))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopProgress(node.name, site.spec.variant.text, r), site.loopStmt)
@@ -865,7 +964,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
             enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
             s.assertExpr(s.not(LoopEncoder.tr(enc, postAst, "postcondition")))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 ASTNode anchor = (resultExpr != null && resultExpr.lineNumber > 0) ?
                     (ASTNode) resultExpr : (ASTNode) site.loopStmt
@@ -1033,7 +1132,7 @@ class VerifyChecker extends TypeCheckingExtension {
             session.assertExpr(session.not(contractSmt))
 
             // 4. Check.
-            CheckResult r = session.check()
+            CheckResult r = shown(session.check())
             switch (r.status) {
                 case CheckResult.Status.VERIFIED:
                     return  // silent success
@@ -1151,7 +1250,7 @@ class VerifyChecker extends TypeCheckingExtension {
             // Obligation: 0 <= measure[args] && measure[args] < measure[entry].
             Object obligation = s.and([s.le(s.intLit(0L), callMeasure), s.lt(callMeasure, entry)])
             s.assertExpr(s.not(obligation))
-            CheckResult r = s.check()
+            CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(Reporter.formatTerminationFailure(node.name, measureAst.text, r), callExpr as ASTNode)
             }

@@ -67,19 +67,19 @@ class VerifyHarness {
     static final List<Map> CASES = [
 
         // ---------- Phase 1: array bounds ----------
-        [group: 'P1 bounds', name: 'unguarded index refuted', expect: 'array index in bounds',
+        [group: 'P1 bounds', name: 'unguarded index refuted', expect: 'IndexOutOfBoundsException',
          src: tc('class C { static int g(int[] a, int i) { a[i] } }')],
         [group: 'P1 bounds', name: 'guarded index verified', ok: true,
          src: tc('class C { static int g(int[] a, int i) { if (i >= 0 && i < a.length) return a[i]; return -1 } }')],
 
         // ---------- Phase 1: division ----------
-        [group: 'P1 division', name: 'unguarded modulo refuted', expect: 'divisor is non-zero',
+        [group: 'P1 division', name: 'unguarded modulo refuted', expect: 'ArithmeticException: Division by zero',
          src: tc('class C { static int d(int x, int y) { x % y } }')],
         [group: 'P1 division', name: 'guarded modulo verified', ok: true,
          src: tc('class C { static int d(int x, int y) { if (y != 0) return x % y; return 0 } }')],
 
         // ---------- Phase 1: null dereference ----------
-        [group: 'P1 null', name: 'unguarded deref refuted', expect: 'non-null at this dereference',
+        [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',
          src: tc('class C { static int n(String s) { s.length() } }')],
         [group: 'P1 null', name: 'guarded deref verified', ok: true,
          src: tc('class C { static int n(String s) { if (s != null) return s.length(); return 0 } }')],
@@ -129,7 +129,7 @@ class VerifyHarness {
         [group: 'P5a value-flow', name: 'assignment-implied index verified', ok: true,
          src: tc('class C { @Requires({ a.length > 5 }) static int f(int[] a) { int j = 3; return a[j] } }')],
         // Same body without the precondition: a may be empty → refuted.
-        [group: 'P5a value-flow', name: 'unconstrained assignment index refuted', expect: 'array index in bounds',
+        [group: 'P5a value-flow', name: 'unconstrained assignment index refuted', expect: 'IndexOutOfBoundsException',
          src: tc('class C { static int f(int[] a) { int j = 3; return a[j] } }')],
         // Aliased counter: j == i, guard bounds i, precondition bounds a — needs value-flow + guard together.
         [group: 'P5a value-flow', name: 'aliased index under guard verified', ok: true,
@@ -152,7 +152,7 @@ class VerifyHarness {
                        }
                    }''')],
         // Same loop without n <= a.length: the array may be shorter than n → refuted.
-        [group: 'P5b loop-fused', name: 'in-loop index unbounded refuted', expect: 'array index in bounds',
+        [group: 'P5b loop-fused', name: 'in-loop index unbounded refuted', expect: 'IndexOutOfBoundsException',
          src: tc('''class C {
                        @Requires({ 0 <= n })
                        static int sum(int[] a, int n) {
@@ -254,6 +254,24 @@ class VerifyHarness {
                            while (i < n) { a[i] = 0; i = i + 1 }
                            return 0
                        }
+                   }''')],
+
+        // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------
+        // No size accessor written (just a[i]) → the universal Groovy idiom .size(), valid for arrays too.
+        [group: 'P9 diagnostics', name: 'implicit access defaults to .size()', expect: 'a.size()',
+         src: tc('class C { static int g(int[] a, int i) { a[i] } }')],
+        // The developer wrote a.length, so the obligation and counterexample echo .length.
+        [group: 'P9 diagnostics', name: 'written .length is echoed', expect: 'a.length',
+         src: tc('''class C {
+                       @Requires({ i < a.length })
+                       static int g(int[] a, int i) { a[i] }
+                   }''')],
+        // A collection's size, written as xs.size(), is echoed verbatim.
+        [group: 'P9 diagnostics', name: 'written .size() is echoed', expect: 'xs.size()',
+         src: tc('''class C {
+                       @Requires({ xs.size() > 5 })
+                       @Ensures({ result < 0 })
+                       static int f(List xs) { xs.size() }
                    }''')],
 
         // ---------- Phase 6: array update (store) ----------
