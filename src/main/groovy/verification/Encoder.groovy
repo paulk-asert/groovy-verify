@@ -551,6 +551,14 @@ class Encoder {
             return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
         }
 
+        // Sets.bounded(s, n) — the cardinality axiom (Phase 19): a set bounded by the domain [0, n).
+        // Lowered to card(s) <= n ∧ (card(s) < n ∨ ∀ i ∈ [0,n)· i ∈ s), a faithful boolean definition.
+        boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
+                         (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets')
+        if (m == 'bounded' && isSets && args.size() == 2) {
+            return translateSetsBounded(args.get(0), args.get(1))
+        }
+
         // Native GDK quantifier idioms (Phase 9) — the universal a Groovy developer would
         // actually write, mapped to the same bounded `forall`. Only the recognised
         // range/indices/collection shapes become quantifiers; any other `every` returns
@@ -682,6 +690,29 @@ class Encoder {
             handles.add(h)
         }
         return session.uninterpretedFunc(c.name, handles)
+    }
+
+    /**
+     * Lower {@code Sets.bounded(s, n)} (the cardinality axiom, Phase 19) to
+     * {@code card(s) <= n ∧ (card(s) < n ∨ ∀ i. 0 <= i < n ⟹ i ∈ s)} — "{@code s ⊆ [0,n)}":
+     * bounded by the domain, and full exactly when it covers the domain. A boolean combination of
+     * the (uninterpreted) cardinality and a bounded membership universal — both already modelled —
+     * so it is a faithful definition usable in both assume and goal positions, not a trusted axiom.
+     */
+    private Object translateSetsBounded(Expression setExpr, Expression nExpr) {
+        String key = setKeyFor(setExpr)
+        if (key == null) return null
+        Object nH = translate(nExpr)
+        if (nH == null) return null
+        Object setH = setFor(key)
+        Object card = cardOf(setH)
+        // ∀ i. 0 <= i < n ⟹ (select s i) == 1, with the select term as the instantiation trigger.
+        Object iv = session.boundIntVar('bnd$q' + (quantCounter++))
+        Object sel = session.select(setH, iv)
+        Object mem = session.eq(sel, session.intLit(1L))
+        Object range = session.and([session.le(session.intLit(0L), iv), session.lt(iv, nH)])
+        Object everyDomain = session.forall([iv], session.implies(range, mem), [sel])
+        session.and([session.le(card, nH), session.or([session.lt(card, nH), everyDomain])])
     }
 
     /**

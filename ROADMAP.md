@@ -988,6 +988,48 @@ named, well-understood gaps remaining — the former needing a stack/path model,
 
 ---
 
+## Phase 19 — The cardinality axiom: pigeonhole over a bounded domain  *(shipped)*
+
+**The link the uninterpreted cardinality was missing.** `card(s)` (Phase 16) tracks only its per-mutation
+deltas — it has no relationship to *which* elements a set holds, so `|s| <= n` for a set drawn from an
+`n`-element domain was not derivable. `Sets.bounded(s, n)` supplies that relationship — the **pigeonhole** —
+as a recognised contract predicate.
+
+**The encoding — a faithful definition, not a trusted axiom.** `Sets.bounded(s, n)` means exactly
+`s ⊆ [0, n)`, and the encoder lowers it to
+
+```
+card(s) <= n  ∧  (card(s) < n  ∨  ∀ i. 0 <= i < n ⟹ i ∈ s)
+```
+
+i.e. "bounded by the domain, and *full* (`card == n`) exactly when it covers `[0, n)`". Both pieces — the
+cardinality comparison and the bounded membership universal — are already modelled, so this is a boolean
+*definition* (sound in both assume and goal positions), not an axiom injected behind the user's back. The
+runtime helper `Sets.bounded` evaluates the same predicate, so the groovy-contracts runtime check agrees.
+`Encoder` recognises the `Sets.bounded(s, n)` call shape (like `Forall.range`) and emits the lowering, the
+membership `select(s, i)` term serving as the universal's instantiation trigger.
+
+From it the engine **derives** the two facts cardinality-driven search needs, neither previously provable:
+
+- **FULL ⟹ MEMBER** — `Sets.bounded(s,n) ∧ s.size() == n ∧ 0 <= u < n ⊢ u ∈ s` (a full bounded set is the
+  whole domain).
+- **HOLE ⟹ NOT FULL** — `Sets.bounded(s,n) ∧ 0 <= u < n ∧ u ∉ s ⊢ s.size() < n` (a missing in-domain node
+  means room remains) — exactly the coverage-branch fact a cardinality-terminating DFS needs.
+
+Drop `Sets.bounded` and both refute: the uninterpreted size says nothing about membership.
+
+**The honest boundary — why this does not, by itself, close whole-DFS unconditional coverage.**
+`Sets.bounded` gives the pigeonhole *consequences*, but a recursive DFS must also **preserve** boundedness
+across the add that *fills* the set — and proving `Sets.bounded(s ∪ {u}, n)` when `|s| = n-1` requires the
+*converse* counting: `|s| = n-1 ∧ s ⊆ [0,n) ⟹ s is [0,n) minus exactly one element`, so the fresh in-domain
+`u` is precisely that element. The definitional `Sets.bounded` does not yield "exact membership from exact
+count". Closing it needs a **bounded-sum cardinality** `bcard(s, k) = Σ_{i<k} (i ∈ s ? 1 : 0)` with its
+recursive defining axioms, plus the monotonicity/exact-count lemmas proved by induction (Phase 7) — at which
+point `card(s)` over a domain *equals* `bcard(s, n)` and the counting closes. That bounded-sum cardinality is
+the next set-reasoning increment; `Sets.bounded` is the usable pigeonhole layer above the uninterpreted
+`card` and below it, and stands on its own (the `HOLE ⟹ NOT FULL` fact is the DFS coverage branch in
+isolation).
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

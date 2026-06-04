@@ -270,10 +270,35 @@ class C {
 
 The same soundness half also goes through under the set-cardinality measure `@Decreases({ n - visited.size() })`
 — the DFS-shaped termination from Phase 16. A traversal that *removes* a node breaks monotonic growth and
-refutes. **The honest boundary:** *completeness* (every reachable node is visited — the closure fixpoint) and
-unconditional `start ∈ visited` are **not** proved here. The first needs the DFS frontier/stack invariant
-(not a simple inductive set property); the second needs a domain-cardinality fact (`|S| ≤ n` for `S ⊆ 0..<n`,
-so a "full" `visited` is the whole domain) that uninterpreted cardinality lacks — both recorded in the roadmap.
+refutes.
+
+**The cardinality axiom — `Sets.bounded`.** The uninterpreted set size (Phase 16) knows only its per-mutation
+deltas — it has no link to *which* elements a set holds. `Sets.bounded(s, n)` supplies the **pigeonhole**
+relationship for a set whose elements live in a finite domain `[0, n)`: it means exactly `s ⊆ [0, n)`, and
+lowers to `s.size() <= n && (s.size() < n || (0..<n).every { it in s })` — a faithful boolean definition over
+the cardinality and a bounded membership universal (no trusted axiom). From it the engine *derives* the two
+facts cardinality-driven search rests on:
+
+```groovy
+@Requires({ Sets.bounded(s, n) && s.size() == n && 0 <= u && u < n })
+@Ensures({ u in s })                       // FULL ⇒ MEMBER: a full bounded set covers the whole domain
+static int f(Set<Integer> s, int n, int u) { 0 }
+
+@Requires({ Sets.bounded(s, n) && 0 <= u && u < n && !(u in s) })
+@Ensures({ s.size() < n })                 // HOLE ⇒ NOT FULL: a missing in-domain node means room remains
+static int g(Set<Integer> s, int n, int u) { 0 }
+```
+
+Drop `Sets.bounded` from either and the claim refutes — without it the (uninterpreted) size says nothing
+about membership. The `HOLE ⇒ NOT FULL` fact is exactly what a cardinality-terminating DFS needs at its
+coverage branch.
+
+**The honest boundary.** *Completeness* (every reachable node visited — the closure fixpoint) needs the DFS
+frontier/stack invariant, not a simple inductive set property. And *whole-traversal* unconditional
+`start ∈ visited` still isn't closed: `Sets.bounded` gives the pigeonhole *consequences*, but **preserving**
+boundedness across the add that fills the set needs the converse counting (`|s| = n-1 ⇒ exactly one hole`),
+which wants a bounded-sum cardinality `bcard(s,k) = Σ_{i<k}(i∈s?1:0)` proved by induction — the next set
+increment. Both gaps are recorded in the roadmap.
 
 ## What's demonstrated
 
@@ -319,9 +344,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Set-cardinality `@Decreases` measure (DFS-shaped termination)** | `@Decreases({ n - s.size() })` on a recursion that adds a fresh element | ✅ Phase 16 |
 | **Finite maps — lookup, key membership, put, key-set cardinality law** | `m[k]`, `m.get(k)`, `k in m`, `m.containsKey(k)`, `m.put(k,v)`, `m.size()` over `Map<Integer,Integer>` | ✅ Phase 17 |
 | **Reachability — recursive graph traversal: visited grows (soundness) + node covered (progress)** | DFS over a `Map<Node,Node>` graph marking a `Set<Node>`, fuel- or cardinality-terminated | ✅ Phase 18 |
+| **Cardinality axiom — pigeonhole over a bounded domain** | `Sets.bounded(s, n)` ⇒ `s.size() <= n`, full ⇒ covers `[0,n)`, a hole ⇒ not full | ✅ Phase 19 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and unconditional `start ∈ visited` | — | ⏳ later (needs a domain-cardinality axiom / frontier invariant) |
+| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and whole-traversal unconditional `start ∈ visited` | — | ⏳ later (needs a bounded-sum cardinality `bcard` + induction, and a frontier/stack invariant) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
