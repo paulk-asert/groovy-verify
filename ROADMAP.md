@@ -1030,6 +1030,56 @@ the next set-reasoning increment; `Sets.bounded` is the usable pigeonhole layer 
 `card` and below it, and stands on its own (the `HOLE ⟹ NOT FULL` fact is the DFS coverage branch in
 isolation).
 
+---
+
+## Phase 20 — Bounded-sum cardinality `bcount`: properties earned by induction  *(shipped)*
+
+**The genuine count — and its foundational properties are *proved*, not axiomatised.** The bounded sum
+`bcount(s, k) = Σ_{i<k} (i ∈ s ? 1 : 0)` is the real count of `s`'s members in `[0, k)` — the quantity
+`Sets.bounded` (Phase 19) approximated and the uninterpreted `card` (Phase 16) had no handle on. The notable
+part: it is *just an ordinary recursive Groovy method*, and its defining properties fall out of the framework's
+own induction (`@Decreases` on `k`, the self-`@Ensures` as the inductive hypothesis, Phase 7) — there is no
+built-in `bcount` and no trusted axiom.
+
+```groovy
+@Requires({ k >= 0 })
+@Ensures({ 0 <= result && result <= k })        // the BOUND, by induction on k
+@Decreases({ k })
+static int bcount(Set<Integer> s, int k) {
+    if (k == 0) return 0
+    int rest = bcount(s, k - 1)                  // Assign-form call → the IH applies: 0 <= rest <= k-1
+    return rest + ((k - 1) in s ? 1 : 0)         // (k-1) in s is a 0/1 membership ite
+}
+```
+
+**Two foundational lemmas, both verified:**
+
+- **Bound** — `0 <= bcount(s,k) <= k`. This is precisely the converse-counting *upper bound* the uninterpreted
+  `card` could not provide (Phase 18's termination needed it; Phase 19's `Sets.bounded` could only *assume* it).
+- **Full domain ⟹ count = k** — the same recursion under `@Requires({ (0..<k).every { it in s } })` proves
+  `result == k`, tying the count to actual membership. The recursive call's precondition
+  (`(0..<k-1).every { it in s }`) follows from the caller's over `[0, k)` by bounded-quantifier instantiation.
+
+The bound is *earned*: a body that over-counts (`rest + 2`) refutes `result <= k`. No machinery was added —
+this is the recursive-function induction (Phase 7) over the set membership and bounded quantifiers (Phases
+9/16) already present, which is itself the point: the bounded-sum cardinality is *in reach of the existing
+fragment*.
+
+**What this unlocks, and what is still open for whole-DFS coverage.** `bcount` supplies the counting facts
+`card`/`Sets.bounded` lacked. To finish wiring it into a DFS that proves *unconditional* coverage, two steps
+remain, both needing **recursive-definition reasoning inside contracts** (so a `bcount(...)` term carries its
+defining equation rather than reducing to an uninterpreted symbol):
+
+- the **per-add law** — `bcount(s ∪ {u}, k) = bcount(s, k) + (0 <= u < k ∧ u ∉ s ? 1 : 0)` — the `bcount`
+  analogue of the per-store `count` law (Phase 12), threading the count across a set mutation; and
+- **cross-lemma use** — referencing `bcount` in one method's contract and discharging it from another's
+  proved `@Ensures` (today a `bcount(s,k)` term *inside a contract* is modelled as an uninterpreted function,
+  so its definition isn't visible across the lemma boundary).
+
+With those, `card(s)` over a domain *equals* `bcount(s, n)`, the "`|s| = n-1` ⟹ exactly one hole" preservation
+closes, and the cardinality-terminating DFS proves unconditional coverage. The foundational lemmas here are the
+base that development builds on.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

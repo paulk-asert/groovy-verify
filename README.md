@@ -297,8 +297,29 @@ coverage branch.
 frontier/stack invariant, not a simple inductive set property. And *whole-traversal* unconditional
 `start ∈ visited` still isn't closed: `Sets.bounded` gives the pigeonhole *consequences*, but **preserving**
 boundedness across the add that fills the set needs the converse counting (`|s| = n-1 ⇒ exactly one hole`),
-which wants a bounded-sum cardinality `bcard(s,k) = Σ_{i<k}(i∈s?1:0)` proved by induction — the next set
-increment. Both gaps are recorded in the roadmap.
+which wants the bounded-sum cardinality below.
+
+**Bounded-sum cardinality — `bcount`, earned by induction.** The genuine count of a set's members in a
+domain, `bcount(s,k) = Σ_{i<k} (i ∈ s ? 1 : 0)`, is just an ordinary recursive method — and its foundational
+properties are proved by the framework's *own* induction (`@Decreases` on `k`, the self-`@Ensures` as the
+hypothesis), no built-in axiom:
+
+```groovy
+@Requires({ k >= 0 })
+@Ensures({ 0 <= result && result <= k })          // the BOUND — the converse counting `card` lacked
+@Decreases({ k })
+static int bcount(Set<Integer> s, int k) {
+    if (k == 0) return 0
+    int rest = bcount(s, k - 1)
+    return rest + ((k - 1) in s ? 1 : 0)
+}
+```
+
+The same shape with `@Requires({ (0..<k).every { it in s } })` proves `result == k` — **full domain ⇒ count
+= k**, tying the count to actual membership. Break the recursion (`rest + 2`) and the bound refutes. These are
+the converse-counting facts the uninterpreted `card` and the definitional `Sets.bounded` couldn't reach.
+*Still open* to close whole-DFS coverage: `bcount`'s **per-add law** (`bcount(s∪{u},k) = bcount(s,k) + …`)
+and using `bcount` across lemmas, both needing recursive-definition reasoning inside contracts.
 
 ## What's demonstrated
 
@@ -345,9 +366,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Finite maps — lookup, key membership, put, key-set cardinality law** | `m[k]`, `m.get(k)`, `k in m`, `m.containsKey(k)`, `m.put(k,v)`, `m.size()` over `Map<Integer,Integer>` | ✅ Phase 17 |
 | **Reachability — recursive graph traversal: visited grows (soundness) + node covered (progress)** | DFS over a `Map<Node,Node>` graph marking a `Set<Node>`, fuel- or cardinality-terminated | ✅ Phase 18 |
 | **Cardinality axiom — pigeonhole over a bounded domain** | `Sets.bounded(s, n)` ⇒ `s.size() <= n`, full ⇒ covers `[0,n)`, a hole ⇒ not full | ✅ Phase 19 |
+| **Bounded-sum cardinality `bcount(s,k)` — bound & full-count, earned by induction** | recursive `bcount`; `0 <= bcount(s,k) <= k` and `(0..<k).every{it in s} ⇒ bcount==k` | ✅ Phase 20 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and whole-traversal unconditional `start ∈ visited` | — | ⏳ later (needs a bounded-sum cardinality `bcard` + induction, and a frontier/stack invariant) |
+| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and whole-traversal unconditional `start ∈ visited` | — | ⏳ later (needs `bcount`'s per-add law + definitional reasoning in contracts; and a frontier/stack invariant) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

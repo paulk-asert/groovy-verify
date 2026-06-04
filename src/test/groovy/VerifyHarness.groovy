@@ -1289,6 +1289,49 @@ class VerifyHarness {
                         @Ensures({ s.size() < n })
                         static int f(Set<Integer> s, int n, int u) { 0 }
                     }''')],
+
+        // ---------- Phase 20: bcount — the bounded-sum cardinality, properties earned by induction ----------
+        // bcount(s, k) = Σ_{i<k} (i ∈ s ? 1 : 0): the genuine count of s's members in [0, k), written as
+        // an ordinary recursive method. Its defining BOUND — 0 <= bcount(s,k) <= k — is the converse
+        // counting the uninterpreted `card` lacked, and the framework proves it by its OWN induction
+        // (@Decreases on k, self-@Ensures as the inductive hypothesis) — no built-in axiom.
+        [group: 'P20 bcount', name: 'bound lemma: 0 <= bcount(s,k) <= k', ok: true,
+         src: tc('''class C {
+                        @Requires({ k >= 0 })
+                        @Ensures({ 0 <= result && result <= k })
+                        @Decreases({ k })
+                        static int bcount(Set<Integer> s, int k) {
+                            if (k == 0) return 0
+                            int rest = bcount(s, k - 1)
+                            return rest + ((k - 1) in s ? 1 : 0)
+                        }
+                    }''')],
+        // FULL ⇒ COUNT = k: if every node of [0,k) is in s, the bounded count is exactly k. This ties the
+        // count to actual membership (the direction `Sets.bounded`'s pigeonhole gives), proved by induction
+        // — the recursion's @Requires `(0..<k-1).every{...}` follows from the caller's over [0,k).
+        [group: 'P20 bcount', name: 'full domain ⇒ bcount(s,k) == k', ok: true,
+         src: tc('''class C {
+                        @Requires({ k >= 0 && (0..<k).every { it in s } })
+                        @Ensures({ result == k })
+                        @Decreases({ k })
+                        static int bcount(Set<Integer> s, int k) {
+                            if (k == 0) return 0
+                            int rest = bcount(s, k - 1)
+                            return rest + ((k - 1) in s ? 1 : 0)
+                        }
+                    }''')],
+        // Soundness: the bound is earned, not assumed — a body that over-counts (rest + 2) breaks `<= k`.
+        [group: 'P20 bcount', name: 'over-counting breaks the bound', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ k >= 0 })
+                        @Ensures({ 0 <= result && result <= k })
+                        @Decreases({ k })
+                        static int bcount(Set<Integer> s, int k) {
+                            if (k == 0) return 0
+                            int rest = bcount(s, k - 1)
+                            return rest + 2
+                        }
+                    }''')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
