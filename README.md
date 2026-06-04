@@ -95,6 +95,23 @@ a concrete array, with the offending elements reconstructed (here a decreasing a
     fails on: diff([21239, 21238] as int[], 0)
 ```
 
+**Lists and boxed types — same reasoning, same syntax.** The encoder never inspects whether a value
+is `int` or `Integer`, or whether a sequence is an `int[]` or a `List` — it models every integer type
+as a mathematical integer and any subscripted, sized receiver as its contents. So `max` above proves
+identically declared `Integer max(Integer a, Integer b)`, and the sorted-`diff` holds verbatim over a
+`List<Integer>`, in the same idiom (`xs[i]`, `xs.size()`):
+
+```groovy
+@Requires({ (0..<xs.size() - 1).every { xs[it] <= xs[it + 1] } && 0 <= k && k + 1 < xs.size() })
+@Ensures({ result <= 0 })
+static int diff(List<Integer> xs, int k) { xs[k] - xs[k + 1] }
+```
+
+A `List<String>` index is bounds-checked the same way — the element type is irrelevant to the access.
+This covers list *index* read and subscript update today; the method-call idioms (`xs.get(i)` /
+`xs.set(i, v)`), size-changing mutation (`add`/`remove`), immutable-list detection, and element
+nullability are tracked in the roadmap.
+
 **Object state — instance fields, read and written.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
 the contract's entry `count` and exit `count` are different values, related by the assignment).
@@ -221,6 +238,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Multiset / `count` preservation (per-store law)** | `a.count(v) == old.a.count(v)` | ✅ Phase 12 |
 | **`@Modifies` framing — frame-check + caller-side havoc & sound inter-proc `old`** | `@Modifies({ this.a })` | ✅ Phase 13 |
 | **Fully verified in-place sort — *sorted ∧ permutation*** | recursive insertion sort under sound `@Modifies` | ✅ Phase 14 |
+| **Boxed scalars & index-accessed collections** | `Integer`, `Integer[]`, `List<Integer>` via `xs[i]` / `xs.size()` | ✅ (structural) |
+| List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Class `@Invariant`, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
