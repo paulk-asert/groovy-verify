@@ -1127,6 +1127,59 @@ in-domain `u` to a set whose count is `n-1` raises the count to `n`, which *forc
 `start ∈ visited`. That full-characterization axiom (and then the frontier/stack invariant for *completeness*)
 is the remaining work; the per-add law shipped here is its other half.
 
+---
+
+## Phase 22 — Full-characterization, and the end-to-end DFS unconditional coverage  *(shipped)*
+
+**The capstone of the sets/maps/cardinality arc: a cardinality-terminating DFS proves it reaches the node it
+is given — unconditionally.** The last axiom is the converse of Phase 20's *full ⇒ count*:
+
+```
+Sets.count(s, k) == k   ⟺   ∀ i. 0 <= i < k ⟹ i ∈ s        (count is full  ⟺  s covers [0, k))
+```
+
+Both directions are theorems of "count of members in `[0, k)`" (`k` members in `k` slots iff every slot is a
+member), so the encoder asserts the iff for every `Sets.count(s, k)` term (in `setCountOf`, alongside the
+bound axiom), the membership `select(s, i)` serving as the universal's trigger. The bounded-coverage `forall`
+is factored (`domainCoverageForall`) and shared with `Sets.bounded`.
+
+**Direct facts (verified):** `Sets.count(s,k) == k ∧ 0 <= u < k ⊢ u ∈ s` (full count forces every domain node
+in); the reverse `(0..<k).every{it∈s} ⊢ Sets.count(s,k) == k`; and the domain bite — `Sets.count(s,k) == k`
+says nothing about a `u` **outside** `[0, k)` (refuted).
+
+**The end-to-end result.** A DFS over a functional graph (`next : Map<Node,Node>`) marking a `Set<Node>`,
+terminated by the **set-cardinality** measure `n - Sets.count(visited, n)`, proves `u ∈ visited`
+**unconditionally** — no fuel budget:
+
+```groovy
+@Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+@Modifies({ this.visited })
+@Decreases({ n - Sets.count(visited, n) })
+@Ensures({ (u in visited) && (0..<n).every { !(it in old.visited) || (it in visited) } })
+void visit(int u) {
+    if (!(u in visited) && Sets.count(visited, n) < n) { visited.add(u); visit(next[u]) }
+}
+```
+
+How the obligations close: **termination** — the per-add law (Phase 21) makes `Sets.count(visited, n)`
+strictly increase on the fresh in-domain add, so the measure drops by one and the bound axiom keeps it `>= 0`;
+**coverage** — on the guard-false branch the model either has `u ∈ visited` already, or `Sets.count(visited,n)
+>= n`, where the bound forces `== n` and the full-characterization then forces every domain node (`u`
+included) into `visited`; on the guard-true branch `u` is added and the inductive hypothesis's monotonicity
+carries it across the recursion's havoc. It composes every prior phase — sets, the map graph, induction,
+caller-side set framing, bounded quantifiers, the per-add law, the full-characterization — into one result.
+*(One wrinkle the build surfaced: `Sets.count` in a method **body** resolves to a `ClassExpression`
+(`verification.Sets.count`), not the `VariableExpression`/`PropertyExpression` a re-parsed contract carries, so
+the encoder's `Sets` recognition was widened to all three.)*
+
+**What remains — completeness.** The proof covers the node *itself*, **not its successors**: `next[u] ∈
+visited` refutes (a node visited earlier needn't have had its edge followed). That is *completeness* — every
+reachable node is visited, the closure fixpoint — and it needs the DFS **frontier/stack invariant** ("`visited`
+is closed under successors except on the recursion stack"), which is not a simple inductive set property: it
+needs the stack modelled (a sequence/ghost) or an explicit inductive `IsPath` predicate with a least-fixed-point
+argument. That is the one named, well-understood gap between here and a fully verified DFS; everything else —
+termination, soundness, and unconditional coverage — is done.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

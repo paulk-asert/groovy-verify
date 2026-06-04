@@ -334,9 +334,43 @@ void put(int u, int k) { s.add(u) }
 ```
 
 Drop the freshness guard and the `+ 1` refutes; add an element *outside* `[0, k)` and the count is
-unchanged (the law's domain guard); `remove` of a present in-domain element decrements it. *Still open* to
-close whole-DFS coverage: `Sets.count`'s **full-characterization** (`count == k ⇒ s covers [0, n)`, the
-converse of full ⇒ count) plus the frontier/stack invariant.
+unchanged (the law's domain guard); `remove` of a present in-domain element decrements it.
+
+**The capstone — DFS proves unconditional coverage.** The last piece is the **full-characterization**:
+`Sets.count(s, k) == k ⟺ (0..<k).every { it ∈ s }` — a full count over a `k`-slot domain forces every node
+in (the converse of Phase 20's *full ⇒ count*). Both directions are theorems of the count, so the encoder
+asserts the iff for every `Sets.count` term. With it, a **cardinality-terminating** DFS proves the node it is
+handed ends up visited — *unconditionally*, no fuel bound — the property that was the honest boundary two
+phases ago:
+
+```groovy
+class C {
+    Map<Integer,Integer> next         // functional graph
+    Set<Integer> visited
+    int n
+    @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+    @Modifies({ this.visited })
+    @Decreases({ n - Sets.count(visited, n) })          // strictly decreases — the per-add law
+    @Ensures({ (u in visited) &&                         // ← UNCONDITIONAL coverage
+               (0..<n).every { !(it in old.visited) || (it in visited) } })
+    void visit(int u) {
+        if (!(u in visited) && Sets.count(visited, n) < n) {
+            visited.add(u)
+            visit(next[u])
+        }
+    }
+}
+```
+
+Termination is `n - Sets.count(visited, n)` (the per-add law makes it drop by one on a fresh add); coverage
+closes at the "set full" branch, where `Sets.count(visited, n) == n` forces — via the full-characterization —
+every domain node, `u` included. It composes *everything*: sets, the functional-graph map, induction,
+caller-side set framing, bounded quantifiers, the per-add law, and the full-characterization.
+
+**What remains — completeness.** We prove the node itself is covered, **not its successors**: claiming
+`next[u] in visited` refutes, because a node visited earlier needn't have had its edge followed. That is the
+closure/completeness property (*every reachable node is visited*), and it needs the DFS frontier/stack
+invariant — not a simple inductive set property — the one named gap left.
 
 ## What's demonstrated
 
@@ -385,9 +419,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Cardinality axiom — pigeonhole over a bounded domain** | `Sets.bounded(s, n)` ⇒ `s.size() <= n`, full ⇒ covers `[0,n)`, a hole ⇒ not full | ✅ Phase 19 |
 | **Bounded-sum cardinality `bcount(s,k)` — bound & full-count, earned by induction** | recursive `bcount`; `0 <= bcount(s,k) <= k` and `(0..<k).every{it in s} ⇒ bcount==k` | ✅ Phase 20 |
 | **`Sets.count(s,k)` primitive + per-add law** | a set mutation threads the bounded count: a fresh in-domain `add` raises `Sets.count(s,k)` by one | ✅ Phase 21 |
+| **Full-characterization `count==k ⟺ covers [0,k)` — and end-to-end DFS unconditional coverage** | `Sets.count(s,k)==k ⇒ u in s`; a cardinality-terminating DFS proves `start ∈ visited` with no fuel bound | ✅ Phase 22 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and whole-traversal unconditional `start ∈ visited` | — | ⏳ later (needs `Sets.count`'s full-characterization `count==k ⇒ covers [0,n)`; and a frontier/stack invariant) |
+| DFS *completeness* (all reachable nodes visited — the closure fixpoint; `next[u] ∈ visited`) | — | ⏳ later (needs a frontier/stack invariant — not a simple inductive set property) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

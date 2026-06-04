@@ -22,6 +22,7 @@ import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
@@ -293,8 +294,22 @@ class Encoder {
             session.assertExpr(session.ge(c, zero))
             session.assertExpr(session.or([session.lt(kH, zero), session.le(c, kH)]))   // k >= 0 ⟹ c <= k
             session.assertExpr(session.or([session.gt(kH, zero), session.eq(c, zero)])) // k <= 0 ⟹ c == 0
+            // Full-characterization (Phase 22): bcount(s,k) == k  ⟺  s covers [0,k). Both directions are
+            // theorems of the count's meaning (k members in k slots ⟺ every slot a member), so asserting
+            // the iff keeps the primitive as strong as the count — this is the converse of Phase 20's
+            // "full ⟹ count = k", and the fact a cardinality-terminating DFS needs to prove coverage.
+            session.assertExpr(session.eq(session.eq(c, kH), domainCoverageForall(setHandle, kH)))
         }
         c
+    }
+
+    /** The bounded universal {@code ∀ i. 0 <= i < k ⟹ i ∈ s}, with {@code (select s i)} as its trigger. */
+    private Object domainCoverageForall(Object setHandle, Object kH) {
+        Object iv = session.boundIntVar('cov$q' + (quantCounter++))
+        Object sel = session.select(setHandle, iv)
+        Object mem = session.eq(sel, session.intLit(1L))
+        Object range = session.and([session.le(session.intLit(0L), iv), session.lt(iv, kH)])
+        session.forall([iv], session.implies(range, mem), [sel])
     }
 
     /**
@@ -574,8 +589,12 @@ class Encoder {
 
         // Sets.bounded(s, n) — the cardinality axiom (Phase 19): a set bounded by the domain [0, n).
         // Lowered to card(s) <= n ∧ (card(s) < n ∨ ∀ i ∈ [0,n)· i ∈ s), a faithful boolean definition.
+        // `Sets` reaches us three ways: a bare import (VariableExpression) and FQN `verification.Sets`
+        // (PropertyExpression) in re-parsed contracts, and a resolved ClassExpression when it appears in a
+        // method *body* (e.g. a loop guard `Sets.count(...) < n`).
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
-                         (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets')
+                         (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets') ||
+                         (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Sets')
         if (m == 'bounded' && isSets && args.size() == 2) {
             return translateSetsBounded(args.get(0), args.get(1))
         }
@@ -736,12 +755,7 @@ class Encoder {
         if (nH == null) return null
         Object setH = setFor(key)
         Object card = cardOf(setH)
-        // ∀ i. 0 <= i < n ⟹ (select s i) == 1, with the select term as the instantiation trigger.
-        Object iv = session.boundIntVar('bnd$q' + (quantCounter++))
-        Object sel = session.select(setH, iv)
-        Object mem = session.eq(sel, session.intLit(1L))
-        Object range = session.and([session.le(session.intLit(0L), iv), session.lt(iv, nH)])
-        Object everyDomain = session.forall([iv], session.implies(range, mem), [sel])
+        Object everyDomain = domainCoverageForall(setH, nH)
         session.and([session.le(card, nH), session.or([session.lt(card, nH), everyDomain])])
     }
 
