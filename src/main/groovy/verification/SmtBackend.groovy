@@ -103,6 +103,16 @@ interface SmtSession extends AutoCloseable {
     Object setCard(Object set)
 
     /**
+     * The bounded-sum cardinality {@code bcount(set, k) = #{ i : 0 <= i < k ∧ i ∈ set }} — an uninterpreted
+     * {@code (Array, Int) -> Int} (the primitive form of the Phase-20 recursive {@code bcount}). Two
+     * applications with the same {@code (set, k)} share the term. Its meaning comes from the sound bound
+     * axiom ({@code 0 <= bcount <= k}) and the <b>per-mutation law</b> the caller asserts on each
+     * {@code s.add}/{@code s.remove} ({@code bcount(store(s,x,1), k) = bcount(s, k) + (0<=x<k ∧ x∉s ? 1 : 0)}) —
+     * the bcount analogue of {@link #count}'s per-store law, threading the count across a set mutation.
+     */
+    Object setCount(Object set, Object k)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

@@ -47,4 +47,16 @@ class Sets {
     static boolean bounded(Set<Integer> s, int n) {
         s.size() <= n && (s.size() < n || (0..<n).every { it in s })
     }
+
+    /**
+     * The bounded-sum cardinality: the number of members of {@code s} in {@code [0, k)}
+     * ({@code Σ_{i<k} (i ∈ s ? 1 : 0)}). The verifier recognises {@code Sets.count(s, k)} in contracts
+     * and models it as a primitive with a bound axiom and a per-mutation law; this body is the matching
+     * runtime evaluation, so the groovy-contracts runtime check agrees.
+     */
+    static int count(Set<Integer> s, int k) {
+        int c = 0
+        for (int i = 0; i < k; i++) if (i in s) c++
+        c
+    }
 }

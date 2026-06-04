@@ -128,6 +128,13 @@ class VerifyChecker extends TypeCheckingExtension {
     private Set<String> currentSetNames = new HashSet<String>()
     /** Names of {@code java.util.Map}-typed params/fields visible to the current method (see {@link #currentSetNames}). */
     private Set<String> currentMapNames = new HashSet<String>()
+    /**
+     * The {@code k} bound expressions of every {@code Sets.count(_, k)} in the postcondition/measure being
+     * discharged — the bcount per-add law (Phase 21) is asserted for each of these {@code k}s at every set
+     * mutation, mirroring how {@link #countValueArgs} drives the per-store {@code count} law. Set per
+     * discharge in {@link #checkPath}/{@link #dischargeTermination}, reset after.
+     */
+    private List<Expression> currentBcountKExprs = Collections.<Expression> emptyList()
 
     /** New Encoder wired with the current class's pure-function evaluator and set/map-typed names. */
     private Encoder mkEncoder(SmtSession session) {
@@ -371,6 +378,31 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (mce.methodAsString == 'count' && a instanceof ArgumentListExpression &&
                         ((ArgumentListExpression) a).expressions.size() == 1) {
                         out.add(((ArgumentListExpression) a).expressions.get(0))
+                    }
+                    super.visitMethodCallExpression(mce)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        out
+    }
+
+    /** The {@code k} (second) argument of each {@code Sets.count(s, k)} call — the bounds the bcount law tracks. */
+    private static List<Expression> bcountKArgs(Expression e) {
+        List<Expression> out = new ArrayList<Expression>()
+        if (e == null) return out
+        try {
+            e.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitMethodCallExpression(MethodCallExpression mce) {
+                    Expression recv = mce.objectExpression
+                    boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
+                                     (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets')
+                    Expression a = mce.arguments
+                    if (isSets && mce.methodAsString == 'count' && a instanceof ArgumentListExpression &&
+                        ((ArgumentListExpression) a).expressions.size() == 2) {
+                        out.add(((ArgumentListExpression) a).expressions.get(1))
                     }
                     super.visitMethodCallExpression(mce)
                 }
@@ -1178,6 +1210,8 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object h = enc.translate(vArg)
                 if (h != null) countVals.add(h)
             }
+            // The `k` bounds of any Sets.count(_, k) in the postcondition drive the bcount per-add law.
+            currentBcountKExprs = bcountKArgs(postAst)
 
             for (Object step : p.steps) {
                 if (step instanceof Guard) {
@@ -1303,6 +1337,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     Reporter.formatClassInvariantViolation(node.name, invText, r), anchor)
             }
         } finally {
+            currentBcountKExprs = Collections.<Expression> emptyList()
             try { session.close() } catch (Throwable ignored) {}
         }
     }
@@ -1337,6 +1372,22 @@ class VerifyChecker extends TypeCheckingExtension {
         Object delta = adding ? s.ite(memOld, zero, one) : s.ite(memOld, one, zero)
         Object newCard = adding ? s.plus(enc.cardOf(oldS), delta) : s.minus(enc.cardOf(oldS), delta)
         s.assertExpr(s.eq(enc.cardOf(newS), newCard))
+
+        // bcount per-add law (Phase 21): for each Sets.count(_, k) the postcondition/measure tracks,
+        //   add:    bcount(s', k) = bcount(s, k) + (0 <= elem < k ∧ elem ∉ s ? 1 : 0)
+        //   remove: bcount(s', k) = bcount(s, k) - (0 <= elem < k ∧ elem ∈ s ? 1 : 0)
+        // The mutation only changes the count at the slot `elem`, and only when that slot is in [0, k).
+        for (Expression kExpr : currentBcountKExprs) {
+            Object kH = enc.translate(kExpr)
+            if (kH == null) continue
+            Object inDomain = s.and([s.le(zero, elem), s.lt(elem, kH)])
+            Object cond = adding ? s.and([inDomain, s.not(memOld)]) : s.and([inDomain, memOld])
+            Object cDelta = s.ite(cond, one, zero)
+            Object newCount = adding ?
+                s.plus(enc.setCountOf(oldS, kH), cDelta) : s.minus(enc.setCountOf(oldS, kH), cDelta)
+            s.assertExpr(s.eq(enc.setCountOf(newS, kH), newCount))
+        }
+
         enc.bindSet(name, newS)
         return true
     }
@@ -1796,6 +1847,8 @@ class VerifyChecker extends TypeCheckingExtension {
             // post-body one. For the usual param-only measure this is identical: the replay never rebinds a
             // parameter, so where `entry` is computed makes no difference.
             Object entry = enc.translate(measureAst)
+            // A measure that counts with Sets.count(_, k) drives the bcount per-add law across the replayed mutations too.
+            currentBcountKExprs = bcountKArgs(measureAst)
             // Replay the path facts up to the call (single-assignment, so params keep entry values). A set
             // mutation `s.add(x)` / `s.remove(x)` threads the set and asserts the per-mutation cardinality
             // law, so a set-valued measure strictly decreases across the call exactly when a fresh element
@@ -1845,6 +1898,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 addStaticTypeError(Reporter.formatTerminationFailure(node.name, measureAst.text, r), callExpr as ASTNode)
             }
         } finally {
+            currentBcountKExprs = Collections.<Expression> emptyList()
             try { s.close() } catch (Throwable ignored) {}
         }
     }

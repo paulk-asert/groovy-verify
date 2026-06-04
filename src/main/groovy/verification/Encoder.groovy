@@ -276,6 +276,27 @@ class Encoder {
         c
     }
 
+    /** Set handles for which a {@code bcount(s,k)} term has had its bound axiom asserted (mint-once). */
+    private final Set<Object> countConstrained = new HashSet<Object>()
+
+    /**
+     * The bounded-sum cardinality {@code bcount(s, k)} of a set handle, asserting its sound bound axiom
+     * the first time each term is seen: {@code 0 <= bcount}, {@code k >= 0 ⟹ bcount <= k}, and
+     * {@code k <= 0 ⟹ bcount == 0}. All three are theorems of the intended meaning (count of members in
+     * {@code [0,k)}), so asserting them keeps the uninterpreted symbol consistent with — and as strong as —
+     * the count it models, without an inductive proof at the use site.
+     */
+    Object setCountOf(Object setHandle, Object kH) {
+        Object c = session.setCount(setHandle, kH)
+        if (countConstrained.add(c)) {
+            Object zero = session.intLit(0L)
+            session.assertExpr(session.ge(c, zero))
+            session.assertExpr(session.or([session.lt(kH, zero), session.le(c, kH)]))   // k >= 0 ⟹ c <= k
+            session.assertExpr(session.or([session.gt(kH, zero), session.eq(c, zero)])) // k <= 0 ⟹ c == 0
+        }
+        c
+    }
+
     /**
      * The set-env key for a receiver that names a set: a plain set-typed variable {@code s}, or the
      * entry snapshot {@code old.s} (keyed {@code old$s}). Null when the receiver is not a known set.
@@ -557,6 +578,15 @@ class Encoder {
                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets')
         if (m == 'bounded' && isSets && args.size() == 2) {
             return translateSetsBounded(args.get(0), args.get(1))
+        }
+        // Sets.count(s, k) — the bounded-sum cardinality as a primitive (Phase 21), carrying its bound
+        // axiom and (at set mutations) the per-add law. The recursive Phase-20 spelling earns the same
+        // bound by induction; this form threads across a mutation.
+        if (m == 'count' && isSets && args.size() == 2) {
+            String key = setKeyFor(args.get(0))
+            if (key == null) return null
+            Object kH = translate(args.get(1))
+            return kH == null ? null : setCountOf(setFor(key), kH)
         }
 
         // Native GDK quantifier idioms (Phase 9) — the universal a Groovy developer would

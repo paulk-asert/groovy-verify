@@ -318,8 +318,25 @@ static int bcount(Set<Integer> s, int k) {
 The same shape with `@Requires({ (0..<k).every { it in s } })` proves `result == k` — **full domain ⇒ count
 = k**, tying the count to actual membership. Break the recursion (`rest + 2`) and the bound refutes. These are
 the converse-counting facts the uninterpreted `card` and the definitional `Sets.bounded` couldn't reach.
-*Still open* to close whole-DFS coverage: `bcount`'s **per-add law** (`bcount(s∪{u},k) = bcount(s,k) + …`)
-and using `bcount` across lemmas, both needing recursive-definition reasoning inside contracts.
+
+**The per-add law — `Sets.count` as a primitive.** The recursive `bcount` *earns* its bound by induction but
+is opaque across a method boundary (and can't take `s ∪ {u}` as an argument), so it can't thread a count
+*through a mutation*. `Sets.count(s, k)` is the same bounded count as a **primitive** — carrying its bound
+axiom, and, at every set mutation, the bcount analogue of the per-store `count` law (Phase 12):
+`Sets.count(s∪{u}, k) = Sets.count(s, k) + (0 <= u < k ∧ u ∉ s ? 1 : 0)`. So a fresh in-domain add raises the
+count by exactly one:
+
+```groovy
+@Requires({ 0 <= u && u < k && !(u in s) })
+@Modifies({ this.s })
+@Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })
+void put(int u, int k) { s.add(u) }
+```
+
+Drop the freshness guard and the `+ 1` refutes; add an element *outside* `[0, k)` and the count is
+unchanged (the law's domain guard); `remove` of a present in-domain element decrements it. *Still open* to
+close whole-DFS coverage: `Sets.count`'s **full-characterization** (`count == k ⇒ s covers [0, n)`, the
+converse of full ⇒ count) plus the frontier/stack invariant.
 
 ## What's demonstrated
 
@@ -367,9 +384,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Reachability — recursive graph traversal: visited grows (soundness) + node covered (progress)** | DFS over a `Map<Node,Node>` graph marking a `Set<Node>`, fuel- or cardinality-terminated | ✅ Phase 18 |
 | **Cardinality axiom — pigeonhole over a bounded domain** | `Sets.bounded(s, n)` ⇒ `s.size() <= n`, full ⇒ covers `[0,n)`, a hole ⇒ not full | ✅ Phase 19 |
 | **Bounded-sum cardinality `bcount(s,k)` — bound & full-count, earned by induction** | recursive `bcount`; `0 <= bcount(s,k) <= k` and `(0..<k).every{it in s} ⇒ bcount==k` | ✅ Phase 20 |
+| **`Sets.count(s,k)` primitive + per-add law** | a set mutation threads the bounded count: a fresh in-domain `add` raises `Sets.count(s,k)` by one | ✅ Phase 21 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and whole-traversal unconditional `start ∈ visited` | — | ⏳ later (needs `bcount`'s per-add law + definitional reasoning in contracts; and a frontier/stack invariant) |
+| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and whole-traversal unconditional `start ∈ visited` | — | ⏳ later (needs `Sets.count`'s full-characterization `count==k ⇒ covers [0,n)`; and a frontier/stack invariant) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

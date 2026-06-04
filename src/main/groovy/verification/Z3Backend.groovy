@@ -156,6 +156,16 @@ class Z3Session implements SmtSession {
         ctx.mkApp(cardFn, (Expr) set)
     }
 
+    private FuncDecl bcountFn
+    @Override
+    Object setCount(Object set, Object k) {
+        if (bcountFn == null) {
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
+            bcountFn = ctx.mkFuncDecl('bcount$', [arrSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        }
+        ctx.mkApp(bcountFn, (Expr) set, (Expr) k)
+    }
+
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
 
     @Override

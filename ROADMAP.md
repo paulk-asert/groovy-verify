@@ -1080,6 +1080,53 @@ With those, `card(s)` over a domain *equals* `bcount(s, n)`, the "`|s| = n-1` �
 closes, and the cardinality-terminating DFS proves unconditional coverage. The foundational lemmas here are the
 base that development builds on.
 
+---
+
+## Phase 21 — The bcount per-add law: `Sets.count` as a primitive  *(shipped)*
+
+**Threading the count across a mutation — the first of the two steps Phase 20 flagged.** The recursive
+`bcount` (Phase 20) *earns* its bound by induction, but a `bcount(...)` term inside another contract reduces to
+an uninterpreted symbol (its definition isn't visible across the lemma boundary) and it cannot take `s ∪ {u}`
+as an argument — so it cannot relate the count *before* and *after* a set mutation. `Sets.count(s, k)` is the
+same bounded count exposed as a **primitive**, which can.
+
+**The encoding — bound axiom + per-mutation law, the `count` machinery adapted.** `Sets.count(s, k)` is an
+uninterpreted `(Set, Int) -> Int` (`setCount`, backed by Z3 `bcount$`). On first use of each term the encoder
+asserts its **sound bound axiom** — `0 <= bcount`, `k >= 0 ⟹ bcount <= k`, `k <= 0 ⟹ bcount == 0` (all
+theorems of "count of members in `[0,k)`", so asserting them keeps the symbol as strong as the count it
+models). At every set mutation `s.add(u)` / `s.remove(u)`, for each `k` the postcondition or measure tracks
+(harvested by `bcountKArgs`, mirroring `countValueArgs` for the Phase-12 `count` law), the **per-add law** is
+asserted:
+
+```
+add:    bcount(s', k) = bcount(s, k) + (0 <= u < k ∧ u ∉ s ? 1 : 0)
+remove: bcount(s', k) = bcount(s, k) - (0 <= u < k ∧ u ∈ s ? 1 : 0)
+```
+
+— the mutation changes the count only at slot `u`, and only when that slot lies in `[0, k)`. It rides the
+existing per-store-law plumbing in `applySetMutation` (driven by the `currentBcountKExprs` set per discharge),
+so it threads through both the postcondition check and the termination replay.
+
+```groovy
+@Requires({ 0 <= u && u < k && !(u in s) })
+@Modifies({ this.s })
+@Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })   // verified
+void put(int u, int k) { s.add(u) }
+```
+
+Verified, and sound on each edge: drop the freshness guard and the `+ 1` refutes; add an element *outside*
+`[0, k)` and the count is provably unchanged (the law's domain guard); `remove` of a present in-domain element
+decrements it; and the bound axiom rides the primitive (`0 <= Sets.count(s,k) <= k` for `k >= 0`).
+
+**What remains for whole-DFS unconditional coverage.** One Phase-20 step is now done (the per-add law); the
+other — **cross-lemma/definitional use** — is subsumed by giving `Sets.count` its **full-characterization**:
+`Sets.count(s, k) == k ⟺ (0..<k).every { it ∈ s }` (the converse of Phase 20's "full ⟹ count = k", which the
+per-add law's bound does not by itself supply). With it, the preservation argument closes — adding the fresh
+in-domain `u` to a set whose count is `n-1` raises the count to `n`, which *forces* domain coverage, so
+`Sets.bounded` is preserved across the filling add and the cardinality-terminating DFS proves unconditional
+`start ∈ visited`. That full-characterization axiom (and then the frontier/stack invariant for *completeness*)
+is the remaining work; the per-add law shipped here is its other half.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -1332,6 +1332,49 @@ class VerifyHarness {
                             return rest + 2
                         }
                     }''')],
+
+        // ---------- Phase 21: the bcount per-add law (Sets.count as a primitive) ----------
+        // Sets.count(s, k) is the bounded count as a primitive, carrying its bound axiom and a per-mutation
+        // law. Adding a FRESH, in-domain element raises the count by exactly one — the bcount analogue of
+        // the per-store `count` law, now threading the count across a set mutation.
+        [group: 'P21 bcount law', name: 'fresh in-domain add increments count', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ 0 <= u && u < k && !(u in s) })
+                        @Modifies({ this.s })
+                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })
+                        void put(int u, int k) { s.add(u) }
+                    }''')],
+        // Soundness: drop the freshness guard and the count need not grow (u may already be present).
+        [group: 'P21 bcount law', name: 'non-fresh add refutes +1', expect: 'Cannot prove postcondition',
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ 0 <= u && u < k })
+                        @Modifies({ this.s })
+                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })
+                        void put(int u, int k) { s.add(u) }
+                    }''')],
+        // The domain guard matters: adding an element OUTSIDE [0,k) leaves the bounded count unchanged.
+        [group: 'P21 bcount law', name: 'out-of-domain add keeps count', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ u >= k })
+                        @Modifies({ this.s })
+                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) })
+                        void put(int u, int k) { s.add(u) }
+                    }''')],
+        // Remove of a present, in-domain element drops the bounded count by one.
+        [group: 'P21 bcount law', name: 'in-domain remove decrements count', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ 0 <= u && u < k && (u in s) })
+                        @Modifies({ this.s })
+                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) - 1 })
+                        void drop(int u, int k) { s.remove(u) }
+                    }''')],
+        // The bound axiom rides the primitive: a domain-bounded count never exceeds its bound.
+        [group: 'P21 bcount law', name: 'primitive count carries its bound', ok: true,
+         src: tc('''class C {
+                        @Requires({ k >= 0 })
+                        @Ensures({ 0 <= Sets.count(s, k) && Sets.count(s, k) <= k })
+                        static int f(Set<Integer> s, int k) { 0 }
+                    }''')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
