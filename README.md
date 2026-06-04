@@ -200,6 +200,27 @@ and one that left elements out of order fails the sortedness clause — bounded 
 (`@Decreases`), the multiset `count` law, `old` pre-state, and sound `@Modifies` framing, in one
 proof.
 
+**Finite sets — membership and a cardinality law.** A `Set<Integer>` is modelled as a characteristic
+array (`x in s` is a membership read; `s.add(x)` is a store threaded through the body), so a method's
+effect on the set is provable. `s.size()` is an uninterpreted cardinality carrying a per-mutation
+*update law* — adding an element that isn't already present grows the size by exactly one — which is
+the building block a set-valued termination measure (e.g. DFS over a finite node domain) rests on:
+
+```groovy
+class C {
+    Set<Integer> s
+    @Requires({ !(x in s) })            // x is new …
+    @Modifies({ this.s })
+    @Ensures({ x in s &&                // … so after add it is a member …
+               s.size() == old.s.size() + 1 })   // … and the size grew by one
+    void put(int x) { s.add(x) }
+}
+```
+
+Drop the `!(x in s)` precondition and the `+ 1` no longer holds — `x` might already be present — so
+the proof fails with a concrete `put(2)`. Set union/intersection/subset (`s.containsAll(t)`) need an
+unbounded quantifier and stay a loud "skipped", never a silent pass.
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -240,7 +261,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Fully verified in-place sort — *sorted ∧ permutation*** | recursive insertion sort under sound `@Modifies` | ✅ Phase 14 |
 | **Class `@Invariant` — instance methods (assume on entry, prove on exit, super-walked)** | `@Invariant({ count >= 0 })` on a class | ✅ Phase 15a |
 | **Boxed scalars & index-accessed collections** | `Integer`, `Integer[]`, `List<Integer>` via `xs[i]` / `xs.size()` | ✅ (structural) |
+| **Finite sets — membership, add/remove, cardinality law** | `x in s`, `s.contains(x)`, `s.add(x)`, `s.size()` over `Set<Integer>` | ✅ Phase 16 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
+| Set union/intersection/subset (`s.containsAll(t)`, `s + t`), non-Int element domains | — | ⏳ later |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
@@ -293,6 +316,11 @@ warning rather than passing silently. In expressions the fragment is:
 - array/list contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
   bounded-universal quantifiers — `Forall.range` or the native GDK idioms
   `(lo..<hi).every{…}` / `xs.indices.every{…}` / `xs.every{ it… }`;
+- finite `Set<Integer>` membership (`x in s`, `s.contains(x)`), mutation (`s.add(x)` /
+  `s.remove(x)`, threaded through the body) and cardinality (`s.size()`) — a set is a
+  characteristic array, and `size()` carries a per-mutation update law (`add` of an absent
+  element raises it by one), the building block a set-valued `@Decreases` measure needs;
+  union/intersection/subset stay outside the fragment (a loud skip);
 - fuel-bounded inlining of contract-free pure functions (a closed call like
   `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.

@@ -999,6 +999,64 @@ class VerifyHarness {
                     class C { int count
                         static int twice(int x) { x + x }
                     }''')],
+
+        // ---------- Phase 16: finite sets (characteristic array + cardinality law) ----------
+        // Membership assumed entails membership — `x in s` over a Set parameter (the read side).
+        [group: 'P16 sets', name: 'membership assumed entails membership', ok: true,
+         src: tc('class C { @Requires({ x in s }) @Ensures({ x in s }) static int f(Set<Integer> s, int x) { 0 } }')],
+        // Not vacuous: with nothing assumed, membership cannot be proved.
+        [group: 'P16 sets', name: 'unproven membership refuted', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ x in s }) static int f(Set<Integer> s, int x) { 0 } }')],
+        // `s.contains(x)` is the method spelling of the same membership.
+        [group: 'P16 sets', name: 'contains is membership', ok: true,
+         src: tc('class C { @Requires({ s.contains(x) }) @Ensures({ x in s }) static int f(Set<Integer> s, int x) { 0 } }')],
+        // add makes the element a member — the post-state read rides Z3 array theory (store then select).
+        [group: 'P16 sets', name: 'add makes element a member', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Modifies({ this.s })
+                        @Ensures({ x in s })
+                        void put(int x) { s.add(x) }
+                    }''')],
+        // Cardinality law (headline): adding an element NOT already present grows the size by one.
+        [group: 'P16 sets', name: 'add of new element grows size by one', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ !(x in s) })
+                        @Modifies({ this.s })
+                        @Ensures({ s.size() == old.s.size() + 1 })
+                        void put(int x) { s.add(x) }
+                    }''')],
+        // Soundness: without knowing x is new, the +1 cannot be claimed (x may already be present).
+        [group: 'P16 sets', name: 'add without freshness refutes +1', expect: 'Cannot prove postcondition',
+         src: tc('''class C { Set<Integer> s
+                        @Modifies({ this.s })
+                        @Ensures({ s.size() == old.s.size() + 1 })
+                        void put(int x) { s.add(x) }
+                    }''')],
+        // Adding an element already present leaves the size unchanged.
+        [group: 'P16 sets', name: 'add of present element keeps size', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ x in s })
+                        @Modifies({ this.s })
+                        @Ensures({ s.size() == old.s.size() })
+                        void put(int x) { s.add(x) }
+                    }''')],
+        // remove of a present element shrinks the size by one.
+        [group: 'P16 sets', name: 'remove of present element shrinks size', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ x in s })
+                        @Modifies({ this.s })
+                        @Ensures({ s.size() == old.s.size() - 1 })
+                        void drop(int x) { s.remove(x) }
+                    }''')],
+        // An undeclared set mutation violates a pure (@Modifies({})) frame — caught like an array store.
+        [group: 'P16 sets', name: 'undeclared set write refuted', expect: 'not in its @Modifies',
+         src: tc('''class C { Set<Integer> s
+                        @Modifies({ [] })
+                        void touch(int x) { s.add(x) }
+                    }''')],
+        // A set operation needing an unbounded quantifier (containsAll/subset) is a loud skip, not a pass.
+        [group: 'P16 sets', name: 'subset op outside fragment skipped', expect: 'Skipped verification of postcondition',
+         src: tc('class C { @Requires({ s.containsAll(t) }) @Ensures({ s.containsAll(t) }) static int f(Set<Integer> s, Set<Integer> t) { 0 } }')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

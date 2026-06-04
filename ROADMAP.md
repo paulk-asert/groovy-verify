@@ -794,6 +794,74 @@ mutated fields in a class invariant should anticipate the limitation.
 
 ---
 
+## Phase 16 — Finite sets: membership + cardinality law  *(shipped)*
+
+**The first genuinely new *data structure*, and the foundation under reasoning about reachable-set
+algorithms (DFS, worklists, dedup).** Everything before this modelled integers, sequences (arrays /
+lists by index), and scalar field state. A `set<T>` is the data structure those proofs are actually
+built on — a value that only grows, a membership test, and a cardinality that drives termination —
+and it is also everyday Groovy. This lands it for the common, tractable case.
+
+**The encoding — sets as characteristic arrays, the in-grain choice.** A `Set<Integer>` is an
+`Array Int -> Int` characteristic function (`1` = member, `0` = absent), so the three core operations
+reuse Z3's array theory wholesale rather than introducing a new theory:
+
+- **membership** — `x in s` / `s.contains(x)` → `(select s x) == 1`;
+- **add / remove** — `s.add(x)` / `s.remove(x)`, threaded through the body as `s := (store s x 1|0)`
+  exactly like an array store, so a later membership read of the post-state resolves through the
+  store/select axioms for free (no quantifier);
+- **cardinality** — `s.size()` is an uninterpreted `(Array) -> Int` (`setCard`, the direct analogue of
+  Phase 12's `count`), whose meaning comes **only** from a per-mutation update law asserted at each
+  add/remove: `card(add(s,x)) = card(s) + (x in s ? 0 : 1)`, `card(remove(s,x)) = card(s) - (x in s ? 1 : 0)`.
+
+This is the quantifier-free heart of the recommendation: the same "uninterpreted measure + per-operation
+update law" pattern that made permutation provable without `∀v` in Phase 12, now applied to a set's size.
+A method that adds an element known *fresh* (`@Requires({ !(x in s) })`) proves `s.size() == old.s.size() + 1`;
+drop the freshness premise and the `+ 1` rightly refutes (`x` may already be present). That `size`-grows-by-one
+law is precisely what a set-valued `@Decreases` measure (`N - visited.size()`) needs.
+
+**How it works:**
+
+- The encoder is otherwise *shape-based and untyped*, but set and list operations are syntactically
+  identical (`contains`, `size`, `in`, `+`). So `VerifyChecker` computes the set-typed parameter/field
+  names (`collectSetNames`, `Set`-implementing declared types) and hands them to the `Encoder`
+  (`setNames`) — the one place a type hint is needed. A receiver in that set lowers to set semantics;
+  anything else stays on the list/array path.
+- Body mutation rides the existing path machinery: a standalone `s.add(x)` is captured as a `LemmaCall`
+  and intercepted in `checkPath` (`applySetMutation`) ahead of the inter-procedural lemma path, threading
+  the store and asserting the cardinality law — no new `BodyEncoder` step kind.
+- `old.s` is snapshotted as a set (entry handle) alongside the scalar/array snapshots, so
+  `x in old.s` / `old.s.size()` read the entry value. `@Modifies` is honoured on both sides: a set
+  mutation is frame-checked as a write to `s` (an undeclared `s.add` under `@Modifies({})` is a loud
+  error), and a modified set field is havoced + reframed at a call site like an array.
+
+```groovy
+class C {
+    Set<Integer> s
+    @Requires({ !(x in s) })
+    @Modifies({ this.s })
+    @Ensures({ x in s && s.size() == old.s.size() + 1 })
+    void put(int x) { s.add(x) }                 // verified
+}
+```
+
+**Known limits (the honest edges).**
+
+- **Element domain is `Int`.** A `Set<Integer>` (node ids, keys) is modelled; `Set<String>` /
+  `Set<Object>` would need an element→Int mapping (Route 2 in the design notes), not done.
+- **Set *algebra* stays out of fragment.** Union / intersection / subset (`s.containsAll(t)`,
+  `s + t`, `s <= t`) need an unbounded `∀x. x∈s ⇒ x∈t` — the explicit quantifier non-goal — so they
+  emit a loud "skipped", never a silent pass. The bounded-domain `every`-over-`0..<N` lowering that
+  would bring subset into the fragment is the natural next slice.
+- **Not yet wired to `@Decreases`.** The cardinality law is the *building block* (the Phase-12 analogue
+  is "swap preserves count", before the full sort). Threading set mutation through the recursion's
+  termination replay — so `N - s.size()` can be a measure and a DFS-shaped recursion terminates — is the
+  follow-on, exactly as permutation needed Phases 13–14 to compose into a verified sort.
+- **Maps next.** A `map<K,V>` is `select`/`store` over keys with a key-*set* that is itself a set — it
+  builds directly on this phase, and is what the DFS adjacency representation wants.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

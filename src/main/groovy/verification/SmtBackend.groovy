@@ -86,6 +86,23 @@ interface SmtSession extends AutoCloseable {
     Object count(Object arr, Object v)
 
     /**
+     * Declare a finite set variable, modelled as a <em>characteristic</em> array {@code Array Int -> Int}
+     * where element {@code x} is a member iff {@code (select set x) == 1} (and absent at {@code 0}) — the
+     * "sets" phase. Membership, add ({@code (store set x 1)}) and remove ({@code (store set x 0)}) are built
+     * from {@link #select}/{@link #store} in the encoder, so they ride Z3's array theory directly. The
+     * element sort is Int — the only modelled set element type (a finite node/key domain).
+     */
+    Object setVar(String name)
+
+    /**
+     * The cardinality {@code |set|} — an uninterpreted {@code (Array) -> Int} (analogue of {@link #count}).
+     * Its meaning comes entirely from the per-mutation update law the caller asserts on each
+     * {@code s.add}/{@code s.remove} ({@code card(store(s,x,1)) = card(s) + (x in s ? 0 : 1)}); there is no
+     * built-in axiom. This is the building block a set-valued {@code @Decreases} measure rests on.
+     */
+    Object setCard(Object set)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

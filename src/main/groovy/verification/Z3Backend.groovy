@@ -70,6 +70,7 @@ class Z3Session implements SmtSession {
     private final Map<String, BoolExpr> boolVars = [:]
     private final Map<String, FuncDecl> funcs = [:]
     private final Map<String, ArrayExpr> arrays = [:]
+    private final Map<String, ArrayExpr> sets = [:]
 
     Z3Session(Context ctx, Solver solver) {
         this.ctx = ctx
@@ -132,6 +133,27 @@ class Z3Session implements SmtSession {
             countFn = ctx.mkFuncDecl('count$', [arrSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
         }
         ctx.mkApp(countFn, (Expr) arr, (Expr) v)
+    }
+
+    @Override
+    Object setVar(String name) {
+        ArrayExpr cached = sets.get(name)
+        if (cached != null) return cached
+        // A set is a characteristic array Int -> Int (1 = member, 0 = absent), sharing the
+        // array sort so membership/add/remove reuse select/store and Z3's array theory.
+        ArrayExpr v = (ArrayExpr) ctx.mkConst(name, ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort()))
+        sets.put(name, v)
+        v
+    }
+
+    private FuncDecl cardFn
+    @Override
+    Object setCard(Object set) {
+        if (cardFn == null) {
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
+            cardFn = ctx.mkFuncDecl('card$', [arrSort] as Sort[], ctx.getIntSort())
+        }
+        ctx.mkApp(cardFn, (Expr) set)
     }
 
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }

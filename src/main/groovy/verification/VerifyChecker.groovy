@@ -23,6 +23,7 @@ import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.Variable
@@ -119,9 +120,35 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private List<Expression> currentClassInvariants = Collections.<Expression> emptyList()
 
-    /** New Encoder wired with the current class's pure-function evaluator. */
+    /**
+     * Source-level names of {@code java.util.Set}-typed parameters and fields visible to the current
+     * method — the type hint the otherwise shape-based encoder needs to tell a set from a list
+     * (membership/size/{@code contains} share syntax). Recomputed per method in {@link #beforeVisitMethod}.
+     */
+    private Set<String> currentSetNames = new HashSet<String>()
+
+    /** New Encoder wired with the current class's pure-function evaluator and set-typed names. */
     private Encoder mkEncoder(SmtSession session) {
-        new Encoder(session, currentEvaluator)
+        new Encoder(session, currentEvaluator, currentSetNames)
+    }
+
+    /** Names of set-typed parameters and declaring-class fields visible to {@code node}. */
+    private static Set<String> collectSetNames(MethodNode node) {
+        Set<String> out = new HashSet<String>()
+        for (Parameter p : node.parameters) if (isSetType(p.type)) out.add(p.name)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (isSetType(f.type)) out.add(f.name)
+        out
+    }
+
+    /** True if {@code t} is (or implements) {@code java.util.Set}. */
+    private static boolean isSetType(ClassNode t) {
+        if (t == null) return false
+        try {
+            return t.name == 'java.util.Set' || t.implementsInterface(ClassHelper.make(Set))
+        } catch (Throwable ignored) {
+            return false
+        }
     }
 
     /** The accessor the developer wrote for {@code recv}'s size; defaults to {@code .size()}. */
@@ -207,6 +234,7 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (nulled) return 'null'
         if (tn == 'java.lang.String') return '""'
+        if (isSetType(t)) return nulled ? 'null' : '[] as Set'
         if (isCollectionType(t)) {
             long n = sizeOf(p.name, ce)
             List<Long> elems = pinnedElements(p.name, n, ce)
@@ -382,6 +410,19 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                     super.visitBinaryExpression(be)
                 }
+                @Override
+                void visitMethodCallExpression(MethodCallExpression mce) {
+                    // A set mutation `s.add(x)` / `s.remove(x)` writes the set `s` — frame-checked like
+                    // an array store, since it is not an assignment LHS.
+                    String mm = mce.methodAsString
+                    if ((mm == 'add' || mm == 'remove') && mce.objectExpression instanceof VariableExpression) {
+                        String w = ((VariableExpression) mce.objectExpression).name
+                        if (currentSetNames.contains(w) && visible.contains(w) && !declared.contains(w)) {
+                            offenders.add(w)
+                        }
+                    }
+                    super.visitMethodCallExpression(mce)
+                }
             })
         } catch (Throwable ignored) {
         }
@@ -439,6 +480,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentFacts = new PathFacts()
         currentMethod = node
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
+        currentSetNames = collectSetNames(node)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -507,6 +549,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentEvaluator = null
             sizeAccessors = [:]
             currentClassInvariants = Collections.<Expression> emptyList()
+            currentSetNames = new HashSet<String>()
         }
     }
 
@@ -1090,6 +1133,8 @@ class VerifyChecker extends TypeCheckingExtension {
             for (String fld : oldFieldNames(postAst)) {
                 enc.bind('old$' + fld, enc.varFor(fld))
                 enc.bindArray('old$' + fld, enc.arrayFor(fld))
+                // A set field's entry snapshot too, so `old.s.size()` / `x in old.s` read the value at entry.
+                if (currentSetNames.contains(fld)) enc.bindSet('old$' + fld, enc.setFor(fld))
             }
 
             // Permutation: the values the postcondition counts (`xs.count(v)`). Each array store
@@ -1155,12 +1200,16 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                     enc.bindArray(st.arr, newA)
                 } else if (step instanceof LemmaCall) {
-                    // Standalone call: assume the callee's @Ensures as a fact (no result). A
-                    // self-call is the inductive hypothesis (enabled by @Decreases). If the call
-                    // has no usable @Ensures it is an unmodelled effect → skip (outside fragment).
-                    if (!assumeCalleeEnsures(session, enc, ((LemmaCall) step).call, node, null, hasDecreases(node))) {
+                    Expression call = ((LemmaCall) step).call
+                    // A set mutation `s.add(x)` / `s.remove(x)` threads the set (a store on its
+                    // characteristic array) and asserts the per-mutation cardinality law — the set
+                    // analogue of the per-store count law above. Otherwise it is a lemma-style call:
+                    // assume the callee's @Ensures (a self-call is the inductive hypothesis, enabled by
+                    // @Decreases). An unmodelled effect with no usable @Ensures is outside the fragment.
+                    if (!applySetMutation(session, enc, call) &&
+                        !assumeCalleeEnsures(session, enc, call, node, null, hasDecreases(node))) {
                         throw new UnsupportedConstructException(
-                            "standalone call '${((LemmaCall) step).call.text}' has no usable @Ensures")
+                            "standalone call '${call.text}' has no usable @Ensures")
                     }
                 }
             }
@@ -1217,6 +1266,40 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally {
             try { session.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /**
+     * Apply a set mutation {@code s.add(x)} / {@code s.remove(x)} on a known set-typed receiver,
+     * threading the set as a store on its characteristic array and asserting the per-mutation
+     * cardinality law — the set analogue of the per-store {@code count} law:
+     * {@code card(add(s,x)) = card(s) + (x in s ? 0 : 1)}, {@code card(remove(s,x)) = card(s) - (x in s ? 1 : 0)}.
+     * Membership reads of the post-state ride Z3's array theory directly. Returns false (so the caller
+     * falls through to lemma handling) when this is not a recognised set mutation.
+     */
+    private boolean applySetMutation(SmtSession s, Encoder enc, Expression call) {
+        if (!(call instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) call
+        Expression recv = mce.objectExpression
+        if (!(recv instanceof VariableExpression)) return false
+        String name = ((VariableExpression) recv).name
+        if (!currentSetNames.contains(name)) return false
+        String m = mce.methodAsString
+        if (m != 'add' && m != 'remove') return false
+        List<Expression> args = collectArgumentExpressions(mce)
+        if (args == null || args.size() != 1) return false
+        Object elem = enc.translate(args.get(0))
+        if (elem == null) return false
+
+        Object oldS = enc.setFor(name)
+        Object one = s.intLit(1L), zero = s.intLit(0L)
+        boolean adding = (m == 'add')
+        Object newS = s.store(oldS, elem, adding ? one : zero)
+        Object memOld = enc.member(oldS, elem)
+        Object delta = adding ? s.ite(memOld, zero, one) : s.ite(memOld, one, zero)
+        Object newCard = adding ? s.plus(enc.cardOf(oldS), delta) : s.minus(enc.cardOf(oldS), delta)
+        s.assertExpr(s.eq(enc.cardOf(newS), newCard))
+        enc.bindSet(name, newS)
+        return true
     }
 
     private static AnnotationNode findEnsures(MethodNode m) {
@@ -1803,6 +1886,7 @@ class VerifyChecker extends TypeCheckingExtension {
         // modifies nothing visible.
         Map<String, Object> savedVar = new LinkedHashMap<String, Object>()
         Map<String, Object> savedArr = new LinkedHashMap<String, Object>()
+        Map<String, Object> savedSet = new LinkedHashMap<String, Object>()
         if (modSet != null) {
             for (String loc : modSet) {
                 String callerLoc = callerSideLocation(loc, formals, actuals)
@@ -1811,11 +1895,18 @@ class VerifyChecker extends TypeCheckingExtension {
                 if (!savedVar.containsKey(oldKey)) {
                     savedVar.put(oldKey, enc.peekVar(oldKey))
                     savedArr.put(oldKey, enc.peekArray(oldKey))
+                    savedSet.put(oldKey, enc.peekSet(oldKey))
                 }
                 enc.bind(oldKey, enc.varFor(callerLoc))            // old.X (scalar) = value at the call
                 enc.bindArray(oldKey, enc.arrayFor(callerLoc))     // old.X (array contents) at the call
                 enc.bind(callerLoc, s.intVar('havoc$' + callerLoc + '$' + (havocCounter++)))     // havoc
                 enc.bindArray(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                // A modified set field is havoced (and snapshotted) too, so a caller can't assume a
+                // set the callee may mutate is unchanged, and the callee's `old.s` reframes from the call.
+                if (currentSetNames.contains(callerLoc)) {
+                    enc.bindSet(oldKey, enc.setFor(callerLoc))
+                    enc.bindSet(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                }
             }
         }
 
@@ -1824,6 +1915,7 @@ class VerifyChecker extends TypeCheckingExtension {
         // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
         savedVar.each { String k, Object v -> if (v != null) enc.bind(k, v) }
         savedArr.each { String k, Object v -> if (v != null) enc.bindArray(k, v) }
+        savedSet.each { String k, Object v -> if (v != null) enc.bindSet(k, v) }
 
         if (ensuresAst != null && post == null) return false   // @Ensures outside the fragment → skip
         if (post != null) s.assertExpr(post)

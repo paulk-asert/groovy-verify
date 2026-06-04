@@ -61,9 +61,13 @@ import org.codehaus.groovy.syntax.Types
  *   - nullity: {@code x == null} / {@code x != null} via a {@link #nullityOf
  *     nullity oracle} (a boolean "is null" flag per reference)
  *   - {@code x.equals(y)} as a synonym for {@code x == y}
- *   - {@code xs.contains(y)} as an uninterpreted predicate (sound, but with
- *     no membership reasoning until Phase 5's quantifiers)
+ *   - {@code xs.contains(y)} as precise membership over the modelled contents
+ *   - finite {@code Set<Integer>} membership ({@code x in s}, {@code s.contains(x)}),
+ *     mutation ({@code s.add(x)}/{@code s.remove(x)}) and cardinality ({@code s.size()}):
+ *     a set is a characteristic {@code Array Int -> Int}, and {@code size()} carries a
+ *     per-mutation update law (see {@link #cardOf}); set names are supplied by the checker
  *
+
  * Not supported (yet, deliberately):
  *   - the *value* of an indexed access {@code arr[i]} or a quotient
  *     {@code a / b} (only their safety side-conditions are checked, in
@@ -83,6 +87,17 @@ class Encoder {
     private final Map<String, Object> nullEnv = [:]
     /** Cache of array-content handles ({@code Array Int -> Int}), keyed by source name. */
     private final Map<String, Object> arrEnv = [:]
+    /** Cache of set handles (characteristic {@code Array Int -> Int}), keyed by source name / {@code old$name}. */
+    private final Map<String, Object> setEnv = [:]
+    /**
+     * Source-level names known to be {@code java.util.Set}-typed (params/fields), supplied by
+     * {@link VerifyChecker}. Membership/size/{@code contains} on these names lower to set semantics
+     * rather than the list/array oracles — the one place the otherwise shape-based encoder needs a
+     * type hint, because set operations are syntactically indistinguishable from list ones.
+     */
+    private final Set<String> setNames
+    /** Set handles whose {@code card >= 0} has already been asserted (mint-once, like the size oracle). */
+    private final Set<Object> cardConstrained = new HashSet<Object>()
     /**
      * While translating a quantifier body, the {@code (select arr i)} terms are
      * collected here to serve as the quantifier's instantiation triggers; null
@@ -97,9 +112,10 @@ class Encoder {
     /** Per-encoder total budget for symbolic unfolding (Phase 8a); only decrements, bounding recursion. */
     private int unfoldFuel = 16
 
-    Encoder(SmtSession session, PureEvaluator pureEvaluator = null) {
+    Encoder(SmtSession session, PureEvaluator pureEvaluator = null, Set<String> setNames = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
+        this.setNames = setNames != null ? setNames : new HashSet<String>()
     }
 
     /**
@@ -214,6 +230,56 @@ class Encoder {
         arrEnv.put(name, handle)
     }
 
+    /** Get-or-declare the set handle for a name / {@code old$name} (a characteristic {@code Array Int -> Int}). */
+    Object setFor(String key) {
+        Object cached = setEnv.get(key)
+        if (cached != null) return cached
+        Object v = session.setVar(key)
+        setEnv.put(key, v)
+        v
+    }
+
+    /** Re-bind a set name to a new handle — threads an add/remove as {@code s := (store s x 1|0)}. */
+    void bindSet(String key, Object handle) { setEnv.put(key, handle) }
+
+    /** Current set binding, or null — for save/restore around a call's framing. */
+    Object peekSet(String key) { setEnv.get(key) }
+
+    /** Set analogue of {@link #havocArray}: re-bind a set name's contents to a fresh, unconstrained set. */
+    Object havocSet(String key) {
+        Object v = session.setVar(key + '$havoc$' + (havocCounter++))
+        setEnv.put(key, v)
+        v
+    }
+
+    /** Membership {@code x ∈ s}, over a characteristic-array set handle: {@code (select s x) == 1}. */
+    Object member(Object setHandle, Object elem) {
+        session.eq(session.select(setHandle, elem), session.intLit(1L))
+    }
+
+    /** Cardinality {@code |s|} of a set handle, asserting {@code >= 0} the first time each handle is seen. */
+    Object cardOf(Object setHandle) {
+        Object c = session.setCard(setHandle)
+        if (cardConstrained.add(setHandle)) session.assertExpr(session.ge(c, session.intLit(0L)))
+        c
+    }
+
+    /**
+     * The set-env key for a receiver that names a set: a plain set-typed variable {@code s}, or the
+     * entry snapshot {@code old.s} (keyed {@code old$s}). Null when the receiver is not a known set.
+     */
+    private String setKeyFor(Expression recv) {
+        if (recv instanceof VariableExpression) {
+            String n = ((VariableExpression) recv).name
+            return setNames.contains(n) ? n : null
+        }
+        if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
+            String n = ((PropertyExpression) recv).propertyAsString
+            return setNames.contains(n) ? ('old$' + n) : null
+        }
+        null
+    }
+
     /** The nullity oracle: a boolean that is true exactly when {@code recv} is null. */
     Object nullityOf(String recv) {
         Object cached = nullEnv.get(recv)
@@ -294,6 +360,11 @@ class Encoder {
             if (isThisReceiver(obj)) {
                 return varFor(prop)
             }
+            // s.size (property form) on a known set -> cardinality, ahead of the list/array size oracle.
+            if (prop == 'size') {
+                String setKey = setKeyFor(obj)
+                if (setKey != null) return cardOf(setFor(setKey))
+            }
             // xs.length / xs.size  ->  size oracle
             if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
                 return sizeOf(((VariableExpression) obj).name)
@@ -363,6 +434,20 @@ class Encoder {
             return sel
         }
 
+        // Set membership: `x in s` / `x !in s` over a known set-typed receiver. Lowers to the
+        // characteristic-array query (select s x) == 1, riding Z3's array theory — so an add
+        // (a store) is related to a later membership read for free.
+        String sym = be.operation.text
+        if (sym == 'in' || sym == '!in') {
+            String key = setKeyFor(be.rightExpression)
+            if (key != null) {
+                Object elem = translate(be.leftExpression)
+                if (elem == null) return null
+                Object mem = member(setFor(key), elem)
+                return sym == 'in' ? mem : session.not(mem)
+            }
+        }
+
         // Nullity: x == null / x != null, before we try to translate `null`.
         if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
             VariableExpression ref = nullComparisonTarget(be)
@@ -423,6 +508,21 @@ class Encoder {
         if ((m == 'every' || m == 'any') && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
+        }
+
+        // Set receivers (s.contains(x) / s.size() / s.isEmpty()) take precedence over the list/array
+        // oracles below: a set is a characteristic array, its size is the uninterpreted cardinality.
+        String setKey = setKeyFor(recv)
+        if (setKey != null) {
+            if (m == 'contains' && args.size() == 1) {
+                Object e = translate(args.get(0))
+                return e == null ? null : member(setFor(setKey), e)
+            }
+            if (m == 'size' && args.isEmpty()) return cardOf(setFor(setKey))
+            if (m == 'isEmpty' && args.isEmpty()) return session.eq(cardOf(setFor(setKey)), session.intLit(0L))
+            // containsAll/union/intersect/etc. need an (unbounded) quantifier over the domain — out of
+            // fragment for now: return null so it surfaces as a loud "skipped", never a silent pass.
+            return null
         }
 
         // xs.count(v) / old.a.count(v) -> the occurrence-count term (Phase 12, permutation). Its
