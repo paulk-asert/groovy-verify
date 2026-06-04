@@ -368,9 +368,15 @@ every domain node, `u` included. It composes *everything*: sets, the functional-
 caller-side set framing, bounded quantifiers, the per-add law, and the full-characterization.
 
 **What remains — completeness.** We prove the node itself is covered, **not its successors**: claiming
-`next[u] in visited` refutes, because a node visited earlier needn't have had its edge followed. That is the
-closure/completeness property (*every reachable node is visited*), and it needs the DFS frontier/stack
-invariant — not a simple inductive set property — the one named gap left.
+`next[u] in visited` refutes, because a node visited earlier needn't have had its edge followed. Completeness
+(*every reachable node is visited*) is the closure fixpoint; a run at it (Phase 23) proves the inductive **step**
+— a set closed under `next` covers the successor of any visited node (`closure ∧ u∈visited ⊢ next[u]∈visited`) —
+and maps the three obstacles to the full result: **(1)** iterating that step needs recursive-definition reasoning
+in contracts (the same gap `bcount` cross-lemma use hits); **(2)** the DFS *establishing* closure needs the
+frontier/stack invariant (a plain `mark` provably breaks closure — the new node's successor isn't visited yet —
+so closure can't be a simple invariant); **(3)** the run also surfaced a call-site soundness fix to make first —
+`verifyCallSite` doesn't replay intervening straight-line mutations before a callee's precondition, so a naive
+closure-threading DFS would pass spuriously. See the roadmap's Phase 23 for the details.
 
 ## What's demonstrated
 
@@ -420,9 +426,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Bounded-sum cardinality `bcount(s,k)` — bound & full-count, earned by induction** | recursive `bcount`; `0 <= bcount(s,k) <= k` and `(0..<k).every{it in s} ⇒ bcount==k` | ✅ Phase 20 |
 | **`Sets.count(s,k)` primitive + per-add law** | a set mutation threads the bounded count: a fresh in-domain `add` raises `Sets.count(s,k)` by one | ✅ Phase 21 |
 | **Full-characterization `count==k ⟺ covers [0,k)` — and end-to-end DFS unconditional coverage** | `Sets.count(s,k)==k ⇒ u in s`; a cardinality-terminating DFS proves `start ∈ visited` with no fuel bound | ✅ Phase 22 |
+| **Completeness — closure ⇒ successor covered (the inductive step)** | `closure ∧ u∈visited ⇒ next[u]∈visited`; and `mark` breaks closure (boundary) | ✅ Phase 23 (one step) |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (all reachable nodes visited — the closure fixpoint; `next[u] ∈ visited`) | — | ⏳ later (needs a frontier/stack invariant — not a simple inductive set property) |
+| DFS *completeness* (full: all reachable visited) | — | ⏳ later (3 mapped obstacles: recursive-defs in contracts; the frontier/stack invariant; a call-site intervening-mutation soundness fix) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

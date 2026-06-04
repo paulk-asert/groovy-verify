@@ -1180,6 +1180,51 @@ needs the stack modelled (a sequence/ghost) or an explicit inductive `IsPath` pr
 argument. That is the one named, well-understood gap between here and a fully verified DFS; everything else —
 termination, soundness, and unconditional coverage — is done.
 
+---
+
+## Phase 23 — A run at completeness: closure ⇒ reachable, and the obstacles  *(partial)*
+
+**Completeness — *every reachable node is visited* — is the closure fixpoint, and this phase charts exactly how
+far the fragment reaches and where it stops.** For the functional graph it factors into two halves: (b) "`visited`
+closed under `next` ⟹ every node reachable from a visited node is visited", and (a) "the DFS *establishes*
+closure". One direction of (b) lands; the rest is blocked by named, understood obstacles.
+
+**What is proved.** With closure written as the bounded universal
+`(0..<n).every { !(it in visited) || (next[it] in visited) }` (a `next[it]` map-read inside a quantifier), the
+**one-step** consequence verifies: a closed set covers the successor of any visited node
+(`closure ∧ u ∈ visited ⊢ next[u] ∈ visited`). That is the inductive *step* of completeness, discharged by
+instantiating the closure universal.
+
+**Obstacle 1 — the full induction needs recursive definitions in contracts.** Iterating the step to "the node
+`d` hops along the chain is visited" needs a `chain(u, d) = (d <= 0 ? u : chain(next[u], d-1))` term whose
+*defining equation* is visible to the induction. Today such a term inside a contract is modelled as an
+uninterpreted function (the inductive step `chain(u,d) == chain(next[u],d-1)` isn't available), so the lemma
+refutes. This is the **same recursive-definition-in-contracts gap** flagged for `bcount` cross-lemma use
+(Phase 20/21) — closing it (one-level definitional unfolding for contracted recursive functions, robust against
+the Phase-8a fuel-mismatch) is the shared next step.
+
+**Obstacle 2 — establishing closure needs the stack.** A `mark` that merely adds a node **breaks** closure (the
+new node's successor needn't be visited) — verified: the `@Ensures` closure refutes on a plain `visited.add(u)`.
+So mark-then-recurse DFS cannot carry closure as a plain invariant; the invariant it really maintains is "closed
+under successors **except for nodes on the recursion stack**", which needs the stack modelled (a `Set`/sequence
+ghost pushed before the recursive call and popped after). That is the well-understood frontier/stack invariant,
+a genuinely larger development.
+
+**Obstacle 3 (found here) — a call-site soundness gap to fix first.** The attempt surfaced that the call-site
+precondition check (`verifyCallSite`) assumes the enclosing `@Requires` and the path (`if`) facts but does **not
+replay intervening straight-line body mutations** before discharging a callee's precondition. So a naive
+closure-threading DFS *spuriously* passed: the recursive `visit(next[u])`'s closure precondition was checked
+against the *pre-`add`* `visited`, not the post-`add` state where closure is broken. (Within the shipped fragment
+this had been latent — no prior call-site precondition referenced mutated collection *contents*.) Threading the
+straight-line prefix's set/array/scalar mutations into `verifyCallSite` (the machinery exists in `checkPath` /
+`LoopEncoder.symExec`) is the soundness fix that must precede any real closure-DFS proof — and is the concrete,
+bounded next increment this run identifies.
+
+**Net.** Completeness is *not* delivered: the one-step closure consequence is proved, and the three obstacles
+between here and the full result are now precise — (1) recursive-definition reasoning in contracts, (2) the
+frontier/stack invariant, (3) the call-site intervening-mutation threading (a soundness fix). Termination,
+soundness, and unconditional coverage (Phases 16–22) stand; completeness is the remaining, well-mapped frontier.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
