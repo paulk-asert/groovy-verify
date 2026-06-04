@@ -319,7 +319,7 @@ that guard (sound, less precise). And the per-site replay multiplies solver call
 sortedness, and the read/write reasoning that array algorithms need. Z3 handles
 bounded universals well when the patterns are right; unbounded quantifiers are
 where the trigger cliff lives, so the scope is **bounded universals only**
-(existentials and unbounded quantifiers are deferred).
+(existentials followed in Phase 9; unbounded quantifiers stay out of scope).
 
 **Syntax for the user:**
 
@@ -368,18 +368,18 @@ case forced: inside `@Invariant` the quantifier must be written fully-qualified
 the import isn't in scope and `a[j]` needs an `int`. And loop invariants are now
 captured *as text and re-parsed* (like `@Requires`/`@Ensures`), so the verifier
 sees a clean CONVERSION AST rather than the live node later phases resolve to a
-static call / `getAt`. **Sort, revisited:** the *sortedness* half is now done — a
+static call / `getAt`. **Sort, revisited:** the *sortedness* half lands here — a
 recursive insertion sort (`insert` + `sort`) verifies end-to-end via induction (see
-Phase 7). What a *full* sort still needs is **permutation** (a multiset/`count` model
-plus `old(a)` to relate the result to the input — without it, "sort" that zeroes the
-array would pass) and, for a *loop*-based sort, nested-loop support; the recursive
-formulation sidesteps the latter.
+Phase 7). The other half, **permutation** (a multiset/`count` model plus `old(a)`), and the
+sound framing that lets the two compose in place, followed in Phases 12–14 — where the full
+sort verifies *sorted ∧ permutation*. (A *loop*-based sort would also need nested-loop
+support; the recursive formulation sidesteps it.)
 
 **Known limits.** Counterexamples for array/quantifier refutations show the
-integer skeleton (`a.size`, indices) but not array contents or unconstrained
-element values — honest, not yet concrete; the array-model pretty-printer
-(cross-cutting risks) and the witness-as-failing-call idea (Phase 9) are the
-follow-ups. UNKNOWN on a stalled quantifier stays a loud "could not decide"; the
+integer skeleton (`a.size`, indices); Phase 9 since added pinning of
+solver-constrained array *contents* and a runnable `fails on:` repro, though
+unconstrained element values and a full array-model pretty-printer (cross-cutting
+risks) stay open. UNKNOWN on a stalled quantifier stays a loud "could not decide"; the
 user-supplied trigger/instantiation hint that would rescue it is the lightest
 borrow from [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
 
@@ -410,11 +410,12 @@ never its body.
   induction on `i`), `sort` composes on it (by induction on `n`). The recursive shape
   sidesteps nested loops entirely.
 
-**Still not done here:** *permutation* for a real sort — needs a multiset/`count` model and
-`old(a)` (the sortedness proof above is only the "zeroing the array would pass" half); mutual
-recursion (only direct self-recursion gives an inductive-hypothesis point — a cycle needs
-SCC-aware reasoning over a combined measure); and cross-module measure *inheritance* (an
-override of a precompiled super's `@Decreases`), an upstream groovy-contracts limitation.
+**Not done *here* (since shipped in Phases 12–14):** *permutation* for a real sort — the
+multiset/`count` model and `old(a)` the sortedness proof above leaves out (it is only the
+"zeroing the array would pass" half). Still genuinely open: mutual recursion (only direct
+self-recursion gives an inductive-hypothesis point — a cycle needs SCC-aware reasoning over a
+combined measure); and cross-module measure *inheritance* (an override of a precompiled super's
+`@Decreases`), an upstream groovy-contracts limitation.
 
 **Genuinely still optional, not done:**
 - **Full NIA** — lift the "a product needs a literal operand" restriction (Z3's `qfnia` is
@@ -628,8 +629,9 @@ the entry/exit distinction made visible). Framing within a single method is triv
 fields are unchanged); the receiver's fields are assumed unaliased, the same boundary arrays draw.
 
 **Not yet:** class-level `@Invariant` (object invariants — assume on entry, prove on exit; its own
-capture infrastructure) and *cross-method* field effects, which is the `@Modifies`/framing slice.
-(Array-typed fields work already — `a[j] = v` on a field threads through `arrayFor` like a param.)
+capture infrastructure). *Cross-method* field effects — the `@Modifies`/framing slice — followed in
+Phase 13. (Array-typed fields work already — `a[j] = v` on a field threads through `arrayFor` like a
+param.)
 
 ---
 
@@ -645,15 +647,15 @@ mismatched `count = count + 2` refutes.
 This is the keystone the framing/permutation arc needed. The headline is the **element frame**:
 a setter that writes only `a[j]` proves every other element is left alone —
 `@Ensures({ (0..<a.length).every { it == j || a[it] == old.a[it] } })` — which is exactly the
-shape `@Modifies` will lean on so that sound array-havoc-on-call doesn't lose the elements a callee
-didn't touch (the gap that would otherwise break the recursive insertion sort).
+shape `@Modifies` leans on (Phase 13) so that sound array-havoc-on-call doesn't lose the elements a
+callee didn't touch (the gap that would otherwise break the recursive insertion sort).
 
 `old` is instance-only upstream (GROOVY-12052: it snapshots instance state, unsupported in static
 methods), so it builds on the Phase 10 field support. It is fully dual-purpose: groovy-contracts
 *clones* `Cloneable` fields for the runtime `old` map, and arrays are `Cloneable`, so for `int[]`
-the runtime snapshot matches the verifier's entry-snapshot model. **Not yet:** `old` over a
-multiset/`count` (the permutation step), and `old` of method *parameters* (upstream models only
-fields).
+the runtime snapshot matches the verifier's entry-snapshot model. **Not yet:** `old` of
+method *parameters* (upstream models only fields). (`old` over a multiset/`count` — the permutation
+step — followed in Phase 12.)
 
 ---
 
@@ -674,16 +676,14 @@ of the input. The tractable encoding, which sidesteps the unbounded `∀v` a mul
 A **swap** is two stores whose count updates cancel, so it preserves every count — verified — while a
 plain copy (drops an element) refutes. That building block is sound and shipped.
 
-**Co-dependency found with `@Modifies`.** The *recursive* sort's permutation does **not** yet hold
-soundly: when a caller assumes a callee's `@Ensures` that mentions `old.a`, the assume path resolves
-`old.a` to the *caller's* entry snapshot, not the array *at the call* — so the recursion's count
-clause becomes an inconsistent (vacuous) assumption (a broken overwrite-`insert` wrongly "verified",
-which is how this was caught). Binding a callee's `old` to a *call-site* snapshot is precisely the
-`@Modifies`/havoc machinery. So permutation's recursive composition and `@Modifies` are mutually
-dependent and land together: `@Modifies` brings sound inter-procedural `old`, which makes the full
-insertion sort verify *sorted ∧ permutation* — and the permutation clause is in turn what lets
-`insert` survive the sound array-havoc (it supplies the bound on the sorted prefix that sortedness
-alone can't). The per-store `count` law built here is the standalone, sound foundation for that.
+**Co-dependency found with `@Modifies` (since resolved).** At this point the *recursive* sort's
+permutation did not hold soundly: when a caller assumes a callee's `@Ensures` that mentions `old.a`,
+the assume path resolved `old.a` to the *caller's* entry snapshot, not the array *at the call* — so
+the recursion's count clause became an inconsistent (vacuous) assumption (a broken overwrite-`insert`
+wrongly "verified", which is how this was caught). Binding a callee's `old` to a *call-site* snapshot
+is precisely the `@Modifies`/havoc machinery, built in Phase 13 — which closed this, so the full
+insertion sort verifies *sorted ∧ permutation* in Phase 14. The per-store `count` law built here is
+the standalone, sound foundation for that.
 
 ---
 
@@ -710,13 +710,25 @@ the bug Phase 12 surfaced (a callee's `old.a` resolving to the caller's entry ma
 - the recursive insertion sort is proven a **permutation** for real — `a.count(v) == old.a.count(v)`
   holds across the swaps *and* the recursive calls — and the broken overwrite now refutes.
 
-**The remaining frontier — sound sortedness under havoc.** A fully sound `sorted ∧ permutation`
-in-place sort still needs `insert`'s *sortedness* to survive the array-havoc: after the recursive
-call havocs `a`, proving `a[i-1] <= a[i]` needs a prefix-multiset *bound* (no sorted-prefix element
-exceeds the old pivot), which pointwise `count` doesn't supply. Closing it needs one more step — a
-`count`-over-range or a small bounding lemma. The frame-check + caller-side framing here, the
-per-store `count` law (Phase 12), and `old` (Phase 11) are its sound foundations; this is the genuine
-last mile.
+---
+
+## Phase 14 — The fully verified sort: *sorted ∧ permutation*  *(shipped)*
+
+The capstone. A recursive in-place insertion sort proven **both** correctness halves at once —
+the result is sorted *and* a permutation of the input — under sound `@Modifies` framing (every call
+havocs the array and reframes it from the callee's `@Ensures`; nothing is assumed unchanged for
+free). No new engine machinery: it composes bounded quantifiers (Phase 6/9), induction via
+`@Decreases` (Phase 7), the per-store `count` law (Phase 12), `old` pre-state (Phase 11), and
+caller-side framing (Phase 13) into a single result. See the README's "fully verified sort".
+
+The sortedness-under-havoc problem flagged at the end of Phase 13 — after the recursive call havocs
+`a`, proving `a[m-1] <= a[m]` — is solved without a range-multiset: the recursion passes the **pivot
+`a[m]` itself** as a fresh, *tight* upper bound `hi`, so the sorted prefix the recursion returns is
+bounded by exactly the element it must sit below. A ghost value `v` carries the multiset
+(`a.count(v) == old.a.count(v)` for arbitrary `v`), and a suffix-frame clause (`(m+1..<a.length).every
+{ a[it] == old.a[it] }`) preserves the untouched tail across the havoc. Soundness is anchored: a
+no-op sort cannot claim its result is sorted, and an overwriting insert (Phase 12) cannot claim the
+permutation.
 
 ---
 

@@ -33,44 +33,6 @@ This started life as the verification spike in the *groovy6-functional* blog
 companion repo. It was split out so it can grow on its own; that repo now
 consumes it (via a Gradle composite build) rather than vendoring it.
 
-## What's demonstrated
-
-| Capability | Authoring | Status |
-|---|---|---|
-| Preconditions discharged at call sites | `@Requires` | ✅ |
-| Postconditions vs. method body | `@Ensures` | ✅ |
-| Loop invariants & termination | `@Invariant` / `@Decreases` | ✅ |
-| **Array/list index in bounds** | *(implicit)* | ✅ Phase 1 |
-| **Division / modulo by zero** | *(implicit)* | ✅ Phase 1 |
-| **Null dereference** | *(implicit)* | ✅ Phase 1 |
-| **`xs.size()` / `xs.length` / `xs.isEmpty()`** in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
-| **`x == null` / `x != null`** nullity in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
-| **`x.equals(y)`** (numeric `==`) | `@Requires`/`@Ensures` | ✅ Phase 4 |
-| **`xs.contains(y)`** (precise membership over contents) | `@Requires`/`@Ensures` | ✅ Phase 4 / 9 |
-| **Cross-boundary nullity/size at call sites** | `@Requires` | ✅ Phase 4 |
-| **Value-flow: safety implied by an assignment** | *(implicit)* | ✅ Phase 5 |
-| **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
-| **Short-circuit guard path conditions** | `i > 0 && a[i - 1] < a[i]` | ✅ Phase 5 |
-| **Bounded-universal quantifiers over arrays** | `Forall.range(lo, hi) { … a[it] … }` | ✅ Phase 6 |
-| **Native GDK quantifier idioms** | `(lo..<hi).every{…}`, `xs.indices.every{…}`, `xs.every{ it… }` | ✅ Phase 9 |
-| **Existential quantifier (`any`)** | `a.any{ it < 0 }`, `(lo..<hi).any{…}` | ✅ Phase 9 |
-| **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
-| **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
-| **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
-| **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
-| **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
-| **Flow-sensitive precondition (use the preceding call's `@Ensures`)** | `sort(a, n-1); insert(a, n-1)` | ✅ Phase 7 (slice 4) |
-| **Recursive insertion sort — *sortedness*, end-to-end** | `insert` + `sort` by induction | ✅ Phase 7 |
-| **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
-| **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
-| **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
-| **Instance methods & field state (read + write)** | `this.count`, `count = count + 1` | ✅ Phase 10 |
-| **Pre-state `old` (field & array-content snapshots)** | `old.count`, `old.a[i]` in `@Ensures` | ✅ Phase 11 |
-| **Multiset / `count` preservation (per-store law)** | `a.count(v) == old.a.count(v)` | ✅ Phase 12 |
-| **`@Modifies` framing — frame-check + caller-side havoc & sound inter-proc `old`** | `@Modifies({ this.a })` | ✅ Phase 13 |
-| **Recursive sort proven a *permutation*** | `a.count(v) == old.a.count(v)` across swaps + recursion | ✅ Phase 13 |
-| Sound *sortedness-under-havoc* (full in-place sort), class `@Invariant`, 32-bit overflow | — | ⏳ later |
-
 ## Examples
 
 Each snippet below is compiled under `@TypeChecked(extensions = 'verification.VerifyChecker')`,
@@ -133,36 +95,6 @@ a concrete array, with the offending elements reconstructed (here a decreasing a
     fails on: diff([21239, 21238] as int[], 0)
 ```
 
-**Putting it together — a verified sort.** A recursive insertion sort whose result is
-*proven sorted*: `insert` places `a[i]` into the sorted prefix (a store, by induction on
-`i`), and `sort` composes it (by induction on `n`, relying on the `@Ensures` of the
-`sort(a, n-1)` call right before `insert`). No loops — the recursion *is* the proof.
-
-```groovy
-@Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
-@Ensures({ (0..<i).every { a[it] <= a[it + 1] } })
-@Decreases({ i })
-static void insert(int[] a, int i) {
-    if (i > 0 && a[i] < a[i - 1]) {
-        int t = a[i]; a[i] = a[i - 1]; a[i - 1] = t
-        insert(a, i - 1)
-    }
-}
-
-@Requires({ 0 <= n && n <= a.length })
-@Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } })
-@Decreases({ n })
-static void sort(int[] a, int n) {
-    if (n > 1) { sort(a, n - 1); insert(a, n - 1) }
-}
-```
-
-This proves *sortedness* — the elements come out in order. It does **not** yet prove
-*permutation* (that the output is a rearrangement of the input), which needs a multiset
-model and `old(a)`; so a "sort" that zeroed the array would still pass here. Sortedness is
-the harder-looking half and the part the order-reasoning machinery (quantifiers + induction)
-makes reachable; permutation is tracked in the roadmap.
-
 **Object state — instance fields, read and written.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
 the contract's entry `count` and exit `count` are different values, related by the assignment).
@@ -203,6 +135,93 @@ size() on null object`, …); the `fails on:` line reconstructs a runnable input
 and a null receiver exact, solver-constrained array elements pinned as literals
 (`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
 (`new int[3]`).
+
+**Putting it all together — a fully verified sort.** Everything above composes into one result: a
+recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves
+of sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in
+place under a sound `@Modifies` frame (the checker *havocs* the array across each call and reframes it
+from the callee's `@Ensures`, so nothing is assumed unchanged for free).
+
+Two ghost parameters carry the proof, both ordinary ints the runtime ignores: `hi` is an upper
+bound on the active elements (the recursion passes the pivot `a[m]` as the new, tight bound — that
+tightness is what lets the order argument go through), and `v` is an arbitrary value whose
+*occurrence count* must be preserved (`a.count(v) == old.a.count(v)` for all `v` ≡ same multiset ≡
+a permutation). The `every`/`count`/`old` are all plain GDK Groovy, so the same contract is checked
+at runtime.
+
+```groovy
+@Requires({ 0 <= m && m < a.length &&
+            (0..<m - 1).every { a[it] <= a[it + 1] } &&   // prefix sorted
+            (0..<m + 1).every { a[it] <= hi } })           // active region bounded by hi
+@Modifies({ this.a })
+@Ensures({ (0..<m).every { a[it] <= a[it + 1] } &&         // a[0..m] now sorted
+           (0..<m + 1).every { a[it] <= hi } &&            // bound preserved
+           (m + 1..<a.length).every { a[it] == old.a[it] } && // suffix framed (untouched)
+           a.count(v) == old.a.count(v) })                 // permutation
+@Decreases({ m })
+void insert(int m, int hi, int v) {
+    if (m > 0 && a[m] < a[m - 1]) {
+        int t = a[m]; a[m] = a[m - 1]; a[m - 1] = t
+        insert(m - 1, a[m], v)                              // recurse with the pivot as the bound
+    }
+}
+
+@Requires({ 0 <= n && n <= a.length && (0..<n).every { a[it] <= hi } })
+@Modifies({ this.a })
+@Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } &&
+           (0..<n).every { a[it] <= hi } &&
+           (n..<a.length).every { a[it] == old.a[it] } &&
+           a.count(v) == old.a.count(v) })
+@Decreases({ n })
+void sort(int n, int hi, int v) {
+    if (n > 1) { sort(n - 1, hi, v); insert(n - 1, hi, v) }
+}
+```
+
+Both halves are checked, not assumed: a "sort" that zeroed the array fails the permutation clause,
+and one that left elements out of order fails the sortedness clause — bounded quantifiers, induction
+(`@Decreases`), the multiset `count` law, `old` pre-state, and sound `@Modifies` framing, in one
+proof.
+
+## What's demonstrated
+
+The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
+
+| Capability | Authoring | Status |
+|---|---|---|
+| Preconditions discharged at call sites | `@Requires` | ✅ |
+| Postconditions vs. method body | `@Ensures` | ✅ |
+| Loop invariants & termination | `@Invariant` / `@Decreases` | ✅ |
+| **Array/list index in bounds** | *(implicit)* | ✅ Phase 1 |
+| **Division / modulo by zero** | *(implicit)* | ✅ Phase 1 |
+| **Null dereference** | *(implicit)* | ✅ Phase 1 |
+| **`xs.size()` / `xs.length` / `xs.isEmpty()`** in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **`x == null` / `x != null`** nullity in contracts | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **`x.equals(y)`** (numeric `==`) | `@Requires`/`@Ensures` | ✅ Phase 4 |
+| **`xs.contains(y)`** (precise membership over contents) | `@Requires`/`@Ensures` | ✅ Phase 4 / 9 |
+| **Cross-boundary nullity/size at call sites** | `@Requires` | ✅ Phase 4 |
+| **Value-flow: safety implied by an assignment** | *(implicit)* | ✅ Phase 5 |
+| **Loop-fused bounds (obligation under `@Invariant`)** | *(implicit)* | ✅ Phase 5 |
+| **Short-circuit guard path conditions** | `i > 0 && a[i - 1] < a[i]` | ✅ Phase 5 |
+| **Bounded-universal quantifiers over arrays** | `Forall.range(lo, hi) { … a[it] … }` | ✅ Phase 6 |
+| **Native GDK quantifier idioms** | `(lo..<hi).every{…}`, `xs.indices.every{…}`, `xs.every{ it… }` | ✅ Phase 9 |
+| **Existential quantifier (`any`)** | `a.any{ it < 0 }`, `(lo..<hi).any{…}` | ✅ Phase 9 |
+| **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
+| **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
+| **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
+| **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
+| **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
+| **Flow-sensitive precondition (use the preceding call's `@Ensures`)** | `sort(a, n-1); insert(a, n-1)` | ✅ Phase 7 (slice 4) |
+| **Recursive insertion sort — *sortedness*, end-to-end** | `insert` + `sort` by induction | ✅ Phase 7 |
+| **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
+| **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
+| **Bounded symbolic unfolding (fuel) + `ite`** | `absV(x)`, `pow2(n)` against a symbolic arg | ✅ Phase 8a (slice 3) |
+| **Instance methods & field state (read + write)** | `this.count`, `count = count + 1` | ✅ Phase 10 |
+| **Pre-state `old` (field & array-content snapshots)** | `old.count`, `old.a[i]` in `@Ensures` | ✅ Phase 11 |
+| **Multiset / `count` preservation (per-store law)** | `a.count(v) == old.a.count(v)` | ✅ Phase 12 |
+| **`@Modifies` framing — frame-check + caller-side havoc & sound inter-proc `old`** | `@Modifies({ this.a })` | ✅ Phase 13 |
+| **Fully verified in-place sort — *sorted ∧ permutation*** | recursive insertion sort under sound `@Modifies` | ✅ Phase 14 |
+| Class `@Invariant`, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
 

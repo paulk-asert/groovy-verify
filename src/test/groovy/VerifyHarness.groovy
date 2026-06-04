@@ -358,6 +358,48 @@ class VerifyHarness {
                        @Ensures({ a.count(v) == old.a.count(v) })
                        void copy(int i, int j, int v) { a[i] = a[j] }
                    }''')],
+        // ---------- Phase 14: the verified sort — sorted AND a permutation, soundly ----------
+        // insert threads a ghost upper bound `hi` (the recursion passes the pivot a[m] as the new,
+        // tight bound), a ghost count value `v` (permutation), and frames the suffix it doesn't touch.
+        [group: 'P14 sort', name: 'insertion sort: sorted AND permutation', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= m && m < a.length &&
+                                   (0..<m - 1).every { a[it] <= a[it + 1] } &&
+                                   (0..<m + 1).every { a[it] <= hi } })
+                       @Modifies({ this.a })
+                       @Ensures({ (0..<m).every { a[it] <= a[it + 1] } &&
+                                  (0..<m + 1).every { a[it] <= hi } &&
+                                  (m + 1..<a.length).every { a[it] == old.a[it] } &&
+                                  a.count(v) == old.a.count(v) })
+                       @Decreases({ m })
+                       void insert(int m, int hi, int v) {
+                           if (m > 0 && a[m] < a[m - 1]) {
+                               int t = a[m]; a[m] = a[m - 1]; a[m - 1] = t
+                               insert(m - 1, a[m], v)
+                           }
+                       }
+                       @Requires({ 0 <= n && n <= a.length && (0..<n).every { a[it] <= hi } })
+                       @Modifies({ this.a })
+                       @Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } &&
+                                  (0..<n).every { a[it] <= hi } &&
+                                  (n..<a.length).every { a[it] == old.a[it] } &&
+                                  a.count(v) == old.a.count(v) })
+                       @Decreases({ n })
+                       void sort(int n, int hi, int v) {
+                           if (n > 1) { sort(n - 1, hi, v); insert(n - 1, hi, v) }
+                       }
+                   }''')],
+        // Soundness anchor: a sort that does nothing cannot claim its result is sorted → refuted.
+        [group: 'P14 sort', name: 'no-op sort cannot claim sorted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= n && n <= a.length })
+                       @Modifies({ this.a })
+                       @Ensures({ (0..<n - 1).every { a[it] <= a[it + 1] } })
+                       void sort(int n) { }
+                   }''')],
+
         // ---------- Phase 13 (frame-check): a method writes only what its @Modifies declares ----------
         // Honest: inc declares it modifies count and writes only count → frame-check passes.
         [group: 'P13 frame', name: 'honest modifies verified', ok: true,
