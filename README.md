@@ -300,6 +300,64 @@ For method bodies: straight-line code, `if`/`else`, locals and instance fields (
 tracked in SSA so a mutator's pre/post state differ), and a single annotated `while` loop. See
 `Encoder` and the roadmap for the exact boundaries.
 
+## Relationship to Groovy's other checkers
+
+groovy-verify is one of a family of `@TypeChecked` extensions, and it deliberately owns a narrow,
+deep slice — SMT-backed *functional* verification. Two things place it: how its null story relates
+to Groovy's existing null tooling, and what guards the code its fragment can't yet reach.
+
+### Null handling — three layers, one of them a sibling
+
+Groovy already answers "null" at more than one point in the lifecycle, and it's worth not conflating
+them (note especially the runtime `@NullCheck` transform versus the compile-time `NullChecker`):
+
+| Piece | Kind | When | What it does |
+|---|---|---|---|
+| `@groovy.transform.NullCheck` | AST transform | runtime | injects fail-fast guards on parameters |
+| `?.` / `?:` | language operators | runtime | safe-navigation / Elvis |
+| **`groovy.typecheckers.NullChecker`** | **type-checking extension** | **compile time** | flow-sensitive nullness via `@Nullable` / `@NonNull` / `@MonotonicNonNull` |
+| **groovy-verify** | **type-checking extension** | **compile time** | SMT obligation `recv != null` at each dereference |
+
+The last two are siblings — the same extension SPI — approaching null from opposite ends.
+**`NullChecker` is the specialist:** annotation-driven and flow-sensitive (it follows null guards,
+early-exit `if (x == null) return`, safe navigation, monotonic fields, non-null-by-default), modelled
+on the Checker Framework's Nullness Checker, and it answers *"could this be null here?"* without a
+solver. **groovy-verify treats nullity as a by-product** of proving richer properties: it asserts
+`¬(recv != null)` and asks Z3, so it catches a dereference when the surrounding logic or a
+`@Requires` makes non-nullness *provable* — and returns a refuting input (`g(null, 0)`). It has no
+`@Nullable` / `@NonNull` awareness, does not model `?.`, and makes every named-receiver dereference an
+unconditional obligation. **For dedicated null-safety, reach for `NullChecker`;** the boxed-element gap
+noted earlier (`List<@Nullable String>`) is exactly what its annotations express and ours do not.
+
+Because both are just extensions, they **compose** — nullness-by-annotation and SMT functional
+verification in a single compile, each doing what it is best at:
+
+```groovy
+@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'])
+```
+
+### Outside the fragment, the code is still guarded
+
+groovy-verify is *loudly* partial: anything outside its fragment is skipped, never silently passed
+(see [Non-goals](ROADMAP.md)). Two safety nets mean "skipped" does not mean "unprotected":
+
+- **The contracts still run.** The annotations are stock `groovy.contracts`, so every
+  `@Requires` / `@Ensures` / `@Invariant` / `@Decreases` / `@Modifies` that groovy-verify *couldn't*
+  discharge at compile time is still enforced as an ordinary **runtime assertion**. A proof we skip
+  degrades to a runtime check, not to nothing — and the spec is written once, serving both. Being
+  machine-readable and compiler-enforced, those same contracts also read as a specification a human or
+  AI agent can reason from without opening the body — even mechanically deriving property-based tests
+  (see [*Groovy 6 features for Functional Programmers*](https://groovy.apache.org/blog/groovy6-functional)) — and groovy-verify only sharpens that, since a `@Ensures` it has discharged is *proven*, not merely asserted.
+- **Sibling checkers cover orthogonal properties.** The `groovy-typecheckers` module ships a set of
+  `@TypeChecked` extensions, each owning a property groovy-verify doesn't model: `NullChecker`
+  (nullness), `RegexChecker` (invalid regular expressions caught at compile time), `FormatStringChecker`
+  (`printf` / `String.format` argument mismatches), and `PurityChecker` / `ModifiesChecker`
+  (`@Pure` / `@SideEffectFree` / `@Contract` side-effect compliance) — the last directly relevant
+  here, since groovy-verify's pure-function evaluation (Phase 8a) and `@Modifies` framing (Phase 13)
+  *assume* a purity those checkers can actually verify. Others (`CombinerChecker`, `MonadicChecker`, …)
+  cover further ground, and they compose the same way. Together the family checks far more than any one
+  extension's fragment.
+
 ## Architecture
 
 | File | Role |

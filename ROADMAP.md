@@ -740,6 +740,16 @@ Things deliberately not pursued, because they don't pay back:
   outside the fragment emits a "skipped: outside fragment" diagnostic, which is
   honest. Chasing actual soundness would mean rejecting any program that touches
   anything outside the fragment — which is most of them.
+- **Orthogonal properties owned by sibling checkers.** Nullness (flow + `@Nullable`/`@NonNull`),
+  regular-expression validity, `printf`/`String.format` argument matching, and `@Pure`/side-effect
+  compliance are each covered by a dedicated `groovy-typecheckers` extension (`NullChecker`,
+  `RegexChecker`, `FormatStringChecker`, `PurityChecker`/`ModifiesChecker`). They ride the same
+  `@TypeChecked(extensions = …)` SPI and compose with this one, so groovy-verify stays focused on
+  *functional* (contract + arithmetic + array/quantifier) verification rather than reimplementing
+  them. Two relate directly: `NullChecker` is the annotation-driven specialist where our nullity
+  oracle is a by-product (see the README's "Relationship to Groovy's other checkers"), and
+  `PurityChecker`/`ModifiesChecker` can verify the purity our pure-function evaluation (Phase 8a) and
+  `@Modifies` framing (Phase 13) assume.
 - **Concurrency.** No race detection, no dataflow reasoning. A different tool.
 - **Floating point.** SMT handles FP but slowly and with surprising results. If
   the project ever targets numeric code, revisit.
