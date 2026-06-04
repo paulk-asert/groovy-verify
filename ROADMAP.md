@@ -853,12 +853,35 @@ class C {
   `s + t`, `s <= t`) need an unbounded `∀x. x∈s ⇒ x∈t` — the explicit quantifier non-goal — so they
   emit a loud "skipped", never a silent pass. The bounded-domain `every`-over-`0..<N` lowering that
   would bring subset into the fragment is the natural next slice.
-- **Not yet wired to `@Decreases`.** The cardinality law is the *building block* (the Phase-12 analogue
-  is "swap preserves count", before the full sort). Threading set mutation through the recursion's
-  termination replay — so `N - s.size()` can be a measure and a DFS-shaped recursion terminates — is the
-  follow-on, exactly as permutation needed Phases 13–14 to compose into a verified sort.
 - **Maps next.** A `map<K,V>` is `select`/`store` over keys with a key-*set* that is itself a set — it
   builds directly on this phase, and is what the DFS adjacency representation wants.
+
+**Wired into recursion termination.** The cardinality law now drives a recursive `@Decreases` measure: the
+termination replay (`dischargeTermination`) threads each `s.add(x)` / `s.remove(x)` through the per-mutation
+law and translates the *entry* measure before those effects, so a set-valued measure like `n - s.size()`
+strictly decreases across a recursive call exactly when a fresh element was added. This is the
+DFS-shaped termination argument — a finite recursion over a bounded domain that ends because the visited
+set keeps growing — proved with **no quantifier**:
+
+```groovy
+class C {
+    Set<Integer> s; int n
+    @Modifies({ this.s })
+    @Decreases({ n - s.size() })
+    void fill(int x) {
+        if (!(x in s) && s.size() < n) {   // x is fresh, room remains
+            s.add(x)                       // |s| grows by one (the cardinality law)
+            fill(x + 1)                    // measure n - |s| strictly decreases
+        }
+    }
+}
+```
+
+Drop the `!(x in s)` freshness guard and `s.add(x)` may be a no-op, so the measure need not decrease —
+termination rightly refutes (`fails on: fill(4)`). What remains for a *full* DFS is the **functional**
+postcondition (every reachable node ends up visited), which needs the adjacency **map** above plus a
+bounded-domain `every` for the reachability relation; the termination half — historically the hard part,
+since cyclic graphs make naive DFS loop forever — is done.
 
 ---
 

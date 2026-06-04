@@ -1057,6 +1057,34 @@ class VerifyHarness {
         // A set operation needing an unbounded quantifier (containsAll/subset) is a loud skip, not a pass.
         [group: 'P16 sets', name: 'subset op outside fragment skipped', expect: 'Skipped verification of postcondition',
          src: tc('class C { @Requires({ s.containsAll(t) }) @Ensures({ s.containsAll(t) }) static int f(Set<Integer> s, Set<Integer> t) { 0 } }')],
+        // The cardinality law wired into a recursive @Decreases measure: each call adds a *fresh* element
+        // to `s` (the guard `!(x in s)` makes it fresh), so the measure `n - s.size()` strictly decreases —
+        // a finite recursion over a bounded domain (the DFS-shaped termination argument), proved with no
+        // quantifier. Termination + the recursion's own well-foundedness, end to end.
+        [group: 'P16 sets', name: 'set-cardinality decreases measure', ok: true,
+         src: tc('''class C { Set<Integer> s; int n
+                        @Modifies({ this.s })
+                        @Decreases({ n - s.size() })
+                        void fill(int x) {
+                            if (!(x in s) && s.size() < n) {
+                                s.add(x)
+                                fill(x + 1)
+                            }
+                        }
+                    }''')],
+        // Soundness: drop the freshness guard `!(x in s)` and the added element may already be present,
+        // so `s.size()` need not grow — the measure does not provably decrease → termination refuted.
+        [group: 'P16 sets', name: 'non-fresh add does not decrease measure', expect: 'recursion measure',
+         src: tc('''class C { Set<Integer> s; int n
+                        @Modifies({ this.s })
+                        @Decreases({ n - s.size() })
+                        void fill(int x) {
+                            if (s.size() < n) {
+                                s.add(x)
+                                fill(x + 1)
+                            }
+                        }
+                    }''')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

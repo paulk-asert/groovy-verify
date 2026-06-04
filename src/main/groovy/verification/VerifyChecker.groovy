@@ -1718,7 +1718,15 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object pre = enc.translate(reqAst)
                 if (pre != null) s.assertExpr(pre)
             }
-            // Replay the path facts up to the call (single-assignment, so params keep entry values).
+            // Measure on entry — translated BEFORE the body effects below are replayed, so a measure over
+            // *mutated* state (a set's cardinality, `n - s.size()`) reads the entry value, not the
+            // post-body one. For the usual param-only measure this is identical: the replay never rebinds a
+            // parameter, so where `entry` is computed makes no difference.
+            Object entry = enc.translate(measureAst)
+            // Replay the path facts up to the call (single-assignment, so params keep entry values). A set
+            // mutation `s.add(x)` / `s.remove(x)` threads the set and asserts the per-mutation cardinality
+            // law, so a set-valued measure strictly decreases across the call exactly when a fresh element
+            // was added — the cardinality law wired into recursion termination.
             for (Object step : preceding) {
                 if (step instanceof Guard) {
                     Guard g = (Guard) step
@@ -1733,9 +1741,10 @@ class VerifyChecker extends TypeCheckingExtension {
                     Object idx = enc.translate(st.index)
                     Object val = enc.translate(st.value)
                     if (idx != null && val != null) enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val))
+                } else if (step instanceof LemmaCall) {
+                    applySetMutation(s, enc, ((LemmaCall) step).call)
                 }
             }
-            Object entry = enc.translate(measureAst)   // measure on entry (the method's parameters)
             List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
             Parameter[] formals = node.parameters
             Map<String, Object> bindings = new LinkedHashMap<String, Object>()
