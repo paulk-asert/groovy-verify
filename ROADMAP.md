@@ -628,10 +628,10 @@ void inc() { count = count + 1 }` verifies, and the same without the guard refut
 the entry/exit distinction made visible). Framing within a single method is trivial (unwritten
 fields are unchanged); the receiver's fields are assumed unaliased, the same boundary arrays draw.
 
-**Not yet:** class-level `@Invariant` (object invariants — assume on entry, prove on exit; its own
-capture infrastructure). *Cross-method* field effects — the `@Modifies`/framing slice — followed in
-Phase 13. (Array-typed fields work already — `a[j] = v` on a field threads through `arrayFor` like a
-param.)
+**Class-level `@Invariant`** (the natural next layer for OO code) was originally listed as the open
+piece here; the **instance-method slice landed in Phase 15a** (see below). *Cross-method* field
+effects — the `@Modifies`/framing slice — followed in Phase 13. (Array-typed fields work already —
+`a[j] = v` on a field threads through `arrayFor` like a param.)
 
 ---
 
@@ -729,6 +729,68 @@ bounded by exactly the element it must sit below. A ghost value `v` carries the 
 { a[it] == old.a[it] }`) preserves the untouched tail across the havoc. Soundness is anchored: a
 no-op sort cannot claim its result is sorted, and an overwriting insert (Phase 12) cannot claim the
 permutation.
+
+---
+
+## Phase 15a — Class `@Invariant`: instance methods  *(shipped)*
+
+The natural OO follow-on to Phase 10's instance fields: a `@groovy.contracts.Invariant({ ... })` on a
+class is an **object invariant** — at runtime it holds after every constructor and before/after every
+method call. The verifier now treats the class-level form as an extra exit obligation for each
+non-static instance method: **assumed at method entry** (an extra fact in scope, alongside `@Requires`)
+and **proved at method exit** (conjoined into the goal that `@Ensures` carries, or — for void methods
+with no `@Ensures` — standing as the sole exit obligation).
+
+**How it works:**
+
+- **Capture.** A sibling of `ContractExpansionTransform.augment` walks `cn.annotations` at CONVERSION,
+  reads each `@Invariant` closure's verbatim text via the same `SourceText` path as
+  `@Requires`/`@Ensures`, and attaches a runtime `@ClassInvariantSource` carrier (separate from the
+  method-level `@ContractSource` to keep its target narrow). Both the repeatable `@Invariant`
+  sequence and the `@Invariants` container shape are handled.
+- **Resolve.** `VerifyChecker.classInvariantTexts(ClassNode)` walks the superclass chain super-first
+  and returns each captured text re-parsed to an `Expression`. Parent invariants are AND-conjoined
+  with the subclass's — matching groovy-contracts' upstream semantics.
+- **Pre-filter.** `beforeVisitMethod` pre-translates each invariant in a probe session and drops any
+  that don't encode (e.g. `name.length() > 0` on a String field — outside the fragment). One
+  `Skipped class invariant` diagnostic per dropped clause per method, not one per discharge site.
+- **Wire.** `assumeClassInvariants(s, enc)` is the single helper called from every discharge site:
+  - `checkPath` — entry-assume + exit-conjoin (postcondition path).
+  - `assumeContext` / `dischargeVfObligation` / `dischargeSeeded` — entry-assume for the
+    implicit-obligation discharge (Phase 1/5 paths).
+  - `checkEstablishment` / `checkPreservation` / `checkProgress` / `checkUse` — entry-assume for the
+    four loop VCs.
+- **Diagnostic.** `Reporter.formatClassInvariantViolation` emits the dedicated
+  `Cannot prove class invariant of <method> holds at method exit` head when the invariant is the
+  sole reason for refutation; `formatClassInvariantSkipped` for outside-fragment clauses.
+
+```groovy
+@groovy.contracts.Invariant({ count >= 0 })
+class Counter {
+    int count
+    void inc() { count = count + 1 }                          // verifies: invariant preserved
+    void dec() { count = count - 1 }                          // REFUTED: count = 0 → -1
+    @Requires({ count > 0 }) void safeDec() { count = count - 1 }   // verifies under the guard
+}
+```
+
+**Soundness scope.** Sound by construction at *method-entry points* (establishment, postcondition
+goal, implicit-obligation seed). For the loop **preservation/progress** VCs the invariant is also
+in scope, which is sound iff the loop body doesn't write to a field the invariant references — the
+same caveat already in place for the body-internal obligation discharge. A future frame analysis
+(per-loop, analogous to `@Modifies` for methods) tightens this; until then, users putting actively-
+mutated fields in a class invariant should anticipate the limitation.
+
+**Not yet (15b/15c):**
+- **Constructors establishing the invariant.** A constructor must prove the invariant at exit; this
+  needs a constructor-shaped analog of `verifyPostcondition` (`cn.declaredConstructors`, body snapshot,
+  same exit assertion). 15b.
+- **Cross-class call-site assumption.** At a call `caller.someOther.m(...)`, the callee's class
+  invariant can be assumed to hold both before and after — natural extension of `assumeCalleeEnsures`
+  in Phase 13. 15c.
+- **Cross-module class-invariant transport.** Same producer-recompile discipline as method
+  `@Requires`: a producer compiled without groovy-verify won't carry the class-invariant text in
+  bytecode. 15c.
 
 ---
 

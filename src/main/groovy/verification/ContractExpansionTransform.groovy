@@ -25,10 +25,12 @@ import org.codehaus.groovy.ast.ImportNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.ast.VariableScope
+import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
@@ -91,10 +93,80 @@ class ContractExpansionTransform implements ASTTransformation {
         ModuleNode module = source.AST
         if (module == null) return
         for (ClassNode cn : module.classes) {
+            augmentClass(cn, module, source)
             for (MethodNode mn : cn.methods) {
                 augment(mn, module, source)
             }
         }
+    }
+
+    /**
+     * Capture any class-level {@code groovy.contracts.@Invariant} closures into a
+     * {@link ClassInvariantSource} on the class (Phase 15a). Each invariant's
+     * verbatim text is harvested the same way as a method's pre/postcondition;
+     * the conjunction of all captured texts is the class invariant.
+     *
+     * groovy-contracts' {@code @Invariant} is {@code @Repeatable}, so the parser
+     * may produce either a sequence of {@code @Invariant} annotations or a single
+     * {@code @Invariants} container holding them. Both shapes are handled.
+     */
+    private static void augmentClass(ClassNode cn, ModuleNode module, SourceUnit source) {
+        List<String> texts = new ArrayList<String>()
+        for (AnnotationNode an : cn.annotations) {
+            if (isClassInvariantAnnotation(an, module)) {
+                String text = captureInvariantText(an, source)
+                if (text) texts.add(text)
+            } else if (isClassInvariantsContainer(an, module)) {
+                Expression value = an.getMember('value')
+                if (value instanceof ListExpression) {
+                    for (Expression child : ((ListExpression) value).expressions) {
+                        if (child instanceof AnnotationConstantExpression) {
+                            Object inner = ((AnnotationConstantExpression) child).value
+                            if (inner instanceof AnnotationNode) {
+                                String text = captureInvariantText((AnnotationNode) inner, source)
+                                if (text) texts.add(text)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (texts.isEmpty()) return
+        AnnotationNode holder = new AnnotationNode(ClassHelper.make(ClassInvariantSource))
+        ListExpression list = new ListExpression()
+        for (String t : texts) list.addExpression(new ConstantExpression(t))
+        holder.addMember('invariants', list)
+        cn.addAnnotation(holder)
+    }
+
+    /** Verbatim text of an {@code @Invariant}'s closure, or null if absent/unparseable. */
+    private static String captureInvariantText(AnnotationNode an, SourceUnit source) {
+        Expression value = an.getMember('value')
+        if (!(value instanceof ClosureExpression)) return null
+        captureSource((ClosureExpression) value, source)
+    }
+
+    /**
+     * True if {@code an} is {@code groovy.contracts.@Invariant}. The same annotation
+     * class is used for loop invariants (via {@code @ExtendedTarget(LOOP)}); the
+     * caller restricts to the class-annotations list, so a loop-position usage is
+     * never seen here.
+     */
+    private static boolean isClassInvariantAnnotation(AnnotationNode an, ModuleNode module) {
+        String name = an.classNode?.name
+        if (name == null) return false
+        if (name == CONTRACTS_PKG + 'Invariant') return true
+        if (name == 'Invariant' && importedFromContracts('Invariant', module)) return true
+        false
+    }
+
+    /** True if {@code an} is the {@code groovy.contracts.@Invariants} repeatable container. */
+    private static boolean isClassInvariantsContainer(AnnotationNode an, ModuleNode module) {
+        String name = an.classNode?.name
+        if (name == null) return false
+        if (name == CONTRACTS_PKG + 'Invariants') return true
+        if (name == 'Invariants' && importedFromContracts('Invariants', module)) return true
+        false
     }
 
     private static void augment(MethodNode mn, ModuleNode module, SourceUnit source) {

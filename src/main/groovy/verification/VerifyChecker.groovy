@@ -92,6 +92,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private static final ClassNode REQUIRES_TYPE = ClassHelper.make(Requires)
     private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
     private static final ClassNode CONTRACT_SOURCE_TYPE = ClassHelper.make(ContractSource)
+    private static final ClassNode CLASS_INVARIANT_SOURCE_TYPE = ClassHelper.make(ClassInvariantSource)
 
     private SmtBackend backend
     private PathFacts currentFacts
@@ -109,6 +110,14 @@ class VerifyChecker extends TypeCheckingExtension {
     private Map<String, String> sizeAccessors = [:]
     /** Mints unique names for havoced locations at call sites (Phase 13 caller-side framing). */
     private int havocCounter = 0
+    /**
+     * Phase 15a — the class-level {@code @Invariant} clauses on the current method's declaring
+     * class, pre-filtered to the encoder fragment. Empty for static methods. Assumed at method
+     * entry across postcondition, implicit-obligation, and loop-obligation discharge sites; also
+     * conjoined into the exit goal in {@link #checkPath}. Populated once in {@link #beforeVisitMethod}
+     * to avoid emitting a "skipped" diagnostic per discharge path for the same outside-fragment clause.
+     */
+    private List<Expression> currentClassInvariants = Collections.<Expression> emptyList()
 
     /** New Encoder wired with the current class's pure-function evaluator. */
     private Encoder mkEncoder(SmtSession session) {
@@ -431,6 +440,12 @@ class VerifyChecker extends TypeCheckingExtension {
         currentMethod = node
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
         buildSizeAccessors(node)
+        // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
+        // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
+        // the method has many implicit-obligation sites, multiple paths, etc.
+        List<Expression> rawInvs = (!node.isStatic() && node.declaringClass != null) ?
+            classInvariantTexts(node.declaringClass) : Collections.<Expression> emptyList()
+        currentClassInvariants = filterEncodableInvariants(rawInvs, node)
         if (node.code != null) {
             try {
                 node.code.visit(currentFacts)
@@ -491,6 +506,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentMethod = null
             currentEvaluator = null
             sizeAccessors = [:]
+            currentClassInvariants = Collections.<Expression> emptyList()
         }
     }
 
@@ -697,7 +713,7 @@ class VerifyChecker extends TypeCheckingExtension {
         return v
     }
 
-    /** Discharge a value-flow obligation: assume @Requires, replay the reaching assignments and guards, then check. */
+    /** Discharge a value-flow obligation: assume @Requires + class invariants, replay the reaching assignments and guards, then check. */
     private void dischargeVfObligation(MethodNode node, VfObligation v, Expression reqAst) {
         SmtSession s = backend.session()
         try {
@@ -706,6 +722,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object pre = enc.translate(reqAst)
                 if (pre != null) s.assertExpr(pre)
             }
+            // Phase 15a — class invariants are method-entry facts, assumed before any
+            // reaching assignment is replayed.
+            assumeClassInvariants(s, enc)
             // Single-assignment locals: each name is bound once, before use, so
             // asserting the equalities in any order recovers the reaching store.
             for (Assign a : v.assigns) {
@@ -722,12 +741,16 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
-    /** Assume the method's own @Requires (if encodable) plus the path facts at a site. */
+    /** Assume the method's own @Requires (if encodable), the class invariants, plus the path facts at a site. */
     private void assumeContext(SmtSession s, Encoder enc, Expression reqAst, ASTNode site, PathFacts pf) {
         if (reqAst != null) {
             Object pre = enc.translate(reqAst)
             if (pre != null) s.assertExpr(pre)
         }
+        // Phase 15a — class invariants are method-entry facts for the implicit-obligation discharge.
+        // An invariant that bounds a field's length, for instance, lets a bare `a[i]` inside the body
+        // verify under a loop-invariant-supplied range without restating the bound on every method.
+        assumeClassInvariants(s, enc)
         for (IfFact f : pf.factsAt(site)) {
             Object c = enc.translate(f.condition)
             if (c == null) continue   // an unencodable fact just weakens the assumption set — safe
@@ -875,6 +898,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object p = enc.translate(reqAst)
                 if (p != null) s.assertExpr(p)
             }
+            // Phase 15a — class invariants are method-entry facts, in scope across the loop's
+            // prefix/guard/body/suffix regions just like @Requires.
+            assumeClassInvariants(s, enc)
             if (assumePos != null) {
                 for (Expression e : assumePos) {
                     Object h = enc.translate(e)
@@ -975,10 +1001,16 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private void verifyPostcondition(MethodNode node) {
         AnnotationNode ens = findEnsures(node)
-        if (ens == null || node.code == null) return
+        // Phase 15a — class invariants on the declaring class behave like an extra exit obligation
+        // for non-static methods. So we now run even when there's no @Ensures, provided the class
+        // carries an invariant. The pre-filtered list lives in {@link #currentClassInvariants}.
+        List<Expression> classInvs = currentClassInvariants
 
-        Expression postAst = contractAstFor(node, 'ensures')
-        if (postAst == null) {
+        if (ens == null && classInvs.isEmpty()) return
+        if (node.code == null) return
+
+        Expression postAst = ens != null ? contractAstFor(node, 'ensures') : null
+        if (ens != null && postAst == null) {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name,
                     "contract source was not captured by ContractExpansionTransform"),
@@ -998,7 +1030,7 @@ class VerifyChecker extends TypeCheckingExtension {
             if (body == null) body = node.code
             List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod())
             for (Path p : paths) {
-                checkPath(node, p, postAst, reqAst)
+                checkPath(node, p, postAst, reqAst, classInvs)
             }
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(
@@ -1006,7 +1038,34 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
-    private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst) {
+    /**
+     * Drop class invariants that don't translate into the encoder fragment, emitting a single
+     * "skipped" diagnostic per dropped clause. Sound: a missing entry-assumption only weakens
+     * the context, and a missing exit-obligation makes one less thing to prove. Returns the
+     * encodable subset, preserving order.
+     */
+    private List<Expression> filterEncodableInvariants(List<Expression> invs, MethodNode node) {
+        if (invs == null || invs.isEmpty()) return invs ?: Collections.<Expression> emptyList()
+        List<Expression> ok = new ArrayList<Expression>()
+        SmtSession probe = backend.session()
+        try {
+            Encoder probeEnc = mkEncoder(probe)
+            for (Expression inv : invs) {
+                if (probeEnc.translate(inv) == null) {
+                    addStaticTypeError(
+                        Reporter.formatClassInvariantSkipped(node.name, inv.text), node)
+                } else {
+                    ok.add(inv)
+                }
+            }
+        } finally {
+            try { probe.close() } catch (Throwable ignored) {}
+        }
+        ok
+    }
+
+    private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst,
+                           List<Expression> classInvs) {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
@@ -1020,6 +1079,10 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
                 session.assertExpr(pre)
             }
+
+            // Phase 15a — class invariants are assumed at method entry (and re-proved at exit
+            // below). The list was pre-filtered for encodability in beforeVisitMethod.
+            assumeClassInvariants(session, enc)
 
             // old(...) snapshots: pin each `old.field` referenced by @Ensures to the field's value
             // *now* (method entry), before the body's writes SSA-rebind it forward. Both the scalar
@@ -1112,20 +1175,45 @@ class VerifyChecker extends TypeCheckingExtension {
                 enc.bind('result', resHandle)
             }
 
-            Object post = enc.translate(postAst)
-            if (post == null) {
-                throw new UnsupportedConstructException(
-                    "postcondition '${postAst.text}' is outside fragment")
+            // Exit obligation: postcondition (if any) AND each class invariant. A single
+            // combined check keeps the body-replay cost flat; refutation diagnostic picks
+            // the message based on which obligations are in play.
+            List<Object> conjuncts = new ArrayList<Object>()
+            if (postAst != null) {
+                Object post = enc.translate(postAst)
+                if (post == null) {
+                    throw new UnsupportedConstructException(
+                        "postcondition '${postAst.text}' is outside fragment")
+                }
+                conjuncts.add(post)
             }
-            session.assertExpr(session.not(post))
+            for (Expression inv : classInvs) {
+                Object h = enc.translate(inv)
+                if (h != null) conjuncts.add(h)
+            }
+            if (conjuncts.isEmpty()) return   // nothing to prove on this path
+
+            Object goal = conjuncts.size() == 1 ?
+                conjuncts.get(0) : session.and(conjuncts)
+            session.assertExpr(session.not(goal))
 
             CheckResult r = shown(session.check())
             if (r.status == CheckResult.Status.VERIFIED) return
 
             ASTNode anchor = (p.result != null && p.result.lineNumber > 0) ?
                 (ASTNode) p.result : (ASTNode) node
-            addStaticTypeError(
-                Reporter.formatPostconditionFailure(node.name, postAst.text, r), anchor)
+            if (postAst != null) {
+                // Combined or pure @Ensures failure — keep the existing message; the
+                // counterexample distinguishes whether the @Ensures or an invariant clause
+                // broke (a per-clause attribution is a future polish).
+                addStaticTypeError(
+                    Reporter.formatPostconditionFailure(node.name, postAst.text, r), anchor)
+            } else {
+                // Phase 15a — no @Ensures present; the obligation is purely the class invariant.
+                String invText = classInvs.collect { it.text }.join(' && ')
+                addStaticTypeError(
+                    Reporter.formatClassInvariantViolation(node.name, invText, r), anchor)
+            }
         } finally {
             try { session.close() } catch (Throwable ignored) {}
         }
@@ -1202,12 +1290,29 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
-    /** Establishment: precondition ∧ prefix ⇒ invariant. */
+    /**
+     * Phase 15a — assume each pre-filtered class invariant as a method-entry fact in the given
+     * session. Used by every loop VC and (in lifted form) by {@link #assumeContext} /
+     * {@link #dischargeVfObligation} / {@link #dischargeSeeded}. Soundness in establishment / use:
+     * direct (invariants are method-entry truths). In preservation / progress / body-internal
+     * obligations: relies on the loop body not modifying invariant-referenced fields (a frame
+     * property not yet checked here — a known unsoundness shared with how implicit obligations
+     * inside the body assume invariants). Future frame analysis can tighten this.
+     */
+    private void assumeClassInvariants(SmtSession s, Encoder enc) {
+        for (Expression inv : currentClassInvariants) {
+            Object h = enc.translate(inv)
+            if (h != null) s.assertExpr(h)
+        }
+    }
+
+    /** Establishment: precondition ∧ class invariants ∧ prefix ⇒ invariant. */
     private void checkEstablishment(MethodNode node, LoopSite site, Expression reqAst) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            assumeClassInvariants(s, enc)
             LoopEncoder.symExec(site.prefix, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
             CheckResult r = shown(s.check())
@@ -1218,13 +1323,14 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
-    /** Preservation: invariant ∧ guard ∧ one body iteration ⇒ invariant still holds. */
+    /** Preservation: invariant ∧ guard ∧ class invariants ∧ one body iteration ⇒ invariant still holds. */
     private void checkPreservation(MethodNode node, LoopSite site) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+            assumeClassInvariants(s, enc)
             LoopEncoder.symExec(site.spec.body, enc, s)
             // Re-translating the invariant reads the post-body bindings → inv'.
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
@@ -1236,13 +1342,14 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
-    /** Progress: invariant ∧ guard ⇒ the variant strictly decreases and stays ≥ 0. */
+    /** Progress: invariant ∧ guard ∧ class invariants ⇒ the variant strictly decreases and stays ≥ 0. */
     private void checkProgress(MethodNode node, LoopSite site) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+            assumeClassInvariants(s, enc)
             Object oldV = LoopEncoder.tr(enc, site.spec.variant, "variant")
             LoopEncoder.symExec(site.spec.body, enc, s)
             Object newV = LoopEncoder.tr(enc, site.spec.variant, "variant")
@@ -1255,12 +1362,13 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
-    /** Use: precondition ∧ invariant ∧ ¬guard ∧ suffix ⇒ postcondition. */
+    /** Use: precondition ∧ class invariants ∧ invariant ∧ ¬guard ∧ suffix ⇒ postcondition. */
     private void checkUse(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            assumeClassInvariants(s, enc)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
@@ -1782,6 +1890,41 @@ class VerifyChecker extends TypeCheckingExtension {
             if (inherited != null) return findContractText(inherited, kind)
         }
         return null
+    }
+
+    /**
+     * Phase 15a — the class-level invariants in effect on {@code cn}: the conjunction
+     * of any {@code @Invariant}s declared on the class itself plus every parent's
+     * class invariants, walked up the superclass chain.
+     *
+     * Returned in superclass-first order so a child's clauses follow the parents
+     * (purely a readability choice — conjunction is commutative). Each entry is the
+     * re-parsed {@link Expression} the encoder can translate, mirroring the
+     * round-trip {@link #contractAstFor} performs for method-level pre/postconditions.
+     */
+    static List<Expression> classInvariantTexts(ClassNode cn) {
+        List<Expression> out = new ArrayList<Expression>()
+        walkClassInvariants(cn, out)
+        out
+    }
+
+    /** Recursive helper: walk superclass first, then add this class's invariants (super-first order). */
+    private static void walkClassInvariants(ClassNode cn, List<Expression> out) {
+        if (cn == null || cn == ClassHelper.OBJECT_TYPE) return
+        walkClassInvariants(cn.superClass, out)
+        List<AnnotationNode> sources = cn.getAnnotations(CLASS_INVARIANT_SOURCE_TYPE)
+        if (sources == null || sources.isEmpty()) return
+        Expression member = sources[0].getMember('invariants')
+        if (!(member instanceof ListExpression)) return
+        for (Expression item : ((ListExpression) member).expressions) {
+            if (item instanceof ConstantExpression) {
+                Object v = ((ConstantExpression) item).value
+                if (v instanceof String && !((String) v).isEmpty()) {
+                    Expression parsed = parseContract((String) v)
+                    if (parsed != null) out.add(parsed)
+                }
+            }
+        }
     }
 
     private static Expression parseContract(String contractText) {

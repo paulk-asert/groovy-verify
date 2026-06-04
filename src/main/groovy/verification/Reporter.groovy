@@ -88,6 +88,40 @@ class Reporter {
         sb.toString()
     }
 
+    static String formatClassInvariantViolation(String methodName,
+                                                String invariantText,
+                                                CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append("Cannot prove class invariant of ").append(methodName)
+                  .append(" holds at method exit")
+                if (invariantText) {
+                    sb.append("\n    invariant: ").append(invariantText)
+                }
+                appendModel(sb, result)
+                break
+
+            case CheckResult.Status.UNKNOWN:
+                sb.append("Could not decide class invariant of ").append(methodName)
+                  .append(" (solver: ").append(result.reason).append(")")
+                if (invariantText) {
+                    sb.append("\n    invariant: ").append(invariantText)
+                }
+                break
+
+            default:
+                sb.append("Class invariant verified — no error to report")
+        }
+        sb.toString()
+    }
+
+    static String formatClassInvariantSkipped(String methodName, String invariantText) {
+        "Skipped class invariant for ${methodName} (invariant '${invariantText}' is outside fragment). " +
+        "The clause is not assumed at entry nor proved at exit; other obligations on the method " +
+        "still apply."
+    }
+
     static String formatModifiesViolation(String methodName, String location, Collection<String> declared) {
         "Method '${methodName}' writes '${location}', which is not in its @Modifies clause ${new TreeSet<>(declared)}. " +
         "A method may modify only the locations it declares (an empty @Modifies({}) means none)."
