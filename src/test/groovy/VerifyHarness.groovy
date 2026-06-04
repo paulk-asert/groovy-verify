@@ -1085,6 +1085,169 @@ class VerifyHarness {
                             }
                         }
                     }''')],
+
+        // ---------- Phase 17: finite maps (value array + key-set) ----------
+        // put then read: m.put(k, v) makes m[k] == v (value store, read back via array theory).
+        [group: 'P17 maps', name: 'put then get value', ok: true,
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Modifies({ this.m })
+                        @Ensures({ m[k] == v })
+                        void put(int k, int v) { m.put(k, v) }
+                    }''')],
+        // The subscript spelling m[k] = v is the same value store.
+        [group: 'P17 maps', name: 'subscript store then read', ok: true,
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Ensures({ m[k] == v })
+                        void set(int k, int v) { m[k] = v }
+                    }''')],
+        // put adds the key to the domain — m.containsKey(k) holds afterwards.
+        [group: 'P17 maps', name: 'put adds the key', ok: true,
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Modifies({ this.m })
+                        @Ensures({ m.containsKey(k) })
+                        void put(int k, int v) { m.put(k, v) }
+                    }''')],
+        // Value frame: a put at key k leaves every other key's value unchanged (array theory, j != k).
+        [group: 'P17 maps', name: 'put frames other keys', ok: true,
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Requires({ j != k })
+                        @Modifies({ this.m })
+                        @Ensures({ m[j] == old.m[j] })
+                        void put(int k, int v, int j) { m.put(k, v) }
+                    }''')],
+        // Key-set cardinality law: putting a NEW key grows the size by one.
+        [group: 'P17 maps', name: 'put of new key grows size by one', ok: true,
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Requires({ !m.containsKey(k) })
+                        @Modifies({ this.m })
+                        @Ensures({ m.size() == old.m.size() + 1 })
+                        void put(int k, int v) { m.put(k, v) }
+                    }''')],
+        // Soundness: without knowing k is a new key, the +1 cannot be claimed (k may already be present).
+        [group: 'P17 maps', name: 'put without fresh key refutes +1', expect: 'Cannot prove postcondition',
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Modifies({ this.m })
+                        @Ensures({ m.size() == old.m.size() + 1 })
+                        void put(int k, int v) { m.put(k, v) }
+                    }''')],
+        // Key membership: `k in m` is m.containsKey(k); assumed entails itself.
+        [group: 'P17 maps', name: 'key membership assumed entails', ok: true,
+         src: tc('class C { @Requires({ k in m }) @Ensures({ m.containsKey(k) }) static int f(Map<Integer,Integer> m, int k) { 0 } }')],
+        // The key-set cardinality law wired into a recursive @Decreases measure — DFS-shaped termination
+        // over a map's key domain (each call inserts a fresh key, so `n - m.size()` strictly decreases).
+        [group: 'P17 maps', name: 'map-size decreases measure', ok: true,
+         src: tc('''class C { Map<Integer,Integer> m; int n
+                        @Modifies({ this.m })
+                        @Decreases({ n - m.size() })
+                        void fill(int k) {
+                            if (!m.containsKey(k) && m.size() < n) {
+                                m.put(k, k)
+                                fill(k + 1)
+                            }
+                        }
+                    }''')],
+        // Soundness: drop the fresh-key guard and the size need not grow → measure not decreasing → refuted.
+        [group: 'P17 maps', name: 'non-fresh put does not decrease measure', expect: 'recursion measure',
+         src: tc('''class C { Map<Integer,Integer> m; int n
+                        @Modifies({ this.m })
+                        @Decreases({ n - m.size() })
+                        void fill(int k) {
+                            if (m.size() < n) {
+                                m.put(k, k)
+                                fill(k + 1)
+                            }
+                        }
+                    }''')],
+        // An undeclared map put violates a pure (@Modifies({})) frame.
+        [group: 'P17 maps', name: 'undeclared map write refuted', expect: 'not in its @Modifies',
+         src: tc('''class C { Map<Integer,Integer> m
+                        @Modifies({ [] })
+                        void touch(int k, int v) { m.put(k, v) }
+                    }''')],
+        // A map operation needing an unbounded quantifier (containsValue) is a loud skip, not a pass.
+        [group: 'P17 maps', name: 'containsValue outside fragment skipped', expect: 'Skipped verification of postcondition',
+         src: tc('class C { @Requires({ m.containsValue(v) }) @Ensures({ m.containsValue(v) }) static int f(Map<Integer,Integer> m, int v) { 0 } }')],
+
+        // ---------- Phase 18: reachability — a recursive graph traversal over a Set<Node> ----------
+        // A DFS on a functional graph (`next` is a Map<Node,Node> successor) marking nodes in a Set.
+        // Fuel-bounded so termination is a plain int measure; the reachability postcondition proves BOTH
+        // halves the fragment can soundly express: (1) SOUNDNESS — visited only grows (every previously
+        // visited node stays visited), a bounded universal over the node domain; (2) PROGRESS — the node
+        // handed in ends visited (while fuel remained). Composes sets, maps, induction, caller-side set
+        // framing (the recursive call havocs `visited` and reframes it from the callee's @Ensures), and
+        // bounded quantifiers — no new machinery.
+        [group: 'P18 reachability', name: 'fuel DFS: visited grows AND node covered', ok: true,
+         src: tc('''class C {
+                        Map<Integer,Integer> next
+                        Set<Integer> visited
+                        int n
+                        @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+                        @Modifies({ this.visited })
+                        @Decreases({ fuel })
+                        @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } &&
+                                   (fuel <= 0 || (u in visited)) })
+                        void visit(int u, int fuel) {
+                            if (fuel > 0 && !(u in visited)) {
+                                visited.add(u)
+                                visit(next[u], fuel - 1)
+                            }
+                        }
+                    }''')],
+        // Soundness anchor: claiming the node is visited UNCONDITIONALLY (dropping the `fuel <= 0 ||`
+        // guard) is false — when fuel runs out the base case adds nothing — so it refutes. This is the
+        // honest boundary: progress is conditional on the termination budget.
+        [group: 'P18 reachability', name: 'unconditional coverage refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        Map<Integer,Integer> next
+                        Set<Integer> visited
+                        int n
+                        @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+                        @Modifies({ this.visited })
+                        @Decreases({ fuel })
+                        @Ensures({ u in visited })
+                        void visit(int u, int fuel) {
+                            if (fuel > 0 && !(u in visited)) {
+                                visited.add(u)
+                                visit(next[u], fuel - 1)
+                            }
+                        }
+                    }''')],
+        // The same SOUNDNESS half under the set-cardinality termination measure (`n - visited.size()`):
+        // the visited-only-grows reachability postcondition, proved with the DFS-shaped cardinality
+        // @Decreases rather than a fuel counter (the size guard supplies the measure's lower bound).
+        [group: 'P18 reachability', name: 'cardinality DFS: visited only grows', ok: true,
+         src: tc('''class C {
+                        Map<Integer,Integer> next
+                        Set<Integer> visited
+                        int n
+                        @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+                        @Modifies({ this.visited })
+                        @Decreases({ n - visited.size() })
+                        @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } })
+                        void visit(int u) {
+                            if (!(u in visited) && visited.size() < n) {
+                                visited.add(u)
+                                visit(next[u])
+                            }
+                        }
+                    }''')],
+        // Soundness: a traversal that REMOVES a node breaks monotonic growth → refuted.
+        [group: 'P18 reachability', name: 'removal breaks monotonic growth', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        Map<Integer,Integer> next
+                        Set<Integer> visited
+                        int n
+                        @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+                        @Modifies({ this.visited })
+                        @Decreases({ fuel })
+                        @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } })
+                        void visit(int u, int fuel) {
+                            if (fuel > 0 && (u in visited)) {
+                                visited.remove(u)
+                                visit(next[u], fuel - 1)
+                            }
+                        }
+                    }''')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

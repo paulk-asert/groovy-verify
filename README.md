@@ -221,6 +221,60 @@ Drop the `!(x in s)` precondition and the `+ 1` no longer holds — `x` might al
 the proof fails with a concrete `put(2)`. Set union/intersection/subset (`s.containsAll(t)`) need an
 unbounded quantifier and stay a loud "skipped", never a silent pass.
 
+**Finite maps — a value array plus a key-set.** A `Map<Integer,Integer>` is modelled as its values
+(`m[k]` / `m.get(k)`, an array) together with its key domain (`m.containsKey(k)` / `k in m`, a *set*).
+A `m.put(k,v)` does both — stores the value and adds the key — so value reads, the key frame, and the
+key-set cardinality law all hold at once; and because the key-set is the Phase-16 set, `m.size()`
+drives the same DFS-shaped recursive measure over a map's key domain:
+
+```groovy
+class C {
+    Map<Integer,Integer> m
+    @Requires({ j != k })
+    @Modifies({ this.m })
+    @Ensures({ m[k] == v &&                 // the value just put …
+               m.containsKey(k) &&          // … the key is now in the domain …
+               m[j] == old.m[j] })          // … every other key is untouched
+    void put(int k, int v, int j) { m.put(k, v) }
+}
+```
+
+`m.containsValue(v)` (a search over the values) needs an unbounded quantifier and stays a loud skip.
+
+**Reachability — a recursive graph traversal, verified.** Sets, maps, induction, and bounded quantifiers
+compose into the property a search algorithm is *for*: a depth-first traversal of a functional graph
+(`next` is a `Map<Node,Node>` successor) marking nodes in a `Set<Node>`. Two reachability postconditions
+hold at once — **soundness** (`visited` only ever grows, a bounded universal over the node domain) and
+**progress** (the node handed in ends up visited, while the traversal budget lasts). The recursive call
+*havocs* `visited` and reframes it from the callee's `@Ensures` (sound `@Modifies`), and the self-`@Ensures`
+is the inductive hypothesis:
+
+```groovy
+class C {
+    Map<Integer,Integer> next   // functional graph: successor of node u
+    Set<Integer> visited
+    int n                       // node domain 0..<n
+    @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+    @Modifies({ this.visited })
+    @Decreases({ fuel })
+    @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } &&   // soundness: visited only grows
+               (fuel <= 0 || (u in visited)) })                               // progress: u gets visited
+    void visit(int u, int fuel) {
+        if (fuel > 0 && !(u in visited)) {
+            visited.add(u)
+            visit(next[u], fuel - 1)
+        }
+    }
+}
+```
+
+The same soundness half also goes through under the set-cardinality measure `@Decreases({ n - visited.size() })`
+— the DFS-shaped termination from Phase 16. A traversal that *removes* a node breaks monotonic growth and
+refutes. **The honest boundary:** *completeness* (every reachable node is visited — the closure fixpoint) and
+unconditional `start ∈ visited` are **not** proved here. The first needs the DFS frontier/stack invariant
+(not a simple inductive set property); the second needs a domain-cardinality fact (`|S| ≤ n` for `S ⊆ 0..<n`,
+so a "full" `visited` is the whole domain) that uninterpreted cardinality lacks — both recorded in the roadmap.
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -262,8 +316,12 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Class `@Invariant` — instance methods (assume on entry, prove on exit, super-walked)** | `@Invariant({ count >= 0 })` on a class | ✅ Phase 15a |
 | **Boxed scalars & index-accessed collections** | `Integer`, `Integer[]`, `List<Integer>` via `xs[i]` / `xs.size()` | ✅ (structural) |
 | **Finite sets — membership, add/remove, cardinality law** | `x in s`, `s.contains(x)`, `s.add(x)`, `s.size()` over `Set<Integer>` | ✅ Phase 16 |
+| **Set-cardinality `@Decreases` measure (DFS-shaped termination)** | `@Decreases({ n - s.size() })` on a recursion that adds a fresh element | ✅ Phase 16 |
+| **Finite maps — lookup, key membership, put, key-set cardinality law** | `m[k]`, `m.get(k)`, `k in m`, `m.containsKey(k)`, `m.put(k,v)`, `m.size()` over `Map<Integer,Integer>` | ✅ Phase 17 |
+| **Reachability — recursive graph traversal: visited grows (soundness) + node covered (progress)** | DFS over a `Map<Node,Node>` graph marking a `Set<Node>`, fuel- or cardinality-terminated | ✅ Phase 18 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
-| Set union/intersection/subset (`s.containsAll(t)`, `s + t`), non-Int element domains | — | ⏳ later |
+| Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
+| DFS *completeness* (all reachable nodes visited — the closure fixpoint) and unconditional `start ∈ visited` | — | ⏳ later (needs a domain-cardinality axiom / frontier invariant) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
@@ -319,8 +377,13 @@ warning rather than passing silently. In expressions the fragment is:
 - finite `Set<Integer>` membership (`x in s`, `s.contains(x)`), mutation (`s.add(x)` /
   `s.remove(x)`, threaded through the body) and cardinality (`s.size()`) — a set is a
   characteristic array, and `size()` carries a per-mutation update law (`add` of an absent
-  element raises it by one), the building block a set-valued `@Decreases` measure needs;
-  union/intersection/subset stay outside the fragment (a loud skip);
+  element raises it by one), which drives a set-valued `@Decreases` measure (`n - s.size()`,
+  the DFS-shaped termination argument); union/intersection/subset stay outside the fragment;
+- finite `Map<Integer,Integer>` — value lookup (`m[k]`, `m.get(k)`), key membership (`k in m`,
+  `m.containsKey(k)`), mutation (`m.put(k,v)` / `m[k] = v`) and size (`m.size()`): a map is a
+  value array plus a key-set, so a put both stores the value and adds the key (with the same
+  cardinality law), and `m.size()` likewise drives a recursive measure over the key domain;
+  `containsValue` / `keySet` / `Map<K,Set<V>>` nesting stay outside the fragment;
 - fuel-bounded inlining of contract-free pure functions (a closed call like
   `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.

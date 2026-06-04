@@ -66,6 +66,9 @@ import org.codehaus.groovy.syntax.Types
  *     mutation ({@code s.add(x)}/{@code s.remove(x)}) and cardinality ({@code s.size()}):
  *     a set is a characteristic {@code Array Int -> Int}, and {@code size()} carries a
  *     per-mutation update law (see {@link #cardOf}); set names are supplied by the checker
+ *   - finite {@code Map<Integer,Integer>}: value lookup ({@code m[k]}, {@code m.get(k)}),
+ *     key membership ({@code k in m}, {@code m.containsKey(k)}) and size ({@code m.size()}) —
+ *     a value array plus a key-set (so size and its law come from the set machinery above)
  *
 
  * Not supported (yet, deliberately):
@@ -96,6 +99,13 @@ class Encoder {
      * type hint, because set operations are syntactically indistinguishable from list ones.
      */
     private final Set<String> setNames
+    /**
+     * Source-level names known to be {@code java.util.Map}-typed. A map is modelled as a value array
+     * (its contents, {@code m[k]}) <em>plus</em> a key-set (a characteristic array, giving
+     * {@code m.containsKey}/{@code m.size()} and the cardinality law) — so it builds directly on the
+     * set machinery. Supplied by {@link VerifyChecker}, the same type hint {@link #setNames} carries.
+     */
+    private final Set<String> mapNames
     /** Set handles whose {@code card >= 0} has already been asserted (mint-once, like the size oracle). */
     private final Set<Object> cardConstrained = new HashSet<Object>()
     /**
@@ -112,10 +122,12 @@ class Encoder {
     /** Per-encoder total budget for symbolic unfolding (Phase 8a); only decrements, bounding recursion. */
     private int unfoldFuel = 16
 
-    Encoder(SmtSession session, PureEvaluator pureEvaluator = null, Set<String> setNames = null) {
+    Encoder(SmtSession session, PureEvaluator pureEvaluator = null,
+            Set<String> setNames = null, Set<String> mapNames = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setNames = setNames != null ? setNames : new HashSet<String>()
+        this.mapNames = mapNames != null ? mapNames : new HashSet<String>()
     }
 
     /**
@@ -280,6 +292,37 @@ class Encoder {
         null
     }
 
+    // ---- Maps: a value array (contents) + a key-set (a characteristic array), keyed by a logical
+    // name ({@code m} or {@code old$m}). The key-set reuses the set machinery, so map size and the
+    // cardinality law come straight from {@link #cardOf}/{@link #member}.
+    private static String mapValsKey(String logical) { 'map$vals$' + logical }
+    private static String mapKeysKey(String logical) { 'map$keys$' + logical }
+
+    /** The value-array handle ({@code m[k]} reads) for a map's logical name. */
+    Object mapValsFor(String logical) { arrayFor(mapValsKey(logical)) }
+    /** The key-set handle ({@code containsKey}/{@code size}) for a map's logical name. */
+    Object mapKeysFor(String logical) { setFor(mapKeysKey(logical)) }
+    /** Re-bind a map's value array — threads {@code m[k] = v} / {@code m.put(k,v)} on the value side. */
+    void putMapVals(String logical, Object handle) { bindArray(mapValsKey(logical), handle) }
+    /** Re-bind a map's key-set — threads the key added by a put (with the cardinality law). */
+    void putMapKeys(String logical, Object handle) { bindSet(mapKeysKey(logical), handle) }
+    /** Current value-array / key-set bindings, or null — for save/restore around a call's framing. */
+    Object peekMapVals(String logical) { peekArray(mapValsKey(logical)) }
+    Object peekMapKeys(String logical) { peekSet(mapKeysKey(logical)) }
+
+    /** The logical map name for a receiver that names a map ({@code m} or the snapshot {@code old.m}); null otherwise. */
+    String mapLogicalFor(Expression recv) {
+        if (recv instanceof VariableExpression) {
+            String n = ((VariableExpression) recv).name
+            return mapNames.contains(n) ? n : null
+        }
+        if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
+            String n = ((PropertyExpression) recv).propertyAsString
+            return mapNames.contains(n) ? ('old$' + n) : null
+        }
+        null
+    }
+
     /** The nullity oracle: a boolean that is true exactly when {@code recv} is null. */
     Object nullityOf(String recv) {
         Object cached = nullEnv.get(recv)
@@ -360,10 +403,12 @@ class Encoder {
             if (isThisReceiver(obj)) {
                 return varFor(prop)
             }
-            // s.size (property form) on a known set -> cardinality, ahead of the list/array size oracle.
+            // s.size / m.size (property form) on a known set/map -> cardinality, ahead of the size oracle.
             if (prop == 'size') {
                 String setKey = setKeyFor(obj)
                 if (setKey != null) return cardOf(setFor(setKey))
+                String mapLog = mapLogicalFor(obj)
+                if (mapLog != null) return cardOf(mapKeysFor(mapLog))
             }
             // xs.length / xs.size  ->  size oracle
             if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
@@ -425,7 +470,9 @@ class Encoder {
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
         // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
         if (op == Types.LEFT_SQUARE_BRACKET) {
-            Object arr = arrayHandleFor(be.leftExpression)
+            // m[k] over a map reads its value array; a[i] over an array/list reads its contents.
+            String mlog = mapLogicalFor(be.leftExpression)
+            Object arr = mlog != null ? mapValsFor(mlog) : arrayHandleFor(be.leftExpression)
             if (arr == null) return null
             Object idx = translate(be.rightExpression)
             if (idx == null) return null
@@ -439,11 +486,14 @@ class Encoder {
         // (a store) is related to a later membership read for free.
         String sym = be.operation.text
         if (sym == 'in' || sym == '!in') {
-            String key = setKeyFor(be.rightExpression)
-            if (key != null) {
+            // `x in s` (set membership) or `k in m` (map key membership — same as m.containsKey(k)).
+            String setKey = setKeyFor(be.rightExpression)
+            String mapLog = setKey == null ? mapLogicalFor(be.rightExpression) : null
+            if (setKey != null || mapLog != null) {
                 Object elem = translate(be.leftExpression)
                 if (elem == null) return null
-                Object mem = member(setFor(key), elem)
+                Object setH = setKey != null ? setFor(setKey) : mapKeysFor(mapLog)
+                Object mem = member(setH, elem)
                 return sym == 'in' ? mem : session.not(mem)
             }
         }
@@ -508,6 +558,25 @@ class Encoder {
         if ((m == 'every' || m == 'any') && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
+        }
+
+        // Map receivers: m.get(k) / m[k] read the value array; containsKey/size/isEmpty go through the
+        // key-set (a set, so size is its cardinality and the membership/law machinery is shared).
+        String mapLog = mapLogicalFor(recv)
+        if (mapLog != null) {
+            if (m == 'get' && args.size() == 1) {
+                Object k = translate(args.get(0))
+                return k == null ? null : session.select(mapValsFor(mapLog), k)
+            }
+            if (m == 'containsKey' && args.size() == 1) {
+                Object k = translate(args.get(0))
+                return k == null ? null : member(mapKeysFor(mapLog), k)
+            }
+            if (m == 'size' && args.isEmpty()) return cardOf(mapKeysFor(mapLog))
+            if (m == 'isEmpty' && args.isEmpty()) return session.eq(cardOf(mapKeysFor(mapLog)), session.intLit(0L))
+            // containsValue/keySet/values/putAll/etc. need an (unbounded) quantifier over the domain —
+            // out of fragment: null so it surfaces as a loud "skipped", never a silent pass.
+            return null
         }
 
         // Set receivers (s.contains(x) / s.size() / s.isEmpty()) take precedence over the list/array

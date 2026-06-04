@@ -126,10 +126,12 @@ class VerifyChecker extends TypeCheckingExtension {
      * (membership/size/{@code contains} share syntax). Recomputed per method in {@link #beforeVisitMethod}.
      */
     private Set<String> currentSetNames = new HashSet<String>()
+    /** Names of {@code java.util.Map}-typed params/fields visible to the current method (see {@link #currentSetNames}). */
+    private Set<String> currentMapNames = new HashSet<String>()
 
-    /** New Encoder wired with the current class's pure-function evaluator and set-typed names. */
+    /** New Encoder wired with the current class's pure-function evaluator and set/map-typed names. */
     private Encoder mkEncoder(SmtSession session) {
-        new Encoder(session, currentEvaluator, currentSetNames)
+        new Encoder(session, currentEvaluator, currentSetNames, currentMapNames)
     }
 
     /** Names of set-typed parameters and declaring-class fields visible to {@code node}. */
@@ -141,11 +143,30 @@ class VerifyChecker extends TypeCheckingExtension {
         out
     }
 
+    /** Names of map-typed parameters and declaring-class fields visible to {@code node}. */
+    private static Set<String> collectMapNames(MethodNode node) {
+        Set<String> out = new HashSet<String>()
+        for (Parameter p : node.parameters) if (isMapType(p.type)) out.add(p.name)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (isMapType(f.type)) out.add(f.name)
+        out
+    }
+
     /** True if {@code t} is (or implements) {@code java.util.Set}. */
     private static boolean isSetType(ClassNode t) {
         if (t == null) return false
         try {
             return t.name == 'java.util.Set' || t.implementsInterface(ClassHelper.make(Set))
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
+
+    /** True if {@code t} is (or implements) {@code java.util.Map}. */
+    private static boolean isMapType(ClassNode t) {
+        if (t == null) return false
+        try {
+            return t.name == 'java.util.Map' || t.implementsInterface(ClassHelper.make(Map))
         } catch (Throwable ignored) {
             return false
         }
@@ -235,6 +256,7 @@ class VerifyChecker extends TypeCheckingExtension {
         if (nulled) return 'null'
         if (tn == 'java.lang.String') return '""'
         if (isSetType(t)) return nulled ? 'null' : '[] as Set'
+        if (isMapType(t)) return nulled ? 'null' : '[:]'
         if (isCollectionType(t)) {
             long n = sizeOf(p.name, ce)
             List<Long> elems = pinnedElements(p.name, n, ce)
@@ -412,12 +434,14 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
                 @Override
                 void visitMethodCallExpression(MethodCallExpression mce) {
-                    // A set mutation `s.add(x)` / `s.remove(x)` writes the set `s` — frame-checked like
-                    // an array store, since it is not an assignment LHS.
+                    // A set mutation `s.add(x)`/`s.remove(x)` or a map `m.put(k,v)` writes the collection —
+                    // frame-checked like an array store, since it is not an assignment LHS.
                     String mm = mce.methodAsString
-                    if ((mm == 'add' || mm == 'remove') && mce.objectExpression instanceof VariableExpression) {
+                    if (mce.objectExpression instanceof VariableExpression) {
                         String w = ((VariableExpression) mce.objectExpression).name
-                        if (currentSetNames.contains(w) && visible.contains(w) && !declared.contains(w)) {
+                        boolean setWrite = (mm == 'add' || mm == 'remove') && currentSetNames.contains(w)
+                        boolean mapWrite = (mm == 'put') && currentMapNames.contains(w)
+                        if ((setWrite || mapWrite) && visible.contains(w) && !declared.contains(w)) {
                             offenders.add(w)
                         }
                     }
@@ -481,6 +505,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentMethod = node
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
         currentSetNames = collectSetNames(node)
+        currentMapNames = collectMapNames(node)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -550,6 +575,7 @@ class VerifyChecker extends TypeCheckingExtension {
             sizeAccessors = [:]
             currentClassInvariants = Collections.<Expression> emptyList()
             currentSetNames = new HashSet<String>()
+            currentMapNames = new HashSet<String>()
         }
     }
 
@@ -842,6 +868,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
         if (site instanceof IndexSite) {
             IndexSite ix = (IndexSite) site
+            // m[k] on a map is a key lookup, not a bounds-checked array index — no obligation.
+            if (currentMapNames.contains(ix.receiver)) return
             Object idx = enc.translate(ix.index)
             if (idx == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("array index",
@@ -1135,6 +1163,11 @@ class VerifyChecker extends TypeCheckingExtension {
                 enc.bindArray('old$' + fld, enc.arrayFor(fld))
                 // A set field's entry snapshot too, so `old.s.size()` / `x in old.s` read the value at entry.
                 if (currentSetNames.contains(fld)) enc.bindSet('old$' + fld, enc.setFor(fld))
+                // A map field's entry snapshot — both value array and key-set — for `old.m[k]` / `old.m.size()`.
+                if (currentMapNames.contains(fld)) {
+                    enc.putMapVals('old$' + fld, enc.mapValsFor(fld))
+                    enc.putMapKeys('old$' + fld, enc.mapKeysFor(fld))
+                }
             }
 
             // Permutation: the values the postcondition counts (`xs.count(v)`). Each array store
@@ -1187,18 +1220,23 @@ class VerifyChecker extends TypeCheckingExtension {
                         throw new UnsupportedConstructException(
                             "array store '${st.arr}[${st.index.text}] = ${st.value.text}' is outside fragment")
                     }
-                    // a := (store a idx val): subsequent reads of a see the update.
-                    Object oldA = enc.arrayFor(st.arr)
-                    Object newA = session.store(oldA, idx, val)
-                    // Per-store count law: count(newA, v) = count(oldA, v) - [oldA[idx]==v] + [val==v].
-                    Object one = session.intLit(1L), zero = session.intLit(0L)
-                    for (Object v : countVals) {
-                        Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
-                        Object added = session.ite(session.eq(val, v), one, zero)
-                        Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
-                        session.assertExpr(session.eq(session.count(newA, v), rhs))
+                    if (currentMapNames.contains(st.arr)) {
+                        // m[k] = v on a map: value store + key-set add + cardinality law.
+                        doMapPut(session, enc, st.arr, idx, val)
+                    } else {
+                        // a := (store a idx val): subsequent reads of a see the update.
+                        Object oldA = enc.arrayFor(st.arr)
+                        Object newA = session.store(oldA, idx, val)
+                        // Per-store count law: count(newA, v) = count(oldA, v) - [oldA[idx]==v] + [val==v].
+                        Object one = session.intLit(1L), zero = session.intLit(0L)
+                        for (Object v : countVals) {
+                            Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
+                            Object added = session.ite(session.eq(val, v), one, zero)
+                            Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
+                            session.assertExpr(session.eq(session.count(newA, v), rhs))
+                        }
+                        enc.bindArray(st.arr, newA)
                     }
-                    enc.bindArray(st.arr, newA)
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
                     // A set mutation `s.add(x)` / `s.remove(x)` threads the set (a store on its
@@ -1207,6 +1245,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     // assume the callee's @Ensures (a self-call is the inductive hypothesis, enabled by
                     // @Decreases). An unmodelled effect with no usable @Ensures is outside the fragment.
                     if (!applySetMutation(session, enc, call) &&
+                        !applyMapPut(session, enc, call) &&
                         !assumeCalleeEnsures(session, enc, call, node, null, hasDecreases(node))) {
                         throw new UnsupportedConstructException(
                             "standalone call '${call.text}' has no usable @Ensures")
@@ -1299,6 +1338,40 @@ class VerifyChecker extends TypeCheckingExtension {
         Object newCard = adding ? s.plus(enc.cardOf(oldS), delta) : s.minus(enc.cardOf(oldS), delta)
         s.assertExpr(s.eq(enc.cardOf(newS), newCard))
         enc.bindSet(name, newS)
+        return true
+    }
+
+    /**
+     * Thread a map put {@code m[k] = v} / {@code m.put(k, v)}: store {@code v} into the value array, add
+     * {@code k} to the key-set, and assert the key-set cardinality law — so {@code m.size()} grows by one
+     * exactly when {@code k} is a new key. A later {@code m[k]} read sees {@code v}, and {@code m[j]} for
+     * {@code j != k} is unchanged, both via Z3's array theory. Shared by the {@code m.put} (lemma) and
+     * {@code m[k] = v} (array-store) spellings.
+     */
+    private void doMapPut(SmtSession s, Encoder enc, String logical, Object key, Object val) {
+        enc.putMapVals(logical, s.store(enc.mapValsFor(logical), key, val))
+        Object oldKeys = enc.mapKeysFor(logical)
+        Object memOld = enc.member(oldKeys, key)
+        Object newKeys = s.store(oldKeys, key, s.intLit(1L))
+        s.assertExpr(s.eq(enc.cardOf(newKeys),
+            s.plus(enc.cardOf(oldKeys), s.ite(memOld, s.intLit(0L), s.intLit(1L)))))
+        enc.putMapKeys(logical, newKeys)
+    }
+
+    /** Apply a {@code m.put(k, v)} call as a map mutation; false (fall through to lemma handling) if not one. */
+    private boolean applyMapPut(SmtSession s, Encoder enc, Expression call) {
+        if (!(call instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) call
+        Expression recv = mce.objectExpression
+        if (!(recv instanceof VariableExpression)) return false
+        String name = ((VariableExpression) recv).name
+        if (!currentMapNames.contains(name) || mce.methodAsString != 'put') return false
+        List<Expression> args = collectArgumentExpressions(mce)
+        if (args == null || args.size() != 2) return false
+        Object key = enc.translate(args.get(0))
+        Object val = enc.translate(args.get(1))
+        if (key == null || val == null) return false
+        doMapPut(s, enc, name, key, val)
         return true
     }
 
@@ -1740,9 +1813,13 @@ class VerifyChecker extends TypeCheckingExtension {
                     ArrayStore st = (ArrayStore) step
                     Object idx = enc.translate(st.index)
                     Object val = enc.translate(st.value)
-                    if (idx != null && val != null) enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val))
+                    if (idx != null && val != null) {
+                        if (currentMapNames.contains(st.arr)) doMapPut(s, enc, st.arr, idx, val)
+                        else enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val))
+                    }
                 } else if (step instanceof LemmaCall) {
-                    applySetMutation(s, enc, ((LemmaCall) step).call)
+                    Expression lc = ((LemmaCall) step).call
+                    if (!applySetMutation(s, enc, lc)) applyMapPut(s, enc, lc)
                 }
             }
             List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
@@ -1896,6 +1973,8 @@ class VerifyChecker extends TypeCheckingExtension {
         Map<String, Object> savedVar = new LinkedHashMap<String, Object>()
         Map<String, Object> savedArr = new LinkedHashMap<String, Object>()
         Map<String, Object> savedSet = new LinkedHashMap<String, Object>()
+        Map<String, Object> savedMapVals = new LinkedHashMap<String, Object>()
+        Map<String, Object> savedMapKeys = new LinkedHashMap<String, Object>()
         if (modSet != null) {
             for (String loc : modSet) {
                 String callerLoc = callerSideLocation(loc, formals, actuals)
@@ -1905,6 +1984,8 @@ class VerifyChecker extends TypeCheckingExtension {
                     savedVar.put(oldKey, enc.peekVar(oldKey))
                     savedArr.put(oldKey, enc.peekArray(oldKey))
                     savedSet.put(oldKey, enc.peekSet(oldKey))
+                    savedMapVals.put(oldKey, enc.peekMapVals(oldKey))
+                    savedMapKeys.put(oldKey, enc.peekMapKeys(oldKey))
                 }
                 enc.bind(oldKey, enc.varFor(callerLoc))            // old.X (scalar) = value at the call
                 enc.bindArray(oldKey, enc.arrayFor(callerLoc))     // old.X (array contents) at the call
@@ -1916,6 +1997,13 @@ class VerifyChecker extends TypeCheckingExtension {
                     enc.bindSet(oldKey, enc.setFor(callerLoc))
                     enc.bindSet(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
                 }
+                // A modified map field — both value array and key-set — likewise snapshotted and havoced.
+                if (currentMapNames.contains(callerLoc)) {
+                    enc.putMapVals(oldKey, enc.mapValsFor(callerLoc))
+                    enc.putMapKeys(oldKey, enc.mapKeysFor(callerLoc))
+                    enc.putMapVals(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                    enc.putMapKeys(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                }
             }
         }
 
@@ -1925,6 +2013,8 @@ class VerifyChecker extends TypeCheckingExtension {
         savedVar.each { String k, Object v -> if (v != null) enc.bind(k, v) }
         savedArr.each { String k, Object v -> if (v != null) enc.bindArray(k, v) }
         savedSet.each { String k, Object v -> if (v != null) enc.bindSet(k, v) }
+        savedMapVals.each { String k, Object v -> if (v != null) enc.putMapVals(k, v) }
+        savedMapKeys.each { String k, Object v -> if (v != null) enc.putMapKeys(k, v) }
 
         if (ensuresAst != null && post == null) return false   // @Ensures outside the fragment → skip
         if (post != null) s.assertExpr(post)

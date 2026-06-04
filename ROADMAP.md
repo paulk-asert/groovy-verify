@@ -853,8 +853,7 @@ class C {
   `s + t`, `s <= t`) need an unbounded `∀x. x∈s ⇒ x∈t` — the explicit quantifier non-goal — so they
   emit a loud "skipped", never a silent pass. The bounded-domain `every`-over-`0..<N` lowering that
   would bring subset into the fragment is the natural next slice.
-- **Maps next.** A `map<K,V>` is `select`/`store` over keys with a key-*set* that is itself a set — it
-  builds directly on this phase, and is what the DFS adjacency representation wants.
+- **Maps** build directly on this phase (a key-*set* that is itself a set) — shipped in Phase 17 below.
 
 **Wired into recursion termination.** The cardinality law now drives a recursive `@Decreases` measure: the
 termination replay (`dischargeTermination`) threads each `s.add(x)` / `s.remove(x)` through the per-mutation
@@ -878,10 +877,114 @@ class C {
 ```
 
 Drop the `!(x in s)` freshness guard and `s.add(x)` may be a no-op, so the measure need not decrease —
-termination rightly refutes (`fails on: fill(4)`). What remains for a *full* DFS is the **functional**
-postcondition (every reachable node ends up visited), which needs the adjacency **map** above plus a
-bounded-domain `every` for the reachability relation; the termination half — historically the hard part,
+termination rightly refutes (`fails on: fill(4)`). The termination half — historically the hard part,
 since cyclic graphs make naive DFS loop forever — is done.
+
+---
+
+## Phase 17 — Finite maps: value array + key-set  *(shipped)*
+
+**The DFS adjacency representation — and it cost almost no new machinery, because a map decomposes into
+two things this project already has.** A `Map<Integer,Integer>` is modelled as a **value array** (its
+contents, `m[k]`) *plus* a **key-set** (its domain) — and the key-set is exactly the Phase-16 set, so
+`m.containsKey`, `m.size()`, and the cardinality law come straight from the set machinery.
+
+**The encoding:**
+
+- **value lookup** — `m[k]` / `m.get(k)` → `(select vals k)` over the value array;
+- **key membership** — `k in m` / `m.containsKey(k)` → set membership on the key-set;
+- **put** — `m.put(k,v)` / `m[k] = v` does *both* sides at once (`doMapPut`): `vals := (store vals k v)`
+  **and** the key-set add `keys := (store keys k 1)` with the per-mutation cardinality law. So after a
+  put: `m[k] == v` (value read), `m[j] == old.m[j]` for `j != k` (the value frame, via array theory), and
+  `m.size()` grew by one **iff** `k` was a new key;
+- **size** — `m.size()` → `card(keys)`, reusing the set cardinality and its law unchanged.
+
+**How it works:** the same shape-based-encoder-needs-a-type-hint story as sets — `VerifyChecker` collects
+the `Map`-typed names (`collectMapNames`) and hands them to the `Encoder`, which routes a subscript /
+`in` / `.get` / `.containsKey` / `.size` on those names to map semantics. Both put spellings ride the
+existing path machinery (`m.put` as a `LemmaCall`, `m[k] = v` as the `ArrayStore` step), and a map
+subscript is **excluded** from the array-bounds obligation — `m[k]` is a key lookup, not an index. `old.m`
+snapshots both dimensions; `@Modifies` frame-checks a `put` and havocs/reframes a modified map across a
+call, like an array. And the **key-set cardinality drives a recursive `@Decreases` measure** the same way
+sets do — `n - m.size()` strictly decreases when a fresh key is inserted (the map twin of the DFS
+termination above).
+
+```groovy
+class C {
+    Map<Integer,Integer> m
+    @Requires({ j != k })
+    @Modifies({ this.m })
+    @Ensures({ m[k] == v && m.containsKey(k) && m[j] == old.m[j] })
+    void put(int k, int v, int j) { m.put(k, v) }     // verified
+}
+```
+
+**Known limits.** Int keys and Int values only (`Map<Integer,Integer>`). The two pieces a *full* DFS over
+`map<Node, set<Node>>` still wants: **(a)** nested values — a map whose values are themselves sets
+(`Map<K, Set<V>>`), i.e. a value array of *set* handles (nested arrays, modellable but not yet wired); and
+**(b)** the reachability **functional** postcondition (every reachable node ends visited), a bounded-domain
+`every` over the adjacency relation. Value-search ops (`containsValue`) and `keySet()`/`values()` as
+first-class collections stay a loud skip. With sets, maps, and the cardinality measure all in place, those
+two are the remaining gap between here and a fully verified DFS — and both are additive, no engine rework.
+
+---
+
+## Phase 18 — Reachability: the recursive graph traversal  *(shipped)*
+
+**The property a search algorithm exists for — and it composed from the previous phases with no new engine
+code.** A depth-first traversal of a functional graph (`next : Map<Node,Node>`, the successor) that marks
+nodes in a `Set<Node>`, with a reachability postcondition proved by induction. The notable part is that
+sets (Phase 16), maps (Phase 17), induction via `@Decreases` (Phase 7), caller-side set framing (Phase 16),
+and bounded quantifiers (Phase 9) *already* compose to discharge it — this phase is the demonstration, not
+new machinery.
+
+**What is proved (the two halves the bounded fragment expresses soundly):**
+
+- **Soundness — `visited` only grows.** `(0..<n).every { !(it in old.visited) || (it in visited) }`: a
+  bounded universal over the node domain saying every previously-visited node stays visited. The recursive
+  call havocs `visited` (sound `@Modifies`) and reframes it from the callee's `@Ensures`; the self-`@Ensures`
+  is the inductive hypothesis, and the store relation `visited1 = visited0 ∪ {u}` chains through it.
+- **Progress — the node handed in ends visited.** `fuel <= 0 || (u in visited)`: under a fuel budget (a
+  plain-int `@Decreases`), the traversed node is covered. On the base case it is already present; on the
+  step it is added before the recursion, and monotonicity carries it across the havoc.
+
+Both halves hold under a fuel measure; the soundness half also holds under the **set-cardinality measure**
+`@Decreases({ n - visited.size() })` — the DFS-shaped termination from Phase 16 — proving the two
+contributions (a cardinality-terminating recursion *and* a reachability postcondition) compose. A traversal
+that *removes* a node refutes the monotonic-growth clause; claiming coverage *unconditionally* (dropping the
+`fuel <= 0` guard) refutes, because the budget can run out.
+
+```groovy
+@Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
+@Modifies({ this.visited })
+@Decreases({ fuel })
+@Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } &&
+           (fuel <= 0 || (u in visited)) })
+void visit(int u, int fuel) {
+    if (fuel > 0 && !(u in visited)) { visited.add(u); visit(next[u], fuel - 1) }
+}
+```
+
+**The honest boundary — what is *not* proved, and why.** Two reachability properties stay out of reach, both
+recorded as future work because each needs a genuinely new capability, not just more wiring:
+
+- **Unconditional progress / `start ∈ visited` for an *unbounded* (cardinality-terminating) DFS.** The
+  cardinality measure forces the guard `visited.size() < n` (so the recursion is well-founded), which means
+  the method legitimately stops when `visited` is "full". To conclude the node is nonetheless covered, you
+  need the **domain-cardinality fact**: for `S ⊆ {0..n-1}`, `|S| ≤ n`, and `|S| = n ⇒ S = {0..n-1}`. The
+  uninterpreted `card` (Phase 16) knows only its per-mutation deltas, not this relation to the domain. The
+  fix is a bounded **cardinality axiom** — e.g. `card(S)` defined as `Σ_{i<n} (i ∈ S ? 1 : 0)`, a bounded
+  sum tying cardinality to membership over `0..<n` — the natural next increment for set reasoning.
+- **Completeness — every reachable node is visited (the closure fixpoint).** This is the deep half of DFS
+  correctness. It is *not* a simple inductive set property: the invariant DFS actually maintains is "`visited`
+  is closed under successors **except** for nodes on the current recursion stack", so it needs the stack
+  modelled (a sequence/ghost), or an explicit inductive `IsPath` predicate plus a least-fixed-point argument
+  — beyond the bounded-quantifier fragment. This is the same frontier subtlety that makes DFS a showcase
+  proof in Dafny, and is left as an explicit non-trivial target.
+
+Net: the **termination** half of DFS (Phases 16/17) and the **soundness + bounded-progress** reachability
+postconditions (this phase) are done and sound; **completeness** and **unconditional coverage** are the two
+named, well-understood gaps remaining — the former needing a stack/path model, the latter a cardinality axiom.
 
 ---
 
