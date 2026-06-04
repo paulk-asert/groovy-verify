@@ -101,6 +101,7 @@ class ContractExpansionTransform implements ASTTransformation {
         String requires = null
         String ensures = null
         String decreases = null
+        String modifies = null
         for (AnnotationNode an : mn.annotations) {
             String kind = contractKind(an, module)
             if (kind == null) continue
@@ -110,13 +111,15 @@ class ContractExpansionTransform implements ASTTransformation {
             if (!text) continue
             if (kind == 'requires') requires = text
             else if (kind == 'ensures') ensures = text
+            else if (kind == 'modifies') modifies = text
             else decreases = text   // method-level @Decreases (recursion termination measure)
         }
-        if (requires != null || ensures != null || decreases != null) {
+        if (requires != null || ensures != null || decreases != null || modifies != null) {
             AnnotationNode holder = new AnnotationNode(ClassHelper.make(ContractSource))
             if (requires != null) holder.addMember('requires', new ConstantExpression(requires))
             if (ensures != null) holder.addMember('ensures', new ConstantExpression(ensures))
             if (decreases != null) holder.addMember('decreases', new ConstantExpression(decreases))
+            if (modifies != null) holder.addMember('modifies', new ConstantExpression(modifies))
             mn.addAnnotation(holder)
         }
 
@@ -259,8 +262,15 @@ class ContractExpansionTransform implements ASTTransformation {
         if (name == CONTRACTS_PKG + 'Requires') return 'requires'
         if (name == CONTRACTS_PKG + 'Ensures') return 'ensures'
         if (name == CONTRACTS_PKG + 'Decreases') return 'decreases'
-        if ((name == 'Requires' || name == 'Ensures' || name == 'Decreases') && importedFromContracts(name, module)) {
-            return name == 'Requires' ? 'requires' : (name == 'Ensures' ? 'ensures' : 'decreases')
+        if (name == CONTRACTS_PKG + 'Modifies') return 'modifies'
+        if ((name == 'Requires' || name == 'Ensures' || name == 'Decreases' || name == 'Modifies') &&
+            importedFromContracts(name, module)) {
+            switch (name) {
+                case 'Requires': return 'requires'
+                case 'Ensures':  return 'ensures'
+                case 'Modifies': return 'modifies'
+                default:         return 'decreases'
+            }
         }
         return null
     }

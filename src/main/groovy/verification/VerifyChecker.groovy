@@ -32,6 +32,7 @@ import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
@@ -318,6 +319,83 @@ class VerifyChecker extends TypeCheckingExtension {
         out
     }
 
+    /** The locations a method declares it modifies via {@code @Modifies}; null when it has none. */
+    private Set<String> modifiedNames(MethodNode node) {
+        Expression e = contractAstFor(node, 'modifies')
+        if (e == null) return null
+        Set<String> out = new HashSet<String>()
+        addModifiedLocation(e, out)
+        out
+    }
+
+    private static void addModifiedLocation(Expression e, Set<String> out) {
+        if (e instanceof ListExpression) {
+            for (Expression x : ((ListExpression) e).expressions) addModifiedLocation(x, out)
+        } else if (e instanceof VariableExpression) {
+            out.add(((VariableExpression) e).name)
+        } else if (e instanceof PropertyExpression) {
+            Expression obj = ((PropertyExpression) e).objectExpression
+            if (obj instanceof VariableExpression && ((VariableExpression) obj).name == 'this') {
+                out.add(((PropertyExpression) e).propertyAsString)
+            }
+        }
+    }
+
+    /**
+     * Frame-check (Phase 13): a method that declares {@code @Modifies} must write only the
+     * caller-visible locations it lists — fields and array parameters/fields (a store {@code a[i]=v}
+     * or a field write {@code this.x=v} / bare {@code x=v}). Local writes don't count. {@code @Modifies({})}
+     * means *nothing* is modified (pure). A write outside the declared set is a loud error.
+     */
+    private void frameCheck(MethodNode node) {
+        Set<String> declared = modifiedNames(node)
+        if (declared == null) return
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return
+        Set<String> visible = new HashSet<String>()
+        if (node.declaringClass != null) node.declaringClass.fields.each { visible.add(it.name) }
+        node.parameters.each { visible.add(it.name) }
+        List<String> offenders = new ArrayList<String>()
+        try {
+            body.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitBinaryExpression(BinaryExpression be) {
+                    if (be.operation.type == Types.ASSIGN) {
+                        String w = writtenLocation(be.leftExpression)
+                        // Caller-visible (a field or array param/field), and not declared → frame violation.
+                        if (w != null && visible.contains(w) && !declared.contains(w)) {
+                            offenders.add(w)
+                        }
+                    }
+                    super.visitBinaryExpression(be)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        for (String loc : offenders) {
+            addStaticTypeError(Reporter.formatModifiesViolation(node.name, loc, declared), node)
+        }
+    }
+
+    /** The caller-visible location written by an assignment LHS, or null (e.g. a local). */
+    private static String writtenLocation(Expression lhs) {
+        if (lhs instanceof BinaryExpression &&
+            ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET &&
+            ((BinaryExpression) lhs).leftExpression instanceof VariableExpression) {
+            return ((VariableExpression) ((BinaryExpression) lhs).leftExpression).name   // a[i] = v -> array a
+        }
+        if (lhs instanceof PropertyExpression) {
+            Expression obj = ((PropertyExpression) lhs).objectExpression
+            if (obj instanceof VariableExpression && ((VariableExpression) obj).name == 'this') {
+                return ((PropertyExpression) lhs).propertyAsString   // this.x = v -> field x
+            }
+        }
+        if (lhs instanceof VariableExpression) return ((VariableExpression) lhs).name   // x = v (field or local)
+        null
+    }
+
     /** Field names referenced via {@code old.field} in a postcondition (groovy-contracts' old map). */
     private static Set<String> oldFieldNames(Expression e) {
         Set<String> names = new HashSet<String>()
@@ -398,6 +476,12 @@ class VerifyChecker extends TypeCheckingExtension {
             // method carries a method-level @Decreases. Best-effort.
             try {
                 verifyTermination(node)
+            } catch (Throwable ignored) {
+            }
+
+            // Phase 13 (frame): a method with @Modifies must write only what it declares. Best-effort.
+            try {
+                frameCheck(node)
             } catch (Throwable ignored) {
             }
         } finally {

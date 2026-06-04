@@ -37,6 +37,7 @@ class VerifyHarness {
         import groovy.contracts.Ensures
         import groovy.contracts.Invariant
         import groovy.contracts.Decreases
+        import groovy.contracts.Modifies
         import verification.Forall
     '''.stripIndent()
 
@@ -357,6 +358,37 @@ class VerifyHarness {
                        @Ensures({ a.count(v) == old.a.count(v) })
                        void copy(int i, int j, int v) { a[i] = a[j] }
                    }''')],
+        // ---------- Phase 13 (frame-check): a method writes only what its @Modifies declares ----------
+        // Honest: inc declares it modifies count and writes only count → frame-check passes.
+        [group: 'P13 frame', name: 'honest modifies verified', ok: true,
+         src: tc('''class C {
+                       int count, other
+                       @Modifies({ this.count })
+                       void inc() { count = count + 1 }
+                   }''')],
+        // Array modifies: a setter declares it modifies a, and writes only a.
+        [group: 'P13 frame', name: 'array modifies verified', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= j && j < a.length })
+                       @Modifies({ this.a })
+                       void set(int j, int v) { a[j] = v }
+                   }''')],
+        // Violation: writes an undeclared field → loud frame error.
+        [group: 'P13 frame', name: 'undeclared write refuted', expect: 'not in its @Modifies',
+         src: tc('''class C {
+                       int count, other
+                       @Modifies({ this.count })
+                       void bad() { count = count + 1; other = 7 }
+                   }''')],
+        // @Modifies({ [] }) means pure: any field write violates it.
+        [group: 'P13 frame', name: 'pure method that writes refuted', expect: 'not in its @Modifies',
+         src: tc('''class C {
+                       int count
+                       @Modifies({ [] })
+                       void touch() { count = 1 }
+                   }''')],
+
         // NOTE: the recursive insertion-sort *permutation* proof is deferred to the @Modifies slice.
         // It needs sound inter-procedural `old` (snapshot the array at the call, bind the callee's
         // `old.a` to it) — without it, a callee's `old.a` resolves to the caller's entry snapshot,
