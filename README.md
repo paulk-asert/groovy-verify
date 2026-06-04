@@ -365,8 +365,10 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks |
 | `Encoder` | Groovy expression → SMT (the fragment lives here) |
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
+| `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
+| `Forall` | the `Forall.range(lo, hi){…}` bounded-quantifier helper (the native GDK `every`/`any` idioms are the preferred surface) |
 | `PathFacts` | enclosing-`if` path conditions per expression site |
-| `ContractExpansionTransform` | captures verbatim contract text + clean body snapshots at CONVERSION |
+| `ContractExpansionTransform` / `ContractSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`) + clean body snapshots onto the runtime `@ContractSource` carrier the checker re-parses |
 | `SmtBackend` / `Z3Backend` | the solver seam and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |
 
