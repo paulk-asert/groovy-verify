@@ -1728,6 +1728,14 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
             }
 
+            // NOTE: a known gap (roadmap Phase 23, "obstacle 3") — this does not thread intervening
+            // straight-line body mutations that run before the call, so a precondition over a *mutated*
+            // collection's contents is checked at the entry state, not the state at the call. Fixing it is
+            // coupled (fresh callee formals to avoid recursive name-conflation; early-return path narrowing;
+            // call-state vs entry-state; re-validating the Phase-14 sort) — a call-site-verification rebuild,
+            // not a localized patch. Latent in the shipped fragment: no in-fragment precondition references
+            // mutated collection contents.
+
             // 3. Translate the contract and assert its NEGATION. We're
             //    asking: is there a model where the path is satisfiable
             //    AND the precondition fails? If yes, that model is the
@@ -1989,6 +1997,7 @@ class VerifyChecker extends TypeCheckingExtension {
         cmp(st.lineNumber, st.columnNumber, tl, tc) <= 0 &&
             cmp(tl, tc, st.lastLineNumber, st.lastColumnNumber) <= 0
     }
+
 
     private static int cmp(int l1, int c1, int l2, int c2) {
         l1 != l2 ? Integer.compare(l1, l2) : Integer.compare(c1, c2)

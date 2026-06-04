@@ -1210,15 +1210,34 @@ under successors **except for nodes on the recursion stack**", which needs the s
 ghost pushed before the recursive call and popped after). That is the well-understood frontier/stack invariant,
 a genuinely larger development.
 
-**Obstacle 3 (found here) — a call-site soundness gap to fix first.** The attempt surfaced that the call-site
-precondition check (`verifyCallSite`) assumes the enclosing `@Requires` and the path (`if`) facts but does **not
-replay intervening straight-line body mutations** before discharging a callee's precondition. So a naive
-closure-threading DFS *spuriously* passed: the recursive `visit(next[u])`'s closure precondition was checked
-against the *pre-`add`* `visited`, not the post-`add` state where closure is broken. (Within the shipped fragment
-this had been latent — no prior call-site precondition referenced mutated collection *contents*.) Threading the
-straight-line prefix's set/array/scalar mutations into `verifyCallSite` (the machinery exists in `checkPath` /
-`LoopEncoder.symExec`) is the soundness fix that must precede any real closure-DFS proof — and is the concrete,
-bounded next increment this run identifies.
+**Obstacle 3 (found here) — a call-site soundness gap, and why its fix is a *rebuild*.** The attempt surfaced
+that the call-site precondition check (`verifyCallSite`) assumes the enclosing `@Requires` and the path (`if`)
+facts but does **not replay intervening straight-line body mutations** before discharging a callee's
+precondition. So a naive closure-threading DFS *spuriously* passed: the recursive `visit(next[u])`'s closure
+precondition was checked against the *pre-`add`* `visited`, not the post-`add` state where closure is broken.
+(Latent in the shipped fragment — no prior call-site precondition referenced mutated collection *contents*.)
+
+A run at fixing it (replay the prefix mutations precisely before the precondition check) showed the gap is
+**coupled**, not a localized patch — it pulls in three more issues that must move together:
+- **Recursive-call name conflation.** The callee's formal and the caller's same-named variable are the *same*
+  SMT constant (both `intVar("u")`), so the formal binding asserts the garbled `u == next[u]` on a recursive
+  self-call — corrupting the context (and, for `sumUp(n-1)`, asserting the inconsistent `n == n-1`, which is
+  why such recursive call-site preconditions pass *vacuously* today). Precise replay only works once callee
+  formals are **fresh** symbols.
+- **Early-return path narrowing.** With fresh formals, `sumUp`/`bcount` then fail: `if (k == 0) return 0`
+  precedes the recursive call, so reaching it implies `k ≠ 0`, but that guard is not an *enclosing* `if`, so
+  `PathFacts` misses it and `k-1 >= 0` can't be shown. The context must replay the **full path** to the call
+  (early-return guards included), e.g. via `BodyEncoder` path steps, not just enclosing-`if` facts.
+- **Call-state vs entry-state, and re-validating the sort.** Checking a precondition against the true state at
+  the call (post-mutation) is *more* correct, but the Phase-14 insertion sort's `insert(m-1, a[m], v)`
+  precondition is currently discharged against the *entry* array; correcting it to the post-swap array changes
+  what must be proved and has to be re-validated.
+
+So the sound fix is a **rebuild of call-site precondition checking** — fresh formals + full-path replay
+(early returns + mutations + preceding-call `@Ensures`, unified) + re-validating the recursive proofs under the
+corrected semantics — not the bounded patch first imagined. It is the single most valuable *soundness* work
+item the project has; until it lands, a call-site precondition over mutated collection *contents* is the one
+in-fragment shape that can be checked at the wrong state (no such case is in the shipped suite).
 
 **Net.** Completeness is *not* delivered: the one-step closure consequence is proved, and the three obstacles
 between here and the full result are now precise — (1) recursive-definition reasoning in contracts, (2) the
