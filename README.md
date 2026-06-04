@@ -67,8 +67,9 @@ consumes it (via a Gradle composite build) rather than vendoring it.
 | **Instance methods & field state (read + write)** | `this.count`, `count = count + 1` | ✅ Phase 10 |
 | **Pre-state `old` (field & array-content snapshots)** | `old.count`, `old.a[i]` in `@Ensures` | ✅ Phase 11 |
 | **Multiset / `count` preservation (per-store law)** | `a.count(v) == old.a.count(v)` | ✅ Phase 12 |
-| **`@Modifies` frame-check (writes ⊆ declared)** | `@Modifies({ this.count })` | ✅ Phase 13 |
-| Caller-side framing (havoc + inter-proc `old`) & sort permutation end-to-end, class `@Invariant`, 32-bit overflow | — | ⏳ later |
+| **`@Modifies` framing — frame-check + caller-side havoc & sound inter-proc `old`** | `@Modifies({ this.a })` | ✅ Phase 13 |
+| **Recursive sort proven a *permutation*** | `a.count(v) == old.a.count(v)` across swaps + recursion | ✅ Phase 13 |
+| Sound *sortedness-under-havoc* (full in-place sort), class `@Invariant`, 32-bit overflow | — | ⏳ later |
 
 ## Examples
 

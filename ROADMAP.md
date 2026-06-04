@@ -687,6 +687,39 @@ alone can't). The per-store `count` law built here is the standalone, sound foun
 
 ---
 
+## Phase 13 — Frame conditions: `@Modifies`  *(shipped)*
+
+A method declares the caller-visible locations it may change via groovy-contracts'
+`@Modifies({ this.field })` / `@Modifies({ [this.a, this.b] })` / `@Modifies({ param })`. Captured
+like the other contracts (a `modifies` member on `@ContractSource`).
+
+**Frame-check (shipped).** A method carrying `@Modifies` is verified to write *only* the locations
+it lists — every `a[i] = v` (array `a`), `this.x = v` / bare field `x = v` is checked against the
+declared set; local writes don't count. `@Modifies({ [] })` means pure (any field/array write is a
+loud error). This is the callee-side half: a method honours its own frame.
+
+**Caller-side framing (shipped).** At a call to a method with `@Modifies`, the caller now *havocs*
+the declared locations (fresh symbols) and reframes them from the callee's `@Ensures` — binding the
+callee's `old.X` to the value *at the call*, not the caller's own entry snapshot. That last point was
+the bug Phase 12 surfaced (a callee's `old.a` resolving to the caller's entry made the recursion's
+`count` clause vacuous; a broken overwrite-`insert` wrongly verified). With it fixed:
+- the cross-call **"clobber"** unsoundness is closed — a caller can no longer assume an array a callee
+  may modify is unchanged (verified: a caller relying on `a[0]` across a clobbering call now refutes);
+- a `@Modifies`-only callee (no `@Ensures`) is modelled as a pure havoc of the declared locations
+  (`resolveContractedCallee` widened to accept it);
+- the recursive insertion sort is proven a **permutation** for real — `a.count(v) == old.a.count(v)`
+  holds across the swaps *and* the recursive calls — and the broken overwrite now refutes.
+
+**The remaining frontier — sound sortedness under havoc.** A fully sound `sorted ∧ permutation`
+in-place sort still needs `insert`'s *sortedness* to survive the array-havoc: after the recursive
+call havocs `a`, proving `a[i-1] <= a[i]` needs a prefix-multiset *bound* (no sorted-prefix element
+exceeds the old pivot), which pointwise `count` doesn't supply. Closing it needs one more step — a
+`count`-over-range or a small bounding lemma. The frame-check + caller-side framing here, the
+per-store `count` law (Phase 12), and `old` (Phase 11) are its sound foundations; this is the genuine
+last mile.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

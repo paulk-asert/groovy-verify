@@ -388,12 +388,63 @@ class VerifyHarness {
                        @Modifies({ [] })
                        void touch() { count = 1 }
                    }''')],
+        // Caller-side framing: clobber() may change a (declared, @Ensures says nothing), so the caller
+        // can NO LONGER assume a[0] is unchanged across the call → refuted. (Pre-framing this passed
+        // unsoundly — the call left `a` untouched.)
+        [group: 'P13 frame', name: 'callee may clobber shared array', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ a.length > 0 })
+                       @Modifies({ this.a })
+                       void clobber() { a[0] = 999 }
+                       @Requires({ a.length > 0 && a[0] == 5 })
+                       @Modifies({ this.a })
+                       @Ensures({ a[0] == 5 })
+                       void caller() { clobber() }
+                   }''')],
 
-        // NOTE: the recursive insertion-sort *permutation* proof is deferred to the @Modifies slice.
-        // It needs sound inter-procedural `old` (snapshot the array at the call, bind the callee's
-        // `old.a` to it) — without it, a callee's `old.a` resolves to the caller's entry snapshot,
-        // making the recursion's count @Ensures an inconsistent (vacuous) assumption. The single-store
-        // building blocks above are sound; the composition lands with @Modifies's call-site machinery.
+        // Composition (now sound, via @Modifies caller-side framing): a recursive insertion sort
+        // preserves the multiset — `a.count(v) == old.a.count(v)` for arbitrary v — across the swaps
+        // *and* the recursive calls (each call havocs a, then reframes count from the callee's @Ensures
+        // with `old.a` bound to the array at the call). Permutation only; sound sortedness-under-havoc
+        // additionally needs a prefix bound (see ROADMAP Phase 13).
+        [group: 'P12 perm', name: 'recursive insertion sort permutes', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= i && i < a.length })
+                       @Modifies({ this.a })
+                       @Ensures({ a.count(v) == old.a.count(v) })
+                       @Decreases({ i })
+                       void insert(int i, int v) {
+                           if (i > 0 && a[i] < a[i - 1]) {
+                               int t = a[i]; a[i] = a[i - 1]; a[i - 1] = t
+                               insert(i - 1, v)
+                           }
+                       }
+                       @Requires({ 0 <= n && n <= a.length })
+                       @Modifies({ this.a })
+                       @Ensures({ a.count(v) == old.a.count(v) })
+                       @Decreases({ n })
+                       void sort(int n, int v) {
+                           if (n > 1) { sort(n - 1, v); insert(n - 1, v) }
+                       }
+                   }''')],
+        // Soundness (no longer vacuous, now that `old` is bound at the call): an overwriting insert
+        // drops an element → permutation refuted.
+        [group: 'P12 perm', name: 'overwrite insert breaks permutation', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= i && i < a.length })
+                       @Modifies({ this.a })
+                       @Ensures({ a.count(v) == old.a.count(v) })
+                       @Decreases({ i })
+                       void insert(int i, int v) {
+                           if (i > 0 && a[i] < a[i - 1]) {
+                               a[i - 1] = a[i]
+                               insert(i - 1, v)
+                           }
+                       }
+                   }''')],
 
         // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------
         // No size accessor written (just a[i]) → the universal Groovy idiom .size(), valid for arrays too.

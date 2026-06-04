@@ -88,6 +88,11 @@ class Reporter {
         sb.toString()
     }
 
+    static String formatModifiesViolation(String methodName, String location, Collection<String> declared) {
+        "Method '${methodName}' writes '${location}', which is not in its @Modifies clause ${new TreeSet<>(declared)}. " +
+        "A method may modify only the locations it declares (an empty @Modifies({}) means none)."
+    }
+
     static String formatPostconditionSkipped(String methodName, String reason) {
         "Skipped verification of postcondition for ${methodName} (${reason}). " +
         "The body uses a construct or value outside the spike's supported " +

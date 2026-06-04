@@ -53,4 +53,6 @@ import java.lang.annotation.Target
     String ensures() default ''
     /** Verbatim method-level termination measure text, e.g. "n" (empty if none); the recursion analogue of a loop's @Decreases. */
     String decreases() default ''
+    /** Verbatim @Modifies frame text, e.g. "this.a" or "[this.items, this.count]" (empty if none). */
+    String modifies() default ''
 }

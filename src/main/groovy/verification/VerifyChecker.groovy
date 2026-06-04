@@ -107,6 +107,8 @@ class VerifyChecker extends TypeCheckingExtension {
      * back to {@code .size()} — Groovy's universal size idiom, valid for arrays too.
      */
     private Map<String, String> sizeAccessors = [:]
+    /** Mints unique names for havoced locations at call sites (Phase 13 caller-side framing). */
+    private int havocCounter = 0
 
     /** New Encoder wired with the current class's pure-function evaluator. */
     private Encoder mkEncoder(SmtSession session) {
@@ -1584,7 +1586,8 @@ class VerifyChecker extends TypeCheckingExtension {
             // termination measure (@Decreases) — its well-foundedness is checked separately.
             if (m == caller && !allowSelf) continue
             if (m.parameters.length != arity) continue
-            if (findEnsures(m) == null) continue
+            // Usable if it has an @Ensures to assume, or an @Modifies whose effect (a havoc) we model.
+            if (findEnsures(m) == null && contractAstFor(m, 'modifies') == null) continue
             return m
         }
         null
@@ -1669,7 +1672,9 @@ class VerifyChecker extends TypeCheckingExtension {
         MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf)
         if (callee == null) return false
         Expression ensuresAst = contractAstFor(callee, 'ensures')
-        if (ensuresAst == null) return false
+        Set<String> modSet = modifiedNames(callee)
+        // Nothing to model — no @Ensures and no @Modifies — so we can't account for the call's effect.
+        if (ensuresAst == null && (modSet == null || modSet.isEmpty())) return false
 
         Parameter[] formals = callee.parameters
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
@@ -1680,10 +1685,56 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (resultHandle != null) bindings.put('result', resultHandle)
 
-        Object post = enc.translateWith(ensuresAst, bindings)
-        if (post == null) return false    // @Ensures outside the fragment → honest skip
-        s.assertExpr(post)
+        // Caller-side framing (Phase 13): for each location the callee @Modifies, snapshot its value
+        // *at the call*, pin the callee's `old.X` to that snapshot, then HAVOC the location (fresh
+        // symbol) so the caller can no longer assume it unchanged. The callee's @Ensures (if any)
+        // re-constrains it relative to the snapshot; with no @Ensures the location is simply unknown
+        // afterwards. Locations not in @Modifies stay framed. This closes the cross-call "clobber"
+        // hole and gives the recursion a sound `old`. Actuals are translated above (pre-havoc). A null
+        // @Modifies frames everything — the pre-Phase-13 behaviour, sound only when the callee truly
+        // modifies nothing visible.
+        Map<String, Object> savedVar = new LinkedHashMap<String, Object>()
+        Map<String, Object> savedArr = new LinkedHashMap<String, Object>()
+        if (modSet != null) {
+            for (String loc : modSet) {
+                String callerLoc = callerSideLocation(loc, formals, actuals)
+                if (callerLoc == null) continue
+                String oldKey = 'old$' + loc   // the callee's @Ensures spells old.<field>
+                if (!savedVar.containsKey(oldKey)) {
+                    savedVar.put(oldKey, enc.peekVar(oldKey))
+                    savedArr.put(oldKey, enc.peekArray(oldKey))
+                }
+                enc.bind(oldKey, enc.varFor(callerLoc))            // old.X (scalar) = value at the call
+                enc.bindArray(oldKey, enc.arrayFor(callerLoc))     // old.X (array contents) at the call
+                enc.bind(callerLoc, s.intVar('havoc$' + callerLoc + '$' + (havocCounter++)))     // havoc
+                enc.bindArray(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+            }
+        }
+
+        Object post = ensuresAst != null ? enc.translateWith(ensuresAst, bindings) : null
+
+        // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
+        savedVar.each { String k, Object v -> if (v != null) enc.bind(k, v) }
+        savedArr.each { String k, Object v -> if (v != null) enc.bindArray(k, v) }
+
+        if (ensuresAst != null && post == null) return false   // @Ensures outside the fragment → skip
+        if (post != null) s.assertExpr(post)
         return true
+    }
+
+    /**
+     * The caller-side name of a callee {@code @Modifies} location: a field name is shared (same name
+     * in the caller); a formal parameter maps to its actual argument when that is a plain variable
+     * (else null — a non-nameable actual can't be havoced as a location).
+     */
+    private static String callerSideLocation(String loc, Parameter[] formals, List<Expression> actuals) {
+        for (int i = 0; i < formals.length; i++) {
+            if (formals[i].name == loc) {
+                Expression act = actuals.get(i)
+                return act instanceof VariableExpression ? ((VariableExpression) act).name : null
+            }
+        }
+        loc   // not a formal → a field, same name in the caller
     }
 
     /** Find a @Requires on the method, walking declared and inherited methods. */
