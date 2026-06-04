@@ -121,6 +121,10 @@ class Encoder {
         env.put(name, handle)
     }
 
+    /** Current scalar/array binding, or null if unbound — for save/restore around a call's framing. */
+    Object peekVar(String name) { env.get(name) }
+    Object peekArray(String name) { arrEnv.get(name) }
+
     /**
      * Translate {@code expr} with {@code bindings} (source-name → handle) applied
      * over the current environment, then restore it. Used to assume a callee's
