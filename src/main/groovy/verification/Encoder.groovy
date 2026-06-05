@@ -540,26 +540,39 @@ class Encoder {
     }
 
     /**
-     * Phase 29 — for an enum-element set, assert the two facts the finite enum domain gives:
-     * (a) the pigeonhole bound {@code card(s) <= N}, and (b) the full-coverage iff
-     * {@code card(s) == N ⟺ c1 ∈ s ∧ … ∧ cN ∈ s}. Both are theorems of "{@code s} is a set over
-     * an N-constant enum domain" — asserting them lets the verifier reason about Sets.bounded
-     * and Sets.count over the enum directly, without falling out as "outside fragment" (the
-     * Phase 27 step 8 behaviour). No-op for Int-element or non-enum sets, and for map key-sets
-     * (which can have enum keys but where the *map's* key bound is the user-visible analog).
+     * For an enum-element set, assert the three facts the finite enum domain gives, once per
+     * set handle:
+     * (a) **pigeonhole** {@code card(s) <= N} (Phase 29),
+     * (b) **full-coverage iff** {@code card(s) == N ⟺ c1 ∈ s ∧ … ∧ cN ∈ s} (Phase 29),
+     * (c) **empty iff** {@code card(s) == 0 ⟺ c1 ∉ s ∧ … ∧ cN ∉ s} (Phase 30+) — the dual
+     *     of (b) at the other endpoint, letting {@code s.size() == 0} reason about (non-)membership
+     *     of every constant.
+     * All three are theorems of "{@code s} is a set over an N-constant enum domain". No-op for
+     * Int-element or non-enum sets, and for map key-sets (which can have enum keys but where the
+     * *map's* key bound is the user-visible analog).
      */
     private void assertEnumDomainAxioms(String key, Object setH) {
         if (key.startsWith('map$keys$')) return   // map key-sets handled via the map's own axioms
         ClassNode elemType = elementTypeForSetKey(key)
         if (elemType == null) return
         if (!(elemType.isEnum() || isEnumLikeType(elemType))) return
-        int n = enumConstantNames(elemType).size()
+        List<String> names = enumConstantNames(elemType)
+        int n = names.size()
         if (n <= 0) return
         Object nLit = session.intLit((long) n)
+        Object zero = session.intLit(0L)
         Object card = cardOf(setH)
         session.assertExpr(session.le(card, nLit))                            // pigeonhole
         Object full = finiteEnumCoverage(setH, elemType)
         session.assertExpr(session.eq(session.eq(card, nLit), full))          // card == N ⟺ full coverage
+        // Empty iff: card(s) == 0 ⟺ ¬c1 ∈ s ∧ … ∧ ¬cN ∈ s.
+        Object enumSort = session.declareSort(enumSortName(elemType))
+        List<Object> noneIn = new ArrayList<Object>()
+        for (String constName : names) {
+            noneIn.add(session.not(member(setH, session.litOfSort(enumSort, constName))))
+        }
+        Object empty = noneIn.size() == 1 ? noneIn.get(0) : session.and(noneIn)
+        session.assertExpr(session.eq(session.eq(card, zero), empty))
     }
 
     /**
@@ -631,6 +644,33 @@ class Encoder {
             }
         }
         null
+    }
+
+    /**
+     * Phase 30 — lower {@code s.containsAll(t)} to the finite conjunction
+     * {@code ∧ (c_i ∈ t ⟹ c_i ∈ s)} over the enum domain when both sets share an enum element
+     * sort. Returns null for Int/String/sort-mismatch or when the receiving set isn't an enum
+     * set — the caller treats null as "outside fragment" and falls through to skip. Int-element
+     * subset needs a bounded-domain context (Sets.bounded on the subset operand) and is a
+     * separate, larger increment.
+     */
+    private Object translateContainsAll(String sKey, Expression tExpr) {
+        String tKey = setKeyFor(tExpr)
+        if (tKey == null) return null
+        Object sElemSort = setKeySortForKey(sKey)
+        Object tElemSort = setKeySortForKey(tKey)
+        if (sElemSort != tElemSort) return null   // sort mismatch
+        ClassNode elemType = elementTypeForSetKey(sKey)
+        if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return null
+        Object sH = setFor(sKey)
+        Object tH = setFor(tKey)
+        Object enumSort = session.declareSort(enumSortName(elemType))
+        List<Object> conjuncts = new ArrayList<Object>()
+        for (String constName : enumConstantNames(elemType)) {
+            Object constLit = session.litOfSort(enumSort, constName)
+            conjuncts.add(session.implies(member(tH, constLit), member(sH, constLit)))
+        }
+        conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
     }
 
     /**
@@ -1135,8 +1175,15 @@ class Encoder {
             }
             if (m == 'size' && args.isEmpty()) return cardOf(setFor(setKey))
             if (m == 'isEmpty' && args.isEmpty()) return session.eq(cardOf(setFor(setKey)), session.intLit(0L))
-            // containsAll/union/intersect/etc. need an (unbounded) quantifier over the domain — out of
-            // fragment for now: return null so it surfaces as a loud "skipped", never a silent pass.
+            // Phase 30 — s.containsAll(t) for enum-element sets, lowered to the finite conjunction
+            // ∧ (c_i ∈ t ⟹ c_i ∈ s) over the enum's constants (the same shape Phase 29 uses for
+            // full-coverage). Int subset needs a bounded-domain context (Sets.bounded on t) to
+            // close the universal — deferred until that plumbing lands; today it skips honestly.
+            if (m == 'containsAll' && args.size() == 1) {
+                Object q = translateContainsAll(setKey, args.get(0))
+                if (q != null) return q
+            }
+            // union/intersect/etc. still need unbounded quantifiers — out of fragment, return null.
             return null
         }
 

@@ -1540,9 +1540,54 @@ verifies *without* requiring `Sets.bounded` — the bound was asserted at setFor
 implication "this set has at most as many elements as its enum has constants" anywhere it's
 needed.
 
-**Known limits unchanged.** Set algebra (union/intersection/subset), nested element domains
+**Known limits.** Set union/intersection (constructive new-set operations), nested element domains
 (`Map<K, Set<V>>`), and non-enum non-Int element domains (String, records, …) all remain as they
-were after Phase 27.
+were after Phase 27. Subset (`s.containsAll(t)`) over enum-element sets is added in Phase 30 below;
+the Int-element subset case still needs bounded-domain context plumbing.
+
+## Phase 30 — Subset reasoning: `s.containsAll(t)` over enum-element sets  *(shipped)*
+
+**The canonical authorization predicate, machine-checked.** `granted.containsAll(required)`
+expresses subset directly — "every role required is among the granted" — and is the building block
+for set equality, ACL checks, FSM coverage transfer, and the membership half of union/intersection
+later. This phase adds it for enum-element sets, where the finite domain gives a clean lowering
+without any unbounded universal.
+
+**The encoding.** `s.containsAll(t)` lowers to the finite conjunction
+`(c1 ∈ t ⟹ c1 ∈ s) ∧ … ∧ (cN ∈ t ⟹ cN ∈ s)` over the enum's constants — the same shape Phase 29
+uses for full-coverage, with implication instead of bare membership. Reflexivity, transitivity, and
+the "add preserves subset" pattern all fall out of the conjunction structure under Z3's
+propositional reasoning; no quantifier needed.
+
+```groovy
+class C {
+    enum Role { ADMIN, USER, GUEST }
+    @Requires({ granted.containsAll(required) && Role.ADMIN in required })
+    @Ensures({ Role.ADMIN in granted })                         // verifies — subset entails transfer
+    static int check(Set<Role> granted, Set<Role> required) { 0 }
+}
+```
+
+Drop the `containsAll` precondition and the `@Ensures` refutes — without subset, membership in
+`required` says nothing about `granted`.
+
+**Enhancement: empty iff.** The Phase-29 enum-set axioms covered `card(s) == N ⟺ full coverage`
+but not the dual at the empty endpoint. Phase 30 adds the third axiom:
+{@code card(s) == 0 ⟺ ¬c1 ∈ s ∧ … ∧ ¬cN ∈ s}, asserted at every enum set's first mint
+alongside the pigeonhole and full-coverage iff. So `s.size() == 0` now implies every constant is
+absent — letting empty-subset claims (`s.containsAll(empty)`) verify by vacuous implication, and
+"this method clears the set" postconditions imply non-membership of every constant.
+
+**Known limits.**
+
+- **Int-element subset stays deferred.** `s.containsAll(t)` over `Set<Integer>` needs a bounded
+  domain on `t` (e.g. `Sets.bounded(t, n)`) to close the universal; the encoder doesn't yet thread
+  that bound from a separate contract clause into the subset lowering. Honest skip today.
+- **Set union/intersection** are *constructive* — they mint a new set with a derived membership
+  predicate — and need a different shape than subset's pure-predicate lowering. Worth its own
+  small phase later; the pattern is established.
+- **`s.equals(t)`** isn't separately wired but is `s.containsAll(t) && t.containsAll(s)` —
+  a trivial follow-up if needed.
 
 ## Non-goals
 

@@ -532,8 +532,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Non-Int element domains — `String` and `Enum` across sets, maps, lists** | `Set<String>`/`Set<Color>`, `Map<String,Integer>`/`Map<Color,V>`, `List<String>`/`List<Color>`; `Color.RED in s`, `m["admin"]==5`, `xs[k]=="abc"`; counterexamples render the model value as a Groovy literal | ✅ Phase 27 |
 | **`EnumClass.values().length` / `.size()` folds to a ground int** | `@Requires({ k < Color.values().length })` becomes `k < 3` at translate time — usable as a literal in contracts, bounded-range upper bounds, and ground state-coverage proofs | ✅ Phase 28 |
 | **`Sets.bounded` / `Sets.count` over enum-element sets** | `Sets.count(handled, State.values().length) == State.values().length ⟹ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled` — FSM completeness verified directly with `Set<State>`; pigeonhole `card(s) <= N` automatic on every enum set | ✅ Phase 29 |
+| **Subset reasoning — `s.containsAll(t)` over enum-element sets** | `granted.containsAll(required) && r in required ⟹ r in granted` (authorization shape); reflexivity, transitivity, and empty-subset cases all verify; complemented by the empty iff `card(s) == 0 ⟺ no enum constant ∈ s` | ✅ Phase 30 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
-| Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), `Map<K, Set<V>>` nesting | — | ⏳ later |
+| Set/map union/intersection (`s + t`), Int-element subset, `m.containsValue`, `Map<K, Set<V>>` nesting | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
