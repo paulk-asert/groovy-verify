@@ -2014,10 +2014,8 @@ kicks in: the literal fold means Z3 sees {@code 3 == 4} on the residual goal, re
 
 **Known limits.**
 
-- **No local-variable propagation.** {@code List<Integer> xs = List.of(1, 2, 3); xs.size()}
-  doesn't fold — {@code xs} becomes an ordinary list local whose size oracle is unconstrained
-  past the assignment. Threading the factory through the {@code Assign} step (parallel to
-  Phase 35's materialised-set path) is the natural follow-up.
+- ~~**No local-variable propagation.**~~ *Closed by Phase 38b below* — a factory RHS recorded
+  on the {@code Assign} step lifts the fold across the variable boundary.
 - **Set.of uniqueness is not enforced.** {@code Set.of(1, 1, 1).size() == 3} folds to true,
   which is technically unsound (the runtime call throws {@code IllegalArgumentException} for
   duplicates and the runtime set has size 1). Dedup-aware sizing would need a static distinct-
@@ -2034,6 +2032,61 @@ kicks in: the literal fold means Z3 sees {@code 3 == 4} on the residual goal, re
 - **{@code .get(non-constant-i)} skips honestly.** Folding for a symbolic index would emit an
   {@code ite}-chain plus an explicit out-of-bounds handling; deferred to the same slice that
   threads factories through assignment.
+
+### Phase 38b — Factory through assignment  *(shipped)*
+
+The biggest Phase 38 known limit closed. {@code List<Integer> xs = List.of(1, 2, 3); xs.size()}
+now folds the same as the inline form: the {@code Assign}-step handler in both {@link
+VerifyChecker#checkPath} (body replay) and {@link VerifyChecker#dischargeVfObligation} (implicit
+obligation discharge) calls a new {@code Encoder.tryRecordFactoryAssign(name, rhs)} before
+falling through to the int-SSA path. The encoder stashes the recognised {@link FactoryContainer}
+in a per-session {@code localFactories} map; {@code factoryContainerFor} now resolves a plain
+{@code VariableExpression} against that map, so every existing fold path —
+{@code translateMethodCall}, {@code translateBinary}'s {@code in} and LEFT_SQUARE_BRACKET branches
+— lifts across the variable boundary without further changes.
+
+**Pinning the cross-cutting oracles.** A factory result is non-null and has a known size; both
+facts the existing implicit-obligation pass consults independently of the factory fold. So
+{@code tryRecordFactoryAssign} also:
+
+```groovy
+session.assertExpr(session.not(nullityOf(name)))
+if (f.kind == 'list' || f.kind == 'set') {
+    session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
+}
+```
+
+— pinning the nullity oracle to false and (for list/set kinds) {@code sizeOf} to the literal entry
+count. With that, {@code xs.size()} discharges the {@code xs?null} obligation, {@code xs[1]}
+discharges the bounds check via {@code sizeOf(xs) == 3}, and the factory fold delivers the
+literal result. Map factories don't need the size pin — {@code m.size()} folds via the factory
+fold itself, and the underlying map-vals/key-set handles aren't queried directly.
+
+```groovy
+class C {
+    @Ensures({ result == 3 })
+    static int f() {
+        List<Integer> xs = List.of(1, 2, 3)
+        xs.size()             // ✓ folds to 3 via the recorded local
+    }
+
+    @Ensures({ result == 20 })
+    static int g() {
+        List<Integer> xs = [10, 20, 30]
+        xs[1]                 // ✓ folds to 20; bounds discharged by the sizeOf pin
+    }
+
+    @Ensures({ result == 2 })
+    static int h() {
+        Map<String, Integer> m = Map.of("a", 1, "b", 2)
+        m.containsKey("b") ? m.get("b") : 0   // ✓ both folds lift across `m`
+    }
+}
+```
+
+All three verify; the wrong-literal mirrors still refute. The hook fires the same way for both
+verification passes, so an implicit-obligation site downstream of a factory assignment sees the
+same nullity/size facts the body-replay path does — no divergence between the two oracles.
 
 ## Non-goals
 

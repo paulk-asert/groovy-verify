@@ -1195,8 +1195,13 @@ class VerifyChecker extends TypeCheckingExtension {
             // reaching assignment is replayed.
             assumeClassInvariants(s, enc)
             // Single-assignment locals: each name is bound once, before use, so
-            // asserting the equalities in any order recovers the reaching store.
+            // asserting the equalities in any order recovers the reaching store. Factory and
+            // set-binop RHS shapes don't translate to a scalar handle; their record-on-assign
+            // helpers (Phase 35, Phase 38b) pin the oracles instead — so the implicit obligation
+            // discharge below sees the same nullity/size/membership facts the body-replay path does.
             for (Assign a : v.assigns) {
+                if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
+                if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
                 Object rhs = enc.translate(a.rhs)
                 if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
             }
@@ -1646,6 +1651,14 @@ class VerifyChecker extends TypeCheckingExtension {
                     // the encoder's setElementTypes, so the new local becomes visible to subsequent
                     // expressions (including applySetMutation's containsKey check below) automatically.
                     if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) {
+                        continue
+                    }
+                    // Phase 38b — xs = List.of(args) / [a, b, c] / Map.of(…) / Set.of(…): if the
+                    // RHS is a recognised immutable-container factory, record the local so
+                    // subsequent receiver lookups fold the same way as the factory itself would.
+                    // Short-circuit the int-SSA path — a list/set/map local isn't an int and the
+                    // factory's size/contents are statically known.
+                    if (enc.tryRecordFactoryAssign(a.name, a.rhs)) {
                         continue
                     }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated

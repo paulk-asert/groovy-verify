@@ -144,6 +144,16 @@ class Encoder {
      */
     private final Map<String, Integer> enumDomainSizes
     /**
+     * Phase 38b — local variables bound to a recognised immutable-container factory: {@code xs}
+     * after {@code xs = List.of(1, 2, 3)} (or {@code [1, 2, 3]} / {@code Map.of(…)} / {@code Set.of(…)}).
+     * The Assign-step handler in {@link VerifyChecker} calls {@link #tryRecordFactoryAssign} on
+     * each declaration before falling through to the int-SSA path, so subsequent receiver lookups
+     * by {@link #factoryContainerFor} resolve the local to its recorded factory and the same
+     * peephole folds (.size, .contains, .get(literal_i), …) apply across the variable boundary.
+     * Per-session — fresh on each new {@link Encoder} — which matches the body-replay rhythm.
+     */
+    private final Map<String, FactoryContainer> localFactories = new LinkedHashMap<String, FactoryContainer>()
+    /**
      * Phase 31 — side-effect populated by {@link #translateSetsBounded}: when the user writes
      * {@code Sets.boundedBy(t, n)} for an Int-element set, the translator records {@code t}'s set key
      * → {@code n}'s Z3 handle here. Then a later {@code s.containsAll(t)} translation on Int sets
@@ -915,6 +925,13 @@ class Encoder {
             if (ce.type?.name == 'java.util.Set') kindOverride = 'set'
             target = ce.expression
         }
+        // Phase 38b — a local previously bound to a factory carries the same fold across the
+        // variable boundary. The kind override from the outer cast (if any) doesn't apply to a
+        // recorded local; the kind is what was recorded at the assignment.
+        if (target instanceof VariableExpression) {
+            FactoryContainer recorded = localFactories.get(((VariableExpression) target).name)
+            if (recorded != null) return recorded
+        }
         if (target instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) target
             if (mce.methodAsString == 'of' && mce.objectExpression instanceof ClassExpression) {
@@ -947,6 +964,32 @@ class Encoder {
             return new FactoryContainer(kind: 'map', keys: ks, values: vs)
         }
         null
+    }
+
+    /**
+     * Phase 38b — record a factory assignment on a local: if {@code rhs} is a recognised
+     * immutable-container factory, stash it in {@link #localFactories} so subsequent receiver
+     * lookups against {@code name} fold the same way the factory itself would. Returns true on
+     * success so the caller short-circuits the int-SSA path (the local isn't an int and there's
+     * nothing to bind via the size oracle — the factory's size is the literal entry count).
+     */
+    boolean tryRecordFactoryAssign(String name, Expression rhs) {
+        FactoryContainer f = factoryContainerFor(rhs)
+        if (f == null) return false
+        localFactories.put(name, f)
+        // Pin the oracles the surrounding machinery consults independently of the factory fold:
+        //  (1) nullity — a factory result is non-null, so the implicit scalar-deref check on
+        //      {@code xs.size()}/{@code m.get(k)}/etc. has its obligation immediately discharged.
+        //  (2) size — for list/set kinds, fix {@code sizeOf(name)} to the literal entry count, so
+        //      the implicit bounds check on {@code xs[i]} closes the same way (sound: this is
+        //      what the factory's runtime size actually is, modulo Set dedup which is a known
+        //      limit). Map factories don't need a size pin: {@code m.size()} folds via the
+        //      factory fold, and the underlying map-vals/key-set handles aren't queried directly.
+        session.assertExpr(session.not(nullityOf(name)))
+        if (f.kind == 'list' || f.kind == 'set') {
+            session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
+        }
+        true
     }
 
     /** Disjunction of equalities — {@code x == a_0 ∨ x == a_1 ∨ …}; null if any element fails to translate. */
