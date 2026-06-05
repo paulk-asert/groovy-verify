@@ -712,7 +712,13 @@ the bug Phase 12 surfaced (a callee's `old.a` resolving to the caller's entry ma
 
 ---
 
-## Phase 14 — The fully verified sort: *sorted ∧ permutation*  *(shipped)*
+## Phase 14 — The sort: *sorted ∧ permutation*  *(shipped; see Phase 24)*
+
+> **Updated by Phase 24.** The **postcondition** (sorted ∧ permutation) and termination verify, as described
+> below. But the sound call-site precondition checking shipped in Phase 24 revealed that `insert`'s *recursive
+> precondition* had been passing **vacuously** (a recursive-call name-conflation); its sound form is a
+> two-quantifier proof over a nested-store array that the solver times out on, so it is now a loud "could not
+> decide". The capstone's *postcondition* claim stands; its *recursive precondition* is the open follow-on.
 
 The capstone. A recursive in-place insertion sort proven **both** correctness halves at once —
 the result is sorted *and* a permutation of the input — under sound `@Modifies` framing (every call
@@ -1235,14 +1241,58 @@ A run at fixing it (replay the prefix mutations precisely before the preconditio
 
 So the sound fix is a **rebuild of call-site precondition checking** — fresh formals + full-path replay
 (early returns + mutations + preceding-call `@Ensures`, unified) + re-validating the recursive proofs under the
-corrected semantics — not the bounded patch first imagined. It is the single most valuable *soundness* work
-item the project has; until it lands, a call-site precondition over mutated collection *contents* is the one
-in-fragment shape that can be checked at the wrong state (no such case is in the shipped suite).
+corrected semantics — not the bounded patch first imagined. **Shipped in Phase 24 below**, where it also
+surfaced that the Phase-14 sort's recursive precondition had been passing *vacuously*.
 
 **Net.** Completeness is *not* delivered: the one-step closure consequence is proved, and the three obstacles
 between here and the full result are now precise — (1) recursive-definition reasoning in contracts, (2) the
 frontier/stack invariant, (3) the call-site intervening-mutation threading (a soundness fix). Termination,
 soundness, and unconditional coverage (Phases 16–22) stand; completeness is the remaining, well-mapped frontier.
+
+## Phase 24 — Call-site precondition soundness  *(shipped)*
+
+**A soundness fix to the foundation — and the one that revealed a flagship had been resting on a vacuous
+check.** The discharge of a callee's `@Requires` at a call site (`verifyCallSite`) was building its context
+from the enclosing `@Requires` and the enclosing-`if` path facts only. It missed two things, both unsound:
+
+- **Intervening body mutations weren't threaded.** A precondition over a *mutated* collection's contents was
+  checked at the method's *entry* state, not the state at the call. (Surfaced by the Phase-23 closure-DFS:
+  `visit(next[u])`'s closure precondition was checked against the *pre-`add`* `visited`, so a naive
+  closure-threading DFS passed spuriously.)
+- **Recursive-call name conflation.** The callee formal and the caller's same-named variable were the same SMT
+  constant, so a self-call's formal binding asserted the garbled `u == next[u]` (or the inconsistent `n == n-1`
+  for `sumUp(n-1)`) — checking the precondition in a corrupt/vacuous context. Many recursive call-site
+  preconditions were therefore passing *vacuously*.
+
+**The fix (three coupled parts):**
+
+1. **Fresh callee formals.** The formal is a fresh symbol (`name#arg…`, kept out of displayed counterexamples
+   by the `#` filter), pinned to the actual — distinct from any caller variable of the same name.
+2. **Early-return path narrowing.** An `if (cond) return/throw` that *precedes* the call (not an enclosing
+   `if`, so `PathFacts` misses it) contributes `¬cond` — the fact `sumUp(n-1)`/`bcount(s,k-1)` need
+   (`n ≠ 0`/`k ≠ 0`) to show `n-1 ≥ 0`.
+3. **Precise intervening-mutation replay.** The straight-line prefix (scalar/field assigns, array stores, map
+   puts, set add/remove) is replayed into the context, and **the actual arguments are translated *after* the
+   replay** — so `insert(m-1, a[m], v)` reads the post-swap `a[m]`. A non-straight-line prefix statement
+   (an `if`/loop) soundly *havocs* what it might write.
+
+**Outcome.** The closure-DFS precondition now correctly refutes; a `s.add(k); needs(k)` (where `needs` requires
+`k ∈ s`) verifies *because* the add is threaded, and refutes without it; `sumUp`/`bcount` recursive
+preconditions now discharge *soundly* (early-return narrowing) rather than vacuously.
+
+**What it revealed — the Phase-14 sort.** The fix exposed that the capstone sort's recursive precondition
+`insert(m-1, a[m], v)` had been passing **vacuously** (the `m == m-1` conflation). The *sound* obligation —
+proving the swap preserves the sorted prefix **and** establishes the new tight `hi`-bound, a two-quantifier
+proof over a nested-store array — is valid (checked by hand) but **beyond Z3's e-matching here** (it times out;
+the trigger cliff). So under sound checking the sort verifies its **postcondition (sorted ∧ permutation) and
+termination**, while its recursive **call-site precondition** is now a loud "could not decide". This is the
+honest state, and the right one for a tool whose identity is *loud, sound-within-the-fragment*: a vacuous pass
+is exactly the silent unsoundness it claims not to have. Discharging that precondition — a user-supplied
+instantiation hint or a helper lemma (roadmap Phase 8b) — is the follow-on to restore the sort to fully green.
+
+**Still not threaded (sound, documented):** a *non-immediate* preceding call's `@Modifies` effect (only the
+immediately-preceding call's `@Ensures` is assumed), and a call nested as an *argument* of another call (no
+path step to anchor the replay) — both fall back to the conservative entry-state context.
 
 ## Non-goals
 

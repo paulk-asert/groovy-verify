@@ -359,10 +359,17 @@ class VerifyHarness {
                        @Ensures({ a.count(v) == old.a.count(v) })
                        void copy(int i, int j, int v) { a[i] = a[j] }
                    }''')],
-        // ---------- Phase 14: the verified sort — sorted AND a permutation, soundly ----------
+        // ---------- Phase 14: the sort — sorted AND a permutation ----------
         // insert threads a ghost upper bound `hi` (the recursion passes the pivot a[m] as the new,
         // tight bound), a ghost count value `v` (permutation), and frames the suffix it doesn't touch.
-        [group: 'P14 sort', name: 'insertion sort: sorted AND permutation', ok: true,
+        // The @Ensures (sorted ∧ permutation) and termination both verify; the ONE obligation the solver
+        // cannot discharge under sound call-site checking (Phase 24) is insert's *recursive precondition*
+        // at `insert(m-1, a[m], v)` — proving the swap preserves the prefix invariant *and* the new
+        // `hi`-bound is a two-quantifier proof over a nested-store array that Z3 times out on (the trigger
+        // cliff; it is valid, just beyond the solver here). Before Phase 24 this passed *vacuously* via a
+        // recursive-call name-conflation; the sound check now reports it as a loud "could not decide".
+        [group: 'P14 sort', name: 'insertion sort: recursive precondition is could-not-decide',
+         expect: 'Could not decide precondition of insert',
          src: tc('''class C {
                        int[] a
                        @Requires({ 0 <= m && m < a.length &&
@@ -1471,6 +1478,56 @@ class VerifyHarness {
                         @Modifies({ this.visited })
                         @Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
                         void mark(int u) { visited.add(u) }
+                    }''')],
+        // Phase 24 (call-site soundness): a recursive closure-threading DFS now REFUTES at the recursive
+        // call. After `visited.add(u)`, the callee's closure precondition is checked against the post-add
+        // set (closure broken at u), not the entry set. Before the fix this passed *spuriously* (the
+        // intervening mutation wasn't threaded, and the formal/caller `u` were conflated).
+        [group: 'P24 call-site', name: 'closure precondition is checked post-mutation', expect: 'Cannot prove precondition',
+         src: tc('''class C {
+                        Map<Integer,Integer> next
+                        Set<Integer> visited
+                        int n
+                        @Requires({ 0 <= u && u < n &&
+                                    (0..<n).every { 0 <= next[it] && next[it] < n } &&
+                                    (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                        @Modifies({ this.visited })
+                        @Decreases({ n - Sets.count(visited, n) })
+                        @Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                        void visit(int u) {
+                            if (!(u in visited) && Sets.count(visited, n) < n) {
+                                visited.add(u)
+                                visit(next[u])
+                            }
+                        }
+                    }''')],
+        // A straight-line mutation before a call is threaded: needs(s, k) requires `k in s`, and
+        // `s.add(k)` right before the call establishes it — verified only because the add is now replayed.
+        [group: 'P24 call-site', name: 'mutation before call establishes precondition', ok: true,
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ k in s })
+                        void needs(int k) { }
+                        @Modifies({ this.s })
+                        void go(int k) { s.add(k); needs(k) }
+                    }''')],
+        // Soundness: without the add, the precondition isn't established → refuted (the threading is precise,
+        // not vacuous).
+        [group: 'P24 call-site', name: 'no mutation, precondition unmet', expect: 'Cannot prove precondition',
+         src: tc('''class C { Set<Integer> s
+                        @Requires({ k in s })
+                        void needs(int k) { }
+                        void go(int k) { needs(k) }
+                    }''')],
+        // Early-return narrowing: `if (k <= 0) return` before the call supplies `k > 0`, so callee's
+        // @Requires({ k > 0 }) holds — a fact PathFacts (enclosing-if only) could not provide.
+        [group: 'P24 call-site', name: 'early-return narrows the path', ok: true,
+         src: tc('''class C {
+                        @Requires({ k > 0 })
+                        static int pos(int k) { k }
+                        static int f(int k) {
+                            if (k <= 0) return 0
+                            return pos(k)
+                        }
                     }''')],
     ]
 

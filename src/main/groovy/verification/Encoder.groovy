@@ -265,6 +265,19 @@ class Encoder {
         v
     }
 
+    /** Map analogue of {@link #havocArray}: re-bind a map name's value array and key-set to fresh ones. */
+    void havocMap(String name) {
+        putMapVals(name, session.arrayVar(mapValsKey(name) + '$havoc$' + (havocCounter++)))
+        putMapKeys(name, session.setVar(mapKeysKey(name) + '$havoc$' + (havocCounter++)))
+    }
+
+    /** Re-bind a receiver's size oracle to a fresh, unconstrained {@code >= 0} integer. */
+    void havocSize(String name) {
+        Object v = session.intVar(name + '.size$havoc$' + (havocCounter++))
+        session.assertExpr(session.ge(v, session.intLit(0L)))
+        sizeEnv.put(name + '.size', v)
+    }
+
     /** Membership {@code x ∈ s}, over a characteristic-array set handle: {@code (select s x) == 1}. */
     Object member(Object setHandle, Object elem) {
         session.eq(session.select(setHandle, elem), session.intLit(1L))

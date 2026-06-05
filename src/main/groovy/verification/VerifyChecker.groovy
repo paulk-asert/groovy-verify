@@ -48,6 +48,7 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.ast.stmt.ThrowStatement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.syntax.Types
@@ -1648,42 +1649,15 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = mkEncoder(session)
 
-            // 1. Translate each actual-argument expression into an SMT
-            //    handle, sharing the encoder's env so a free variable
-            //    referenced by the argument is the same SMT var as one
-            //    referenced by the path condition.
             Map<String, Object> formalBindings = [:]
             // Reference-typed formals bound to a named actual: candidates for
             // tying the size/nullity oracles across the boundary (see below).
             Map<String, String> oracleActuals = [:]
-            for (int i = 0; i < formals.length; i++) {
-                Object argHandle = enc.translate(argExprs[i])
-                if (argHandle == null) {
-                    addStaticTypeError(
-                        Reporter.formatSkipped(target.name,
-                            "actual argument '${argExprs[i].text}' is outside fragment"),
-                        callExpr as ASTNode)
-                    return
-                }
-                // Bind the formal to a named SMT variable pinned to the
-                // actual argument, rather than to the argument handle
-                // directly. This guarantees the parameter shows up in
-                // any counterexample model (Dafny-style "x = -1"), even
-                // when the actual argument is a bare literal.
-                Object formalVar = session.intVar(formals[i].name)
-                session.assertExpr(session.eq(formalVar, argHandle))
-                formalBindings[formals[i].name] = formalVar
 
-                // Record reference-typed formals bound to a named actual. The
-                // size/nullity oracles are tied *after* the contract is
-                // translated (below), so we tie only the oracles the contract
-                // actually uses — minting an unused `n.size` would pollute the
-                // counterexample. Primitives have no size/nullity to tie.
-                if (argExprs[i] instanceof VariableExpression &&
-                    !ClassHelper.isPrimitiveType(formals[i].type)) {
-                    oracleActuals[formals[i].name] = ((VariableExpression) argExprs[i]).name
-                }
-            }
+            // The context (1b–2c) is built FIRST, against the caller's entry state, then the prefix is
+            // replayed to the call site; only THEN are the actual arguments translated (step 1, below),
+            // so an argument like `a[m]` reads the post-mutation array. This ordering — plus fresh callee
+            // formals — is what makes a precondition over mutated state (or a recursive self-call) sound.
 
             // 1b. Assume the *enclosing* method's own @Requires, if any. A
             //     precondition is a given throughout the method body, so it may
@@ -1728,13 +1702,52 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
             }
 
-            // NOTE: a known gap (roadmap Phase 23, "obstacle 3") — this does not thread intervening
-            // straight-line body mutations that run before the call, so a precondition over a *mutated*
-            // collection's contents is checked at the entry state, not the state at the call. Fixing it is
-            // coupled (fresh callee formals to avoid recursive name-conflation; early-return path narrowing;
-            // call-state vs entry-state; re-validating the Phase-14 sort) — a call-site-verification rebuild,
-            // not a localized patch. Latent in the shipped fragment: no in-fragment precondition references
-            // mutated collection contents.
+            // 2c. Early-return path narrowing: an `if (cond) return/throw` that *precedes* this call on its
+            //     path means `cond` was false when we got here. Such a guard is not an *enclosing* `if`, so
+            //     PathFacts misses it — yet it is a definite fact (e.g. `sumUp(n-1)` after `if (n==0) return 0`
+            //     needs ¬(n==0) to show `n-1 >= 0`). Without it, fresh formals would leave these recursive
+            //     preconditions unprovable (they pass vacuously today only via the name-conflation above).
+            if (currentMethod != null && callExpr.lineNumber > 0) {
+                Statement encBody = (Statement) currentMethod.getNodeMetaData(
+                    ContractExpansionTransform.ORIGINAL_BODY_KEY)
+                if (encBody == null) encBody = currentMethod.code
+                if (encBody != null) {
+                    for (Expression g : earlyReturnGuards(encBody, callExpr.lineNumber, callExpr.columnNumber)) {
+                        Object c = enc.translate(g)
+                        if (c != null) session.assertExpr(session.not(c))
+                    }
+                    // 2d. Thread the intervening straight-line body mutations to the call site, so both the
+                    //     precondition and the actual arguments (step 1, next) see the state *at the call*.
+                    try {
+                        replayPrefix(prefixStatements(encBody, callExpr.lineNumber, callExpr.columnNumber), enc, session)
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+
+            // 1. Translate each actual-argument expression — now against the post-replay state — and pin a
+            //    FRESH formal to it. The formal must be distinct from any caller variable of the same name:
+            //    on a recursive self-call (`visit(next[u])`) the callee formal `u` and the caller `u` would
+            //    otherwise be the same constant, asserting the garbled `u == next[u]` (or `n == n-1` for
+            //    `sumUp(n-1)`) and checking the precondition in a corrupt/vacuous context. The `#arg` keeps
+            //    the fresh symbol out of the displayed counterexample (which filters `#`).
+            for (int i = 0; i < formals.length; i++) {
+                Object argHandle = enc.translate(argExprs[i])
+                if (argHandle == null) {
+                    addStaticTypeError(
+                        Reporter.formatSkipped(target.name,
+                            "actual argument '${argExprs[i].text}' is outside fragment"),
+                        callExpr as ASTNode)
+                    return
+                }
+                Object formalVar = session.intVar(formals[i].name + '#arg' + (havocCounter++))
+                session.assertExpr(session.eq(formalVar, argHandle))
+                formalBindings[formals[i].name] = formalVar
+                if (argExprs[i] instanceof VariableExpression &&
+                    !ClassHelper.isPrimitiveType(formals[i].type)) {
+                    oracleActuals[formals[i].name] = ((VariableExpression) argExprs[i]).name
+                }
+            }
 
             // 3. Translate the contract and assert its NEGATION. We're
             //    asking: is there a model where the path is satisfiable
@@ -1996,6 +2009,189 @@ class VerifyChecker extends TypeCheckingExtension {
     private static boolean spans(Statement st, int tl, int tc) {
         cmp(st.lineNumber, st.columnNumber, tl, tc) <= 0 &&
             cmp(tl, tc, st.lastLineNumber, st.lastColumnNumber) <= 0
+    }
+
+    /**
+     * The conditions of {@code if (cond) <terminating>} statements that are *preceding siblings* of the call
+     * at {@code (tl, tc)} — at any enclosing block level. Reaching the call means each such {@code cond} was
+     * false, so the caller asserts their negations (the early-return path narrowing PathFacts can't supply,
+     * since these are not enclosing ifs). "Terminating" = the then-branch always returns/throws and there is
+     * no else.
+     */
+    private static List<Expression> earlyReturnGuards(Statement body, int tl, int tc) {
+        List<Expression> out = new ArrayList<Expression>()
+        try { collectEarlyReturns(body, tl, tc, out) } catch (Throwable ignored) {}
+        out
+    }
+
+    private static boolean collectEarlyReturns(Statement st, int tl, int tc, List<Expression> out) {
+        if (st instanceof BlockStatement) {
+            for (Statement child : ((BlockStatement) st).statements) {
+                if (spans(child, tl, tc)) { collectEarlyReturns(child, tl, tc, out); return true }
+                if (child instanceof IfStatement) {
+                    IfStatement ifs = (IfStatement) child
+                    boolean noElse = ifs.elseBlock == null || ifs.elseBlock instanceof EmptyStatement
+                    if (noElse && alwaysExits(ifs.ifBlock)) out.add(ifs.booleanExpression)
+                }
+            }
+            return false
+        }
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            int before = out.size()
+            if (ifs.ifBlock != null && collectEarlyReturns(ifs.ifBlock, tl, tc, out)) return true
+            while (out.size() > before) out.remove(out.size() - 1)
+            if (ifs.elseBlock != null && collectEarlyReturns(ifs.elseBlock, tl, tc, out)) return true
+            while (out.size() > before) out.remove(out.size() - 1)
+            return false
+        }
+        return false
+    }
+
+    /** True if every path through {@code s} ends by returning or throwing. */
+    private static boolean alwaysExits(Statement s) {
+        if (s instanceof ReturnStatement || s instanceof ThrowStatement) return true
+        if (s instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) s).statements
+            return !ss.isEmpty() && alwaysExits(ss.get(ss.size() - 1))
+        }
+        if (s instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) s
+            return ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement) &&
+                   alwaysExits(ifs.ifBlock) && alwaysExits(ifs.elseBlock)
+        }
+        false
+    }
+
+    /**
+     * The straight-line statements that definitely execute before the call at {@code (tl, tc)} on its path:
+     * the siblings before the call's containing statement, at each nesting level down to it. Enclosing
+     * {@code if} conditions are excluded (they are the path facts / early-return guards, asserted separately).
+     */
+    private static List<Statement> prefixStatements(Statement body, int tl, int tc) {
+        List<Statement> out = new ArrayList<Statement>()
+        try { collectPrefix(body, tl, tc, out) } catch (Throwable ignored) {}
+        out
+    }
+
+    private static boolean collectPrefix(Statement st, int tl, int tc, List<Statement> out) {
+        if (st instanceof BlockStatement) {
+            for (Statement child : ((BlockStatement) st).statements) {
+                if (spans(child, tl, tc)) { collectPrefix(child, tl, tc, out); return true }
+                out.add(child)
+            }
+            return false
+        }
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            int before = out.size()
+            if (ifs.ifBlock != null && collectPrefix(ifs.ifBlock, tl, tc, out)) return true
+            while (out.size() > before) out.remove(out.size() - 1)
+            if (ifs.elseBlock != null && collectPrefix(ifs.elseBlock, tl, tc, out)) return true
+            while (out.size() > before) out.remove(out.size() - 1)
+            return false
+        }
+        return false
+    }
+
+    /**
+     * Replay the intervening prefix into the encoder so a callee's precondition — and the call's actual
+     * arguments — are discharged against the state *at the call*. Straight-line mutations (scalar/field
+     * assigns, array stores, map puts, set add/remove) are threaded precisely; a standalone call is left to
+     * the preceding-call {@code @Ensures} path; anything else (an {@code if}/loop in the prefix, an
+     * unmodelable rhs) soundly *havocs* every location it could write — unknown, never wrongly at entry value.
+     */
+    private void replayPrefix(List<Statement> prefix, Encoder enc, SmtSession s) {
+        for (Statement st : prefix) {
+            if (st instanceof ExpressionStatement && replayMutation(((ExpressionStatement) st).expression, enc, s)) {
+                continue
+            }
+            if (standaloneCallOf(st) != null) continue
+            for (String loc : modifiedLocations(st)) havocLocation(enc, loc)
+        }
+    }
+
+    /** Apply one straight-line mutation expression to the encoder; false if it is not one we model precisely. */
+    private boolean replayMutation(Expression e, Encoder enc, SmtSession s) {
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            if (de.leftExpression instanceof VariableExpression) {
+                String name = ((VariableExpression) de.leftExpression).name
+                Object rhs = enc.translate(de.rightExpression)
+                if (rhs != null) enc.bind(name, rhs) else havocLocation(enc, name)
+                return true
+            }
+            return false
+        }
+        if (e instanceof MethodCallExpression) {
+            return applySetMutation(s, enc, e) || applyMapPut(s, enc, e)
+        }
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+            BinaryExpression be = (BinaryExpression) e
+            Expression lhs = be.leftExpression
+            if (lhs instanceof VariableExpression) {
+                String name = ((VariableExpression) lhs).name
+                Object rhs = enc.translate(be.rightExpression)
+                if (rhs != null) enc.bind(name, rhs) else havocLocation(enc, name)
+                return true
+            }
+            if (lhs instanceof PropertyExpression &&
+                ((PropertyExpression) lhs).objectExpression instanceof VariableExpression &&
+                ((VariableExpression) ((PropertyExpression) lhs).objectExpression).name == 'this') {
+                String name = ((PropertyExpression) lhs).propertyAsString
+                Object rhs = enc.translate(be.rightExpression)
+                if (rhs != null) enc.bind(name, rhs) else havocLocation(enc, name)
+                return true
+            }
+            if (lhs instanceof BinaryExpression &&
+                ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                ((BinaryExpression) lhs).leftExpression instanceof VariableExpression) {
+                String name = ((VariableExpression) ((BinaryExpression) lhs).leftExpression).name
+                Object idx = enc.translate(((BinaryExpression) lhs).rightExpression)
+                Object val = enc.translate(be.rightExpression)
+                if (idx == null || val == null) { havocLocation(enc, name); return true }
+                if (currentMapNames.contains(name)) doMapPut(s, enc, name, idx, val)
+                else enc.bindArray(name, s.store(enc.arrayFor(name), idx, val))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** Havoc every representation a name might have (sound when its type is unknown at the havoc site). */
+    private void havocLocation(Encoder enc, String name) {
+        if (currentSetNames.contains(name)) { enc.havocSet(name); return }
+        if (currentMapNames.contains(name)) { enc.havocMap(name); return }
+        enc.havoc(name); enc.havocArray(name); enc.havocSize(name)
+    }
+
+    /** Caller-visible locations a statement may write (assignment LHS, or a set/map mutation receiver). */
+    private static Set<String> modifiedLocations(Statement st) {
+        Set<String> out = new HashSet<String>()
+        try {
+            st.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitBinaryExpression(BinaryExpression be) {
+                    if (be.operation.type == Types.ASSIGN) {
+                        String w = writtenLocation(be.leftExpression)
+                        if (w != null) out.add(w)
+                    }
+                    super.visitBinaryExpression(be)
+                }
+                @Override
+                void visitMethodCallExpression(MethodCallExpression mce) {
+                    String m = mce.methodAsString
+                    if ((m == 'add' || m == 'remove' || m == 'put') &&
+                        mce.objectExpression instanceof VariableExpression) {
+                        out.add(((VariableExpression) mce.objectExpression).name)
+                    }
+                    super.visitMethodCallExpression(mce)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        out
     }
 
 

@@ -153,11 +153,19 @@ and a null receiver exact, solver-constrained array elements pinned as literals
 (`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
 (`new int[3]`).
 
-**Putting it all together — a fully verified sort.** Everything above composes into one result: a
-recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves
-of sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in
-place under a sound `@Modifies` frame (the checker *havocs* the array across each call and reframes it
-from the callee's `@Ensures`, so nothing is assumed unchanged for free).
+**Putting it all together — an in-place sort.** Everything above composes into one result: a
+recursive in-place insertion sort whose **postcondition** is proven **sorted *and* a permutation of its
+input** — the two halves of sorting correctness — with no loops; the recursion *is* the proof, and the
+array is mutated in place under a sound `@Modifies` frame (the checker *havocs* the array across each call
+and reframes it from the callee's `@Ensures`, so nothing is assumed unchanged for free).
+
+> **Honesty note (Phase 24).** The postcondition (sorted ∧ permutation) and termination verify. The one
+> obligation the solver cannot discharge is `insert`'s *recursive precondition* at `insert(m-1, a[m], v)`:
+> under sound call-site checking it must prove the swap preserves the sorted prefix *and* the new tight
+> `hi`-bound — a two-quantifier proof over a nested-store array that Z3 times out on (valid, but past its
+> e-matching). It is reported as a loud "could not decide". (Before Phase 24 it passed *vacuously*, via a
+> recursive-call name-conflation; the call-site soundness fix corrected that.) A user-supplied instantiation
+> hint / helper lemma is the follow-on to restore it.
 
 Two ghost parameters carry the proof, both ordinary ints the runtime ignores: `hi` is an upper
 bound on the active elements (the recursion passes the pivot `a[m]` as the new, tight bound — that
@@ -195,10 +203,10 @@ void sort(int n, int hi, int v) {
 }
 ```
 
-Both halves are checked, not assumed: a "sort" that zeroed the array fails the permutation clause,
-and one that left elements out of order fails the sortedness clause — bounded quantifiers, induction
-(`@Decreases`), the multiset `count` law, `old` pre-state, and sound `@Modifies` framing, in one
-proof.
+Both *postcondition* halves are checked, not assumed: a "sort" that zeroed the array fails the permutation
+clause, and one that left elements out of order fails the sortedness clause — bounded quantifiers, induction
+(`@Decreases`), the multiset `count` law, `old` pre-state, and sound `@Modifies` framing, in one proof
+(modulo the recursive-precondition could-not-decide noted above).
 
 **Finite sets — membership and a cardinality law.** A `Set<Integer>` is modelled as a characteristic
 array (`x in s` is a membership read; `s.add(x)` is a store threaded through the body), so a method's
@@ -415,7 +423,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Pre-state `old` (field & array-content snapshots)** | `old.count`, `old.a[i]` in `@Ensures` | ✅ Phase 11 |
 | **Multiset / `count` preservation (per-store law)** | `a.count(v) == old.a.count(v)` | ✅ Phase 12 |
 | **`@Modifies` framing — frame-check + caller-side havoc & sound inter-proc `old`** | `@Modifies({ this.a })` | ✅ Phase 13 |
-| **Fully verified in-place sort — *sorted ∧ permutation*** | recursive insertion sort under sound `@Modifies` | ✅ Phase 14 |
+| **In-place sort — *sorted ∧ permutation* postcondition + termination** | recursive insertion sort under sound `@Modifies` (its recursive *precondition* is a could-not-decide under Phase 24 — see below) | ✅ Phase 14 / ⚠️ Phase 24 |
 | **Class `@Invariant` — instance methods (assume on entry, prove on exit, super-walked)** | `@Invariant({ count >= 0 })` on a class | ✅ Phase 15a |
 | **Boxed scalars & index-accessed collections** | `Integer`, `Integer[]`, `List<Integer>` via `xs[i]` / `xs.size()` | ✅ (structural) |
 | **Finite sets — membership, add/remove, cardinality law** | `x in s`, `s.contains(x)`, `s.add(x)`, `s.size()` over `Set<Integer>` | ✅ Phase 16 |
@@ -427,9 +435,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`Sets.count(s,k)` primitive + per-add law** | a set mutation threads the bounded count: a fresh in-domain `add` raises `Sets.count(s,k)` by one | ✅ Phase 21 |
 | **Full-characterization `count==k ⟺ covers [0,k)` — and end-to-end DFS unconditional coverage** | `Sets.count(s,k)==k ⇒ u in s`; a cardinality-terminating DFS proves `start ∈ visited` with no fuel bound | ✅ Phase 22 |
 | **Completeness — closure ⇒ successor covered (the inductive step)** | `closure ∧ u∈visited ⇒ next[u]∈visited`; and `mark` breaks closure (boundary) | ✅ Phase 23 (one step) |
+| **Call-site precondition soundness** | intervening mutations threaded, fresh callee formals, early-return narrowing — a precondition is checked at the *state at the call* | ✅ Phase 24 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (full: all reachable visited) | — | ⏳ later (3 mapped obstacles: recursive-defs in contracts; the frontier/stack invariant; a call-site intervening-mutation soundness fix) |
+| DFS *completeness* (full: all reachable visited) | — | ⏳ later (recursive-defs in contracts; the frontier/stack invariant) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
