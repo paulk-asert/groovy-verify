@@ -1507,6 +1507,53 @@ mixing (e.g. `Map<K, Set<V>>` nesting) is not yet wired; non-Int element domains
 and Enum (records, value classes, arbitrary objects) fall through to the default-Int path and emit a
 skip. None of these need new theory — just additional collect/dispatch wiring on the same pattern.
 
+## Phase 28 — `EnumClass.values().length` folds to a ground int  *(shipped)*
+
+**A small piece of normalisation that unlocks ground state-coverage proofs.** `Color.values().length`
+(and the equivalent `.size()` method form) is a syntactically uniform way to spell an enum's domain
+size, but it reached the encoder as a `MethodCallExpression` whose return type isn't modelled — so
+contracts like `@Requires({ k < Color.values().length })` skipped as outside fragment. This phase
+folds the expression to its literal value at translate time, the same accelerator pattern as
+Phase 8a's closed-constant evaluation, scoped narrowly to the one shape.
+
+**How it works.** Both AST shapes are recognised:
+
+- **Post-resolution body**: `PropertyExpression(MethodCallExpression(ClassExpression(Color),
+  "values", []), "length")` — the encoder has direct access to the `ClassNode`, counts enum
+  constants by walking the type's fields and filtering on the JVM {@code ACC_ENUM} modifier bit
+  (`0x4000`), emits an `intLit`.
+- **Re-parsed contract**: `PropertyExpression(MethodCallExpression(VariableExpression("Color"),
+  "values", []), "length")` — the receiver name has no resolved type, so `VerifyChecker` walks the
+  declaring class's module in `beforeVisitMethod`, builds a `Map<String, Integer>` of enum simple
+  names → constant counts (both the source-level `Color` key and the inner-class-stripped form for
+  nested enums), and hands it to the encoder.
+
+The `ACC_ENUM` filter is the load-bearing detail: Groovy synthesises additional same-typed
+`MIN_VALUE` and `MAX_VALUE` fields on every enum, so counting "static fields whose declared type
+matches the enum class" would inflate a 3-constant `Color` to 5. The JVM modifier flag is set only
+on real enum constants.
+
+```groovy
+class C {
+    enum Color { RED, BLUE, GREEN }
+    @Ensures({ result == 3 })
+    static int numColors() { Color.values().length }                          // verifies
+    @Requires({ k < Color.values().length })
+    @Ensures({ k <= 2 })
+    static int safe(int k) { k }                                              // verifies
+    @Ensures({ result == 4 })                                                  // refutes
+    static int wrong() { Color.values().length }
+}
+```
+
+**What it unlocks (and what it doesn't).** The folded literal is usable anywhere an `int` literal is
+— upper bound of a bounded range (`(0..<Color.values().length).every { … }`), `Sets.bounded(s, n)`
+over an Int-element set, ground constraint in a postcondition. What it *doesn't* immediately give:
+`Sets.bounded` over a `Set<Color>` (Phase 27's Int-only restriction on that predicate still applies),
+or recognition of enums defined in *other* modules (only the current module's enums are walked).
+Cross-module enum support would extend `collectEnumDomainSizes` to consult the compilation unit's
+classloader; the foundation is there.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

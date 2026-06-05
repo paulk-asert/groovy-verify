@@ -123,6 +123,15 @@ class Encoder {
      * sort-mismatched {@code (Int eq String!Sort)}.
      */
     private final Map<String, ClassNode> scalarTypes
+    /**
+     * Phase 28 — same-module enum classes, mapped from simple name (and inner-class-stripped
+     * name) to value count. Used by {@link #enumValuesCountFor} to fold a
+     * {@code Color.values().length} (or {@code .size()}) re-parsed-contract expression to the
+     * literal constant count when the receiver appears as an unresolved {@link VariableExpression}.
+     * The post-resolution {@link ClassExpression} shape doesn't need this map — the count comes
+     * from walking the type's fields directly.
+     */
+    private final Map<String, Integer> enumDomainSizes
     /** Set handles whose {@code card >= 0} has already been asserted (mint-once, like the size oracle). */
     private final Set<Object> cardConstrained = new HashSet<Object>()
     /**
@@ -152,13 +161,15 @@ class Encoder {
             Map<String, ClassNode> setElementTypes = null,
             Map<String, ClassNode[]> mapTypes = null,
             Map<String, ClassNode> listElementTypes = null,
-            Map<String, ClassNode> scalarTypes = null) {
+            Map<String, ClassNode> scalarTypes = null,
+            Map<String, Integer> enumDomainSizes = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
         this.mapTypes = mapTypes != null ? mapTypes : new HashMap<String, ClassNode[]>()
         this.listElementTypes = listElementTypes != null ? listElementTypes : new HashMap<String, ClassNode>()
         this.scalarTypes = scalarTypes != null ? scalarTypes : new HashMap<String, ClassNode>()
+        this.enumDomainSizes = enumDomainSizes != null ? enumDomainSizes : new HashMap<String, Integer>()
     }
 
     /**
@@ -215,6 +226,46 @@ class Encoder {
      * of {@link #translateInSort}. Computed lazily and cached on first use.
      */
     private Set<String> knownEnumNames = null
+    /**
+     * Phase 28 — if {@code e} is the shape {@code <EnumClass>.values()} (no arguments), return the
+     * enum's constant count; null otherwise. Two AST shapes accepted: ClassExpression receiver
+     * (post-resolution body) — count by walking the type's static-final fields; and
+     * VariableExpression receiver (re-parsed contract) — look up the name in
+     * {@link #enumDomainSizes} pre-populated by VerifyChecker. Lets a contract like
+     * {@code @Requires({ k < Color.values().length })} fold to {@code k < 3} at translate time.
+     */
+    private Integer enumValuesCountFor(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.methodAsString != 'values') return null
+        if (!argList(mce).isEmpty()) return null
+        Expression recv = mce.objectExpression
+        if (recv instanceof ClassExpression) {
+            ClassNode t = ((ClassExpression) recv).type
+            if (t != null && (t.isEnum() || isEnumLikeType(t))) {
+                int count = countEnumConstants(t)
+                return count > 0 ? count : null
+            }
+        }
+        if (recv instanceof VariableExpression) {
+            return enumDomainSizes.get(((VariableExpression) recv).name)
+        }
+        null
+    }
+
+    /**
+     * Count the actual enum constants of {@code t} — fields with the JVM {@code ACC_ENUM}
+     * modifier bit set. Filters out synthetic same-type fields Groovy adds (notably
+     * {@code MIN_VALUE} / {@code MAX_VALUE}) and the array-typed {@code $VALUES}.
+     */
+    private static int countEnumConstants(ClassNode t) {
+        int count = 0
+        for (org.codehaus.groovy.ast.FieldNode f : t.fields) {
+            if ((f.modifiers & 0x4000) != 0) count++   // 0x4000 = ACC_ENUM
+        }
+        count
+    }
+
     private boolean isKnownEnumName(String name) {
         if (knownEnumNames == null) {
             knownEnumNames = new HashSet<String>()
@@ -727,6 +778,13 @@ class Encoder {
             if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
                 return sizeOf(((VariableExpression) obj).name)
             }
+            // Phase 28 — `Color.values().length` folds to the literal enum-constant count, so a
+            // contract like `Sets.bounded(s, Color.values().length)` or a body returning the count
+            // becomes ground.
+            if (prop == 'length') {
+                Integer cnt = enumValuesCountFor(obj)
+                if (cnt != null) return session.intLit(cnt.longValue())
+            }
             // Phase 27 — enum literal in a non-expected-sort position (e.g. the RHS of
             // `xs[k] == Color.RED` where the encoder doesn't push down an expected sort). Two
             // shapes: PropertyExpression(ClassExpression(Color), RED) when the type has been
@@ -933,6 +991,13 @@ class Encoder {
         if ((m == 'every' || m == 'any') && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
+        }
+
+        // Phase 28 — `Color.values().size()` (the method-form of `.length`) folds to the literal
+        // enum-constant count, same as the property form above.
+        if (m == 'size' && args.isEmpty()) {
+            Integer cnt = enumValuesCountFor(recv)
+            if (cnt != null) return session.intLit(cnt.longValue())
         }
 
         // Map receivers: m.get(k) / m[k] read the value array; containsKey/size/isEmpty go through the

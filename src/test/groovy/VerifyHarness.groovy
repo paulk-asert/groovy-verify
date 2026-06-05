@@ -1057,6 +1057,56 @@ class VerifyHarness {
                         C(int m) { max = m; count = m + 1 }
                     }''')],
 
+        // ---------- Phase 28: enum.values().length folds to a ground int ----------
+        // Body context (post-resolution ClassExpression): the method returns the count, the
+        // @Ensures matches the folded literal.
+        [group: 'P28 enum.values', name: 'body returns Color.values().length, verifies', ok: true,
+         src: tc('''class C {
+                        enum Color { RED, BLUE, GREEN }
+                        @Ensures({ result == 3 })
+                        static int numColors() { Color.values().length }
+                    }''')],
+        // Soundness: wrong expected count refutes.
+        [group: 'P28 enum.values', name: 'wrong count refuted',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        enum Color { RED, BLUE, GREEN }
+                        @Ensures({ result == 4 })
+                        static int numColors() { Color.values().length }
+                    }''')],
+        // .size() form folds the same way as .length — in both body and contract positions.
+        [group: 'P28 enum.values', name: 'size() form folds in body', ok: true,
+         src: tc('''class C {
+                        enum Color { RED, BLUE, GREEN }
+                        @Ensures({ result == 3 })
+                        static int numColors() { Color.values().size() }
+                    }''')],
+        [group: 'P28 enum.values', name: 'size() form folds in contract', ok: true,
+         src: tc('''class C {
+                        enum Color { RED, BLUE, GREEN }
+                        @Requires({ k < Color.values().size() })
+                        @Ensures({ k <= 2 })
+                        static int safe(int k) { k }
+                    }''')],
+        // Contract-side use (re-parsed VariableExpression receiver). Looks the enum up by name in
+        // the enumDomainSizes map populated by VerifyChecker, folds to 3.
+        [group: 'P28 enum.values', name: '@Requires uses folded count', ok: true,
+         src: tc('''class C {
+                        enum Color { RED, BLUE, GREEN }
+                        @Requires({ k < Color.values().length })
+                        @Ensures({ k <= 2 })
+                        static int safe(int k) { k }
+                    }''')],
+        // Bounded iteration over the enum domain: the upper bound folds to a literal, so the
+        // every-quantifier's range is concrete.
+        [group: 'P28 enum.values', name: 'bounded iteration over enum domain', ok: true,
+         src: tc('''class C {
+                        enum Color { RED, BLUE, GREEN }
+                        @Requires({ (0..<Color.values().length).every { it >= 0 } })
+                        @Ensures({ result == 3 })
+                        static int numColors() { Color.values().length }
+                    }''')],
+
         // ---------- Phase 16: finite sets (characteristic array + cardinality law) ----------
         // Membership assumed entails membership — `x in s` over a Set parameter (the read side).
         [group: 'P16 sets', name: 'membership assumed entails membership', ok: true,

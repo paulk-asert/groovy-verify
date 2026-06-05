@@ -146,6 +146,13 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
     /**
+     * Phase 28 — enum classes in the same module, mapped from source-level simple name to value
+     * count. Lets the encoder fold {@code Color.values().length} (and {@code .size()}) to the
+     * literal enum-constant count even in re-parsed contracts where {@code Color} is just a
+     * {@link VariableExpression} (no resolved type information).
+     */
+    private Map<String, Integer> currentEnumDomainSizes = new HashMap<String, Integer>()
+    /**
      * The {@code k} bound expressions of every {@code Sets.count(_, k)} in the postcondition/measure being
      * discharged — the bcount per-add law (Phase 21) is asserted for each of these {@code k}s at every set
      * mutation, mirroring how {@link #countValueArgs} drives the per-store {@code count} law. Set per
@@ -156,7 +163,7 @@ class VerifyChecker extends TypeCheckingExtension {
     /** New Encoder wired with the current class's pure-function evaluator and set/map/list-typed names with element types. */
     private Encoder mkEncoder(SmtSession session) {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
-                    currentListElementTypes, currentScalarTypes)
+                    currentListElementTypes, currentScalarTypes, currentEnumDomainSizes)
     }
 
     /**
@@ -256,6 +263,41 @@ class VerifyChecker extends TypeCheckingExtension {
             if (isNonIntScalar(t)) out.put(f.name, t)
         }
         out
+    }
+
+    /**
+     * Phase 28 — enum classes visible from {@code node}'s module, mapped from simple name (and
+     * inner-class-stripped name) to value count. The Encoder uses this to fold
+     * {@code Color.values().length} to the literal constant count in re-parsed contracts where the
+     * receiver appears as an unresolved {@link VariableExpression}. Post-resolution body code has
+     * the {@link ClassExpression} receiver and works without this map.
+     */
+    private static Map<String, Integer> collectEnumDomainSizes(MethodNode node) {
+        Map<String, Integer> out = new LinkedHashMap<String, Integer>()
+        ClassNode dc = node.declaringClass
+        if (dc == null || dc.module == null) return out
+        for (ClassNode cn : dc.module.classes) {
+            if (!cn.isEnum()) continue
+            int count = countEnumConstants(cn)
+            if (count <= 0) continue
+            out.put(cn.nameWithoutPackage, count)
+            String simple = simpleEnumName(cn)   // strips C$ from C$Color → Color (nested-class case)
+            if (simple != cn.nameWithoutPackage) out.put(simple, count)
+        }
+        out
+    }
+
+    /**
+     * Count actual enum constants on a ClassNode by walking its fields for declarations with the
+     * JVM {@code ACC_ENUM} modifier bit set. Filters out the synthetic same-type fields Groovy
+     * adds (notably {@code MIN_VALUE}/{@code MAX_VALUE}) and the array-typed {@code $VALUES}.
+     */
+    private static int countEnumConstants(ClassNode t) {
+        int count = 0
+        for (FieldNode f : t.fields) {
+            if ((f.modifiers & 0x4000) != 0) count++   // 0x4000 = ACC_ENUM
+        }
+        count
     }
 
     /** True for non-Int scalar types we model under an uninterpreted Z3 sort: String, enums. */
@@ -694,6 +736,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentMapTypes = collectMapTypes(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
+        currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
@@ -788,6 +831,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
+            currentEnumDomainSizes = new HashMap<String, Integer>()
         }
     }
 

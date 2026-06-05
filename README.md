@@ -499,6 +499,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Recursive definitions in contracts** | a recursive `chain(u,d)`/`bcount(s,k)` carries its defining equation across a lemma boundary (shared symbol + bounded-depth eq) | ✅ Phase 25 |
 | **DFS establishes closure — the frontier/stack invariant** | recursion-stack `Set` ghost (push/pop), closed-except-on-stack ⇒ full closure when the stack empties | ✅ Phase 26 |
 | **Non-Int element domains — `String` and `Enum` across sets, maps, lists** | `Set<String>`/`Set<Color>`, `Map<String,Integer>`/`Map<Color,V>`, `List<String>`/`List<Color>`; `Color.RED in s`, `m["admin"]==5`, `xs[k]=="abc"`; counterexamples render the model value as a Groovy literal | ✅ Phase 27 |
+| **`EnumClass.values().length` / `.size()` folds to a ground int** | `@Requires({ k < Color.values().length })` becomes `k < 3` at translate time — usable as a literal in contracts, bounded-range upper bounds, and ground state-coverage proofs | ✅ Phase 28 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), `Map<K, Set<V>>` nesting | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
