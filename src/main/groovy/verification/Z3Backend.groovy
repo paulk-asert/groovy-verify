@@ -71,6 +71,32 @@ class Z3Session implements SmtSession {
     private final Map<String, FuncDecl> funcs = [:]
     private final Map<String, ArrayExpr> arrays = [:]
     private final Map<String, ArrayExpr> sets = [:]
+    /** Phase 27 — uninterpreted sorts keyed by source-level name (e.g. "String", "Color"). */
+    private final Map<String, Sort> sorts = [:]
+    /**
+     * Phase 27 — variables of an arbitrary sort, keyed by {@code name + ':' + sortName}. A
+     * {@code String} parameter {@code s} and a {@code Color} parameter {@code s} would otherwise
+     * collide; the sort tag disambiguates while keeping the displayed name clean.
+     */
+    private final Map<String, Expr> sortedVars = [:]
+    /**
+     * Phase 27 — interned literals keyed by {@code sortName + ':' + literalKey}. Each new mint
+     * within a sort gets pairwise-distinct assertions against every previously-minted constant
+     * of that sort (see {@link #sortLiteralsBySort}).
+     */
+    private final Map<String, Expr> sortedLits = [:]
+    /** All literals minted per sort, for the pairwise-distinct cascade in {@link #litOfSort}. */
+    private final Map<String, List<Expr>> sortLiteralsBySort = [:]
+    /**
+     * Reverse lookup: the const-name a non-Int literal was minted under (e.g.
+     * {@code "String!val_admin"}) → the source-level literal key ({@code "admin"}).
+     * Used in {@link #check} to map a model's non-Int value back to the literal it
+     * represents, populating {@link CheckResult#sortedCounterexample} (Phase 27
+     * step 9 — counterexample rendering for non-Int parameters).
+     */
+    private final Map<String, String> literalKeyByConstName = [:]
+    /** Phase 27 — arrays of arbitrary key/value sorts, keyed by {@code name + ':' + keySort + '->' + valSort}. */
+    private final Map<String, ArrayExpr> sortedArrays = [:]
 
     Z3Session(Context ctx, Solver solver) {
         this.ctx = ctx
@@ -84,6 +110,85 @@ class Z3Session implements SmtSession {
         IntExpr v = (IntExpr) ctx.mkIntConst(name)
         vars.put(name, v)
         v
+    }
+
+    // ---- Phase 27 — non-Int element sorts ---------------------------------------------------
+
+    @Override
+    Object intSort() {
+        ctx.getIntSort()
+    }
+
+    @Override
+    Object declareSort(String name) {
+        Sort cached = sorts.get(name)
+        if (cached != null) return cached
+        Sort s = ctx.mkUninterpretedSort(name)
+        sorts.put(name, s)
+        s
+    }
+
+    @Override
+    Object varOfSort(String name, Object sort) {
+        // Int parameters keep the existing intVar storage so model extraction (which iterates
+        // `vars`) still pins their values for counterexamples.
+        if (sort == ctx.getIntSort()) return intVar(name)
+        Sort sortHandle = (Sort) sort
+        String key = name + ':' + sortHandle.getName()
+        Expr cached = sortedVars.get(key)
+        if (cached != null) return cached
+        Expr v = ctx.mkConst(name, sortHandle)
+        sortedVars.put(key, v)
+        v
+    }
+
+    @Override
+    Object litOfSort(Object sort, String literalKey) {
+        if (sort == ctx.getIntSort()) {
+            // Int literals: parse the key as a long. The backend already exposes intLit for the
+            // common case; this branch keeps the interface uniform when the caller doesn't know
+            // statically whether the element sort is Int or uninterpreted.
+            return ctx.mkInt(Long.parseLong(literalKey))
+        }
+        Sort sortHandle = (Sort) sort
+        String sortName = sortHandle.getName().toString()
+        String key = sortName + ':' + literalKey
+        Expr cached = sortedLits.get(key)
+        if (cached != null) return cached
+        // Mint a fresh constant whose displayed name encodes both sort and literal, so a
+        // counterexample reading "String!val_admin" is traceable back to the source "admin".
+        String constName = sortName + '!val_' + literalKey
+        Expr v = ctx.mkConst(constName, sortHandle)
+        sortedLits.put(key, v)
+        literalKeyByConstName.put(constName, literalKey)   // reverse lookup for model rendering
+        // Lazy pairwise-distinct: assert the new constant is distinct from every previously-minted
+        // literal of this sort. Cumulative cost is O(n^2) per sort; fine for the dozens-of-literals
+        // scale typical for set/map element domains in a single compilation unit.
+        List<Expr> bucket = sortLiteralsBySort.get(sortName)
+        if (bucket == null) {
+            bucket = new ArrayList<Expr>()
+            sortLiteralsBySort.put(sortName, bucket)
+        }
+        for (Expr prior : bucket) {
+            solver.add((BoolExpr) ctx.mkNot(ctx.mkEq(v, prior)))
+        }
+        bucket.add(v)
+        v
+    }
+
+    @Override
+    Object arrayVarOfSort(String name, Object keySort, Object valSort) {
+        // Int->Int arrays continue to use the existing storage so the counterexample model walk
+        // (which iterates `arrays`) still pins their contents. Anything else lives in sortedArrays.
+        if (keySort == ctx.getIntSort() && valSort == ctx.getIntSort()) return arrayVar(name)
+        Sort k = (Sort) keySort
+        Sort v = (Sort) valSort
+        String key = name + ':' + k.getName() + '->' + v.getName()
+        ArrayExpr cached = sortedArrays.get(key)
+        if (cached != null) return cached
+        ArrayExpr arr = (ArrayExpr) ctx.mkConst(name, ctx.mkArraySort(k, v))
+        sortedArrays.put(key, arr)
+        arr
     }
 
     @Override
@@ -146,24 +251,40 @@ class Z3Session implements SmtSession {
         v
     }
 
-    private FuncDecl cardFn
+    /**
+     * Per-element-sort cardinality functions (Phase 27). A {@code Set<Int>}'s {@code card$Int} and a
+     * {@code Set<String>}'s {@code card$String!Sort} are distinct uninterpreted functions, since each
+     * takes a differently-sorted array. Keyed by the element sort's string name.
+     */
+    private final Map<String, FuncDecl> cardFnsByElemSort = [:]
     @Override
     Object setCard(Object set) {
-        if (cardFn == null) {
-            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
-            cardFn = ctx.mkFuncDecl('card$', [arrSort] as Sort[], ctx.getIntSort())
+        ArrayExpr arr = (ArrayExpr) set
+        Sort elemSort = arr.getSort().getDomain()
+        String key = elemSort.getName().toString()
+        FuncDecl fd = cardFnsByElemSort.get(key)
+        if (fd == null) {
+            Sort arrSort = ctx.mkArraySort(elemSort, ctx.getIntSort())
+            fd = ctx.mkFuncDecl('card$' + key, [arrSort] as Sort[], ctx.getIntSort())
+            cardFnsByElemSort.put(key, fd)
         }
-        ctx.mkApp(cardFn, (Expr) set)
+        ctx.mkApp(fd, (Expr) set)
     }
 
-    private FuncDecl bcountFn
+    /** Per-element-sort bounded-count functions (Phase 27, parallel structure to {@link #cardFnsByElemSort}). */
+    private final Map<String, FuncDecl> bcountFnsByElemSort = [:]
     @Override
     Object setCount(Object set, Object k) {
-        if (bcountFn == null) {
-            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
-            bcountFn = ctx.mkFuncDecl('bcount$', [arrSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        ArrayExpr arr = (ArrayExpr) set
+        Sort elemSort = arr.getSort().getDomain()
+        String key = elemSort.getName().toString()
+        FuncDecl fd = bcountFnsByElemSort.get(key)
+        if (fd == null) {
+            Sort arrSort = ctx.mkArraySort(elemSort, ctx.getIntSort())
+            fd = ctx.mkFuncDecl('bcount$' + key, [arrSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
+            bcountFnsByElemSort.put(key, fd)
         }
-        ctx.mkApp(bcountFn, (Expr) set, (Expr) k)
+        ctx.mkApp(fd, (Expr) set, (Expr) k)
     }
 
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
@@ -286,7 +407,38 @@ class Z3Session implements SmtSession {
                 if (ev instanceof IntNum) ce[name + '[' + k + ']'] = ((IntNum) ev).getInt64()
             }
         }
-        CheckResult.refuted(ce)
+        // Phase 27 step 9 — non-Int parameter / variable values from the model. A String parameter
+        // pinned to "admin" appears in the model as our minted constant `String!val_admin`; the
+        // const-name reverse lookup recovers the literal key "admin". A model value that doesn't
+        // match any of our minted constants (Z3 invented a fresh interpretation) is dropped — the
+        // renderer falls back to the default {@code ""} / {@code null}.
+        // Phase 27 step 9 — for each non-Int variable, check equality-under-model against every
+        // interned literal of the same sort. Z3 may assign the variable a synthetic constant
+        // (`String!val!1`) instead of one of our minted constants (`String!val_admin`); the
+        // model still satisfies the constraint that they're equal, which equality-evaluation
+        // recovers. Const-name string-matching alone misses these synthetic-name cases.
+        Map<String, String> sce = [:]
+        sortedVars.each { String key, Expr var ->
+            com.microsoft.z3.Sort varSort = var.getSort()
+            Expr mv = m.evaluate(var, false)
+            int vColon = key.indexOf(':')
+            String name = vColon >= 0 ? key.substring(0, vColon) : key
+            for (Map.Entry<String, Expr> entry : sortedLits.entrySet()) {
+                Expr litExpr = entry.value
+                if (litExpr.getSort() != varSort) continue
+                Expr eqResult = m.evaluate(ctx.mkEq(mv, litExpr), true)
+                if (eqResult.isTrue()) {
+                    String litKey = entry.key
+                    int colon = litKey.indexOf(':')
+                    String literalKey = colon >= 0 ? litKey.substring(colon + 1) : litKey
+                    sce[name] = literalKey
+                    break
+                }
+            }
+        }
+        CheckResult r = CheckResult.refuted(ce)
+        r.sortedCounterexample = sce
+        r
     }
 
     @Override

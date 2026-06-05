@@ -126,9 +126,17 @@ class VerifyChecker extends TypeCheckingExtension {
      * method — the type hint the otherwise shape-based encoder needs to tell a set from a list
      * (membership/size/{@code contains} share syntax). Recomputed per method in {@link #beforeVisitMethod}.
      */
-    private Set<String> currentSetNames = new HashSet<String>()
-    /** Names of {@code java.util.Map}-typed params/fields visible to the current method (see {@link #currentSetNames}). */
-    private Set<String> currentMapNames = new HashSet<String>()
+    private Map<String, ClassNode> currentSetElementTypes = new HashMap<String, ClassNode>()
+    /** Names of {@code java.util.Map}-typed params/fields visible to the current method (see {@link #currentSetElementTypes}). */
+    private Map<String, ClassNode[]> currentMapTypes = new HashMap<String, ClassNode[]>()
+    /** Names of {@code java.util.List}-typed params/fields with non-Int element types (Phase 27). */
+    private Map<String, ClassNode> currentListElementTypes = new HashMap<String, ClassNode>()
+    /**
+     * Non-Int scalar parameter and field names (Phase 27): a {@code String s} or {@code Color c}
+     * parameter that appears in a contract needs to translate to a sort-typed constant rather than
+     * the default Int. Without this, `s == "admin"` would mismatch (Int s vs String!Sort literal).
+     */
+    private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
     /**
      * The {@code k} bound expressions of every {@code Sets.count(_, k)} in the postcondition/measure being
      * discharged — the bcount per-add law (Phase 21) is asserted for each of these {@code k}s at every set
@@ -137,27 +145,132 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private List<Expression> currentBcountKExprs = Collections.<Expression> emptyList()
 
-    /** New Encoder wired with the current class's pure-function evaluator and set/map-typed names. */
+    /** New Encoder wired with the current class's pure-function evaluator and set/map/list-typed names with element types. */
     private Encoder mkEncoder(SmtSession session) {
-        new Encoder(session, currentEvaluator, currentSetNames, currentMapNames)
+        new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
+                    currentListElementTypes, currentScalarTypes)
     }
 
-    /** Names of set-typed parameters and declaring-class fields visible to {@code node}. */
-    private static Set<String> collectSetNames(MethodNode node) {
-        Set<String> out = new HashSet<String>()
-        for (Parameter p : node.parameters) if (isSetType(p.type)) out.add(p.name)
+    /**
+     * Set-typed parameters and declaring-class fields visible to {@code node}, paired with element
+     * type (Phase 27). Element type comes from the declared generic if present
+     * ({@code Set<String> tags} → String); a raw {@code Set} defaults to Integer for back-compat with
+     * the Phase-16 Int-element behaviour. Step 4 wires non-Int element types end-to-end; this collect
+     * pass already extracts them so a Set<String> field flows the right ClassNode to the encoder.
+     */
+    private static Map<String, ClassNode> collectSetElementTypes(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) if (isSetType(p.type)) out.put(p.name, firstGenericOrInt(p.type))
         ClassNode dc = node.declaringClass
-        if (dc != null) for (FieldNode f : dc.fields) if (isSetType(f.type)) out.add(f.name)
+        if (dc != null) for (FieldNode f : dc.fields) if (isSetType(f.type)) out.put(f.name, firstGenericOrInt(f.type))
         out
     }
 
-    /** Names of map-typed parameters and declaring-class fields visible to {@code node}. */
-    private static Set<String> collectMapNames(MethodNode node) {
-        Set<String> out = new HashSet<String>()
-        for (Parameter p : node.parameters) if (isMapType(p.type)) out.add(p.name)
+    /**
+     * Map-typed names visible to {@code node}, each paired with a {@code [keyType, valueType]} pair.
+     * Raw {@code Map} defaults to {@code [Integer, Integer]} for back-compat. (Phase 27.)
+     */
+    private static Map<String, ClassNode[]> collectMapTypes(MethodNode node) {
+        Map<String, ClassNode[]> out = new LinkedHashMap<String, ClassNode[]>()
+        for (Parameter p : node.parameters) if (isMapType(p.type)) out.put(p.name, twoGenericsOrInt(p.type))
         ClassNode dc = node.declaringClass
-        if (dc != null) for (FieldNode f : dc.fields) if (isMapType(f.type)) out.add(f.name)
+        if (dc != null) for (FieldNode f : dc.fields) if (isMapType(f.type)) out.put(f.name, twoGenericsOrInt(f.type))
         out
+    }
+
+    /**
+     * List-typed names with non-Int element types visible to {@code node}. Lists with Int elements
+     * (or raw) keep the existing shape-based path — only non-Int receivers need the encoder hint.
+     */
+    private static Map<String, ClassNode> collectListElementTypes(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) {
+            if (isListType(p.type)) {
+                ClassNode elem = firstGenericOrInt(p.type)
+                if (!isIntElement(elem)) out.put(p.name, elem)
+            }
+        }
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) {
+            if (isListType(f.type)) {
+                ClassNode elem = firstGenericOrInt(f.type)
+                if (!isIntElement(elem)) out.put(f.name, elem)
+            }
+        }
+        out
+    }
+
+    /** The first generic type parameter of {@code t}, or {@code Integer} if {@code t} is raw. */
+    private static ClassNode firstGenericOrInt(ClassNode t) {
+        try {
+            def gens = t?.genericsTypes
+            if (gens != null && gens.length >= 1 && gens[0].type != null) return gens[0].type
+        } catch (Throwable ignored) {}
+        ClassHelper.Integer_TYPE
+    }
+
+    /** A two-element {@code [key, value]} pair from {@code t}'s generics; {@code [Integer, Integer]} if raw. */
+    private static ClassNode[] twoGenericsOrInt(ClassNode t) {
+        ClassNode k = ClassHelper.Integer_TYPE, v = ClassHelper.Integer_TYPE
+        try {
+            def gens = t?.genericsTypes
+            if (gens != null) {
+                if (gens.length >= 1 && gens[0].type != null) k = gens[0].type
+                if (gens.length >= 2 && gens[1].type != null) v = gens[1].type
+            }
+        } catch (Throwable ignored) {}
+        [k, v] as ClassNode[]
+    }
+
+    /** True for {@code int}/{@code Integer} and the other Int-modelled scalar types. */
+    private static boolean isIntElement(ClassNode t) {
+        String n = t?.name
+        n == 'int' || n == 'long' || n == 'short' || n == 'byte' || n == 'char' ||
+            n == 'java.lang.Integer' || n == 'java.lang.Long' || n == 'java.lang.Short' ||
+            n == 'java.lang.Byte' || n == 'java.lang.Character'
+    }
+
+    /**
+     * Non-Int scalar parameter/field names visible to {@code node} (Phase 27 step 9).
+     * Currently recognises {@code String} and enum types. Lets the encoder translate a
+     * {@code String s} parameter as a String!Sort constant — without this, {@code s == "admin"}
+     * mismatches (Int s, String literal RHS).
+     */
+    private static Map<String, ClassNode> collectScalarTypes(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) {
+            ClassNode t = p.type
+            if (isNonIntScalar(t)) out.put(p.name, t)
+        }
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) {
+            ClassNode t = f.type
+            if (isNonIntScalar(t)) out.put(f.name, t)
+        }
+        out
+    }
+
+    /** True for non-Int scalar types we model under an uninterpreted Z3 sort: String, enums. */
+    private static boolean isNonIntScalar(ClassNode t) {
+        if (t == null) return false
+        if (t.isArray() || isSetType(t) || isMapType(t) || isListType(t)) return false
+        if (isIntElement(t)) return false
+        if (t.name == 'java.lang.String') return true
+        try {
+            if (t.isEnum()) return true
+            if (t.superClass != null && t.superClass.name == 'java.lang.Enum') return true
+        } catch (Throwable ignored) {}
+        false
+    }
+
+    /** True if {@code t} is (or implements) {@code java.util.List}. */
+    private static boolean isListType(ClassNode t) {
+        if (t == null) return false
+        try {
+            return t.name == 'java.util.List' || t.implementsInterface(ClassHelper.make(List))
+        } catch (Throwable ignored) {
+            return false
+        }
     }
 
     /** True if {@code t} is (or implements) {@code java.util.Set}. */
@@ -194,8 +307,11 @@ class VerifyChecker extends TypeCheckingExtension {
      * diagnostic shares the rendering; a no-op when there is no model.
      */
     private CheckResult shown(CheckResult r) {
-        if (r == null || r.counterexample == null || r.counterexample.isEmpty()) return r
-        r.failingCall = buildFailingCall(r.counterexample)
+        if (r == null) return r
+        boolean intEmpty = r.counterexample == null || r.counterexample.isEmpty()
+        boolean sortedEmpty = r.sortedCounterexample == null || r.sortedCounterexample.isEmpty()
+        if (intEmpty && sortedEmpty) return r
+        r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
         Map<String, Long> display = new LinkedHashMap<String, Long>()
         r.counterexample.each { String k, Long v ->
             // internal keys: nullity flag, array element, SSA version — surfaced via failingCall / the
@@ -227,17 +343,23 @@ class VerifyChecker extends TypeCheckingExtension {
      * (contents are not yet pinned — that is slice 2); an unmodelled object parameter falls back to
      * {@code null}. Returns null when there is no current method.
      */
-    private String buildFailingCall(Map<String, Long> ce) {
+    private String buildFailingCall(Map<String, Long> ce, Map<String, String> sortedCe) {
         if (currentMethod == null) return null
         List<String> args = new ArrayList<String>()
         for (Parameter p : currentMethod.parameters) {
-            args.add(renderArg(p, ce))
+            args.add(renderArg(p, ce, sortedCe))
         }
         "${currentMethod.name}(${args.join(', ')})"
     }
 
-    /** Render one parameter as a Groovy literal drawn from the counterexample. */
-    private static String renderArg(Parameter p, Map<String, Long> ce) {
+    /**
+     * Render one parameter as a Groovy literal drawn from the counterexample. {@code sortedCe} holds
+     * non-Int model values (Phase 27 step 9): a String parameter that the model pinned to {@code admin}
+     * appears as {@code [name: "admin"]} and renders as the quoted Groovy literal; an enum parameter
+     * pinned to {@code RED} renders as {@code <ClassSimpleName>.RED} (the inner-class binary prefix is
+     * stripped, mirroring the enum sort name normalization in the encoder).
+     */
+    private static String renderArg(Parameter p, Map<String, Long> ce, Map<String, String> sortedCe) {
         ClassNode t = p.type
         boolean nulled = ce.get(p.name + '?null') == 1L
         if (t != null && t.isArray()) {
@@ -262,7 +384,14 @@ class VerifyChecker extends TypeCheckingExtension {
             return (v != null && v == 1L) ? 'true' : 'false'
         }
         if (nulled) return 'null'
-        if (tn == 'java.lang.String') return '""'
+        if (tn == 'java.lang.String') {
+            String modelVal = sortedCe?.get(p.name)
+            return modelVal != null ? "\"${modelVal}\"".toString() : '""'
+        }
+        if (t != null && (t.isEnum() || isEnumLikeType(t))) {
+            String modelVal = sortedCe?.get(p.name)
+            return modelVal != null ? "${simpleEnumName(t)}.${modelVal}".toString() : 'null'
+        }
         if (isSetType(t)) return nulled ? 'null' : '[] as Set'
         if (isMapType(t)) return nulled ? 'null' : '[:]'
         if (isCollectionType(t)) {
@@ -272,6 +401,22 @@ class VerifyChecker extends TypeCheckingExtension {
             return n == 0L ? '[]' : '[' + (['null'] * (int) n).join(', ') + ']'
         }
         return 'null'   // best effort for an arbitrary object type
+    }
+
+    /** Strip the inner-class binary prefix from an enum's nameWithoutPackage (mirrors Encoder.enumSortName). */
+    private static String simpleEnumName(ClassNode t) {
+        String n = t.nameWithoutPackage
+        int dollar = n.lastIndexOf('$')
+        dollar >= 0 ? n.substring(dollar + 1) : n
+    }
+
+    /** True if {@code t} appears to be an Enum subclass (mirrors Encoder.isEnumLikeType). */
+    private static boolean isEnumLikeType(ClassNode t) {
+        try {
+            return t != null && t.superClass != null && t.superClass.name == 'java.lang.Enum'
+        } catch (Throwable ignored) {
+            return false
+        }
     }
 
     private static long sizeOf(String name, Map<String, Long> ce) {
@@ -472,8 +617,8 @@ class VerifyChecker extends TypeCheckingExtension {
                     String mm = mce.methodAsString
                     if (mce.objectExpression instanceof VariableExpression) {
                         String w = ((VariableExpression) mce.objectExpression).name
-                        boolean setWrite = (mm == 'add' || mm == 'remove') && currentSetNames.contains(w)
-                        boolean mapWrite = (mm == 'put') && currentMapNames.contains(w)
+                        boolean setWrite = (mm == 'add' || mm == 'remove') && currentSetElementTypes.containsKey(w)
+                        boolean mapWrite = (mm == 'put') && currentMapTypes.containsKey(w)
                         if ((setWrite || mapWrite) && visible.contains(w) && !declared.contains(w)) {
                             offenders.add(w)
                         }
@@ -537,8 +682,10 @@ class VerifyChecker extends TypeCheckingExtension {
         currentFacts = new PathFacts()
         currentMethod = node
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
-        currentSetNames = collectSetNames(node)
-        currentMapNames = collectMapNames(node)
+        currentSetElementTypes = collectSetElementTypes(node)
+        currentMapTypes = collectMapTypes(node)
+        currentListElementTypes = collectListElementTypes(node)
+        currentScalarTypes = collectScalarTypes(node)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -607,8 +754,10 @@ class VerifyChecker extends TypeCheckingExtension {
             currentEvaluator = null
             sizeAccessors = [:]
             currentClassInvariants = Collections.<Expression> emptyList()
-            currentSetNames = new HashSet<String>()
-            currentMapNames = new HashSet<String>()
+            currentSetElementTypes = new HashMap<String, ClassNode>()
+            currentMapTypes = new HashMap<String, ClassNode[]>()
+            currentListElementTypes = new HashMap<String, ClassNode>()
+            currentScalarTypes = new HashMap<String, ClassNode>()
         }
     }
 
@@ -902,7 +1051,7 @@ class VerifyChecker extends TypeCheckingExtension {
         if (site instanceof IndexSite) {
             IndexSite ix = (IndexSite) site
             // m[k] on a map is a key lookup, not a bounds-checked array index — no obligation.
-            if (currentMapNames.contains(ix.receiver)) return
+            if (currentMapTypes.containsKey(ix.receiver)) return
             Object idx = enc.translate(ix.index)
             if (idx == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("array index",
@@ -1195,9 +1344,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 enc.bind('old$' + fld, enc.varFor(fld))
                 enc.bindArray('old$' + fld, enc.arrayFor(fld))
                 // A set field's entry snapshot too, so `old.s.size()` / `x in old.s` read the value at entry.
-                if (currentSetNames.contains(fld)) enc.bindSet('old$' + fld, enc.setFor(fld))
+                if (currentSetElementTypes.containsKey(fld)) enc.bindSet('old$' + fld, enc.setFor(fld))
                 // A map field's entry snapshot — both value array and key-set — for `old.m[k]` / `old.m.size()`.
-                if (currentMapNames.contains(fld)) {
+                if (currentMapTypes.containsKey(fld)) {
                     enc.putMapVals('old$' + fld, enc.mapValsFor(fld))
                     enc.putMapKeys('old$' + fld, enc.mapKeysFor(fld))
                 }
@@ -1249,13 +1398,21 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step
-                    Object idx = enc.translate(st.index)
-                    Object val = enc.translate(st.value)
+                    // Phase 27 — index/value sorts depend on the receiver kind: map key/value
+                    // sorts for a map put, or Int-index + list-element sort for a list/array
+                    // store. Routing the translations through translateInSort lets a
+                    // Map<String,Integer>'s m["k"] = 5 land cleanly, and a List<String>'s
+                    // xs[i] = "abc" likewise.
+                    boolean isMap = currentMapTypes.containsKey(st.arr)
+                    Object idxSort = isMap ? enc.mapKeySort(st.arr) : session.intSort()
+                    Object valSort = isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr)
+                    Object idx = enc.translateInSort(st.index, idxSort)
+                    Object val = enc.translateInSort(st.value, valSort)
                     if (idx == null || val == null) {
                         throw new UnsupportedConstructException(
                             "array store '${st.arr}[${st.index.text}] = ${st.value.text}' is outside fragment")
                     }
-                    if (currentMapNames.contains(st.arr)) {
+                    if (isMap) {
                         // m[k] = v on a map: value store + key-set add + cardinality law.
                         doMapPut(session, enc, st.arr, idx, val)
                     } else {
@@ -1263,12 +1420,16 @@ class VerifyChecker extends TypeCheckingExtension {
                         Object oldA = enc.arrayFor(st.arr)
                         Object newA = session.store(oldA, idx, val)
                         // Per-store count law: count(newA, v) = count(oldA, v) - [oldA[idx]==v] + [val==v].
-                        Object one = session.intLit(1L), zero = session.intLit(0L)
-                        for (Object v : countVals) {
-                            Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
-                            Object added = session.ite(session.eq(val, v), one, zero)
-                            Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
-                            session.assertExpr(session.eq(session.count(newA, v), rhs))
+                        // Only applies for Int-valued arrays (the count theory is Int-keyed); skipped
+                        // for non-Int element lists where countVals is irrelevant anyway (Phase 27).
+                        if (valSort == session.intSort()) {
+                            Object one = session.intLit(1L), zero = session.intLit(0L)
+                            for (Object v : countVals) {
+                                Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
+                                Object added = session.ite(session.eq(val, v), one, zero)
+                                Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
+                                session.assertExpr(session.eq(session.count(newA, v), rhs))
+                            }
                         }
                         enc.bindArray(st.arr, newA)
                     }
@@ -1357,12 +1518,13 @@ class VerifyChecker extends TypeCheckingExtension {
         Expression recv = mce.objectExpression
         if (!(recv instanceof VariableExpression)) return false
         String name = ((VariableExpression) recv).name
-        if (!currentSetNames.contains(name)) return false
+        if (!currentSetElementTypes.containsKey(name)) return false
         String m = mce.methodAsString
         if (m != 'add' && m != 'remove') return false
         List<Expression> args = collectArgumentExpressions(mce)
         if (args == null || args.size() != 1) return false
-        Object elem = enc.translate(args.get(0))
+        Object elemSort = enc.setElementSort(name)
+        Object elem = enc.translateInSort(args.get(0), elemSort)
         if (elem == null) return false
 
         Object oldS = enc.setFor(name)
@@ -1378,15 +1540,19 @@ class VerifyChecker extends TypeCheckingExtension {
         //   add:    bcount(s', k) = bcount(s, k) + (0 <= elem < k ∧ elem ∉ s ? 1 : 0)
         //   remove: bcount(s', k) = bcount(s, k) - (0 <= elem < k ∧ elem ∈ s ? 1 : 0)
         // The mutation only changes the count at the slot `elem`, and only when that slot is in [0, k).
-        for (Expression kExpr : currentBcountKExprs) {
-            Object kH = enc.translate(kExpr)
-            if (kH == null) continue
-            Object inDomain = s.and([s.le(zero, elem), s.lt(elem, kH)])
-            Object cond = adding ? s.and([inDomain, s.not(memOld)]) : s.and([inDomain, memOld])
-            Object cDelta = s.ite(cond, one, zero)
-            Object newCount = adding ?
-                s.plus(enc.setCountOf(oldS, kH), cDelta) : s.minus(enc.setCountOf(oldS, kH), cDelta)
-            s.assertExpr(s.eq(enc.setCountOf(newS, kH), newCount))
+        // Skipped for non-Int element sets (Phase 27): the law's `0 <= elem < k` is meaningless when
+        // `elem` is a String/Enum constant — Sets.count is honestly out of fragment for those.
+        if (elemSort == s.intSort()) {
+            for (Expression kExpr : currentBcountKExprs) {
+                Object kH = enc.translate(kExpr)
+                if (kH == null) continue
+                Object inDomain = s.and([s.le(zero, elem), s.lt(elem, kH)])
+                Object cond = adding ? s.and([inDomain, s.not(memOld)]) : s.and([inDomain, memOld])
+                Object cDelta = s.ite(cond, one, zero)
+                Object newCount = adding ?
+                    s.plus(enc.setCountOf(oldS, kH), cDelta) : s.minus(enc.setCountOf(oldS, kH), cDelta)
+                s.assertExpr(s.eq(enc.setCountOf(newS, kH), newCount))
+            }
         }
 
         enc.bindSet(name, newS)
@@ -1417,11 +1583,13 @@ class VerifyChecker extends TypeCheckingExtension {
         Expression recv = mce.objectExpression
         if (!(recv instanceof VariableExpression)) return false
         String name = ((VariableExpression) recv).name
-        if (!currentMapNames.contains(name) || mce.methodAsString != 'put') return false
+        if (!currentMapTypes.containsKey(name) || mce.methodAsString != 'put') return false
         List<Expression> args = collectArgumentExpressions(mce)
         if (args == null || args.size() != 2) return false
-        Object key = enc.translate(args.get(0))
-        Object val = enc.translate(args.get(1))
+        // Phase 27 — route key and value through the map's declared sorts so a String-keyed
+        // / Enum-keyed map's `put("admin", 5)` lands as a constant of the right element sort.
+        Object key = enc.translateInSort(args.get(0), enc.mapKeySort(name))
+        Object val = enc.translateInSort(args.get(1), enc.mapValueSort(name))
         if (key == null || val == null) return false
         doMapPut(s, enc, name, key, val)
         return true
@@ -1729,7 +1897,15 @@ class VerifyChecker extends TypeCheckingExtension {
                         callExpr as ASTNode)
                     return
                 }
-                Object formalVar = session.intVar(formals[i].name + '#arg' + (havocCounter++))
+                // Phase 27 — pick the formal's sort from its declared type so a String/Enum actual
+                // (translated to the right sort via scalarTypes routing) can be equated without a
+                // sort mismatch. Int sort keeps the existing intVar storage (so it still shows up
+                // in counterexample model walks).
+                String formalName = formals[i].name + '#arg' + (havocCounter++)
+                Object formalSort = enc.sortForType(formals[i].type)
+                Object formalVar = (formalSort == session.intSort()) ?
+                    session.intVar(formalName) :
+                    session.varOfSort(formalName, formalSort)
                 session.assertExpr(session.eq(formalVar, argHandle))
                 formalBindings[formals[i].name] = formalVar
                 if (argExprs[i] instanceof VariableExpression &&
@@ -1874,10 +2050,14 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step
-                    Object idx = enc.translate(st.index)
-                    Object val = enc.translate(st.value)
+                    // Phase 27 — same sort-routing as in checkPath's main step replay above.
+                    boolean isMap = currentMapTypes.containsKey(st.arr)
+                    Object idxSort = isMap ? enc.mapKeySort(st.arr) : s.intSort()
+                    Object valSort = isMap ? enc.mapValueSort(st.arr) : enc.listElementSort(st.arr)
+                    Object idx = enc.translateInSort(st.index, idxSort)
+                    Object val = enc.translateInSort(st.value, valSort)
                     if (idx != null && val != null) {
-                        if (currentMapNames.contains(st.arr)) doMapPut(s, enc, st.arr, idx, val)
+                        if (isMap) doMapPut(s, enc, st.arr, idx, val)
                         else enc.bindArray(st.arr, s.store(enc.arrayFor(st.arr), idx, val))
                     }
                 } else if (step instanceof LemmaCall) {
@@ -2144,10 +2324,15 @@ class VerifyChecker extends TypeCheckingExtension {
                 ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET &&
                 ((BinaryExpression) lhs).leftExpression instanceof VariableExpression) {
                 String name = ((VariableExpression) ((BinaryExpression) lhs).leftExpression).name
-                Object idx = enc.translate(((BinaryExpression) lhs).rightExpression)
-                Object val = enc.translate(be.rightExpression)
+                // Phase 27 — same sort-routing as the ArrayStore-step path: map key/val sorts for
+                // a map write, Int-index + list element sort for a list/array write.
+                boolean isMap = currentMapTypes.containsKey(name)
+                Object idxSort = isMap ? enc.mapKeySort(name) : s.intSort()
+                Object valSort = isMap ? enc.mapValueSort(name) : enc.listElementSort(name)
+                Object idx = enc.translateInSort(((BinaryExpression) lhs).rightExpression, idxSort)
+                Object val = enc.translateInSort(be.rightExpression, valSort)
                 if (idx == null || val == null) { havocLocation(enc, name); return true }
-                if (currentMapNames.contains(name)) doMapPut(s, enc, name, idx, val)
+                if (isMap) doMapPut(s, enc, name, idx, val)
                 else enc.bindArray(name, s.store(enc.arrayFor(name), idx, val))
                 return true
             }
@@ -2157,8 +2342,8 @@ class VerifyChecker extends TypeCheckingExtension {
 
     /** Havoc every representation a name might have (sound when its type is unknown at the havoc site). */
     private void havocLocation(Encoder enc, String name) {
-        if (currentSetNames.contains(name)) { enc.havocSet(name); return }
-        if (currentMapNames.contains(name)) { enc.havocMap(name); return }
+        if (currentSetElementTypes.containsKey(name)) { enc.havocSet(name); return }
+        if (currentMapTypes.containsKey(name)) { enc.havocMap(name); return }
         enc.havoc(name); enc.havocArray(name); enc.havocSize(name)
     }
 
@@ -2249,12 +2434,12 @@ class VerifyChecker extends TypeCheckingExtension {
                 enc.bindArray(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
                 // A modified set field is havoced (and snapshotted) too, so a caller can't assume a
                 // set the callee may mutate is unchanged, and the callee's `old.s` reframes from the call.
-                if (currentSetNames.contains(callerLoc)) {
+                if (currentSetElementTypes.containsKey(callerLoc)) {
                     enc.bindSet(oldKey, enc.setFor(callerLoc))
                     enc.bindSet(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
                 }
                 // A modified map field — both value array and key-set — likewise snapshotted and havoced.
-                if (currentMapNames.contains(callerLoc)) {
+                if (currentMapTypes.containsKey(callerLoc)) {
                     enc.putMapVals(oldKey, enc.mapValsFor(callerLoc))
                     enc.putMapKeys(oldKey, enc.mapKeysFor(callerLoc))
                     enc.putMapVals(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))

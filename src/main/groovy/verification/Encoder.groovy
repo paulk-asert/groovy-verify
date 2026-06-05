@@ -18,6 +18,7 @@ package verification
 import groovy.transform.CompileStatic
 import org.apache.groovy.ast.tools.ExpressionUtils
 import org.codehaus.groovy.ast.ClassHelper
+import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
@@ -94,19 +95,34 @@ class Encoder {
     /** Cache of set handles (characteristic {@code Array Int -> Int}), keyed by source name / {@code old$name}. */
     private final Map<String, Object> setEnv = [:]
     /**
-     * Source-level names known to be {@code java.util.Set}-typed (params/fields), supplied by
-     * {@link VerifyChecker}. Membership/size/{@code contains} on these names lower to set semantics
-     * rather than the list/array oracles — the one place the otherwise shape-based encoder needs a
-     * type hint, because set operations are syntactically indistinguishable from list ones.
+     * Source-level names known to be {@code java.util.Set}-typed (params/fields), each mapped to its
+     * declared element type (Phase 27). Membership/size/{@code contains} on these names lower to set
+     * semantics rather than the list/array oracles — the one place the otherwise shape-based encoder
+     * needs a type hint, because set operations are syntactically indistinguishable from list ones.
+     * The element type drives non-Int sort routing: a {@code Set<String>}'s element constants live in
+     * an uninterpreted Z3 {@code String!Sort}, a {@code Set<Integer>}'s in {@code Int} (the default).
      */
-    private final Set<String> setNames
+    private final Map<String, ClassNode> setElementTypes
     /**
-     * Source-level names known to be {@code java.util.Map}-typed. A map is modelled as a value array
-     * (its contents, {@code m[k]}) <em>plus</em> a key-set (a characteristic array, giving
-     * {@code m.containsKey}/{@code m.size()} and the cardinality law) — so it builds directly on the
-     * set machinery. Supplied by {@link VerifyChecker}, the same type hint {@link #setNames} carries.
+     * Source-level names known to be {@code java.util.Map}-typed, each mapped to its declared
+     * {@code [keyType, valueType]} pair (Phase 27). A map is modelled as a value array (its contents,
+     * {@code m[k]}) <em>plus</em> a key-set (a characteristic array, giving {@code m.containsKey}/
+     * {@code m.size()} and the cardinality law) — so it builds directly on the set machinery.
      */
-    private final Set<String> mapNames
+    private final Map<String, ClassNode[]> mapTypes
+    /**
+     * Source-level names known to be {@code java.util.List}-typed, each mapped to its declared
+     * element type (Phase 27). The encoder defaults Lists to Int-element when no type hint is supplied
+     * (today's behaviour), so this map is populated only for non-Int element domains.
+     */
+    private final Map<String, ClassNode> listElementTypes
+    /**
+     * Non-Int scalar parameter/field names (Phase 27 step 9). A {@code String s} parameter looked up
+     * via {@link #varFor} dispatches to {@link #varForOfSort} on the declared sort here, so
+     * {@code s == "admin"} translates as {@code (String!Sort eq String!Sort)} rather than the
+     * sort-mismatched {@code (Int eq String!Sort)}.
+     */
+    private final Map<String, ClassNode> scalarTypes
     /** Set handles whose {@code card >= 0} has already been asserted (mint-once, like the size oracle). */
     private final Set<Object> cardConstrained = new HashSet<Object>()
     /**
@@ -133,12 +149,109 @@ class Encoder {
     private final Set<Object> definedCalls = new HashSet<Object>()
 
     Encoder(SmtSession session, PureEvaluator pureEvaluator = null,
-            Set<String> setNames = null, Set<String> mapNames = null) {
+            Map<String, ClassNode> setElementTypes = null,
+            Map<String, ClassNode[]> mapTypes = null,
+            Map<String, ClassNode> listElementTypes = null,
+            Map<String, ClassNode> scalarTypes = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
-        this.setNames = setNames != null ? setNames : new HashSet<String>()
-        this.mapNames = mapNames != null ? mapNames : new HashSet<String>()
+        this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
+        this.mapTypes = mapTypes != null ? mapTypes : new HashMap<String, ClassNode[]>()
+        this.listElementTypes = listElementTypes != null ? listElementTypes : new HashMap<String, ClassNode>()
+        this.scalarTypes = scalarTypes != null ? scalarTypes : new HashMap<String, ClassNode>()
     }
+
+    /**
+     * The Z3 sort for a Groovy element type. Int / Integer → the built-in Int sort (the existing
+     * default); String → the uninterpreted {@code String!Sort}; an enum class → a per-class
+     * uninterpreted sort named after the enum's nameWithoutPackage. {@code null} or any other type
+     * falls back to Int (the default-Int policy preserves today's behaviour for unannotated
+     * receivers). Used by {@link #setElementSort} / {@link #mapKeySort} / {@link #mapValueSort} /
+     * {@link #listElementSort}.
+     */
+    private Object sortFor(ClassNode t) {
+        if (t == null) return session.intSort()
+        String name = t.name
+        if (name == 'java.lang.String') return session.declareSort('String')
+        if (isIntLikeType(t)) return session.intSort()
+        if (t.isEnum() || isEnumLikeType(t)) return session.declareSort(enumSortName(t))
+        session.intSort()   // default — preserves today's Int-only behaviour for unrecognised types
+    }
+
+    /**
+     * The Z3 sort name for an enum class — its source-level simple name with any inner-class
+     * binary-name prefix stripped (so {@code C$Color} → {@code Color}). The CONTRACT-side enum
+     * literal {@code Color.RED} (re-parsed from text, unresolved receiver name "Color") and the
+     * BODY-side {@code Color.RED} (resolved to the inner-class binary "C$Color") then agree on
+     * the same sort. The known limitation: two enums with the same source-level name in different
+     * outer classes collapse into one sort — acceptable for the spike's scale.
+     */
+    private static String enumSortName(ClassNode t) {
+        String n = t.nameWithoutPackage
+        int dollar = n.lastIndexOf('$')   // String-overload — finds the last '$' separator if present
+        dollar >= 0 ? n.substring(dollar + 1) : n
+    }
+
+    private static boolean isIntLikeType(ClassNode t) {
+        String n = t?.name
+        n == 'int' || n == 'long' || n == 'short' || n == 'byte' || n == 'char' ||
+            n == 'java.lang.Integer' || n == 'java.lang.Long' || n == 'java.lang.Short' ||
+            n == 'java.lang.Byte' || n == 'java.lang.Character'
+    }
+
+    private static boolean isEnumLikeType(ClassNode t) {
+        try {
+            return t != null && t.superClass != null && t.superClass.name == 'java.lang.Enum'
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
+
+    /**
+     * True if {@code name} matches an enum class that's been seen as a set/map/list element type
+     * for the current method (Phase 27). Used by the default {@link #translate} path to recognise
+     * a pre-resolution enum literal {@code Color.RED} (which parses as
+     * PropertyExpression(VariableExpression("Color"), "RED")) outside the expected-sort dispatch
+     * of {@link #translateInSort}. Computed lazily and cached on first use.
+     */
+    private Set<String> knownEnumNames = null
+    private boolean isKnownEnumName(String name) {
+        if (knownEnumNames == null) {
+            knownEnumNames = new HashSet<String>()
+            setElementTypes.values().each { ClassNode t ->
+                if (t != null && (t.isEnum() || isEnumLikeType(t))) knownEnumNames.add(enumSortName(t))
+            }
+            mapTypes.values().each { ClassNode[] pair ->
+                if (pair[0] != null && (pair[0].isEnum() || isEnumLikeType(pair[0]))) knownEnumNames.add(enumSortName(pair[0]))
+                if (pair[1] != null && (pair[1].isEnum() || isEnumLikeType(pair[1]))) knownEnumNames.add(enumSortName(pair[1]))
+            }
+            listElementTypes.values().each { ClassNode t ->
+                if (t != null && (t.isEnum() || isEnumLikeType(t))) knownEnumNames.add(enumSortName(t))
+            }
+            scalarTypes.values().each { ClassNode t ->
+                if (t != null && (t.isEnum() || isEnumLikeType(t))) knownEnumNames.add(enumSortName(t))
+            }
+        }
+        knownEnumNames.contains(name)
+    }
+
+    /** The Z3 sort for the element type of a set receiver name, or Int if unknown / Int-element. */
+    Object setElementSort(String name) { sortFor(setElementTypes.get(name)) }
+    /** The Z3 sort for a map receiver's key type. */
+    Object mapKeySort(String name) {
+        ClassNode[] pair = mapTypes.get(name)
+        sortFor(pair != null ? pair[0] : null)
+    }
+    /** The Z3 sort for a map receiver's value type. */
+    Object mapValueSort(String name) {
+        ClassNode[] pair = mapTypes.get(name)
+        sortFor(pair != null ? pair[1] : null)
+    }
+    /** The Z3 sort for the element type of a list receiver name, or Int if unknown. */
+    Object listElementSort(String name) { sortFor(listElementTypes.get(name)) }
+
+    /** The Z3 sort for a declared Groovy {@code ClassNode}, mirroring {@link #sortFor}. */
+    Object sortForType(ClassNode t) { sortFor(t) }
 
     /**
      * Get-or-declare an integer SMT variable for a source-level name.
@@ -147,11 +260,78 @@ class Encoder {
      * precondition refers to the same SMT constant.
      */
     Object varFor(String name) {
+        // Phase 27 step 9 — a non-Int scalar (String, Enum) parameter/field dispatches to
+        // varForOfSort, which caches in sortedEnv. The standard env stays Int-only so the
+        // counterexample model walk (which iterates Z3Backend.vars) keeps pinning Int values
+        // unchanged for everything else.
+        ClassNode declared = scalarTypes.get(name)
+        if (declared != null) {
+            Object sort = sortFor(declared)
+            if (sort != session.intSort()) return varForOfSort(name, sort)
+        }
         Object cached = env.get(name)
         if (cached != null) return cached
         Object v = session.intVar(name)
         env.put(name, v)
         v
+    }
+
+    /** Per-sort variable bindings (Phase 27), keyed by {@code name + ':' + sortHandle.toString()}. */
+    private final Map<String, Object> sortedEnv = [:]
+
+    /**
+     * The non-Int analogue of {@link #varFor} — get-or-declare an SMT constant of the given sort for
+     * {@code name}. For the Int sort, delegates to {@link #varFor} so the existing env / counterexample
+     * walk continues to pin Int values. Used by {@link #translateInSort} when a variable appears in a
+     * known non-Int position (set element, map key, etc.).
+     */
+    Object varForOfSort(String name, Object sort) {
+        if (sort == session.intSort()) return varFor(name)
+        String key = name + ':' + sort.toString()
+        Object cached = sortedEnv.get(key)
+        if (cached != null) return cached
+        Object v = session.varOfSort(name, sort)
+        sortedEnv.put(key, v)
+        v
+    }
+
+    /**
+     * Translate {@code e} with an <em>expected sort</em>: a literal or variable in a known non-Int
+     * position (e.g. the argument to {@code Set<String>.contains}) needs to dispatch to {@link
+     * #varForOfSort}/{@link SmtSession#litOfSort} rather than the default Int path. For complex
+     * expressions or the Int default sort, falls through to the existing {@link #translate}.
+     */
+    Object translateInSort(Expression e, Object expectedSort) {
+        if (e == null) return null
+        if (expectedSort == session.intSort()) return translate(e)
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof String) return session.litOfSort(expectedSort, (String) v)
+            // Other literal kinds in a non-Int position are out of fragment (today).
+            return null
+        }
+        if (e instanceof VariableExpression) {
+            return varForOfSort(((VariableExpression) e).name, expectedSort)
+        }
+        if (e instanceof PropertyExpression) {
+            // Enum constant: `Color.RED` reaches the encoder in two AST shapes — pre-resolution
+            // `PropertyExpression(VariableExpression(Color), RED)` (the form a re-parsed contract
+            // carries) and post-resolution `PropertyExpression(ClassExpression(C$Color), RED)` (the
+            // form the live method body carries after type checking). Both must lower to the SAME
+            // Z3 constant so a body's `s.add(Color.RED)` connects to a contract's `Color.RED in s`.
+            // Solution: intern by the property name alone — the expected sort (passed in by the
+            // caller, derived from the receiver type) already disambiguates cross-enum constants
+            // (Suit.RED vs Color.RED reach distinct expected sorts, so a property key of "RED"
+            // doesn't collide).
+            PropertyExpression pe = (PropertyExpression) e
+            Expression obj = pe.objectExpression
+            if (obj instanceof ClassExpression || obj instanceof VariableExpression) {
+                return session.litOfSort(expectedSort, pe.propertyAsString)
+            }
+        }
+        // Anything else: best-effort fall back to the Int path (will likely return null, which the
+        // caller treats as outside-fragment).
+        translate(e)
     }
 
     /** Explicit binding, used to wire formal parameters to actual-argument expressions. */
@@ -200,7 +380,12 @@ class Encoder {
 
     /** Array analogue of {@link #havoc}: re-bind {@code name}'s contents to a fresh, unconstrained array. */
     Object havocArray(String name) {
-        Object v = session.arrayVar(name + '$havoc$' + (havocCounter++))
+        String havocName = name + '$havoc$' + (havocCounter++)
+        Object[] sorts = arraySortsFor(name)
+        Object kSort = sorts[0], vSort = sorts[1]
+        Object v = (kSort == session.intSort() && vSort == session.intSort()) ?
+            session.arrayVar(havocName) :
+            session.arrayVarOfSort(havocName, kSort, vSort)
         arrEnv.put(name, v)
         v
     }
@@ -233,14 +418,45 @@ class Encoder {
     /**
      * Get-or-declare the array-content handle for a source-level name. Shares its
      * key with nothing else — the size oracle ({@link #sizeOf}) bounds the valid
-     * index range, this models the element values.
+     * index range, this models the element values. Element sort dispatch via
+     * {@link #arrayElementSortFor} (Phase 27): a non-Int element list or a non-Int
+     * value-side map allocates {@code Array Int -> ElemSort}; Int-element arrays keep
+     * the existing {@link SmtSession#arrayVar} storage so the counterexample model walk
+     * continues to pin contents the way it does today.
      */
     Object arrayFor(String name) {
         Object cached = arrEnv.get(name)
         if (cached != null) return cached
-        Object v = session.arrayVar(name)
+        Object[] sorts = arraySortsFor(name)
+        Object kSort = sorts[0], vSort = sorts[1]
+        Object v = (kSort == session.intSort() && vSort == session.intSort()) ?
+            session.arrayVar(name) :
+            session.arrayVarOfSort(name, kSort, vSort)
         arrEnv.put(name, v)
         v
+    }
+
+    /**
+     * The {@code [keySort, valueSort]} for an array handle key. Recognises the three name shapes
+     * the encoder uses:
+     * - {@code map$vals$<logical>} / {@code map$vals$old$<logical>} — a map's value array; key
+     *   sort = the map's KEY sort, value sort = the map's VALUE sort (so a Map<String,Integer>
+     *   is {@code Array String -> Int}, Map<String,String> is {@code Array String -> String}).
+     * - {@code old$<name>} — entry snapshot of a list; Int-indexed, value sort = list's element sort.
+     * - {@code <name>} — a regular array/list name; Int-indexed, value sort from {@code listElementTypes}.
+     * Default Int/Int when not classified as non-Int, preserving the existing untyped-list path.
+     */
+    private Object[] arraySortsFor(String name) {
+        if (name.startsWith('map$vals$')) {
+            String logical = name.substring('map$vals$'.length())
+            if (logical.startsWith('old$')) logical = logical.substring('old$'.length())
+            ClassNode[] pair = mapTypes.get(logical)
+            return [sortFor(pair != null ? pair[0] : null),
+                    sortFor(pair != null ? pair[1] : null)] as Object[]
+        }
+        String n = name
+        if (n.startsWith('old$')) n = n.substring('old$'.length())
+        [session.intSort(), sortFor(listElementTypes.get(n))] as Object[]
     }
 
     /**
@@ -252,13 +468,42 @@ class Encoder {
         arrEnv.put(name, handle)
     }
 
-    /** Get-or-declare the set handle for a name / {@code old$name} (a characteristic {@code Array Int -> Int}). */
+    /**
+     * Get-or-declare the set handle for a name / {@code old$name} — a characteristic
+     * {@code Array <elem-sort> -> Int}. Element sort comes from the receiver type collected by
+     * {@link VerifyChecker}: Int-element sets keep the existing {@link SmtSession#setVar} storage
+     * (so the counterexample walk still pins them as before); non-Int element sets allocate via
+     * {@link SmtSession#arrayVarOfSort}. Map key-sets (keyed {@code map$keys$<logical>}) consult
+     * the map's key type, not its value type.
+     */
     Object setFor(String key) {
         Object cached = setEnv.get(key)
         if (cached != null) return cached
-        Object v = session.setVar(key)
+        Object elemSort = setKeySortForKey(key)
+        Object v = (elemSort == session.intSort()) ?
+            session.setVar(key) :
+            session.arrayVarOfSort(key, elemSort, session.intSort())
         setEnv.put(key, v)
         v
+    }
+
+    /**
+     * The element sort for a set handle key. Three shapes:
+     * - {@code map$keys$<logical>} or {@code map$keys$old$<logical>} — a map's key-set; element sort is
+     *   the map's KEY sort.
+     * - {@code old$<name>} — a set's entry-state snapshot; element sort is the same as {@code name}'s.
+     * - {@code <name>} — a regular set name; element sort comes from {@code setElementTypes}.
+     */
+    private Object setKeySortForKey(String key) {
+        String name = key
+        if (name.startsWith('map$keys$')) {
+            name = name.substring('map$keys$'.length())
+            if (name.startsWith('old$')) name = name.substring('old$'.length())
+            ClassNode[] pair = mapTypes.get(name)
+            return sortFor(pair != null ? pair[0] : null)
+        }
+        if (name.startsWith('old$')) name = name.substring('old$'.length())
+        sortFor(setElementTypes.get(name))
     }
 
     /** Re-bind a set name to a new handle — threads an add/remove as {@code s := (store s x 1|0)}. */
@@ -341,11 +586,11 @@ class Encoder {
     private String setKeyFor(Expression recv) {
         if (recv instanceof VariableExpression) {
             String n = ((VariableExpression) recv).name
-            return setNames.contains(n) ? n : null
+            return setElementTypes.containsKey(n) ? n : null
         }
         if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
             String n = ((PropertyExpression) recv).propertyAsString
-            return setNames.contains(n) ? ('old$' + n) : null
+            return setElementTypes.containsKey(n) ? ('old$' + n) : null
         }
         null
     }
@@ -372,11 +617,11 @@ class Encoder {
     String mapLogicalFor(Expression recv) {
         if (recv instanceof VariableExpression) {
             String n = ((VariableExpression) recv).name
-            return mapNames.contains(n) ? n : null
+            return mapTypes.containsKey(n) ? n : null
         }
         if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
             String n = ((PropertyExpression) recv).propertyAsString
-            return mapNames.contains(n) ? ('old$' + n) : null
+            return mapTypes.containsKey(n) ? ('old$' + n) : null
         }
         null
     }
@@ -405,7 +650,17 @@ class Encoder {
             if (v instanceof Boolean) {
                 return session.boolLit((Boolean) v)
             }
-            return null  // strings, floats, null — outside fragment (null handled at comparison level)
+            if (v instanceof String) {
+                // Phase 27 — a bare String literal in expression position translates to a
+                // constant of the default String!Sort. Cross-comparisons like
+                // {@code m["k"] == "v"} (where m is Map<String,String>) and
+                // {@code xs[i] == "abc"} (where xs is List<String>) then connect through this
+                // same sort. Interning by the literal text means two references to "v" in the
+                // same session resolve to the same Z3 constant; the lazy pairwise-distinct
+                // cascade keeps distinct literals distinct.
+                return session.litOfSort(session.declareSort('String'), (String) v)
+            }
+            return null  // floats, null — outside fragment (null handled at comparison level)
         }
 
         if (expr instanceof VariableExpression) {
@@ -472,6 +727,25 @@ class Encoder {
             if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
                 return sizeOf(((VariableExpression) obj).name)
             }
+            // Phase 27 — enum literal in a non-expected-sort position (e.g. the RHS of
+            // `xs[k] == Color.RED` where the encoder doesn't push down an expected sort). Two
+            // shapes: PropertyExpression(ClassExpression(Color), RED) when the type has been
+            // resolved (typed method body), and PropertyExpression(VariableExpression(Color), RED)
+            // when the contract closure has been re-parsed from text. Both mint a literal of the
+            // enum's sort, keyed by the property name — the same key shape translateInSort uses,
+            // so a body's `xs[k] = Color.RED` and a contract's `xs[k] == Color.RED` agree.
+            if (obj instanceof ClassExpression) {
+                ClassNode t = ((ClassExpression) obj).type
+                if (t != null && (t.isEnum() || isEnumLikeType(t))) {
+                    return session.litOfSort(session.declareSort(enumSortName(t)), prop)
+                }
+            }
+            if (obj instanceof VariableExpression) {
+                String recvName = ((VariableExpression) obj).name
+                if (isKnownEnumName(recvName)) {
+                    return session.litOfSort(session.declareSort(recvName), prop)
+                }
+            }
             return null
         }
 
@@ -528,11 +802,20 @@ class Encoder {
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
         // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
         if (op == Types.LEFT_SQUARE_BRACKET) {
-            // m[k] over a map reads its value array; a[i] over an array/list reads its contents.
+            // m[k] over a map reads its value array (key in map's key sort); a[i] over an array
+            // or list reads its contents (index in Int). Phase 27: route map keys through the
+            // declared key sort so a Map<String, Integer> can do m["admin"] cleanly.
             String mlog = mapLogicalFor(be.leftExpression)
             Object arr = mlog != null ? mapValsFor(mlog) : arrayHandleFor(be.leftExpression)
             if (arr == null) return null
-            Object idx = translate(be.rightExpression)
+            Object idx
+            if (mlog != null) {
+                ClassNode[] pair = mapTypes.get(mlog)
+                Object kSort = sortFor(pair != null ? pair[0] : null)
+                idx = translateInSort(be.rightExpression, kSort)
+            } else {
+                idx = translate(be.rightExpression)
+            }
             if (idx == null) return null
             Object sel = session.select(arr, idx)
             if (triggerSink != null) triggerSink.add(sel)
@@ -541,14 +824,17 @@ class Encoder {
 
         // Set membership: `x in s` / `x !in s` over a known set-typed receiver. Lowers to the
         // characteristic-array query (select s x) == 1, riding Z3's array theory — so an add
-        // (a store) is related to a later membership read for free.
+        // (a store) is related to a later membership read for free. The element is translated in
+        // the receiver's element sort (Phase 27 — Int by default, String/Enum when typed).
         String sym = be.operation.text
         if (sym == 'in' || sym == '!in') {
             // `x in s` (set membership) or `k in m` (map key membership — same as m.containsKey(k)).
             String setKey = setKeyFor(be.rightExpression)
             String mapLog = setKey == null ? mapLogicalFor(be.rightExpression) : null
             if (setKey != null || mapLog != null) {
-                Object elem = translate(be.leftExpression)
+                Object elemSort = setKey != null ? setKeySortForKey(setKey) :
+                                  sortFor(mapTypes.get(mapLog) != null ? mapTypes.get(mapLog)[0] : null)
+                Object elem = translateInSort(be.leftExpression, elemSort)
                 if (elem == null) return null
                 Object setH = setKey != null ? setFor(setKey) : mapKeysFor(mapLog)
                 Object mem = member(setH, elem)
@@ -618,6 +904,13 @@ class Encoder {
                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets') ||
                          (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Sets')
         if (m == 'bounded' && isSets && args.size() == 2) {
+            // Phase 27 — Sets.bounded(s, n) inherently means s ⊆ [0, n), so it requires an Int
+            // element domain. For non-Int element sets (Set<String>, Set<Enum>, ...), the
+            // bounded-membership universal would try to assert `i ∈ s` with `i` an Int bound
+            // variable — a sort mismatch. Return null so the standard "outside fragment" skip
+            // diagnostic fires; the cardinality axiom is honestly not applicable here.
+            String key = setKeyFor(args.get(0))
+            if (key != null && setKeySortForKey(key) != session.intSort()) return null
             return translateSetsBounded(args.get(0), args.get(1))
         }
         // Sets.count(s, k) — the bounded-sum cardinality as a primitive (Phase 21), carrying its bound
@@ -626,6 +919,9 @@ class Encoder {
         if (m == 'count' && isSets && args.size() == 2) {
             String key = setKeyFor(args.get(0))
             if (key == null) return null
+            // Phase 27 — same Int-domain restriction as Sets.bounded above. The full-characterization
+            // axiom asserted on setCountOf would otherwise emit a sort-mismatched bounded universal.
+            if (setKeySortForKey(key) != session.intSort()) return null
             Object kH = translate(args.get(1))
             return kH == null ? null : setCountOf(setFor(key), kH)
         }
@@ -640,15 +936,19 @@ class Encoder {
         }
 
         // Map receivers: m.get(k) / m[k] read the value array; containsKey/size/isEmpty go through the
-        // key-set (a set, so size is its cardinality and the membership/law machinery is shared).
+        // key-set (a set, so size is its cardinality and the membership/law machinery is shared). The
+        // key argument is translated in the map's key sort (Phase 27 — Int by default, String/Enum
+        // when typed).
         String mapLog = mapLogicalFor(recv)
         if (mapLog != null) {
+            ClassNode[] mapPair = mapTypes.get(mapLog)
+            Object kSort = sortFor(mapPair != null ? mapPair[0] : null)
             if (m == 'get' && args.size() == 1) {
-                Object k = translate(args.get(0))
+                Object k = translateInSort(args.get(0), kSort)
                 return k == null ? null : session.select(mapValsFor(mapLog), k)
             }
             if (m == 'containsKey' && args.size() == 1) {
-                Object k = translate(args.get(0))
+                Object k = translateInSort(args.get(0), kSort)
                 return k == null ? null : member(mapKeysFor(mapLog), k)
             }
             if (m == 'size' && args.isEmpty()) return cardOf(mapKeysFor(mapLog))
@@ -660,10 +960,12 @@ class Encoder {
 
         // Set receivers (s.contains(x) / s.size() / s.isEmpty()) take precedence over the list/array
         // oracles below: a set is a characteristic array, its size is the uninterpreted cardinality.
+        // The element is translated in the set's element sort (Phase 27).
         String setKey = setKeyFor(recv)
         if (setKey != null) {
+            Object elemSort = setKeySortForKey(setKey)
             if (m == 'contains' && args.size() == 1) {
-                Object e = translate(args.get(0))
+                Object e = translateInSort(args.get(0), elemSort)
                 return e == null ? null : member(setFor(setKey), e)
             }
             if (m == 'size' && args.isEmpty()) return cardOf(setFor(setKey))

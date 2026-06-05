@@ -1389,6 +1389,72 @@ bounded-sum cardinality and its laws (20–22), unconditional coverage (22), rec
 call-site soundness (24), and now closure (26): **a depth-first search over a cyclic graph, every correctness
 property machine-checked, by induction, with no loops** — the goal this whole line of work was aimed at.
 
+## Phase 27 — Non-Int element domains: `String` and `Enum` in sets, maps, lists  *(shipped)*
+
+**Real-world Groovy uses string keys and enum-typed fields; the engine was Int-only until now.** Sets,
+maps, and lists modelled their elements as `Int` — fine for the DFS over a finite node domain that
+Phases 16–22 built up, but `Set<String>`, `Map<String, V>`, `List<Color>` (the everyday shapes) were
+out of fragment. This phase lifts the element-sort assumption: any literal of a recognised non-Int
+element type lowers to a constant of that type's Z3 uninterpreted sort, and all the existing
+operations (`contains`/`add`/`size`/`put`/`get`/subscript read+write) thread through that sort
+untouched.
+
+**The encoding — uninterpreted sorts plus pairwise distinct.** Each non-Int element type maps to a Z3
+uninterpreted sort (`String!Sort`, `Color!Sort`, …), declared once per name and shared across the
+session. A literal (`"admin"`, `Color.RED`) mints a constant of that sort, interned by literal text;
+on each new mint, the constant is asserted distinct from every previously-minted literal of the same
+sort. So `s.contains("admin")` and `s.contains("guest")` resolve to two different `(select s _)`
+queries — `contains("admin")` doesn't entail `contains("guest")` (refutes, with the
+counterexample-as-Groovy-literal renderer showing `f("admin")` in `fails on:`). Two enums with the
+same source-level simple name in different outer classes collapse into one sort — accepted limit.
+
+**Cross-AST-shape consistency.** A contract closure is re-parsed from text, so `Color.RED` arrives as
+`PropertyExpression(VariableExpression("Color"), "RED")`. The method body is post-resolution, so the
+same `Color.RED` arrives as `PropertyExpression(ClassExpression(C$Color), "RED")` — the nested-enum
+binary name `C$Color` diverges from the source-level `Color`. Two normalisations make them converge:
+the enum sort name is the simple name with any `$`-prefix stripped (so `C$Color` → `Color`), and the
+literal-key interning uses the property name alone (`"RED"`) — the expected sort already
+disambiguates cross-enum (`Suit.RED` vs `Color.RED` reach different sorts).
+
+**`Set<E>` / `Map<K,V>` / `List<E>` routing** — `VerifyChecker` extracts the element/key/value types
+from declared generics in `beforeVisitMethod` (`collectSetElementTypes` / `collectMapTypes` /
+`collectListElementTypes` / `collectScalarTypes`) and hands them to the `Encoder`. The encoder's
+array allocator `arrayFor` now dispatches on `[keySort, valueSort]` — a map value array becomes
+`Array KeySort -> ValueSort`, a non-Int list `Array Int -> ElemSort`. The set characteristic array
+likewise: `Array ElemSort -> Int`. Per-element-sort `card$T` / `bcount$T` functions are declared
+lazily on the backend so cardinality works for `Set<String>` the same way it does for `Set<Integer>`.
+
+**`Sets.bounded(s, n)` / `Sets.count(s, k)` are Int-only.** Both depend on the `[0, n)` Int-domain
+structure (the lowering is a bounded membership universal over Int indices). For non-Int element
+sets, both return null and the standard "outside fragment" skip diagnostic fires — honest about the
+limitation rather than emitting a silently sort-mismatched assertion.
+
+**Counterexample rendering.** A refuting String/Enum parameter's model value is recovered by
+checking equality-under-the-model against each interned literal of the same sort (Z3 may assign a
+synthetic uninterpreted-sort constant instead of one of our minted ones — string-name matching
+alone misses these cases). The repro is rendered as a Groovy literal: `f("admin")` for String,
+`f(Color.RED)` for Enum.
+
+```groovy
+class C {
+    enum Color { RED, BLUE, GREEN }
+    Set<Color> palette
+    @Requires({ !(Color.RED in palette) })
+    @Modifies({ this.palette })
+    @Ensures({ palette.size() == old.palette.size() + 1 })
+    void useRed() { palette.add(Color.RED) }
+}
+```
+
+Verifies. Drop the freshness `@Requires` and the `+ 1` refutes with `fails on: useRed()` — a
+no-op-add is one model.
+
+**Known limits.** Beyond `Sets.bounded` / `Sets.count` being Int-only: set algebra (union/
+intersection/subset) stays a loud skip (it needs an unbounded `∀x. x∈s ⇒ x∈t`); element-domain
+mixing (e.g. `Map<K, Set<V>>` nesting) is not yet wired; non-Int element domains other than String
+and Enum (records, value classes, arbitrary objects) fall through to the default-Int path and emit a
+skip. None of these need new theory — just additional collect/dispatch wiring on the same pattern.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

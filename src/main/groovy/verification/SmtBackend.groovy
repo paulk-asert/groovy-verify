@@ -48,6 +48,47 @@ interface SmtSession extends AutoCloseable {
      */
     Object boolVar(String name)
 
+    // ---- Non-Int element sorts (Phase 27) -------------------------------------------------
+    // The original surface above is Int-only — every constant, array index/value, and set
+    // element lives in {@code Int}. Phase 27 adds non-Int element domains (String, Enum) for
+    // sets/maps/lists. Existing call sites stay unchanged; the new methods sit alongside.
+
+    /**
+     * The built-in integer sort — the existing surface above is implicitly typed here.
+     * Returning it as a handle lets the Encoder mention {@code Int} uniformly when picking a
+     * key/value/element sort for an array, without the backend leaking through.
+     */
+    Object intSort()
+
+    /**
+     * Declare-or-get an uninterpreted sort by {@code name}. Idempotent — two calls with the
+     * same name return the same handle, so a {@code Set<String>} in one method and a
+     * {@code Set<String>} in another share the {@code String!Sort}. Used to model element types
+     * the encoder doesn't otherwise interpret (a Groovy {@code String} or enum class) as a
+     * decidable equality domain — Z3 reasons about distinctness, nothing else.
+     */
+    Object declareSort(String name)
+
+    /** Declare a constant of the given sort — the polymorphic generalisation of {@link #intVar}. */
+    Object varOfSort(String name, Object sort)
+
+    /**
+     * Declare-or-get a literal constant of the given sort, interned by {@code literalKey}. Two
+     * calls with the same {@code (sort, literalKey)} pair return the same handle. On each new
+     * mint within a sort, the new constant is asserted distinct from every previously-minted
+     * constant of that sort — so {@code "a" != "b"} is a fact the solver knows, lazily and
+     * pairwise (O(n) on the nth mint, O(n^2) total per sort — fine for the dozens-of-literals
+     * scale the fragment expects).
+     */
+    Object litOfSort(Object sort, String literalKey)
+
+    /**
+     * Declare an array constant {@code Array key -> val} of arbitrary key/value sorts — the
+     * polymorphic generalisation of {@link #arrayVar} ({@code Int -> Int}) and the eventual
+     * home for set characteristic arrays {@code key -> Int} and map value-arrays {@code key -> val}.
+     */
+    Object arrayVarOfSort(String name, Object keySort, Object valSort)
+
     /**
      * Apply a named uninterpreted integer function {@code Int^n -> Int} to its
      * arguments, declaring it on first use; two applications of the same
@@ -182,6 +223,14 @@ class CheckResult {
     Status status
     /** Variable name -> concrete value, populated only on REFUTED. */
     Map<String, Long> counterexample = [:]
+    /**
+     * Non-Int variable name -> the literal key text the model pinned (Phase 27). A String
+     * parameter the solver constrained to {@code "admin"} appears here as
+     * {@code [name: "admin"]}; an Enum parameter as {@code [name: "RED"]} (the property
+     * name, without the class prefix — the {@link Reporter} adds the class on render).
+     * Empty unless the refutation involves a non-Int sort.
+     */
+    Map<String, String> sortedCounterexample = [:]
     /** Free-text reason, populated on UNKNOWN. */
     String reason
     /**
