@@ -120,11 +120,13 @@ static int firstLen(List<String> xs) { xs[0].length() }
 Drop the `xs[0] != null` guard and the refutation pins a concrete failing input. The Java-style
 method idioms `xs.get(i)` / `xs.first()` / `xs.head()` / `xs.last()` / `xs.set(i, v)` lower
 through the same array-access machinery (with the bounds check synthesised so `xs.first()` on a
-possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would); only size-changing
-mutation (`xs.add` / `xs.remove`) remains deferred. Immutable-container factories
-(`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in, peephole-folding to ground SMT terms on
-`.size()`, `.contains`, `.get(literal_i)`, and the same folds lift across a local:
-`xs = List.of(1, 2, 3); xs[1]` proves `result == 20`.
+possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would). Size-changing
+mutation — `xs.add(v)`, `xs.removeLast()` / `xs.pop()`, `xs.clear()` — threads the size and
+contents oracles SSA-style and pairs with a runtime-faithful `xs.count(v)` (see the
+"Lists — mutation" beat below); only the shift-based variants (`xs.add(i, v)`, `xs.remove(i)`)
+still defer. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
+peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`, and the same
+folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 20`.
 
 **Object state — instance fields, valid by construction.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
@@ -336,6 +338,33 @@ assignment (`Set<X> u = a + b` as a fresh first-class set) is **also in**: `u` b
 whose pigeonhole, full-coverage iff, and per-element membership iff relating it to its operands are
 all asserted on mint, so subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning composes
 with every other set lowering.
+
+**Lists — mutation under a sound `@Modifies`, with count preservation faithful to Groovy's runtime.**
+A `List<Integer>` is the indexed sibling of the Set: contents under array theory + a size oracle
+that threads through every size-changing call. `xs.add(v)` stores at the new last index and
+grows the size by one; `xs.removeLast()` / `xs.pop()` shrink (refuted on empty via a synth'd
+bounds-check obligation); `xs.clear()` zeros the size and every tracked count. The bounded
+`bcount(arr, v, 0, size)` matches Groovy's GDK `xs.count(v)` faithfully across all three, so a
+stack-shaped push-then-pop *provably* preserves the count:
+
+```groovy
+class Stack {
+    List<Integer> xs
+    @Requires({ xs != null })
+    @Modifies({ this.xs })
+    @Ensures({ xs.count(v) == old.xs.count(v) })       // count preserved across a push-pop round-trip
+    void roundTrip(int v) { xs.add(v); xs.removeLast() }
+}
+```
+
+Drop the `xs.removeLast()` and the postcondition refutes (the add raised the count by one and
+there's no compensating pop). Drop the `@Requires({ xs != null })` and the implicit NPE check
+on the `xs.add(v)` receiver refutes with a concrete `roundTrip(0)` repro. The Java-style method
+idioms `xs.get(i)` / `xs.first()` / `xs.last()` / `xs.set(i, v)` ride the same machinery — the
+bounds check on `xs.first()`/`xs.last()`/`xs.removeLast()` is synthesised so pop-on-empty refutes
+the same way on an instance field as it does on a parameter. Only the shift-based variants
+(`xs.add(i, v)`, `xs.remove(i)`) still defer — their quantified shift modelling is the next
+hard slice.
 
 **Finite maps — a value array plus a key-set.** A `Map<Integer,Integer>` is modelled as its values
 (`m[k]` / `m.get(k)`, an array) together with its key domain (`m.containsKey(k)` / `k in m`, a *set*).

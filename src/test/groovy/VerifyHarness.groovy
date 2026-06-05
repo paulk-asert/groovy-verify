@@ -1860,6 +1860,16 @@ class VerifyHarness {
                         @Ensures({ xs.size() == old.xs.size() })
                         void roundTrip(int v) { xs.add(v); xs.removeLast() }
                     }''')],
+        // README Stack example anchor — push-pop preserves both size and count (the headline
+        // Phase 41 win, narrated as a Stack class in the README "Lists — mutation" beat).
+        [group: 'P40 list mutation', name: 'README Stack: roundTrip preserves count', ok: true,
+         src: tc('''class Stack {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(v) == old.xs.count(v) })
+                        void roundTrip(int v) { xs.add(v); xs.removeLast() }
+                    }''')],
 
         // ---------- Phase 41: bounded count tracking for lists ----------
         // Append of a matching element raises xs.count(v) by exactly one — the bounded-count

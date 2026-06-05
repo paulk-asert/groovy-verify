@@ -1442,12 +1442,12 @@ class C {
 Verifies. Drop the freshness `@Requires` and the `+ 1` refutes with `fails on: useRed()` — a
 no-op-add is one model.
 
-**Known limits.** Set algebra (union/intersection/subset) stays a loud skip (it needs an unbounded
-`∀x. x∈s ⇒ x∈t`); element-domain mixing (e.g. `Map<K, Set<V>>` nesting) is not yet wired; non-Int
-element domains other than String and Enum (records, value classes, arbitrary objects) fall through
-to the default-Int path and emit a skip. None of these need new theory — just additional
-collect/dispatch wiring on the same pattern. The `Sets.boundedBy`/`Sets.boundedCount` Int-only restriction
-from this phase was lifted in Phase 29 for the enum case.
+**Known limits at the time of this phase** (most since closed). Set algebra (union/intersection/
+subset) and `Map<K, Set<V>>` nesting both shipped later — see Phases 30/31/33/35 and Phase 36.
+What still skips honestly today: non-Int element domains other than String and Enum (records,
+value classes, arbitrary objects) fall through to the default-Int path. The
+`Sets.boundedBy`/`Sets.boundedCount` Int-only restriction from this phase was lifted in Phase 29
+for the enum case.
 
 ## Phase 28 — `EnumClass.values().length` folds to a ground int  *(shipped)*
 
@@ -1540,10 +1540,8 @@ verifies *without* requiring `Sets.boundedBy` — the bound was asserted at setF
 implication "this set has at most as many elements as its enum has constants" anywhere it's
 needed.
 
-**Known limits.** Set union/intersection (constructive new-set operations), nested element domains
-(`Map<K, Set<V>>`), and non-enum non-Int element domains (String, records, …) all remain as they
-were after Phase 27. Subset (`s.containsAll(t)`) over enum-element sets is added in Phase 30 below;
-the Int-element subset case still needs bounded-domain context plumbing.
+**Known limits at the time of this phase.** Subset, set union/intersection, materialised sets,
+and `Map<K, Set<V>>` nesting all shipped in subsequent phases — see Phases 30/31, 33, 35, 36.
 
 ## Phase 30 — Subset reasoning: `s.containsAll(t)` over enum-element sets  *(shipped)*
 
@@ -1578,11 +1576,10 @@ alongside the pigeonhole and full-coverage iff. So `s.size() == 0` now implies e
 absent — letting empty-subset claims (`s.containsAll(empty)`) verify by vacuous implication, and
 "this method clears the set" postconditions imply non-membership of every constant.
 
-**Known limits.** Phase 31 (below) lifts the Int-element subset restriction by threading a
-registered `Sets.boundedBy(t, n)` into the subset lowering. Phase 32 adds `s.equals(t)` as a
-two-direction composition over the same subset primitive. Set union/intersection remain
-deferred — they're *constructive* (mint a new set with a derived membership predicate) and need
-a different shape than the pure-predicate lowering here.
+**Known limits at the time of this phase** (since closed). Phase 31 lifts the Int-element
+subset restriction by threading a registered `Sets.boundedBy(t, n)` into the subset lowering;
+Phase 32 adds `s.equals(t)` as a two-direction composition; Phases 33 and 35 add inline and
+materialised set union/intersection.
 
 ## Phase 31 — Int-element subset via bounded-domain context  *(shipped)*
 
@@ -1690,9 +1687,8 @@ a covering u from either operand, the union claim doesn't hold.
 
 **Known limits.**
 
-- **Materialised set assignment** — `Set<X> u = a + b` followed by treating `u` as a fresh
-  first-class set with its own size/membership — is still out. Needs a constructive set-handle
-  mint with the membership iff axiom; bigger phase.
+- **Materialised set assignment** — `Set<X> u = a + b` as a fresh first-class set — *closed by
+  Phase 35*.
 - **`.size()` on a union/intersection** — out of scope. Needs inclusion-exclusion
   `|s ∪ t| = |s| + |t| − |s ∩ t|` to be useful; the uninterpreted `card` has no axiom relating
   cards of derived sets. Skip honestly.
