@@ -434,11 +434,12 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Bounded-sum cardinality `bcount(s,k)` — bound & full-count, earned by induction** | recursive `bcount`; `0 <= bcount(s,k) <= k` and `(0..<k).every{it in s} ⇒ bcount==k` | ✅ Phase 20 |
 | **`Sets.count(s,k)` primitive + per-add law** | a set mutation threads the bounded count: a fresh in-domain `add` raises `Sets.count(s,k)` by one | ✅ Phase 21 |
 | **Full-characterization `count==k ⟺ covers [0,k)` — and end-to-end DFS unconditional coverage** | `Sets.count(s,k)==k ⇒ u in s`; a cardinality-terminating DFS proves `start ∈ visited` with no fuel bound | ✅ Phase 22 |
-| **Completeness — closure ⇒ successor covered (the inductive step)** | `closure ∧ u∈visited ⇒ next[u]∈visited`; and `mark` breaks closure (boundary) | ✅ Phase 23 (one step) |
+| **Completeness — closure ⇒ EVERY reachable node visited** | inductive `propagate` over the chain; `mark` breaks closure (boundary) | ✅ Phase 23 / 25 |
 | **Call-site precondition soundness** | intervening mutations threaded, fresh callee formals, early-return narrowing — a precondition is checked at the *state at the call* | ✅ Phase 24 |
+| **Recursive definitions in contracts** | a recursive `chain(u,d)`/`bcount(s,k)` carries its defining equation across a lemma boundary (shared symbol + bounded-depth eq) | ✅ Phase 25 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (full: all reachable visited) | — | ⏳ later (recursive-defs in contracts; the frontier/stack invariant) |
+| DFS *completeness* (full: DFS *establishes* closure) | — | ⏳ later (the frontier/stack invariant — the one remaining DFS gap) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

@@ -487,6 +487,10 @@ currently returns `null`:
   and because fuel only decrements, two applications of the same function in one
   obligation may unfold to different depths — proofs that rely on syntactically
   equating them belong to induction (Phase 7), not here.
+  - **Upgraded in Phase 25.** This last limit is now closed: a recursive call is a *shared* symbol
+    `f#(args)` carrying its **defining equation** (per-term bounded depth) rather than an inlined body, so two
+    applications *are* the same term (congruence) and inductive proofs over a recursive contract function go
+    through. See [Phase 25](#phase-25--recursive-definitions-in-contracts-the-defining-equation-upgrade-shipped).
 
 The clean architecture is **normalise-then-SMT**: evaluate what you can, send the
 residual to the solver. One asymmetry to state plainly — normalisation helps only
@@ -1201,13 +1205,13 @@ closure". One direction of (b) lands; the rest is blocked by named, understood o
 (`closure ∧ u ∈ visited ⊢ next[u] ∈ visited`). That is the inductive *step* of completeness, discharged by
 instantiating the closure universal.
 
-**Obstacle 1 — the full induction needs recursive definitions in contracts.** Iterating the step to "the node
-`d` hops along the chain is visited" needs a `chain(u, d) = (d <= 0 ? u : chain(next[u], d-1))` term whose
-*defining equation* is visible to the induction. Today such a term inside a contract is modelled as an
-uninterpreted function (the inductive step `chain(u,d) == chain(next[u],d-1)` isn't available), so the lemma
-refutes. This is the **same recursive-definition-in-contracts gap** flagged for `bcount` cross-lemma use
-(Phase 20/21) — closing it (one-level definitional unfolding for contracted recursive functions, robust against
-the Phase-8a fuel-mismatch) is the shared next step.
+**Obstacle 1 — the full induction needs recursive definitions in contracts.** *(closed in Phase 25.)* Iterating
+the step to "the node `d` hops along the chain is visited" needs a `chain(u, d) = (d <= 0 ? u : chain(next[u],
+d-1))` term whose *defining equation* is visible to the induction. Originally such a term inside a contract was
+modelled as an uninterpreted function (the inductive step `chain(u,d) == chain(next[u],d-1)` wasn't available),
+so the lemma refuted. **Phase 25** gives it the defining equation (shared symbol + bounded-depth eq), so the
+inductive `propagate` now verifies — **closure ⇒ EVERY reachable node visited**, the full (b) half. (The same
+upgrade unblocked `bcount` cross-lemma use.)
 
 **Obstacle 2 — establishing closure needs the stack.** A `mark` that merely adds a node **breaks** closure (the
 new node's successor needn't be visited) — verified: the `@Ensures` closure refutes on a plain `visited.add(u)`.
@@ -1244,10 +1248,12 @@ So the sound fix is a **rebuild of call-site precondition checking** — fresh f
 corrected semantics — not the bounded patch first imagined. **Shipped in Phase 24 below**, where it also
 surfaced that the Phase-14 sort's recursive precondition had been passing *vacuously*.
 
-**Net.** Completeness is *not* delivered: the one-step closure consequence is proved, and the three obstacles
-between here and the full result are now precise — (1) recursive-definition reasoning in contracts, (2) the
-frontier/stack invariant, (3) the call-site intervening-mutation threading (a soundness fix). Termination,
-soundness, and unconditional coverage (Phases 16–22) stand; completeness is the remaining, well-mapped frontier.
+**Net.** Of the three obstacles this run mapped, two have since closed: (1) recursive-definition reasoning in
+contracts — **Phase 25**, which makes the full (b) half (*closure ⇒ every reachable node visited*) verify; and
+(3) the call-site intervening-mutation soundness fix — **Phase 24**. What remains for full DFS *completeness* is
+just (2): the DFS *establishing* closure needs the **frontier/stack invariant**, a genuinely larger development
+(model the recursion stack, or an inductive path predicate). Termination, soundness, unconditional coverage, and
+the closure⇒reachable half are all done.
 
 ## Phase 24 — Call-site precondition soundness  *(shipped)*
 
@@ -1294,6 +1300,44 @@ tractable by a user lemma, no engine change beyond the call-site threading.
 
 **Still not threaded (sound, documented):** a call nested as an *argument* of another call has no path step to
 anchor the replay, so it falls back to the conservative entry-state context.
+
+## Phase 25 — Recursive definitions in contracts: the defining-equation upgrade  *(shipped)*
+
+**The piece that lets an inductive proof reason about a recursive function — and the last addition needed for
+the *closure ⇒ every reachable node visited* half of completeness.** Phase 8a's symbolic unfolding *inlined* a
+pure function's body at the call site; for a *recursive* function appearing in a contract this produced
+different inlined terms at different fuel depths, so two occurrences (a goal `chain(u,d)` and the inductive
+hypothesis's `chain(next[u],d-1)`) could not be equated, and the induction refuted.
+
+**The fix — shared symbol + defining equation.** A contract-free same-class call `f(args)` is now translated to
+a *shared* uninterpreted symbol `f#(args)` (so two occurrences are the same term by congruence), and its
+**defining equation** `f#(args) == body[params↦args]` is asserted (sound by the function's purity). The body's
+own recursive calls become `f#(deeper)` terms with their own equations, so the definition unfolds *as
+equations* over shared symbols rather than as inlined terms.
+
+**The depth subtlety that made it work.** A naïve shared total unfold budget fails on an inductive function
+whose argument *drifts* (`chain(u,d) → chain(next[u],d-1) → chain(next[next[u]],d-2) → …`): the body expansion
+drains the whole budget before the goal term is ever defined. So the budget is **per-term depth**, restored
+after each top-level call — the goal and the hypothesis each get their equation independently. Depth (6) still
+reaches base cases, so the concrete unfolds (`pow2(2) == 4`) keep working.
+
+```groovy
+int chain(int u, int d) { d <= 0 ? u : chain(next[u], d - 1) }   // the d-step successor
+@Requires({ d >= 0 && 0 <= u && u < n && (u in visited) &&
+            (0..<n).every { 0 <= next[it] && next[it] < n } &&
+            (0..<n).every { !(it in visited) || (next[it] in visited) } })   // closure
+@Ensures({ chain(u, d) in visited })
+@Decreases({ d })
+void propagate(int u, int d) { if (d > 0) propagate(next[u], d - 1) }       // verified
+```
+
+**Payoff.** Two things land: the **completeness (b) half** — closure ∧ `u ∈ visited` ⇒ every node reachable
+from `u` is visited, by induction over `chain` (Phase 23's open inductive case) — and **`bcount` cross-lemma
+use**: a single-expression `bcount(s,k)` referenced in a *separate* lemma's contract, whose bound
+`0 <= bcount <= k` is proved by induction using the defining equation (the cross-lemma use the statement-form
+Phase-20 `bcount` couldn't support; a wrong bound still refutes). It is also the bounded, in-grain form of
+"recursive-definition reasoning" — no quantified function axioms, just ground defining equations to a fixed
+depth, keeping clear of the trigger cliff.
 
 ## Non-goals
 

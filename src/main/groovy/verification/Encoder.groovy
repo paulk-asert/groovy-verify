@@ -120,8 +120,17 @@ class Encoder {
 
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
-    /** Per-encoder total budget for symbolic unfolding (Phase 8a); only decrements, bounding recursion. */
-    private int unfoldFuel = 16
+    /**
+     * Per-*term* unfolding depth for the defining-equation expansion (Phase 8a). A {@code f#(args)} term
+     * asserts its equation and unfolds its body's recursive calls to {@code depth - 1}, restoring the
+     * counter afterwards — so each *top-level* call (e.g. the goal {@code chain(u,d)} and the hypothesis's
+     * {@code chain(next[u],d-1)}) gets the same depth independently, rather than draining one shared budget
+     * (which the drifting recursion of an inductive function would exhaust before the goal is even defined).
+     */
+    private static final int MAX_UNFOLD_DEPTH = 6
+    private int unfoldDepth = MAX_UNFOLD_DEPTH
+    /** Call terms {@code f#(args)} whose defining equation has already been asserted (assert-once per term). */
+    private final Set<Object> definedCalls = new HashSet<Object>()
 
     Encoder(SmtSession session, PureEvaluator pureEvaluator = null,
             Set<String> setNames = null, Set<String> mapNames = null) {
@@ -734,24 +743,37 @@ class Encoder {
         PureEvaluator.Call c = pureEvaluator.callInfo(e)
         if (c == null) return null   // not a same-class call — outside the fragment
 
-        // (2) bounded unfolding
-        if (unfoldFuel > 0) {
-            Expression body = pureEvaluator.unfoldBody(c)
-            if (body != null) {
-                unfoldFuel--
-                Object r = translate(body)
-                if (r != null) return r   // else: body had an un-encodable construct; fall to (3)
-            }
-        }
-
-        // (3) uninterpreted bottom
+        // The call as a *shared* uninterpreted symbol f#(args). Two occurrences of the same call are the
+        // same term (congruence) — which is what lets an inductive proof equate `chain(u,d)` with the
+        // hypothesis's `chain(next[u],d-1)`, where the old inline-the-body unfolding produced unequal terms
+        // at different fuel depths.
         List<Object> handles = new ArrayList<Object>()
         for (Expression a : c.args) {
             Object h = translate(a)
             if (h == null) return null
             handles.add(h)
         }
-        return session.uninterpretedFunc(c.name, handles)
+        Object fSharp = session.uninterpretedFunc(c.name, handles)
+
+        // Assert its defining equation f#(args) == body[params↦args] (the function's definition — sound by
+        // its purity). Asserted once per distinct term and fuel-bounded, so recursion unfolds to a finite
+        // depth *as equations* over the shared symbol — making the definition visible across a lemma boundary
+        // (Phase 8a, the recursive-defs-in-contracts upgrade). When fuel runs out, or the body is un-encodable,
+        // f#(args) is left fully uninterpreted — a sound over-approximation.
+        if (unfoldDepth > 0 && definedCalls.add(fSharp)) {
+            Expression body = pureEvaluator.unfoldBody(c)
+            if (body != null) {
+                int prev = unfoldDepth
+                unfoldDepth = prev - 1
+                try {
+                    Object bodyH = translate(body)
+                    if (bodyH != null) session.assertExpr(session.eq(fSharp, bodyH))
+                } finally {
+                    unfoldDepth = prev
+                }
+            }
+        }
+        return fSharp
     }
 
     /**
