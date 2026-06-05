@@ -1578,16 +1578,83 @@ alongside the pigeonhole and full-coverage iff. So `s.size() == 0` now implies e
 absent — letting empty-subset claims (`s.containsAll(empty)`) verify by vacuous implication, and
 "this method clears the set" postconditions imply non-membership of every constant.
 
-**Known limits.**
+**Known limits.** Phase 31 (below) lifts the Int-element subset restriction by threading a
+registered `Sets.boundedBy(t, n)` into the subset lowering. Phase 32 adds `s.equals(t)` as a
+two-direction composition over the same subset primitive. Set union/intersection remain
+deferred — they're *constructive* (mint a new set with a derived membership predicate) and need
+a different shape than the pure-predicate lowering here.
 
-- **Int-element subset stays deferred.** `s.containsAll(t)` over `Set<Integer>` needs a bounded
-  domain on `t` (e.g. `Sets.boundedBy(t, n)`) to close the universal; the encoder doesn't yet thread
-  that bound from a separate contract clause into the subset lowering. Honest skip today.
-- **Set union/intersection** are *constructive* — they mint a new set with a derived membership
-  predicate — and need a different shape than subset's pure-predicate lowering. Worth its own
-  small phase later; the pattern is established.
-- **`s.equals(t)`** isn't separately wired but is `s.containsAll(t) && t.containsAll(s)` —
-  a trivial follow-up if needed.
+## Phase 31 — Int-element subset via bounded-domain context  *(shipped)*
+
+**Closes the Int-side of subset.** Phase 30 lowered `s.containsAll(t)` over enum-element sets to a
+finite conjunction — the finite domain made it ground. For Int-element sets the user has to
+supply the domain via a `Sets.boundedBy(t, n)` clause; once they do, the subset lowering becomes
+the natural bounded universal `∀i. 0 <= i < n ⟹ (i ∈ t ⟹ i ∈ s)`. Same shape Phase 19 / 22
+already lean on, applied to a new predicate.
+
+**The plumbing — `intSubsetBounds`.** A per-encoder map (set-key → bound handle) is populated as
+a side-effect of `translateSetsBounded`'s Int branch: when `Sets.boundedBy(t, n)` translates, it
+records `t`'s key with `n`'s Z3 handle. A later `s.containsAll(t)` on Int sets consults this map;
+if a bound is registered, it emits the bounded universal with `(select t i)` and `(select s i)`
+as triggers. Without a bound (`Sets.boundedBy` not in scope, or `containsAll` translated *before*
+the bound clause in L-to-R AST order), the lowering returns null and the standard "outside
+fragment" skip diagnostic fires.
+
+```groovy
+class C {
+    @Requires({ Sets.boundedBy(required, n) && granted.containsAll(required) &&
+                0 <= u && u < n && u in required })
+    @Ensures({ u in granted })
+    static int check(Set<Integer> granted, Set<Integer> required, int n, int u) { 0 }
+}
+```
+
+Verifies. Reflexivity and transitivity over Int sets (with a shared bound) both go through the
+same way enum subset did in Phase 30. The bound *must* be on the subset operand (`t`), not the
+superset — the universal needs to range over `t`'s candidate elements.
+
+**Ordering caveat.** Because the bound is populated by side-effect when `Sets.boundedBy(t, n)`
+translates, a contract written `@Requires({ a.containsAll(t) && Sets.boundedBy(t, n) })` (subset
+first, bound after) skips — at the time `containsAll` is translated, the bound isn't yet
+registered. Writing the bound first (`Sets.boundedBy(t, n) && a.containsAll(t)`) works. Not a
+soundness issue (skip is honest), but a UX quirk worth knowing.
+
+## Phase 32 — `m.containsValue(v)` for enum-keyed maps + `s.equals(t)` for sets  *(shipped)*
+
+**Two small completions on top of the subset machinery.** `m.containsValue(v)` and `s.equals(t)`
+were the next items in the deferred set/map algebra row; both are small enough to ship together,
+both compose with what's already there.
+
+**32a — `m.containsValue(v)` for enum-keyed maps.** The existential mirror of Phase 30's finite
+conjunction: lower to `(m[c_1] == v) ∨ … ∨ (m[c_N] == v)` over the enum's key constants. The
+value is translated in the map's value sort (Int / String / Enum all work). Int-keyed and
+String-keyed maps skip honestly — no finite key domain to enumerate.
+
+```groovy
+class Registry {
+    enum State { IDLE, RUNNING, DONE }
+    Map<State, Integer> errorCodes
+    @Requires({ errorCodes[State.RUNNING] == 42 })
+    @Ensures({ errorCodes.containsValue(42) })
+    boolean hasError42() { errorCodes.containsValue(42) }
+}
+```
+
+Verifies: the key-pinned `[State.RUNNING] == 42` makes the `RUNNING` disjunct true, and the
+disjunction holds. Drop the `@Requires` and the postcondition rightly refutes.
+
+**32b — `s.equals(t)` for sets, by subset composition.** Pure composition, no new theory:
+`s.equals(t) ≡ s.containsAll(t) ∧ t.containsAll(s)`. Reuses the Phase 30/31 subset lowering in
+both directions. Works for any element sort the subset path handles (enum: always; Int: with
+mutual `Sets.boundedBy` bounds). Both directions need to translate; if either skips, equals does too.
+
+Reflexivity (`s.equals(s)`) is automatic. The diagnostic-form alternative to writing `s == t`
+directly — which would lower to Z3's array-equality predicate (an unbounded universal on the
+characteristic functions). The method-form path gives the user a propositionally-decomposed
+alternative Z3 reasons about as ground facts.
+
+**Known limits.** Int-keyed map `containsValue` would need a key-set bound (similar to Phase 31's
+`intSubsetBounds`) and isn't yet wired. `s.equals(t)` for Int sets without mutual bounds skips.
 
 ## Non-goals
 
