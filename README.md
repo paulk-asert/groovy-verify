@@ -115,13 +115,15 @@ nullability are tracked in the roadmap.
 **Object state — instance fields, read and written.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
 the contract's entry `count` and exit `count` are different values, related by the assignment).
-A mutator is proven to maintain its bound:
+A mutator is proven to maintain its bound — and once the bound is declared as a *class invariant*,
+every method on the receiver assumes it at entry and re-proves it at exit (so the `@Ensures` below
+is implied by the invariant):
 
 ```groovy
+@groovy.contracts.Invariant({ count >= 0 && count <= max })
 class Counter {
     int count, max
     @Requires({ count < max })
-    @Ensures({ count <= max })
     void increment() { count = count + 1 }
 }
 ```
@@ -131,6 +133,35 @@ A postcondition can relate the *exit* state to the *entry* state with `old` — 
 it leaves alone: a setter that touches only `a[j]` proves every other element is unchanged,
 `@Ensures({ (0..<a.length).every { it == j || a[it] == old.a[it] } })` (groovy-contracts clones the
 field for `old`, so this holds at runtime as well as in the proof).
+
+**String-keyed sets and maps, with the same machinery.** Sets and maps work over `Set<Integer>` /
+`Map<Integer,Integer>` and likewise over `Set<String>` / `Map<String,Integer>` (and the enum
+variants), the only change being the element sort the encoder uses — every contract idiom
+(`x in s`, `s.size()`, `m["k"]`) reads the same. The cardinality law carries across: a fresh-element
+add raises the size by one, refuted if the add isn't fresh:
+
+```groovy
+class Acl {
+    Set<String> admins
+    @Requires({ !("root" in admins) })
+    @Modifies({ this.admins })
+    @Ensures({ "root" in admins && admins.size() == old.admins.size() + 1 })
+    void grantRoot() { admins.add("root") }
+}
+```
+
+Drop the `!("root" in admins)` precondition and the `+ 1` refutes — adding a key that's already
+present is a no-op, and the verifier names exactly the postcondition that fails:
+
+```
+[Static type checking] - Cannot prove postcondition of grantRoot holds on this return path
+    ensured: ((root in admins) && (admins.size() == (old.admins.size() + 1)))
+```
+
+Same machinery, real-world types. For a method with a String or Enum parameter, the verifier
+additionally renders a `fails on: grant("…")` / `fails on: paint(Color.RED)` line — pinning the
+refuting parameter from the model as a Groovy literal — just as it does for the int-parameter
+examples above.
 
 **Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
@@ -344,7 +375,7 @@ void put(int u, int k) { s.add(u) }
 Drop the freshness guard and the `+ 1` refutes; add an element *outside* `[0, k)` and the count is
 unchanged (the law's domain guard); `remove` of a present in-domain element decrements it.
 
-**The capstone — DFS proves unconditional coverage.** The last piece is the **full-characterization**:
+**A DFS that proves the node is reached — unconditionally.** The last piece is the **full-characterization**:
 `Sets.count(s, k) == k ⟺ (0..<k).every { it ∈ s }` — a full count over a `k`-slot domain forces every node
 in (the converse of Phase 20's *full ⇒ count*). Both directions are theorems of the count, so the encoder
 asserts the iff for every `Sets.count` term. With it, a **cardinality-terminating** DFS proves the node it is
@@ -375,10 +406,11 @@ closes at the "set full" branch, where `Sets.count(visited, n) == n` forces — 
 every domain node, `u` included. It composes *everything*: sets, the functional-graph map, induction,
 caller-side set framing, bounded quantifiers, the per-add law, and the full-characterization.
 
-**What remains — completeness.** We prove the node itself is covered, **not its successors**: claiming
-`next[u] in visited` refutes for a *single* `visit` call, because a node visited earlier needn't have had its
-edge followed *yet* — that is the frontier subtlety. Completeness (*every reachable node is visited*) is the
-closure fixpoint, and it is now **fully verified**, in two halves:
+**Putting it all together — verified DFS, completeness and all.** A single `visit` call above covers
+the node it was handed but **not its successors**: claiming `next[u] in visited` refutes for that one
+call, because a node visited earlier needn't have had its edge followed *yet* — the frontier
+subtlety. *Completeness* (every reachable node is visited) is the closure fixpoint, and it is now
+**fully verified**, in two halves:
 
 - **closure ⇒ every reachable node is visited** (Phase 23/25) — the inductive `propagate` over the chain
   `chain(u,d)` (the `d`-step successor), discharged once a recursive contract function carries its defining
