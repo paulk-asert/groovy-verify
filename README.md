@@ -293,8 +293,10 @@ Drop the `!(x in s)` precondition and the `+ 1` no longer holds — `x` might al
 the proof fails with a concrete `put(2)`. **Subset** (`s.containsAll(t)`) and **equality**
 (`s.equals(t)`) are in the fragment for enum-element sets (finite-conjunction lowering over the
 enum's constants) and for Int-element sets under a `Sets.boundedBy(t, n)` context (bounded
-universal); union/intersection are still out (a constructive operation that mints a new set with
-derived membership).
+universal). **Union and intersection** are in for *inline* uses — `(a + b).contains(x)` lowers
+lazily to `x ∈ a ∨ x ∈ b`, `a.intersect(b).contains(x)` to the conjunction, and `containsAll` on a
+binop receiver chains through the finite conjunction over the enum domain. Materialised
+assignment (`Set u = a + b` as a fresh first-class set) is still out.
 
 **Finite maps — a value array plus a key-set.** A `Map<Integer,Integer>` is modelled as its values
 (`m[k]` / `m.get(k)`, an array) together with its key domain (`m.containsKey(k)` / `k in m`, a *set*).
@@ -540,8 +542,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Subset reasoning — `s.containsAll(t)` over enum-element sets** | `granted.containsAll(required) && r in required ⟹ r in granted` (authorization shape); reflexivity, transitivity, and empty-subset cases all verify; complemented by the empty iff `card(s) == 0 ⟺ no enum constant ∈ s` | ✅ Phase 30 |
 | **Subset over Int-element sets via `Sets.boundedBy(t, n)`** | Same `containsAll` shape, now for `Set<Integer>` when the subset operand has a registered bound; the bounded universal `∀i. 0<=i<n ⟹ (i ∈ t ⟹ i ∈ s)` closes via Z3 e-matching on `(select t i)` and `(select s i)` | ✅ Phase 31 |
 | **`m.containsValue(v)` for enum-keyed maps + `s.equals(t)` for sets** | `m[State.RUNNING] == 42 ⟹ m.containsValue(42)` (existential over enum keys); `s.equals(t) ≡ s.containsAll(t) ∧ t.containsAll(s)` composes subset both ways | ✅ Phase 32 |
+| **Inline set union / intersection** | `(a + b).contains(x)` → `x ∈ a ∨ x ∈ b`; `a.intersect(b).contains(x)` → conjunction; `(a + b).containsAll(u)` for enum sets via finite conjunction. Lazy lowering — no new set handle is minted | ✅ Phase 33 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
-| Set/map union/intersection (`s + t`), `Map<K, Set<V>>` nesting | — | ⏳ later |
+| Materialised set ops (`Set u = a + b`), `Map<K, Set<V>>` nesting | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
@@ -599,8 +602,10 @@ warning rather than passing silently. In expressions the fragment is:
   characteristic array, and `size()` carries a per-mutation update law (`add` of an absent
   element raises it by one), which drives a set-valued `@Decreases` measure (`n - s.size()`,
   the DFS-shaped termination argument); subset (`s.containsAll(t)`) and equality (`s.equals(t)`)
-  are in for enum-element sets and for Int-element sets under `Sets.boundedBy(t, n)`;
-  union/intersection stay outside (constructive new-set operations);
+  are in for enum-element sets and for Int-element sets under `Sets.boundedBy(t, n)`; union and
+  intersection are in for *inline* uses — `(a + b).contains(x)`, `a.intersect(b).contains(x)`,
+  and `containsAll` on a binop receiver — but the *materialised* form (`Set u = a + b` as a fresh
+  first-class set) is still out;
 - finite `Map<Integer,Integer>` — value lookup (`m[k]`, `m.get(k)`), key membership (`k in m`,
   `m.containsKey(k)`), mutation (`m.put(k,v)` / `m[k] = v`) and size (`m.size()`): a map is a
   value array plus a key-set, so a put both stores the value and adds the key (with the same

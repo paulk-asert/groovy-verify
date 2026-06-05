@@ -1285,6 +1285,65 @@ class VerifyHarness {
                         static int f(Set<Role> s) { 0 }
                     }''')],
 
+        // ---------- Phase 33: inline set union / intersection (lazy lowering on .contains, .containsAll) ----------
+        // Union .contains: membership in (a + b) follows from membership in either operand.
+        [group: 'P33 union/intersect', name: 'union: contains is disjunction of operand memberships', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ Role.ADMIN in a })
+                        @Ensures({ Role.ADMIN in (a + b) })
+                        static int f(Set<Role> a, Set<Role> b) { 0 }
+                    }''')],
+        // Soundness: union .contains refuted when neither operand contains the element.
+        [group: 'P33 union/intersect', name: 'union: contains refuted when neither operand has it',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Ensures({ Role.ADMIN in (a + b) })
+                        static int f(Set<Role> a, Set<Role> b) { 0 }
+                    }''')],
+        // Intersection .contains: membership in (a ∩ b) requires membership in BOTH operands.
+        [group: 'P33 union/intersect', name: 'intersect: contains is conjunction', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ Role.ADMIN in a && Role.ADMIN in b })
+                        @Ensures({ Role.ADMIN in a.intersect(b) })
+                        static int f(Set<Role> a, Set<Role> b) { 0 }
+                    }''')],
+        // Soundness: intersection refuted when only one operand contains the element.
+        [group: 'P33 union/intersect', name: 'intersect: contains refuted with only one operand',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ Role.ADMIN in a })
+                        @Ensures({ Role.ADMIN in a.intersect(b) })
+                        static int f(Set<Role> a, Set<Role> b) { 0 }
+                    }''')],
+        // Union .containsAll: every element of u is in a OR in b.
+        [group: 'P33 union/intersect', name: 'union: containsAll via finite conjunction', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ a.containsAll(u) })
+                        @Ensures({ (a + b).containsAll(u) })
+                        static int f(Set<Role> a, Set<Role> b, Set<Role> u) { 0 }
+                    }''')],
+        // Intersection .containsAll: every element of u must be in BOTH a and b.
+        [group: 'P33 union/intersect', name: 'intersect: containsAll via finite conjunction', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ a.containsAll(u) && b.containsAll(u) })
+                        @Ensures({ a.intersect(b).containsAll(u) })
+                        static int f(Set<Role> a, Set<Role> b, Set<Role> u) { 0 }
+                    }''')],
+        // Soundness anchor: union .containsAll refutes when neither operand alone covers u.
+        [group: 'P33 union/intersect', name: 'union: containsAll refuted with neither operand covering',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Ensures({ (a + b).containsAll(u) })
+                        static int f(Set<Role> a, Set<Role> b, Set<Role> u) { 0 }
+                    }''')],
+
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
         [group: 'README counter', name: 'Counter without @Requires refutes at construction',
          expect: 'Cannot prove class invariant',

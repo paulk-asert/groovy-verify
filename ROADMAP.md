@@ -1656,6 +1656,50 @@ alternative Z3 reasons about as ground facts.
 **Known limits.** Int-keyed map `containsValue` would need a key-set bound (similar to Phase 31's
 `intSubsetBounds`) and isn't yet wired. `s.equals(t)` for Int sets without mutual bounds skips.
 
+## Phase 33 — Inline set union / intersection  *(shipped)*
+
+**The last set-algebra slice the deferred row called out, in its tractable form.** A user writing
+`(a + b).contains(x)` or `a.intersect(b).containsAll(u)` in a contract gets the natural lowering
+without the encoder having to mint a new set handle for the binary operation's result. The result
+is treated as a *predicate context* — every method called on it lowers lazily by chaining through
+to the operands.
+
+**The encoding — lazy at the use site.** Recognised receiver shapes:
+- {@code (s + t)} — Groovy's {@code Set.plus} binary expression (BinaryExpression with PLUS op).
+- {@code s.intersect(t)} — Groovy GDK method-form intersection (MethodCallExpression).
+
+Both must be two known set names with matching element sort; otherwise honest skip. Methods on
+the result lower:
+- {@code .contains(x)}: union → {@code x ∈ s ∨ x ∈ t}; intersection → {@code x ∈ s ∧ x ∈ t}.
+- {@code .containsAll(u)} (enum element sort): finite conjunction over the enum's constants —
+  {@code (c ∈ u ⟹ c ∈ s ∨ c ∈ t)} for union, {@code (c ∈ u ⟹ c ∈ s ∧ c ∈ t)} for intersection.
+- The {@code x in (s + t)} / {@code x !in s.intersect(t)} membership operator forms route through
+  the same lowering — mirror of the method-form path.
+
+```groovy
+class C {
+    enum Role { ADMIN, USER, GUEST }
+    @Requires({ a.containsAll(u) })                   // a covers u
+    @Ensures({ (a + b).containsAll(u) })              // the union covers u — adding b only helps
+    static int f(Set<Role> a, Set<Role> b, Set<Role> u) { 0 }
+}
+```
+
+Verifies via the finite conjunction. Drop the @Requires and the @Ensures rightly refutes — without
+a covering u from either operand, the union claim doesn't hold.
+
+**Known limits.**
+
+- **Materialised set assignment** — `Set<X> u = a + b` followed by treating `u` as a fresh
+  first-class set with its own size/membership — is still out. Needs a constructive set-handle
+  mint with the membership iff axiom; bigger phase.
+- **`.size()` on a union/intersection** — out of scope. Needs inclusion-exclusion
+  `|s ∪ t| = |s| + |t| − |s ∩ t|` to be useful; the uninterpreted `card` has no axiom relating
+  cards of derived sets. Skip honestly.
+- **Int-element `containsAll` on a binop receiver** — would extend Phase 31's
+  `intSubsetBounds` plumbing to recognise a bound on the subset operand of the binop expression;
+  not yet wired. Enum is the only path today for the `containsAll`-on-binop case.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

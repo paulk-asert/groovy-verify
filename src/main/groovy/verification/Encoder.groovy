@@ -676,6 +676,85 @@ class Encoder {
      * universal on the characteristic functions); this method-form path gives the user a
      * propositionally-decomposed alternative that Z3 reasons about as ground facts.
      */
+    /**
+     * Phase 33 — a recognised inline set union/intersection: two known set names with matching
+     * element sort, combined by {@code +} (union) or {@code .intersect(...)} (intersection).
+     * The encoder never mints a new set handle for the result — that's the *materialised* mode
+     * and a separate, bigger phase. Instead, methods called on the result are lowered lazily:
+     * {@code (s + t).contains(x)} → {@code s.contains(x) ∨ t.contains(x)}, etc.
+     */
+    @CompileStatic
+    private static class SetBinop {
+        String leftKey
+        String rightKey
+        Object elemSort
+        ClassNode elemType
+        boolean isUnion           // true = union (+); false = intersection (.intersect)
+    }
+
+    /** True if {@code e} is a known set union/intersection — see {@link SetBinop}. Null otherwise. */
+    private SetBinop setBinopFor(Expression e) {
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type == Types.PLUS) {
+                return tryMakeSetBinop(be.leftExpression, be.rightExpression, true)
+            }
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (mce.methodAsString == 'intersect' && argList(mce).size() == 1) {
+                return tryMakeSetBinop(mce.objectExpression, argList(mce).get(0), false)
+            }
+        }
+        null
+    }
+
+    private SetBinop tryMakeSetBinop(Expression leftExpr, Expression rightExpr, boolean isUnion) {
+        String lKey = setKeyFor(leftExpr)
+        String rKey = setKeyFor(rightExpr)
+        if (lKey == null || rKey == null) return null
+        Object lSort = setKeySortForKey(lKey)
+        Object rSort = setKeySortForKey(rKey)
+        if (lSort != rSort) return null
+        SetBinop b = new SetBinop()
+        b.leftKey = lKey
+        b.rightKey = rKey
+        b.elemSort = lSort
+        b.elemType = elementTypeForSetKey(lKey)
+        b.isUnion = isUnion
+        b
+    }
+
+    /**
+     * Phase 33 — lower {@code (s + t).containsAll(u)} / {@code s.intersect(t).containsAll(u)} to
+     * a finite conjunction over the enum domain (or bounded Int domain), where each per-constant
+     * implication says "constant ∈ u ⟹ constant ∈ s ∨/∧ constant ∈ t". For enum-element sets,
+     * the constants come from the enum directly. Int-element binops would need a bound on {@code u}
+     * (the universal's domain), same plumbing as Phase 31; not yet wired.
+     */
+    private Object translateContainsAllOnBinop(SetBinop binop, Expression uExpr) {
+        String uKey = setKeyFor(uExpr)
+        if (uKey == null) return null
+        if (setKeySortForKey(uKey) != binop.elemSort) return null
+        // Enum-only for the binop case (Int would need a bound on u — Phase 31's plumbing applied
+        // to a binop receiver; small follow-up but not in this slice).
+        ClassNode elemType = binop.elemType
+        if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return null
+        Object sH = setFor(binop.leftKey)
+        Object tH = setFor(binop.rightKey)
+        Object uH = setFor(uKey)
+        Object enumSort = session.declareSort(enumSortName(elemType))
+        List<Object> conjuncts = new ArrayList<Object>()
+        for (String constName : enumConstantNames(elemType)) {
+            Object constLit = session.litOfSort(enumSort, constName)
+            Object inS = member(sH, constLit)
+            Object inT = member(tH, constLit)
+            Object rhs = binop.isUnion ? session.or([inS, inT]) : session.and([inS, inT])
+            conjuncts.add(session.implies(member(uH, constLit), rhs))
+        }
+        conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
+    }
+
     private Object translateSetEquals(String sKey, Expression tExpr) {
         Object forward = translateContainsAll(sKey, tExpr)
         if (forward == null) return null
@@ -1105,6 +1184,18 @@ class Encoder {
                 Object mem = member(setH, elem)
                 return sym == 'in' ? mem : session.not(mem)
             }
+            // Phase 33 — `x in (a + b)` / `x !in (a + b)` / `x in a.intersect(b)`: the lazy
+            // union/intersection lowering applied to the membership operator. Mirror of the
+            // (s + t).contains(x) path in translateMethodCall.
+            SetBinop binop = setBinopFor(be.rightExpression)
+            if (binop != null) {
+                Object elem = translateInSort(be.leftExpression, binop.elemSort)
+                if (elem == null) return null
+                Object lMem = member(setFor(binop.leftKey), elem)
+                Object rMem = member(setFor(binop.rightKey), elem)
+                Object mem = binop.isUnion ? session.or([lMem, rMem]) : session.and([lMem, rMem])
+                return sym == 'in' ? mem : session.not(mem)
+            }
         }
 
         // Nullity: x == null / x != null, before we try to translate `null`.
@@ -1276,7 +1367,26 @@ class Encoder {
                 Object q = translateSetEquals(setKey, args.get(0))
                 if (q != null) return q
             }
-            // union/intersect/etc. still need unbounded quantifiers — out of fragment, return null.
+            return null
+        }
+
+        // Phase 33 — inline set union / intersection on the receiver side: (s + t).contains(x)
+        // and s.intersect(t).contains(x) lower lazily without minting a new set handle. The
+        // operands must both be known sets with matching element sort; otherwise skip.
+        SetBinop binop = setBinopFor(recv)
+        if (binop != null) {
+            if (m == 'contains' && args.size() == 1) {
+                Object e = translateInSort(args.get(0), binop.elemSort)
+                if (e == null) return null
+                Object lMem = member(setFor(binop.leftKey), e)
+                Object rMem = member(setFor(binop.rightKey), e)
+                return binop.isUnion ? session.or([lMem, rMem]) : session.and([lMem, rMem])
+            }
+            if (m == 'containsAll' && args.size() == 1) {
+                Object q = translateContainsAllOnBinop(binop, args.get(0))
+                if (q != null) return q
+            }
+            // .size() on a binop needs inclusion-exclusion (out of scope); other ops skip too.
             return null
         }
 
