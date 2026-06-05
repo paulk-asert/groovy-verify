@@ -1476,10 +1476,13 @@ array allocator `arrayFor` now dispatches on `[keySort, valueSort]` — a map va
 likewise: `Array ElemSort -> Int`. Per-element-sort `card$T` / `bcount$T` functions are declared
 lazily on the backend so cardinality works for `Set<String>` the same way it does for `Set<Integer>`.
 
-**`Sets.bounded(s, n)` / `Sets.count(s, k)` are Int-only.** Both depend on the `[0, n)` Int-domain
-structure (the lowering is a bounded membership universal over Int indices). For non-Int element
-sets, both return null and the standard "outside fragment" skip diagnostic fires — honest about the
-limitation rather than emitting a silently sort-mismatched assertion.
+**`Sets.bounded(s, n)` / `Sets.count(s, k)` are Int-only here, generalised in Phase 29.** Both
+originally depended on the `[0, n)` Int-domain structure (the lowering is a bounded membership
+universal over Int indices). For non-Int element sets they returned null and the standard "outside
+fragment" skip diagnostic fired. Phase 29 below generalises them to enum-element sets when
+`n`/`k` matches the enum's domain size — the bounded-universal coverage becomes a finite
+conjunction over the enum's constants. The String case still skips (strings have no finite
+domain).
 
 **Counterexample rendering.** A refuting String/Enum parameter's model value is recovered by
 checking equality-under-the-model against each interned literal of the same sort (Z3 may assign a
@@ -1501,11 +1504,12 @@ class C {
 Verifies. Drop the freshness `@Requires` and the `+ 1` refutes with `fails on: useRed()` — a
 no-op-add is one model.
 
-**Known limits.** Beyond `Sets.bounded` / `Sets.count` being Int-only: set algebra (union/
-intersection/subset) stays a loud skip (it needs an unbounded `∀x. x∈s ⇒ x∈t`); element-domain
-mixing (e.g. `Map<K, Set<V>>` nesting) is not yet wired; non-Int element domains other than String
-and Enum (records, value classes, arbitrary objects) fall through to the default-Int path and emit a
-skip. None of these need new theory — just additional collect/dispatch wiring on the same pattern.
+**Known limits.** Set algebra (union/intersection/subset) stays a loud skip (it needs an unbounded
+`∀x. x∈s ⇒ x∈t`); element-domain mixing (e.g. `Map<K, Set<V>>` nesting) is not yet wired; non-Int
+element domains other than String and Enum (records, value classes, arbitrary objects) fall through
+to the default-Int path and emit a skip. None of these need new theory — just additional
+collect/dispatch wiring on the same pattern. The `Sets.bounded`/`Sets.count` Int-only restriction
+from this phase was lifted in Phase 29 for the enum case.
 
 ## Phase 28 — `EnumClass.values().length` folds to a ground int  *(shipped)*
 
@@ -1548,11 +1552,59 @@ class C {
 
 **What it unlocks (and what it doesn't).** The folded literal is usable anywhere an `int` literal is
 — upper bound of a bounded range (`(0..<Color.values().length).every { … }`), `Sets.bounded(s, n)`
-over an Int-element set, ground constraint in a postcondition. What it *doesn't* immediately give:
-`Sets.bounded` over a `Set<Color>` (Phase 27's Int-only restriction on that predicate still applies),
-or recognition of enums defined in *other* modules (only the current module's enums are walked).
-Cross-module enum support would extend `collectEnumDomainSizes` to consult the compilation unit's
-classloader; the foundation is there.
+over an Int-element set, ground constraint in a postcondition. Phase 29 below additionally uses
+the folded count to enable `Sets.bounded` / `Sets.count` over a `Set<Color>` (the FSM
+completeness shape). What this phase *doesn't* give on its own: recognition of enums defined in
+*other* modules (only the current module's enums are walked). Cross-module enum support would
+extend `collectEnumDomainSizes` to consult the compilation unit's classloader; the foundation is
+there.
+
+## Phase 29 — `Sets.bounded` / `Sets.count` generalised to enum-element sets  *(shipped)*
+
+**The "FSM proves every state handled" example, with the natural `Set<State>` spelling.** Phase 27
+step 8 honestly skipped `Sets.bounded` / `Sets.count` on non-Int element sets — the bounded
+universal `∀ i. 0<=i<n ⟹ i ∈ s` is meaningless when `s`'s elements aren't Int. For enums, the
+finite domain gives a clean substitute: enumerate the constants, write the coverage as a finite
+conjunction. This phase wires that, and lets the natural FSM completeness proof verify directly.
+
+**The encoding.** On first mint of an enum-element set (`setFor` returning a fresh handle), two
+facts the finite enum domain gives are asserted unconditionally:
+
+- **Pigeonhole**: `card(s) <= N` where N is the enum's constant count.
+- **Full-coverage iff**: `card(s) == N ⟺ c1 ∈ s ∧ … ∧ cN ∈ s` — finite conjunction over the
+  enum's constants (the same interned literals Phase 27 already mints).
+
+`Sets.bounded(s, n)` and `Sets.count(s, k)` then dispatch on element sort. For Int: the existing
+Phase 19 / 22 machinery (bounded universal). For enum, when `n`/`k` folds to the enum's domain
+size (via Phase 28's `EnumClass.values().length` recognition or a literal): `Sets.bounded(s, n)`
+lowers to `card(s) <= n ∧ (card(s) < n ∨ finite-conjunction)`, and `Sets.count(s, k)` aliases to
+`card(s)` (no partial-domain ordering on an enum, so the only meaningful count is the whole-set
+size). Non-matching `n`/`k` skips with the standard "outside fragment" diagnostic — the
+restriction is the partial-domain ambiguity, not the element sort.
+
+```groovy
+class FSM {
+    enum State { IDLE, RUNNING, DONE }
+    Set<State> handled
+    @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+    @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
+    boolean allHandled() { true }
+}
+```
+
+Verifies. `State.values().length` folds to `3` (Phase 28), `Sets.count(handled, 3)` aliases to
+`card(handled)` (Phase 29), the iff axiom `card(handled) == 3 ⟺ IDLE ∈ handled ∧ RUNNING ∈ handled
+∧ DONE ∈ handled` was asserted at the set's first use, so `@Requires` ⟹ `@Ensures`. Drop the
+`@Requires` and the postcondition rightly refutes — partial coverage can't prove every state.
+
+**Pigeonhole is automatic.** A method whose postcondition is `s.size() <= 3` over a `Set<State>`
+verifies *without* requiring `Sets.bounded` — the bound was asserted at setFor time. Same for the
+implication "this set has at most as many elements as its enum has constants" anywhere it's
+needed.
+
+**Known limits unchanged.** Set algebra (union/intersection/subset), nested element domains
+(`Map<K, Set<V>>`), and non-enum non-Int element domains (String, records, …) all remain as they
+were after Phase 27.
 
 ## Non-goals
 

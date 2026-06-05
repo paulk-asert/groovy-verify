@@ -535,7 +535,31 @@ class Encoder {
             session.setVar(key) :
             session.arrayVarOfSort(key, elemSort, session.intSort())
         setEnv.put(key, v)
+        assertEnumDomainAxioms(key, v)
         v
+    }
+
+    /**
+     * Phase 29 — for an enum-element set, assert the two facts the finite enum domain gives:
+     * (a) the pigeonhole bound {@code card(s) <= N}, and (b) the full-coverage iff
+     * {@code card(s) == N ⟺ c1 ∈ s ∧ … ∧ cN ∈ s}. Both are theorems of "{@code s} is a set over
+     * an N-constant enum domain" — asserting them lets the verifier reason about Sets.bounded
+     * and Sets.count over the enum directly, without falling out as "outside fragment" (the
+     * Phase 27 step 8 behaviour). No-op for Int-element or non-enum sets, and for map key-sets
+     * (which can have enum keys but where the *map's* key bound is the user-visible analog).
+     */
+    private void assertEnumDomainAxioms(String key, Object setH) {
+        if (key.startsWith('map$keys$')) return   // map key-sets handled via the map's own axioms
+        ClassNode elemType = elementTypeForSetKey(key)
+        if (elemType == null) return
+        if (!(elemType.isEnum() || isEnumLikeType(elemType))) return
+        int n = enumConstantNames(elemType).size()
+        if (n <= 0) return
+        Object nLit = session.intLit((long) n)
+        Object card = cardOf(setH)
+        session.assertExpr(session.le(card, nLit))                            // pigeonhole
+        Object full = finiteEnumCoverage(setH, elemType)
+        session.assertExpr(session.eq(session.eq(card, nLit), full))          // card == N ⟺ full coverage
     }
 
     /**
@@ -555,6 +579,74 @@ class Encoder {
         }
         if (name.startsWith('old$')) name = name.substring('old$'.length())
         sortFor(setElementTypes.get(name))
+    }
+
+    /**
+     * The Groovy {@link ClassNode} for the element type of a set-handle key (Phase 29). Mirror of
+     * {@link #setKeySortForKey} returning the raw type rather than the Z3 sort — used by callers
+     * that need to know "is this an enum, and how many constants does it have" to apply the
+     * enum-domain {@code Sets.bounded}/{@code Sets.count} specialisation.
+     */
+    private ClassNode elementTypeForSetKey(String key) {
+        String name = key
+        if (name.startsWith('map$keys$')) {
+            name = name.substring('map$keys$'.length())
+            if (name.startsWith('old$')) name = name.substring('old$'.length())
+            ClassNode[] pair = mapTypes.get(name)
+            return pair != null ? pair[0] : null
+        }
+        if (name.startsWith('old$')) name = name.substring('old$'.length())
+        setElementTypes.get(name)
+    }
+
+    /** Phase 29 — enum constant names on a ClassNode (filtered by JVM {@code ACC_ENUM}). */
+    private static List<String> enumConstantNames(ClassNode t) {
+        List<String> names = new ArrayList<String>()
+        for (org.codehaus.groovy.ast.FieldNode f : t.fields) {
+            if ((f.modifiers & 0x4000) != 0) names.add(f.name)
+        }
+        names
+    }
+
+    /**
+     * Phase 29 — try to fold {@code e} to a {@code Long} at translate time. Recognises ordinary
+     * integer ConstantExpressions and the Phase 28 {@code <EnumClass>.values().length} /
+     * {@code .size()} shapes. Used to detect whether a {@code Sets.bounded}/{@code Sets.count}
+     * second argument matches an enum's domain size, enabling the finite-conjunction lowering.
+     */
+    private Long tryFoldToLong(Expression e) {
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof Number) return ((Number) v).longValue()
+        }
+        if (e instanceof PropertyExpression && ((PropertyExpression) e).propertyAsString == 'length') {
+            Integer cnt = enumValuesCountFor(((PropertyExpression) e).objectExpression)
+            if (cnt != null) return cnt.longValue()
+        }
+        if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'size') {
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (argList(mce).isEmpty()) {
+                Integer cnt = enumValuesCountFor(mce.objectExpression)
+                if (cnt != null) return cnt.longValue()
+            }
+        }
+        null
+    }
+
+    /**
+     * Phase 29 — finite-domain conjunction {@code c1 ∈ s ∧ c2 ∈ s ∧ ... ∧ cN ∈ s} over the
+     * enum's constants. The encoder-side replacement for the Int-domain bounded universal
+     * {@code ∀ i. 0<=i<n ⟹ i ∈ s}, used when {@code Sets.bounded}/{@code Sets.count} reach an
+     * enum-element set with n matching the enum's domain size.
+     */
+    private Object finiteEnumCoverage(Object setH, ClassNode enumType) {
+        Object sort = session.declareSort(enumSortName(enumType))
+        List<Object> conjuncts = new ArrayList<Object>()
+        for (String constName : enumConstantNames(enumType)) {
+            Object constLit = session.litOfSort(sort, constName)
+            conjuncts.add(member(setH, constLit))
+        }
+        conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
     }
 
     /** Re-bind a set name to a new handle — threads an add/remove as {@code s := (store s x 1|0)}. */
@@ -962,13 +1054,6 @@ class Encoder {
                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets') ||
                          (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Sets')
         if (m == 'bounded' && isSets && args.size() == 2) {
-            // Phase 27 — Sets.bounded(s, n) inherently means s ⊆ [0, n), so it requires an Int
-            // element domain. For non-Int element sets (Set<String>, Set<Enum>, ...), the
-            // bounded-membership universal would try to assert `i ∈ s` with `i` an Int bound
-            // variable — a sort mismatch. Return null so the standard "outside fragment" skip
-            // diagnostic fires; the cardinality axiom is honestly not applicable here.
-            String key = setKeyFor(args.get(0))
-            if (key != null && setKeySortForKey(key) != session.intSort()) return null
             return translateSetsBounded(args.get(0), args.get(1))
         }
         // Sets.count(s, k) — the bounded-sum cardinality as a primitive (Phase 21), carrying its bound
@@ -977,11 +1062,26 @@ class Encoder {
         if (m == 'count' && isSets && args.size() == 2) {
             String key = setKeyFor(args.get(0))
             if (key == null) return null
-            // Phase 27 — same Int-domain restriction as Sets.bounded above. The full-characterization
-            // axiom asserted on setCountOf would otherwise emit a sort-mismatched bounded universal.
-            if (setKeySortForKey(key) != session.intSort()) return null
+            Object elemSort = setKeySortForKey(key)
             Object kH = translate(args.get(1))
-            return kH == null ? null : setCountOf(setFor(key), kH)
+            if (kH == null) return null
+            if (elemSort == session.intSort()) {
+                return setCountOf(setFor(key), kH)
+            }
+            // Phase 29 — enum-element set: when k equals the enum's domain size,
+            // Sets.count(s, k) is morally the set's cardinality (no partial-domain "first k
+            // constants" ordering exists). Alias to cardOf — the pigeonhole + full-coverage iff
+            // were asserted at setFor time, so the user-visible identity
+            // `Sets.count(s, N) == N ⟺ every enum constant ∈ s` follows by the iff.
+            ClassNode enumType = elementTypeForSetKey(key)
+            if (enumType != null && (enumType.isEnum() || isEnumLikeType(enumType))) {
+                Long kLong = tryFoldToLong(args.get(1))
+                int enumSize = enumConstantNames(enumType).size()
+                if (kLong != null && kLong.longValue() == (long) enumSize) {
+                    return cardOf(setFor(key))
+                }
+            }
+            return null   // non-matching k or unsupported element sort — honest skip
         }
 
         // Native GDK quantifier idioms (Phase 9) — the universal a Groovy developer would
@@ -1144,11 +1244,16 @@ class Encoder {
     }
 
     /**
-     * Lower {@code Sets.bounded(s, n)} (the cardinality axiom, Phase 19) to
-     * {@code card(s) <= n ∧ (card(s) < n ∨ ∀ i. 0 <= i < n ⟹ i ∈ s)} — "{@code s ⊆ [0,n)}":
-     * bounded by the domain, and full exactly when it covers the domain. A boolean combination of
-     * the (uninterpreted) cardinality and a bounded membership universal — both already modelled —
-     * so it is a faithful definition usable in both assume and goal positions, not a trusted axiom.
+     * Lower {@code Sets.bounded(s, n)} (the cardinality axiom) to
+     * {@code card(s) <= n ∧ (card(s) < n ∨ coverage)} where {@code coverage} is the
+     * "every domain element ∈ s" predicate. Two element-sort cases:
+     *
+     * - **Int** (Phase 19): {@code coverage = ∀ i. 0 <= i < n ⟹ i ∈ s} — bounded universal over
+     *   {@code [0, n)}, the natural domain when {@code s} is Int-element.
+     * - **Enum** (Phase 29): {@code coverage = c1 ∈ s ∧ … ∧ cN ∈ s} — finite conjunction over
+     *   the enum's constants, applied when {@code n} folds to the enum's domain size. Without an
+     *   ordering on the enum sort there is no "first n constants" notion, so non-matching {@code n}
+     *   skips with an honest "outside fragment" diagnostic.
      */
     private Object translateSetsBounded(Expression setExpr, Expression nExpr) {
         String key = setKeyFor(setExpr)
@@ -1157,8 +1262,22 @@ class Encoder {
         if (nH == null) return null
         Object setH = setFor(key)
         Object card = cardOf(setH)
-        Object everyDomain = domainCoverageForall(setH, nH)
-        session.and([session.le(card, nH), session.or([session.lt(card, nH), everyDomain])])
+        Object elemSort = setKeySortForKey(key)
+        if (elemSort == session.intSort()) {
+            Object everyDomain = domainCoverageForall(setH, nH)
+            return session.and([session.le(card, nH), session.or([session.lt(card, nH), everyDomain])])
+        }
+        // Phase 29 — enum case: only meaningful when n matches the enum's domain size.
+        ClassNode enumType = elementTypeForSetKey(key)
+        if (enumType != null && (enumType.isEnum() || isEnumLikeType(enumType))) {
+            Long nLong = tryFoldToLong(nExpr)
+            int enumSize = enumConstantNames(enumType).size()
+            if (nLong != null && nLong.longValue() == (long) enumSize) {
+                Object everyEnum = finiteEnumCoverage(setH, enumType)
+                return session.and([session.le(card, nH), session.or([session.lt(card, nH), everyEnum])])
+            }
+        }
+        null   // non-matching n or unsupported element sort — honest skip
     }
 
     /**

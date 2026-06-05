@@ -1057,6 +1057,74 @@ class VerifyHarness {
                         C(int m) { max = m; count = m + 1 }
                     }''')],
 
+        // ---------- Phase 29: Sets.bounded / Sets.count generalised to enum-element sets ----------
+        // FSM via ordinals — the workaround pattern still works.
+        [group: 'P29 enum-sets', name: 'FSM via Set<Integer> ordinals: full coverage verifies', ok: true,
+         src: tc('''class FSM {
+                        enum State { IDLE, RUNNING, DONE }
+                        Set<Integer> handled
+                        @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+                        @Ensures({ (0..<State.values().length).every { it in handled } })
+                        boolean allHandled() { true }
+                    }''')],
+        // Direct Set<State> spelling — the headline Phase 29 capability. Sets.count(s, N) where
+        // N is the enum's domain size proves every state is handled, via the iff axiom asserted
+        // at setFor time.
+        [group: 'P29 enum-sets', name: 'FSM via Set<State>: full coverage entails every state', ok: true,
+         src: tc('''class FSM {
+                        enum State { IDLE, RUNNING, DONE }
+                        Set<State> handled
+                        @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+                        @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
+                        boolean allHandled() { true }
+                    }''')],
+        // Soundness: without the full-coverage @Requires, the full-state @Ensures must refute.
+        [group: 'P29 enum-sets', name: 'partial coverage cannot prove every state',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class FSM {
+                        enum State { IDLE, RUNNING, DONE }
+                        Set<State> handled
+                        @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
+                        boolean allHandled() { true }
+                    }''')],
+        // Pigeonhole: card(Set<Enum>) <= enum.values().length asserted at setFor time, so a
+        // postcondition relying on it (s.size() <= 3 for a 3-state enum) verifies without an
+        // explicit Sets.bounded clause.
+        [group: 'P29 enum-sets', name: 'pigeonhole bound is automatic for enum sets', ok: true,
+         src: tc('''class FSM {
+                        enum State { IDLE, RUNNING, DONE }
+                        @Ensures({ s.size() <= 3 })
+                        static int f(Set<State> s) { 0 }
+                    }''')],
+        // Sets.bounded over Set<Enum> with matching n verifies (pigeonhole + iff already asserted).
+        [group: 'P29 enum-sets', name: 'Sets.bounded matching enum size verifies', ok: true,
+         src: tc('''class FSM {
+                        enum State { IDLE, RUNNING, DONE }
+                        @Requires({ Sets.bounded(s, State.values().length) })
+                        @Ensures({ s.size() <= State.values().length })
+                        static int f(Set<State> s) { 0 }
+                    }''')],
+        // Sets.bounded with NON-matching n on enum set: still skips (no partial-ordering meaning).
+        [group: 'P29 enum-sets', name: 'Sets.bounded non-matching n on enum set skipped',
+         expect: 'outside fragment',
+         src: tc('''class FSM {
+                        enum State { IDLE, RUNNING, DONE }
+                        @Requires({ Sets.bounded(s, 2) })
+                        @Ensures({ s.size() <= 2 })
+                        static int f(Set<State> s) { 0 }
+                    }''')],
+
+        // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
+        [group: 'README counter', name: 'Counter without @Requires refutes at construction',
+         expect: 'Cannot prove class invariant',
+         src: tc('''@groovy.contracts.Invariant({ count >= 0 && count <= max })
+                    class Counter {
+                        int count, max
+                        Counter(int m) { max = m }
+                        @Requires({ count < max })
+                        void increment() { count = count + 1 }
+                    }''')],
+
         // ---------- Phase 28: enum.values().length folds to a ground int ----------
         // Body context (post-resolution ClassExpression): the method returns the count, the
         // @Ensures matches the folded literal.
@@ -1990,11 +2058,14 @@ class VerifyHarness {
                         @Ensures({ s.size() <= 5 })
                         static int f(Set<String> s) { 0 }
                     }''')],
-        [group: 'P27 non-int domains', name: 'Sets.count on Set<Enum> skipped',
+        // Sets.count on Set<Enum> with k that doesn't match the enum's domain size: still skips,
+        // because without an enum ordering there's no meaning for "count of constants with ordinal < k".
+        // (The matching-k case is supported in Phase 29 — see the FSM exploration group below.)
+        [group: 'P27 non-int domains', name: 'Sets.count on Set<Enum> with non-matching k skipped',
          expect: 'outside fragment',
          src: tc('''class C {
                         enum Color { RED, BLUE, GREEN }
-                        @Requires({ Sets.count(s, 3) == 3 })
+                        @Requires({ Sets.count(s, 2) == 2 })
                         @Ensures({ s.size() >= 0 })
                         static int f(Set<Color> s) { 0 }
                     }''')],

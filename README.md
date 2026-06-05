@@ -112,20 +112,32 @@ This covers list *index* read and subscript update today; the method-call idioms
 `xs.set(i, v)`), size-changing mutation (`add`/`remove`), immutable-list detection, and element
 nullability are tracked in the roadmap.
 
-**Object state — instance fields, read and written.** Not just static functions: a method may
+**Object state — instance fields, valid by construction.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
 the contract's entry `count` and exit `count` are different values, related by the assignment).
-A mutator is proven to maintain its bound — and once the bound is declared as a *class invariant*,
-every method on the receiver assumes it at entry and re-proves it at exit (so the `@Ensures` below
-is implied by the invariant):
+A class invariant declares the bound once — every constructor proves it *at exit* (the receiver
+is valid by construction), and every method assumes it at entry and re-proves it at exit:
 
 ```groovy
 @groovy.contracts.Invariant({ count >= 0 && count <= max })
 class Counter {
     int count, max
+    @Requires({ m > 0 })
+    Counter(int m) { max = m }                  // establishes the invariant
     @Requires({ count < max })
-    void increment() { count = count + 1 }
+    void increment() { count = count + 1 }      // maintains it
 }
+```
+
+Int fields default to `0` at constructor entry (matching JVM semantics), so the constructor starts
+with `count = 0`, and the `@Requires({ m > 0 })` lets the invariant's `0 <= max` close. Drop the
+`@Requires` and the constructor refutes — with a runnable repro:
+
+```
+[Static type checking] - Cannot prove class invariant of <init> holds at method exit
+    invariant: ((count >= 0) && (count <= max))
+    counterexample: count = 0, m = -1, max = 0
+    fails on: <init>(-1)
 ```
 
 A postcondition can relate the *exit* state to the *entry* state with `old` — `@Ensures({ count
@@ -162,6 +174,27 @@ Same machinery, real-world types. For a method with a String or Enum parameter, 
 additionally renders a `fails on: grant("…")` / `fails on: paint(Color.RED)` line — pinning the
 refuting parameter from the model as a Groovy literal — just as it does for the int-parameter
 examples above.
+
+**State machines — every state handled, machine-checked.** A `Set<State>` over an `enum` has a
+finite domain the verifier exploits: the pigeonhole `handled.size() <= 3` is automatic for any
+`Set<State>` (a 3-state enum), and the iff `Sets.count(handled, N) == N ⟺ every enum constant ∈
+handled` is asserted on the set's first use. So an FSM-completeness claim becomes a one-line
+contract:
+
+```groovy
+class FSM {
+    enum State { IDLE, RUNNING, DONE }
+    Set<State> handled
+    @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+    @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
+    boolean allHandled() { true }
+}
+```
+
+Drop the `@Requires` and the postcondition rightly refutes — partial coverage can't entail
+every state. No ordinals, no workaround — the direct `Set<State>` spelling composes the enum
+literal interning, the `State.values().length` constant-folding, and the enum-domain
+pigeonhole + full-coverage iff into a single proof.
 
 **Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
@@ -500,6 +533,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **DFS establishes closure — the frontier/stack invariant** | recursion-stack `Set` ghost (push/pop), closed-except-on-stack ⇒ full closure when the stack empties | ✅ Phase 26 |
 | **Non-Int element domains — `String` and `Enum` across sets, maps, lists** | `Set<String>`/`Set<Color>`, `Map<String,Integer>`/`Map<Color,V>`, `List<String>`/`List<Color>`; `Color.RED in s`, `m["admin"]==5`, `xs[k]=="abc"`; counterexamples render the model value as a Groovy literal | ✅ Phase 27 |
 | **`EnumClass.values().length` / `.size()` folds to a ground int** | `@Requires({ k < Color.values().length })` becomes `k < 3` at translate time — usable as a literal in contracts, bounded-range upper bounds, and ground state-coverage proofs | ✅ Phase 28 |
+| **`Sets.bounded` / `Sets.count` over enum-element sets** | `Sets.count(handled, State.values().length) == State.values().length ⟹ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled` — FSM completeness verified directly with `Set<State>`; pigeonhole `card(s) <= N` automatic on every enum set | ✅ Phase 29 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), `Map<K, Set<V>>` nesting | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
