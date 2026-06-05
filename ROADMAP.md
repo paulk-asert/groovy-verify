@@ -2259,11 +2259,9 @@ class C {
   {@code pop()} only fires on parameter-resolved receivers (the {@code ObligationCollector}'s
   {@code realVar} check excludes field-resolved access). A pop-on-empty on an instance field
   isn't flagged via the implicit pass; users guard with {@code @Requires({ xs.size() > 0 })}.
-- **Implicit obligations downstream of a mutation.** {@code dischargeVfObligation} (the implicit-
-  obligation pass) replays guards and assigns but not LemmaCalls. A bounds-check site downstream
-  of {@code xs.add(v)} doesn't see the size growth and may over-refute. Practical workaround:
-  state the prior mutation's effect in a contract; checkPath (the @Ensures path) handles
-  composition correctly.
+- ~~**Implicit obligations downstream of a mutation.**~~ *Closed by Phase 42 below* —
+  {@code dischargeVfObligation} now replays Assign / Guard / LemmaCall steps in source order, so
+  the implicit pass sees the same oracle state the body-replay pass does.
 
 ## Phase 41 — Bounded list count, faithful to runtime semantics  *(shipped)*
 
@@ -2351,6 +2349,85 @@ showcase are zero-regression.
   {@code .count(v)} isn't yet summarised through the inter-procedural Phase-7 reasoning the
   way scalar postconditions are. Same gap as for scalar nullity (Phase 37) and other ensure-driven
   array facts.
+
+## Phase 42 — LemmaCall replay in the implicit-obligation pass  *(shipped)*
+
+**The Phase 40/41 follow-on.** Until Phase 42, the two verification passes ({@code checkPath} for
+postconditions and {@code dischargeVfObligation} for implicit obligations like array bounds,
+divide-by-zero, NPE) replayed different shapes of body steps. {@code checkPath} walked a Path
+whose {@code steps} include Assign / Guard / ArrayStore / LemmaCall in source order — set adds,
+map puts, list mutations all threading their oracles. {@code dischargeVfObligation} snapshotted
+{@code [guards, assigns]} only, in two separate lists. The result: a body like {@code xs.add(v);
+xs[0]} verified its {@code @Ensures} cleanly but over-refuted the bounds check on {@code xs[0]}
+(the implicit pass didn't know {@code xs.size()} had grown).
+
+**The refactor.** {@code VfObligation} now carries a single {@code steps: List<Object>} in source
+order, populated by {@code collectVfObligations} as it walks the body — Assign, Guard, *and*
+LemmaCall steps interleave the same way they do in {@code checkPath}'s Path.
+
+```groovy
+@CompileStatic
+private static class VfObligation {
+    Object site                 // IndexSite | DivideSite | DerefSite
+    List<Object> steps          // Assign | Guard | LemmaCall, in source order
+}
+```
+
+{@code dischargeVfObligation} walks the snapshot in source order, dispatching each step through
+the same handlers {@code checkPath} uses ({@code tryMaterialiseSetBinopAssign},
+{@code tryRecordFactoryAssign}, {@code applySetMutation}, {@code applyMapPut},
+{@code applyListMutation}). The two passes now see the same oracle state at the obligation site —
+no divergence, no over-refute.
+
+**Why source order matters.** Assigns / guards are commutative — they assert facts that don't
+depend on each other. LemmaCalls rebind the size and array oracles SSA-style, so a guard like
+{@code if (xs.size() > 0) …} placed *after* an {@code xs.add(v)} must see the post-mutation
+size. Replaying assigns and guards before lemmas (the obvious naïve approach) would assert the
+guard against pre-mutation oracles — unsound for the case where the guard depends on the
+mutation's effect. The single-ordered-list refactor avoids this by reusing exactly the same
+walking discipline {@code checkPath} already had.
+
+**Unrecognised LemmaCalls.** Plain callee calls (a method with no recognised mutation shape) are
+silently skipped in the implicit-pass replay, rather than throwing {@code
+UnsupportedConstructException} as {@code checkPath} does. The implicit pass is best-effort —
+"can't model this mutation" should mean "don't sharpen the downstream check", not "fail the
+build".
+
+```groovy
+class C {
+    @Requires({ xs != null })
+    static int firstAfterPush(List<Integer> xs, int v) {
+        xs.add(v)
+        xs[0]                                          // ✓ bounds discharged via post-add size
+    }
+
+    @Requires({ xs != null && xs.size() > 0 })
+    static int popThenRead(List<Integer> xs) {
+        int n = xs.size()
+        xs.removeLast()
+        xs[n - 1]                                      // ✗ refutes — size shrunk, n-1 out of bounds
+    }
+}
+```
+
+The {@code firstAfterPush} verify-side is the more visible win; the {@code popThenRead}
+refute-side is the soundness anchor (pre-Phase-42 it would have passed because the implicit pass
+didn't see the size shrink).
+
+**Known limits.**
+
+- **`countVals` not threaded into the implicit pass.** The bcount boundary law ({@link
+  applyListMutation} with non-empty {@code countVals}) is invoked only by {@code checkPath} —
+  the implicit pass passes an empty list so the per-mutation bcount facts aren't asserted. Why:
+  {@code countVals} are scoped to a postcondition's tracked {@code .count(v)} mentions, which
+  aren't relevant to implicit obligations (bounds/null/div). If a future obligation type does
+  care about counts, the threading would extend.
+- **ArrayStore step still missing.** Bracket assignment {@code xs[i] = v} becomes an
+  {@code ArrayStore} step in {@code BodyEncoder} but doesn't get recorded in the implicit-pass
+  steps list (the value-flow collector skips ArrayStore by design — its contents aren't tracked
+  there). Practical impact: an obligation downstream of an in-bounds bracket store doesn't see
+  the contents change. Rarely matters for the bounds/null/div check; could matter if a future
+  obligation depends on element values.
 
 ## Non-goals
 

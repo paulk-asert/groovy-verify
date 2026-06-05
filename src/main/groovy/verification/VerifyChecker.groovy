@@ -1038,7 +1038,7 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             List<VfObligation> sites = new ArrayList<VfObligation>()
             collectVfObligations(topStatements(body),
-                new ArrayList<Guard>(), new ArrayList<Assign>(),
+                new ArrayList<Object>(),
                 new HashSet<String>(), sites)
             for (VfObligation v : sites) dischargeVfObligation(node, v, reqAst)
         } catch (UnsupportedConstructException ignored) {
@@ -1065,12 +1065,18 @@ class VerifyChecker extends TypeCheckingExtension {
         for (DerefSite s : col.derefSites)  dischargeDeref(s, pf, reqAst)
     }
 
-    /** An implicit obligation paired with the guards and single-assignment bindings that reach it. */
+    /**
+     * An implicit obligation paired with the ordered steps that reach it. Steps are a heterogeneous
+     * list of {@link Assign} / {@link Guard} / {@link LemmaCall} entries in source order — same
+     * shape as {@code Path.steps} in the body-replay path. This ordering matters once
+     * {@link LemmaCall} entries (Phase 42) join the list: a mutation may sit between an assign and
+     * a downstream guard, and replaying the steps in source order keeps the size/contents oracles
+     * consistent across the implicit-obligation pass and the body-replay pass.
+     */
     @CompileStatic
     private static class VfObligation {
         Object site                 // IndexSite | DivideSite | DerefSite
-        List<Guard> guards
-        List<Assign> assigns
+        List<Object> steps          // Assign | Guard | LemmaCall, in source order
     }
 
     /**
@@ -1084,30 +1090,30 @@ class VerifyChecker extends TypeCheckingExtension {
      * unsupported statement so the caller can fall back to the havoc pass.
      */
     private void collectVfObligations(List<Statement> stmts,
-                                      List<Guard> guards, List<Assign> assigns,
+                                      List<Object> steps,
                                       Set<String> assigned, List<VfObligation> out) {
         for (Statement st : stmts) {
             if (st instanceof BlockStatement) {
-                collectVfObligations(((BlockStatement) st).statements, guards, assigns, assigned, out)
+                collectVfObligations(((BlockStatement) st).statements, steps, assigned, out)
                 continue
             }
             if (st instanceof IfStatement) {
                 IfStatement ifs = (IfStatement) st
                 Expression cond = ifs.booleanExpression
-                scanObligations(cond, guards, assigns, out)
+                scanObligations(cond, steps, out)
                 collectVfObligations(topStatements(ifs.ifBlock),
-                    append(guards, new Guard(cond, true)),
-                    new ArrayList<Assign>(assigns), new HashSet<String>(assigned), out)
+                    appendStep(steps, new Guard(cond, true)),
+                    new HashSet<String>(assigned), out)
                 Statement elseBlk = ifs.elseBlock
                 if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
                     collectVfObligations(topStatements(elseBlk),
-                        append(guards, new Guard(cond, false)),
-                        new ArrayList<Assign>(assigns), new HashSet<String>(assigned), out)
+                        appendStep(steps, new Guard(cond, false)),
+                        new HashSet<String>(assigned), out)
                 }
                 continue
             }
             if (st instanceof ReturnStatement) {
-                scanObligations(((ReturnStatement) st).expression, guards, assigns, out)
+                scanObligations(((ReturnStatement) st).expression, steps, out)
                 return   // rest of this list is dead on this path
             }
             if (st instanceof ExpressionStatement) {
@@ -1118,9 +1124,9 @@ class VerifyChecker extends TypeCheckingExtension {
                         throw new UnsupportedConstructException("multi-variable declaration")
                     }
                     String name = ((VariableExpression) de.leftExpression).name
-                    scanObligations(de.rightExpression, guards, assigns, out)
+                    scanObligations(de.rightExpression, steps, out)
                     if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
-                    if (de.rightExpression != null) assigns.add(new Assign(name, de.rightExpression))
+                    if (de.rightExpression != null) steps.add(new Assign(name, de.rightExpression))
                     continue
                 }
                 if (e instanceof BinaryExpression &&
@@ -1128,9 +1134,9 @@ class VerifyChecker extends TypeCheckingExtension {
                     BinaryExpression be = (BinaryExpression) e
                     if (be.leftExpression instanceof VariableExpression) {
                         String name = ((VariableExpression) be.leftExpression).name
-                        scanObligations(be.rightExpression, guards, assigns, out)
+                        scanObligations(be.rightExpression, steps, out)
                         if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
-                        assigns.add(new Assign(name, be.rightExpression))
+                        steps.add(new Assign(name, be.rightExpression))
                         continue
                     }
                     // Array-element store `a[i] = v`: not a scalar binding. Its *contents* aren't tracked
@@ -1140,13 +1146,22 @@ class VerifyChecker extends TypeCheckingExtension {
                     // understands short-circuit guards) instead of the value-flow-blind havoc fallback.
                     if (be.leftExpression instanceof BinaryExpression &&
                         ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET) {
-                        scanObligations(be.leftExpression, guards, assigns, out)
-                        scanObligations(be.rightExpression, guards, assigns, out)
+                        scanObligations(be.leftExpression, steps, out)
+                        scanObligations(be.rightExpression, steps, out)
                         continue
                     }
                     throw new UnsupportedConstructException("assignment to a non-variable target")
                 }
-                scanObligations(e, guards, assigns, out)
+                // Phase 42 — a standalone method call (xs.add(v), s.remove(x), m.put(k,v), …) is a
+                // candidate LemmaCall: it might mutate size/contents that downstream obligations
+                // depend on. Collect the call's own obligations *first* (pre-mutation state),
+                // then thread it as a LemmaCall step so downstream sites see the effect during
+                // discharge. Calls that don't match any apply-mutation handler are silently
+                // ignored at replay time — the LemmaCall is then a no-op.
+                scanObligations(e, steps, out)
+                if (e instanceof MethodCallExpression) {
+                    steps.add(new LemmaCall(e))
+                }
                 continue
             }
             // Loops, switch, try/catch, etc. — outside the value-flow fragment.
@@ -1156,7 +1171,7 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /** Collect the implicit obligations syntactically present in {@code e}, each tagged with a snapshot of context. */
-    private void scanObligations(Expression e, List<Guard> guards, List<Assign> assigns, List<VfObligation> out) {
+    private void scanObligations(Expression e, List<Object> steps, List<VfObligation> out) {
         if (e == null) return
 
         // Short-circuit / conditional operators carry a path condition *within* the expression: in
@@ -1165,48 +1180,48 @@ class VerifyChecker extends TypeCheckingExtension {
         // branch (e.g. the `a[i-1]` in `i > 0 && a[i] < a[i-1]`) is discharged under that extra guard —
         // without this, the access is checked unprotected and a perfectly safe expression is refuted.
         if (e instanceof BooleanExpression) {   // Groovy wraps if/ternary conditions
-            scanObligations(((BooleanExpression) e).expression, guards, assigns, out)
+            scanObligations(((BooleanExpression) e).expression, steps, out)
             return
         }
         if (e instanceof BinaryExpression) {
             int op = ((BinaryExpression) e).operation.type
             if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
                 BinaryExpression be = (BinaryExpression) e
-                scanObligations(be.leftExpression, guards, assigns, out)
+                scanObligations(be.leftExpression, steps, out)
                 scanObligations(be.rightExpression,
-                    append(guards, new Guard(be.leftExpression, op == Types.LOGICAL_AND)), assigns, out)
+                    appendStep(steps, new Guard(be.leftExpression, op == Types.LOGICAL_AND)), out)
                 return
             }
         }
         if (e instanceof TernaryExpression) {
             TernaryExpression te = (TernaryExpression) e
-            scanObligations(te.booleanExpression, guards, assigns, out)
-            scanObligations(te.trueExpression, append(guards, new Guard(te.booleanExpression, true)), assigns, out)
-            scanObligations(te.falseExpression, append(guards, new Guard(te.booleanExpression, false)), assigns, out)
+            scanObligations(te.booleanExpression, steps, out)
+            scanObligations(te.trueExpression, appendStep(steps, new Guard(te.booleanExpression, true)), out)
+            scanObligations(te.falseExpression, appendStep(steps, new Guard(te.booleanExpression, false)), out)
             return
         }
 
         ObligationCollector col = new ObligationCollector()
         try { e.visit(col) } catch (Throwable ignored) { return }
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() && col.derefSites.isEmpty()) return
-        List<Guard> gSnap = new ArrayList<Guard>(guards)
-        List<Assign> aSnap = new ArrayList<Assign>(assigns)
-        for (IndexSite s : col.indexSites)  out.add(mkVf(s, gSnap, aSnap))
-        for (DivideSite s : col.divideSites) out.add(mkVf(s, gSnap, aSnap))
-        for (DerefSite s : col.derefSites)  out.add(mkVf(s, gSnap, aSnap))
+        List<Object> snap = new ArrayList<Object>(steps)
+        for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
+        for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
+        for (DerefSite s : col.derefSites)  out.add(mkVf(s, snap))
     }
 
-    private static List<Guard> append(List<Guard> base, Guard g) {
-        List<Guard> r = new ArrayList<Guard>(base); r.add(g); return r
+    /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
+    private static List<Object> appendStep(List<Object> base, Object step) {
+        List<Object> r = new ArrayList<Object>(base); r.add(step); return r
     }
 
-    private static VfObligation mkVf(Object site, List<Guard> guards, List<Assign> assigns) {
+    private static VfObligation mkVf(Object site, List<Object> steps) {
         VfObligation v = new VfObligation()
-        v.site = site; v.guards = guards; v.assigns = assigns
+        v.site = site; v.steps = steps
         return v
     }
 
-    /** Discharge a value-flow obligation: assume @Requires + class invariants, replay the reaching assignments and guards, then check. */
+    /** Discharge a value-flow obligation: assume @Requires + class invariants, replay the reaching steps in source order, then check. */
     private void dischargeVfObligation(MethodNode node, VfObligation v, Expression reqAst) {
         SmtSession s = backend.session()
         try {
@@ -1216,22 +1231,34 @@ class VerifyChecker extends TypeCheckingExtension {
                 if (pre != null) s.assertExpr(pre)
             }
             // Phase 15a — class invariants are method-entry facts, assumed before any
-            // reaching assignment is replayed.
+            // reaching step is replayed.
             assumeClassInvariants(s, enc)
-            // Single-assignment locals: each name is bound once, before use, so
-            // asserting the equalities in any order recovers the reaching store. Factory and
-            // set-binop RHS shapes don't translate to a scalar handle; their record-on-assign
-            // helpers (Phase 35, Phase 38b) pin the oracles instead — so the implicit obligation
-            // discharge below sees the same nullity/size/membership facts the body-replay path does.
-            for (Assign a : v.assigns) {
-                if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
-                if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
-                Object rhs = enc.translate(a.rhs)
-                if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
-            }
-            for (Guard g : v.guards) {
-                Object c = enc.translate(g.cond)
-                if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+            // Phase 42 — replay the steps in source order. {@link Assign} factor handling
+            // (materialised sets, factories) mirrors checkPath. {@link Guard} adds a path fact.
+            // {@link LemmaCall} threads a set/map/list mutation via the same apply* handlers
+            // checkPath uses; unrecognised calls are silently ignored so the implicit pass
+            // doesn't fail on lemma-style callees that won't affect downstream oracles. The
+            // ordered walk keeps the oracles' state consistent between the two passes.
+            for (Object step : v.steps) {
+                if (step instanceof Assign) {
+                    Assign a = (Assign) step
+                    if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
+                    if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
+                    Object rhs = enc.translate(a.rhs)
+                    if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
+                } else if (step instanceof Guard) {
+                    Guard g = (Guard) step
+                    Object c = enc.translate(g.cond)
+                    if (c != null) s.assertExpr(g.positive ? c : s.not(c))
+                } else if (step instanceof LemmaCall) {
+                    Expression call = ((LemmaCall) step).call
+                    if (applySetMutation(s, enc, call)) continue
+                    if (applyMapPut(s, enc, call)) continue
+                    applyListMutation(s, enc, call, Collections.<Object>emptyList())
+                    // Note: countVals are scoped to a postcondition's @Ensures, not relevant for
+                    // implicit obligations (bounds/null/div) — pass empty so the bcount boundary
+                    // law just skips for unrelated v's. The size-thread is what we need here.
+                }
             }
             dischargeObligationUnder(s, enc, v.site)
         } finally {
