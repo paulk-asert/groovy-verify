@@ -1691,17 +1691,6 @@ class VerifyChecker extends TypeCheckingExtension {
                 session.assertExpr(f.inThenBranch ? condExpr : session.not(condExpr))
             }
 
-            // 2b. Flow-sensitivity: assume the @Ensures of the unconditional calls that ran *before*
-            //     this one on its path, so a later call's precondition can rely on an earlier call's
-            //     effect — e.g. `sort(a, n-1); insert(a, n-1)`, where insert needs the prefix sort
-            //     just established. `allowSelf` lets a recursive self-call contribute its inductive
-            //     hypothesis here too (termination is verified separately).
-            if (currentMethod != null) {
-                for (Expression pc : precedingCallExprs(currentMethod, callExpr)) {
-                    assumeCalleeEnsures(session, enc, pc, currentMethod, null, hasDecreases(currentMethod))
-                }
-            }
-
             // 2c. Early-return path narrowing: an `if (cond) return/throw` that *precedes* this call on its
             //     path means `cond` was false when we got here. Such a guard is not an *enclosing* `if`, so
             //     PathFacts misses it — yet it is a definite fact (e.g. `sumUp(n-1)` after `if (n==0) return 0`
@@ -2106,7 +2095,15 @@ class VerifyChecker extends TypeCheckingExtension {
             if (st instanceof ExpressionStatement && replayMutation(((ExpressionStatement) st).expression, enc, s)) {
                 continue
             }
-            if (standaloneCallOf(st) != null) continue
+            Expression call = standaloneCallOf(st)
+            if (call != null) {
+                // Assume a preceding standalone call's @Ensures (and frame its @Modifies), in path order.
+                // Sound now that intervening mutations are threaded above — so this generalises the old
+                // immediate-predecessor-only rule to ANY preceding call, which is what lets a lemma proved
+                // before a mutation (e.g. a monotone-bound lemma before the sort's swap) reach a later call.
+                assumeCalleeEnsures(s, enc, call, currentMethod, null, hasDecreases(currentMethod))
+                continue
+            }
             for (String loc : modifiedLocations(st)) havocLocation(enc, loc)
         }
     }

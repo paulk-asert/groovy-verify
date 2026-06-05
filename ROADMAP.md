@@ -712,13 +712,13 @@ the bug Phase 12 surfaced (a callee's `old.a` resolving to the caller's entry ma
 
 ---
 
-## Phase 14 — The sort: *sorted ∧ permutation*  *(shipped; see Phase 24)*
+## Phase 14 — The fully verified sort: *sorted ∧ permutation*  *(shipped; precondition hardened in Phase 24)*
 
-> **Updated by Phase 24.** The **postcondition** (sorted ∧ permutation) and termination verify, as described
-> below. But the sound call-site precondition checking shipped in Phase 24 revealed that `insert`'s *recursive
-> precondition* had been passing **vacuously** (a recursive-call name-conflation); its sound form is a
-> two-quantifier proof over a nested-store array that the solver times out on, so it is now a loud "could not
-> decide". The capstone's *postcondition* claim stands; its *recursive precondition* is the open follow-on.
+> **Hardened by Phase 24.** Sound call-site checking revealed `insert`'s *recursive precondition* had been
+> passing **vacuously** (a recursive-call name-conflation). Its sound form needs a *transitive* bound from
+> *adjacent* sortedness, which Z3 can't e-match — so Phase 24 restores it with a one-line **monotone-bound
+> lemma** (`maxBound`, proved by induction), whose `@Ensures` threads through the swap to the recursive call.
+> The sort is fully verified again, now *soundly* at every obligation.
 
 The capstone. A recursive in-place insertion sort proven **both** correctness halves at once —
 the result is sorted *and* a permutation of the input — under sound `@Modifies` framing (every call
@@ -1280,19 +1280,20 @@ from the enclosing `@Requires` and the enclosing-`if` path facts only. It missed
 `k ∈ s`) verifies *because* the add is threaded, and refutes without it; `sumUp`/`bcount` recursive
 preconditions now discharge *soundly* (early-return narrowing) rather than vacuously.
 
-**What it revealed — the Phase-14 sort.** The fix exposed that the capstone sort's recursive precondition
-`insert(m-1, a[m], v)` had been passing **vacuously** (the `m == m-1` conflation). The *sound* obligation —
-proving the swap preserves the sorted prefix **and** establishes the new tight `hi`-bound, a two-quantifier
-proof over a nested-store array — is valid (checked by hand) but **beyond Z3's e-matching here** (it times out;
-the trigger cliff). So under sound checking the sort verifies its **postcondition (sorted ∧ permutation) and
-termination**, while its recursive **call-site precondition** is now a loud "could not decide". This is the
-honest state, and the right one for a tool whose identity is *loud, sound-within-the-fragment*: a vacuous pass
-is exactly the silent unsoundness it claims not to have. Discharging that precondition — a user-supplied
-instantiation hint or a helper lemma (roadmap Phase 8b) — is the follow-on to restore the sort to fully green.
+**What it revealed — and restored — the Phase-14 sort.** The fix exposed that the capstone sort's recursive
+precondition `insert(m-1, a[m], v)` had been passing **vacuously** (the `m == m-1` conflation). The *sound*
+obligation needs the *transitive* bound `a[it] <= a[m-1]` (for all `it`) from *adjacent* sortedness — which
+Z3 cannot get by e-matching (it times out; the trigger cliff). So the call-site rebuild also generalised the
+preceding-call rule: **any** preceding call's `@Ensures` is now assumed in path order (sound *because* the
+intervening mutations are threaded), not just the immediate predecessor. With that, a one-line **monotone-bound
+lemma** (`maxBound`: every element of an adjacent-sorted prefix `[0,k]` is `<= a[k]`, proved by induction)
+called *before* the swap supplies the transitive bound, and its `@Ensures` threads through the swap to the
+recursive call — discharging the precondition *soundly*. The sort is fully verified again. This is also the
+project's first worked **lemma-as-instantiation-hint** (roadmap Phase 8b): a hard quantifier proof made
+tractable by a user lemma, no engine change beyond the call-site threading.
 
-**Still not threaded (sound, documented):** a *non-immediate* preceding call's `@Modifies` effect (only the
-immediately-preceding call's `@Ensures` is assumed), and a call nested as an *argument* of another call (no
-path step to anchor the replay) — both fall back to the conservative entry-state context.
+**Still not threaded (sound, documented):** a call nested as an *argument* of another call has no path step to
+anchor the replay, so it falls back to the conservative entry-state context.
 
 ## Non-goals
 

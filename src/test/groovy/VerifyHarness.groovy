@@ -359,19 +359,24 @@ class VerifyHarness {
                        @Ensures({ a.count(v) == old.a.count(v) })
                        void copy(int i, int j, int v) { a[i] = a[j] }
                    }''')],
-        // ---------- Phase 14: the sort — sorted AND a permutation ----------
+        // ---------- Phase 14: the verified sort — sorted AND a permutation ----------
         // insert threads a ghost upper bound `hi` (the recursion passes the pivot a[m] as the new,
         // tight bound), a ghost count value `v` (permutation), and frames the suffix it doesn't touch.
-        // The @Ensures (sorted ∧ permutation) and termination both verify; the ONE obligation the solver
-        // cannot discharge under sound call-site checking (Phase 24) is insert's *recursive precondition*
-        // at `insert(m-1, a[m], v)` — proving the swap preserves the prefix invariant *and* the new
-        // `hi`-bound is a two-quantifier proof over a nested-store array that Z3 times out on (the trigger
-        // cliff; it is valid, just beyond the solver here). Before Phase 24 this passed *vacuously* via a
-        // recursive-call name-conflation; the sound check now reports it as a loud "could not decide".
-        [group: 'P14 sort', name: 'insertion sort: recursive precondition is could-not-decide',
-         expect: 'Could not decide precondition of insert',
+        // Under sound call-site checking (Phase 24) the recursive precondition `insert(m-1, a[m], v)` needs
+        // the *transitive* bound `a[it] <= a[m-1]` for all it<m-1 (the new pivot bound), which Z3 cannot get
+        // from *adjacent* sortedness by e-matching (it times out). A monotone-bound LEMMA (`maxBound`, proved
+        // by induction) supplies it: called before the swap, its @Ensures threads through the swap (Phase 24)
+        // to the recursive call — and the sort is fully verified again.
+        [group: 'P14 sort', name: 'insertion sort: sorted AND permutation', ok: true,
          src: tc('''class C {
                        int[] a
+                       // lemma: every element of an adjacent-sorted prefix [0,k] is <= a[k], by induction on k.
+                       @Requires({ 0 <= k && k < a.length && (0..<k).every { a[it] <= a[it + 1] } })
+                       @Ensures({ (0..<k + 1).every { a[it] <= a[k] } })
+                       @Decreases({ k })
+                       void maxBound(int k) {
+                           if (k > 0) maxBound(k - 1)
+                       }
                        @Requires({ 0 <= m && m < a.length &&
                                    (0..<m - 1).every { a[it] <= a[it + 1] } &&
                                    (0..<m + 1).every { a[it] <= hi } })
@@ -383,6 +388,7 @@ class VerifyHarness {
                        @Decreases({ m })
                        void insert(int m, int hi, int v) {
                            if (m > 0 && a[m] < a[m - 1]) {
+                               maxBound(m - 1)
                                int t = a[m]; a[m] = a[m - 1]; a[m - 1] = t
                                insert(m - 1, a[m], v)
                            }
