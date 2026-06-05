@@ -210,6 +210,11 @@ class Z3Session implements SmtSession {
     }
 
     @Override
+    Object arraySort(Object keySort, Object valSort) {
+        ctx.mkArraySort((Sort) keySort, (Sort) valSort)
+    }
+
+    @Override
     Object arrayVarOfSort(String name, Object keySort, Object valSort) {
         // Int->Int arrays continue to use the existing storage so the counterexample model walk
         // (which iterates `arrays`) still pins their contents. Anything else lives in sortedArrays.

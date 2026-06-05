@@ -90,6 +90,15 @@ interface SmtSession extends AutoCloseable {
     Object arrayVarOfSort(String name, Object keySort, Object valSort)
 
     /**
+     * Build the array sort {@code Array key -> val} as a value — *not* a constant of that sort.
+     * Used to construct nested array sorts like {@code Array<K, Array<V, Int>>} for
+     * {@code Map<K, Set<V>>} (Phase 36): the outer map's value sort needs to be the
+     * characteristic-array sort of the inner set, but no Z3 constant is minted for the inner
+     * sort itself — only the outer map handle binds a constant.
+     */
+    Object arraySort(Object keySort, Object valSort)
+
+    /**
      * Apply a named uninterpreted integer function {@code Int^n -> Int} to its
      * arguments, declaring it on first use; two applications of the same
      * {@code name}/arity share one declaration. This is the "bottom" of bounded

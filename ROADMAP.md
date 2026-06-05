@@ -1816,6 +1816,87 @@ into either operand), so {@code result == 1} rightly refutes.
   upper bound + full-coverage iff usually suffice for FSM-shape proofs that care about
   *coverage*, not exact size.
 
+## Phase 36 — Map&lt;K, Set&lt;V&gt;&gt; nesting (read-only)  *(shipped)*
+
+**The final row-2 deferred item: nested element domains.** A {@code Map<K, Set<V>>} reads as one
+SMT array whose *value sort is itself an array sort* — the inner set's characteristic function.
+Z3's array theory has always supported this: {@code Array<K, Array<V, Int>>} is a perfectly
+ordinary sort. What was missing was the Groovy/encoder plumbing: until Phase 36, the value-type
+extraction in {@code twoGenericsOrInt} returned {@code Set} (the raw outer-level type), the
+encoder defaulted to {@code Int} as the value sort, and any subsequent {@code m[k].contains(x)}
+hit "outside fragment" because {@code m[k]} was being typed as a scalar.
+
+**The encoding — value sort lifted to an array.** A new {@code SmtSession.arraySort(key, val)}
+returns a Z3 sort *without* minting a constant (the existing {@code arrayVarOfSort} mints; we
+need just the sort to compose nested sorts). Two new collect passes:
+
+```groovy
+// VerifyChecker
+currentNestedSetValueTypes = collectNestedSetValueTypes(node)   // Map<String, ClassNode>: mapName → V
+```
+
+drive a small change in {@code Encoder.mapValueSort}:
+
+```groovy
+ClassNode nestedElem = nestedSetValueTypes.get(name)
+if (nestedElem != null) {
+    return session.arraySort(sortFor(nestedElem), session.intSort())
+}
+// existing: sortFor(pair[1])
+```
+
+so the map's value array now mints as {@code Array<K, Array<V, Int>>} — and {@code select(map, k)}
+yields a transient inner-set term that the existing {@code member}/{@code select} machinery
+already handles.
+
+**The dispatch.** A new {@code nestedSetReceiverFor(Expression)} recognises {@code m[k]} for a
+known nested-set map, resolving it to {@code select(mapValsFor(m), translatedKey)} packaged with
+the inner element sort and {@link ClassNode}. Both {@link #translateMethodCall} (for
+{@code .contains}/{@code .containsAll}) and {@link #translateBinary} (for the {@code in} /
+{@code !in} operator) consult it before falling through to the existing receiver shapes:
+
+```groovy
+// translateMethodCall
+NestedSetReceiver nr = nestedSetReceiverFor(recv)
+if (nr != null) {
+    if (m == 'contains') return member(nr.innerSet, translateInSort(args.get(0), nr.innerElemSort))
+    if (m == 'containsAll') return translateNestedContainsAll(nr, args.get(0))
+    return null
+}
+```
+
+{@code translateNestedContainsAll} is a finite conjunction over V's enum constants — structurally
+the same shape as Phase 30's {@link #translateContainsAll}, but operating on a transient inner-set
+term instead of a named handle.
+
+```groovy
+class C {
+    enum Role { ADMIN, USER, GUEST }
+    @Requires({ m[Role.ADMIN].containsAll(s) && Role.USER in s })
+    @Ensures({ Role.USER in m[Role.ADMIN] })
+    static int f(Map<Role, Set<Role>> m, Set<Role> s) { 0 }
+}
+```
+
+Verifies. The finite conjunction over {@code Role} constants closes the gap between
+"{@code m[ADMIN]} covers {@code s}" and "{@code USER} is in {@code m[ADMIN]}" once
+{@code USER ∈ s} is in scope.
+
+**Known limits.**
+
+- **Read-only.** {@code m[k] = newSet} (replacing the whole set at a key) and {@code m[k].add(x)}
+  (in-place inner-set mutation) are out. The former needs the existing map-put plumbing to thread
+  array-valued stores; the latter needs SSA on a *transient* inner handle plus the per-mutation
+  cardinality law. Together they're a separate ~3-day phase.
+- **No `m[k].size()`.** Cardinality of a transient inner set would need to mint a named handle on
+  the fly so {@link SmtSession#setCard} could apply — out of scope; skips honestly.
+- **`m[k].containsAll(s)` over Int-element inner sets.** Would need Phase 31's
+  {@code intSubsetBounds} applied to a transient receiver — parallels the Phase-33-known-limit
+  for Int-binop {@code containsAll}; not yet wired. Enum-V inner sets are the only path today.
+- **One layer of nesting.** {@code Map<K1, Map<K2, Set<V>>>} (three-level nesting) isn't
+  recognised: {@code collectNestedSetValueTypes} introspects only one level deep. Genuinely
+  rare; not pursued.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

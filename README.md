@@ -544,8 +544,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`m.containsValue(v)` for enum-keyed maps + `s.equals(t)` for sets** | `m[State.RUNNING] == 42 ⟹ m.containsValue(42)` (existential over enum keys); `s.equals(t) ≡ s.containsAll(t) ∧ t.containsAll(s)` composes subset both ways | ✅ Phase 32 |
 | **Inline set union / intersection** | `(a + b).contains(x)` → `x ∈ a ∨ x ∈ b`; `a.intersect(b).contains(x)` → conjunction; `(a + b).containsAll(u)` for enum sets via finite conjunction. Lazy lowering — no new set handle is minted | ✅ Phase 33 |
 | **Materialised set ops** | `Set<X> u = a + b` (or `as Set<X>` on `a.intersect(b)`) mints `u` as a first-class set: subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning, the enum-domain pigeonhole/full-coverage iff/empty iff axioms, and the per-element membership iff relating `u` to its operands all light up automatically | ✅ Phase 35 |
+| **`Map<K, Set<V>>` nesting (read)** | `m[k].contains(x)` / `x in m[k]` / `m[k].containsAll(s)` over `Map<Role, Set<V>>` — the map's value sort is the inner set's characteristic-array sort `Array<V, Int>`, so `m[k]` reads as a transient SMT array (no named handle minted). Inner-set mutation and `m[k].size()` are deferred | ✅ Phase 36 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
-| `Map<K, Set<V>>` nesting | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

@@ -137,6 +137,13 @@ class VerifyChecker extends TypeCheckingExtension {
     private Map<String, ClassNode> currentSetElementTypes = new HashMap<String, ClassNode>()
     /** Names of {@code java.util.Map}-typed params/fields visible to the current method (see {@link #currentSetElementTypes}). */
     private Map<String, ClassNode[]> currentMapTypes = new HashMap<String, ClassNode[]>()
+    /**
+     * Phase 36 — for each {@code Map<K, Set<V>>} param/field visible to the current method, the inner
+     * {@code Set}'s element type {@code V}. The value sort of such a map becomes the characteristic-array
+     * sort {@code Array<V, Int>}, so {@code m[k]} reads as a transient set handle the encoder can lower
+     * {@code .contains}/{@code .containsAll} through.
+     */
+    private Map<String, ClassNode> currentNestedSetValueTypes = new HashMap<String, ClassNode>()
     /** Names of {@code java.util.List}-typed params/fields with non-Int element types (Phase 27). */
     private Map<String, ClassNode> currentListElementTypes = new HashMap<String, ClassNode>()
     /**
@@ -163,7 +170,8 @@ class VerifyChecker extends TypeCheckingExtension {
     /** New Encoder wired with the current class's pure-function evaluator and set/map/list-typed names with element types. */
     private Encoder mkEncoder(SmtSession session) {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
-                    currentListElementTypes, currentScalarTypes, currentEnumDomainSizes)
+                    currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
+                    currentNestedSetValueTypes)
     }
 
     /**
@@ -191,6 +199,45 @@ class VerifyChecker extends TypeCheckingExtension {
         ClassNode dc = node.declaringClass
         if (dc != null) for (FieldNode f : dc.fields) if (isMapType(f.type)) out.put(f.name, twoGenericsOrInt(f.type))
         out
+    }
+
+    /**
+     * Phase 36 — for each visible {@code Map<K, Set<V>>}, the inner {@code Set}'s element type
+     * {@code V}. The map's value type goes through two layers of generics ({@code gens[1]} of the
+     * map, then {@code gens[0]} of that {@code Set}); any layer that isn't parameterised drops the
+     * map from the result, so {@code Map<K, Set>} (raw inner set) won't be treated as nested.
+     */
+    private static Map<String, ClassNode> collectNestedSetValueTypes(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) {
+            if (isMapType(p.type)) {
+                ClassNode elem = nestedSetElementType(p.type)
+                if (elem != null) out.put(p.name, elem)
+            }
+        }
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) {
+            if (isMapType(f.type)) {
+                ClassNode elem = nestedSetElementType(f.type)
+                if (elem != null) out.put(f.name, elem)
+            }
+        }
+        out
+    }
+
+    /** The inner element type of a {@code Map<_, Set<X>>}, or null if the value isn't a parameterised Set. */
+    private static ClassNode nestedSetElementType(ClassNode mapType) {
+        try {
+            def mapGens = mapType?.genericsTypes
+            if (mapGens == null || mapGens.length < 2) return null
+            ClassNode valueType = mapGens[1].type
+            if (valueType == null || !isSetType(valueType)) return null
+            def setGens = valueType.genericsTypes
+            if (setGens == null || setGens.length < 1 || setGens[0].type == null) return null
+            return setGens[0].type
+        } catch (Throwable ignored) {
+            return null
+        }
     }
 
     /**
@@ -734,6 +781,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
         currentSetElementTypes = collectSetElementTypes(node)
         currentMapTypes = collectMapTypes(node)
+        currentNestedSetValueTypes = collectNestedSetValueTypes(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
@@ -829,6 +877,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentIsConstructor = false
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
+            currentNestedSetValueTypes = new HashMap<String, ClassNode>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentEnumDomainSizes = new HashMap<String, Integer>()

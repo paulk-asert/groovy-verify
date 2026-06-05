@@ -1423,6 +1423,63 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- Phase 36: Map<K, Set<V>> nesting (read-only) ----------
+        // Enum key + enum value set: x in m[k] over Map<Role, Set<Role>> lowers to membership in
+        // the inner set, an SMT array term (no named handle minted). Round-trip identity.
+        [group: 'P36 nested map<set>', name: 'enum/enum: in m[k] round-trip', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ Role.USER in m[Role.ADMIN] })
+                        @Ensures({ Role.USER in m[Role.ADMIN] })
+                        static int f(Map<Role, Set<Role>> m) { 0 }
+                    }''')],
+        // m[k].contains(x) as method-form sibling of `in` — same lowering through
+        // translateMethodCall instead of translateBinary.
+        [group: 'P36 nested map<set>', name: 'enum/enum: m[k].contains round-trip', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ m[Role.ADMIN].contains(Role.USER) })
+                        @Ensures({ m[Role.ADMIN].contains(Role.USER) })
+                        static int f(Map<Role, Set<Role>> m) { 0 }
+                    }''')],
+        // Soundness: m[k] at one key tells us nothing about m[k'] at another key.
+        [group: 'P36 nested map<set>', name: 'enum/enum: distinct keys do not leak membership',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ Role.USER in m[Role.ADMIN] })
+                        @Ensures({ Role.USER in m[Role.GUEST] })
+                        static int f(Map<Role, Set<Role>> m) { 0 }
+                    }''')],
+        // containsAll on the nested set: m[k] covers an enum-element subset s ⟹ every constant of
+        // s is in m[k]. Finite conjunction over the inner enum domain.
+        [group: 'P36 nested map<set>', name: 'enum/enum: m[k].containsAll(s) over enum V', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ m[Role.ADMIN].containsAll(s) && Role.USER in s })
+                        @Ensures({ Role.USER in m[Role.ADMIN] })
+                        static int f(Map<Role, Set<Role>> m, Set<Role> s) { 0 }
+                    }''')],
+        // Non-enum inner element type: Map<Role, Set<Integer>>. Membership lowers through the
+        // Int sort cleanly; .containsAll over Int element domain is out of scope (needs
+        // bounded universal with intSubsetBounds on a transient receiver — known limit).
+        [group: 'P36 nested map<set>', name: 'enum/Int: in m[k] over Set<Integer> values', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ 42 in m[Role.ADMIN] })
+                        @Ensures({ 42 in m[Role.ADMIN] })
+                        static int f(Map<Role, Set<Integer>> m) { 0 }
+                    }''')],
+        // Composes with Phase 32a's containsKey: m.containsKey rides the independent key-set,
+        // which is unaffected by the nested-value-sort change.
+        [group: 'P36 nested map<set>', name: 'enum/enum: m.containsKey still works alongside nested values', ok: true,
+         src: tc('''class C {
+                        enum Role { ADMIN, USER, GUEST }
+                        @Requires({ m.containsKey(Role.ADMIN) && Role.USER in m[Role.ADMIN] })
+                        @Ensures({ m.containsKey(Role.ADMIN) })
+                        static int f(Map<Role, Set<Role>> m) { 0 }
+                    }''')],
+
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
         [group: 'README counter', name: 'Counter without @Requires refutes at construction',
          expect: 'Cannot prove class invariant',

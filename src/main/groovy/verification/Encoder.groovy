@@ -112,6 +112,13 @@ class Encoder {
      */
     private final Map<String, ClassNode[]> mapTypes
     /**
+     * Phase 36 — for each {@code Map<K, Set<V>>} param/field, the inner {@code Set}'s element type
+     * {@code V}. The map's value sort routes through {@link SmtSession#arraySort} to the
+     * characteristic-array sort {@code Array<V, Int>}, so {@code m[k]} reads as an array term the
+     * encoder lowers downstream membership/{@code containsAll} through.
+     */
+    private final Map<String, ClassNode> nestedSetValueTypes
+    /**
      * Source-level names known to be {@code java.util.List}-typed, each mapped to its declared
      * element type (Phase 27). The encoder defaults Lists to Int-element when no type hint is supplied
      * (today's behaviour), so this map is populated only for non-Int element domains.
@@ -172,7 +179,8 @@ class Encoder {
             Map<String, ClassNode[]> mapTypes = null,
             Map<String, ClassNode> listElementTypes = null,
             Map<String, ClassNode> scalarTypes = null,
-            Map<String, Integer> enumDomainSizes = null) {
+            Map<String, Integer> enumDomainSizes = null,
+            Map<String, ClassNode> nestedSetValueTypes = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -180,6 +188,7 @@ class Encoder {
         this.listElementTypes = listElementTypes != null ? listElementTypes : new HashMap<String, ClassNode>()
         this.scalarTypes = scalarTypes != null ? scalarTypes : new HashMap<String, ClassNode>()
         this.enumDomainSizes = enumDomainSizes != null ? enumDomainSizes : new HashMap<String, Integer>()
+        this.nestedSetValueTypes = nestedSetValueTypes != null ? nestedSetValueTypes : new HashMap<String, ClassNode>()
     }
 
     /**
@@ -303,11 +312,26 @@ class Encoder {
         ClassNode[] pair = mapTypes.get(name)
         sortFor(pair != null ? pair[0] : null)
     }
-    /** The Z3 sort for a map receiver's value type. */
+    /**
+     * The Z3 sort for a map receiver's value type. For a nested-set map {@code Map<K, Set<V>>}
+     * (Phase 36), this is the characteristic-array sort {@code Array<V, Int>} so the map's
+     * declared handle has the right shape for {@code select(map, k)} to return an array term.
+     */
     Object mapValueSort(String name) {
+        ClassNode nestedElem = nestedSetValueTypes.get(name)
+        if (nestedElem != null) {
+            return session.arraySort(sortFor(nestedElem), session.intSort())
+        }
         ClassNode[] pair = mapTypes.get(name)
         sortFor(pair != null ? pair[1] : null)
     }
+
+    /**
+     * Phase 36 — the inner set's element {@link ClassNode} for a {@code Map<_, Set<V>>}, or null
+     * for a non-nested map. Used by the {@code m[k].contains}/{@code m[k].containsAll} lowerings
+     * to route the argument through the right element sort.
+     */
+    ClassNode nestedSetElementTypeFor(String mapName) { nestedSetValueTypes.get(mapName) }
     /** The Z3 sort for the element type of a list receiver name, or Int if unknown. */
     Object listElementSort(String name) { sortFor(listElementTypes.get(name)) }
 
@@ -511,9 +535,9 @@ class Encoder {
         if (name.startsWith('map$vals$')) {
             String logical = name.substring('map$vals$'.length())
             if (logical.startsWith('old$')) logical = logical.substring('old$'.length())
-            ClassNode[] pair = mapTypes.get(logical)
-            return [sortFor(pair != null ? pair[0] : null),
-                    sortFor(pair != null ? pair[1] : null)] as Object[]
+            // mapValueSort handles the Phase 36 nested-set case (Array<V, Int>) — call it instead
+            // of re-deriving from mapTypes so a Map<K, Set<V>> mints with the right value sort.
+            return [mapKeySort(logical), mapValueSort(logical)] as Object[]
         }
         String n = name
         if (n.startsWith('old$')) n = n.substring('old$'.length())
@@ -792,6 +816,63 @@ class Encoder {
             Object inT = member(tH, constLit)
             Object rhs = binop.isUnion ? session.or([inS, inT]) : session.and([inS, inT])
             conjuncts.add(session.implies(member(uH, constLit), rhs))
+        }
+        conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
+    }
+
+    /**
+     * Phase 36 — a recognised {@code m[k]} receiver on a {@code Map<K, Set<V>>}, resolved to the
+     * inner set as an SMT array term. Carries the inner element {@link ClassNode} so containsAll
+     * over an enum-V domain knows the constant set to enumerate.
+     */
+    @CompileStatic
+    private static class NestedSetReceiver {
+        Object innerSet         // SMT array term: select(map$vals, k)
+        Object innerElemSort    // Z3 sort of V
+        ClassNode innerElemType // Groovy type of V (for enum-domain dispatch)
+    }
+
+    /**
+     * If {@code e} is {@code m[k]} for a known {@code Map<K, Set<V>>} (Phase 36), return the
+     * resolved nested set; null otherwise. The key is translated in the map's key sort, so
+     * an enum key like {@code Role.ADMIN} routes through {@code translateInSort} cleanly.
+     */
+    private NestedSetReceiver nestedSetReceiverFor(Expression e) {
+        if (!(e instanceof BinaryExpression)) return null
+        BinaryExpression be = (BinaryExpression) e
+        if (be.operation.type != Types.LEFT_SQUARE_BRACKET) return null
+        String mapName = mapLogicalFor(be.leftExpression)
+        if (mapName == null) return null
+        ClassNode innerType = nestedSetValueTypes.get(mapName)
+        if (innerType == null) return null
+        Object kSort = mapKeySort(mapName)
+        Object k = translateInSort(be.rightExpression, kSort)
+        if (k == null) return null
+        NestedSetReceiver r = new NestedSetReceiver()
+        r.innerSet = session.select(mapValsFor(mapName), k)
+        r.innerElemSort = sortFor(innerType)
+        r.innerElemType = innerType
+        r
+    }
+
+    /**
+     * Phase 36 — lower {@code m[k].containsAll(s)} for a nested-set map with enum-element V:
+     * finite conjunction {@code ∧ (c ∈ s ⟹ c ∈ m[k])} over V's constants. Int-element / String-
+     * element inner sets would need a bound on the subset operand (Phase 31's intSubsetBounds
+     * applied to a transient receiver); not wired in this slice.
+     */
+    private Object translateNestedContainsAll(NestedSetReceiver nr, Expression tExpr) {
+        String tKey = setKeyFor(tExpr)
+        if (tKey == null) return null
+        if (setKeySortForKey(tKey) != nr.innerElemSort) return null
+        ClassNode elemType = nr.innerElemType
+        if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return null
+        Object tH = setFor(tKey)
+        Object enumSort = session.declareSort(enumSortName(elemType))
+        List<Object> conjuncts = new ArrayList<Object>()
+        for (String constName : enumConstantNames(elemType)) {
+            Object constLit = session.litOfSort(enumSort, constName)
+            conjuncts.add(session.implies(member(tH, constLit), member(nr.innerSet, constLit)))
         }
         conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
     }
@@ -1237,6 +1318,15 @@ class Encoder {
                 Object mem = binop.isUnion ? session.or([lMem, rMem]) : session.and([lMem, rMem])
                 return sym == 'in' ? mem : session.not(mem)
             }
+            // Phase 36 — `x in m[k]` over a known Map<K, Set<V>>: lower to membership in the inner
+            // set (an SMT array term, never minted as a named handle).
+            NestedSetReceiver nr = nestedSetReceiverFor(be.rightExpression)
+            if (nr != null) {
+                Object elem = translateInSort(be.leftExpression, nr.innerElemSort)
+                if (elem == null) return null
+                Object mem = member(nr.innerSet, elem)
+                return sym == 'in' ? mem : session.not(mem)
+            }
         }
 
         // Nullity: x == null / x != null, before we try to translate `null`.
@@ -1406,6 +1496,22 @@ class Encoder {
             // the whole thing skips honestly.
             if (m == 'equals' && args.size() == 1) {
                 Object q = translateSetEquals(setKey, args.get(0))
+                if (q != null) return q
+            }
+            return null
+        }
+
+        // Phase 36 — `m[k].contains(x)` / `m[k].containsAll(s)` on a Map<K, Set<V>>: lower through
+        // the inner set as a transient SMT array term, never minted as a named handle. .size() and
+        // mutations on the inner set are out of scope (would need to mint a handle and update law).
+        NestedSetReceiver nr = nestedSetReceiverFor(recv)
+        if (nr != null) {
+            if (m == 'contains' && args.size() == 1) {
+                Object e = translateInSort(args.get(0), nr.innerElemSort)
+                return e == null ? null : member(nr.innerSet, e)
+            }
+            if (m == 'containsAll' && args.size() == 1) {
+                Object q = translateNestedContainsAll(nr, args.get(0))
                 if (q != null) return q
             }
             return null
