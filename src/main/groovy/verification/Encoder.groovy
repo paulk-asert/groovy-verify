@@ -23,6 +23,7 @@ import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.CastExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
@@ -694,6 +695,10 @@ class Encoder {
 
     /** True if {@code e} is a known set union/intersection — see {@link SetBinop}. Null otherwise. */
     private SetBinop setBinopFor(Expression e) {
+        // Unwrap an outer cast — e.g. `a.intersect(b) as Set<Role>` (Groovy's GDK intersect returns
+        // Collection, so a Set-typed target needs the explicit cast). The cast doesn't change the
+        // set semantics; the wrapped expression is the one we recognise.
+        if (e instanceof CastExpression) e = ((CastExpression) e).expression
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             if (be.operation.type == Types.PLUS) {
@@ -732,6 +737,42 @@ class Encoder {
      * the constants come from the enum directly. Int-element binops would need a bound on {@code u}
      * (the universal's domain), same plumbing as Phase 31; not yet wired.
      */
+    /**
+     * Phase 35 — materialise {@code Set<X> u = a + b} or {@code Set<X> u = a.intersect(b)}: register
+     * {@code u} as a known set local with the same element type as the operands, mint its handle,
+     * and emit the per-element membership iff axiom relating {@code u} to {@code a} and {@code b}.
+     * Once registered, every existing set capability (subset, equals, containsValue via map joins,
+     * cardinality update laws on subsequent mutations, pigeonhole/full-coverage iff/empty iff via
+     * {@link #assertEnumDomainAxioms}) picks up {@code u} as a first-class set.
+     *
+     * Enum-element domain only in this slice: the per-constant membership iff is a finite
+     * conjunction. Int-element and uninterpreted-sort cases would need an unbounded universal with
+     * trigger on {@code select(u, x)} — pulls in quantifier reasoning on every membership query,
+     * deferred. Returns {@code true} on success so the caller can short-circuit the int-SSA path.
+     */
+    boolean tryMaterialiseSetBinopAssign(String name, Expression rhs) {
+        SetBinop binop = setBinopFor(rhs)
+        if (binop == null) return false
+        ClassNode elemType = binop.elemType
+        if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return false
+        // Commit: register u's element type *before* setFor mints the handle, so its enum-domain
+        // axioms (pigeonhole + full-coverage iff + empty iff, all theorems of the iff below) fire.
+        setElementTypes.put(name, elemType)
+        Object uH = setFor(name)
+        Object aH = setFor(binop.leftKey)
+        Object bH = setFor(binop.rightKey)
+        Object enumSort = session.declareSort(enumSortName(elemType))
+        for (String constName : enumConstantNames(elemType)) {
+            Object c = session.litOfSort(enumSort, constName)
+            Object inU = member(uH, c)
+            Object inA = member(aH, c)
+            Object inB = member(bH, c)
+            Object rhsExpr = binop.isUnion ? session.or([inA, inB]) : session.and([inA, inB])
+            session.assertExpr(session.eq(inU, rhsExpr))
+        }
+        true
+    }
+
     private Object translateContainsAllOnBinop(SetBinop binop, Expression uExpr) {
         String uKey = setKeyFor(uExpr)
         if (uKey == null) return null

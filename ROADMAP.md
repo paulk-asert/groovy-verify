@@ -1746,6 +1746,76 @@ per assertion; not pursued today. The cache is also process-wide rather than per
 class-file digests is a much larger phase (file-system layout, invalidation on dependency
 upgrades, cross-machine reproducibility) and the in-memory wins were already worthwhile alone.
 
+## Phase 35 — Materialised set ops  *(shipped)*
+
+**Lifts Phase 33's predicate form to a value form.** Phase 33 lowered {@code (a + b).contains(x)}
+and friends *at the use site* — no new set handle minted, the binop stayed a predicate context.
+Phase 35 takes the next step: an *assignment* whose RHS is a set union or intersection mints a
+fresh set handle for the left-hand side, with the full per-element membership iff relating it to
+its operands. Every existing set capability — subset, equals, cardinality update laws on
+subsequent mutations, the enum-domain pigeonhole / full-coverage iff / empty iff axioms — picks
+up the new local automatically.
+
+**Detection.** The body's {@code DeclarationExpression} already becomes an {@code Assign} step in
+{@code BodyEncoder}. The new branch in {@code VerifyChecker}'s {@code Assign} handler runs
+{@code Encoder.tryMaterialiseSetBinopAssign(name, rhs)} *before* the int-SSA path. The encoder
+reuses Phase 33's {@code setBinopFor} (now also unwrapping an outer {@code CastExpression}, so
+{@code Set<Role> u = a.intersect(b) as Set<Role>} — needed because Groovy's GDK
+{@code Collection.intersect} returns {@code Collection}) — and on a match commits:
+
+```groovy
+setElementTypes.put(name, binop.elemType)   // u becomes a "known set" downstream
+Object uH = setFor(name)                     // mint the handle (auto-asserts enum-domain axioms)
+for (String c : enumConstantNames(elemType)) {
+    Object inU = member(uH, lit(c))
+    Object inA = member(setFor(binop.leftKey),  lit(c))
+    Object inB = member(setFor(binop.rightKey), lit(c))
+    Object rhs = binop.isUnion ? or([inA, inB]) : and([inA, inB])
+    session.assertExpr(eq(inU, rhs))         // c ∈ u ⟺ c ∈ a OP c ∈ b
+}
+```
+
+**Why this composes for free.** Because {@code u} is registered in {@code setElementTypes}, the
+encoder's existing {@code setFor(name)} machinery — which auto-asserts pigeonhole
+({@code card(u) ≤ N}), full-coverage iff, and empty iff for enum-element sets — fires on the
+mint. Everything downstream that already reasons about set parameters and fields
+({@code u.containsAll(z)}, {@code u.equals(v)}, {@code Sets.boundedCount(u, k)}) now reasons
+about {@code u} the same way; there's no special "materialised set" path elsewhere in the
+codebase. The membership iff is the *only* extra fact Phase 35 emits.
+
+```groovy
+class C {
+    enum Role { ADMIN, USER, GUEST }
+    @Requires({ Role.ADMIN in a })
+    @Ensures({ result == 1 })
+    static int f(Set<Role> a, Set<Role> b) {
+        Set<Role> u = a + b
+        Role.ADMIN in u ? 1 : 0     // provable: the iff makes ADMIN ∈ u true under @Requires
+    }
+}
+```
+
+Verifies. Drop the @Requires and the else-branch becomes feasible (no constraint forces ADMIN
+into either operand), so {@code result == 1} rightly refutes.
+
+**Known limits.**
+
+- **Enum-element domain only.** Int-element and uninterpreted-sort set binops would need an
+  unbounded universal with trigger on {@code select(u, x)} — pulls in quantifier reasoning for
+  every downstream membership query, deferred (parallels Phase 33's Int-binop {@code containsAll}
+  known limit).
+- **First assignment only.** A reassignment {@code u = a + c} after the original
+  {@code u = a + b} isn't supported — the materialise path is the *declaration* form. Groovy
+  rarely reassigns local sets, so this hasn't hurt in practice.
+- **Cast handling stops at the outer expression.** A nested cast inside one of the operands —
+  e.g. {@code (a as Set) + b} — works because the outer expression is the {@code +} binop, but a
+  cast wrapping the whole thing on the *right* hand side is the only cast we unwrap. Reasonable
+  given the GDK signature it's there to satisfy.
+- **No inclusion-exclusion.** {@code card(u) = card(a) + card(b) − card(a ∩ b)} for a union is
+  still out (Phase 33's known limit on {@code .size()} of a binop). The enum-domain pigeonhole
+  upper bound + full-coverage iff usually suffice for FSM-shape proofs that care about
+  *coverage*, not exact size.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

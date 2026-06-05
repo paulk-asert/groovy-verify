@@ -1455,6 +1455,15 @@ class VerifyChecker extends TypeCheckingExtension {
                     session.assertExpr(g.positive ? c : session.not(c))
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
+                    // Phase 35 — Set<X> u = a + b / Set<X> u = a.intersect(b): if the RHS is a
+                    // recognised set union/intersection over a single element sort, the encoder
+                    // materialises u as a first-class set with the membership iff axiom, skipping
+                    // the int-SSA path entirely. currentSetElementTypes is shared by reference with
+                    // the encoder's setElementTypes, so the new local becomes visible to subsequent
+                    // expressions (including applySetMutation's containsKey check below) automatically.
+                    if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) {
+                        continue
+                    }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated
                     // against the current binding (the pre-assignment value), so a mutation like
                     // `count = count + 1` becomes `count#1 == count + 1` (not the false `count == count + 1`)

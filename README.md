@@ -543,8 +543,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Subset over Int-element sets via `Sets.boundedBy(t, n)`** | Same `containsAll` shape, now for `Set<Integer>` when the subset operand has a registered bound; the bounded universal `∀i. 0<=i<n ⟹ (i ∈ t ⟹ i ∈ s)` closes via Z3 e-matching on `(select t i)` and `(select s i)` | ✅ Phase 31 |
 | **`m.containsValue(v)` for enum-keyed maps + `s.equals(t)` for sets** | `m[State.RUNNING] == 42 ⟹ m.containsValue(42)` (existential over enum keys); `s.equals(t) ≡ s.containsAll(t) ∧ t.containsAll(s)` composes subset both ways | ✅ Phase 32 |
 | **Inline set union / intersection** | `(a + b).contains(x)` → `x ∈ a ∨ x ∈ b`; `a.intersect(b).contains(x)` → conjunction; `(a + b).containsAll(u)` for enum sets via finite conjunction. Lazy lowering — no new set handle is minted | ✅ Phase 33 |
+| **Materialised set ops** | `Set<X> u = a + b` (or `as Set<X>` on `a.intersect(b)`) mints `u` as a first-class set: subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning, the enum-domain pigeonhole/full-coverage iff/empty iff axioms, and the per-element membership iff relating `u` to its operands all light up automatically | ✅ Phase 35 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
-| Materialised set ops (`Set u = a + b`), `Map<K, Set<V>>` nesting | — | ⏳ later |
+| `Map<K, Set<V>>` nesting | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
