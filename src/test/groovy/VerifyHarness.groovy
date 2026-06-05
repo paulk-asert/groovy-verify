@@ -1057,24 +1057,24 @@ class VerifyHarness {
                         C(int m) { max = m; count = m + 1 }
                     }''')],
 
-        // ---------- Phase 29: Sets.bounded / Sets.count generalised to enum-element sets ----------
+        // ---------- Phase 29: Sets.boundedBy / Sets.boundedCount generalised to enum-element sets ----------
         // FSM via ordinals — the workaround pattern still works.
         [group: 'P29 enum-sets', name: 'FSM via Set<Integer> ordinals: full coverage verifies', ok: true,
          src: tc('''class FSM {
                         enum State { IDLE, RUNNING, DONE }
                         Set<Integer> handled
-                        @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+                        @Requires({ Sets.boundedCount(handled, State.values().length) == State.values().length })
                         @Ensures({ (0..<State.values().length).every { it in handled } })
                         boolean allHandled() { true }
                     }''')],
-        // Direct Set<State> spelling — the headline Phase 29 capability. Sets.count(s, N) where
+        // Direct Set<State> spelling — the headline Phase 29 capability. Sets.boundedCount(s, N) where
         // N is the enum's domain size proves every state is handled, via the iff axiom asserted
         // at setFor time.
         [group: 'P29 enum-sets', name: 'FSM via Set<State>: full coverage entails every state', ok: true,
          src: tc('''class FSM {
                         enum State { IDLE, RUNNING, DONE }
                         Set<State> handled
-                        @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+                        @Requires({ Sets.boundedCount(handled, State.values().length) == State.values().length })
                         @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
                         boolean allHandled() { true }
                     }''')],
@@ -1089,27 +1089,27 @@ class VerifyHarness {
                     }''')],
         // Pigeonhole: card(Set<Enum>) <= enum.values().length asserted at setFor time, so a
         // postcondition relying on it (s.size() <= 3 for a 3-state enum) verifies without an
-        // explicit Sets.bounded clause.
+        // explicit Sets.boundedBy clause.
         [group: 'P29 enum-sets', name: 'pigeonhole bound is automatic for enum sets', ok: true,
          src: tc('''class FSM {
                         enum State { IDLE, RUNNING, DONE }
                         @Ensures({ s.size() <= 3 })
                         static int f(Set<State> s) { 0 }
                     }''')],
-        // Sets.bounded over Set<Enum> with matching n verifies (pigeonhole + iff already asserted).
-        [group: 'P29 enum-sets', name: 'Sets.bounded matching enum size verifies', ok: true,
+        // Sets.boundedBy over Set<Enum> with matching n verifies (pigeonhole + iff already asserted).
+        [group: 'P29 enum-sets', name: 'Sets.boundedBy matching enum size verifies', ok: true,
          src: tc('''class FSM {
                         enum State { IDLE, RUNNING, DONE }
-                        @Requires({ Sets.bounded(s, State.values().length) })
+                        @Requires({ Sets.boundedBy(s, State.values().length) })
                         @Ensures({ s.size() <= State.values().length })
                         static int f(Set<State> s) { 0 }
                     }''')],
-        // Sets.bounded with NON-matching n on enum set: still skips (no partial-ordering meaning).
-        [group: 'P29 enum-sets', name: 'Sets.bounded non-matching n on enum set skipped',
+        // Sets.boundedBy with NON-matching n on enum set: still skips (no partial-ordering meaning).
+        [group: 'P29 enum-sets', name: 'Sets.boundedBy non-matching n on enum set skipped',
          expect: 'outside fragment',
          src: tc('''class FSM {
                         enum State { IDLE, RUNNING, DONE }
-                        @Requires({ Sets.bounded(s, 2) })
+                        @Requires({ Sets.boundedBy(s, 2) })
                         @Ensures({ s.size() <= 2 })
                         static int f(Set<State> s) { 0 }
                     }''')],
@@ -1169,13 +1169,58 @@ class VerifyHarness {
                         @Ensures({ granted.containsAll(required) })
                         void grant(Set<Role> required, Role r) { granted.add(r) }
                     }''')],
-        // Int-element subset: deferred until bounded-domain plumbing lands. Honest skip today.
-        [group: 'P30 subset', name: 'containsAll: Int-element subset skipped',
+        // Int-element subset WITHOUT a bound on the subset operand still skips honestly.
+        [group: 'P30 subset', name: 'containsAll: Int-element subset without bound skipped',
          expect: 'outside fragment',
          src: tc('''class C {
                         @Requires({ a.containsAll(b) })
                         @Ensures({ true })
                         static int f(Set<Integer> a, Set<Integer> b) { 0 }
+                    }''')],
+
+        // ---------- Phase 31: Int-element s.containsAll(t) via bounded-domain context ----------
+        // With Sets.boundedBy(t, n) registered, subset entails membership transfer for any in-domain
+        // element — the bounded-universal lowering instantiates at the in-bounds witness.
+        [group: 'P31 int-subset', name: 'Int subset with Sets.boundedBy verifies membership transfer', ok: true,
+         src: tc('''class C {
+                        @Requires({ Sets.boundedBy(required, n) && granted.containsAll(required) &&
+                                    0 <= u && u < n && u in required })
+                        @Ensures({ u in granted })
+                        static int f(Set<Integer> granted, Set<Integer> required, int n, int u) { 0 }
+                    }''')],
+        // Soundness: without the containsAll, membership in required doesn't transfer to granted.
+        [group: 'P31 int-subset', name: 'Int subset: membership without subset refuted',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ Sets.boundedBy(required, n) && 0 <= u && u < n && u in required })
+                        @Ensures({ u in granted })
+                        static int f(Set<Integer> granted, Set<Integer> required, int n, int u) { 0 }
+                    }''')],
+        // Reflexivity: s.containsAll(s) once s is bounded — the bounded universal degenerates
+        // to ∀i. 0<=i<n ⟹ (i ∈ s ⟹ i ∈ s), trivially true.
+        [group: 'P31 int-subset', name: 'Int subset: reflexivity', ok: true,
+         src: tc('''class C {
+                        @Requires({ Sets.boundedBy(s, n) })
+                        @Ensures({ s.containsAll(s) })
+                        static int f(Set<Integer> s, int n) { 0 }
+                    }''')],
+        // Transitivity: a ⊇ b ∧ b ⊇ c ⟹ a ⊇ c, when all three are bounded by the same n. Z3
+        // chains the bounded universals via the shared range guard.
+        [group: 'P31 int-subset', name: 'Int subset: transitivity', ok: true,
+         src: tc('''class C {
+                        @Requires({ Sets.boundedBy(b, n) && Sets.boundedBy(c, n) &&
+                                    a.containsAll(b) && b.containsAll(c) })
+                        @Ensures({ a.containsAll(c) })
+                        static int f(Set<Integer> a, Set<Integer> b, Set<Integer> c, int n) { 0 }
+                    }''')],
+        // Bound on the SUPERSET (not the subset operand) doesn't unblock — the universal needs
+        // to range over the subset's domain. Honest skip.
+        [group: 'P31 int-subset', name: 'Int subset: bound on superset only still skips',
+         expect: 'outside fragment',
+         src: tc('''class C {
+                        @Requires({ Sets.boundedBy(granted, n) && granted.containsAll(required) })
+                        @Ensures({ true })
+                        static int f(Set<Integer> granted, Set<Integer> required, int n) { 0 }
                     }''')],
 
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
@@ -1489,16 +1534,16 @@ class VerifyHarness {
                     }''')],
 
         // ---------- Phase 19: the cardinality axiom — pigeonhole over a bounded domain ----------
-        // Sets.bounded(s, n) ≜ s ⊆ [0,n): |s| <= n, and full iff it covers the domain. This is the
+        // Sets.boundedBy(s, n) ≜ s ⊆ [0,n): |s| <= n, and full iff it covers the domain. This is the
         // bridge the uninterpreted cardinality (Phase 16) lacked — relating |s| to actual membership.
         // FULL ⟹ MEMBER: a bounded set of size n contains every node of the domain (pigeonhole).
         [group: 'P19 cardinality', name: 'full bounded set covers the domain', ok: true,
          src: tc('''class C {
-                        @Requires({ Sets.bounded(s, n) && s.size() == n && 0 <= u && u < n })
+                        @Requires({ Sets.boundedBy(s, n) && s.size() == n && 0 <= u && u < n })
                         @Ensures({ u in s })
                         static int f(Set<Integer> s, int n, int u) { 0 }
                     }''')],
-        // Soundness: without Sets.bounded there is no link from size to membership → cannot conclude u in s.
+        // Soundness: without Sets.boundedBy there is no link from size to membership → cannot conclude u in s.
         [group: 'P19 cardinality', name: 'coverage needs the bound (refuted)', expect: 'Cannot prove postcondition',
          src: tc('''class C {
                         @Requires({ s.size() == n && 0 <= u && u < n })
@@ -1508,7 +1553,7 @@ class VerifyHarness {
         // The size bound itself: a domain-bounded set has at most n elements.
         [group: 'P19 cardinality', name: 'bounded set size is at most n', ok: true,
          src: tc('''class C {
-                        @Requires({ Sets.bounded(s, n) })
+                        @Requires({ Sets.boundedBy(s, n) })
                         @Ensures({ s.size() <= n })
                         static int f(Set<Integer> s, int n) { 0 }
                     }''')],
@@ -1516,7 +1561,7 @@ class VerifyHarness {
         // cardinality-terminating DFS needs at its coverage branch (an unvisited in-domain node ⟹ room remains).
         [group: 'P19 cardinality', name: 'a hole means the set is not full', ok: true,
          src: tc('''class C {
-                        @Requires({ Sets.bounded(s, n) && 0 <= u && u < n && !(u in s) })
+                        @Requires({ Sets.boundedBy(s, n) && 0 <= u && u < n && !(u in s) })
                         @Ensures({ s.size() < n })
                         static int f(Set<Integer> s, int n, int u) { 0 }
                     }''')],
@@ -1545,7 +1590,7 @@ class VerifyHarness {
                         }
                     }''')],
         // FULL ⇒ COUNT = k: if every node of [0,k) is in s, the bounded count is exactly k. This ties the
-        // count to actual membership (the direction `Sets.bounded`'s pigeonhole gives), proved by induction
+        // count to actual membership (the direction `Sets.boundedBy`'s pigeonhole gives), proved by induction
         // — the recursion's @Requires `(0..<k-1).every{...}` follows from the caller's over [0,k).
         [group: 'P20 bcount', name: 'full domain ⇒ bcount(s,k) == k', ok: true,
          src: tc('''class C {
@@ -1571,15 +1616,15 @@ class VerifyHarness {
                         }
                     }''')],
 
-        // ---------- Phase 21: the bcount per-add law (Sets.count as a primitive) ----------
-        // Sets.count(s, k) is the bounded count as a primitive, carrying its bound axiom and a per-mutation
+        // ---------- Phase 21: the bcount per-add law (Sets.boundedCount as a primitive) ----------
+        // Sets.boundedCount(s, k) is the bounded count as a primitive, carrying its bound axiom and a per-mutation
         // law. Adding a FRESH, in-domain element raises the count by exactly one — the bcount analogue of
         // the per-store `count` law, now threading the count across a set mutation.
         [group: 'P21 bcount law', name: 'fresh in-domain add increments count', ok: true,
          src: tc('''class C { Set<Integer> s
                         @Requires({ 0 <= u && u < k && !(u in s) })
                         @Modifies({ this.s })
-                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })
+                        @Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) + 1 })
                         void put(int u, int k) { s.add(u) }
                     }''')],
         // Soundness: drop the freshness guard and the count need not grow (u may already be present).
@@ -1587,7 +1632,7 @@ class VerifyHarness {
          src: tc('''class C { Set<Integer> s
                         @Requires({ 0 <= u && u < k })
                         @Modifies({ this.s })
-                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })
+                        @Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) + 1 })
                         void put(int u, int k) { s.add(u) }
                     }''')],
         // The domain guard matters: adding an element OUTSIDE [0,k) leaves the bounded count unchanged.
@@ -1595,7 +1640,7 @@ class VerifyHarness {
          src: tc('''class C { Set<Integer> s
                         @Requires({ u >= k })
                         @Modifies({ this.s })
-                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) })
+                        @Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) })
                         void put(int u, int k) { s.add(u) }
                     }''')],
         // Remove of a present, in-domain element drops the bounded count by one.
@@ -1603,23 +1648,23 @@ class VerifyHarness {
          src: tc('''class C { Set<Integer> s
                         @Requires({ 0 <= u && u < k && (u in s) })
                         @Modifies({ this.s })
-                        @Ensures({ Sets.count(s, k) == Sets.count(old.s, k) - 1 })
+                        @Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) - 1 })
                         void drop(int u, int k) { s.remove(u) }
                     }''')],
         // The bound axiom rides the primitive: a domain-bounded count never exceeds its bound.
         [group: 'P21 bcount law', name: 'primitive count carries its bound', ok: true,
          src: tc('''class C {
                         @Requires({ k >= 0 })
-                        @Ensures({ 0 <= Sets.count(s, k) && Sets.count(s, k) <= k })
+                        @Ensures({ 0 <= Sets.boundedCount(s, k) && Sets.boundedCount(s, k) <= k })
                         static int f(Set<Integer> s, int k) { 0 }
                     }''')],
 
         // ---------- Phase 22: the full-characterization axiom + end-to-end DFS coverage ----------
-        // Sets.count(s,k) == k  ⟺  s covers [0,k). COUNT FULL ⇒ COVERS: a count of k over a k-slot domain
+        // Sets.boundedCount(s,k) == k  ⟺  s covers [0,k). COUNT FULL ⇒ COVERS: a count of k over a k-slot domain
         // forces every node in — the converse of Phase 20's full ⇒ count, and the fact DFS needs.
         [group: 'P22 full-char', name: 'count == k ⇒ every domain node is in', ok: true,
          src: tc('''class C {
-                        @Requires({ Sets.count(s, k) == k && 0 <= u && u < k })
+                        @Requires({ Sets.boundedCount(s, k) == k && 0 <= u && u < k })
                         @Ensures({ u in s })
                         static int f(Set<Integer> s, int k, int u) { 0 }
                     }''')],
@@ -1627,18 +1672,18 @@ class VerifyHarness {
         [group: 'P22 full-char', name: 'covers domain ⇒ count == k', ok: true,
          src: tc('''class C {
                         @Requires({ k >= 0 && (0..<k).every { it in s } })
-                        @Ensures({ Sets.count(s, k) == k })
+                        @Ensures({ Sets.boundedCount(s, k) == k })
                         static int f(Set<Integer> s, int k) { 0 }
                     }''')],
         // Soundness: full count says nothing about a node OUTSIDE the domain [0,k).
         [group: 'P22 full-char', name: 'coverage is only within the domain (refuted)', expect: 'Cannot prove postcondition',
          src: tc('''class C {
-                        @Requires({ Sets.count(s, k) == k && u >= k })
+                        @Requires({ Sets.boundedCount(s, k) == k && u >= k })
                         @Ensures({ u in s })
                         static int f(Set<Integer> s, int k, int u) { 0 }
                     }''')],
         // THE CAPSTONE: a cardinality-terminating DFS proves UNCONDITIONAL coverage — the node handed in
-        // ends visited, with no fuel bound. Termination is `n - Sets.count(visited, n)` (the per-add law
+        // ends visited, with no fuel bound. Termination is `n - Sets.boundedCount(visited, n)` (the per-add law
         // makes it strictly decrease on a fresh add); coverage closes because at the "set full" branch the
         // full-characterization forces the node in. Composes sets, maps, induction, set framing, bounded
         // quantifiers, the per-add law and the full-characterization into the DFS soundness property.
@@ -1649,11 +1694,11 @@ class VerifyHarness {
                         int n
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
-                        @Decreases({ n - Sets.count(visited, n) })
+                        @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ (u in visited) &&
                                    (0..<n).every { !(it in old.visited) || (it in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.count(visited, n) < n) {
+                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -1669,10 +1714,10 @@ class VerifyHarness {
                         int n
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
-                        @Decreases({ n - Sets.count(visited, n) })
+                        @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ next[u] in visited })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.count(visited, n) < n) {
+                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -1723,10 +1768,10 @@ class VerifyHarness {
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
                                     (0..<n).every { !(it in visited) || (next[it] in visited) } })
                         @Modifies({ this.visited })
-                        @Decreases({ n - Sets.count(visited, n) })
+                        @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.count(visited, n) < n) {
+                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -1825,14 +1870,14 @@ class VerifyHarness {
                                     (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&
                                     (0..<n).every { !(it in onStack) || (it in visited) } })
                         @Modifies({ [this.visited, this.onStack] })
-                        @Decreases({ n - Sets.count(visited, n) })
+                        @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ (u in visited) &&
                                    (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&
                                    (0..<n).every { !(it in onStack) || (it in visited) } &&
                                    (0..<n).every { (it in onStack) == (it in old.onStack) } &&
                                    (0..<n).every { !(it in old.visited) || (it in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.count(visited, n) < n) {
+                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 onStack.add(u)
                                 visit(next[u])
@@ -2111,33 +2156,33 @@ class VerifyHarness {
                         static int paint(List<Color> xs, int k) { xs[k] = Color.RED; 0 }
                     }''')],
 
-        // ---------- Phase 27: Sets.bounded / Sets.count honestly skip on non-Int element sets ----
-        // Sets.bounded(s, n) means s ⊆ [0, n) — only defined for Int element domains. Applying it
+        // ---------- Phase 27: Sets.boundedBy / Sets.boundedCount honestly skip on non-Int element sets ----
+        // Sets.boundedBy(s, n) means s ⊆ [0, n) — only defined for Int element domains. Applying it
         // to a Set<String> rightly produces a "skipped: outside fragment" diagnostic rather than
         // silently asserting a sort-mismatched bounded universal.
-        [group: 'P27 non-int domains', name: 'Sets.bounded on Set<String> skipped',
+        [group: 'P27 non-int domains', name: 'Sets.boundedBy on Set<String> skipped',
          expect: 'outside fragment',
          src: tc('''class C {
-                        @Requires({ Sets.bounded(s, 5) })
+                        @Requires({ Sets.boundedBy(s, 5) })
                         @Ensures({ s.size() <= 5 })
                         static int f(Set<String> s) { 0 }
                     }''')],
-        // Sets.count on Set<Enum> with k that doesn't match the enum's domain size: still skips,
+        // Sets.boundedCount on Set<Enum> with k that doesn't match the enum's domain size: still skips,
         // because without an enum ordering there's no meaning for "count of constants with ordinal < k".
         // (The matching-k case is supported in Phase 29 — see the FSM exploration group below.)
-        [group: 'P27 non-int domains', name: 'Sets.count on Set<Enum> with non-matching k skipped',
+        [group: 'P27 non-int domains', name: 'Sets.boundedCount on Set<Enum> with non-matching k skipped',
          expect: 'outside fragment',
          src: tc('''class C {
                         enum Color { RED, BLUE, GREEN }
-                        @Requires({ Sets.count(s, 2) == 2 })
+                        @Requires({ Sets.boundedCount(s, 2) == 2 })
                         @Ensures({ s.size() >= 0 })
                         static int f(Set<Color> s) { 0 }
                     }''')],
-        // Regression: Sets.bounded over a Set<Integer> still verifies — the Int-domain path is
+        // Regression: Sets.boundedBy over a Set<Integer> still verifies — the Int-domain path is
         // unchanged by the non-Int restriction added in step 8.
-        [group: 'P27 non-int domains', name: 'Sets.bounded on Set<Integer> still verifies', ok: true,
+        [group: 'P27 non-int domains', name: 'Sets.boundedBy on Set<Integer> still verifies', ok: true,
          src: tc('''class C {
-                        @Requires({ Sets.bounded(s, 5) })
+                        @Requires({ Sets.boundedBy(s, 5) })
                         @Ensures({ s.size() <= 5 })
                         static int f(Set<Integer> s) { 0 }
                     }''')],

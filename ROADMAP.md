@@ -1027,10 +1027,10 @@ named, well-understood gaps remaining — the former needing a stack/path model,
 
 **The link the uninterpreted cardinality was missing.** `card(s)` (Phase 16) tracks only its per-mutation
 deltas — it has no relationship to *which* elements a set holds, so `|s| <= n` for a set drawn from an
-`n`-element domain was not derivable. `Sets.bounded(s, n)` supplies that relationship — the **pigeonhole** —
+`n`-element domain was not derivable. `Sets.boundedBy(s, n)` supplies that relationship — the **pigeonhole** —
 as a recognised contract predicate.
 
-**The encoding — a faithful definition, not a trusted axiom.** `Sets.bounded(s, n)` means exactly
+**The encoding — a faithful definition, not a trusted axiom.** `Sets.boundedBy(s, n)` means exactly
 `s ⊆ [0, n)`, and the encoder lowers it to
 
 ```
@@ -1040,28 +1040,28 @@ card(s) <= n  ∧  (card(s) < n  ∨  ∀ i. 0 <= i < n ⟹ i ∈ s)
 i.e. "bounded by the domain, and *full* (`card == n`) exactly when it covers `[0, n)`". Both pieces — the
 cardinality comparison and the bounded membership universal — are already modelled, so this is a boolean
 *definition* (sound in both assume and goal positions), not an axiom injected behind the user's back. The
-runtime helper `Sets.bounded` evaluates the same predicate, so the groovy-contracts runtime check agrees.
-`Encoder` recognises the `Sets.bounded(s, n)` call shape (like `Forall.range`) and emits the lowering, the
+runtime helper `Sets.boundedBy` evaluates the same predicate, so the groovy-contracts runtime check agrees.
+`Encoder` recognises the `Sets.boundedBy(s, n)` call shape (like `Forall.range`) and emits the lowering, the
 membership `select(s, i)` term serving as the universal's instantiation trigger.
 
 From it the engine **derives** the two facts cardinality-driven search needs, neither previously provable:
 
-- **FULL ⟹ MEMBER** — `Sets.bounded(s,n) ∧ s.size() == n ∧ 0 <= u < n ⊢ u ∈ s` (a full bounded set is the
+- **FULL ⟹ MEMBER** — `Sets.boundedBy(s,n) ∧ s.size() == n ∧ 0 <= u < n ⊢ u ∈ s` (a full bounded set is the
   whole domain).
-- **HOLE ⟹ NOT FULL** — `Sets.bounded(s,n) ∧ 0 <= u < n ∧ u ∉ s ⊢ s.size() < n` (a missing in-domain node
+- **HOLE ⟹ NOT FULL** — `Sets.boundedBy(s,n) ∧ 0 <= u < n ∧ u ∉ s ⊢ s.size() < n` (a missing in-domain node
   means room remains) — exactly the coverage-branch fact a cardinality-terminating DFS needs.
 
-Drop `Sets.bounded` and both refute: the uninterpreted size says nothing about membership.
+Drop `Sets.boundedBy` and both refute: the uninterpreted size says nothing about membership.
 
 **The honest boundary — why this does not, by itself, close whole-DFS unconditional coverage.**
-`Sets.bounded` gives the pigeonhole *consequences*, but a recursive DFS must also **preserve** boundedness
-across the add that *fills* the set — and proving `Sets.bounded(s ∪ {u}, n)` when `|s| = n-1` requires the
+`Sets.boundedBy` gives the pigeonhole *consequences*, but a recursive DFS must also **preserve** boundedness
+across the add that *fills* the set — and proving `Sets.boundedBy(s ∪ {u}, n)` when `|s| = n-1` requires the
 *converse* counting: `|s| = n-1 ∧ s ⊆ [0,n) ⟹ s is [0,n) minus exactly one element`, so the fresh in-domain
-`u` is precisely that element. The definitional `Sets.bounded` does not yield "exact membership from exact
+`u` is precisely that element. The definitional `Sets.boundedBy` does not yield "exact membership from exact
 count". Closing it needs a **bounded-sum cardinality** `bcard(s, k) = Σ_{i<k} (i ∈ s ? 1 : 0)` with its
 recursive defining axioms, plus the monotonicity/exact-count lemmas proved by induction (Phase 7) — at which
 point `card(s)` over a domain *equals* `bcard(s, n)` and the counting closes. That bounded-sum cardinality is
-the next set-reasoning increment; `Sets.bounded` is the usable pigeonhole layer above the uninterpreted
+the next set-reasoning increment; `Sets.boundedBy` is the usable pigeonhole layer above the uninterpreted
 `card` and below it, and stands on its own (the `HOLE ⟹ NOT FULL` fact is the DFS coverage branch in
 isolation).
 
@@ -1071,7 +1071,7 @@ isolation).
 
 **The genuine count — and its foundational properties are *proved*, not axiomatised.** The bounded sum
 `bcount(s, k) = Σ_{i<k} (i ∈ s ? 1 : 0)` is the real count of `s`'s members in `[0, k)` — the quantity
-`Sets.bounded` (Phase 19) approximated and the uninterpreted `card` (Phase 16) had no handle on. The notable
+`Sets.boundedBy` (Phase 19) approximated and the uninterpreted `card` (Phase 16) had no handle on. The notable
 part: it is *just an ordinary recursive Groovy method*, and its defining properties fall out of the framework's
 own induction (`@Decreases` on `k`, the self-`@Ensures` as the inductive hypothesis, Phase 7) — there is no
 built-in `bcount` and no trusted axiom.
@@ -1090,7 +1090,7 @@ static int bcount(Set<Integer> s, int k) {
 **Two foundational lemmas, both verified:**
 
 - **Bound** — `0 <= bcount(s,k) <= k`. This is precisely the converse-counting *upper bound* the uninterpreted
-  `card` could not provide (Phase 18's termination needed it; Phase 19's `Sets.bounded` could only *assume* it).
+  `card` could not provide (Phase 18's termination needed it; Phase 19's `Sets.boundedBy` could only *assume* it).
 - **Full domain ⟹ count = k** — the same recursion under `@Requires({ (0..<k).every { it in s } })` proves
   `result == k`, tying the count to actual membership. The recursive call's precondition
   (`(0..<k-1).every { it in s }`) follows from the caller's over `[0, k)` by bounded-quantifier instantiation.
@@ -1101,7 +1101,7 @@ this is the recursive-function induction (Phase 7) over the set membership and b
 fragment*.
 
 **What this unlocks, and what is still open for whole-DFS coverage.** `bcount` supplies the counting facts
-`card`/`Sets.bounded` lacked. To finish wiring it into a DFS that proves *unconditional* coverage, two steps
+`card`/`Sets.boundedBy` lacked. To finish wiring it into a DFS that proves *unconditional* coverage, two steps
 remain, both needing **recursive-definition reasoning inside contracts** (so a `bcount(...)` term carries its
 defining equation rather than reducing to an uninterpreted symbol):
 
@@ -1117,15 +1117,15 @@ base that development builds on.
 
 ---
 
-## Phase 21 — The bcount per-add law: `Sets.count` as a primitive  *(shipped)*
+## Phase 21 — The bcount per-add law: `Sets.boundedCount` as a primitive  *(shipped)*
 
 **Threading the count across a mutation — the first of the two steps Phase 20 flagged.** The recursive
 `bcount` (Phase 20) *earns* its bound by induction, but a `bcount(...)` term inside another contract reduces to
 an uninterpreted symbol (its definition isn't visible across the lemma boundary) and it cannot take `s ∪ {u}`
-as an argument — so it cannot relate the count *before* and *after* a set mutation. `Sets.count(s, k)` is the
+as an argument — so it cannot relate the count *before* and *after* a set mutation. `Sets.boundedCount(s, k)` is the
 same bounded count exposed as a **primitive**, which can.
 
-**The encoding — bound axiom + per-mutation law, the `count` machinery adapted.** `Sets.count(s, k)` is an
+**The encoding — bound axiom + per-mutation law, the `count` machinery adapted.** `Sets.boundedCount(s, k)` is an
 uninterpreted `(Set, Int) -> Int` (`setCount`, backed by Z3 `bcount$`). On first use of each term the encoder
 asserts its **sound bound axiom** — `0 <= bcount`, `k >= 0 ⟹ bcount <= k`, `k <= 0 ⟹ bcount == 0` (all
 theorems of "count of members in `[0,k)`", so asserting them keeps the symbol as strong as the count it
@@ -1145,20 +1145,20 @@ so it threads through both the postcondition check and the termination replay.
 ```groovy
 @Requires({ 0 <= u && u < k && !(u in s) })
 @Modifies({ this.s })
-@Ensures({ Sets.count(s, k) == Sets.count(old.s, k) + 1 })   // verified
+@Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) + 1 })   // verified
 void put(int u, int k) { s.add(u) }
 ```
 
 Verified, and sound on each edge: drop the freshness guard and the `+ 1` refutes; add an element *outside*
 `[0, k)` and the count is provably unchanged (the law's domain guard); `remove` of a present in-domain element
-decrements it; and the bound axiom rides the primitive (`0 <= Sets.count(s,k) <= k` for `k >= 0`).
+decrements it; and the bound axiom rides the primitive (`0 <= Sets.boundedCount(s,k) <= k` for `k >= 0`).
 
 **What remains for whole-DFS unconditional coverage.** One Phase-20 step is now done (the per-add law); the
-other — **cross-lemma/definitional use** — is subsumed by giving `Sets.count` its **full-characterization**:
-`Sets.count(s, k) == k ⟺ (0..<k).every { it ∈ s }` (the converse of Phase 20's "full ⟹ count = k", which the
+other — **cross-lemma/definitional use** — is subsumed by giving `Sets.boundedCount` its **full-characterization**:
+`Sets.boundedCount(s, k) == k ⟺ (0..<k).every { it ∈ s }` (the converse of Phase 20's "full ⟹ count = k", which the
 per-add law's bound does not by itself supply). With it, the preservation argument closes — adding the fresh
 in-domain `u` to a set whose count is `n-1` raises the count to `n`, which *forces* domain coverage, so
-`Sets.bounded` is preserved across the filling add and the cardinality-terminating DFS proves unconditional
+`Sets.boundedBy` is preserved across the filling add and the cardinality-terminating DFS proves unconditional
 `start ∈ visited`. That full-characterization axiom (and then the frontier/stack invariant for *completeness*)
 is the remaining work; the per-add law shipped here is its other half.
 
@@ -1170,41 +1170,41 @@ is the remaining work; the per-add law shipped here is its other half.
 is given — unconditionally.** The last axiom is the converse of Phase 20's *full ⇒ count*:
 
 ```
-Sets.count(s, k) == k   ⟺   ∀ i. 0 <= i < k ⟹ i ∈ s        (count is full  ⟺  s covers [0, k))
+Sets.boundedCount(s, k) == k   ⟺   ∀ i. 0 <= i < k ⟹ i ∈ s        (count is full  ⟺  s covers [0, k))
 ```
 
 Both directions are theorems of "count of members in `[0, k)`" (`k` members in `k` slots iff every slot is a
-member), so the encoder asserts the iff for every `Sets.count(s, k)` term (in `setCountOf`, alongside the
+member), so the encoder asserts the iff for every `Sets.boundedCount(s, k)` term (in `setCountOf`, alongside the
 bound axiom), the membership `select(s, i)` serving as the universal's trigger. The bounded-coverage `forall`
-is factored (`domainCoverageForall`) and shared with `Sets.bounded`.
+is factored (`domainCoverageForall`) and shared with `Sets.boundedBy`.
 
-**Direct facts (verified):** `Sets.count(s,k) == k ∧ 0 <= u < k ⊢ u ∈ s` (full count forces every domain node
-in); the reverse `(0..<k).every{it∈s} ⊢ Sets.count(s,k) == k`; and the domain bite — `Sets.count(s,k) == k`
+**Direct facts (verified):** `Sets.boundedCount(s,k) == k ∧ 0 <= u < k ⊢ u ∈ s` (full count forces every domain node
+in); the reverse `(0..<k).every{it∈s} ⊢ Sets.boundedCount(s,k) == k`; and the domain bite — `Sets.boundedCount(s,k) == k`
 says nothing about a `u` **outside** `[0, k)` (refuted).
 
 **The end-to-end result.** A DFS over a functional graph (`next : Map<Node,Node>`) marking a `Set<Node>`,
-terminated by the **set-cardinality** measure `n - Sets.count(visited, n)`, proves `u ∈ visited`
+terminated by the **set-cardinality** measure `n - Sets.boundedCount(visited, n)`, proves `u ∈ visited`
 **unconditionally** — no fuel budget:
 
 ```groovy
 @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
 @Modifies({ this.visited })
-@Decreases({ n - Sets.count(visited, n) })
+@Decreases({ n - Sets.boundedCount(visited, n) })
 @Ensures({ (u in visited) && (0..<n).every { !(it in old.visited) || (it in visited) } })
 void visit(int u) {
-    if (!(u in visited) && Sets.count(visited, n) < n) { visited.add(u); visit(next[u]) }
+    if (!(u in visited) && Sets.boundedCount(visited, n) < n) { visited.add(u); visit(next[u]) }
 }
 ```
 
-How the obligations close: **termination** — the per-add law (Phase 21) makes `Sets.count(visited, n)`
+How the obligations close: **termination** — the per-add law (Phase 21) makes `Sets.boundedCount(visited, n)`
 strictly increase on the fresh in-domain add, so the measure drops by one and the bound axiom keeps it `>= 0`;
-**coverage** — on the guard-false branch the model either has `u ∈ visited` already, or `Sets.count(visited,n)
+**coverage** — on the guard-false branch the model either has `u ∈ visited` already, or `Sets.boundedCount(visited,n)
 >= n`, where the bound forces `== n` and the full-characterization then forces every domain node (`u`
 included) into `visited`; on the guard-true branch `u` is added and the inductive hypothesis's monotonicity
 carries it across the recursion's havoc. It composes every prior phase — sets, the map graph, induction,
 caller-side set framing, bounded quantifiers, the per-add law, the full-characterization — into one result.
-*(One wrinkle the build surfaced: `Sets.count` in a method **body** resolves to a `ClassExpression`
-(`verification.Sets.count`), not the `VariableExpression`/`PropertyExpression` a re-parsed contract carries, so
+*(One wrinkle the build surfaced: `Sets.boundedCount` in a method **body** resolves to a `ClassExpression`
+(`verification.Sets.boundedCount`), not the `VariableExpression`/`PropertyExpression` a re-parsed contract carries, so
 the encoder's `Sets` recognition was widened to all three.)*
 
 **What remains — completeness.** The proof covers the node *itself*, **not its successors**: `next[u] ∈
@@ -1350,9 +1350,9 @@ closure `∀ it. it ∈ visited ⟹ next[it] ∈ visited`.
 
 ```groovy
 @Modifies({ [this.visited, this.onStack] })
-@Decreases({ n - Sets.count(visited, n) })
+@Decreases({ n - Sets.boundedCount(visited, n) })
 void visit(int u) {
-    if (!(u in visited) && Sets.count(visited, n) < n) {
+    if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
         visited.add(u); onStack.add(u); visit(next[u]); onStack.remove(u)   // mark, push, recurse, pop
     }
 }
@@ -1365,7 +1365,7 @@ void dfs(int start) { visit(start) }
 by Phase 24's call-site/mutation machinery; the recursion **havocs both sets and reframes** them from `visit`'s
 `@Ensures` (sound `@Modifies` over two sets); the **stack-restored** clause lets the pop cancel the push
 (`u ∉ onStack` follows from `onStack ⊆ visited` and `u ∉ visited`); `u ∈ visited` (needed so the recursion
-covers `next[u]` in the invariant's `it == u` case) rides the **`Sets.count` full-characterization** (Phase 22)
+covers `next[u]` in the invariant's `it == u` case) rides the **`Sets.boundedCount` full-characterization** (Phase 22)
 on the "set full" branch; and termination is the **set-cardinality measure** (Phase 16). No new engine
 machinery — it is the entire stack of phases 16–25 brought to bear on one proof.
 
@@ -1414,7 +1414,7 @@ array allocator `arrayFor` now dispatches on `[keySort, valueSort]` — a map va
 likewise: `Array ElemSort -> Int`. Per-element-sort `card$T` / `bcount$T` functions are declared
 lazily on the backend so cardinality works for `Set<String>` the same way it does for `Set<Integer>`.
 
-**`Sets.bounded(s, n)` / `Sets.count(s, k)` are Int-only here, generalised in Phase 29.** Both
+**`Sets.boundedBy(s, n)` / `Sets.boundedCount(s, k)` are Int-only here, generalised in Phase 29.** Both
 originally depended on the `[0, n)` Int-domain structure (the lowering is a bounded membership
 universal over Int indices). For non-Int element sets they returned null and the standard "outside
 fragment" skip diagnostic fired. Phase 29 below generalises them to enum-element sets when
@@ -1446,7 +1446,7 @@ no-op-add is one model.
 `∀x. x∈s ⇒ x∈t`); element-domain mixing (e.g. `Map<K, Set<V>>` nesting) is not yet wired; non-Int
 element domains other than String and Enum (records, value classes, arbitrary objects) fall through
 to the default-Int path and emit a skip. None of these need new theory — just additional
-collect/dispatch wiring on the same pattern. The `Sets.bounded`/`Sets.count` Int-only restriction
+collect/dispatch wiring on the same pattern. The `Sets.boundedBy`/`Sets.boundedCount` Int-only restriction
 from this phase was lifted in Phase 29 for the enum case.
 
 ## Phase 28 — `EnumClass.values().length` folds to a ground int  *(shipped)*
@@ -1489,18 +1489,18 @@ class C {
 ```
 
 **What it unlocks (and what it doesn't).** The folded literal is usable anywhere an `int` literal is
-— upper bound of a bounded range (`(0..<Color.values().length).every { … }`), `Sets.bounded(s, n)`
+— upper bound of a bounded range (`(0..<Color.values().length).every { … }`), `Sets.boundedBy(s, n)`
 over an Int-element set, ground constraint in a postcondition. Phase 29 below additionally uses
-the folded count to enable `Sets.bounded` / `Sets.count` over a `Set<Color>` (the FSM
+the folded count to enable `Sets.boundedBy` / `Sets.boundedCount` over a `Set<Color>` (the FSM
 completeness shape). What this phase *doesn't* give on its own: recognition of enums defined in
 *other* modules (only the current module's enums are walked). Cross-module enum support would
 extend `collectEnumDomainSizes` to consult the compilation unit's classloader; the foundation is
 there.
 
-## Phase 29 — `Sets.bounded` / `Sets.count` generalised to enum-element sets  *(shipped)*
+## Phase 29 — `Sets.boundedBy` / `Sets.boundedCount` generalised to enum-element sets  *(shipped)*
 
 **The "FSM proves every state handled" example, with the natural `Set<State>` spelling.** Phase 27
-step 8 honestly skipped `Sets.bounded` / `Sets.count` on non-Int element sets — the bounded
+step 8 honestly skipped `Sets.boundedBy` / `Sets.boundedCount` on non-Int element sets — the bounded
 universal `∀ i. 0<=i<n ⟹ i ∈ s` is meaningless when `s`'s elements aren't Int. For enums, the
 finite domain gives a clean substitute: enumerate the constants, write the coverage as a finite
 conjunction. This phase wires that, and lets the natural FSM completeness proof verify directly.
@@ -1512,10 +1512,10 @@ facts the finite enum domain gives are asserted unconditionally:
 - **Full-coverage iff**: `card(s) == N ⟺ c1 ∈ s ∧ … ∧ cN ∈ s` — finite conjunction over the
   enum's constants (the same interned literals Phase 27 already mints).
 
-`Sets.bounded(s, n)` and `Sets.count(s, k)` then dispatch on element sort. For Int: the existing
+`Sets.boundedBy(s, n)` and `Sets.boundedCount(s, k)` then dispatch on element sort. For Int: the existing
 Phase 19 / 22 machinery (bounded universal). For enum, when `n`/`k` folds to the enum's domain
-size (via Phase 28's `EnumClass.values().length` recognition or a literal): `Sets.bounded(s, n)`
-lowers to `card(s) <= n ∧ (card(s) < n ∨ finite-conjunction)`, and `Sets.count(s, k)` aliases to
+size (via Phase 28's `EnumClass.values().length` recognition or a literal): `Sets.boundedBy(s, n)`
+lowers to `card(s) <= n ∧ (card(s) < n ∨ finite-conjunction)`, and `Sets.boundedCount(s, k)` aliases to
 `card(s)` (no partial-domain ordering on an enum, so the only meaningful count is the whole-set
 size). Non-matching `n`/`k` skips with the standard "outside fragment" diagnostic — the
 restriction is the partial-domain ambiguity, not the element sort.
@@ -1524,19 +1524,19 @@ restriction is the partial-domain ambiguity, not the element sort.
 class FSM {
     enum State { IDLE, RUNNING, DONE }
     Set<State> handled
-    @Requires({ Sets.count(handled, State.values().length) == State.values().length })
+    @Requires({ Sets.boundedCount(handled, State.values().length) == State.values().length })
     @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
     boolean allHandled() { true }
 }
 ```
 
-Verifies. `State.values().length` folds to `3` (Phase 28), `Sets.count(handled, 3)` aliases to
+Verifies. `State.values().length` folds to `3` (Phase 28), `Sets.boundedCount(handled, 3)` aliases to
 `card(handled)` (Phase 29), the iff axiom `card(handled) == 3 ⟺ IDLE ∈ handled ∧ RUNNING ∈ handled
 ∧ DONE ∈ handled` was asserted at the set's first use, so `@Requires` ⟹ `@Ensures`. Drop the
 `@Requires` and the postcondition rightly refutes — partial coverage can't prove every state.
 
 **Pigeonhole is automatic.** A method whose postcondition is `s.size() <= 3` over a `Set<State>`
-verifies *without* requiring `Sets.bounded` — the bound was asserted at setFor time. Same for the
+verifies *without* requiring `Sets.boundedBy` — the bound was asserted at setFor time. Same for the
 implication "this set has at most as many elements as its enum has constants" anywhere it's
 needed.
 
@@ -1581,7 +1581,7 @@ absent — letting empty-subset claims (`s.containsAll(empty)`) verify by vacuou
 **Known limits.**
 
 - **Int-element subset stays deferred.** `s.containsAll(t)` over `Set<Integer>` needs a bounded
-  domain on `t` (e.g. `Sets.bounded(t, n)`) to close the universal; the encoder doesn't yet thread
+  domain on `t` (e.g. `Sets.boundedBy(t, n)`) to close the universal; the encoder doesn't yet thread
   that bound from a separate contract clause into the subset lowering. Honest skip today.
 - **Set union/intersection** are *constructive* — they mint a new set with a derived membership
   predicate — and need a different shape than subset's pure-predicate lowering. Worth its own

@@ -153,7 +153,7 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private Map<String, Integer> currentEnumDomainSizes = new HashMap<String, Integer>()
     /**
-     * The {@code k} bound expressions of every {@code Sets.count(_, k)} in the postcondition/measure being
+     * The {@code k} bound expressions of every {@code Sets.boundedCount(_, k)} in the postcondition/measure being
      * discharged — the bcount per-add law (Phase 21) is asserted for each of these {@code k}s at every set
      * mutation, mirroring how {@link #countValueArgs} drives the per-store {@code count} law. Set per
      * discharge in {@link #checkPath}/{@link #dischargeTermination}, reset after.
@@ -583,7 +583,7 @@ class VerifyChecker extends TypeCheckingExtension {
         out
     }
 
-    /** The {@code k} (second) argument of each {@code Sets.count(s, k)} call — the bounds the bcount law tracks. */
+    /** The {@code k} (second) argument of each {@code Sets.boundedCount(s, k)} call — the bounds the bcount law tracks. */
     private static List<Expression> bcountKArgs(Expression e) {
         List<Expression> out = new ArrayList<Expression>()
         if (e == null) return out
@@ -596,7 +596,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
                                      (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets')
                     Expression a = mce.arguments
-                    if (isSets && mce.methodAsString == 'count' && a instanceof ArgumentListExpression &&
+                    if (isSets && mce.methodAsString == 'boundedCount' && a instanceof ArgumentListExpression &&
                         ((ArgumentListExpression) a).expressions.size() == 2) {
                         out.add(((ArgumentListExpression) a).expressions.get(1))
                     }
@@ -1441,7 +1441,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object h = enc.translate(vArg)
                 if (h != null) countVals.add(h)
             }
-            // The `k` bounds of any Sets.count(_, k) in the postcondition drive the bcount per-add law.
+            // The `k` bounds of any Sets.boundedCount(_, k) in the postcondition drive the bcount per-add law.
             currentBcountKExprs = bcountKArgs(postAst)
 
             for (Object step : p.steps) {
@@ -1617,12 +1617,12 @@ class VerifyChecker extends TypeCheckingExtension {
         Object newCard = adding ? s.plus(enc.cardOf(oldS), delta) : s.minus(enc.cardOf(oldS), delta)
         s.assertExpr(s.eq(enc.cardOf(newS), newCard))
 
-        // bcount per-add law (Phase 21): for each Sets.count(_, k) the postcondition/measure tracks,
+        // bcount per-add law (Phase 21): for each Sets.boundedCount(_, k) the postcondition/measure tracks,
         //   add:    bcount(s', k) = bcount(s, k) + (0 <= elem < k ∧ elem ∉ s ? 1 : 0)
         //   remove: bcount(s', k) = bcount(s, k) - (0 <= elem < k ∧ elem ∈ s ? 1 : 0)
         // The mutation only changes the count at the slot `elem`, and only when that slot is in [0, k).
         // Skipped for non-Int element sets (Phase 27): the law's `0 <= elem < k` is meaningless when
-        // `elem` is a String/Enum constant — Sets.count is honestly out of fragment for those.
+        // `elem` is a String/Enum constant — Sets.boundedCount is honestly out of fragment for those.
         if (elemSort == s.intSort()) {
             for (Expression kExpr : currentBcountKExprs) {
                 Object kH = enc.translate(kExpr)
@@ -2137,7 +2137,7 @@ class VerifyChecker extends TypeCheckingExtension {
             // post-body one. For the usual param-only measure this is identical: the replay never rebinds a
             // parameter, so where `entry` is computed makes no difference.
             Object entry = enc.translate(measureAst)
-            // A measure that counts with Sets.count(_, k) drives the bcount per-add law across the replayed mutations too.
+            // A measure that counts with Sets.boundedCount(_, k) drives the bcount per-add law across the replayed mutations too.
             currentBcountKExprs = bcountKArgs(measureAst)
             // Replay the path facts up to the call (single-assignment, so params keep entry values). A set
             // mutation `s.add(x)` / `s.remove(x)` threads the set and asserts the per-mutation cardinality

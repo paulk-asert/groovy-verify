@@ -25,10 +25,10 @@ package verification
  * a finite domain {@code [0, n)}:
  *
  * <pre>
- *   {@literal @}Requires({ Sets.bounded(s, n) })
+ *   {@literal @}Requires({ Sets.boundedBy(s, n) })
  * </pre>
  *
- * {@code bounded(s, n)} is true exactly when {@code s ⊆ [0, n)} — equivalently:
+ * {@code boundedBy(s, n)} is true exactly when {@code s ⊆ [0, n)} — equivalently:
  * {@code |s| <= n}, and {@code s} is <em>full</em> ({@code |s| == n}) iff it covers the
  * whole domain. From it the verifier can derive the two facts cardinality-driven
  * search needs: a full bounded set contains every domain element
@@ -36,25 +36,34 @@ package verification
  * ({@code u ∉ s ⟹ |s| < n}).
  *
  * It stays executable so the groovy-contracts <em>runtime</em> check still works; at
- * compile time {@link Encoder} recognises the {@code Sets.bounded(s, n)} shape and
+ * compile time {@link Encoder} recognises the {@code Sets.boundedBy(s, n)} shape and
  * lowers it to {@code card(s) <= n ∧ (card(s) < n ∨ ∀ i ∈ [0,n)· i ∈ s)} — a boolean
  * combination of the set cardinality and a bounded membership universal, both already
  * modelled, so the lowering is a faithful definition rather than a trusted axiom.
+ *
+ * <p>The companion {@link #boundedCount} threads the same count <em>across mutations</em>,
+ * via the per-add law the verifier asserts at every {@code s.add(x)}/{@code s.remove(x)}.
+ * Both helpers share the {@code bounded} prefix to signal "reasoning over the {@code [0, k)}
+ * slice of an Int domain"; deliberately distinct from Groovy's GDK {@code Collection.count(value)}
+ * which counts <em>occurrences of a specific element value</em> (a different question).
  */
 class Sets {
 
     /** True iff every member of {@code s} lies in {@code [0, n)} — i.e. {@code s ⊆ [0, n)}. */
-    static boolean bounded(Set<Integer> s, int n) {
+    static boolean boundedBy(Set<Integer> s, int n) {
         s.size() <= n && (s.size() < n || (0..<n).every { it in s })
     }
 
     /**
      * The bounded-sum cardinality: the number of members of {@code s} in {@code [0, k)}
-     * ({@code Σ_{i<k} (i ∈ s ? 1 : 0)}). The verifier recognises {@code Sets.count(s, k)} in contracts
-     * and models it as a primitive with a bound axiom and a per-mutation law; this body is the matching
-     * runtime evaluation, so the groovy-contracts runtime check agrees.
+     * ({@code Σ_{i<k} (i ∈ s ? 1 : 0)}). The verifier recognises {@code Sets.boundedCount(s, k)}
+     * in contracts and models it as a primitive with a bound axiom and a per-mutation law;
+     * this body is the matching runtime evaluation, so the groovy-contracts runtime check agrees.
+     *
+     * Distinct from Groovy's GDK {@code Collection.count(value)} (which counts occurrences of a
+     * specific value); the {@code bounded} prefix marks the [0, k)-slice semantics.
      */
-    static int count(Set<Integer> s, int k) {
+    static int boundedCount(Set<Integer> s, int k) {
         int c = 0
         for (int i = 0; i < k; i++) if (i in s) c++
         c
