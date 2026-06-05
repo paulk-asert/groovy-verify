@@ -1030,6 +1030,16 @@ class Encoder {
             if (f.kind == 'list') return foldFactoryListIndex(f.args, args.get(0))
             if (f.kind == 'map')  return foldFactoryMapLookup(f, args.get(0))
         }
+        // Phase 39 — first/head/last on a list/set factory fold to the literal at position 0
+        // or size-1. Both ops on an empty factory fold to null (the JDK throws at runtime); the
+        // fold returns null too so the call surfaces as honest skip rather than picking a wrong
+        // element.
+        if ((m == 'first' || m == 'head') && args.isEmpty() && (f.kind == 'list' || f.kind == 'set')) {
+            return f.args.isEmpty() ? null : translate(f.args.get(0))
+        }
+        if (m == 'last' && args.isEmpty() && (f.kind == 'list' || f.kind == 'set')) {
+            return f.args.isEmpty() ? null : translate(f.args.get(f.args.size() - 1))
+        }
         null
     }
 
@@ -1703,6 +1713,18 @@ class Encoder {
                 Object q = translateMapContainsValue(mapLog, args.get(0))
                 if (q != null) return q
             }
+            // Phase 39 — m.getOrDefault(k, d): the canonical defensive-read idiom. Lowers to
+            // {@code ite(containsKey(k), m[k], d)}, with the default translated in the map's
+            // value sort so types compose cleanly.
+            if (m == 'getOrDefault' && args.size() == 2) {
+                Object k = translateInSort(args.get(0), kSort)
+                Object vSort = mapValueSort(mapLog)
+                Object d = translateInSort(args.get(1), vSort)
+                if (k == null || d == null) return null
+                Object present = member(mapKeysFor(mapLog), k)
+                Object value = session.select(mapValsFor(mapLog), k)
+                return session.ite(present, value, d)
+            }
             // keySet/values/putAll/etc. still need unbounded quantifiers or new theory —
             // out of fragment: null so it surfaces as a loud "skipped", never a silent pass.
             return null
@@ -1816,6 +1838,24 @@ class Encoder {
                 Object sel = session.select(arrayFor(rn), iv)
                 Object range = session.and([session.le(session.intLit(0L), iv), session.lt(iv, sizeOf(rn))])
                 return session.exists([iv], session.and([range, session.eq(sel, y)]), [sel])
+            }
+            // Phase 39 — common non-mutating list idioms as syntactic sugar for the existing
+            // array-access path. {@code xs.get(i)} → {@code (select xs i)}; the bounds check
+            // travels through the existing IndexSite machinery because BodyEncoder's
+            // ObligationCollector lifts the same shape (xs.get(i) is also a deref site).
+            if (m == 'get' && args.size() == 1) {
+                Object idx = translate(args.get(0))
+                return idx == null ? null : session.select(arrayFor(rn), idx)
+            }
+            // {@code xs.first()} / {@code xs.head()} → {@code xs[0]}. Sugar; the caller still
+            // needs {@code xs.size() > 0} to discharge the implicit bounds check on xs[0].
+            if ((m == 'first' || m == 'head') && args.isEmpty()) {
+                return session.select(arrayFor(rn), session.intLit(0L))
+            }
+            // {@code xs.last()} → {@code xs[size - 1]}.
+            if (m == 'last' && args.isEmpty()) {
+                Object lastIdx = session.minus(sizeOf(rn), session.intLit(1L))
+                return session.select(arrayFor(rn), lastIdx)
             }
         }
 

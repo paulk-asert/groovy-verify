@@ -17,6 +17,7 @@ package verification
 
 import groovy.transform.CompileStatic
 import groovy.transform.TupleConstructor
+import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
@@ -275,6 +276,26 @@ class BodyEncoder {
                 }
                 throw new UnsupportedConstructException(
                     "assignment to a non-variable target (line ${s.lineNumber})")
+            }
+
+            // Phase 39 — xs.set(i, v) as a statement is the method-form sibling of xs[i] = v.
+            // Both threads through the same ArrayStore step, so subsequent reads of xs[i] see the
+            // updated value and the per-store {@code count} law fires the same way.
+            if (e instanceof MethodCallExpression && !tail) {
+                MethodCallExpression mce = (MethodCallExpression) e
+                if (mce.methodAsString == 'set' &&
+                    mce.objectExpression instanceof VariableExpression) {
+                    Expression argsExpr = mce.arguments
+                    List<Expression> argList = argsExpr instanceof ArgumentListExpression ?
+                        ((ArgumentListExpression) argsExpr).expressions : Collections.<Expression>emptyList()
+                    if (argList.size() == 2) {
+                        String arr = ((VariableExpression) mce.objectExpression).name
+                        Path np = copy(prefix)
+                        np.steps.add(new ArrayStore(arr, argList.get(0), argList.get(1)))
+                        res.live.add(np)
+                        return res
+                    }
+                }
             }
 
             // A standalone (non-tail) call is a lemma-style fact injection; a tail call is the

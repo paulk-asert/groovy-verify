@@ -117,11 +117,14 @@ an implicit NPE obligation against a per-element nullity oracle, discharged by a
 static int firstLen(List<String> xs) { xs[0].length() }
 ```
 
-Drop the `xs[0] != null` guard and the refutation pins a concrete failing input. The remaining list
-deferred items — method-call idioms (`xs.get`/`set`), and size-changing mutation (`add`/`remove`) —
-are tracked in the roadmap; immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`,
-…) **are** in, peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`,
-and the same folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 20`.
+Drop the `xs[0] != null` guard and the refutation pins a concrete failing input. The Java-style
+method idioms `xs.get(i)` / `xs.first()` / `xs.head()` / `xs.last()` / `xs.set(i, v)` lower
+through the same array-access machinery (with the bounds check synthesised so `xs.first()` on a
+possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would); only size-changing
+mutation (`xs.add` / `xs.remove`) remains deferred. Immutable-container factories
+(`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in, peephole-folding to ground SMT terms on
+`.size()`, `.contains`, `.get(literal_i)`, and the same folds lift across a local:
+`xs = List.of(1, 2, 3); xs[1]` proves `result == 20`.
 
 **Object state — instance fields, valid by construction.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
@@ -583,7 +586,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`Map<K, Set<V>>` nesting (read)** | `m[k].contains(x)` / `x in m[k]` / `m[k].containsAll(s)` over `Map<Role, Set<V>>` — the map's value sort is the inner set's characteristic-array sort `Array<V, Int>`, so `m[k]` reads as a transient SMT array (no named handle minted). Inner-set mutation and `m[k].size()` are deferred | ✅ Phase 36 |
 | **List element nullability** | `xs[i].method()` and `xs.get(i).method()` are now implicit-NPE-checked against a per-element nullity oracle; `@Requires({ xs[i] != null })` and `if (xs[i] != null) …` guards discharge it. Counterexamples render as `f([null])` / `f([null, null])`. Annotation matching (`@NonNull` / `@NotNull` / `@Nonnull` / `@MonotonicNonNull` simple-name set, à la NullChecker) is plumbed but Groovy's AST doesn't always preserve type-use annotations on generics; use the contract form for now | ✅ Phase 37 |
 | **Immutable container factory recognition** | `List.of(args)` / `Set.of(args)` / `Map.of(k1,v1,…)` and Groovy literals `[a,b,c]` / `[k:v]` (with `as Set` cast for set literals) peephole-fold to ground SMT terms: `.size()` to the literal count, `.contains` / `containsKey` / `containsValue` / `in` to a finite disjunction over the entries, `.get(literal_i)` / `[literal_i]` to the i-th element, `Map.of(…).get(k)` to an ite-chain. A factory bound to a local (`xs = List.of(…)`) lifts the same folds across the variable boundary, pinning nullity and size oracles too. No new handle minted, no axioms emitted | ✅ Phase 38 / 38b |
-| List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation | — | ⏳ later |
+| **Common list/map method-form idioms** | `xs.get(i)` / `xs.first()` / `xs.head()` / `xs.last()` lower to the existing array-access path (with `IndexSite` synthesised so the bounds check fires the same way as `xs[i]`); `xs.set(i, v)` as a statement threads through the same `ArrayStore` step as `xs[i] = v`; `m.getOrDefault(k, default)` lowers to `ite(m.containsKey(k), m[k], default)`. Sublist-returning idioms (`tail`, `init`, `drop`, `take`) still defer | ✅ Phase 39 |
+| Size-changing list mutation (`xs.add`, `xs.remove`) | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
