@@ -1965,6 +1965,76 @@ the annotations, this slice picks them up without further changes.
   encodable in contracts already; they just aren't currently summarised through inter-procedural
   Phase-7 reasoning the way scalar postconditions are.
 
+## Phase 38 — Immutable container factory recognition  *(shipped)*
+
+**Peephole, not theory.** Immutable factories are the easiest immutability slice to land: their
+size is known statically, their elements are known statically, and they can never be mutated —
+so every {@code .size()}/{@code .contains}/{@code .get} call on a factory receiver can be folded
+to a ground SMT term *without* minting a set/list/map handle. There's no new oracle, no per-store
+update law, and no quantifier. Just literal-driven folding.
+
+**Recognised receivers.** {@code factoryContainerFor} matches:
+
+- {@code List.of(args)}, {@code Set.of(args)}, {@code Map.of(k1, v1, …)} — Java-9+ factories.
+- Groovy list literals {@code [a, b, c]} (kind {@code list} by default; the outer cast
+  {@code [a, b, c] as Set} switches the kind via {@code CastExpression} unwrapping).
+- Groovy map literals {@code [k1: v1, k2: v2]} via {@code MapEntryExpression} iteration.
+
+**The folds.** For a recognised {@code FactoryContainer} {@code f}:
+
+| Op | Fold |
+|---|---|
+| {@code f.size()} | {@code intLit(f.entryCount())} |
+| {@code f.isEmpty()} | {@code boolLit(f.entryCount() == 0)} |
+| {@code f.contains(x)} | {@code x == a_0 ∨ x == a_1 ∨ …} (list/set kinds) |
+| {@code f.containsKey(k)} | same disjunction over {@code f.keys} (map kind) |
+| {@code f.containsValue(v)} | same disjunction over {@code f.values} (map kind) |
+| {@code x in f} | same as {@code f.contains(x)} for list/set; {@code f.containsKey(x)} for map (matches Groovy semantics) |
+| {@code f.get(literal_i)} | {@code translate(f.args[i])} (list); {@code ite}-chain over {@code (k_j, v_j)} entries (map) |
+| {@code f[literal_i]} | same fold via {@code translateBinary}'s LEFT_SQUARE_BRACKET path |
+
+```groovy
+class C {
+    @Ensures({ result == 3 })
+    static int f() { List.of(1, 2, 3).size() }
+
+    @Ensures({ result == 1 })
+    static int g() { List.of(1, 2, 3).contains(2) ? 1 : 0 }
+
+    @Ensures({ result == 20 })
+    static int h() { [10, 20, 30][1] }
+
+    @Ensures({ result == 2 })
+    static int i() { Map.of("a", 1, "b", 2).get("b") }
+}
+```
+
+All four verify. Replace {@code result == 3} with {@code result == 4} and the soundness anchor
+kicks in: the literal fold means Z3 sees {@code 3 == 4} on the residual goal, refutes immediately.
+
+**Known limits.**
+
+- **No local-variable propagation.** {@code List<Integer> xs = List.of(1, 2, 3); xs.size()}
+  doesn't fold — {@code xs} becomes an ordinary list local whose size oracle is unconstrained
+  past the assignment. Threading the factory through the {@code Assign} step (parallel to
+  Phase 35's materialised-set path) is the natural follow-up.
+- **Set.of uniqueness is not enforced.** {@code Set.of(1, 1, 1).size() == 3} folds to true,
+  which is technically unsound (the runtime call throws {@code IllegalArgumentException} for
+  duplicates and the runtime set has size 1). Dedup-aware sizing would need a static distinct-
+  pairs analysis on the literal args; skipped because real code that calls Set.of with
+  duplicates is itself a bug.
+- **No {@code Collections.unmodifiableX} or {@code .asImmutable()}.** Those wrap an existing
+  container — the result inherits its size from the operand, which the size oracle already
+  models for named operands; folding would require recognising the wrap explicitly. Out of
+  scope for this slice.
+- **No {@code .values()} / {@code .keySet()} forwarding.** A factory map's {@code .values()}
+  could in principle yield a recognised set factory of the values, composing with downstream
+  {@code .contains}. Not wired here — most contracts that care about map values do so via
+  {@code containsValue}, which already folds.
+- **{@code .get(non-constant-i)} skips honestly.** Folding for a symbolic index would emit an
+  {@code ite}-chain plus an explicit out-of-bounds handling; deferred to the same slice that
+  threads factories through assignment.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

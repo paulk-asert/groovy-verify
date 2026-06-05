@@ -108,9 +108,19 @@ static int diff(List<Integer> xs, int k) { xs[k] - xs[k + 1] }
 ```
 
 A `List<String>` index is bounds-checked the same way — the element type is irrelevant to the access.
-This covers list *index* read and subscript update today; the method-call idioms (`xs.get(i)` /
-`xs.set(i, v)`), size-changing mutation (`add`/`remove`), immutable-list detection, and element
-nullability are tracked in the roadmap.
+And the *element* itself is now nullity-checked: `xs[i].method()` (or `xs.get(i).method()`) becomes
+an implicit NPE obligation against a per-element nullity oracle, discharged by an `@Requires` or an
+`if` guard, refuted otherwise with a `fails on: f([null])`-shape repro:
+
+```groovy
+@Requires({ xs.size() > 0 && xs[0] != null })
+static int firstLen(List<String> xs) { xs[0].length() }
+```
+
+Drop the `xs[0] != null` guard and the refutation pins a concrete failing input. The remaining list
+deferred items — method-call idioms (`xs.get`/`set`), and size-changing mutation (`add`/`remove`) —
+are tracked in the roadmap; immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`,
+…) **are** in, peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`.
 
 **Object state — instance fields, valid by construction.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
@@ -174,6 +184,28 @@ Same machinery, real-world types. For a method with a String or Enum parameter, 
 additionally renders a `fails on: grant("…")` / `fails on: paint(Color.RED)` line — pinning the
 refuting parameter from the model as a Groovy literal — just as it does for the int-parameter
 examples above.
+
+**Permissions — `Map<Role, Set<Perm>>` nested element domains.** Sets compose with maps the way a
+typical RBAC table is written: each role maps to a set of granted permissions, looked up by `m[k]`.
+The map's *value sort* is the inner set's characteristic-array sort `Array<Perm, Int>`, so `m[k]`
+reads as a transient set; `m[k].contains(p)` is membership, and `m[k].containsAll(required)`
+finite-conjuncts over the inner enum's constants. So a covering-implies-granted claim is a one-liner:
+
+```groovy
+class Acl {
+    enum Role { ADMIN, USER, GUEST }
+    enum Perm { READ, WRITE, DELETE }
+    @Requires({ grants[Role.ADMIN].containsAll(required) })            // ADMIN covers required …
+    @Ensures({ !(Perm.WRITE in required) || Perm.WRITE in grants[Role.ADMIN] })   // … so WRITE, when requested, is held
+    static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
+}
+```
+
+The verifier closes the gap between "ADMIN covers `required`" and "WRITE is in `grants[ADMIN]` whenever
+`WRITE ∈ required`" via the per-constant conjunction over `Perm`. Drop the `containsAll` precondition
+and the postcondition rightly refutes: without coverage, the requested permission isn't pinned in
+the admin's grant set. Inner-set mutation (`grants[k].add(p)`) and `grants[k].size()` are out of the
+read-only nesting fragment today.
 
 **State machines — every state handled, machine-checked.** A `Set<State>` over an `enum` has a
 finite domain the verifier exploits: the pigeonhole `handled.size() <= 3` is automatic for any
@@ -296,7 +328,10 @@ enum's constants) and for Int-element sets under a `Sets.boundedBy(t, n)` contex
 universal). **Union and intersection** are in for *inline* uses — `(a + b).contains(x)` lowers
 lazily to `x ∈ a ∨ x ∈ b`, `a.intersect(b).contains(x)` to the conjunction, and `containsAll` on a
 binop receiver chains through the finite conjunction over the enum domain. Materialised
-assignment (`Set u = a + b` as a fresh first-class set) is still out.
+assignment (`Set<X> u = a + b` as a fresh first-class set) is **also in**: `u` becomes a known set
+whose pigeonhole, full-coverage iff, and per-element membership iff relating it to its operands are
+all asserted on mint, so subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning composes
+with every other set lowering.
 
 **Finite maps — a value array plus a key-set.** A `Map<Integer,Integer>` is modelled as its values
 (`m[k]` / `m.get(k)`, an array) together with its key domain (`m.containsKey(k)` / `k in m`, a *set*).
@@ -546,7 +581,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Materialised set ops** | `Set<X> u = a + b` (or `as Set<X>` on `a.intersect(b)`) mints `u` as a first-class set: subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning, the enum-domain pigeonhole/full-coverage iff/empty iff axioms, and the per-element membership iff relating `u` to its operands all light up automatically | ✅ Phase 35 |
 | **`Map<K, Set<V>>` nesting (read)** | `m[k].contains(x)` / `x in m[k]` / `m[k].containsAll(s)` over `Map<Role, Set<V>>` — the map's value sort is the inner set's characteristic-array sort `Array<V, Int>`, so `m[k]` reads as a transient SMT array (no named handle minted). Inner-set mutation and `m[k].size()` are deferred | ✅ Phase 36 |
 | **List element nullability** | `xs[i].method()` and `xs.get(i).method()` are now implicit-NPE-checked against a per-element nullity oracle; `@Requires({ xs[i] != null })` and `if (xs[i] != null) …` guards discharge it. Counterexamples render as `f([null])` / `f([null, null])`. Annotation matching (`@NonNull` / `@NotNull` / `@Nonnull` / `@MonotonicNonNull` simple-name set, à la NullChecker) is plumbed but Groovy's AST doesn't always preserve type-use annotations on generics; use the contract form for now | ✅ Phase 37 |
-| List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection | — | ⏳ later |
+| **Immutable container factory recognition** | `List.of(args)` / `Set.of(args)` / `Map.of(k1,v1,…)` and Groovy literals `[a,b,c]` / `[k:v]` (with `as Set` cast for set literals) peephole-fold to ground SMT terms: `.size()` to the literal count, `.contains` / `containsKey` / `containsValue` / `in` to a finite disjunction over the entries, `.get(literal_i)` / `[literal_i]` to the i-th element, `Map.of(…).get(k)` to an ite-chain. No new handle minted, no axioms emitted | ✅ Phase 38 |
+| List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
@@ -608,15 +644,23 @@ warning rather than passing silently. In expressions the fragment is:
   element raises it by one), which drives a set-valued `@Decreases` measure (`n - s.size()`,
   the DFS-shaped termination argument); subset (`s.containsAll(t)`) and equality (`s.equals(t)`)
   are in for enum-element sets and for Int-element sets under `Sets.boundedBy(t, n)`; union and
-  intersection are in for *inline* uses — `(a + b).contains(x)`, `a.intersect(b).contains(x)`,
-  and `containsAll` on a binop receiver — but the *materialised* form (`Set u = a + b` as a fresh
-  first-class set) is still out;
+  intersection are in both *inline* (`(a + b).contains(x)`, `a.intersect(b).contains(x)`,
+  `containsAll` on a binop receiver) **and *materialised*** (`Set<X> u = a + b` mints `u` as a
+  first-class set with the membership iff axiom);
 - finite `Map<Integer,Integer>` — value lookup (`m[k]`, `m.get(k)`), key membership (`k in m`,
   `m.containsKey(k)`), mutation (`m.put(k,v)` / `m[k] = v`) and size (`m.size()`): a map is a
   value array plus a key-set, so a put both stores the value and adds the key (with the same
   cardinality law), and `m.size()` likewise drives a recursive measure over the key domain;
   `m.containsValue(v)` is in for enum-keyed maps (finite disjunction over key constants);
-  `keySet` / `Map<K,Set<V>>` nesting stay outside the fragment;
+  **`Map<K, Set<V>>` nesting is in for reads** (`m[k].contains(x)`, `m[k].containsAll(s)`,
+  `x in m[k]`) via a nested array sort `Array<K, Array<V, Int>>`; `keySet`/`values` projections
+  and nested-set mutation remain outside;
+- list element nullability: `xs[i].method()` / `xs.get(i).method()` is an implicit NPE obligation
+  against a per-element nullity oracle, discharged by `@Requires({ xs[i] != null })` or an
+  `if` guard;
+- immutable container factories — `List.of(args)` / `Set.of(args)` / `Map.of(k,v,…)` and Groovy
+  literals `[a, b, c]` / `[k: v]` (and `as Set` casts) peephole-fold to ground SMT terms on
+  `.size()`, `.contains` / `containsKey` / `containsValue` / `in`, and `.get(literal_i)`;
 - fuel-bounded inlining of contract-free pure functions (a closed call like
   `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.

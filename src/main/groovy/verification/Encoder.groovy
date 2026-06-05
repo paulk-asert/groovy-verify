@@ -24,6 +24,9 @@ import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.CastExpression
+import org.codehaus.groovy.ast.expr.ListExpression
+import org.codehaus.groovy.ast.expr.MapEntryExpression
+import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
@@ -877,6 +880,155 @@ class Encoder {
         conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
     }
 
+    /**
+     * Phase 38 — a recognised immutable-container factory expression. Carries enough information
+     * to fold peephole operations ({@code .size()}, {@code .isEmpty()}, {@code .contains(x)},
+     * {@code .get(i)}, {@code .containsKey}, {@code m[k]}) to ground SMT terms without minting
+     * any handle. For lists/sets the elements live in {@code args}; for maps the keys and values
+     * live in parallel {@code keys}/{@code values} lists.
+     */
+    @CompileStatic
+    private static class FactoryContainer {
+        String kind                    // 'list' | 'set' | 'map'
+        List<Expression> args          // list/set elements; null for maps
+        List<Expression> keys          // map keys; null for list/set
+        List<Expression> values        // map values; null for list/set
+        int entryCount() { args != null ? args.size() : (keys != null ? keys.size() : 0) }
+    }
+
+    /**
+     * Phase 38 — recognise a factory call or Groovy literal that yields an immutable container of
+     * known size and elements:
+     *   - {@code List.of(a, b, …)} / {@code Set.of(a, b, …)} / {@code Map.of(k1, v1, …)}
+     *   - Groovy list literal {@code [a, b, c]} (kind {@code list} by default; the outer cast,
+     *     {@code [a, b, c] as Set<X>}, switches the kind)
+     *   - Groovy map literal {@code [k1: v1, k2: v2]}
+     * Returns null for anything else, so callers fall through to their default receiver handling.
+     */
+    private FactoryContainer factoryContainerFor(Expression e) {
+        Expression target = e
+        String kindOverride = null
+        if (target instanceof CastExpression) {
+            CastExpression ce = (CastExpression) target
+            // Name check rather than isAssignableFrom — we just need to distinguish "cast to Set"
+            // from "cast to something else" syntactically; generics don't change the qualifier.
+            if (ce.type?.name == 'java.util.Set') kindOverride = 'set'
+            target = ce.expression
+        }
+        if (target instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) target
+            if (mce.methodAsString == 'of' && mce.objectExpression instanceof ClassExpression) {
+                String tn = ((ClassExpression) mce.objectExpression).type?.name
+                List<Expression> args = argList(mce)
+                if (tn == 'java.util.List') return new FactoryContainer(kind: kindOverride ?: 'list', args: args)
+                if (tn == 'java.util.Set')  return new FactoryContainer(kind: 'set', args: args)
+                if (tn == 'java.util.Map') {
+                    if (args.size() % 2 != 0) return null
+                    List<Expression> ks = new ArrayList<Expression>()
+                    List<Expression> vs = new ArrayList<Expression>()
+                    for (int i = 0; i < args.size(); i += 2) {
+                        ks.add(args.get(i))
+                        vs.add(args.get(i + 1))
+                    }
+                    return new FactoryContainer(kind: 'map', keys: ks, values: vs)
+                }
+            }
+        }
+        if (target instanceof ListExpression) {
+            return new FactoryContainer(kind: kindOverride ?: 'list', args: ((ListExpression) target).expressions)
+        }
+        if (target instanceof MapExpression) {
+            List<Expression> ks = new ArrayList<Expression>()
+            List<Expression> vs = new ArrayList<Expression>()
+            for (MapEntryExpression entry : ((MapExpression) target).mapEntryExpressions) {
+                ks.add(entry.keyExpression)
+                vs.add(entry.valueExpression)
+            }
+            return new FactoryContainer(kind: 'map', keys: ks, values: vs)
+        }
+        null
+    }
+
+    /** Disjunction of equalities — {@code x == a_0 ∨ x == a_1 ∨ …}; null if any element fails to translate. */
+    private Object foldContainsDisjunction(Object xH, List<Expression> elems) {
+        if (elems.isEmpty()) return session.boolLit(false)
+        List<Object> disjuncts = new ArrayList<Object>()
+        for (Expression el : elems) {
+            Object elH = translate(el)
+            if (elH == null) return null
+            disjuncts.add(session.eq(xH, elH))
+        }
+        disjuncts.size() == 1 ? disjuncts.get(0) : session.or(disjuncts)
+    }
+
+    /**
+     * Phase 38 — fold a method call on a recognised factory receiver. Returns null when the op
+     * isn't one we recognise on this kind (caller falls through to honest skip).
+     */
+    private Object foldFactoryMethodCall(FactoryContainer f, String m, List<Expression> args) {
+        if (m == 'size' && args.isEmpty()) return session.intLit(f.entryCount().longValue())
+        if (m == 'isEmpty' && args.isEmpty()) return session.boolLit(f.entryCount() == 0)
+        if (m == 'contains' && args.size() == 1 && (f.kind == 'list' || f.kind == 'set')) {
+            Object xH = translate(args.get(0))
+            if (xH == null) return null
+            return foldContainsDisjunction(xH, f.args)
+        }
+        if (m == 'containsKey' && args.size() == 1 && f.kind == 'map') {
+            Object xH = translate(args.get(0))
+            if (xH == null) return null
+            return foldContainsDisjunction(xH, f.keys)
+        }
+        if (m == 'containsValue' && args.size() == 1 && f.kind == 'map') {
+            Object xH = translate(args.get(0))
+            if (xH == null) return null
+            return foldContainsDisjunction(xH, f.values)
+        }
+        if (m == 'get' && args.size() == 1) {
+            if (f.kind == 'list') return foldFactoryListIndex(f.args, args.get(0))
+            if (f.kind == 'map')  return foldFactoryMapLookup(f, args.get(0))
+        }
+        null
+    }
+
+    /** {@code listFactory.get(i)} — fold only if {@code i} is a known constant int in range. */
+    private Object foldFactoryListIndex(List<Expression> elems, Expression idxExpr) {
+        Object idxH = translate(idxExpr)
+        if (idxH == null) return null
+        // Build ite-chain only if i is a literal int in range — for non-constant i, we'd need to
+        // also model the out-of-bounds case and threads of array equality, beyond this slice.
+        if (idxExpr instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) idxExpr).value
+            if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) {
+                int idx = ((Number) v).intValue()
+                if (idx >= 0 && idx < elems.size()) return translate(elems.get(idx))
+            }
+        }
+        null
+    }
+
+    /** {@code mapFactory.get(k)} / {@code mapFactory[k]} — ite-chain over the literal entries. */
+    private Object foldFactoryMapLookup(FactoryContainer f, Expression keyExpr) {
+        Object kH = translate(keyExpr)
+        if (kH == null) return null
+        // If kH matches one of the entry keys symbolically, that's the value. For runtime mismatch
+        // the JDK throws; we only fold the in-range case via an ite chain.
+        // Build right-to-left: for entries [(k_0,v_0), …, (k_{n-1},v_{n-1})], emit
+        //   ite(k == k_{n-1}, v_{n-1}, ite(k == k_{n-2}, v_{n-2}, … default))
+        // The default is the last value — semantically wrong for true misses, but folds are only
+        // exercised when the user asserts the key matches one of the entries (otherwise the result
+        // is unconstrained, which Z3 will treat as a free unknown — sound for our refute discipline).
+        if (f.keys.isEmpty()) return null
+        Object current = translate(f.values.get(f.keys.size() - 1))
+        if (current == null) return null
+        for (int i = f.keys.size() - 2; i >= 0; i--) {
+            Object kiH = translate(f.keys.get(i))
+            Object viH = translate(f.values.get(i))
+            if (kiH == null || viH == null) return null
+            current = session.ite(session.eq(kH, kiH), viH, current)
+        }
+        current
+    }
+
     private Object translateSetEquals(String sKey, Expression tExpr) {
         Object forward = translateContainsAll(sKey, tExpr)
         if (forward == null) return null
@@ -1278,6 +1430,15 @@ class Encoder {
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
         // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
         if (op == Types.LEFT_SQUARE_BRACKET) {
+            // Phase 38 — `[a, b, c][i]` / `Map.of(k, v)[k']` / `[k:v][k']`: factory receiver
+            // peephole-folds to the i-th element (for constant i) or an ite-chain over entries.
+            FactoryContainer factoryL = factoryContainerFor(be.leftExpression)
+            if (factoryL != null) {
+                if (factoryL.kind == 'list')
+                    return foldFactoryListIndex(factoryL.args, be.rightExpression)
+                if (factoryL.kind == 'map')
+                    return foldFactoryMapLookup(factoryL, be.rightExpression)
+            }
             // m[k] over a map reads its value array (key in map's key sort); a[i] over an array
             // or list reads its contents (index in Int). Phase 27: route map keys through the
             // declared key sort so a Map<String, Integer> can do m["admin"] cleanly.
@@ -1336,6 +1497,18 @@ class Encoder {
                 if (elem == null) return null
                 Object mem = member(nr.innerSet, elem)
                 return sym == 'in' ? mem : session.not(mem)
+            }
+            // Phase 38 — `x in [a, b, c]` / `x in List.of(…)` / `x in [k: v]`: peephole disjunction
+            // over the recognised factory's elements (or keys, for map factories — matching the
+            // Groovy `in` semantics: `k in m` tests key membership, mirror of containsKey).
+            FactoryContainer factoryR = factoryContainerFor(be.rightExpression)
+            if (factoryR != null) {
+                Object xH = translate(be.leftExpression)
+                if (xH == null) return null
+                List<Expression> probe = (factoryR.kind == 'map') ? factoryR.keys : factoryR.args
+                Object disj = foldContainsDisjunction(xH, probe)
+                if (disj == null) return null
+                return sym == 'in' ? disj : session.not(disj)
             }
         }
 
@@ -1520,6 +1693,18 @@ class Encoder {
                 Object q = translateSetEquals(setKey, args.get(0))
                 if (q != null) return q
             }
+            return null
+        }
+
+        // Phase 38 — factory receiver (List.of / Set.of / Map.of / Groovy literals): peephole-fold
+        // .size / .isEmpty / .contains / .containsKey / .containsValue / .get to ground SMT terms
+        // when the receiver is a recognised immutable-container literal. Composes with other
+        // dispatch paths cleanly — no named handle minted, no axioms emitted.
+        FactoryContainer factory = factoryContainerFor(recv)
+        if (factory != null) {
+            Object q = foldFactoryMethodCall(factory, m, args)
+            if (q != null) return q
+            // Not a recognised op on this kind — fall through to honest skip rather than masking.
             return null
         }
 

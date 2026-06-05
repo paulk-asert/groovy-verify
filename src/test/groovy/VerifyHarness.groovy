@@ -1479,6 +1479,26 @@ class VerifyHarness {
                         @Ensures({ m.containsKey(Role.ADMIN) })
                         static int f(Map<Role, Set<Role>> m) { 0 }
                     }''')],
+        // README example anchor: RBAC over Map<Role, Set<Perm>>. ADMIN covering the required
+        // permission set implies a specific requested perm is in ADMIN's grant set via the
+        // finite conjunction over Perm constants.
+        [group: 'P36 nested map<set>', name: 'README RBAC: adminMayWrite verifies', ok: true,
+         src: tc('''class Acl {
+                        enum Role { ADMIN, USER, GUEST }
+                        enum Perm { READ, WRITE, DELETE }
+                        @Requires({ grants[Role.ADMIN].containsAll(required) })
+                        @Ensures({ !(Perm.WRITE in required) || Perm.WRITE in grants[Role.ADMIN] })
+                        static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
+                    }''')],
+        // Soundness anchor: without the containsAll precondition, the postcondition refutes.
+        [group: 'P36 nested map<set>', name: 'README RBAC: refutes without containsAll',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class Acl {
+                        enum Role { ADMIN, USER, GUEST }
+                        enum Perm { READ, WRITE, DELETE }
+                        @Ensures({ !(Perm.WRITE in required) || Perm.WRITE in grants[Role.ADMIN] })
+                        static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
+                    }''')],
 
         // ---------- Phase 37: element nullability ----------
         // Refute: xs[0].method() without a per-element non-null guarantee. The bounds @Requires lets
@@ -1525,6 +1545,76 @@ class VerifyHarness {
                         @Requires({ xs != null && xs.size() > 0 && xs.get(0) != null })
                         static int f(List<String> xs) { xs.get(0).length() }
                     }''')],
+        // ---------- Phase 38: immutable-container factory recognition ----------
+        // List.of(...).size() folds to a literal count — usable as a ground int in @Ensures.
+        [group: 'P38 factory', name: 'List.of(args).size() folds to literal', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { List.of(1, 2, 3).size() }
+                    }''')],
+        // Soundness: List.of(1, 2, 3).size() is provably 3, not 4 — refute the wrong literal.
+        [group: 'P38 factory', name: 'List.of size: wrong literal refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 4 })
+                        static int f() { List.of(1, 2, 3).size() }
+                    }''')],
+        // Groovy list literal: same fold via the ListExpression branch.
+        [group: 'P38 factory', name: 'Groovy [a, b, c].size() folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int f() { [10, 20].size() }
+                    }''')],
+        // .contains() over a list factory: disjunction over the entries.
+        [group: 'P38 factory', name: 'List.of(...).contains folds to disjunction', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { List.of(1, 2, 3).contains(2) ? 1 : 0 }
+                    }''')],
+        // Soundness on contains: refute the wrong claim.
+        [group: 'P38 factory', name: 'List.of(...).contains refutes wrong element',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { List.of(1, 2, 3).contains(99) ? 1 : 0 }
+                    }''')],
+        // `x in [...]` operator form, same lowering as .contains.
+        [group: 'P38 factory', name: 'x in [a, b, c] operator folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { (2 in [1, 2, 3]) ? 1 : 0 }
+                    }''')],
+        // List.of(...).get(literal_i) folds to the literal element.
+        [group: 'P38 factory', name: 'List.of(...).get(0) folds to first element', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 10 })
+                        static int f() { List.of(10, 20, 30).get(0) }
+                    }''')],
+        // [...][i] bracket-access on a Groovy list literal also folds.
+        [group: 'P38 factory', name: '[a, b, c][i] bracket fold for constant i', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 20 })
+                        static int f() { [10, 20, 30][1] }
+                    }''')],
+        // Set.of factory: .size and .contains the same way (uniqueness of args not enforced —
+        // dedup-aware sizing is a known limit).
+        [group: 'P38 factory', name: 'Set.of(args).size folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { Set.of(1, 2, 3).size() }
+                    }''')],
+        // Map.of factory: keys/values via containsKey / containsValue.
+        [group: 'P38 factory', name: 'Map.of(...).containsKey folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { Map.of("a", 1, "b", 2).containsKey("a") ? 1 : 0 }
+                    }''')],
+        [group: 'P38 factory', name: 'Map.of(...).get(k) ite-chain folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int f() { Map.of("a", 1, "b", 2).get("b") }
+                    }''')],
+
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
         [group: 'README counter', name: 'Counter without @Requires refutes at construction',
          expect: 'Cannot prove class invariant',
