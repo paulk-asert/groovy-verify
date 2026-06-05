@@ -1553,16 +1553,17 @@ class VerifyChecker extends TypeCheckingExtension {
                     // Phase 40 — same trick for removeLast()/pop(): the implicit precondition
                     // {@code xs.size() > 0} maps to IndexSite(xs, 0), so pop-on-empty refutes with
                     // the standard bounds-check diagnostic.
-                    String mName = mce.methodAsString
-                    List<Expression> margs = mce.arguments instanceof ArgumentListExpression ?
-                        ((ArgumentListExpression) mce.arguments).expressions :
-                        Collections.<Expression>emptyList()
-                    if (mName == 'get' && margs.size() == 1) {
-                        indexSites.add(new IndexSite(node: mce, receiver: v.name, index: margs.get(0)))
-                    } else if ((mName == 'first' || mName == 'head' ||
-                                mName == 'removeLast' || mName == 'pop') && margs.isEmpty()) {
-                        indexSites.add(new IndexSite(node: mce, receiver: v.name, index: new ConstantExpression(0)))
-                    }
+                    synthIndexSiteFor(mce, v.name)
+                } else if (accessed instanceof FieldNode && v.name != 'this' && v.name != 'super') {
+                    // Phase 43 — instance field receiver: synthesise the IndexSite for the
+                    // runtime-throwing shapes only ({@code get(i)}, {@code first()}, {@code head()},
+                    // {@code removeLast()}, {@code pop()}). Do NOT add a DerefSite: existing tests
+                    // that mutate set/map/list fields ({@code s.add(x)}, {@code m.put(k,v)},
+                    // {@code xs.add(v)}) don't declare {@code @Requires({ field != null })}, so
+                    // adding a scalar nullity obligation here would regress them. The bounds
+                    // check on a field's runtime-throwing read still fires — pop-on-empty
+                    // refutes uniformly whether xs is a parameter or a field.
+                    synthIndexSiteFor(mce, v.name)
                 }
             } else if (!mce.implicitThis) {
                 // Phase 37 — xs[i].method() and xs.get(i).method() shapes. The dereference target
@@ -1575,6 +1576,26 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
             }
             super.visitMethodCallExpression(mce)
+        }
+
+        /**
+         * Shared IndexSite synthesis for indexed-read shapes ({@code .get(i)}, {@code .first()},
+         * {@code .head()}, {@code .removeLast()}, {@code .pop()}) on a named receiver. The
+         * runtime-throwing variants (first/head/removeLast/pop) map to {@code IndexSite(name, 0)};
+         * {@code .get(i)} lifts the arg expression. Used by both the parameter-receiver branch
+         * (Phase 39/40) and the field-receiver branch (Phase 43).
+         */
+        private void synthIndexSiteFor(MethodCallExpression mce, String name) {
+            String mName = mce.methodAsString
+            List<Expression> margs = mce.arguments instanceof ArgumentListExpression ?
+                ((ArgumentListExpression) mce.arguments).expressions :
+                Collections.<Expression>emptyList()
+            if (mName == 'get' && margs.size() == 1) {
+                indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
+            } else if ((mName == 'first' || mName == 'head' ||
+                        mName == 'removeLast' || mName == 'pop') && margs.isEmpty()) {
+                indexSites.add(new IndexSite(node: mce, receiver: name, index: new ConstantExpression(0)))
+            }
         }
     }
 

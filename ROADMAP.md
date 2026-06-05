@@ -2255,10 +2255,10 @@ class C {
   higher risk of trigger-cliff issues. A separate phase.
 - ~~**Count tracking across mutations.**~~ *Closed by Phase 41 below* — list {@code .count(v)}
   now routes through a bounded count oracle with per-store + boundary laws on every mutation.
-- **Field-receiver bounds synthesis.** The synthesised IndexSite for {@code removeLast()} /
-  {@code pop()} only fires on parameter-resolved receivers (the {@code ObligationCollector}'s
-  {@code realVar} check excludes field-resolved access). A pop-on-empty on an instance field
-  isn't flagged via the implicit pass; users guard with {@code @Requires({ xs.size() > 0 })}.
+- ~~**Field-receiver bounds synthesis.**~~ *Closed by Phase 43 below* —
+  {@link ObligationCollector} now synthesises IndexSites for runtime-throwing list shapes on
+  field receivers, so {@code xs.removeLast()} on a possibly-empty instance field refutes the
+  same way it does on a parameter.
 - ~~**Implicit obligations downstream of a mutation.**~~ *Closed by Phase 42 below* —
   {@code dischargeVfObligation} now replays Assign / Guard / LemmaCall steps in source order, so
   the implicit pass sees the same oracle state the body-replay pass does.
@@ -2428,6 +2428,52 @@ didn't see the size shrink).
   there). Practical impact: an obligation downstream of an in-bounds bracket store doesn't see
   the contents change. Rarely matters for the bounds/null/div check; could matter if a future
   obligation depends on element values.
+
+## Phase 43 — Field-receiver bounds synthesis  *(shipped)*
+
+**Closes the Phase 40 ergonomic gap.** The IndexSite synthesis for runtime-throwing list shapes
+({@code get(i)}, {@code first()}, {@code head()}, {@code removeLast()}, {@code pop()}) was added
+in Phase 39/40 inside {@link ObligationCollector#visitMethodCallExpression}, gated by a
+{@code realVar} check that accepts only {@link Parameter} and (the loop-bound)
+{@link VariableExpression} resolutions. Instance-field references — where
+{@code v.accessedVariable} is a {@link FieldNode} — fell through silently, so a pop-on-empty on
+{@code this.xs} verified despite the guaranteed runtime exception.
+
+**The fix.** A second branch in the same method handles {@link FieldNode}-resolved
+{@code VariableExpression}s. It calls the same {@code synthIndexSiteFor(mce, name)} helper the
+parameter branch uses — same diagnostic, same shape, same {@code IndexSite(name, 0)} or
+{@code IndexSite(name, idxArg)} — but **does not** add a {@link DerefSite}. The asymmetry is
+intentional: existing tests that mutate set/map/list instance fields
+({@code s.add(x)}, {@code m.put(k, v)}, {@code xs.add(v)}) don't carry a {@code @Requires({
+field != null })}, and adding a scalar nullity check on the receiver would have regressed them.
+The bounds check on runtime-throwing reads is what the user actually needs flagged; the field's
+scalar nullity is handled by the surrounding class invariants if at all.
+
+```groovy
+class C {
+    List<Integer> xs
+    void popOne() { xs.removeLast() }   // ✗ refutes — pop-on-empty, fails on: popOne()
+
+    @Requires({ xs != null && xs.size() > 0 })
+    @Modifies({ this.xs })
+    void popSafe() { xs.removeLast() }  // ✓ — bounds discharged via @Requires
+}
+```
+
+The diagnostic shape is identical to the parameter-receiver version — same
+{@code obligation: 0 <= 0 && 0 < xs.size()}, same {@code counterexample: xs.size() = 0}, same
+{@code fails on:} repro line (just with no list argument since {@code xs} is a field).
+
+**Known limits.**
+
+- **No scalar field-nullity check.** A {@code field.method()} on an instance field still skips
+  the {@code field != null} obligation. Adding it would regress the set/map/list mutation tests;
+  the only sound fix is to require those tests to assert non-null in their @Requires (an
+  ergonomic change). Class invariants can pin the field's non-null property; this is the
+  intended pattern.
+- **{@code xs.last()} bounds still skip.** Same as Phase 39's known limit — the {@code size-1}
+  index isn't fabricated as an Expression; the @Ensures-driven check still catches correctness
+  violations.
 
 ## Non-goals
 
