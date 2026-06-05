@@ -2390,6 +2390,14 @@ class VerifyHarness {
         }
         println "\n${'═' * 64}"
         println "${passed} passed, ${failed} failed, ${CASES.size()} total"
+        if (System.getenv('VERIFY_CACHE_STATS') == '1') {
+            long hits   = verification.Z3Backend.vcCacheHits()
+            long misses = verification.Z3Backend.vcCacheMisses()
+            long total  = hits + misses
+            int  size   = verification.Z3Backend.vcCacheSize()
+            String pct  = total == 0 ? '—' : sprintf('%.1f%%', 100.0d * hits / total)
+            println "VC cache: ${hits} hits / ${misses} misses (${pct} hit rate), ${size} entries"
+        }
         if (failed > 0) System.exit(1)
     }
 }

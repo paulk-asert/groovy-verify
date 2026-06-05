@@ -31,6 +31,9 @@ import com.microsoft.z3.Sort
 import com.microsoft.z3.Status
 import groovy.transform.CompileStatic
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+
 /**
  * Z3 implementation via the z3-turnkey distribution
  * (tools.aqua:z3-turnkey), which bundles native libraries for
@@ -57,8 +60,28 @@ class Z3Backend implements SmtBackend {
         Params p = ctx.mkParams()
         p.add("timeout", timeoutMs)
         solver.setParameters(p)
-        new Z3Session(ctx, solver)
+        new Z3Session(ctx, solver, timeoutMs)
     }
+
+    /**
+     * Phase 34 — process-wide VC cache. Two checks built from the same set of asserted Z3
+     * expressions (compared structurally via {@link com.microsoft.z3.Expr#toString}) and the
+     * same timeout produce the same {@link CheckResult}, so we look up before calling the
+     * solver. Within {@code ./gradlew verify} (one JVM, ~250 tests, many shared trivial VCs
+     * for arithmetic/bounds/null obligations), the suite gains a high hit rate without any
+     * loss of soundness — counterexamples are pure {@code Map<String, Long>} / {@code String}
+     * data, so cached refutations re-render correctly in any session whose declared variables
+     * carry the cached names.
+     */
+    static final Map<String, CheckResult> vcCache = new ConcurrentHashMap<>()
+    private static final AtomicLong vcHits = new AtomicLong()
+    private static final AtomicLong vcMisses = new AtomicLong()
+    static long vcCacheHits() { vcHits.get() }
+    static long vcCacheMisses() { vcMisses.get() }
+    static int  vcCacheSize()  { vcCache.size() }
+    static void resetVCCacheStats() { vcHits.set(0); vcMisses.set(0) }
+    static void recordVCCacheHit()   { vcHits.incrementAndGet() }
+    static void recordVCCacheMiss()  { vcMisses.incrementAndGet() }
 }
 
 @CompileStatic
@@ -98,9 +121,19 @@ class Z3Session implements SmtSession {
     /** Phase 27 — arrays of arbitrary key/value sorts, keyed by {@code name + ':' + keySort + '->' + valSort}. */
     private final Map<String, ArrayExpr> sortedArrays = [:]
 
-    Z3Session(Context ctx, Solver solver) {
+    /**
+     * Phase 34 — assertion fingerprint, lazily hashed in {@link #check}. We keep the
+     * {@link BoolExpr} handles (cheap — they're shared with the solver) rather than
+     * computing {@code toString} eagerly on every {@code assertExpr}, since the encoder
+     * may build dozens of intermediate constraints before any check fires.
+     */
+    private final List<BoolExpr> assertedExprs = new ArrayList<BoolExpr>()
+    private final int timeoutMs
+
+    Z3Session(Context ctx, Solver solver, int timeoutMs) {
         this.ctx = ctx
         this.solver = solver
+        this.timeoutMs = timeoutMs
     }
 
     @Override
@@ -366,11 +399,42 @@ class Z3Session implements SmtSession {
 
     @Override
     void assertExpr(Object boolExpr) {
-        solver.add((BoolExpr) boolExpr)
+        BoolExpr be = (BoolExpr) boolExpr
+        solver.add(be)
+        assertedExprs.add(be)
+    }
+
+    /**
+     * Phase 34 — canonical fingerprint of the asserted set. Sorted S-expression strings make the
+     * key insensitive to assertion order (the solver result already is), and the timeout prefix
+     * guards against a hard-VC UNKNOWN being reused under a different bound.
+     */
+    private String vcKey() {
+        if (assertedExprs.isEmpty()) return "t:${timeoutMs}\n<empty>"
+        List<String> reprs = new ArrayList<String>(assertedExprs.size())
+        for (BoolExpr e : assertedExprs) reprs.add(e.toString())
+        Collections.sort(reprs)
+        StringBuilder sb = new StringBuilder()
+        sb.append('t:').append(timeoutMs).append('\n')
+        for (String s : reprs) sb.append(s).append('\n')
+        sb.toString()
     }
 
     @Override
     CheckResult check() {
+        String key = vcKey()
+        CheckResult cached = Z3Backend.vcCache.get(key)
+        if (cached != null) {
+            Z3Backend.recordVCCacheHit()
+            return cached
+        }
+        Z3Backend.recordVCCacheMiss()
+        CheckResult result = computeCheck()
+        Z3Backend.vcCache.put(key, result)
+        return result
+    }
+
+    private CheckResult computeCheck() {
         Status status = solver.check()
         if (status == Status.UNSATISFIABLE) {
             return CheckResult.verified()

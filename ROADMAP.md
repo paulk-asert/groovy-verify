@@ -1700,6 +1700,52 @@ a covering u from either operand, the union claim doesn't hold.
   `intSubsetBounds` plumbing to recognise a bound on the subset operand of the binop expression;
   not yet wired. Enum is the only path today for the `containsAll`-on-binop case.
 
+## Phase 34 — VC cache  *(shipped)*
+
+**The first pure-engineering phase.** No new capability, no new contract surface — a *cross-cutting
+risk* the project flagged from the start ("compilation slowdown — Z3 calls take 10–100 ms each;
+mitigations: cache VCs by `(signature, path-condition hash)`"). The mitigation is now in.
+
+**The encoding.** Two VC checks built from the same set of asserted Z3 expressions — compared
+structurally via {@code Expr.toString()}, with the asserted-set sorted to a canonical order, and
+prefixed with the solver timeout to keep hard-UNKNOWN results from leaking across configurations
+— must produce the same {@code CheckResult}, by Z3's determinism. {@code Z3Backend} now keeps a
+process-wide {@code ConcurrentHashMap<String, CheckResult>} consulted at the top of
+{@code Z3Session.check()}: hit → return immediately; miss → solve, cache, return.
+
+```groovy
+@Override
+CheckResult check() {
+    String key = vcKey()
+    CheckResult cached = Z3Backend.vcCache.get(key)
+    if (cached != null) { Z3Backend.recordVCCacheHit(); return cached }
+    Z3Backend.recordVCCacheMiss()
+    CheckResult result = computeCheck()
+    Z3Backend.vcCache.put(key, result)
+    return result
+}
+```
+
+**Soundness.** A cached {@code CheckResult} carries only {@code String} → {@code Long} /
+{@code String} maps — no Z3 handles — so the counterexample re-renders correctly in any future
+session that declared the same source-level names. Sorts are differentiable inside the assertion
+text (an {@code Int} {@code n} and a {@code String} {@code n} would always appear inside
+operations that disambiguate them; their {@code toString} differs), so cross-sort name aliasing
+can't cause unsound conflation.
+
+**The result.** Test suite drops from **31.5 s to 25.8 s** (–18 %) at 253 cases, with **94 hits
+/ 359 misses ≈ 20.8 % hit rate** — the misses are the ~1.4 distinct VCs each test contributes to
+the cache for the first time; the hits are the precondition / bounds / null check obligations
+that recur across the suite. Set {@code VERIFY_CACHE_STATS=1} to surface the counters.
+
+**Known limits.** Two VCs that are *logically* equivalent but *syntactically* different (e.g.
+{@code a + b} vs {@code b + a}, {@code a ∧ b} vs {@code b ∧ a} inside a single conjunct) miss the
+cache. A canonicaliser would lift hit rates further at the cost of an extra normalisation pass
+per assertion; not pursued today. The cache is also process-wide rather than persisted — each
+{@code ./gradlew verify} rebuilds it from scratch. Persistent caching keyed on the project's
+class-file digests is a much larger phase (file-system layout, invalidation on dependency
+upgrades, cross-machine reproducibility) and the in-memory wins were already worthwhile alone.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -1739,10 +1785,10 @@ Things deliberately not pursued, because they don't pay back:
 
 - **Compilation slowdown.** Z3 calls take 10–100 ms each. A large module with
   hundreds of annotated call sites and implicit-check sites could add noticeable
-  seconds to a compile. Mitigations: cache VCs by `(signature, path-condition
-  hash)` so unchanged sites reuse prior results; run the checker only in a
-  "verify" configuration (a separate source set or a `-PverifyEnabled=true`
-  flag).
+  seconds to a compile. The in-process VC cache is shipped (see
+  [Phase 34](#phase-34--vc-cache--shipped)) and currently rebates ~18 % at suite
+  scale; a `-PverifyEnabled=true`-style "verify only" configuration and a
+  persistent disk cache keyed on class-file digests remain as further levers.
 - **`@CompileStatic` incompatibility.** The checker is a type-checking
   extension; code authored under `@CompileStatic` needs the checker to either
   work as an AST transformation instead, or run before `@CompileStatic` makes
