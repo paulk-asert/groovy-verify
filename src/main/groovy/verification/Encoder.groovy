@@ -668,6 +668,54 @@ class Encoder {
      *
      * Returns null for sort-mismatch or any other element sort (String, …).
      */
+    /**
+     * Phase 32b — lower {@code s.equals(t)} to {@code s.containsAll(t) ∧ t.containsAll(s)},
+     * composing the existing subset lowering in both directions. Returns null if either subset
+     * translation does (the caller treats that as "outside fragment"). Note: writing
+     * {@code s == t} directly in a contract uses Z3's array-equality predicate (an unbounded
+     * universal on the characteristic functions); this method-form path gives the user a
+     * propositionally-decomposed alternative that Z3 reasons about as ground facts.
+     */
+    private Object translateSetEquals(String sKey, Expression tExpr) {
+        Object forward = translateContainsAll(sKey, tExpr)
+        if (forward == null) return null
+        String tKey = setKeyFor(tExpr)
+        if (tKey == null) return null
+        // Reverse direction: build a VariableExpression-shaped wrapper for the receiver's key so
+        // translateContainsAll can resolve it back. The receiver name is the setKey itself for a
+        // plain receiver; for an old-snapshot key, strip the old$ prefix.
+        String sName = sKey.startsWith('old$') ? sKey.substring('old$'.length()) : sKey
+        Expression sAsExpr = new VariableExpression(sName)
+        Object backward = translateContainsAll(tKey, sAsExpr)
+        if (backward == null) return null
+        session.and([forward, backward])
+    }
+
+    /**
+     * Phase 32a — lower {@code m.containsValue(v)} to the finite disjunction
+     * {@code (m[c_1] == v) ∨ … ∨ (m[c_N] == v)} over an enum-keyed map's key constants.
+     * The existential mirror of {@link #translateContainsAll}: instead of "every key implies
+     * membership", "some key matches the value". Returns null for non-enum key sorts (no finite
+     * domain to enumerate) — Int/String keys honestly skip.
+     */
+    private Object translateMapContainsValue(String mapLog, Expression vExpr) {
+        ClassNode[] pair = mapTypes.get(mapLog)
+        if (pair == null) return null
+        ClassNode keyType = pair[0]
+        if (keyType == null || !(keyType.isEnum() || isEnumLikeType(keyType))) return null
+        Object vSort = sortFor(pair[1])
+        Object vH = translateInSort(vExpr, vSort)
+        if (vH == null) return null
+        Object valsArr = mapValsFor(mapLog)
+        Object keySort = session.declareSort(enumSortName(keyType))
+        List<Object> disjuncts = new ArrayList<Object>()
+        for (String constName : enumConstantNames(keyType)) {
+            Object keyLit = session.litOfSort(keySort, constName)
+            disjuncts.add(session.eq(session.select(valsArr, keyLit), vH))
+        }
+        disjuncts.isEmpty() ? session.boolLit(false) : session.or(disjuncts)
+    }
+
     private Object translateContainsAll(String sKey, Expression tExpr) {
         String tKey = setKeyFor(tExpr)
         if (tKey == null) return null
@@ -1187,7 +1235,15 @@ class Encoder {
             }
             if (m == 'size' && args.isEmpty()) return cardOf(mapKeysFor(mapLog))
             if (m == 'isEmpty' && args.isEmpty()) return session.eq(cardOf(mapKeysFor(mapLog)), session.intLit(0L))
-            // containsValue/keySet/values/putAll/etc. need an (unbounded) quantifier over the domain —
+            // Phase 32a — m.containsValue(v) for enum-keyed maps: lower to the finite disjunction
+            // (m[c_1] == v) ∨ … ∨ (m[c_N] == v) over the enum's key constants. The bounded
+            // existential mirror of the Phase-30 finite-conjunction subset lowering. Int-keyed
+            // and String-keyed maps skip (no finite key-domain to enumerate).
+            if (m == 'containsValue' && args.size() == 1) {
+                Object q = translateMapContainsValue(mapLog, args.get(0))
+                if (q != null) return q
+            }
+            // keySet/values/putAll/etc. still need unbounded quantifiers or new theory —
             // out of fragment: null so it surfaces as a loud "skipped", never a silent pass.
             return null
         }
@@ -1206,10 +1262,18 @@ class Encoder {
             if (m == 'isEmpty' && args.isEmpty()) return session.eq(cardOf(setFor(setKey)), session.intLit(0L))
             // Phase 30 — s.containsAll(t) for enum-element sets, lowered to the finite conjunction
             // ∧ (c_i ∈ t ⟹ c_i ∈ s) over the enum's constants (the same shape Phase 29 uses for
-            // full-coverage). Int subset needs a bounded-domain context (Sets.boundedBy on t) to
-            // close the universal — deferred until that plumbing lands; today it skips honestly.
+            // full-coverage). Phase 31 — Int subset under a Sets.boundedBy(t, n) context, lowered
+            // to a bounded universal over [0, n).
             if (m == 'containsAll' && args.size() == 1) {
                 Object q = translateContainsAll(setKey, args.get(0))
+                if (q != null) return q
+            }
+            // Phase 32b — s.equals(t) ≡ s.containsAll(t) ∧ t.containsAll(s), composed from the
+            // subset lowering above. Verifies for any element sort the subset path handles (enum
+            // always; Int with mutual bounds); otherwise the conjunction has a null operand and
+            // the whole thing skips honestly.
+            if (m == 'equals' && args.size() == 1) {
+                Object q = translateSetEquals(setKey, args.get(0))
                 if (q != null) return q
             }
             // union/intersect/etc. still need unbounded quantifiers — out of fragment, return null.
