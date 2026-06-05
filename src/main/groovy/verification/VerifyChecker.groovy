@@ -151,6 +151,14 @@ class VerifyChecker extends TypeCheckingExtension {
      * {@code xs[i].method()} is skipped for these.
      */
     private Set<String> currentNonNullElementContainers = new HashSet<String>()
+    /**
+     * Phase 41 — names of every {@code java.util.List}-typed param/field, regardless of element type.
+     * Distinct from {@link #currentListElementTypes} (which only tracks non-Int element lists).
+     * The encoder routes {@code xs.count(v)} for any of these through {@code bcount(arr, v, 0, sizeOf)}
+     * so the count tracks the bounded {@code [0, size)} range faithfully across size-changing
+     * mutations. Arrays ({@code int[]}) keep using the unbounded {@code count}.
+     */
+    private Set<String> currentListNames = new HashSet<String>()
     /** Names of {@code java.util.List}-typed params/fields with non-Int element types (Phase 27). */
     private Map<String, ClassNode> currentListElementTypes = new HashMap<String, ClassNode>()
     /**
@@ -178,7 +186,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private Encoder mkEncoder(SmtSession session) {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
-                    currentNestedSetValueTypes)
+                    currentNestedSetValueTypes, currentListNames)
     }
 
     /**
@@ -311,6 +319,20 @@ class VerifyChecker extends TypeCheckingExtension {
         } catch (Throwable ignored) {
             return false
         }
+    }
+
+    /**
+     * Phase 41 — every {@link java.util.List}-typed name visible to {@code node}, irrespective of
+     * element type. Used by the encoder to route {@code xs.count(v)} for lists through bounded
+     * count {@code bcount(arr, v, 0, sizeOf(xs))} so the count tracks size-changing mutations
+     * faithfully. Distinct from {@link #collectListElementTypes} which only collects non-Int lists.
+     */
+    private static Set<String> collectListNames(MethodNode node) {
+        Set<String> out = new LinkedHashSet<String>()
+        for (Parameter p : node.parameters) if (isListType(p.type)) out.add(p.name)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (isListType(f.type)) out.add(f.name)
+        out
     }
 
     /**
@@ -876,6 +898,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentMapTypes = collectMapTypes(node)
         currentNestedSetValueTypes = collectNestedSetValueTypes(node)
         currentNonNullElementContainers = collectNonNullElementContainers(node)
+        currentListNames = collectListNames(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
@@ -973,6 +996,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentNestedSetValueTypes = new HashMap<String, ClassNode>()
             currentNonNullElementContainers = new HashSet<String>()
+            currentListNames = new HashSet<String>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
@@ -1494,6 +1518,24 @@ class VerifyChecker extends TypeCheckingExtension {
                 boolean realVar = accessed instanceof Parameter || accessed instanceof VariableExpression
                 if (realVar && v.name != 'this' && v.name != 'super') {
                     derefSites.add(new DerefSite(node: mce, receiver: v.name, method: mce.methodAsString))
+                    // Phase 39 — synthesize an IndexSite for method-form indexed reads so the
+                    // bounds check fires the same way it does for the bracket form. xs.get(i)
+                    // lifts the arg directly; xs.first()/xs.head() use literal 0. xs.last()'s
+                    // index is sizeOf-1 — not synthesised as an Expression here; users guard with
+                    // {@code xs.size() > 0} and the @Ensures-driven check covers correctness.
+                    // Phase 40 — same trick for removeLast()/pop(): the implicit precondition
+                    // {@code xs.size() > 0} maps to IndexSite(xs, 0), so pop-on-empty refutes with
+                    // the standard bounds-check diagnostic.
+                    String mName = mce.methodAsString
+                    List<Expression> margs = mce.arguments instanceof ArgumentListExpression ?
+                        ((ArgumentListExpression) mce.arguments).expressions :
+                        Collections.<Expression>emptyList()
+                    if (mName == 'get' && margs.size() == 1) {
+                        indexSites.add(new IndexSite(node: mce, receiver: v.name, index: margs.get(0)))
+                    } else if ((mName == 'first' || mName == 'head' ||
+                                mName == 'removeLast' || mName == 'pop') && margs.isEmpty()) {
+                        indexSites.add(new IndexSite(node: mce, receiver: v.name, index: new ConstantExpression(0)))
+                    }
                 }
             } else if (!mce.implicitThis) {
                 // Phase 37 — xs[i].method() and xs.get(i).method() shapes. The dereference target
@@ -1613,6 +1655,10 @@ class VerifyChecker extends TypeCheckingExtension {
             for (String fld : oldFieldNames(postAst)) {
                 enc.bind('old$' + fld, enc.varFor(fld))
                 enc.bindArray('old$' + fld, enc.arrayFor(fld))
+                // Phase 40 — pin the entry-time size of fld so {@code old.fld.size()} survives
+                // size-changing list mutations in the body. The bind is harmless for non-sized
+                // fields (their sizeOf is just an unrelated int variable, unaffected by anyone).
+                enc.bindSize('old$' + fld, enc.sizeOf(fld))
                 // A set field's entry snapshot too, so `old.s.size()` / `x in old.s` read the value at entry.
                 if (currentSetElementTypes.containsKey(fld)) enc.bindSet('old$' + fld, enc.setFor(fld))
                 // A map field's entry snapshot — both value array and key-set — for `old.m[k]` / `old.m.size()`.
@@ -1709,13 +1755,25 @@ class VerifyChecker extends TypeCheckingExtension {
                         // Per-store count law: count(newA, v) = count(oldA, v) - [oldA[idx]==v] + [val==v].
                         // Only applies for Int-valued arrays (the count theory is Int-keyed); skipped
                         // for non-Int element lists where countVals is irrelevant anyway (Phase 27).
+                        // Phase 41 — for List receivers the law fires on bcount (bounded by [0, size))
+                        // instead of count: the runtime's xs.count(v) is bounded, and the unbounded
+                        // count would conflict with the bcount-based @Ensures translation. Arrays
+                        // keep using count (fixed size, no semantic mismatch).
                         if (valSort == session.intSort()) {
                             Object one = session.intLit(1L), zero = session.intLit(0L)
+                            boolean isList = enc.isListName(st.arr)
+                            Object size = isList ? enc.sizeOf(st.arr) : null
                             for (Object v : countVals) {
                                 Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
                                 Object added = session.ite(session.eq(val, v), one, zero)
-                                Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
-                                session.assertExpr(session.eq(session.count(newA, v), rhs))
+                                if (isList) {
+                                    Object oldBc = session.bcount(oldA, v, zero, size)
+                                    Object newBc = session.bcount(newA, v, zero, size)
+                                    session.assertExpr(session.eq(newBc, session.plus(session.minus(oldBc, removed), added)))
+                                } else {
+                                    Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
+                                    session.assertExpr(session.eq(session.count(newA, v), rhs))
+                                }
                             }
                         }
                         enc.bindArray(st.arr, newA)
@@ -1724,11 +1782,14 @@ class VerifyChecker extends TypeCheckingExtension {
                     Expression call = ((LemmaCall) step).call
                     // A set mutation `s.add(x)` / `s.remove(x)` threads the set (a store on its
                     // characteristic array) and asserts the per-mutation cardinality law — the set
-                    // analogue of the per-store count law above. Otherwise it is a lemma-style call:
-                    // assume the callee's @Ensures (a self-call is the inductive hypothesis, enabled by
-                    // @Decreases). An unmodelled effect with no usable @Ensures is outside the fragment.
+                    // analogue of the per-store count law above. A list mutation (Phase 40 —
+                    // xs.add/clear/removeLast/pop) threads array + size. Otherwise it's a lemma-style
+                    // call: assume the callee's @Ensures (a self-call is the inductive hypothesis,
+                    // enabled by @Decreases). An unmodelled effect with no usable @Ensures is outside
+                    // the fragment.
                     if (!applySetMutation(session, enc, call) &&
                         !applyMapPut(session, enc, call) &&
+                        !applyListMutation(session, enc, call, countVals) &&
                         !assumeCalleeEnsures(session, enc, call, node, null, hasDecreases(node))) {
                         throw new UnsupportedConstructException(
                             "standalone call '${call.text}' has no usable @Ensures")
@@ -1844,6 +1905,97 @@ class VerifyChecker extends TypeCheckingExtension {
 
         enc.bindSet(name, newS)
         return true
+    }
+
+    /**
+     * Phase 40 — size-changing list mutation: {@code xs.add(v)}, {@code xs.clear()},
+     * {@code xs.removeLast()} / {@code xs.pop()}. Threads the size and array oracles SSA-style:
+     *
+     * - **add(v)**: {@code newSize = oldSize + 1}; {@code newArr = store(oldArr, oldSize, v)} — a
+     *   single store at the new last index, so subsequent reads of {@code xs[i]} for
+     *   {@code i < newSize} see the right values (the prefix unchanged, the new tail = v).
+     *   The per-store {@code count} update law fires for each {@code v} the postcondition tracks.
+     * - **clear()**: {@code newSize = 0}; array left as-is (no in-bounds read survives).
+     * - **removeLast() / pop()**: {@code newSize = oldSize - 1}; array left as-is (prefix
+     *   unchanged). The implicit precondition {@code oldSize > 0} is checked via a synthesised
+     *   {@code IndexSite(xs, 0)} in {@link ObligationCollector} — refutes pop-on-empty with the
+     *   bounds-check diagnostic shape.
+     *
+     * Returns false (fall through to lemma handling) when the call isn't a recognised list
+     * mutation. Sets and maps are guarded out via {@code currentSetElementTypes} / {@code
+     * currentMapTypes} so their own dispatch handles those.
+     */
+    private boolean applyListMutation(SmtSession s, Encoder enc, Expression call, List<Object> countVals) {
+        if (!(call instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) call
+        Expression recv = mce.objectExpression
+        if (!(recv instanceof VariableExpression)) return false
+        String name = ((VariableExpression) recv).name
+        // Sets and maps are owned by their own dispatch — bail.
+        if (currentSetElementTypes.containsKey(name) || currentMapTypes.containsKey(name)) return false
+        String m = mce.methodAsString
+        List<Expression> args = collectArgumentExpressions(mce)
+        if (args == null) return false
+
+        // Direct SMT-expression rebinding (no SSA naming needed): newSize/newArr are computed
+        // expressions, not named constants. Two adds in a row chain via expression composition —
+        // oldSize after the first add is {@code oldSize0 + 1}, etc. — so size/contents stay
+        // sound across consecutive mutations.
+        Object zero = s.intLit(0L), one = s.intLit(1L)
+        if (m == 'add' && args.size() == 1) {
+            Object x = enc.translate(args.get(0))
+            if (x == null) return false
+            Object oldSize = enc.sizeOf(name)
+            Object oldArr = enc.arrayFor(name)
+            Object newArr = s.store(oldArr, oldSize, x)
+            Object newSize = s.plus(oldSize, one)
+            enc.bindArray(name, newArr)
+            enc.bindSize(name, newSize)
+            // Phase 41 — bcount boundary law: bcount(newArr, w, 0, newSize) =
+            //   bcount(oldArr, w, 0, oldSize) + (x == w ? 1 : 0). The prefix [0, oldSize) is
+            //   unchanged by the store at oldSize, and the new tail-slot value is x.
+            for (Object w : countVals) {
+                Object delta = s.ite(s.eq(x, w), one, zero)
+                Object lhs = s.bcount(newArr, w, zero, newSize)
+                Object rhs = s.plus(s.bcount(oldArr, w, zero, oldSize), delta)
+                s.assertExpr(s.eq(lhs, rhs))
+            }
+            return true
+        }
+        if (m == 'clear' && args.isEmpty()) {
+            // Array left as-is — no in-bounds read survives a clear, so the prior contents are
+            // irrelevant. (Modelling clear as a havoc'd fresh array would be sounder against an
+            // out-of-bounds read, but we already model that case via the bounds-check obligation.)
+            enc.bindSize(name, zero)
+            // Phase 41 — bcount over the empty range is 0 by definition; assert per tracked v
+            // so the user's @Ensures({ xs.count(v) == 0 }) discharges trivially after clear.
+            Object arr = enc.arrayFor(name)
+            for (Object w : countVals) {
+                s.assertExpr(s.eq(s.bcount(arr, w, zero, zero), zero))
+            }
+            return true
+        }
+        if ((m == 'removeLast' || m == 'pop') && args.isEmpty()) {
+            // The "oldSize > 0" check is emitted as a synthesised IndexSite by ObligationCollector,
+            // so pop-on-empty refutes with the standard bounds-check diagnostic (Possible
+            // IndexOutOfBoundsException, fails on: f([])). Threading still proceeds — the
+            // body-replay path is best-effort even when an implicit obligation didn't discharge.
+            Object oldSize = enc.sizeOf(name)
+            Object newSize = s.minus(oldSize, one)
+            Object arr = enc.arrayFor(name)
+            enc.bindSize(name, newSize)
+            // Phase 41 — bcount boundary law: bcount(arr, w, 0, oldSize) =
+            //   bcount(arr, w, 0, newSize) + (arr[newSize] == w ? 1 : 0). Equivalently, the
+            //   new bcount is the old bcount minus the contribution of the dropped tail element.
+            for (Object w : countVals) {
+                Object dropped = s.ite(s.eq(s.select(arr, newSize), w), one, zero)
+                Object lhs = s.bcount(arr, w, zero, newSize)
+                Object rhs = s.minus(s.bcount(arr, w, zero, oldSize), dropped)
+                s.assertExpr(s.eq(lhs, rhs))
+            }
+            return true
+        }
+        return false
     }
 
     /**

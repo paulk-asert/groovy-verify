@@ -1765,6 +1765,171 @@ class VerifyHarness {
                         static int f() { [10, 20, 30].last() }
                     }''')],
 
+        // ---------- Phase 40: size-changing list mutation ----------
+        // Append: xs.add(v) grows size by 1; the new last element is v.
+        [group: 'P40 list mutation', name: 'xs.add(v): size grows by 1', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == old.xs.size() + 1 })
+                        void push(int v) { xs.add(v) }
+                    }''')],
+        // Append: the appended value lives at the new last index.
+        [group: 'P40 list mutation', name: 'xs.add(v): new last element is v', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs[old.xs.size()] == v })
+                        void push(int v) { xs.add(v) }
+                    }''')],
+        // Soundness: claiming size grew by 2 from a single add refutes.
+        [group: 'P40 list mutation', name: 'xs.add(v): wrong delta refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == old.xs.size() + 2 })
+                        void push(int v) { xs.add(v) }
+                    }''')],
+        // Frame: a non-modified element at index j < oldSize is unchanged.
+        [group: 'P40 list mutation', name: 'xs.add(v) preserves earlier elements', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null && 0 <= j && j < xs.size() })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs[j] == old.xs[j] })
+                        void push(int v, int j) { xs.add(v) }
+                    }''')],
+        // Two adds chain: size grows by 2 (the expression composition lets the encoder track
+        // sequential mutations without SSA naming).
+        [group: 'P40 list mutation', name: 'two adds: size grows by 2', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == old.xs.size() + 2 })
+                        void pushTwo(int a, int b) { xs.add(a); xs.add(b) }
+                    }''')],
+        // Clear: size goes to 0.
+        [group: 'P40 list mutation', name: 'xs.clear() drops size to 0', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == 0 })
+                        void reset() { xs.clear() }
+                    }''')],
+        // removeLast: with a guard, size shrinks by 1.
+        [group: 'P40 list mutation', name: 'xs.removeLast() with guard: size shrinks by 1', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == old.xs.size() - 1 })
+                        void popOne() { xs.removeLast() }
+                    }''')],
+        // pop is the Groovy alias for removeLast.
+        [group: 'P40 list mutation', name: 'xs.pop() with guard: size shrinks by 1', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == old.xs.size() - 1 })
+                        void popOne() { xs.pop() }
+                    }''')],
+        // Soundness: pop without a size guard refutes via the synthesised IndexSite obligation
+        // ("0 < xs.size()") — same diagnostic shape as the bracket form would produce. Uses a
+        // List parameter (rather than field) because the ObligationCollector's realVar check
+        // currently only fires on parameter-resolved VariableExpressions; field-resolved access
+        // is a known limit (the body-replay path still threads the mutation, but the implicit
+        // bounds check at the call site is parameter-only).
+        [group: 'P40 list mutation', name: 'xs.removeLast() without guard refutes',
+         expect: 'IndexOutOfBoundsException',
+         src: tc('''class C {
+                        static void popOne(List<Integer> xs) { xs.removeLast() }
+                    }''')],
+        // Push-then-pop returns to the original size — composes both mutations.
+        [group: 'P40 list mutation', name: 'add then removeLast: size restored', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.size() == old.xs.size() })
+                        void roundTrip(int v) { xs.add(v); xs.removeLast() }
+                    }''')],
+
+        // ---------- Phase 41: bounded count tracking for lists ----------
+        // Append of a matching element raises xs.count(v) by exactly one — the bounded-count
+        // analogue of the per-store count law, asserted on the boundary slot oldSize.
+        [group: 'P41 list bcount', name: 'xs.add(v) raises xs.count(v) by 1', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(v) == old.xs.count(v) + 1 })
+                        void push(int v) { xs.add(v) }
+                    }''')],
+        // Append of a non-matching element preserves the count.
+        [group: 'P41 list bcount', name: 'xs.add(v) leaves xs.count(w) unchanged when v != w', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null && v != w })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(w) == old.xs.count(w) })
+                        void push(int v, int w) { xs.add(v) }
+                    }''')],
+        // Soundness: claiming the wrong delta refutes — the bcount law is precise.
+        [group: 'P41 list bcount', name: 'xs.add(v) wrong delta refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(v) == old.xs.count(v) + 2 })
+                        void push(int v) { xs.add(v) }
+                    }''')],
+        // removeLast undoes the matching element's contribution.
+        [group: 'P41 list bcount', name: 'removeLast of a matching tail decreases count by 1', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null && xs.size() > 0 && xs[xs.size() - 1] == v })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(v) == old.xs.count(v) - 1 })
+                        void popOne(int v) { xs.removeLast() }
+                    }''')],
+        // Push-then-pop round-trips count — the headline win from Phase 41 (today it would
+        // refute because the unbounded count grows by 1 on the push and doesn't shrink back).
+        [group: 'P41 list bcount', name: 'push-then-pop preserves count', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(v) == old.xs.count(v) })
+                        void roundTrip(int v) { xs.add(v); xs.removeLast() }
+                    }''')],
+        // clear zeros every tracked count (the bcount-over-empty-range axiom asserted at clear time).
+        [group: 'P41 list bcount', name: 'clear drops xs.count(v) to 0', ok: true,
+         src: tc('''class C {
+                        List<Integer> xs
+                        @Requires({ xs != null })
+                        @Modifies({ this.xs })
+                        @Ensures({ xs.count(v) == 0 })
+                        void reset(int v) { xs.clear() }
+                    }''')],
+        // Regression check: existing per-store count law on int[] arrays continues to use the
+        // unbounded count (the permutation sort proofs rely on this). No change in behaviour.
+        [group: 'P41 list bcount', name: 'int[] count law unchanged (regression anchor)', ok: true,
+         src: tc('''class C {
+                        int[] a
+                        @Requires({ 0 <= k && k < a.length })
+                        @Modifies({ this.a })
+                        @Ensures({ a.count(v) == old.a.count(v) - (old.a[k] == v ? 1 : 0) + (newV == v ? 1 : 0) })
+                        void put(int k, int newV, int v) { a[k] = newV }
+                    }''')],
+
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
         [group: 'README counter', name: 'Counter without @Requires refutes at construction',
          expect: 'Cannot prove class invariant',

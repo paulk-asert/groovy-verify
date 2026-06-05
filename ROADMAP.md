@@ -2088,6 +2088,270 @@ All three verify; the wrong-literal mirrors still refute. The hook fires the sam
 verification passes, so an implicit-obligation site downstream of a factory assignment sees the
 same nullity/size facts the body-replay path does — no divergence between the two oracles.
 
+## Phase 39 — Common list / map method-form idioms  *(shipped)*
+
+**Method-form sugar for the bracket access path.** {@code xs.get(i)}, {@code xs.first()},
+{@code xs.head()}, {@code xs.last()} are sibling spellings of {@code xs[i]} and {@code xs[0]} /
+{@code xs[size-1]} — Java-style on the get side, Groovy-functional on the first/head/last side.
+Until Phase 39 they fell through to honest skip; the verifier didn't recognise them as
+indexed reads. The lowering is small (each maps to {@code (select arr i)} with the appropriate
+index expression), and one important piece of plumbing makes them sound: the {@link
+ObligationCollector} now synthesises an {@code IndexSite} alongside the existing {@code DerefSite}
+when it sees these shapes, so the bounds check fires the same way it does for the bracket form
+— {@code xs.first()} on a possibly-empty list refutes with {@code obligation: 0 <= 0 && 0 < xs.size()}
+and {@code fails on: f([])}, exactly the same diagnostic {@code xs[0]} would produce.
+
+**The dispatch.** In {@code translateMethodCall}'s named-receiver block:
+
+```groovy
+if (m == 'get' && args.size() == 1) {
+    return session.select(arrayFor(rn), translate(args.get(0)))
+}
+if ((m == 'first' || m == 'head') && args.isEmpty()) {
+    return session.select(arrayFor(rn), session.intLit(0L))
+}
+if (m == 'last' && args.isEmpty()) {
+    return session.select(arrayFor(rn), session.minus(sizeOf(rn), session.intLit(1L)))
+}
+```
+
+The corresponding {@code IndexSite} synthesis happens in {@link ObligationCollector} for the
+{@code get} and {@code first}/{@code head} shapes (index is the arg or {@code ConstantExpression(0)}).
+{@code last} skips the synthesis — its index {@code sizeOf-1} is harder to fabricate as an
+{@link Expression}, and the @Ensures-driven check already covers correctness when the user
+guards with {@code xs.size() > 0}.
+
+**`xs.set(i, v)` as a statement.** The mutating sibling of {@code xs[i] = v} is recognised in
+{@link BodyEncoder}'s {@code ExpressionStatement} handling: a non-tail
+{@code MethodCallExpression} with {@code methodAsString == 'set'} and two args, on a named
+receiver, becomes an {@code ArrayStore(arr, idx, val)} step — the same step the bracket form
+emits. Subsequent reads of {@code xs[i]} see the update, the per-store {@code count} law fires,
+and {@code @Modifies} framing covers the unchanged indices.
+
+**`m.getOrDefault(k, default)`.** The canonical defensive-read map idiom lowers to
+{@code ite(containsKey(k), m[k], default)}, with the default translated in the map's value sort
+so types compose. Verifies the value-when-present case via the map-vals/key-set composition
+already in for {@code m.containsKey} and {@code m[k]}.
+
+**Factory-fold extensions.** {@code List.of(args).first()} / {@code .head()} / {@code .last()}
+fold the same way {@code .get(literal_i)} already did: pick the first/last arg by position;
+return null (honest skip) on an empty factory.
+
+```groovy
+class C {
+    // Bracket and method form discharge identically.
+    @Requires({ xs != null && xs.size() > 0 })
+    @Ensures({ result == xs[0] })
+    static int head(List<Integer> xs) { xs.first() }       // ✓
+
+    // Set-via-method threads through ArrayStore the same as xs[k] = v.
+    @Requires({ a != null && 0 <= k && k < a.size() && j != k && 0 <= j && j < a.size() })
+    @Modifies({ this.a })
+    @Ensures({ a[k] == v && a[j] == old.a[j] })
+    void put(int k, int v, int j) { a.set(k, v) }          // ✓
+
+    // Map.getOrDefault picks the value when present, the default otherwise.
+    @Requires({ m != null && m.containsKey("k") && m["k"] == 42 })
+    @Ensures({ result == 42 })
+    static int lookup(Map<String, Integer> m) { m.getOrDefault("k", 0) }   // ✓
+}
+```
+
+**Known limits.**
+
+- **Sublist-returning idioms** ({@code xs.tail()}, {@code xs.init()}, {@code xs.drop(n)},
+  {@code xs.take(n)}) still defer. Each returns a *new* list, which requires minting a fresh
+  array handle and threading content-relation axioms ({@code tail[i] == xs[i+1]},
+  {@code size(tail) == size(xs) - 1}) — a separate phase paralleling materialised sets.
+- **`xs.last()` bounds synthesis.** The bounds check synthesis for {@code .last()} would need
+  an {@code Expression} for {@code xs.size() - 1}; not fabricated here. The @Ensures-driven
+  check still catches correctness violations, and the user's guard ({@code xs.size() > 0})
+  closes the implicit obligation.
+- **Set side intentionally minimal.** {@code s.first()} / {@code s.head()} are
+  implementation-defined for sets (HashSet's iteration order is hash-dependent), so the
+  named-receiver dispatch only fires for lists. Factory sets DO fold {@code .first()} /
+  {@code .last()} via the recorded element order — sound for {@code Set.of(...)}-style literals
+  where the input order is the source of truth.
+
+## Phase 40 — Size-changing list mutation  *(shipped)*
+
+**The last row-1 capability.** Until Phase 40, {@code xs.add(v)} / {@code xs.clear()} /
+{@code xs.removeLast()} on a list were "outside fragment" — the verifier had no model for size
+changing across a body step. Phase 40 threads the size oracle ({@link Encoder#sizeOf}) and the
+array oracle ({@link Encoder#arrayFor}) together at each mutation, parallel to how Phase 16's
+{@code applySetMutation} threads the set's characteristic array and cardinality. No new theory;
+just oracle threading.
+
+**The encoding — direct SMT-expression rebinding.** A new {@link Encoder#bindSize} method lets
+the size handle for a name be replaced with any SMT expression. Combined with the existing
+{@link Encoder#bindArray}, the three list mutations lower to:
+
+```groovy
+// xs.add(v)
+enc.bindArray(name, s.store(enc.arrayFor(name), enc.sizeOf(name), x))
+enc.bindSize(name, s.plus(enc.sizeOf(name), s.intLit(1L)))
+
+// xs.clear()
+enc.bindSize(name, s.intLit(0L))     // array left as-is — no in-bounds read survives
+
+// xs.removeLast() / xs.pop()
+enc.bindSize(name, s.minus(enc.sizeOf(name), s.intLit(1L)))
+```
+
+The rebinding stores **expressions, not named constants** — no SSA versioning needed. Two adds
+in a row chain naturally via expression composition: after the second add the size handle is
+{@code (+ oldSize0 1 1)} which Z3 simplifies. Subsequent {@code xs[i]} reads see the threaded
+array; the per-store {@code count} law fires on the {@code add} store the same way it does for
+{@code xs[i] = v}.
+
+**Pop-on-empty diagnostic.** {@code xs.removeLast()} / {@code xs.pop()} require a non-empty list
+at runtime — failing throws {@code NoSuchElementException}. The verifier emits this as a
+synthesised {@code IndexSite(xs, 0)} in the {@link ObligationCollector}, so the existing implicit-
+bounds-check machinery refutes pop-on-empty with the familiar shape:
+
+```
+Possible IndexOutOfBoundsException: index may be out of bounds
+    obligation: 0 <= 0 && 0 < xs.size()
+    counterexample: xs.size() = 0
+    fails on: popOne([])
+```
+
+The diagnostic mentions {@code IndexOutOfBoundsException} rather than {@code NoSuchElementException}
+— a tiny semantic mismatch traded for the soundness of the existing bounds-check infrastructure
+firing uniformly on both spellings.
+
+**`old.xs.size()` plumbing.** A postcondition like {@code @Ensures({ xs.size() == old.xs.size() + 1 })}
+needs {@code old.xs.size()} to refer to the entry-time size *before* any mutation rebound it.
+checkPath's old-snapshot loop now also calls {@code bindSize('old$xs', sizeOf('xs'))} so the
+entry handle is pinned before any body step runs. The {@code .size()} dispatch in
+{@code translateMethodCall} was widened to recognise the {@code old.fld} PropertyExpression
+receiver shape, mapping it to the {@code old$fld} key.
+
+```groovy
+class C {
+    List<Integer> xs
+    @Requires({ xs != null && xs.size() > 0 })
+    @Modifies({ this.xs })
+    @Ensures({ xs.size() == old.xs.size() - 1 })
+    void popOne() { xs.removeLast() }                  // ✓
+
+    @Requires({ xs != null })
+    @Modifies({ this.xs })
+    @Ensures({ xs.size() == old.xs.size() + 2 })
+    void pushTwo(int a, int b) { xs.add(a); xs.add(b) } // ✓ — chained via expression composition
+
+    @Requires({ xs != null })
+    @Modifies({ this.xs })
+    @Ensures({ xs.size() == old.xs.size() })
+    void roundTrip(int v) { xs.add(v); xs.removeLast() } // ✓
+}
+```
+
+**Known limits.**
+
+- **Shift-based variants** ({@code xs.add(i, v)}, {@code xs.remove(i)}, {@code xs.remove(Object)})
+  defer. They require modelling arbitrary element shifts via a quantifier ({@code ∀j. j < i → new[j] == old[j];
+  ∀j. j >= i → new[j] == old[j-1]}) and quantifier instantiation depends on Z3 e-matching —
+  higher risk of trigger-cliff issues. A separate phase.
+- ~~**Count tracking across mutations.**~~ *Closed by Phase 41 below* — list {@code .count(v)}
+  now routes through a bounded count oracle with per-store + boundary laws on every mutation.
+- **Field-receiver bounds synthesis.** The synthesised IndexSite for {@code removeLast()} /
+  {@code pop()} only fires on parameter-resolved receivers (the {@code ObligationCollector}'s
+  {@code realVar} check excludes field-resolved access). A pop-on-empty on an instance field
+  isn't flagged via the implicit pass; users guard with {@code @Requires({ xs.size() > 0 })}.
+- **Implicit obligations downstream of a mutation.** {@code dischargeVfObligation} (the implicit-
+  obligation pass) replays guards and assigns but not LemmaCalls. A bounds-check site downstream
+  of {@code xs.add(v)} doesn't see the size growth and may over-refute. Practical workaround:
+  state the prior mutation's effect in a contract; checkPath (the @Ensures path) handles
+  composition correctly.
+
+## Phase 41 — Bounded list count, faithful to runtime semantics  *(shipped)*
+
+**The semantic mismatch resolved.** Groovy's GDK {@code list.count(v)} iterates {@code [0, size)};
+the verifier's existing {@link SmtSession#count} oracle counts over the unbounded array-index
+domain. For arrays ({@code int[]}) the two interpretations agree (size is fixed, no slack); for
+lists they diverge whenever size changes without the contents changing — exactly what
+{@code removeLast()} / {@code clear()} do. Phase 41 routes list {@code .count(v)} through a new
+{@link SmtSession#bcount}({@code arr, v, lo, hi}) oracle and emits per-store + boundary update
+laws on every list mutation.
+
+**The encoding.** A new {@code bcount(arr, v, lo, hi)} uninterpreted function returns
+{@code #{i : lo ≤ i < hi ∧ arr[i] == v}} (its *meaning* comes from the caller-asserted laws,
+mirroring how {@link SmtSession#count} and {@link SmtSession#setCount} work). The encoder
+distinguishes List from array via a new {@code currentListNames} set collected from typed
+parameters/fields, and the {@code .count(v)} dispatch in {@link translateMethodCall} routes
+accordingly:
+
+```groovy
+if (m == 'count' && ...) {
+    Object arr = arrayHandleFor(recv)
+    String rname = receiverArrayName(recv)
+    if (rname != null && isListName(rname)) {
+        return session.bcount(arr, translate(v), session.intLit(0L), sizeOf(rname))
+    }
+    return session.count(arr, translate(v))   // unchanged for arrays
+}
+```
+
+**The laws.** Three per-mutation laws keep {@code bcount} in sync with the body's effect:
+
+- **Per-store** ({@code xs[i] = v} / {@code xs.set(i, v)}): the existing per-store law in the
+  {@code ArrayStore} handler now fires on {@code bcount} for List receivers instead of
+  {@code count}: {@code bcount(newA, w, 0, size) = bcount(oldA, w, 0, size) - [oldA[i] == w ? 1 : 0]
+  + [v == w ? 1 : 0]}. Same shape as the unbounded version, with the bound carried through.
+- **Add boundary** ({@code xs.add(v)}): the prefix {@code [0, oldSize)} is unchanged, and the new
+  tail slot at {@code oldSize} holds {@code v}: {@code bcount(newA, w, 0, newSize) =
+  bcount(oldA, w, 0, oldSize) + [v == w ? 1 : 0]}.
+- **RemoveLast boundary** ({@code xs.removeLast()} / {@code xs.pop()}): array unchanged; the
+  dropped tail's contribution is the only delta: {@code bcount(arr, w, 0, newSize) =
+  bcount(arr, w, 0, oldSize) - [arr[newSize] == w ? 1 : 0]}.
+- **Clear**: {@code bcount(arr, w, 0, 0) == 0} for each tracked {@code w} — the empty-range
+  zero fact, ad-hoc per call (cheap, avoids needing a quantified empty-range axiom).
+
+```groovy
+class C {
+    List<Integer> xs
+    @Requires({ xs != null })
+    @Modifies({ this.xs })
+    @Ensures({ xs.count(v) == old.xs.count(v) + 1 })
+    void push(int v) { xs.add(v) }                       // ✓ (add boundary law)
+
+    @Requires({ xs != null && xs.size() > 0 && xs[xs.size() - 1] == v })
+    @Modifies({ this.xs })
+    @Ensures({ xs.count(v) == old.xs.count(v) - 1 })
+    void popOne(int v) { xs.removeLast() }              // ✓ (removeLast boundary law)
+
+    @Requires({ xs != null })
+    @Modifies({ this.xs })
+    @Ensures({ xs.count(v) == old.xs.count(v) })
+    void roundTrip(int v) { xs.add(v); xs.removeLast() } // ✓ (laws compose — the headline win)
+}
+```
+
+The {@code roundTrip} proof is the demo Phase 41 was for: with the pre-Phase-41 unbounded count,
+the {@code add} grew the count by one and {@code removeLast} (which doesn't touch the array)
+left it grown — the postcondition refuted. With {@code bcount}, the {@code add} grows
+{@code bcount(_, _, 0, oldSize+1)} by one and {@code removeLast} drops the size back, so
+{@code bcount(_, _, 0, oldSize)} ends equal to what it was at entry.
+
+**User experience.** Pure encoding change — no contract or annotation rewrites. The user writes
+the same {@code xs.count(v)} they always did; the verifier now matches what Groovy actually
+returns at runtime.
+
+**Arrays untouched.** {@code int[] a; a.count(v)} continues to route through the unbounded
+{@link SmtSession#count}, so Phase 12's per-store law and the Phase 14 permutation-sort
+showcase are zero-regression.
+
+**Known limits.**
+
+- **Shift-based mutations still defer.** {@code xs.add(i, v)} and {@code xs.remove(i)} would
+  need bcount update laws that account for arbitrary shifts — same hard problem as for size
+  alone (Phase 40 known limit). Closed together with that work.
+- **Cross-call bcount propagation.** A callee's {@code @Ensures} about its own list's
+  {@code .count(v)} isn't yet summarised through the inter-procedural Phase-7 reasoning the
+  way scalar postconditions are. Same gap as for scalar nullity (Phase 37) and other ensure-driven
+  array facts.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -128,6 +128,18 @@ interface SmtSession extends AutoCloseable {
     Object store(Object arr, Object idx, Object val)
 
     /**
+     * Phase 41 — the bounded occurrence count {@code #{ i : lo <= i < hi ∧ arr[i] == v }} — an
+     * uninterpreted {@code (Array, Int, Int, Int) -> Int} modelling Groovy's GDK
+     * {@code list.count(v)} faithfully (the runtime call iterates {@code [0, size)}, not the
+     * unbounded index domain {@link #count} models). Used by the encoder for List receivers; the
+     * unbounded {@link #count} stays in place for arrays where size is fixed and the two
+     * interpretations agree. Two applications with the same {@code (arr, v, lo, hi)} share the
+     * term; the *meaning* comes from the per-store law on writes within {@code [lo, hi)} and the
+     * boundary law on extensions / contractions of the range — emitted by the caller, not the backend.
+     */
+    Object bcount(Object arr, Object v, Object lo, Object hi)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store

@@ -122,6 +122,12 @@ class Encoder {
      */
     private final Map<String, ClassNode> nestedSetValueTypes
     /**
+     * Phase 41 — every {@link java.util.List}-typed parameter/field, regardless of element type.
+     * The {@code .count(v)} dispatch routes List receivers through bounded count
+     * {@code bcount(arr, v, 0, sizeOf)}; arrays keep the unbounded {@link SmtSession#count}.
+     */
+    private final Set<String> listNames
+    /**
      * Source-level names known to be {@code java.util.List}-typed, each mapped to its declared
      * element type (Phase 27). The encoder defaults Lists to Int-element when no type hint is supplied
      * (today's behaviour), so this map is populated only for non-Int element domains.
@@ -193,7 +199,8 @@ class Encoder {
             Map<String, ClassNode> listElementTypes = null,
             Map<String, ClassNode> scalarTypes = null,
             Map<String, Integer> enumDomainSizes = null,
-            Map<String, ClassNode> nestedSetValueTypes = null) {
+            Map<String, ClassNode> nestedSetValueTypes = null,
+            Set<String> listNames = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -202,6 +209,15 @@ class Encoder {
         this.scalarTypes = scalarTypes != null ? scalarTypes : new HashMap<String, ClassNode>()
         this.enumDomainSizes = enumDomainSizes != null ? enumDomainSizes : new HashMap<String, Integer>()
         this.nestedSetValueTypes = nestedSetValueTypes != null ? nestedSetValueTypes : new HashMap<String, ClassNode>()
+        this.listNames = listNames != null ? listNames : new HashSet<String>()
+    }
+
+    /** Phase 41 — true if {@code name} is a List-typed parameter/field (use bcount, not count). */
+    boolean isListName(String name) {
+        if (name == null) return false
+        // Strip old$ for snapshot keys — they still refer to a List.
+        String bare = name.startsWith('old$') ? name.substring('old$'.length()) : name
+        listNames.contains(bare)
     }
 
     /**
@@ -505,6 +521,17 @@ class Encoder {
         session.assertExpr(session.ge(v, session.intLit(0L)))  // a size is never negative
         sizeEnv.put(key, v)
         v
+    }
+
+    /**
+     * Phase 40 — rebind the size oracle for {@code recv} to a fresh handle, threading size-changing
+     * mutations (list {@code add}/{@code clear}/{@code removeLast}) the same way {@link #bindArray}
+     * threads the array oracle and {@link #bindSet} threads a set's characteristic array. Subsequent
+     * {@link #sizeOf(String)} reads return the new handle. Caller is responsible for the equality
+     * relating new to old (e.g. {@code newSize == oldSize + 1} for an append).
+     */
+    void bindSize(String recv, Object handle) {
+        sizeEnv.put(recv + '.size', handle)
     }
 
     /** True if a size oracle has already been minted for {@code recv} (i.e. a contract referenced its size). */
@@ -1809,19 +1836,35 @@ class Encoder {
             return null
         }
 
-        // xs.count(v) / old.a.count(v) -> the occurrence-count term (Phase 12, permutation). Its
-        // value is governed by the per-store update law asserted in checkPath, not a literal value.
+        // xs.count(v) / old.a.count(v) -> the occurrence-count term. Lists route through bcount
+        // bounded by [0, sizeOf) (Phase 41 — faithful to Groovy's GDK list count semantics under
+        // size-changing mutations); arrays keep the unbounded count (Phase 12, permutation — fixed
+        // size, no semantic mismatch). The receiver-name lookup tolerates both bare {@code xs} and
+        // {@code old.xs} via {@link #isListName} stripping the {@code old$} prefix.
         if (m == 'count' && args.size() == 1 && !(args.get(0) instanceof ClosureExpression)) {
             Object arr = arrayHandleFor(recv)
             if (arr != null) {
                 Object v = translate(args.get(0))
-                if (v != null) return session.count(arr, v)
+                if (v == null) return null
+                String rname = receiverArrayName(recv)
+                if (rname != null && isListName(rname)) {
+                    return session.bcount(arr, v, session.intLit(0L), sizeOf(rname))
+                }
+                return session.count(arr, v)
             }
         }
 
-        // size() / isEmpty() / contains() need a named receiver for their oracle.
+        // size() / isEmpty() / contains() need a named receiver for their oracle. The receiver
+        // can be a bare {@code xs} (VariableExpression) or {@code old.xs} (PropertyExpression with
+        // an old receiver) — the old form maps to the entry-snapshot key {@code old$xs}, which
+        // checkPath pins to the entry value before any size-changing mutation runs.
+        String rn = null
         if (!mce.implicitThis && recv instanceof VariableExpression) {
-            String rn = ((VariableExpression) recv).name
+            rn = ((VariableExpression) recv).name
+        } else if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
+            rn = 'old$' + ((PropertyExpression) recv).propertyAsString
+        }
+        if (rn != null) {
             if (m == 'size' && args.isEmpty()) {
                 return sizeOf(rn)
             }
@@ -2091,6 +2134,27 @@ class Encoder {
             return arrayFor('old$' + ((PropertyExpression) recv).propertyAsString)
         }
         null
+    }
+
+    /**
+     * Phase 41 — the canonical array-name for a receiver shape, mirroring {@link #arrayHandleFor}:
+     * a bare {@code xs} returns {@code "xs"}; an {@code old.xs} snapshot returns {@code "old$xs"}.
+     * Used by the {@code .count} dispatch to decide bounded vs unbounded count and to look up
+     * the right {@code sizeOf} oracle.
+     */
+    private static String receiverArrayName(Expression recv) {
+        if (recv instanceof VariableExpression) {
+            return ((VariableExpression) recv).name
+        }
+        if (recv instanceof PropertyExpression && isOldReceiverStatic(((PropertyExpression) recv).objectExpression)) {
+            return 'old$' + ((PropertyExpression) recv).propertyAsString
+        }
+        null
+    }
+
+    /** Static mirror of {@link #isOldReceiver} for use from static helpers. */
+    private static boolean isOldReceiverStatic(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == 'old'
     }
 
     /** The closure's single parameter name, or Groovy's implicit {@code it}; null if it has several. */

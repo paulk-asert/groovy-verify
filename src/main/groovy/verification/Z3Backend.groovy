@@ -278,6 +278,18 @@ class Z3Session implements SmtSession {
         ctx.mkApp(countFn, (Expr) arr, (Expr) v)
     }
 
+    private FuncDecl bcountFn
+    @Override
+    Object bcount(Object arr, Object v, Object lo, Object hi) {
+        if (bcountFn == null) {
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
+            bcountFn = ctx.mkFuncDecl('bcountArr$',
+                [arrSort, ctx.getIntSort(), ctx.getIntSort(), ctx.getIntSort()] as Sort[],
+                ctx.getIntSort())
+        }
+        ctx.mkApp(bcountFn, (Expr) arr, (Expr) v, (Expr) lo, (Expr) hi)
+    }
+
     @Override
     Object setVar(String name) {
         ArrayExpr cached = sets.get(name)
