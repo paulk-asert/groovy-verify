@@ -365,11 +365,9 @@ Drop `Sets.bounded` from either and the claim refutes — without it the (uninte
 about membership. The `HOLE ⇒ NOT FULL` fact is exactly what a cardinality-terminating DFS needs at its
 coverage branch.
 
-**The honest boundary.** *Completeness* (every reachable node visited — the closure fixpoint) needs the DFS
-frontier/stack invariant, not a simple inductive set property. And *whole-traversal* unconditional
-`start ∈ visited` still isn't closed: `Sets.bounded` gives the pigeonhole *consequences*, but **preserving**
-boundedness across the add that fills the set needs the converse counting (`|s| = n-1 ⇒ exactly one hole`),
-which wants the bounded-sum cardinality below.
+**Two gaps remain at this point in the narrative** — *completeness* (every reachable node visited) and
+*unconditional* `start ∈ visited` (without a fuel budget). Both are closed by what follows: the
+bounded-sum cardinality unlocks the latter, and the frontier/stack invariant lands the former.
 
 **Bounded-sum cardinality — `bcount`, earned by induction.** The genuine count of a set's members in a
 domain, `bcount(s,k) = Σ_{i<k} (i ∈ s ? 1 : 0)`, is just an ordinary recursive method — and its foundational

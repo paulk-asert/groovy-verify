@@ -449,48 +449,32 @@ paper proof language, already ships an interpreter, so this is unusually cheap
 to reach. A normalisation pre-pass slots in exactly where `Encoder.translate`
 currently returns `null`:
 
-- **Constant folding (closed sub-terms) — shipped.** A closed numeric
-  sub-expression — `(2 + 2) * (2 + 2)`, a folded array index `a[(1 + 1) * 2]` — is
-  reduced to a literal before encoding (`Encoder.tryFoldConstant`), dissolving the
-  **NIA opt-out** for *constant* products that would otherwise be skipped. It
-  reuses Groovy's own `ExpressionUtils.transformInlineConstants` (`NumberMath`
-  semantics), so the fold matches Groovy's arithmetic and adds no new integer
-  model — it stays consistent with the encoder's mathematical-`Int` view (the
-  runtime-overflow gap is the separate bounded-int item). It is purely an
-  accelerator: folding never produces a counterexample, so a wrong constant still
-  refutes on the SMT side (tested).
-- **Closed pure-function evaluation — shipped.** A small tree-walking interpreter
-  (`PureEvaluator`) computes a *same-class, side-effect-free* function applied to
-  *constant* arguments to a literal — `pow2(10)` → 1024, `factorial(5)` → 120 —
-  whether the call appears in a contract or a body. It evaluates the *clean*
-  CONVERSION body over the evaluable fragment (literals, parameters, `+ - * %`,
-  comparisons, boolean connectives, `?:`/`if`/`return`, single-assignment locals,
-  same-class recursive/static calls); anything else makes the call un-evaluable, so
-  the verifier falls back to "skipped" — it never guesses. Purity is the
-  conservative "body lies entirely in the fragment" proxy (no representable side
-  effects); a step budget bounds non-terminating recursion; it computes with
-  `long`, matching the encoder's mathematical-integer model (so it adds no new
-  soundness gap beyond the existing bounded-int one). It's an accelerator — a
-  wrong expected value still refutes on the SMT side (tested).
-- **Bounded symbolic unfolding — shipped.** A pure same-class function applied to
-  *symbolic* arguments is inlined to its (single-expression) body with the arguments
-  substituted, and the residual handed to Z3 — so `absV(x)` becomes an `ite` and a
-  recursive `pow2(n)` reduces one level per call. A ternary body maps to Z3's `ite`
-  (`Encoder` + backend gained `ite`/`uninterpretedFunc`). Recursion is bounded by a
-  per-VC **fuel** budget (F\*'s `fuel`/`ifuel`); when it runs out — or the body isn't
-  a single expression (an `if`/`return` chain like the statement form of `factorial`)
-  — the unexpanded call is modelled as an *uninterpreted* integer function, a sound
-  over-approximation (the result is constrained only through the levels actually
-  unfolded). Inlining is faithful — a body that disagrees with the definition still
-  refutes (tested). Two limits, both by design: it fires only for *contract-free*
-  methods (a contracted callee is the inter-procedural/induction path's job, Phase 7),
-  and because fuel only decrements, two applications of the same function in one
-  obligation may unfold to different depths — proofs that rely on syntactically
-  equating them belong to induction (Phase 7), not here.
-  - **Upgraded in Phase 25.** This last limit is now closed: a recursive call is a *shared* symbol
-    `f#(args)` carrying its **defining equation** (per-term bounded depth) rather than an inlined body, so two
-    applications *are* the same term (congruence) and inductive proofs over a recursive contract function go
-    through. See [Phase 25](#phase-25--recursive-definitions-in-contracts-the-defining-equation-upgrade-shipped).
+- **Constant folding (closed sub-terms) — shipped.** A closed numeric sub-expression —
+  `(2 + 2) * (2 + 2)`, a folded array index `a[(1 + 1) * 2]` — is reduced to a literal via
+  `Encoder.tryFoldConstant` before encoding, dissolving the **NIA opt-out** for *constant* products.
+  Reuses Groovy's own `ExpressionUtils.transformInlineConstants` (`NumberMath` semantics) so the
+  fold matches Groovy's arithmetic.
+- **Closed pure-function evaluation — shipped.** A tree-walking interpreter (`PureEvaluator`)
+  computes a *same-class, side-effect-free* function applied to *constant* arguments to a literal —
+  `pow2(10)` → 1024, `factorial(5)` → 120 — whether the call appears in a contract or a body. It
+  evaluates the *clean* CONVERSION body over the evaluable fragment (literals, parameters,
+  `+ - * %`, comparisons, boolean connectives, `?:`/`if`/`return`, single-assignment locals,
+  same-class recursive/static calls); anything else makes the call un-evaluable and the verifier
+  falls back to "skipped" — never guesses. Purity proxy: "body lies entirely in the fragment";
+  step budget bounds non-terminating recursion.
+- **Bounded symbolic unfolding — shipped.** A pure same-class function applied to *symbolic*
+  arguments is inlined to its (single-expression) body with arguments substituted — so `absV(x)`
+  becomes an `ite` and a recursive `pow2(n)` reduces one level per call. Recursion bounded by a
+  per-VC **fuel** budget (F\*'s `fuel`/`ifuel`); when it runs out — or the body isn't a single
+  expression — the unexpanded call is modelled as an *uninterpreted* integer function, a sound
+  over-approximation. Fires only for *contract-free* methods (a contracted callee is Phase 7's
+  inter-procedural path). **Phase 25 upgrade:** a recursive call now becomes a *shared* symbol
+  `f#(args)` carrying its **defining equation**, so two applications are the same term by
+  congruence and inductive proofs over a recursive contract function go through.
+
+All three are pure accelerators — a wrong value still refutes on the SMT side (tested for each).
+Evaluation computes with `long`, matching the encoder's mathematical-`Int` view, so they add no
+new soundness gap beyond the existing bounded-int one.
 
 The clean architecture is **normalise-then-SMT**: evaluate what you can, send the
 residual to the solver. One asymmetry to state plainly — normalisation helps only
@@ -587,20 +571,12 @@ shape-restricted — any other `every` falls through to a loud "outside fragment
 silently reinterpreted.
 
 The **existential `any` is now shipped** too — `a.any { it < 0 }`, `(lo..<hi).any { … }`,
-`xs.indices.any { … }` — lowered to a bounded `∃ i. lo <= i < hi ∧ body` (a shared
-`emitQuantifier` with `every`; `Z3Backend.exists` mirrors `forall`). It also **upgrades
-`xs.contains(y)` from the opaque Phase-4 uninterpreted predicate to precise membership** —
-`∃ i. xs[i] == y` over the modelled contents — so `contains` now relates to actual element
-values (e.g. `xs.contains(xs[k])` is provable for a valid `k`). Two notes from building it: (1)
-a bounded existential *goal* needs a ground witness term for Z3 to instantiate (e-matching won't
-invent one), which the natural specs supply; (2) a quantifier trigger must mention a bound
-variable — a body that indexes by a *different*, ground index (`any { it == a[k] }` → ground
-`a[k]`) was polluting the pattern, now filtered in `Z3Backend`. Authoring relies on
-GROOVY-12059 (nested closures in contract conditions, including `@Ensures`), in the ASF
-snapshot. Still open: full retirement of the `Forall` helper (migrating its remaining internal
-uses); `Forall.range` still works for back-compat. If the contract-position restriction ever
-proves fragile, the documented fallback is an annotation surface (`@Forall`, with jqwik
-precedent) — unambiguous by construction, at the cost of reading less like an inline boolean.
+`xs.indices.any { … }` — lowered to a bounded `∃ i. lo <= i < hi ∧ body`. It also **upgrades
+`xs.contains(y)` from the opaque Phase-4 uninterpreted predicate to precise membership**
+(`∃ i. xs[i] == y` over the modelled contents) — so `contains` now relates to actual element
+values (e.g. `xs.contains(xs[k])` is provable for a valid `k`). Authoring relies on
+GROOVY-12059 (nested closures in contract conditions) in the ASF snapshot. `Forall.range` still
+works for back-compat; migrating its remaining internal uses is the open follow-up.
 
 **Why it waited.** Pinning diagnostic/authoring wording before the capability set settled
 (Phase 6 especially) would only have churned. With the surface now landed, the payoff is
@@ -718,11 +694,8 @@ the bug Phase 12 surfaced (a callee's `old.a` resolving to the caller's entry ma
 
 ## Phase 14 — The fully verified sort: *sorted ∧ permutation*  *(shipped; precondition hardened in Phase 24)*
 
-> **Hardened by Phase 24.** Sound call-site checking revealed `insert`'s *recursive precondition* had been
-> passing **vacuously** (a recursive-call name-conflation). Its sound form needs a *transitive* bound from
-> *adjacent* sortedness, which Z3 can't e-match — so Phase 24 restores it with a one-line **monotone-bound
-> lemma** (`maxBound`, proved by induction), whose `@Ensures` threads through the swap to the recursive call.
-> The sort is fully verified again, now *soundly* at every obligation.
+> **Hardened by Phase 24** — the `insert` recursive precondition had been passing vacuously
+> (name-conflation); restored with a one-line `maxBound` lemma. Now sound at every obligation.
 
 The capstone. A recursive in-place insertion sort proven **both** correctness halves at once —
 the result is sorted *and* a permutation of the input — under sound `@Modifies` framing (every call
@@ -1244,67 +1217,32 @@ termination, soundness, and unconditional coverage — is done.
 
 ---
 
-## Phase 23 — A run at completeness: closure ⇒ reachable, and the obstacles  *(partial)*
+## Phase 23 — A run at completeness: closure ⇒ reachable, and the obstacles  *(superseded by 24/25/26)*
 
-**Completeness — *every reachable node is visited* — is the closure fixpoint, and this phase charts exactly how
-far the fragment reaches and where it stops.** For the functional graph it factors into two halves: (b) "`visited`
-closed under `next` ⟹ every node reachable from a visited node is visited", and (a) "the DFS *establishes*
-closure". One direction of (b) lands; the rest is blocked by named, understood obstacles.
+**Completeness — *every reachable node is visited* — is the closure fixpoint.** It factors into two halves:
+(b) "`visited` closed under `next` ⟹ every reachable node is visited", and (a) "the DFS *establishes* closure".
 
-**What is proved.** With closure written as the bounded universal
-`(0..<n).every { !(it in visited) || (next[it] in visited) }` (a `next[it]` map-read inside a quantifier), the
-**one-step** consequence verifies: a closed set covers the successor of any visited node
-(`closure ∧ u ∈ visited ⊢ next[u] ∈ visited`). That is the inductive *step* of completeness, discharged by
-instantiating the closure universal.
+**What is proved here.** Closure as the bounded universal
+`(0..<n).every { !(it in visited) || (next[it] in visited) }` lets the **one-step** consequence of (b) verify:
+a closed set covers the successor of any visited node (`closure ∧ u ∈ visited ⊢ next[u] ∈ visited`) — the
+inductive *step*, discharged by instantiating the closure universal.
 
-**Obstacle 1 — the full induction needs recursive definitions in contracts.** *(closed in Phase 25.)* Iterating
-the step to "the node `d` hops along the chain is visited" needs a `chain(u, d) = (d <= 0 ? u : chain(next[u],
-d-1))` term whose *defining equation* is visible to the induction. Originally such a term inside a contract was
-modelled as an uninterpreted function (the inductive step `chain(u,d) == chain(next[u],d-1)` wasn't available),
-so the lemma refuted. **Phase 25** gives it the defining equation (shared symbol + bounded-depth eq), so the
-inductive `propagate` now verifies — **closure ⇒ EVERY reachable node visited**, the full (b) half. (The same
-upgrade unblocked `bcount` cross-lemma use.)
+**What was blocked, and where each block closed.** Attempting the full proof surfaced three coupled obstacles,
+all since shipped:
+- **Recursive definitions in contracts** — the inductive iteration over a `chain(u, d)` needed its defining
+  equation visible across the lemma boundary. **Phase 25** lands this (shared symbol + bounded-depth eq); the
+  full (b) half — *closure ⇒ EVERY reachable node visited* — now verifies.
+- **DFS *establishing* closure** — a plain `mark` breaks closure (the new node's successor isn't visited yet),
+  so the invariant is "closed-except-on-stack", needing a recursion-stack ghost. **Phase 26** delivers the
+  frontier/stack invariant.
+- **Call-site soundness** — the run found that `verifyCallSite` wasn't replaying intervening body mutations
+  before discharging a callee's precondition, so a naive closure-threading DFS spuriously passed; recursive-call
+  name conflation and missing early-return narrowing were coupled to the fix. **Phase 24** rebuilds the
+  call-site path (fresh formals + full-path replay) and re-validates the recursive proofs — including the
+  Phase-14 sort, whose recursive precondition had been passing vacuously.
 
-**Obstacle 2 — establishing closure needs the stack.** A `mark` that merely adds a node **breaks** closure (the
-new node's successor needn't be visited) — verified: the `@Ensures` closure refutes on a plain `visited.add(u)`.
-So mark-then-recurse DFS cannot carry closure as a plain invariant; the invariant it really maintains is "closed
-under successors **except for nodes on the recursion stack**", which needs the stack modelled (a `Set`/sequence
-ghost pushed before the recursive call and popped after). That is the well-understood frontier/stack invariant,
-a genuinely larger development.
-
-**Obstacle 3 (found here) — a call-site soundness gap, and why its fix is a *rebuild*.** The attempt surfaced
-that the call-site precondition check (`verifyCallSite`) assumes the enclosing `@Requires` and the path (`if`)
-facts but does **not replay intervening straight-line body mutations** before discharging a callee's
-precondition. So a naive closure-threading DFS *spuriously* passed: the recursive `visit(next[u])`'s closure
-precondition was checked against the *pre-`add`* `visited`, not the post-`add` state where closure is broken.
-(Latent in the shipped fragment — no prior call-site precondition referenced mutated collection *contents*.)
-
-A run at fixing it (replay the prefix mutations precisely before the precondition check) showed the gap is
-**coupled**, not a localized patch — it pulls in three more issues that must move together:
-- **Recursive-call name conflation.** The callee's formal and the caller's same-named variable are the *same*
-  SMT constant (both `intVar("u")`), so the formal binding asserts the garbled `u == next[u]` on a recursive
-  self-call — corrupting the context (and, for `sumUp(n-1)`, asserting the inconsistent `n == n-1`, which is
-  why such recursive call-site preconditions pass *vacuously* today). Precise replay only works once callee
-  formals are **fresh** symbols.
-- **Early-return path narrowing.** With fresh formals, `sumUp`/`bcount` then fail: `if (k == 0) return 0`
-  precedes the recursive call, so reaching it implies `k ≠ 0`, but that guard is not an *enclosing* `if`, so
-  `PathFacts` misses it and `k-1 >= 0` can't be shown. The context must replay the **full path** to the call
-  (early-return guards included), e.g. via `BodyEncoder` path steps, not just enclosing-`if` facts.
-- **Call-state vs entry-state, and re-validating the sort.** Checking a precondition against the true state at
-  the call (post-mutation) is *more* correct, but the Phase-14 insertion sort's `insert(m-1, a[m], v)`
-  precondition is currently discharged against the *entry* array; correcting it to the post-swap array changes
-  what must be proved and has to be re-validated.
-
-So the sound fix is a **rebuild of call-site precondition checking** — fresh formals + full-path replay
-(early returns + mutations + preceding-call `@Ensures`, unified) + re-validating the recursive proofs under the
-corrected semantics — not the bounded patch first imagined. **Shipped in Phase 24 below**, where it also
-surfaced that the Phase-14 sort's recursive precondition had been passing *vacuously*.
-
-**Net.** All three obstacles this run mapped have since closed: (1) recursive-definition reasoning in contracts —
-**Phase 25**, which makes the full (b) half (*closure ⇒ every reachable node visited*) verify; (2) DFS
-*establishing* closure via the **frontier/stack invariant** — **Phase 26**; and (3) the call-site
-intervening-mutation soundness fix — **Phase 24**. With Phase 26, **every correctness property of DFS** —
-termination, soundness, unconditional coverage, and completeness (both halves) — is machine-checked.
+With 24/25/26, every correctness property of DFS — termination, soundness, unconditional coverage, completeness
+(both halves) — is machine-checked.
 
 ## Phase 24 — Call-site precondition soundness  *(shipped)*
 
