@@ -484,6 +484,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`@Modifies` framing — frame-check + caller-side havoc & sound inter-proc `old`** | `@Modifies({ this.a })` | ✅ Phase 13 |
 | **Fully verified in-place sort — *sorted ∧ permutation*** | recursive insertion sort under sound `@Modifies`; recursive precondition discharged soundly via a monotone-bound lemma (Phase 24) | ✅ Phase 14 / 24 |
 | **Class `@Invariant` — instance methods (assume on entry, prove on exit, super-walked)** | `@Invariant({ count >= 0 })` on a class | ✅ Phase 15a |
+| **Class `@Invariant` — constructors establish the invariant at exit** | `@Invariant({ count >= 0 }) class C { C(int n) { count = n } }` — refutes without `@Requires({ n >= 0 })`. Int fields default-init to 0 to match JVM semantics. | ✅ Phase 15b |
 | **Boxed scalars & index-accessed collections** | `Integer`, `Integer[]`, `List<Integer>` via `xs[i]` / `xs.size()` | ✅ (structural) |
 | **Finite sets — membership, add/remove, cardinality law** | `x in s`, `s.contains(x)`, `s.add(x)`, `s.size()` over `Set<Integer>` | ✅ Phase 16 |
 | **Set-cardinality `@Decreases` measure (DFS-shaped termination)** | `@Decreases({ n - s.size() })` on a recursion that adds a fresh element | ✅ Phase 16 |
@@ -500,7 +501,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Non-Int element domains — `String` and `Enum` across sets, maps, lists** | `Set<String>`/`Set<Color>`, `Map<String,Integer>`/`Map<Color,V>`, `List<String>`/`List<Color>`; `Color.RED in s`, `m["admin"]==5`, `xs[k]=="abc"`; counterexamples render the model value as a Groovy literal | ✅ Phase 27 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), `Map<K, Set<V>>` nesting | — | ⏳ later |
-| Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
+| Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
 

@@ -20,6 +20,7 @@ import groovy.contracts.Requires
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ASTNode
+import org.codehaus.groovy.ast.ConstructorNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
@@ -120,6 +121,13 @@ class VerifyChecker extends TypeCheckingExtension {
      * to avoid emitting a "skipped" diagnostic per discharge path for the same outside-fragment clause.
      */
     private List<Expression> currentClassInvariants = Collections.<Expression> emptyList()
+    /**
+     * Phase 15b — true while {@link #afterVisitMethod} is processing a constructor. The class
+     * invariant is *not* assumed at constructor entry (the invariant hasn't been established yet —
+     * it's the goal, not a precondition), but it IS conjoined into the exit obligation just as for
+     * an instance method. Set in {@link #beforeVisitMethod}, cleared in the afterVisitMethod finally.
+     */
+    private boolean currentIsConstructor = false
 
     /**
      * Source-level names of {@code java.util.Set}-typed parameters and fields visible to the current
@@ -686,6 +694,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentMapTypes = collectMapTypes(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
+        currentIsConstructor = (node instanceof ConstructorNode)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -704,6 +713,26 @@ class VerifyChecker extends TypeCheckingExtension {
             }
         }
         false  // false = also run the default type-check visit
+    }
+
+    /**
+     * Phase 15b — Groovy's StaticTypeCheckingVisitor doesn't fire the {@link #beforeVisitMethod} /
+     * {@link #afterVisitMethod} hooks for constructors. Sweep them here, after all methods on the
+     * class have been visited, manually invoking the same setup + verify path so a constructor
+     * gets its class invariant proved at exit (with Int-field defaults from {@link #initFieldDefaults}
+     * giving an empty-body constructor the same "JVM-default 0" entry state real code sees).
+     */
+    @Override
+    void afterVisitClass(ClassNode classNode) {
+        if (classNode == null) return
+        for (ConstructorNode ctor : classNode.declaredConstructors) {
+            try {
+                beforeVisitMethod(ctor)
+                afterVisitMethod(ctor)
+            } catch (Throwable ignored) {
+                // Best-effort: a constructor processing failure shouldn't break the class's other diagnostics.
+            }
+        }
     }
 
     @Override
@@ -754,6 +783,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentEvaluator = null
             sizeAccessors = [:]
             currentClassInvariants = Collections.<Expression> emptyList()
+            currentIsConstructor = false
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentListElementTypes = new HashMap<String, ClassNode>()
@@ -1281,7 +1311,9 @@ class VerifyChecker extends TypeCheckingExtension {
             Statement body = (Statement) node.getNodeMetaData(
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
-            List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod())
+            // A constructor has no return value (it implicitly produces `this`); treat its body
+            // as void-shaped for path enumeration — paths terminate without a return expression.
+            List<Path> paths = BodyEncoder.enumeratePaths(body, node.isVoidMethod() || node instanceof ConstructorNode)
             for (Path p : paths) {
                 checkPath(node, p, postAst, reqAst, classInvs)
             }
@@ -1334,8 +1366,13 @@ class VerifyChecker extends TypeCheckingExtension {
             }
 
             // Phase 15a — class invariants are assumed at method entry (and re-proved at exit
-            // below). The list was pre-filtered for encodability in beforeVisitMethod.
+            // below). The list was pre-filtered for encodability in beforeVisitMethod. For
+            // constructors, assumeClassInvariants is a no-op (the invariant is the goal, not a
+            // precondition); instead we initialise Int-like fields to their JVM default (0) so a
+            // constructor with an empty body whose invariant trivially holds at default values
+            // verifies, matching runtime semantics.
             assumeClassInvariants(session, enc)
+            if (currentIsConstructor) initFieldDefaults(session, enc, node)
 
             // old(...) snapshots: pin each `old.field` referenced by @Ensures to the field's value
             // *now* (method entry), before the body's writes SSA-rebind it forward. Both the scalar
@@ -1675,7 +1712,30 @@ class VerifyChecker extends TypeCheckingExtension {
      * property not yet checked here — a known unsoundness shared with how implicit obligations
      * inside the body assume invariants). Future frame analysis can tighten this.
      */
+    /**
+     * Phase 15b — at constructor entry, default-initialise Int-like instance fields to {@code 0}
+     * to match JVM semantics ({@code int count} starts at 0 before any assignment). Without this,
+     * an empty constructor on a class with {@code @Invariant({ count >= 0 })} would refute (the
+     * field is unconstrained, so could be -1) — a false positive. Reference/Set/Map/array fields
+     * are left unconstrained; the constructor body is expected to initialise them explicitly when
+     * the invariant requires it. Static fields skipped.
+     */
+    private void initFieldDefaults(SmtSession s, Encoder enc, MethodNode node) {
+        ClassNode dc = node?.declaringClass
+        if (dc == null) return
+        for (FieldNode f : dc.fields) {
+            if (f.isStatic()) continue
+            if (isIntElement(f.type)) {
+                s.assertExpr(s.eq(enc.varFor(f.name), s.intLit(0L)))
+            }
+        }
+    }
+
     private void assumeClassInvariants(SmtSession s, Encoder enc) {
+        // Phase 15b — a constructor doesn't get to *assume* the invariant at entry; the invariant
+        // hasn't been established yet. The exit obligation still proves it (handled directly in
+        // checkPath when classInvs are conjoined into the goal).
+        if (currentIsConstructor) return
         for (Expression inv : currentClassInvariants) {
             Object h = enc.translate(inv)
             if (h != null) s.assertExpr(h)

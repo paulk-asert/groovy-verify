@@ -792,15 +792,67 @@ same caveat already in place for the body-internal obligation discharge. A futur
 mutated fields in a class invariant should anticipate the limitation.
 
 **Not yet (15b/15c):**
-- **Constructors establishing the invariant.** A constructor must prove the invariant at exit; this
-  needs a constructor-shaped analog of `verifyPostcondition` (`cn.declaredConstructors`, body snapshot,
-  same exit assertion). 15b.
+- **Constructors establishing the invariant.** Shipped in Phase 15b below.
 - **Cross-class call-site assumption.** At a call `caller.someOther.m(...)`, the callee's class
   invariant can be assumed to hold both before and after — natural extension of `assumeCalleeEnsures`
   in Phase 13. 15c.
 - **Cross-module class-invariant transport.** Same producer-recompile discipline as method
   `@Requires`: a producer compiled without groovy-verify won't carry the class-invariant text in
   bytecode. 15c.
+
+---
+
+## Phase 15b — Class `@Invariant`: constructors establish the invariant  *(shipped)*
+
+**Closes the "instance methods only" qualifier Phase 15a left.** Phase 15a treated `@Invariant` as
+an extra entry-assumption + exit-obligation for every non-static method. Constructors got nothing:
+the capability table read "instance methods" with that asterisk visible to anyone evaluating the
+framework. Now a constructor proves the invariant *at exit* (no entry-assume — the invariant is the
+goal, not a precondition), so the class is verified valid by construction.
+
+**Three things made it work:**
+
+- **Constructor capture.** `ContractExpansionTransform` now iterates `cn.declaredConstructors`
+  alongside `cn.methods`, attaching the same `ContractSource` annotation + clean-body snapshot.
+- **`afterVisitClass` sweep.** Groovy's `StaticTypeCheckingVisitor` doesn't dispatch constructors
+  through the `beforeVisitMethod`/`afterVisitMethod` hooks — silent skip. `VerifyChecker` now
+  overrides `afterVisitClass(ClassNode)` and manually invokes the same setup + verify pipeline for
+  each constructor, with a `currentIsConstructor` flag that makes `assumeClassInvariants` a no-op
+  at entry (the invariant is the goal, not a fact).
+- **Int-field default-init.** A `Counter()` with an empty body trivially satisfies
+  `@Invariant({ count >= 0 })` at runtime (JVM zeroes Int fields before the constructor body),
+  but without default-init the field would be unconstrained and refute. `initFieldDefaults`
+  asserts `field == 0` at constructor entry for each Int-like instance field. Reference / Set /
+  Map / array fields are left unconstrained — the constructor body is expected to initialise them
+  when the invariant requires.
+
+```groovy
+@groovy.contracts.Invariant({ count >= 0 && count <= max })
+class Counter {
+    int count, max
+    @Requires({ m > 0 })
+    Counter(int m) { max = m }                              // verifies — count is default 0, max = m > 0
+    @Requires({ count < max })
+    void increment() { count = count + 1 }                  // verifies — Phase 15a path
+}
+```
+
+Drop the `@Requires({ m > 0 })` and the constructor refutes (count >= 0 holds, but max >= count
+needs max >= 0 — m could be negative). A `Counter(int n) { count = n }` without
+`@Requires({ n >= 0 })` likewise refutes, with `fails on: <init>(-1)` from the model.
+
+**Known limits:**
+
+- **Field initializers.** Groovy compiles `int count = 5` into a synthetic init block prepended to
+  every constructor. The clean-body snapshot may or may not contain that injected code; the first
+  cut here trusts the constructor body to explicitly assign anything the invariant requires.
+  Field initializers as a verified path is a future polish.
+- **`<init>` in the diagnostic.** The refute message names the constructor by its JVM-internal
+  `<init>` name; a small Reporter tweak could surface the source-level class name (`Counter(-1)`).
+- **Cross-class call-site invariant assumption** (when a *consumer* method calls into a class with
+  an invariant) remains deferred to 15c. Within a single class, the constructor's exit invariant
+  becomes the entry assumption for every other method via Phase 15a's assume-at-entry mechanism;
+  cross-class needs the same callee-side invariant lookup applied at the call site.
 
 ---
 

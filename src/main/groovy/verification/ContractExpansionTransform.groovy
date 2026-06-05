@@ -21,6 +21,7 @@ import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.ConstructorNode
 import org.codehaus.groovy.ast.ImportNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.ModuleNode
@@ -96,6 +97,13 @@ class ContractExpansionTransform implements ASTTransformation {
             augmentClass(cn, module, source)
             for (MethodNode mn : cn.methods) {
                 augment(mn, module, source)
+            }
+            // Phase 15b — constructors get the same contract-text capture + clean-body snapshot as
+            // methods. ConstructorNode extends MethodNode so the same augment() runs over both;
+            // the constructor's verification path (no entry-assume of class invariants, prove
+            // them at exit) lives in VerifyChecker.
+            for (ConstructorNode cn2 : cn.declaredConstructors) {
+                augment(cn2, module, source)
             }
         }
     }
