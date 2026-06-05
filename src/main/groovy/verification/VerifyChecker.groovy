@@ -144,6 +144,13 @@ class VerifyChecker extends TypeCheckingExtension {
      * {@code .contains}/{@code .containsAll} through.
      */
     private Map<String, ClassNode> currentNestedSetValueTypes = new HashMap<String, ClassNode>()
+    /**
+     * Phase 37 — names of {@code List<X>} / {@code X[]} containers whose element generic (or array
+     * component) carries a {@code @NonNull}-like annotation (the {@code NullChecker}-style simple
+     * names — see {@link #NON_NULL_ANNOTATION_NAMES}). The implicit per-element NPE obligation on
+     * {@code xs[i].method()} is skipped for these.
+     */
+    private Set<String> currentNonNullElementContainers = new HashSet<String>()
     /** Names of {@code java.util.List}-typed params/fields with non-Int element types (Phase 27). */
     private Map<String, ClassNode> currentListElementTypes = new HashMap<String, ClassNode>()
     /**
@@ -238,6 +245,92 @@ class VerifyChecker extends TypeCheckingExtension {
         } catch (Throwable ignored) {
             return null
         }
+    }
+
+    /**
+     * Phase 37 — annotation simple-names that mark a type use as <em>non-null</em>. The set mirrors
+     * what {@code groovy.typecheckers.NullChecker} matches: {@code @NonNull} (Checker Framework /
+     * Android / Lombok), {@code @NotNull} (JetBrains), {@code @Nonnull} (JSR-305),
+     * {@code @MonotonicNonNull} (Checker Framework). Element-level annotation on a list's generic
+     * type ({@code List<@NonNull String>}) suppresses the per-element NPE obligation on
+     * {@code xs[i].method()}.
+     */
+    private static final Set<String> NON_NULL_ANNOTATION_NAMES = [
+        'NonNull', 'NotNull', 'Nonnull', 'MonotonicNonNull'
+    ] as Set<String>
+
+    /**
+     * Phase 37 — annotation simple-names that mark a type use as <em>nullable</em>. Currently no-op
+     * (the unannotated default already triggers the implicit obligation), but tracked so a future
+     * "non-null-by-default" mode could distinguish "explicitly nullable" from "unspecified".
+     */
+    private static final Set<String> NULLABLE_ANNOTATION_NAMES = ['Nullable', 'CheckForNull'] as Set<String>
+
+    /**
+     * True if any of {@code anns} has a simple-name matching one of {@code names}. "Simple name"
+     * here is the segment after the last {@code .} *and* after the last {@code $} — so an inner
+     * {@code @C.NonNull} (which Groovy renders as {@code C$NonNull} in {@code nameWithoutPackage})
+     * matches just as the top-level {@code @NonNull} does. Mirrors how NullChecker matches by
+     * simple name, robust to annotation classes declared as inner types.
+     */
+    private static boolean hasAnnotationNamed(List<AnnotationNode> anns, Set<String> names) {
+        if (anns == null) return false
+        for (AnnotationNode a : anns) {
+            ClassNode cn = a?.classNode
+            if (cn == null) continue
+            String n = cn.nameWithoutPackage
+            if (n == null) continue
+            int dollar = n.lastIndexOf('$')
+            String simple = dollar >= 0 ? n.substring(dollar + 1) : n
+            if (names.contains(simple)) return true
+        }
+        false
+    }
+
+    /**
+     * For a list-typed {@code ClassNode}, return true if its element generic carries a non-null
+     * annotation. Reads annotations off the element {@link GenericsType}'s inner ClassNode — the
+     * shape Groovy's parser leaves for {@code List<@NonNull String>}.
+     */
+    private static boolean hasNonNullElementAnnotation(ClassNode listType) {
+        try {
+            def gens = listType?.genericsTypes
+            if (gens == null || gens.length < 1) return false
+            ClassNode elemNode = gens[0]?.type
+            return elemNode != null && hasAnnotationNamed(elemNode.annotations, NON_NULL_ANNOTATION_NAMES)
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
+
+    /** Same shape as {@link #hasNonNullElementAnnotation} but for the component type of an array. */
+    private static boolean hasNonNullComponentAnnotation(ClassNode arrType) {
+        try {
+            ClassNode comp = arrType?.componentType
+            return comp != null && hasAnnotationNamed(comp.annotations, NON_NULL_ANNOTATION_NAMES)
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
+
+    /**
+     * Phase 37 — names of List<X>/X[] containers visible to {@code node} whose element generic
+     * (or array component) carries a {@code @NonNull}-like annotation. The implicit per-element
+     * NPE obligation on {@code xs[i].method()} is skipped for these — the user has declared the
+     * elements non-null, we trust the declaration.
+     */
+    private static Set<String> collectNonNullElementContainers(MethodNode node) {
+        Set<String> out = new LinkedHashSet<String>()
+        for (Parameter p : node.parameters) {
+            if (isListType(p.type) && hasNonNullElementAnnotation(p.type)) out.add(p.name)
+            else if (p.type?.isArray() && hasNonNullComponentAnnotation(p.type)) out.add(p.name)
+        }
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) {
+            if (isListType(f.type) && hasNonNullElementAnnotation(f.type)) out.add(f.name)
+            else if (f.type?.isArray() && hasNonNullComponentAnnotation(f.type)) out.add(f.name)
+        }
+        out
     }
 
     /**
@@ -782,6 +875,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentSetElementTypes = collectSetElementTypes(node)
         currentMapTypes = collectMapTypes(node)
         currentNestedSetValueTypes = collectNestedSetValueTypes(node)
+        currentNonNullElementContainers = collectNonNullElementContainers(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
@@ -878,6 +972,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentNestedSetValueTypes = new HashMap<String, ClassNode>()
+            currentNonNullElementContainers = new HashSet<String>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
@@ -1208,6 +1303,26 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (site instanceof DerefSite) {
             DerefSite df = (DerefSite) site
+            if (df.indexExpr != null) {
+                // Phase 37 — indexed receiver (xs[i].method() / xs.get(i).method()): consult the
+                // per-element nullity oracle. A @NonNull-element container is trusted — no
+                // obligation fires. (No quantifier needed to encode the "trust"; we just skip.)
+                if (currentNonNullElementContainers.contains(df.receiver)) return
+                Object idx = enc.translate(df.indexExpr)
+                if (idx == null) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("element dereference",
+                        "index '${df.indexExpr.text}' is outside fragment"), df.node)
+                    return
+                }
+                Object flag = s.select(enc.elementNullityFor(df.receiver), idx)
+                s.assertExpr(s.eq(flag, s.intLit(1L)))   // negation of (flag == 0, i.e. non-null)
+                CheckResult r = shown(s.check())
+                if (r.status != CheckResult.Status.VERIFIED) {
+                    addStaticTypeError(Reporter.formatNullDereference(
+                        "${df.receiver}[${df.indexExpr.text}]", df.method, r), df.node)
+                }
+                return
+            }
             // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
             // check: SAT means the receiver can be null on this path.
             s.assertExpr(enc.nullityOf(df.receiver))
@@ -1318,7 +1433,18 @@ class VerifyChecker extends TypeCheckingExtension {
 
     @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
     @CompileStatic private static class DivideSite { ASTNode node; Expression divisor }
-    @CompileStatic private static class DerefSite  { ASTNode node; String receiver; String method }
+    /**
+     * A method-call dereference site to be discharged via the nullity oracle. Two shapes:
+     * - Scalar receiver ({@code recv.method()}): {@code indexExpr} is null; nullity comes from {@code nullityOf(receiver)}.
+     * - Indexed receiver ({@code xs[i].method()} / {@code xs.get(i).method()}, Phase 37):
+     *   {@code indexExpr} is non-null; nullity comes from {@code select(elementNullityFor(receiver), idx) == 1}.
+     */
+    @CompileStatic private static class DerefSite  {
+        ASTNode node
+        String receiver
+        String method
+        Expression indexExpr   // null = scalar deref; non-null = indexed (Phase 37)
+    }
 
     /**
      * Walks a method body once, collecting the implicit-precondition sites:
@@ -1363,6 +1489,15 @@ class VerifyChecker extends TypeCheckingExtension {
                 boolean realVar = accessed instanceof Parameter || accessed instanceof VariableExpression
                 if (realVar && v.name != 'this' && v.name != 'super') {
                     derefSites.add(new DerefSite(node: mce, receiver: v.name, method: mce.methodAsString))
+                }
+            } else if (!mce.implicitThis) {
+                // Phase 37 — xs[i].method() and xs.get(i).method() shapes. The dereference target
+                // is the element value at idx, with the per-element nullity oracle as the obligation.
+                Encoder.IndexedNullTarget ind = Encoder.indexedAccessTarget(recv)
+                if (ind != null) {
+                    derefSites.add(new DerefSite(
+                        node: mce, receiver: ind.containerName,
+                        method: mce.methodAsString, indexExpr: ind.indexExpr))
                 }
             }
             super.visitMethodCallExpression(mce)

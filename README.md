@@ -545,12 +545,13 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Inline set union / intersection** | `(a + b).contains(x)` → `x ∈ a ∨ x ∈ b`; `a.intersect(b).contains(x)` → conjunction; `(a + b).containsAll(u)` for enum sets via finite conjunction. Lazy lowering — no new set handle is minted | ✅ Phase 33 |
 | **Materialised set ops** | `Set<X> u = a + b` (or `as Set<X>` on `a.intersect(b)`) mints `u` as a first-class set: subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning, the enum-domain pigeonhole/full-coverage iff/empty iff axioms, and the per-element membership iff relating `u` to its operands all light up automatically | ✅ Phase 35 |
 | **`Map<K, Set<V>>` nesting (read)** | `m[k].contains(x)` / `x in m[k]` / `m[k].containsAll(s)` over `Map<Role, Set<V>>` — the map's value sort is the inner set's characteristic-array sort `Array<V, Int>`, so `m[k]` reads as a transient SMT array (no named handle minted). Inner-set mutation and `m[k].size()` are deferred | ✅ Phase 36 |
-| List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
+| **List element nullability** | `xs[i].method()` and `xs.get(i).method()` are now implicit-NPE-checked against a per-element nullity oracle; `@Requires({ xs[i] != null })` and `if (xs[i] != null) …` guards discharge it. Counterexamples render as `f([null])` / `f([null, null])`. Annotation matching (`@NonNull` / `@NotNull` / `@Nonnull` / `@MonotonicNonNull` simple-name set, à la NullChecker) is plumbed but Groovy's AST doesn't always preserve type-use annotations on generics; use the contract form for now | ✅ Phase 37 |
+| List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection | — | ⏳ later |
 | Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing
 
-Requires JDK 25. It builds against `org.apache.groovy:6.0.0-SNAPSHOT` from the
+Built using JDK 25. It builds against `org.apache.groovy:6.0.0-SNAPSHOT` from the
 [ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots) —
 it relies on some fixes due for release in the next Groovy 6 pre-release.
 
@@ -649,9 +650,12 @@ on the Checker Framework's Nullness Checker, and it answers *"could this be null
 solver. **groovy-verify treats nullity as a by-product** of proving richer properties: it asserts
 `¬(recv != null)` and asks Z3, so it catches a dereference when the surrounding logic or a
 `@Requires` makes non-nullness *provable* — and returns a refuting input (`g(null, 0)`). It has no
-`@Nullable` / `@NonNull` awareness, does not model `?.`, and makes every named-receiver dereference an
-unconditional obligation. **For dedicated null-safety, reach for `NullChecker`;** the boxed-element gap
-noted earlier (`List<@Nullable String>`) is exactly what its annotations express and ours do not.
+`@Nullable` / `@NonNull` awareness in source positions Groovy's AST surfaces, does not model `?.`, and
+makes every named-receiver dereference *and* every indexed-element dereference (`xs[i].method()` /
+`xs.get(i).method()`, Phase 37) an unconditional obligation against per-element nullity oracles.
+**For dedicated null-safety, reach for `NullChecker`;** the residual boxed-element gap
+(`List<@Nullable String>` at the type-use position, which Groovy's AST doesn't reliably surface here)
+is exactly what its annotations express.
 
 Because both are just extensions, they **compose** — nullness-by-annotation and SMT functional
 verification in a single compile, each doing what it is best at:

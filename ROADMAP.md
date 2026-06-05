@@ -1897,6 +1897,74 @@ Verifies. The finite conjunction over {@code Role} constants closes the gap betw
   recognised: {@code collectNestedSetValueTypes} introspects only one level deep. Genuinely
   rare; not pursued.
 
+## Phase 37 — List element nullability  *(shipped)*
+
+**The row-1 nullability slice.** Until Phase 37, {@code xs[i].method()} and
+{@code xs.get(i).method()} silently passed — the implicit-NPE pass recognised only *named*
+receivers ({@code recv.method()}), so an unguarded dereference into a list element was outside
+the obligation set. Phase 37 closes that: every indexed-element dereference is now an
+unconditional obligation against a per-element nullity oracle, discharged by a contract guard
+or an in-body {@code if} check.
+
+**The encoding.** A new
+{@code Encoder.elementNullityFor(name)} returns a lazily-minted {@code Array<Int, Int>} keyed
+{@code <name>$nullElem} — the now-familiar 1/0 characteristic-array shape that {@link Sets} and
+the map key-set already use. The lowering is symmetric on both faces:
+
+- **Contract face.** {@code xs[i] == null} / {@code null == xs[i]} (and {@code xs.get(i) == null}
+  shape) translate to {@code select(xs$nullElem, i) == 1}; the {@code !=} mirrors negate. So a
+  {@code @Requires({ xs[i] != null })} pins {@code select(xs$nullElem, i) == 0} in the path
+  context.
+- **Body face.** The {@code ObligationCollector} now emits a {@code DerefSite} for
+  {@code xs[i].method()} / {@code xs.get(i).method()} shapes (recognised by
+  {@code Encoder.indexedAccessTarget}, the same helper the contract face uses) carrying the
+  index expression alongside. The discharge asserts the negation
+  ({@code select(xs$nullElem, i) == 1}) and Z3 returns SAT exactly when the element *can* be
+  null on this path — refuted, with the counterexample rendered as e.g. {@code fails on: f([null])}.
+
+```groovy
+class C {
+    @Requires({ xs.size() > 0 && xs[0] != null })
+    static int f(List<String> xs) { xs[0].length() }       // verifies
+}
+class D {
+    @Requires({ xs.size() > 1 && xs[0] != null })
+    static int f(List<String> xs) { xs[1].length() }       // refutes — guard was on index 0
+}
+```
+
+The wrong-index refutation drops out for free: the contract pins
+{@code select(xs$nullElem, 0) == 0}, but the body's obligation is about
+{@code select(xs$nullElem, 1)}, which Z3 is free to assign 1.
+
+**Annotation plumbing.** {@code collectNonNullElementContainers} reads the standard NullChecker-
+shape simple-name set ({@code NonNull}, {@code NotNull}, {@code Nonnull},
+{@code MonotonicNonNull}) off the element generic and the array component type, suppressing the
+implicit obligation for declared-non-null containers — *if* Groovy's AST preserves the
+annotation at the read position. In current Groovy 6.0.0-SNAPSHOT, type-use annotations on
+generics ({@code List<@NonNull String>}) aren't reliably present on the GenericsType's inner
+ClassNode, so the suppression path is a no-op in practice today; the contract form is the
+working interface. The matcher handles inner-class annotation names by stripping the segment
+after the last {@code $}, so a {@code C.NonNull} (which Groovy renders as {@code C$NonNull})
+matches the same as a top-level {@code NonNull} — should the upstream parser start surfacing
+the annotations, this slice picks them up without further changes.
+
+**Known limits.**
+
+- **Annotation surfacing** — see above. The infrastructure is in place; the AST input isn't
+  consistently there. Out of our hands until Groovy preserves type-use annotations on generic
+  type arguments at the StaticTypeChecking phase.
+- **No nullity tracking through writes.** {@code xs[i] = null} / {@code xs[i] = something} does
+  not currently update the per-element nullity array — the oracle is read-only in this slice.
+  Practical impact: a body that *assigns* into the list and then dereferences would still flag
+  the dereference. Adding the write-side is a follow-up paralleling the existing per-store
+  {@code count} law.
+- **No cross-call propagation.** A method receiving a {@code List<String>} returned by another
+  contracted method doesn't know whether that other method's @Ensures said anything about
+  element nullity. Element-level @Ensures shapes ({@code @Ensures({ result[0] != null })}) are
+  encodable in contracts already; they just aren't currently summarised through inter-procedural
+  Phase-7 reasoning the way scalar postconditions are.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

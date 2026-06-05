@@ -1095,6 +1095,16 @@ class Encoder {
     }
 
     /**
+     * Phase 37 — get-or-mint the per-element nullity array for a list/array container. The handle
+     * is an {@code Array<Int, Int>} where {@code select(arr, i) == 1} means element {@code i} is
+     * null, {@code 0} means non-null. The shape matches the existing set machinery (also 1/0 over
+     * an Int-Int characteristic array), so Z3's array theory carries through cleanly: a contract
+     * {@code @Requires({ xs[i] != null })} adds a path fact that {@code select(xs$nullElem, i) == 0},
+     * which discharges the implicit per-element NPE obligation at a later {@code xs[i].method()}.
+     */
+    Object elementNullityFor(String name) { arrayFor(name + '$nullElem') }
+
+    /**
      * Translate a Groovy expression to an SMT handle. Returns null
      * if anything in the subtree is outside the fragment.
      */
@@ -1335,6 +1345,18 @@ class Encoder {
             if (ref != null) {
                 Object isNull = nullityOf(ref.name)
                 return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
+            }
+            // Phase 37 — xs[i] == null / xs.get(i) == null and their `!=` mirrors: lower to the
+            // per-element nullity oracle. Lets a @Requires({ xs[i] != null }) constrain the same
+            // flag the implicit deref obligation later asserts the negation of.
+            IndexedNullTarget ind = indexedNullComparisonTarget(be)
+            if (ind != null) {
+                Object idxH = translate(ind.indexExpr)
+                if (idxH != null) {
+                    Object flag = session.select(elementNullityFor(ind.containerName), idxH)
+                    Object isNull = session.eq(flag, session.intLit(1L))
+                    return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
+                }
             }
         }
 
@@ -1830,6 +1852,53 @@ class Encoder {
         }
         if (isNullLiteral(be.leftExpression) && be.rightExpression instanceof VariableExpression) {
             return (VariableExpression) be.rightExpression
+        }
+        return null
+    }
+
+    /** Phase 37 — a recognised indexed access ({@code xs[i]} or {@code xs.get(i)}). Public so {@code VerifyChecker.Collect} can spot deref sites by the same rule the contract translation uses. */
+    @CompileStatic static class IndexedNullTarget {
+        String containerName
+        Expression indexExpr
+    }
+
+    /** Recognise {@code xs[i] == null} / {@code null == xs[i]} (and {@code .get(i)} mirror); returns the indexed-access target. */
+    private static IndexedNullTarget indexedNullComparisonTarget(BinaryExpression be) {
+        Expression maybeIdx
+        if (isNullLiteral(be.rightExpression)) maybeIdx = be.leftExpression
+        else if (isNullLiteral(be.leftExpression)) maybeIdx = be.rightExpression
+        else return null
+        return indexedAccessTarget(maybeIdx)
+    }
+
+    /**
+     * If {@code e} is {@code xs[i]} (BinaryExpression with LEFT_SQUARE_BRACKET) or {@code xs.get(i)}
+     * over a named container, return its {@link IndexedNullTarget}; null otherwise. The check is
+     * shape-based and permissive — any name with a single-arg subscript / get call qualifies —
+     * since the implicit deref obligation depends on the *use*, not on declared type metadata.
+     */
+    static IndexedNullTarget indexedAccessTarget(Expression e) {
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type == Types.LEFT_SQUARE_BRACKET &&
+                be.leftExpression instanceof VariableExpression) {
+                IndexedNullTarget t = new IndexedNullTarget()
+                t.containerName = ((VariableExpression) be.leftExpression).name
+                t.indexExpr = be.rightExpression
+                return t
+            }
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (mce.methodAsString == 'get' && mce.objectExpression instanceof VariableExpression) {
+                List<Expression> args = argList(mce)
+                if (args.size() == 1) {
+                    IndexedNullTarget t = new IndexedNullTarget()
+                    t.containerName = ((VariableExpression) mce.objectExpression).name
+                    t.indexExpr = args.get(0)
+                    return t
+                }
+            }
         }
         return null
     }

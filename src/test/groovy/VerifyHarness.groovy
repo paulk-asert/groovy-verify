@@ -1480,6 +1480,51 @@ class VerifyHarness {
                         static int f(Map<Role, Set<Role>> m) { 0 }
                     }''')],
 
+        // ---------- Phase 37: element nullability ----------
+        // Refute: xs[0].method() without a per-element non-null guarantee. The bounds @Requires lets
+        // the index check pass; the nullity obligation still fires because xs[0] is unconstrained.
+        [group: 'P37 element null', name: 'unguarded xs[i].method() refutes',
+         expect: 'Possible NullPointerException: Cannot invoke method length()',
+         src: tc('''class C {
+                        @Requires({ xs.size() > 0 })
+                        static int f(List<String> xs) { xs[0].length() }
+                    }''')],
+        // Verify: @Requires({ xs[i] != null }) constrains the per-element nullity oracle, which
+        // discharges the implicit obligation at the .length() deref.
+        [group: 'P37 element null', name: 'guarded by @Requires xs[i] != null verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs.size() > 0 && xs[0] != null })
+                        static int f(List<String> xs) { xs[0].length() }
+                    }''')],
+        // Verify: in-body if-guard discharges via the path-fact mechanism — same oracle.
+        [group: 'P37 element null', name: 'in-body if (xs[i] != null) guard verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs.size() > 0 })
+                        static int f(List<String> xs) {
+                            if (xs[0] != null) return xs[0].length()
+                            return 0
+                        }
+                    }''')],
+        // Refute soundness: a guard on xs[0] doesn't license a deref on xs[1].
+        [group: 'P37 element null', name: 'guard on wrong index refutes',
+         expect: 'Possible NullPointerException: Cannot invoke method length()',
+         src: tc('''class C {
+                        @Requires({ xs.size() > 1 && xs[0] != null })
+                        static int f(List<String> xs) { xs[1].length() }
+                    }''')],
+        // xs.get(i) shape: same lowering through translateBinary's null path; same DerefSite.
+        [group: 'P37 element null', name: 'xs.get(i).method() shape: refute',
+         expect: 'Possible NullPointerException: Cannot invoke method length()',
+         src: tc('''class C {
+                        @Requires({ xs.size() > 0 })
+                        static int f(List<String> xs) { xs.get(0).length() }
+                    }''')],
+        // The scalar deref on xs itself fires (xs.get(0) is a method call), so xs != null also needed.
+        [group: 'P37 element null', name: 'xs.get(i).method() shape: verify with @Requires xs.get(i) != null', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 && xs.get(0) != null })
+                        static int f(List<String> xs) { xs.get(0).length() }
+                    }''')],
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.
         [group: 'README counter', name: 'Counter without @Requires refutes at construction',
          expect: 'Cannot prove class invariant',
