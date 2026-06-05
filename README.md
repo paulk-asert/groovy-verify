@@ -376,15 +376,42 @@ every domain node, `u` included. It composes *everything*: sets, the functional-
 caller-side set framing, bounded quantifiers, the per-add law, and the full-characterization.
 
 **What remains — completeness.** We prove the node itself is covered, **not its successors**: claiming
-`next[u] in visited` refutes, because a node visited earlier needn't have had its edge followed. Completeness
-(*every reachable node is visited*) is the closure fixpoint; a run at it (Phase 23) proves the inductive **step**
-— a set closed under `next` covers the successor of any visited node (`closure ∧ u∈visited ⊢ next[u]∈visited`) —
-and maps the obstacles to the full result: **(1)** iterating that step needs recursive-definition reasoning
-in contracts (the same gap `bcount` cross-lemma use hits); **(2)** the DFS *establishing* closure needs the
-frontier/stack invariant (a plain `mark` provably breaks closure — the new node's successor isn't visited yet —
-so closure can't be a simple invariant). The run also surfaced a **call-site soundness fix** — `verifyCallSite`
-wasn't replaying intervening mutations before a callee's precondition, so a naive closure-threading DFS passed
-spuriously — now **shipped in Phase 24** (the closure-DFS precondition correctly refutes). See the roadmap.
+`next[u] in visited` refutes for a *single* `visit` call, because a node visited earlier needn't have had its
+edge followed *yet* — that is the frontier subtlety. Completeness (*every reachable node is visited*) is the
+closure fixpoint, and it is now **fully verified**, in two halves:
+
+- **closure ⇒ every reachable node is visited** (Phase 23/25) — the inductive `propagate` over the chain
+  `chain(u,d)` (the `d`-step successor), discharged once a recursive contract function carries its defining
+  equation (Phase 25);
+- **DFS *establishes* closure** (Phase 26) — the frontier/stack invariant. A plain `mark` provably breaks
+  closure (the new node's successor isn't visited yet), so the recursion stack is modelled as a `Set` ghost
+  (`onStack`, pushed before recursing, popped after) under the invariant *closed-except-on-stack*: every
+  visited node is on the stack **or** its successor is visited. `visit` maintains it and restores the stack,
+  so a top-level `dfs` (empty stack in, empty stack out) leaves `visited` **closed under `next`** — every
+  visited node's successor is visited.
+
+```groovy
+@Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } &&
+            (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&   // closed-except-on-stack
+            (0..<n).every { !(it in onStack) || (it in visited) } })                            // onStack ⊆ visited
+@Modifies({ [this.visited, this.onStack] })
+@Decreases({ n - Sets.count(visited, n) })
+@Ensures({ (u in visited) &&
+           (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&   // invariant kept
+           (0..<n).every { !(it in onStack) || (it in visited) } &&
+           (0..<n).every { (it in onStack) == (it in old.onStack) } &&                          // stack restored
+           (0..<n).every { !(it in old.visited) || (it in visited) } })
+void visit(int u) {
+    if (!(u in visited) && Sets.count(visited, n) < n) {
+        visited.add(u); onStack.add(u); visit(next[u]); onStack.remove(u)
+    }
+}
+```
+
+A **call-site soundness fix** (Phase 24) was the prerequisite — `verifyCallSite` wasn't replaying intervening
+mutations before a callee's precondition, so a naive closure-threading DFS passed spuriously. With all of it,
+**every correctness property of DFS** — termination, soundness, unconditional coverage, and completeness — is
+machine-checked, over a cyclic graph, by induction (no loops). See the roadmap.
 
 ## What's demonstrated
 
@@ -437,9 +464,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Completeness — closure ⇒ EVERY reachable node visited** | inductive `propagate` over the chain; `mark` breaks closure (boundary) | ✅ Phase 23 / 25 |
 | **Call-site precondition soundness** | intervening mutations threaded, fresh callee formals, early-return narrowing — a precondition is checked at the *state at the call* | ✅ Phase 24 |
 | **Recursive definitions in contracts** | a recursive `chain(u,d)`/`bcount(s,k)` carries its defining equation across a lemma boundary (shared symbol + bounded-depth eq) | ✅ Phase 25 |
+| **DFS establishes closure — the frontier/stack invariant** | recursion-stack `Set` ghost (push/pop), closed-except-on-stack ⇒ full closure when the stack empties | ✅ Phase 26 |
 | List method-call idioms (`xs.get`/`set`/`add`), size-changing mutation, immutable-list detection, element nullability | — | ⏳ later |
 | Set/map union/intersection/subset (`s.containsAll(t)`, `m.containsValue`, `s + t`), non-Int domains, `Map<K, Set<V>>` nesting | — | ⏳ later |
-| DFS *completeness* (full: DFS *establishes* closure) | — | ⏳ later (the frontier/stack invariant — the one remaining DFS gap) |
 | Class `@Invariant` for constructors and cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
 
 ## Building & testing

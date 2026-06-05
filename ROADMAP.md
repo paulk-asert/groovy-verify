@@ -1248,12 +1248,11 @@ So the sound fix is a **rebuild of call-site precondition checking** — fresh f
 corrected semantics — not the bounded patch first imagined. **Shipped in Phase 24 below**, where it also
 surfaced that the Phase-14 sort's recursive precondition had been passing *vacuously*.
 
-**Net.** Of the three obstacles this run mapped, two have since closed: (1) recursive-definition reasoning in
-contracts — **Phase 25**, which makes the full (b) half (*closure ⇒ every reachable node visited*) verify; and
-(3) the call-site intervening-mutation soundness fix — **Phase 24**. What remains for full DFS *completeness* is
-just (2): the DFS *establishing* closure needs the **frontier/stack invariant**, a genuinely larger development
-(model the recursion stack, or an inductive path predicate). Termination, soundness, unconditional coverage, and
-the closure⇒reachable half are all done.
+**Net.** All three obstacles this run mapped have since closed: (1) recursive-definition reasoning in contracts —
+**Phase 25**, which makes the full (b) half (*closure ⇒ every reachable node visited*) verify; (2) DFS
+*establishing* closure via the **frontier/stack invariant** — **Phase 26**; and (3) the call-site
+intervening-mutation soundness fix — **Phase 24**. With Phase 26, **every correctness property of DFS** —
+termination, soundness, unconditional coverage, and completeness (both halves) — is machine-checked.
 
 ## Phase 24 — Call-site precondition soundness  *(shipped)*
 
@@ -1338,6 +1337,57 @@ use**: a single-expression `bcount(s,k)` referenced in a *separate* lemma's cont
 Phase-20 `bcount` couldn't support; a wrong bound still refutes). It is also the bounded, in-grain form of
 "recursive-definition reasoning" — no quantified function axioms, just ground defining equations to a fixed
 depth, keeping clear of the trigger cliff.
+
+## Phase 26 — The frontier/stack invariant: DFS establishes closure  *(shipped)*
+
+**The last gap, and the capstone of the whole sets→maps→cardinality→completeness arc: a depth-first search
+proven to leave its `visited` set *closed under the successor relation* — i.e. it reaches everything reachable.**
+This is the deep half of DFS correctness, the one that needs the recursion *frontier* modelled, not just an
+inductive set property.
+
+**Why a plain invariant fails.** Mark-then-recurse marks `u` *before* recursing into `next[u]`, so right after
+the mark `visited` is closed **except at `u`** (whose successor isn't visited yet); the recursion restores it.
+A plain "closed under `next`" invariant therefore provably breaks on a single `mark` (Phase 23's boundary test).
+The invariant DFS really maintains is **closed-except-on-stack**.
+
+**The encoding — the stack as a `Set` ghost.** A second set field `onStack` is pushed (`onStack.add(u)`) before
+the recursive call and popped (`onStack.remove(u)`) after. The invariant is
+`∀ it ∈ [0,n). it ∈ visited ⟹ (it ∈ onStack ∨ next[it] ∈ visited)` — every visited node is on the stack or its
+successor is visited. `visit` is proven to **maintain it and restore the stack** (the `@Ensures` includes a
+pointwise *stack-restored* clause `(it in onStack) == (it in old.onStack)` and `onStack ⊆ visited`), so a
+top-level `dfs` started with both sets empty leaves `onStack` empty — at which point the invariant *is* full
+closure `∀ it. it ∈ visited ⟹ next[it] ∈ visited`.
+
+```groovy
+@Modifies({ [this.visited, this.onStack] })
+@Decreases({ n - Sets.count(visited, n) })
+void visit(int u) {
+    if (!(u in visited) && Sets.count(visited, n) < n) {
+        visited.add(u); onStack.add(u); visit(next[u]); onStack.remove(u)   // mark, push, recurse, pop
+    }
+}
+// from empty visited + empty stack, one DFS ⇒ visited is closed under next:
+@Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
+void dfs(int start) { visit(start) }
+```
+
+**How the obligations close.** The proof composes *everything*: the **pop** after the recursive call is threaded
+by Phase 24's call-site/mutation machinery; the recursion **havocs both sets and reframes** them from `visit`'s
+`@Ensures` (sound `@Modifies` over two sets); the **stack-restored** clause lets the pop cancel the push
+(`u ∉ onStack` follows from `onStack ⊆ visited` and `u ∉ visited`); `u ∈ visited` (needed so the recursion
+covers `next[u]` in the invariant's `it == u` case) rides the **`Sets.count` full-characterization** (Phase 22)
+on the "set full" branch; and termination is the **set-cardinality measure** (Phase 16). No new engine
+machinery — it is the entire stack of phases 16–25 brought to bear on one proof.
+
+**Cost.** This is the heaviest proof in the suite — several quantifiers over two mutated sets with map-indexed
+bodies, plus the defining-equation overhead (Phase 25). It stays within the per-VC timeout (no UNKNOWNs), but
+the suite's wall-clock grew noticeably; a tighter unfold depth, VC caching, or per-VC tactic selection (the
+cross-cutting compilation-slowdown item) is the natural optimisation now that the capability is proven.
+
+**The arc is complete.** Termination (16/17), soundness + bounded progress (18), the cardinality axiom (19),
+bounded-sum cardinality and its laws (20–22), unconditional coverage (22), recursive-defs in contracts (25),
+call-site soundness (24), and now closure (26): **a depth-first search over a cyclic graph, every correctness
+property machine-checked, by induction, with no loops** — the goal this whole line of work was aimed at.
 
 ## Non-goals
 
