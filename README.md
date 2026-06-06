@@ -346,6 +346,44 @@ suite continues to verify unchanged, and the permutation-sort showcase still use
 machine-integer-precision territory as Verus or Dafny without forcing the typed-narrow ergonomic
 that limits adoption — *math by default, machine precision on demand.*
 
+**HumanEval-style benchmarks — same algorithms, stronger specs.** Verus' HumanEval suite
+([secure-foundations/human-eval-verus](https://github.com/secure-foundations/human-eval-verus))
+is the standard benchmark for auto-active verifiers on LeetCode-shape problems. Most of its
+entries are GPT-generated implementations with *no* explicit specs — Verus checks implicit
+overflow only. groovy-verify ports many of them faithfully and *adds the spec the original
+lacks*. Task 030 — filter a list to its positive elements — is one shape:
+
+```groovy
+@Requires({ xs != null })
+@Ensures({ result.size() <= xs.size() })            // ← the spec the Verus original omits
+static List<Integer> getPositive(List<Integer> xs) {
+    List<Integer> positive = []
+    int i = 0
+    @Invariant({ positive != null && 0 <= i && i <= xs.size() && positive.size() <= i })
+    @Decreases({ xs.size() - i })
+    while (i < xs.size()) {
+        int x = xs[i]
+        if (x > 0) {
+            positive.add(x)
+        }
+        i = i + 1
+    }
+    return positive
+}
+```
+
+This exercises a wide slice of the fragment in one method: an empty-list factory local
+(`[]`), a *conditional list mutation* inside a `while` loop, a `@Decreases` measure for
+termination, and an `@Ensures` over the *returned list*'s size — the verifier aliases
+`result.size()` to the returned local's threaded size oracle so the postcondition resolves
+correctly. The Verus port of the same task has none of that — just the implementation.
+
+Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
+The remaining honest gaps: tasks with non-linear int arithmetic (`i * i <= n` in
+prime-testing) hit the Phase 8a NIA opt-out, and tasks with string-content reasoning
+(`startsWith`, `charAt`) need fragment extensions still to come. Sister task 023 (`strlen`)
+ports the same way — with the natural spec `result == xs.size()` added.
+
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
 sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in place under a
