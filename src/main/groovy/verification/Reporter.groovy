@@ -176,9 +176,15 @@ class Reporter {
             (op == '-')   ? "subtraction" :
             (op == '*')   ? "multiplication" :
             (op == 'neg') ? "negation" :
+            (op == 'div') ? "division" :
                             "arithmetic"
+        // Division's failure case is the specific pair Integer.MIN_VALUE / -1, not a general
+        // result-out-of-range — phrase the obligation accordingly so the diagnostic reads true.
+        String obligation = (op == 'div') ?
+            "!((${exprText}) is Integer.MIN_VALUE / -1)" :
+            "Integer.MIN_VALUE <= (${exprText}) && (${exprText}) <= Integer.MAX_VALUE"
         implicit("Possible ArithmeticException: ${kindWord} overflows 32-bit signed range",
-            "Integer.MIN_VALUE <= (${exprText}) && (${exprText}) <= Integer.MAX_VALUE",
+            obligation,
             "Could not decide ${kindWord} stays in 32-bit range", result)
     }
 

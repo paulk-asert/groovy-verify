@@ -2105,6 +2105,31 @@ class VerifyHarness {
                         @Requires({ a > Integer.MIN_VALUE })
                         static int neg(int a) { -a }
                     }''')],
+        // Division overflow — the only arithmetic case where / overflows is INT_MIN / -1.
+        // Unguarded refutes; Z3 picks the specific failure pair. Groovy promotes int/int to
+        // BigDecimal at the source level, so the explicit (int) cast keeps the method's int
+        // return type — but the inner BinaryExpression a/b is what the collector picks up.
+        [group: 'P44 overflow', name: 'unguarded division refutes on INT_MIN / -1',
+         expect: 'division overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ b != 0 })
+                        static int div(int a, int b) { (int)(a / b) }
+                    }''')],
+        // Guard against either pair member; division verifies.
+        [group: 'P44 overflow', name: 'division with guard verifies', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ b != 0 && !(a == Integer.MIN_VALUE && b == -1) })
+                        static int div(int a, int b) { (int)(a / b) }
+                    }''')],
+        // % is unaffected — Java spec: Integer.MIN_VALUE % -1 == 0. (% returns int directly so no cast.)
+        [group: 'P44 overflow', name: 'modulo never flagged for INT_MIN/-1', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ b != 0 })
+                        static int mod(int a, int b) { a % b }
+                    }''')],
 
         // ---------- Phase 45: cross-class @Invariant call-site assumption ----------
         // Headline: a class-typed parameter c carries Counter's invariant into the calling method.

@@ -1538,6 +1538,21 @@ class VerifyChecker extends TypeCheckingExtension {
                     "operand of '${ov.text}' is outside fragment"), ov.node)
                 return
             }
+            // Phase 44b-div — division overflow uses a specific-pair failure assertion rather than
+            // the general "result outside [INT_MIN, INT_MAX]" form, because the only arithmetic
+            // case where {@code /} overflows is {@code Integer.MIN_VALUE / -1}. Asserting that exact
+            // pair (and checking SAT) is equivalent to asserting the result's range violation but
+            // doesn't require an integer-{@code div} SMT operator.
+            if (ov.op == 'div') {
+                Object intMinLit = s.intLit(-2147483648L)
+                Object negOneLit = s.intLit(-1L)
+                s.assertExpr(s.and([s.eq(L, intMinLit), s.eq(R, negOneLit)]))
+                CheckResult r = shown(s.check())
+                if (r.status != CheckResult.Status.VERIFIED) {
+                    addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, r), ov.node)
+                }
+                return
+            }
             Object result = (ov.op == '+')   ? s.plus(L, R) :
                             (ov.op == '-')   ? s.minus(L, R) :
                             (ov.op == '*')   ? s.times(L, R) :
@@ -1729,6 +1744,16 @@ class VerifyChecker extends TypeCheckingExtension {
             if (overflowChecking && (sym == '+' || sym == '-' || sym == '*')) {
                 overflowSites.add(new OverflowSite(node: be,
                     left: be.leftExpression, right: be.rightExpression, op: sym, text: be.text))
+            }
+            // Phase 44b-div — division overflow: {@code Integer.MIN_VALUE / -1} is the *only*
+            // arithmetic case where {@code /} overflows (the math result is 2^31, one past
+            // INT_MAX). Asserted as the specific input pair rather than computed via a math
+            // {@code div}, because {@code SmtSession} doesn't expose integer division (the encoder
+            // treats {@code /} via the NIA opt-out + divide-by-zero check). {@code %} is unaffected —
+            // Java specifies {@code Integer.MIN_VALUE % -1 == 0}.
+            if (overflowChecking && sym == '/') {
+                overflowSites.add(new OverflowSite(node: be,
+                    left: be.leftExpression, right: be.rightExpression, op: 'div', text: be.text))
             }
             super.visitBinaryExpression(be)
         }

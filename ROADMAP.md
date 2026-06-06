@@ -2585,10 +2585,9 @@ scoping (only on selected methods, regardless of class).
 - **`long`, `short`, `byte`, `char`** still use the math-int model. A {@code @CheckOverflow long n; n + 1}
   is currently 32-bit-checked (sound but tighter than necessary). Type-driven dispatch to 64-bit
   / 16-bit / 8-bit ranges is the natural follow-on.
-- **Division edge case** ({@code INT_MIN / -1}) overflows at runtime but isn't yet checked.
-  Unary {@code -INT_MIN} *is* checked — same {@code OverflowSite} pipeline, just an extra
-  {@code visitUnaryMinusExpression} collector hook and a {@code 'neg'} discharge branch with
-  Reporter wording "negation overflows 32-bit signed range".
+- All arithmetic-overflow edge cases now ship: addition, subtraction, multiplication
+  ({@code 'neg'} for unary minus on INT_MIN, {@code 'div'} for INT_MIN/-1). {@code %} is
+  specifically *not* flagged — Java guarantees {@code Integer.MIN_VALUE % -1 == 0}.
 - **JDK boxed-range constants** (`Integer.MAX_VALUE`/`MIN_VALUE`, `Long`/`Short`/`Byte`/`Character`
   variants) fold to their literal values via {@code tryFoldJdkRangeConstant} in the
   {@link PropertyExpression} dispatch, so {@code @Requires({ n < Integer.MAX_VALUE })} works as
