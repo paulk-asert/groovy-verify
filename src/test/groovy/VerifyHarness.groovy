@@ -1678,6 +1678,29 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- HumanEval port — strlen (Verus task 023) ----------
+        // The Verus original (https://github.com/secure-foundations/human-eval-verus, gpt/023)
+        // is spec-free; Verus only checks implicit overflow. groovy-verify ports the same body
+        // and *adds the spec the original lacks*: result == xs.size(). Verifies cleanly with a
+        // loop invariant carrying count == i across iterations and a decreases measure for
+        // termination — exactly the shape any auto-active verifier needs for a counter loop.
+        [group: 'HumanEval port', name: 'strlen (Verus 023) with @Ensures(result == size)', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        @Ensures({ result == xs.size() })
+                        static int strlen(List<Character> xs) {
+                            int count = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= xs.size() && count == i })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                count = count + 1
+                                i = i + 1
+                            }
+                            return count
+                        }
+                    }''')],
+
         // ---------- Phase 38c-3: keySet / values projections on map factories ----------
         // Map.of(...).keySet() returns a set factory of the keys; .contains folds via disjunction.
         [group: 'P38c projection', name: 'Map.of(...).keySet().contains folds', ok: true,
