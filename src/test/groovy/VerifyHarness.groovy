@@ -2467,14 +2467,85 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- Phase 49b (Slice B): early-return INSIDE a loop body ----------
+        // The in-body return path: its @Ensures verifies under invariant ∧ guard ∧
+        // ¬prior-in-body-guards ∧ this-guard, with result bound to the exit value.
+        // The loop's preservation / progress fire on the "no exit fired" path
+        // (¬each-in-body-guard assumed during the body walk).
+        [group: 'P49b in-body exits', name: 'single in-body early-return verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                if (i == 5) return 42
+                                i = i + 1
+                            }
+                            return i
+                        }
+                    }''')],
+        // Soundness: an in-body return whose value violates the postcondition refutes.
+        [group: 'P49b in-body exits', name: 'in-body return postcondition violation refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                if (i == 5) return -1
+                                i = i + 1
+                            }
+                            return i
+                        }
+                    }''')],
+        // Preservation under in-body exit: the body's normal-continuation path keeps the
+        // invariant. The {@code i++} still happens on the no-exit path.
+        [group: 'P49b in-body exits', name: 'preservation holds on no-exit body path', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        @Ensures({ result >= -1 })
+                        static int firstNegativeIndex(List<Integer> xs) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= xs.size() })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                if (xs[i] < 0) return i
+                                i = i + 1
+                            }
+                            return -1
+                        }
+                    }''')],
+        // Multiple in-body exits: each verified independently; ¬prior-guards assumed for later ones.
+        [group: 'P49b in-body exits', name: 'multiple stacked in-body returns', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                if (i == 3) return 100
+                                if (i == 7) return 200
+                                i = i + 1
+                            }
+                            return i
+                        }
+                    }''')],
+
         // ---------- HumanEval port — is_prime (Verus task 039) ----------
-        // The Verus original combines two pieces this checker previously couldn't do:
-        // (1) the {@code while (i * i <= num)} NIA loop bound — closed by Phase 48; (2)
-        // multiple early-returns in the prefix ({@code if (num <= 1) return false;} etc.) —
-        // closed by Phase 49 (Slice A). The Verus version's last gap is in-body early returns
-        // (the {@code if (num % i == 0) return false} inside the loop), which Slice A still
-        // skips honestly; refactored to a {@code composite} flag in the body.
-        [group: 'HumanEval port', name: 'is_prime (Verus 039) — NIA bound + prefix early-returns', ok: true,
+        // The Verus original combines three pieces this checker previously couldn't do:
+        // (1) the {@code while (i * i <= num)} NIA loop bound — closed by Phase 48;
+        // (2) prefix early-returns ({@code if (num <= 1) return 0;} etc.) — closed by Phase 49a;
+        // (3) the in-body early-return ({@code if (num % i == 0) return 0;} inside the loop)
+        // — closed by Phase 49b. The port is now structurally identical to the Verus source.
+        [group: 'HumanEval port', name: 'is_prime (Verus 039) — full Verus-shape port', ok: true,
          src: tc('''class C {
                         @Requires({ num >= 0 })
                         static int isPrime(int num) {
@@ -2482,16 +2553,12 @@ class VerifyHarness {
                             if (num <= 3) return 1
                             if (num % 2 == 0 || num % 3 == 0) return 0
                             int i = 5
-                            boolean composite = false
                             @Invariant({ i >= 5 })
-                            while (!composite && i * i <= num) {
-                                if (num % i == 0 || num % (i + 2) == 0) {
-                                    composite = true
-                                } else {
-                                    i = i + 6
-                                }
+                            while (i * i <= num) {
+                                if (num % i == 0 || num % (i + 2) == 0) return 0
+                                i = i + 6
                             }
-                            return composite ? 0 : 1
+                            return 1
                         }
                     }''')],
 

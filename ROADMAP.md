@@ -3503,19 +3503,71 @@ after the prior suffix statements have run, not at the start of `checkUse` — r
 restructuring `LoopEncoder.resultExpr`. The existing "unsupported statement
 ReturnStatement after loop" diagnostic is the right honest skip; no soundness risk.
 
-**In-body early returns also still deferred** (Slice B's other half). Each in-body return
-forks the loop into "exited via this return" vs "continued" paths, with the method's
-`@Ensures` checked at each return point under the loop invariant. A genuine restructure
-of `checkPreservation`/`checkUse`; ~3-5 days as documented in the original sizing.
-
-**What this unlocks** — `is_prime` ports with its natural prefix-guards (the inner
-`if (num % i == 0) return false` still becomes a `composite` flag for now). Any
-HumanEval-style method that opens with sanity checks (`if (xs.size() == 0) return …`,
-`if (s == null) return …`, etc.) ports verbatim.
-
 **Co-shipped tests** (5): single prefix early-return, multiple stacked early-returns,
 postcondition violation refute, loop invariant using `¬prefix-guard`, prior assignment
 running before an exit.
+
+## Phase 49b (Slice B) — Early-return in loop body  *(shipped)*
+
+Slice A handled prefix exits; Slice B handles **early-returns INSIDE the loop body**. This
+closes the second half of the original Slice B sizing and lets `is_prime` port verbatim:
+
+```groovy
+@Requires({ num >= 0 })
+static int isPrime(int num) {
+    if (num <= 1) return 0                      // ← Slice A (prefix exits)
+    if (num <= 3) return 1
+    if (num % 2 == 0 || num % 3 == 0) return 0
+    int i = 5
+    @Invariant({ i >= 5 })
+    while (i * i <= num) {
+        if (num % i == 0 || num % (i + 2) == 0) return 0   // ← Slice B (in-body exit)
+        i = i + 6
+    }
+    return 1
+}
+```
+
+**The shape**: same `if (cond) return e;` (no else, then-block a single return) as
+Slice A, recognised at the top level of the loop body.
+
+**The verification has three parts**:
+
+1. **Preservation / progress on the no-exit-fired path.** Rather than calling
+   `LoopEncoder.symExec(spec.body, …)` directly, a new `symExecBodyWithExits` walks the
+   body's top-level statements: an early-exit `if` asserts `¬guard` (we didn't take this
+   exit); everything else defers to the existing `LoopEncoder.symExec` (Phase 45c
+   snapshot/restore for non-exit ifs is preserved). At the end of the body walk, the
+   invariant is checked / variant decrease is asserted as before. The interleaving keeps
+   `¬guard` assertions consistent with the state at the point each guard is evaluated.
+
+2. **Per-exit `@Ensures` check.** `checkEarlyExit` gets a new `region == 'inBody'`
+   branch. Critically — and the bug that nearly shipped — the **prefix is NOT
+   sym-exec'd** for in-body exits: the loop invariant abstracts the post-prefix state.
+   Sym-exec'ing the prefix would over-constrain values (e.g. binding `i = 0` from
+   `int i = 0` in the prefix, then asserting `i == 5` in an in-body exit's guard, would
+   make the assertion set UNSAT and vacuously verify any postcondition). The correct
+   shape: assume invariant ∧ loop-guard, walk body up to this exit interleaving
+   `¬each-prior-in-body-guard` with sym-exec of non-exit body statements, then assume
+   this exit's guard and bind `result`.
+
+3. **`checkUse` unchanged**. In-body exits exit the *method*, not the loop. The natural
+   post-loop path (`invariant ∧ ¬loop-guard ∧ suffix`) doesn't need to know about them.
+
+**The bug worth noting in the design diary**: shipping point 2 incorrectly with the
+prefix sym-exec'd caused the soundness-violation test ("in-body return of `-1` against
+`@Ensures({ result >= 0 })`") to *pass* (vacuously), not refute. The diagnostic — same
+test refuting cleanly after removing the prefix walk — is what surfaced the issue. Worth
+remembering whenever a checker adds new path-discovery: vacuous verification is the
+quiet failure mode.
+
+**Co-shipped tests** (4): single in-body early-return, postcondition-violation refute,
+preservation on the no-exit body path (find-first-negative-index shape), multiple
+stacked in-body returns.
+
+**Still deferred**: suffix exits (the original Slice B's other half), and in-body
+returns nested inside other if-branches or for-loops. The nested form would need the
+partition logic to recurse, which adds complexity for a relatively rare shape.
 
 ## Non-goals
 

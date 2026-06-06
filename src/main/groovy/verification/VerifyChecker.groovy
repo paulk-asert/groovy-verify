@@ -2817,7 +2817,8 @@ class VerifyChecker extends TypeCheckingExtension {
         Expression result
         List<Statement> priorStmts
         List<Expression> priorGuards
-        boolean beforeLoop
+        boolean beforeLoop    // legacy: true for prefix, false otherwise (kept for Slice A code)
+        String region         // 'prefix' | 'inBody' (Slice B) — 'suffix' deferred
         Statement node
     }
 
@@ -2850,8 +2851,15 @@ class VerifyChecker extends TypeCheckingExtension {
         // at the right point in the suffix walk; the existing {@code LoopEncoder.resultExpr}
         // will reject return-shaped if-statements with its standard "unsupported statement"
         // diagnostic, which is the right honest-skip behaviour for Slice A's scope).
-        site.prefix = partitionEarlyExits(site.originalPrefix, true, site.earlyExits)
+        site.prefix = partitionEarlyExits(site.originalPrefix, 'prefix', site.earlyExits)
         site.suffix = new ArrayList<Statement>(site.originalSuffix)
+        // Phase 49b (Slice B) — partition the loop body's top-level statements similarly,
+        // collecting in-body early-exits into the same {@code earlyExits} list with region
+        // {@code 'inBody'}. The body's preservation/progress walks then interleave
+        // {@code ¬guard} for each exit (handled by {@link #symExecBodyWithExits}).
+        if (site.spec.body != null) {
+            partitionEarlyExits(site.spec.body, 'inBody', site.earlyExits)
+        }
         return site
     }
 
@@ -2864,7 +2872,7 @@ class VerifyChecker extends TypeCheckingExtension {
      * don't end with a return) stay in the region as ordinary statements, and the existing
      * {@code LoopEncoder.symExec} path-fact handling (Phase 45c) covers them.
      */
-    private static List<Statement> partitionEarlyExits(List<Statement> stmts, boolean beforeLoop,
+    private static List<Statement> partitionEarlyExits(List<Statement> stmts, String region,
                                                        List<EarlyExit> out) {
         List<Statement> kept = new ArrayList<Statement>()
         List<Expression> priorGuards = new ArrayList<Expression>()
@@ -2877,7 +2885,8 @@ class VerifyChecker extends TypeCheckingExtension {
                 ex.result = returnExpr
                 ex.priorStmts = new ArrayList<Statement>(kept)
                 ex.priorGuards = new ArrayList<Expression>(priorGuards)
-                ex.beforeLoop = beforeLoop
+                ex.beforeLoop = (region == 'prefix')
+                ex.region = region
                 ex.node = st
                 out.add(ex)
                 priorGuards.add(ifs.booleanExpression)
@@ -2969,31 +2978,36 @@ class VerifyChecker extends TypeCheckingExtension {
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
-            if (ex.beforeLoop) {
+            if (ex.region == 'prefix') {
                 // Assume each earlier prefix-exit's guard is false (we got here, not there).
                 for (Expression g : ex.priorGuards) {
                     Object gh = enc.translate(g)
                     if (gh != null) s.assertExpr(s.not(gh))
                 }
                 LoopEncoder.symExec(ex.priorStmts, enc, s)
-            } else {
-                // Full prefix runs (no prefix exit taken), then the loop completes, then the
-                // suffix priors before this exit. Loop's effect is captured by assuming the
-                // invariant and ¬guard at the post-loop point.
-                for (EarlyExit pe : site.earlyExits) {
-                    if (pe.beforeLoop) {
-                        Object gh = enc.translate(pe.guard)
+            } else if (ex.region == 'inBody') {
+                // Phase 49b — in-body exit. The exit fires inside *some* iteration: not
+                // necessarily the first. The state at body-entry is whatever satisfies the
+                // invariant — NOT the post-prefix state (the invariant is exactly the
+                // abstraction layer that hides "how many iterations ran"). Mirrors the
+                // existing checkPreservation / checkProgress shape.
+                s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+                s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+                // Walk the body up to ex.node, interleaving ¬each-prior-in-body-guard with
+                // sym-exec of non-exit body statements:
+                for (Statement st : site.spec.body) {
+                    if (st === ex.node) break
+                    Expression retExpr = earlyExitReturnFor(st)
+                    if (retExpr != null) {
+                        Object gh = enc.translate(((IfStatement) st).booleanExpression)
                         if (gh != null) s.assertExpr(s.not(gh))
+                    } else {
+                        LoopEncoder.symExec([st] as List<Statement>, enc, s)
                     }
                 }
-                LoopEncoder.symExec(site.prefix, enc, s)
-                s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
-                s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
-                for (Expression g : ex.priorGuards) {
-                    Object gh = enc.translate(g)
-                    if (gh != null) s.assertExpr(s.not(gh))
-                }
-                LoopEncoder.symExec(ex.priorStmts, enc, s)
+            } else {
+                // 'suffix' region — deferred. Honest skip.
+                return
             }
             // Assume the exit's own guard (we did take this exit).
             Object guardH = enc.translate(ex.guard)
@@ -3109,7 +3123,10 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
-    /** Preservation: invariant ∧ guard ∧ class invariants ∧ one body iteration ⇒ invariant still holds. */
+    /** Preservation: invariant ∧ guard ∧ class invariants ∧ one body iteration ⇒ invariant still holds.
+     *  Phase 49b — when the body has in-body early-exits, walk it interleaving sym-exec of
+     *  non-exit statements with {@code ¬each-in-body-guard} (the preservation check fires
+     *  only on the "no early-exit taken" path; each exit's @Ensures is verified separately). */
     private void checkPreservation(MethodNode node, LoopSite site) {
         SmtSession s = backend.session()
         try {
@@ -3117,7 +3134,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
             assumeClassInvariants(s, enc)
-            LoopEncoder.symExec(site.spec.body, enc, s)
+            symExecBodyWithExits(site, enc, s)
             // Re-translating the invariant reads the post-body bindings → inv'.
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
             CheckResult r = shown(s.check())
@@ -3128,7 +3145,9 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
-    /** Progress: invariant ∧ guard ∧ class invariants ⇒ the variant strictly decreases and stays ≥ 0. */
+    /** Progress: invariant ∧ guard ∧ class invariants ⇒ the variant strictly decreases and stays ≥ 0.
+     *  Phase 49b — same body-walk treatment as preservation: progress is checked on the
+     *  "no early-exit taken" path. */
     private void checkProgress(MethodNode node, LoopSite site) {
         SmtSession s = backend.session()
         try {
@@ -3137,7 +3156,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
             assumeClassInvariants(s, enc)
             Object oldV = LoopEncoder.tr(enc, site.spec.variant, "variant")
-            LoopEncoder.symExec(site.spec.body, enc, s)
+            symExecBodyWithExits(site, enc, s)
             Object newV = LoopEncoder.tr(enc, site.spec.variant, "variant")
             s.assertExpr(s.not(s.and([s.lt(newV, oldV), s.ge(newV, s.intLit(0L))])))
             CheckResult r = shown(s.check())
@@ -3146,6 +3165,26 @@ class VerifyChecker extends TypeCheckingExtension {
                     Reporter.formatLoopProgress(node.name, site.spec.variant.text, r), site.loopStmt)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /**
+     * Phase 49b — walk the loop body's top-level statements, sym-executing each non-exit
+     * via {@link LoopEncoder#symExec} and asserting {@code ¬guard} for each in-body
+     * early-exit if-statement (we're on the "no exit fired" path here). The interleaving
+     * keeps the guard's variable bindings consistent with whatever prior body statements
+     * have done.
+     */
+    private void symExecBodyWithExits(LoopSite site, Encoder enc, SmtSession s) {
+        for (Statement st : site.spec.body) {
+            Expression retExpr = earlyExitReturnFor(st)
+            if (retExpr != null) {
+                IfStatement ifs = (IfStatement) st
+                Object g = enc.translate(ifs.booleanExpression)
+                if (g != null) s.assertExpr(s.not(g))
+            } else {
+                LoopEncoder.symExec([st] as List<Statement>, enc, s)
+            }
+        }
     }
 
     /** Use: precondition ∧ class invariants ∧ invariant ∧ ¬guard ∧ suffix ⇒ postcondition. */
