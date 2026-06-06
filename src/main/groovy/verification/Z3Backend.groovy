@@ -206,6 +206,18 @@ class Z3Session implements SmtSession {
             solver.add((BoolExpr) ctx.mkNot(ctx.mkEq(v, prior)))
         }
         bucket.add(v)
+        // Phase 46b — pin the literal's length to its Java {@code String.length()} for String-sorted
+        // mints. This is the only fact about the literal's content the encoder can name today
+        // (charAt is deferred behind Z3 string theory); together with the session-level
+        // non-negativity and prefix/suffix-length axioms, it lets {@code "hello".length() == 5}
+        // and {@code s.startsWith("hello") ⟹ s.length() >= 5} both verify.
+        if (sortName == 'String') {
+            ensureStringAxiomsAsserted()
+            BoolExpr pinLen = ctx.mkEq(ctx.mkApp(strLengthFn, v),
+                ctx.mkInt((long) literalKey.length()))
+            solver.add(pinLen)
+            assertedExprs.add(pinLen)
+        }
         v
     }
 
@@ -343,7 +355,10 @@ class Z3Session implements SmtSession {
     private FuncDecl startsWithFn
     private FuncDecl endsWithFn
     private FuncDecl containsSubFn
-    private FuncDecl isEmptyStrFn
+    /** Phase 46b — string length oracle, lazily declared. */
+    private FuncDecl strLengthFn
+    /** Phase 46c — session-level axioms asserted exactly once at first use of any string op. */
+    private boolean stringAxiomsAsserted = false
 
     private FuncDecl ensureStrPred2(FuncDecl current, String name) {
         if (current != null) return current
@@ -351,31 +366,97 @@ class Z3Session implements SmtSession {
         ctx.mkFuncDecl(name, [strSort, strSort] as Sort[], ctx.getBoolSort())
     }
 
+    /** Phase 46b — get-or-declare the string length function and ensure session axioms exist. */
+    private FuncDecl ensureStrLength() {
+        if (strLengthFn != null) return strLengthFn
+        Sort strSort = (Sort) declareSort('String')
+        strLengthFn = ctx.mkFuncDecl('strLength$', [strSort] as Sort[], ctx.getIntSort())
+        strLengthFn
+    }
+
+    /**
+     * Phase 46c — assert the universally-quantified string axioms once per session, lazily on
+     * first use of any string op. Each axiom carries a single-{@code mkPattern} trigger so Z3
+     * only instantiates on ground terms that already appear in the user's proof — no blind-fire
+     * explosion across the Herbrand universe.
+     */
+    private void ensureStringAxiomsAsserted() {
+        if (stringAxiomsAsserted) return
+        stringAxiomsAsserted = true
+        Sort strSort = (Sort) declareSort('String')
+        FuncDecl len = ensureStrLength()
+        if (startsWithFn == null) startsWithFn = ensureStrPred2(startsWithFn, 'startsWith$')
+        if (endsWithFn   == null) endsWithFn   = ensureStrPred2(endsWithFn,   'endsWith$')
+
+        // Axiom 1: ∀s. length(s) >= 0. The trigger is the length term itself, so Z3 instantiates
+        // exactly for the strings whose length the user (or the encoder) actually mentions.
+        Expr q1 = ctx.mkConst('q$strLen', strSort)
+        Expr lenQ1 = ctx.mkApp(len, q1)
+        BoolExpr nonNeg = ctx.mkGe((ArithExpr) lenQ1, (ArithExpr) ctx.mkInt(0))
+        addAxiom(ctx.mkForall([q1] as Expr[], nonNeg, 1,
+            [ctx.mkPattern(lenQ1)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+
+        // Axiom 2: ∀s,p. startsWith(s, p) → length(p) <= length(s). The contrapositive — the
+        // load-bearing direction — is "length(p) > length(s) ⟹ ¬startsWith(s, p)": a prefix
+        // longer than the string can't match.
+        Expr q2s = ctx.mkConst('q$swS', strSort)
+        Expr q2p = ctx.mkConst('q$swP', strSort)
+        BoolExpr sw = (BoolExpr) ctx.mkApp(startsWithFn, q2s, q2p)
+        Expr lenS2 = ctx.mkApp(len, q2s)
+        Expr lenP2 = ctx.mkApp(len, q2p)
+        BoolExpr bound2 = ctx.mkImplies(sw,
+            ctx.mkLe((ArithExpr) lenP2, (ArithExpr) lenS2))
+        addAxiom(ctx.mkForall([q2s, q2p] as Expr[], bound2, 1,
+            [ctx.mkPattern(sw)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+
+        // Axiom 3: ∀s,p. endsWith(s, p) → length(p) <= length(s). Same shape as axiom 2 for the
+        // suffix predicate.
+        Expr q3s = ctx.mkConst('q$ewS', strSort)
+        Expr q3p = ctx.mkConst('q$ewP', strSort)
+        BoolExpr ew = (BoolExpr) ctx.mkApp(endsWithFn, q3s, q3p)
+        Expr lenS3 = ctx.mkApp(len, q3s)
+        Expr lenP3 = ctx.mkApp(len, q3p)
+        BoolExpr bound3 = ctx.mkImplies(ew,
+            ctx.mkLe((ArithExpr) lenP3, (ArithExpr) lenS3))
+        addAxiom(ctx.mkForall([q3s, q3p] as Expr[], bound3, 1,
+            [ctx.mkPattern(ew)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+    }
+
+    private void addAxiom(Object ax) {
+        BoolExpr be = (BoolExpr) ax
+        solver.add(be)
+        assertedExprs.add(be)
+    }
+
     @Override
     Object stringStartsWith(Object s, Object prefix) {
         startsWithFn = ensureStrPred2(startsWithFn, 'startsWith$')
+        ensureStringAxiomsAsserted()
         ctx.mkApp(startsWithFn, (Expr) s, (Expr) prefix)
     }
 
     @Override
     Object stringEndsWith(Object s, Object suffix) {
         endsWithFn = ensureStrPred2(endsWithFn, 'endsWith$')
+        ensureStringAxiomsAsserted()
         ctx.mkApp(endsWithFn, (Expr) s, (Expr) suffix)
     }
 
     @Override
     Object stringContainsSub(Object s, Object sub) {
         containsSubFn = ensureStrPred2(containsSubFn, 'strContains$')
+        ensureStringAxiomsAsserted()
         ctx.mkApp(containsSubFn, (Expr) s, (Expr) sub)
     }
 
     @Override
-    Object stringIsEmpty(Object s) {
-        if (isEmptyStrFn == null) {
-            Sort strSort = (Sort) declareSort('String')
-            isEmptyStrFn = ctx.mkFuncDecl('strIsEmpty$', [strSort] as Sort[], ctx.getBoolSort())
-        }
-        ctx.mkApp(isEmptyStrFn, (Expr) s)
+    Object stringLength(Object s) {
+        ensureStrLength()
+        ensureStringAxiomsAsserted()
+        ctx.mkApp(strLengthFn, (Expr) s)
     }
 
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }

@@ -2205,7 +2205,14 @@ class Encoder {
             Object strSort = session.declareSort('String')
             Object sH = translateInSort(recv, strSort)
             if (sH == null) return null
-            if (m == 'isEmpty' && args.isEmpty()) return session.stringIsEmpty(sH)
+            // Phase 46b — {@code s.length()} and its GDK alias {@code s.size()} route to the
+            // length oracle. {@code s.isEmpty()} lowers to {@code length(s) == 0} — replacing
+            // the Phase-46a uninterpreted predicate with a length-coupled one, so
+            // {@code s.isEmpty()} and {@code s.length() == 0} stay equivalent for the solver.
+            if ((m == 'length' || m == 'size') && args.isEmpty()) return session.stringLength(sH)
+            if (m == 'isEmpty' && args.isEmpty()) {
+                return session.eq(session.stringLength(sH), session.intLit(0L))
+            }
             if (args.size() == 1 && (m == 'startsWith' || m == 'endsWith' || m == 'contains')) {
                 Object pH = translateInSort(args.get(0), strSort)
                 if (pH == null) return null

@@ -985,12 +985,13 @@ class VerifyHarness {
                             return s
                         }
                     }''')],
-        // Step 5 — an invariant whose body is outside the encoder fragment (a String method call
-        // on a non-numeric receiver) is dropped with a single "Skipped class invariant" diagnostic
-        // at the method level. Verification continues for everything else.
+        // Step 5 — an invariant whose body is outside the encoder fragment (a String charAt call —
+        // character-content reasoning is deferred behind Z3 string theory, post-Phase-46c) is
+        // dropped with a single "Skipped class invariant" diagnostic at the method level.
+        // Verification continues for everything else.
         [group: 'P15a class-invariant', name: 'unmodelled invariant skipped',
          expect: 'Skipped class invariant',
-         src: tc('''@groovy.contracts.Invariant({ name.length() > 0 })
+         src: tc('''@groovy.contracts.Invariant({ name.charAt(0) == 65 })
                     class C { String name
                         int n() { 0 }
                     }''')],
@@ -1763,6 +1764,73 @@ class VerifyHarness {
                         @Requires({ xs != null && xs.size() > 0 && xs[0] != null && xs[0].startsWith("foo") })
                         @Ensures({ result == 1 })
                         static int f(List<String> xs) { xs[0].startsWith("foo") ? 1 : 0 }
+                    }''')],
+
+        // ---------- Phase 46b: string length oracle with literal pinning ----------
+        // Literal pinning: "hello".length() == 5 folds via the mint-time pin.
+        [group: 'P46b string length', name: 'literal length pinned', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f() { "hello".length() }
+                    }''')],
+        // GDK alias size() on a String routes to length too — Groovy treats them as synonyms.
+        [group: 'P46b string length', name: 'String size() == length()', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f() { "hello".size() }
+                    }''')],
+        // Wrong length refutes — the pinning is exact.
+        [group: 'P46b string length', name: 'wrong literal length refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 4 })
+                        static int f() { "hello".length() }
+                    }''')],
+        // Length on a String parameter is non-negative (axiom 1) — even with no other constraint,
+        // s.length() >= 0 holds. This is the load-bearing axiom for length-based reasoning.
+        [group: 'P46c string axioms', name: 'string length non-negativity', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result >= 0 })
+                        static int f(String s) { s.length() }
+                    }''')],
+        // s.isEmpty() lowered to length(s) == 0 — both expressions resolve to the same term.
+        [group: 'P46b string length', name: 'isEmpty <=> length == 0', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.isEmpty() })
+                        @Ensures({ result == 0 })
+                        static int f(String s) { s.length() }
+                    }''')],
+        // Length-prefix bound (axiom 2): s.startsWith("hello") implies s.length() >= 5.
+        [group: 'P46c string axioms', name: 'startsWith implies length bound', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.startsWith("hello") })
+                        @Ensures({ result >= 5 })
+                        static int f(String s) { s.length() }
+                    }''')],
+        // Headline application of axiom 2: a string of length 4 *cannot* start with "hello" —
+        // the verifier proves the negation outright, not just leaves it open.
+        [group: 'P46c string axioms', name: 'too-short string never starts with longer prefix', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() == 4 })
+                        @Ensures({ !result })
+                        static boolean f(String s) { s.startsWith("hello") }
+                    }''')],
+        // Soundness: claiming the opposite (a 4-char string starts with "hello") is refutable —
+        // the axiom rules it out, so trying to ensure it succeeds is unverifiable.
+        [group: 'P46c string axioms', name: 'too-short string cannot be claimed to start with longer prefix',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() == 4 })
+                        @Ensures({ result })
+                        static boolean f(String s) { s.startsWith("hello") }
+                    }''')],
+        // Length-suffix bound (axiom 3): mirror of axiom 2 for endsWith.
+        [group: 'P46c string axioms', name: 'endsWith implies length bound', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.endsWith("world") })
+                        @Ensures({ result >= 5 })
+                        static int f(String s) { s.length() }
                     }''')],
 
         // ---------- HumanEval port — filter_by_prefix (Verus task 029) ----------

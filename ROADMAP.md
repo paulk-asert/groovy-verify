@@ -2784,6 +2784,77 @@ sort from the start.
   `xs[i] != null` (as the `filter_by_prefix` port does). Same shape as Verus' `Vec<String>`
   (non-nullable elements), so the precondition is a faithful translation.
 
+## Phase 46b — String length oracle, literal pinning  *(shipped)*
+
+Phase 46a left string predicates uninterpreted: `s.startsWith(p)` had a value, but no tie
+to anything else about `s`. Phase 46b adds the length oracle and pins it precisely at
+literals, lifting reasoning to "if `s.startsWith("hello")` then `s.length() >= 5`."
+
+**The shipped slice.**
+
+- **`SmtSession.stringLength(s) → Int`** — an uninterpreted `(String!Sort) → Int` declared
+  on first use as `strLength$`. Two applications with the same `s` share the term.
+- **Literal pinning at the backend's `litOfSort` mint site.** When a String-sorted constant
+  is interned (e.g. `"hello"` minted as `String!val_hello`), the backend also asserts
+  `strLength$($lit) == 5` — exact JVM `String.length()` count. This is the only fact about a
+  literal's content the encoder can name today (charAt is deferred behind Z3 string theory),
+  and it composes cleanly with the Phase-46c axioms.
+- **Encoder dispatch.** `s.length()` and its GDK alias `s.size()` on String-typed receivers
+  route to `stringLength`. `s.isEmpty()` is now lowered to `length(s) == 0` — the
+  Phase-46a uninterpreted predicate is retired, so `s.isEmpty()` and `s.length() == 0`
+  resolve to the same term and the verifier sees them as syntactically equivalent.
+
+**What this unlocks (in concert with Phase 46c below):**
+
+- `"hello".length() == 5` folds at the mint site — proved by the literal pin.
+- `s.length() >= 0` for any String — from the Phase 46c non-negativity axiom.
+- The cross-coupling story: length and `startsWith`/`endsWith` now reason about each other.
+
+## Phase 46c — Light string axioms  *(shipped)*
+
+Three universally-quantified facts asserted exactly once per session, gated by a
+`stringAxiomsAsserted` flag and lazily on first use of any string op. Each carries a
+single-trigger `mkPattern` so Z3 instantiates only on ground terms the user's proof already
+mentions — no blind-fire across the Herbrand universe.
+
+- **Axiom 1 — non-negativity:** `∀s. strLength$(s) >= 0`.
+  Trigger: `strLength$(s)`.
+  Without this, Z3 could (and would) pick a model where some `s.length() == -7` to disprove
+  a postcondition.
+- **Axiom 2 — startsWith length bound:** `∀s,p. startsWith$(s, p) ⟹ strLength$(p) <= strLength$(s)`.
+  Trigger: `startsWith$(s, p)`.
+  Load-bearing contrapositive: `length(p) > length(s)` rules out `startsWith(s, p)` — a
+  prefix longer than the string can't match. This is the axiom that lets a 4-char string
+  *provably never* start with `"hello"`.
+- **Axiom 3 — endsWith length bound:** `∀s,p. endsWith$(s, p) ⟹ strLength$(p) <= strLength$(s)`.
+  Trigger: `endsWith$(s, p)`.
+  Suffix mirror of axiom 2.
+
+**Demo of the composite reasoning shipped with the tests:**
+
+```groovy
+// Axiom 2 used positively — proves the *negation* of startsWith outright, not just leaves it open.
+@Requires({ s != null && s.length() == 4 })
+@Ensures({ !result })
+static boolean cannotStartWith(String s) { s.startsWith("hello") }   // verifies ✅
+```
+
+**Known limits.**
+
+- **No `contains`/`isEmpty` length axiom.** `s.contains(sub) ⟹ length(sub) <= length(s)`
+  is true and would close an obvious gap, but Z3's quantifier instantiation favours a
+  smaller axiom set; if a real use surfaces, add it.
+- **No reflexivity (`startsWith(s, s) = true`) or empty-prefix (`startsWith(s, "")`) axioms.**
+  Both are natural facts but would add another quantifier; not load-bearing for the
+  shipped HumanEval-029 port.
+- **No relation between predicates.** `s.startsWith(s)` doesn't imply `s.endsWith(s)`,
+  and `s.startsWith(p) ∧ s.endsWith(p)` doesn't tell you anything about `length(p)` vs
+  `length(s)/2`. Genuinely structural facts about substrings are deferred behind Z3 string
+  theory.
+- **`charAt` still isn't reachable.** Character-content reasoning needs either a per-position
+  `charAt(s, i): Int` oracle with literal pinning (cheap follow-on) or Z3's native string
+  theory (a phase of its own).
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

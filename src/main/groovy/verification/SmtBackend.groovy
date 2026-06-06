@@ -188,8 +188,18 @@ interface SmtSession extends AutoCloseable {
     Object stringStartsWith(Object s, Object prefix)
     Object stringEndsWith(Object s, Object suffix)
     Object stringContainsSub(Object s, Object sub)
-    /** Phase 46a — {@code s.isEmpty()} on a String-typed receiver, as a unary uninterpreted Bool. */
-    Object stringIsEmpty(Object s)
+
+    /**
+     * Phase 46b — string length oracle: an uninterpreted {@code (String!Sort) -> Int}. Literal
+     * pinning happens at the backend's {@code litOfSort} mint site — each new String constant
+     * asserts {@code length($lit) == lit.length()} so the model has the right length for known
+     * literals. Variables only get the non-negativity bound (from the Phase-46c session-level
+     * axiom); their length is otherwise unconstrained until tied to a literal or another length
+     * via the contract. The encoder lowers both {@code s.length()} and the GDK alias
+     * {@code s.size()} to this; {@code s.isEmpty()} lowers to {@code length(s) == 0}, replacing
+     * the Phase-46a uninterpreted predicate with a length-coupled one.
+     */
+    Object stringLength(Object s)
 
     /**
      * A fresh integer constant to be universally quantified over by {@link
