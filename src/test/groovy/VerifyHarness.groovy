@@ -2075,14 +2075,21 @@ class VerifyHarness {
                         @CheckOverflow
                         static int incr(int n) { n + 1 }
                     }''')],
-        // Bound the input explicitly to make the increment safe. We write the literal value
-        // rather than {@code Integer.MAX_VALUE} because the verifier doesn't currently fold the
-        // JDK constant (a polish item; see Phase 44 known limits).
-        [group: 'P44 overflow', name: 'increment with upper bound verifies', ok: true,
+        // Bound the input to make the increment safe. {@code Integer.MAX_VALUE} folds to the
+        // literal 2147483647 via the JDK-range-constant peephole, so users can write the natural
+        // spelling rather than the magic number.
+        [group: 'P44 overflow', name: 'increment with Integer.MAX_VALUE bound verifies', ok: true,
          src: tc('''class C {
                         @CheckOverflow
-                        @Requires({ n < 2147483647 })
+                        @Requires({ n < Integer.MAX_VALUE })
                         static int incr(int n) { n + 1 }
+                    }''')],
+        // Same for Integer.MIN_VALUE on the negation side.
+        [group: 'P44 overflow', name: 'subtraction with Integer.MIN_VALUE bound verifies', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ a > Integer.MIN_VALUE && b == 1 })
+                        static int dec(int a, int b) { a - b }
                     }''')],
         // Subtraction overflow: a - b could underflow Integer.MIN_VALUE.
         [group: 'P44 overflow', name: 'unguarded subtraction refutes',

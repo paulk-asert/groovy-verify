@@ -275,7 +275,7 @@ Possible ArithmeticException: addition overflows 32-bit signed range
     fails on: incr(2147483647)
 ```
 
-Add `@Requires({ n < 2147483647 })` and it verifies. Sub-expression aware: `(a + 1) * (a + 1)`
+Add `@Requires({ n < Integer.MAX_VALUE })` and it verifies. Sub-expression aware: `(a + 1) * (a + 1)`
 generates an obligation for the inner add and one for the outer multiply, so an unguarded
 square-of-successor refutes at the multiplication step with a sqrt(INT_MAX)-territory
 counterexample.

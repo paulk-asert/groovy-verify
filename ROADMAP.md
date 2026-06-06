@@ -2588,10 +2588,11 @@ scoping (only on selected methods, regardless of class).
 - **Division edge cases.** {@code INT_MIN / -1} and {@code -INT_MIN} (unary minus on INT_MIN)
   overflow at runtime but aren't yet checked. Phase 44b would add these — small, ~1 day; not
   bundled here because the {@code +}/{@code -}/{@code *} cases are the headline.
-- **`Integer.MAX_VALUE` / `Integer.MIN_VALUE` constants.** A {@code @Requires({ n < Integer.MAX_VALUE })}
-  doesn't fold the constant (the verifier doesn't recognise the PropertyExpression). Users write
-  the literal {@code 2147483647}. A small {@code tryFoldConstant} extension would close this; not
-  pursued today.
+- **JDK boxed-range constants** (`Integer.MAX_VALUE`/`MIN_VALUE`, `Long`/`Short`/`Byte`/`Character`
+  variants) fold to their literal values via {@code tryFoldJdkRangeConstant} in the
+  {@link PropertyExpression} dispatch, so {@code @Requires({ n < Integer.MAX_VALUE })} works as
+  written. Match is by simple class-name on a {@link ClassExpression} (or pre-resolution
+  {@link VariableExpression}), so fully qualified and unqualified spellings both fold.
 - **Cast/conversion overflow.** {@code (byte) intVal}, {@code (int) longVal} need explicit
   truncation modelling — not in the fragment regardless of {@code @CheckOverflow}.
 - **Always-on mode.** Some safety-critical projects want overflow checked everywhere, no

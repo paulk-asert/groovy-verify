@@ -1414,6 +1414,13 @@ class Encoder {
             PropertyExpression pe = (PropertyExpression) expr
             String prop = pe.propertyAsString
             Expression obj = pe.objectExpression
+            // Phase 44 polish — JDK boxed-numeric range constants fold to their literal values, so a
+            // user can write {@code @Requires({ n < Integer.MAX_VALUE })} (or the {@code Long}
+            // equivalents) and the verifier sees the same literal a tighter explicit bound would
+            // give. Matched by simple-name on the receiver and property string; Long values exceed
+            // 32-bit range but our int model is mathematical so a 64-bit literal is fine to assert.
+            Object jdkConst = tryFoldJdkRangeConstant(obj, prop)
+            if (jdkConst != null) return jdkConst
             // old.field -> the field's *entry* snapshot variable (groovy-contracts' `old` map). The
             // snapshot is pinned to the entry value before the body's writes (see VerifyChecker).
             if (isOldReceiver(obj)) {
@@ -1489,6 +1496,45 @@ class Encoder {
      * arithmetic matches Groovy's semantics. Returns null if it doesn't fold to an integral
      * or boolean constant (the same value shapes {@link #translate} accepts as literals).
      */
+    /**
+     * Phase 44 polish — recognise the JDK boxed-numeric range constants
+     * ({@code Integer.MAX_VALUE}/{@code MIN_VALUE}, {@code Long.MAX_VALUE}/{@code MIN_VALUE},
+     * {@code Short}/{@code Byte}/{@code Character} variants) and fold each to its literal value.
+     * Returns null when the property doesn't match — the caller falls through to the existing
+     * PropertyExpression dispatch. The receiver match is by simple class-name on a
+     * {@link ClassExpression} so the contract can be written {@code Integer.MAX_VALUE}
+     * unqualified (the imported boxed-name) or fully qualified.
+     */
+    private Object tryFoldJdkRangeConstant(Expression obj, String prop) {
+        if (obj == null || prop == null) return null
+        String typeName = null
+        if (obj instanceof ClassExpression) {
+            typeName = ((ClassExpression) obj).type?.nameWithoutPackage
+        } else if (obj instanceof VariableExpression) {
+            // {@code Integer.MAX_VALUE} sometimes parses as VariableExpression('Integer') before
+            // type resolution; accept the bare class-name spelling too.
+            typeName = ((VariableExpression) obj).name
+        }
+        if (typeName == null) return null
+        if (typeName == 'Integer') {
+            if (prop == 'MAX_VALUE') return session.intLit(2147483647L)
+            if (prop == 'MIN_VALUE') return session.intLit(-2147483648L)
+        } else if (typeName == 'Long') {
+            if (prop == 'MAX_VALUE') return session.intLit(Long.MAX_VALUE)
+            if (prop == 'MIN_VALUE') return session.intLit(Long.MIN_VALUE)
+        } else if (typeName == 'Short') {
+            if (prop == 'MAX_VALUE') return session.intLit(32767L)
+            if (prop == 'MIN_VALUE') return session.intLit(-32768L)
+        } else if (typeName == 'Byte') {
+            if (prop == 'MAX_VALUE') return session.intLit(127L)
+            if (prop == 'MIN_VALUE') return session.intLit(-128L)
+        } else if (typeName == 'Character') {
+            if (prop == 'MAX_VALUE') return session.intLit(65535L)
+            if (prop == 'MIN_VALUE') return session.intLit(0L)
+        }
+        null
+    }
+
     private Object tryFoldConstant(Expression e) {
         Expression folded = ExpressionUtils.transformInlineConstants(e, ClassHelper.int_TYPE)
         if (folded instanceof ConstantExpression) {
