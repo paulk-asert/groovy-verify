@@ -404,6 +404,33 @@ termination, and an `@Ensures` over the *returned list*'s size — the verifier 
 `result.size()` to the returned local's threaded size oracle so the postcondition resolves
 correctly. The Verus port of the same task has none of that — just the implementation.
 
+Task 039's inner `is_prime` — the canonical NIA-plus-control-flow benchmark — ports
+verbatim to the Verus source shape:
+
+```groovy
+@Requires({ num >= 0 })
+static int isPrime(int num) {
+    if (num <= 1) return 0
+    if (num <= 3) return 1
+    if (num % 2 == 0 || num % 3 == 0) return 0
+    int i = 5
+    @Invariant({ i >= 5 })
+    while (i * i <= num) {
+        if (num % i == 0 || num % (i + 2) == 0) return 0
+        i = i + 6
+    }
+    return 1
+}
+```
+
+Three previously-deferred capabilities compose in one method: **prefix early-returns**
+(Phase 49a) carry the trivial-input bailouts, the **NIA bound check `i * i <= num`**
+(Phase 48) replaces what used to be the Phase 8a opt-out cliff, the **in-body early-return**
+(Phase 49b) covers the "found a divisor → not prime" shortcut, and the loop invariant
+`i >= 5` discharges the divide-by-zero obligations on `num % i` and `num % (i + 2)`. The
+Verus original has no `@Ensures` (Verus checks implicit overflow); we add a sound
+`@Requires({ num >= 0 })` to keep the bound check honest.
+
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
 positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
 in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
