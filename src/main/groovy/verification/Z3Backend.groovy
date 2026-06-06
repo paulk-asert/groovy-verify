@@ -480,6 +480,137 @@ class Z3Session implements SmtSession {
         cachedAllChar
     }
 
+    @Override
+    Object reComplement(Object re) {
+        ctx.mkComplement((Expr) re)
+    }
+
+    @Override
+    Object reIntersect(Object a, Object b) {
+        com.microsoft.z3.ReExpr[] args = [(com.microsoft.z3.ReExpr) a, (com.microsoft.z3.ReExpr) b] as com.microsoft.z3.ReExpr[]
+        ctx.mkIntersect(args)
+    }
+
+    @Override
+    Object reLoop(Object re, int lo, int hi) {
+        ctx.mkLoop((Expr) re, lo, hi)
+    }
+
+    @Override
+    Object reLoopAtLeast(Object re, int lo) {
+        ctx.mkLoop((Expr) re, lo)
+    }
+
+    @Override
+    Object stringFromInt(Object n) {
+        ctx.intToString((Expr) n)
+    }
+
+    @Override
+    Object parseIntFromString(Object s) {
+        ctx.stringToInt((Expr) s)
+    }
+
+    /**
+     * Phase 47f — uninterpreted {@code replaceAll$} and {@code lastIndexOf$}, lazily declared
+     * with weak universally-quantified axioms on first use. Z3 has no native primitive for
+     * either; the uninterpreted form lets calls thread through proofs as opaque, with the
+     * axioms providing the minimal facts that aren't a semantic gamble.
+     */
+    private FuncDecl replaceAllFn
+    private FuncDecl lastIndexOfFn
+    private boolean replaceAllAxiomsAsserted = false
+    private boolean lastIndexOfAxiomsAsserted = false
+
+    private FuncDecl ensureReplaceAllFn() {
+        if (replaceAllFn != null) return replaceAllFn
+        Sort strSort = stringSort()
+        replaceAllFn = ctx.mkFuncDecl('replaceAll$',
+            [strSort, strSort, strSort] as Sort[], strSort)
+        replaceAllFn
+    }
+
+    private FuncDecl ensureLastIndexOfFn() {
+        if (lastIndexOfFn != null) return lastIndexOfFn
+        Sort strSort = stringSort()
+        lastIndexOfFn = ctx.mkFuncDecl('lastIndexOf$',
+            [strSort, strSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        lastIndexOfFn
+    }
+
+    private void ensureReplaceAllAxioms() {
+        if (replaceAllAxiomsAsserted) return
+        replaceAllAxiomsAsserted = true
+        FuncDecl fn = ensureReplaceAllFn()
+        Sort strSort = stringSort()
+        Expr s  = ctx.mkConst('q$raS', strSort)
+        Expr od = ctx.mkConst('q$raO', strSort)
+        Expr nw = ctx.mkConst('q$raN', strSort)
+        Expr appl = ctx.mkApp(fn, s, od, nw)
+        // Axiom: ¬contains(s, old) ⟹ replaceAll(s, old, new) == s. (When the target isn't
+        // present, the result is the input — the only fact we're sure about without primitives.)
+        BoolExpr noOccur = (BoolExpr) ctx.mkNot(ctx.mkContains((Expr) s, (Expr) od))
+        BoolExpr noOp = ctx.mkImplies(noOccur, ctx.mkEq(appl, s))
+        addAxiom(ctx.mkForall([s, od, nw] as Expr[], noOp, 1,
+            [ctx.mkPattern(appl)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+        // Axiom: length(old) == length(new) ⟹ length(replaceAll(s, old, new)) == length(s).
+        // (Single-character replace, the most common case.)
+        Expr lenOld = ctx.mkLength((Expr) od)
+        Expr lenNew = ctx.mkLength((Expr) nw)
+        Expr lenS   = ctx.mkLength((Expr) s)
+        Expr lenAppl = ctx.mkLength((Expr) appl)
+        BoolExpr sameLen = ctx.mkImplies(
+            ctx.mkEq(lenOld, lenNew),
+            ctx.mkEq(lenAppl, lenS))
+        addAxiom(ctx.mkForall([s, od, nw] as Expr[], sameLen, 1,
+            [ctx.mkPattern(appl)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+    }
+
+    private void ensureLastIndexOfAxioms() {
+        if (lastIndexOfAxiomsAsserted) return
+        lastIndexOfAxiomsAsserted = true
+        FuncDecl fn = ensureLastIndexOfFn()
+        Sort strSort = stringSort()
+        Expr s    = ctx.mkConst('q$liS', strSort)
+        Expr sub  = ctx.mkConst('q$liT', strSort)
+        Expr from = ctx.mkIntConst('q$liF')
+        Expr appl = ctx.mkApp(fn, s, sub, from)
+        // Axiom: lastIndexOf(s, sub, from) >= -1.
+        BoolExpr geMinus1 = ctx.mkGe((ArithExpr) appl, (ArithExpr) ctx.mkInt(-1))
+        addAxiom(ctx.mkForall([s, sub, from] as Expr[], geMinus1, 1,
+            [ctx.mkPattern(appl)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+        // Axiom: ¬contains(s, sub) ⟹ lastIndexOf(s, sub, from) == -1.
+        BoolExpr noOccur = (BoolExpr) ctx.mkNot(ctx.mkContains((Expr) s, (Expr) sub))
+        BoolExpr negOne = ctx.mkImplies(noOccur, ctx.mkEq(appl, ctx.mkInt(-1)))
+        addAxiom(ctx.mkForall([s, sub, from] as Expr[], negOne, 1,
+            [ctx.mkPattern(appl)] as Pattern[], (Expr[]) null,
+            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
+    }
+
+    /** Phase 47f — helper used by the axiom-emission paths above. Mirrors the pattern Phase
+     *  46c used before native theory retired its axioms — kept local since other paths no
+     *  longer need it. */
+    private void addAxiom(Object ax) {
+        BoolExpr be = (BoolExpr) ax
+        solver.add(be)
+        assertedExprs.add(be)
+    }
+
+    @Override
+    Object stringReplaceAll(Object s, Object oldSub, Object newSub) {
+        ensureReplaceAllAxioms()
+        ctx.mkApp(replaceAllFn, (Expr) s, (Expr) oldSub, (Expr) newSub)
+    }
+
+    @Override
+    Object stringLastIndexOf(Object s, Object sub, Object fromIndex) {
+        ensureLastIndexOfAxioms()
+        ctx.mkApp(lastIndexOfFn, (Expr) s, (Expr) sub, (Expr) fromIndex)
+    }
+
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
 
     @Override

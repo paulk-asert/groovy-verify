@@ -274,6 +274,61 @@ interface SmtSession extends AutoCloseable {
     Object reAllChar()
 
     /**
+     * Phase 47d — regex complement and intersection. {@code reIntersect(reAllChar, reComplement(re))}
+     * is the standard idiom for "any single character that doesn't match {@code re}", which is how
+     * negated character classes {@code [^…]} and the {@code \D} / {@code \W} / {@code \S} predefined
+     * classes are translated.
+     */
+    Object reComplement(Object re)
+    Object reIntersect(Object a, Object b)
+
+    /**
+     * Phase 47d — quantified-range regex. {@code reLoop(re, lo, hi)} matches {@code re} repeated
+     * between {@code lo} and {@code hi} times; {@code reLoopAtLeast(re, lo)} repeats at least
+     * {@code lo} times with no upper bound. The encoder lowers Groovy's {@code re{n,m}} /
+     * {@code re{n}} / {@code re{n,}} to these.
+     */
+    Object reLoop(Object re, int lo, int hi)
+    Object reLoopAtLeast(Object re, int lo)
+
+    /**
+     * Phase 47e — integer-to-string conversion ({@code str.from_int} in SMT-LIB). Z3's
+     * semantics: maps a non-negative integer to its decimal representation; maps a negative
+     * integer to the empty string. Java's {@code Integer.toString} returns {@code "-n"} for
+     * negative inputs — a known semantic gap. The encoder dispatches Java's
+     * {@code Integer.toString(n)} / {@code String.valueOf(n)} here; users who reason over
+     * negative inputs see refutes that surprise them. ROADMAP notes the gap.
+     */
+    Object stringFromInt(Object n)
+
+    /**
+     * Phase 47e — string-to-integer conversion ({@code str.to_int} in SMT-LIB). Z3's
+     * semantics: returns the integer value if the string is a sequence of decimal digits,
+     * else {@code -1}. Java's {@code Integer.parseInt} parses signs and throws on bad input.
+     * Another known semantic gap (signs, whitespace, non-decimal). The encoder dispatches
+     * {@code Integer.parseInt(s)} here.
+     */
+    Object parseIntFromString(Object s)
+
+    /**
+     * Phase 47f — {@code s.replaceAll(old, new)} as an uninterpreted {@code (String, String, String)
+     * -> String} pending Z3's {@code mkReplaceAll}. The session asserts weak axioms on first
+     * use: identity when {@code old} doesn't occur in {@code s}, and length-preservation when
+     * {@code old} and {@code new} have equal length. The encoder dispatches Groovy's
+     * {@code s.replaceAll(old, new)} here. Sound under-approximation: the verifier knows less
+     * than Z3 native would, but everything it does know is true.
+     */
+    Object stringReplaceAll(Object s, Object oldSub, Object newSub)
+
+    /**
+     * Phase 47f — {@code s.lastIndexOf(sub, fromIndex)} as an uninterpreted {@code (String, String,
+     * Int) -> Int} pending a Z3 primitive. Weak axioms on first use: result is {@code >= -1};
+     * result is {@code -1} when {@code sub} doesn't occur in {@code s}. The encoder dispatches
+     * Groovy's {@code s.lastIndexOf(sub)} with {@code fromIndex = length(s)} (Groovy default).
+     */
+    Object stringLastIndexOf(Object s, Object sub, Object fromIndex)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

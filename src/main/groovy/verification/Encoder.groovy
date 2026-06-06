@@ -316,10 +316,20 @@ class Encoder {
             // {@code concat}, and {@code replace} all return String, so a chained
             // {@code s.substring(1, 4).length()} or {@code s.replace("a", "b").length()}
             // resolves correctly through the string-receiver path.
-            if ((m == 'substring' || m == 'concat' || m == 'replace') &&
+            if ((m == 'substring' || m == 'concat' || m == 'replace' || m == 'replaceAll') &&
                 isStringReceiver(mc.objectExpression)) {
                 return true
             }
+            // Phase 47e — static int→string conversions also produce String values.
+            Expression mcRecv = mc.objectExpression
+            boolean isIntCls = (mcRecv instanceof VariableExpression && ((VariableExpression) mcRecv).name == 'Integer') ||
+                               (mcRecv instanceof PropertyExpression && ((PropertyExpression) mcRecv).propertyAsString == 'Integer') ||
+                               (mcRecv instanceof ClassExpression && ((ClassExpression) mcRecv).type?.nameWithoutPackage == 'Integer')
+            boolean isStrCls = (mcRecv instanceof VariableExpression && ((VariableExpression) mcRecv).name == 'String') ||
+                               (mcRecv instanceof PropertyExpression && ((PropertyExpression) mcRecv).propertyAsString == 'String') ||
+                               (mcRecv instanceof ClassExpression && ((ClassExpression) mcRecv).type?.nameWithoutPackage == 'String')
+            if (isIntCls && m == 'toString' && argList(mc).size() == 1) return true
+            if (isStrCls && m == 'valueOf' && argList(mc).size() == 1) return true
         }
         return false
     }
@@ -386,6 +396,42 @@ class Encoder {
             session.reToRe(session.litOfSort(strSort, s))
         }
 
+        /** Phase 47d — {@code \d} → range {@code '0'..'9'}. */
+        private Object reDigit() {
+            session.reRange(
+                session.litOfSort(strSort, '0'),
+                session.litOfSort(strSort, '9'))
+        }
+
+        /** Phase 47d — {@code \w} → {@code [a-zA-Z0-9_]}. */
+        private Object reWordChar() {
+            Object lower = session.reRange(session.litOfSort(strSort, 'a'), session.litOfSort(strSort, 'z'))
+            Object upper = session.reRange(session.litOfSort(strSort, 'A'), session.litOfSort(strSort, 'Z'))
+            Object digit = reDigit()
+            Object underscore = reLitStr('_')
+            session.reUnion(session.reUnion(session.reUnion(lower, upper), digit), underscore)
+        }
+
+        /** Phase 47d — {@code \s} → ASCII whitespace set (space, tab, LF, CR, FF, VT). */
+        private Object reSpace() {
+            Object[] chars = [
+                reLitStr(' '),
+                reLitStr('\t'),
+                reLitStr('\n'),
+                reLitStr('\r'),
+                reLitStr('\f'),
+                reLitStr(''),   // vertical tab
+            ]
+            Object acc = chars[0]
+            for (int i = 1; i < chars.length; i++) acc = session.reUnion(acc, chars[i])
+            acc
+        }
+
+        /** Phase 47d — single-char complement: any one character not in {@code re}. */
+        private Object reNotSingle(Object re) {
+            session.reIntersect(session.reAllChar(), session.reComplement(re))
+        }
+
         Object parseAlt() {
             Object first = parseConcat()
             while (!done() && peek() == '|' as char) {
@@ -413,8 +459,39 @@ class Encoder {
                 if (c == '*' as char) { pos++; return session.reStar(atom) }
                 if (c == '+' as char) { pos++; return session.rePlus(atom) }
                 if (c == '?' as char) { pos++; return session.reOption(atom) }
+                // Phase 47d — {@code {n}}, {@code {n,m}}, {@code {n,}} quantified ranges.
+                if (c == '{' as char) return parseBraceQuantified(atom)
             }
             atom
+        }
+
+        /** Phase 47d — parse {@code {n}} / {@code {n,m}} / {@code {n,}} following an atom. */
+        Object parseBraceQuantified(Object atom) {
+            pos++   // consume '{'
+            int lo = parseInt()
+            int hi = lo
+            boolean hasHi = false
+            boolean openUpper = false
+            if (!done() && peek() == ',' as char) {
+                pos++
+                if (!done() && peek() == '}' as char) {
+                    openUpper = true
+                } else {
+                    hi = parseInt()
+                    hasHi = true
+                }
+            }
+            if (done() || peek() != '}' as char) throw new IllegalStateException('expected }')
+            pos++
+            if (openUpper) return session.reLoopAtLeast(atom, lo)
+            return session.reLoop(atom, lo, hasHi ? hi : lo)
+        }
+
+        private int parseInt() {
+            int start = pos
+            while (!done() && Character.isDigit(peek())) pos++
+            if (start == pos) throw new IllegalStateException('expected digits')
+            Integer.parseInt(src.substring(start, pos))
         }
 
         Object parseAtom() {
@@ -440,31 +517,47 @@ class Encoder {
                 if (done()) throw new IllegalStateException('dangling backslash')
                 char esc = src.charAt(pos)
                 pos++
-                // Predefined classes are an honest-skip trap — Z3 has primitives but our parser
-                // doesn't translate them yet.
-                if (esc == 'd' as char || esc == 'D' as char || esc == 'w' as char ||
-                    esc == 'W' as char || esc == 's' as char || esc == 'S' as char ||
-                    esc == 'b' as char || esc == 'B' as char) {
-                    throw new IllegalStateException('predefined class not supported')
+                // Phase 47d — predefined character classes. Each is a one-character regex; the
+                // capital-letter variants are single-char complements.
+                if (esc == 'd' as char) return reDigit()
+                if (esc == 'D' as char) return reNotSingle(reDigit())
+                if (esc == 'w' as char) return reWordChar()
+                if (esc == 'W' as char) return reNotSingle(reWordChar())
+                if (esc == 's' as char) return reSpace()
+                if (esc == 'S' as char) return reNotSingle(reSpace())
+                // Word-boundary anchors aren't a single-character regex; honest skip.
+                if (esc == 'b' as char || esc == 'B' as char) {
+                    throw new IllegalStateException('word boundary not supported')
                 }
                 return reLit(esc)
             }
-            // These should never appear at atom position in a well-formed regex.
+            // Phase 47d — anchors. {@code String.matches} is whole-string-anchored, so a top-
+            // level {@code ^}/{@code $} is redundant. Translate as the empty-string regex
+            // (matches only ""), which composes correctly with concat: {@code ^foo} becomes
+            // empty + foo = foo.
+            if (c == '^' as char || c == '$' as char) {
+                pos++
+                return reLitStr('')
+            }
             if (c == ')' as char || c == ']' as char || c == '|' as char || c == '*' as char ||
                 c == '+' as char || c == '?' as char) {
                 throw new IllegalStateException('unexpected metacharacter')
             }
-            // Anchors and quantified-ranges aren't translated.
-            if (c == '^' as char || c == '$' as char || c == '{' as char) {
-                throw new IllegalStateException('anchor / quantified-range not supported')
+            if (c == '{' as char) {
+                throw new IllegalStateException('quantified range without preceding atom')
             }
             pos++
             reLit(c)
         }
 
         Object parseCharClass() {
+            // Phase 47d — negated character class {@code [^…]}: parse the positive class
+            // inside, then complement-and-intersect with allchar to get "any single character
+            // that isn't in the class".
+            boolean negated = false
             if (!done() && peek() == '^' as char) {
-                throw new IllegalStateException('negated character class not supported')
+                negated = true
+                pos++
             }
             Object acc = null
             while (!done() && peek() != ']' as char) {
@@ -488,7 +581,7 @@ class Encoder {
             if (done() || peek() != ']' as char) throw new IllegalStateException('expected ]')
             pos++
             if (acc == null) throw new IllegalStateException('empty character class')
-            acc
+            negated ? reNotSingle(acc) : acc
         }
     }
 
@@ -2208,6 +2301,31 @@ class Encoder {
         // `Sets` reaches us three ways: a bare import (VariableExpression) and FQN `verification.Sets`
         // (PropertyExpression) in re-parsed contracts, and a resolved ClassExpression when it appears in a
         // method *body* (e.g. a loop guard `Sets.boundedCount(...) < n`).
+        // Phase 47e — static-class string/int conversions. Receiver reaches as one of three
+        // shapes depending on whether the source is type-resolved: VariableExpression for
+        // unresolved imports, PropertyExpression for FQN paths, ClassExpression after the
+        // type checker has bound the class. Detect by simple name across all three.
+        boolean isInteger = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Integer') ||
+                            (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Integer') ||
+                            (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Integer')
+        boolean isStringClass = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'String') ||
+                                (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'String') ||
+                                (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'String')
+        if (isInteger && m == 'toString' && args.size() == 1) {
+            Object n = translate(args.get(0))
+            return n == null ? null : session.stringFromInt(n)
+        }
+        if (isInteger && m == 'parseInt' && args.size() == 1) {
+            Object s = translateInSort(args.get(0), session.declareSort('String'))
+            return s == null ? null : session.parseIntFromString(s)
+        }
+        if (isStringClass && m == 'valueOf' && args.size() == 1) {
+            // Only the Int overload is modeled; String.valueOf on other types returns null
+            // (honest skip — the caller's site is outside fragment).
+            Object n = translate(args.get(0))
+            return n == null ? null : session.stringFromInt(n)
+        }
+
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets') ||
                          (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Sets')
@@ -2489,6 +2607,28 @@ class Encoder {
                 Object re = parseRegexLiteral(args.get(0))
                 if (re == null) return null
                 return session.stringInRegex(sH, re)
+            }
+            // Phase 47f — {@code s.replaceAll(old, new)} as uninterpreted with weak axioms.
+            // The verifier knows non-occurrence is a no-op and same-length-replacement preserves
+            // length, nothing else. Sound under-approximation.
+            if (m == 'replaceAll' && args.size() == 2) {
+                Object oldSub = translateInSort(args.get(0), strSort)
+                Object newSub = translateInSort(args.get(1), strSort)
+                if (oldSub == null || newSub == null) return null
+                return session.stringReplaceAll(sH, oldSub, newSub)
+            }
+            // Phase 47f — {@code s.lastIndexOf(sub)} as uninterpreted with weak axioms.
+            // Groovy's no-arg default for fromIndex is {@code length(s)} (search the whole string).
+            if (m == 'lastIndexOf' && args.size() == 1) {
+                Object sub = translateInSort(args.get(0), strSort)
+                if (sub == null) return null
+                return session.stringLastIndexOf(sH, sub, session.stringLength(sH))
+            }
+            if (m == 'lastIndexOf' && args.size() == 2) {
+                Object sub = translateInSort(args.get(0), strSort)
+                Object from = translate(args.get(1))
+                if (sub == null || from == null) return null
+                return session.stringLastIndexOf(sH, sub, from)
             }
             return null   // unsupported op on a String receiver — honest skip, don't fall through to list dispatch
         }

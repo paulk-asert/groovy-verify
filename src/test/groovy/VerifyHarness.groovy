@@ -2075,13 +2075,172 @@ class VerifyHarness {
                         @Ensures({ result == 1 })
                         static int f(String s) { s.matches("[0-9]+") ? 1 : 0 }
                     }''')],
-        // Unsupported feature: predefined class {@code \d} returns null = honest skip.
-        // Reaches the verifier as an "outside fragment" postcondition skip.
+        // Unsupported feature: word-boundary {@code \b} isn't a single-character regex; the
+        // parser bails out and the verifier emits an honest skip diagnostic.
         [group: 'P47c regex', name: 'unsupported regex feature honest-skips',
          expect: 'Skipped verification of postcondition',
          src: tc('''class C {
                         @Ensures({ result == 1 })
+                        static int f() { "abc".matches("\\\\babc\\\\b") ? 1 : 0 }
+                    }''')],
+
+        // ---------- Phase 47d: regex feature expansion ----------
+        // Predefined classes: \d, \w, \s.
+        [group: 'P47d regex extras', name: '\\\\d+ matches digits', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
                         static int f() { "123".matches("\\\\d+") ? 1 : 0 }
+                    }''')],
+        [group: 'P47d regex extras', name: '\\\\d+ rejects letters',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc".matches("\\\\d+") ? 1 : 0 }
+                    }''')],
+        [group: 'P47d regex extras', name: '\\\\w+ matches alphanumeric+underscore', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc_123".matches("\\\\w+") ? 1 : 0 }
+                    }''')],
+        [group: 'P47d regex extras', name: '\\\\s+ matches whitespace', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "   ".matches("\\\\s+") ? 1 : 0 }
+                    }''')],
+        // Negated predefined: \D = non-digit.
+        [group: 'P47d regex extras', name: '\\\\D+ rejects digits', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 0 })
+                        static int f() { "123".matches("\\\\D+") ? 1 : 0 }
+                    }''')],
+        // Negated character class.
+        [group: 'P47d regex extras', name: '[^0-9]+ matches non-digits', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc".matches("[^0-9]+") ? 1 : 0 }
+                    }''')],
+        [group: 'P47d regex extras', name: '[^0-9]+ rejects digits',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "123".matches("[^0-9]+") ? 1 : 0 }
+                    }''')],
+        // Anchors as no-op (matches is whole-string anchored).
+        [group: 'P47d regex extras', name: 'anchors are redundant no-ops', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc".matches("^abc\\$") ? 1 : 0 }
+                    }''')],
+        // Quantified range: a{3} matches exactly three.
+        [group: 'P47d regex extras', name: 'a{3} matches exactly three', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "aaa".matches("a{3}") ? 1 : 0 }
+                    }''')],
+        [group: 'P47d regex extras', name: 'a{3} rejects two',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "aa".matches("a{3}") ? 1 : 0 }
+                    }''')],
+        // {n,m} range.
+        [group: 'P47d regex extras', name: 'a{2,4} matches three', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "aaa".matches("a{2,4}") ? 1 : 0 }
+                    }''')],
+        [group: 'P47d regex extras', name: 'a{2,4} rejects five',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "aaaaa".matches("a{2,4}") ? 1 : 0 }
+                    }''')],
+        // {n,} unbounded.
+        [group: 'P47d regex extras', name: 'a{2,} matches three', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "aaa".matches("a{2,}") ? 1 : 0 }
+                    }''')],
+
+        // ---------- Phase 47e: Integer ↔ String conversion ----------
+        // Integer.toString folds for non-negative literals (Z3 semantics: int.to.str(n) is
+        // the decimal repr for n >= 0).
+        [group: 'P47e int/string', name: 'Integer.toString folds for non-negative literal', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "5" })
+                        static String f() { Integer.toString(5) }
+                    }''')],
+        // String.valueOf(int) — same lowering, useful Groovy idiom.
+        [group: 'P47e int/string', name: 'String.valueOf(int) folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "42" })
+                        static String f() { String.valueOf(42) }
+                    }''')],
+        // Integer.parseInt — round-trips for digit strings.
+        [group: 'P47e int/string', name: 'Integer.parseInt folds for digit string', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 123 })
+                        static int f() { Integer.parseInt("123") }
+                    }''')],
+        // Length composes: Integer.toString(n) for n >= 0 has at least one character.
+        // (Z3 knows int.to.str(n) is "" iff n < 0, else has len >= 1 digit count.)
+        [group: 'P47e int/string', name: 'parseInt of non-numeric returns -1 (Z3 semantics)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == -1 })
+                        static int f() { Integer.parseInt("abc") }
+                    }''')],
+        // Refute wrong toString result.
+        [group: 'P47e int/string', name: 'Integer.toString wrong-value refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == "6" })
+                        static String f() { Integer.toString(5) }
+                    }''')],
+        // Symbolic round-trip: parseInt(toString(n)) == n for non-negative n. (Z3 verifies.)
+        [group: 'P47e int/string', name: 'parseInt of toString round-trips for non-negative', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n })
+                        static int f(int n) { Integer.parseInt(Integer.toString(n)) }
+                    }''')],
+
+        // ---------- Phase 47f: replaceAll + lastIndexOf as uninterpreted ----------
+        // replaceAll on a non-occurring substring is a no-op (axiom 1).
+        [group: 'P47f weak ops', name: 'replaceAll non-occurring is no-op', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && !s.contains("XYZ") })
+                        @Ensures({ result == s })
+                        static String f(String s) { s.replaceAll("XYZ", "A") }
+                    }''')],
+        // replaceAll preserves length when old and new have equal length (axiom 2).
+        [group: 'P47f weak ops', name: 'replaceAll preserves length under equal-length swap', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s.length() })
+                        static int f(String s) { s.replaceAll("a", "b").length() }
+                    }''')],
+        // Soundness: replaceAll content beyond the axioms isn't claimable. Unequal-length
+        // replacement doesn't preserve length, so claiming it does refutes.
+        [group: 'P47f weak ops', name: 'replaceAll length under unequal-length swap not provable',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s.length() })
+                        static int f(String s) { s.replaceAll("a", "bc").length() }
+                    }''')],
+        // lastIndexOf result is always >= -1.
+        [group: 'P47f weak ops', name: 'lastIndexOf >= -1', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null })
+                        @Ensures({ result >= -1 })
+                        static int f(String s, String t) { s.lastIndexOf(t) }
+                    }''')],
+        // lastIndexOf is -1 when sub doesn't occur.
+        [group: 'P47f weak ops', name: 'lastIndexOf -1 when absent', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null && !s.contains(t) })
+                        @Ensures({ result == -1 })
+                        static int f(String s, String t) { s.lastIndexOf(t) }
                     }''')],
 
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------
