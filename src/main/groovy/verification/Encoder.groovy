@@ -265,6 +265,49 @@ class Encoder {
         out
     }
 
+    /**
+     * Phase 46a — true if {@code recv} is a String-typed expression: a String parameter / local
+     * recorded in {@link #scalarTypes}, or a String literal. {@code translateMethodCall} consults
+     * this to route {@code startsWith} / {@code endsWith} / {@code contains} / {@code isEmpty} to
+     * the string-predicate uninterpreted functions instead of the list-style array dispatch.
+     * {@code PropertyExpression} forms (a String field on a known object) are intentionally not
+     * routed here yet — they'd need to compose with the receiver-context machinery; out of scope
+     * for this slice.
+     */
+    private boolean isStringReceiver(Expression recv) {
+        if (recv == null) return false
+        if (recv instanceof ConstantExpression) {
+            return ((ConstantExpression) recv).value instanceof String
+        }
+        if (recv instanceof VariableExpression) {
+            String n = ((VariableExpression) recv).name
+            ClassNode t = scalarTypes.get(n)
+            return t != null && t.name == 'java.lang.String'
+        }
+        // {@code xs[i].startsWith(...)} where {@code xs} is a {@code List<String>} — the GDK
+        // {@code getAt} shape and the bracketed binary form both reach here. Routing on element
+        // type lets the user filter strings without first assigning to a String-typed local
+        // (locals aren't recorded in {@code scalarTypes}).
+        if (recv instanceof BinaryExpression &&
+            ((BinaryExpression) recv).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            Expression listRecv = ((BinaryExpression) recv).leftExpression
+            if (listRecv instanceof VariableExpression) {
+                ClassNode et = listElementTypes.get(((VariableExpression) listRecv).name)
+                return et != null && et.name == 'java.lang.String'
+            }
+        }
+        // {@code xs.get(i).startsWith(...)} — the named-method form of indexing.
+        if (recv instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) recv
+            if (mc.methodAsString == 'get' && argList(mc).size() == 1 &&
+                mc.objectExpression instanceof VariableExpression) {
+                ClassNode et = listElementTypes.get(((VariableExpression) mc.objectExpression).name)
+                return et != null && et.name == 'java.lang.String'
+            }
+        }
+        return false
+    }
+
     /** Phase 41 — true if {@code name} is a List-typed parameter/field (use bcount, not count). */
     boolean isListName(String name) {
         if (name == null) return false
@@ -2152,6 +2195,25 @@ class Encoder {
                 }
                 return session.count(arr, v)
             }
+        }
+
+        // Phase 46a — String-typed receivers route to the string-predicate translations
+        // (startsWith/endsWith/contains/isEmpty) before the list-style named-receiver dispatch
+        // below: the latter would mistakenly interpret {@code s.contains(p)} on a String as a
+        // bounded existential over array indices.
+        if (isStringReceiver(recv)) {
+            Object strSort = session.declareSort('String')
+            Object sH = translateInSort(recv, strSort)
+            if (sH == null) return null
+            if (m == 'isEmpty' && args.isEmpty()) return session.stringIsEmpty(sH)
+            if (args.size() == 1 && (m == 'startsWith' || m == 'endsWith' || m == 'contains')) {
+                Object pH = translateInSort(args.get(0), strSort)
+                if (pH == null) return null
+                if (m == 'startsWith') return session.stringStartsWith(sH, pH)
+                if (m == 'endsWith')   return session.stringEndsWith(sH, pH)
+                if (m == 'contains')   return session.stringContainsSub(sH, pH)
+            }
+            return null   // unsupported op on a String receiver — honest skip, don't fall through to list dispatch
         }
 
         // size() / isEmpty() / contains() need a named receiver for their oracle. The receiver

@@ -378,11 +378,21 @@ termination, and an `@Ensures` over the *returned list*'s size — the verifier 
 `result.size()` to the returned local's threaded size oracle so the postcondition resolves
 correctly. The Verus port of the same task has none of that — just the implementation.
 
+Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
+positivity check — ports with the same `result.size() <= xs.size()` spec. The Phase 46a
+slice translates `startsWith` / `endsWith` / `contains` / `isEmpty` on String-typed receivers
+as uninterpreted Bool predicates, which is enough for "every result element satisfied the
+filter" reasoning even though the verifier doesn't know what the predicate *means* internally.
+Reverse-style benchmarks port on the `List<Character>` API today (length preservation
+verifies cleanly); a true `String.reverse()` proof with character-position reasoning is
+deferred behind Z3 string theory adoption.
+
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
 The remaining honest gaps: tasks with non-linear int arithmetic (`i * i <= n` in
-prime-testing) hit the Phase 8a NIA opt-out, and tasks with string-content reasoning
-(`startsWith`, `charAt`) need fragment extensions still to come. Sister task 023 (`strlen`)
-ports the same way — with the natural spec `result == xs.size()` added.
+prime-testing) hit the Phase 8a NIA opt-out, and tasks that reason about string *content*
+(`s.length()`, `s.charAt(i)`, the substring relation behind `startsWith`) need fragment
+extensions still to come. Sister task 023 (`strlen`) ports the same way — with the natural
+spec `result == xs.size()` added.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
@@ -750,6 +760,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Implicit obligations downstream of mutations** | `VfObligation` now carries a single source-ordered step list (Assign / Guard / LemmaCall) replayed via the same handlers `checkPath` uses, so the implicit-obligation pass and the body-replay pass see the same oracle state. `xs.add(v); xs[0]` now passes the implicit bounds check; `xs.removeLast(); xs[n-1]` correctly refutes | ✅ Phase 42 |
 | **32-bit integer overflow (opt-in via `@CheckOverflow`)** | A method or class annotated `@CheckOverflow` gets a Verus-style guarantee: every `+`, `-`, `*` (sub-expressions included) becomes an implicit obligation that the math result stays in `[Integer.MIN_VALUE, Integer.MAX_VALUE]`. Unannotated code keeps the math-int default — the verifier's existing experience. Implicit JVM int bounds (size oracles, int parameters, int fields) are *always-on*, asserted from the JVM contract, so the math view and machine view coincide for the common case of in-bounds index arithmetic | ✅ Phase 44 |
 | **Cross-class `@Invariant` assumption** | A class-typed parameter carries its class's invariants into the calling method. `c.count >= 0` is assumed automatically when the receiver `c: Counter` has `@Invariant({ count >= 0 })`. Cross-class calls (`c.incr()`) discharge the callee's `@Requires` under a receiver context, then havoc the receiver's fields and re-assume its invariants on return. Field references are namespaced per receiver (`c$count` distinct from `b$count`), so two parameters of the same type carry independent state. Sound under the no-aliasing assumption (a project [non-goal](ROADMAP.md)) | ✅ Phase 45 |
+| **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). No length / charAt / substring-content axioms — those are deferred behind Z3 string theory adoption. Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
 
 ## Building & testing
 

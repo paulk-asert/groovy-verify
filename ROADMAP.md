@@ -2710,6 +2710,80 @@ the assumption the rest of the project already lives under. With aliasing, `b$co
   which doesn't apply the receiver-qualified rewrite. Edge case; the typical use is foreign
   receivers, which work.
 
+## Phase 46a — String predicates as uninterpreted functions  *(shipped)*
+
+The string sort was equality-only since Phase 27 — `s == "admin"` worked, but no string
+*content* operations (no `startsWith`, no `endsWith`, no `contains`, no `isEmpty`) reached the
+encoder. Any HumanEval-style port that filtered a list by predicate hit a wall here.
+
+**The shipped slice.** Four string predicates translate now, modelled as uninterpreted Bool
+functions over the existing `String!Sort`:
+
+- `s.startsWith(p)` → `startsWith$(s, p)` — `(String, String) → Bool`.
+- `s.endsWith(q)` → `endsWith$(s, q)`.
+- `s.contains(sub)` → `strContains$(s, sub)`.
+- `s.isEmpty()` → `strIsEmpty$(s)` — unary.
+
+The encoder routes by receiver type: a String-typed parameter (recorded in `scalarTypes`),
+a String literal (`ConstantExpression` of String value), or an indexed access on a
+`List<String>` (`xs[i]` / `xs.get(i)`). The list-style dispatch ("contains as bounded
+existential over array indices", "isEmpty as size == 0") is **explicitly skipped** for String
+receivers — the same method name, but the wrong semantics if applied to a String.
+
+Two applications with the same `(s, p)` share the SMT term, so a contract that names
+`s.startsWith(p)` connects by syntactic identity to a body that calls `s.startsWith(p)`. The
+verifier knows the predicate has *some* Boolean value at each pair — but **not** what relates
+it to `length`, to other strings, or to character positions.
+
+**What this unlocks — HumanEval 029 (`filter_by_prefix`):**
+
+```groovy
+@Requires({ xs != null && prefix != null &&
+            Forall.range(0, xs.size()) { i -> xs[i] != null } })
+@Ensures({ result.size() <= xs.size() })
+static List<String> filterByPrefix(List<String> xs, String prefix) {
+    List<String> result = []
+    int i = 0
+    @Invariant({ result != null && 0 <= i && i <= xs.size() && result.size() <= i })
+    @Decreases({ xs.size() - i })
+    while (i < xs.size()) {
+        if (xs[i].startsWith(prefix)) {
+            result.add(xs[i])
+        }
+        i = i + 1
+    }
+    return result
+}
+```
+
+Same algorithmic shape as `get_positive` (Verus 030), with `startsWith` substituted for the
+positivity check. The Verus original is spec-free; we add the size-bound spec.
+
+**Co-shipped: typed-local element types.** `List<String> result = []` previously crashed
+during the first `result.add(...)` with a Z3 sort mismatch — the empty factory `[]` minted a
+default Int-element array. Now `collectListElementTypes` also scans the method body for
+typed `DeclarationExpression`s so a typed-local non-Int list mints with the right element
+sort from the start.
+
+**Known limits.**
+
+- **No axioms beyond translation.** `startsWith(s, "")` isn't known to be true; `length(p) >
+  length(s) ⟹ ¬startsWith(s, p)` isn't known. Adequate for "every result element satisfies
+  the filter predicate" reasoning where the predicate composes opaquely; insufficient for
+  length-coupled or character-content claims.
+- **No `length`, no `charAt`.** Specs that talk about string length or character positions
+  are still out of fragment — would need either a length oracle with literal pinning
+  (cheap follow-on) or Z3's native string theory (major phase).
+- **`String.reverse()`-style proofs aren't reachable here.** A meaningful reverse spec needs
+  character-position reasoning; the char-list reverse shape (`List<Character>`) already works
+  in the supported fragment as a separate demo. A String-typed reverse with character content
+  is deferred behind Z3 string theory adoption.
+- **In-loop `if (xs[i] != null)` doesn't discharge a per-element deref obligation.** The
+  loop-encoder's `applyIf` ITE-combines branch bindings but doesn't thread the condition as
+  a path fact through obligation discharge. Workaround: a `Forall.range` precondition over
+  `xs[i] != null` (as the `filter_by_prefix` port does). Same shape as Verus' `Vec<String>`
+  (non-nullable elements), so the precondition is a faithful translation.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

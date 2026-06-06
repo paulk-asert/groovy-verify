@@ -1726,6 +1726,97 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- Phase 46a: string predicates as uninterpreted Bool functions ----------
+        // startsWith on a String parameter — proves a precondition that names the predicate.
+        // The receiver routing kicks in via scalarTypes (s: String parameter).
+        [group: 'P46a string preds', name: 'startsWith on String param: contract assumption flows', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.startsWith("foo") })
+                        @Ensures({ result == 1 })
+                        static int hasFooPrefix(String s) { s.startsWith("foo") ? 1 : 0 }
+                    }''')],
+        // Distinct predicates aren't equated — startsWith vs endsWith are independent functions.
+        [group: 'P46a string preds', name: 'startsWith and endsWith are independent',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null && s.startsWith("foo") })
+                        @Ensures({ result == 1 })
+                        static int f(String s) { s.endsWith("bar") ? 1 : 0 }
+                    }''')],
+        // contains/isEmpty route through the same dispatch — disambiguated from list semantics
+        // by the scalarTypes check (which sees s: String, not List).
+        [group: 'P46a string preds', name: 'String contains routes to string predicate (not list existential)', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.contains("admin") })
+                        @Ensures({ result == 1 })
+                        static int f(String s) { s.contains("admin") ? 1 : 0 }
+                    }''')],
+        [group: 'P46a string preds', name: 'String isEmpty as unary predicate', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.isEmpty() })
+                        @Ensures({ result == 1 })
+                        static int f(String s) { s.isEmpty() ? 1 : 0 }
+                    }''')],
+        // Routing on List<String>[i] — xs[i].startsWith(p) for List<String> xs.
+        [group: 'P46a string preds', name: 'startsWith on xs[i] for List<String>', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 && xs[0] != null && xs[0].startsWith("foo") })
+                        @Ensures({ result == 1 })
+                        static int f(List<String> xs) { xs[0].startsWith("foo") ? 1 : 0 }
+                    }''')],
+
+        // ---------- HumanEval port — filter_by_prefix (Verus task 029) ----------
+        // The Verus original is spec-free (only implicit overflow). groovy-verify ports the same
+        // body and adds the natural size-bound spec: result.size() <= xs.size(). startsWith routes
+        // through the P46a uninterpreted predicate; the spec doesn't try to relate startsWith to
+        // string content, just that the conditional filter doesn't add more than it iterates —
+        // the same invariant shape as get_positive (Verus 030), with startsWith(xs[i], prefix)
+        // substituted for xs[i] > 0.
+        [group: 'HumanEval port', name: 'filter_by_prefix (Verus 029): result.size() <= xs.size()', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && prefix != null &&
+                                    Forall.range(0, xs.size()) { i -> xs[i] != null } })
+                        @Ensures({ result.size() <= xs.size() })
+                        static List<String> filterByPrefix(List<String> xs, String prefix) {
+                            List<String> result = []
+                            int i = 0
+                            @Invariant({ result != null && 0 <= i && i <= xs.size() && result.size() <= i })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                if (xs[i].startsWith(prefix)) {
+                                    result.add(xs[i])
+                                }
+                                i = i + 1
+                            }
+                            return result
+                        }
+                    }''')],
+
+        // ---------- HumanEval port — char-list reverse ----------
+        // A char-list reverse: result.size() == xs.size(). Sits in the supported fragment without
+        // any string-content machinery — the algorithm shape (read from one end, build the other)
+        // is identical to a true String reverse, on the List<Character> API. The invariant carries
+        // {@code r.size() == xs.size() - 1 - i}, which is preserved by each {@code r.add(xs[i])}
+        // step and resolves at loop exit (i = -1) to {@code r.size() == xs.size()}. Demonstrates
+        // that "reverse-shaped" proofs are reachable today; a String-typed reverse with character
+        // content reasoning is the deferred Z3-string-theory phase.
+        [group: 'HumanEval port', name: 'char-list reverse: result.size() == xs.size()', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        @Ensures({ result.size() == xs.size() })
+                        static List<Character> reverseList(List<Character> xs) {
+                            List<Character> r = []
+                            int i = xs.size() - 1
+                            @Invariant({ r != null && -1 <= i && i < xs.size() && r.size() == xs.size() - 1 - i })
+                            @Decreases({ i + 1 })
+                            while (i >= 0) {
+                                r.add(xs[i])
+                                i = i - 1
+                            }
+                            return r
+                        }
+                    }''')],
+
         // ---------- Phase 38c-3: keySet / values projections on map factories ----------
         // Map.of(...).keySet() returns a set factory of the keys; .contains folds via disjunction.
         [group: 'P38c projection', name: 'Map.of(...).keySet().contains folds', ok: true,

@@ -337,6 +337,47 @@ class Z3Session implements SmtSession {
         ctx.mkApp(fd, (Expr) set, (Expr) k)
     }
 
+    // Phase 46a — string predicates over String!Sort, declared lazily on first use. The function
+    // name is suffixed with '$' (matching the count$/bcount$/card$ pattern) so it's
+    // unambiguously SMT-internal — never collides with a user identifier.
+    private FuncDecl startsWithFn
+    private FuncDecl endsWithFn
+    private FuncDecl containsSubFn
+    private FuncDecl isEmptyStrFn
+
+    private FuncDecl ensureStrPred2(FuncDecl current, String name) {
+        if (current != null) return current
+        Sort strSort = (Sort) declareSort('String')
+        ctx.mkFuncDecl(name, [strSort, strSort] as Sort[], ctx.getBoolSort())
+    }
+
+    @Override
+    Object stringStartsWith(Object s, Object prefix) {
+        startsWithFn = ensureStrPred2(startsWithFn, 'startsWith$')
+        ctx.mkApp(startsWithFn, (Expr) s, (Expr) prefix)
+    }
+
+    @Override
+    Object stringEndsWith(Object s, Object suffix) {
+        endsWithFn = ensureStrPred2(endsWithFn, 'endsWith$')
+        ctx.mkApp(endsWithFn, (Expr) s, (Expr) suffix)
+    }
+
+    @Override
+    Object stringContainsSub(Object s, Object sub) {
+        containsSubFn = ensureStrPred2(containsSubFn, 'strContains$')
+        ctx.mkApp(containsSubFn, (Expr) s, (Expr) sub)
+    }
+
+    @Override
+    Object stringIsEmpty(Object s) {
+        if (isEmptyStrFn == null) {
+            Sort strSort = (Sort) declareSort('String')
+            isEmptyStrFn = ctx.mkFuncDecl('strIsEmpty$', [strSort] as Sort[], ctx.getBoolSort())
+        }
+        ctx.mkApp(isEmptyStrFn, (Expr) s)
+    }
+
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
 
     @Override

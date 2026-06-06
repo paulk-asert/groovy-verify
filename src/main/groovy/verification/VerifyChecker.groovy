@@ -453,6 +453,30 @@ class VerifyChecker extends TypeCheckingExtension {
                 if (!isIntElement(elem)) out.put(f.name, elem)
             }
         }
+        // Phase 46a — typed locals like {@code List<String> result = []} carry their element type
+        // on the DeclarationExpression's LHS. Without this scan, the empty-factory {@code []} mints
+        // a default Int-element array and a subsequent {@code result.add(stringValue)} crashes Z3
+        // with a sort-mismatch. The body walk is best-effort (failures here just leave the entry
+        // unset, the same state as today).
+        if (node.code != null) try {
+            node.code.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (t != null && isListType(t)) {
+                            ClassNode elem = firstGenericOrInt(t)
+                            if (!isIntElement(elem)) {
+                                out.putIfAbsent(((VariableExpression) de.leftExpression).name, elem)
+                            }
+                        }
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
         out
     }
 

@@ -175,6 +175,23 @@ interface SmtSession extends AutoCloseable {
     Object setCount(Object set, Object k)
 
     /**
+     * Phase 46a — string predicates as uninterpreted Bool functions over the {@code String!Sort}.
+     * Two arguments (receiver, query) interpreted symbolically — Z3 reasons only about the
+     * predicate's value at a given point, not its decomposition over characters. The encoder
+     * routes {@code s.startsWith(p)}/{@code s.endsWith(q)}/{@code s.contains(sub)} on String-typed
+     * receivers here. Two applications with the same {@code (s, p)} share the term, so a contract
+     * naming the predicate connects to a body that names the same predicate by syntactic identity.
+     * No axioms beyond translation: the verifier knows {@code startsWith(s, p)} is *some* boolean,
+     * but not what relates it to {@code length} or to other strings — adequate for "every result
+     * element satisfied the filter predicate"-shape proofs, insufficient for length-coupled claims.
+     */
+    Object stringStartsWith(Object s, Object prefix)
+    Object stringEndsWith(Object s, Object suffix)
+    Object stringContainsSub(Object s, Object sub)
+    /** Phase 46a — {@code s.isEmpty()} on a String-typed receiver, as a unary uninterpreted Bool. */
+    Object stringIsEmpty(Object s)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then
