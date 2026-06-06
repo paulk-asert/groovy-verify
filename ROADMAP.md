@@ -2855,6 +2855,86 @@ static boolean cannotStartWith(String s) { s.startsWith("hello") }   // verifies
   `charAt(s, i): Int` oracle with literal pinning (cheap follow-on) or Z3's native string
   theory (a phase of its own).
 
+## Phase 46d — In-loop `if`-condition as a path fact  *(shipped)*
+
+Phase 46a documented a known limit: an in-body `if (xs[i] != null) xs[i].method()` inside
+a `while` body didn't discharge the per-element deref obligation. The `filter_by_prefix`
+port worked around it with a `Forall.range` precondition. Phase 46d closes that gap directly.
+
+**The fix lives in `dischargeRegion`.** That function discharges every implicit obligation
+(bounds / null / divide / overflow / charAt) inside a loop's prefix / guard / body / suffix
+region. Pre-46d it walked top-level statements and discharged each statement's obligations
+under "invariants + guard" only — an in-region `if` was traversed for its sites but its
+condition wasn't asserted before discharging the body's sites.
+
+Two refinements:
+
+- **If-statement recursion.** When `dischargeRegion` sees an `if (cond) { … } else { … }`,
+  it discharges the condition's own obligations under the outer facts, then recurses into
+  the then-branch with `cond` added to `assumePos`, and into the else-branch with
+  `NotExpression(cond)` added. The new `assumePos` list flows into `dischargeSeeded`, which
+  already asserts every entry as a precondition for the obligation check.
+- **`&&`/`||`/ternary short-circuit awareness.** A new helper `dischargeExpression` walks
+  the expression tree, and for each binary `&&` (resp. `||`) operand-pair, discharges the
+  left operand first, then the right under `leftExpression` (resp. `!leftExpression`).
+  This matches Groovy's runtime short-circuit, so `xs[i] != null && xs[i].method()`
+  discharges the inner deref under the null guard the conjunction establishes.
+
+**What this unlocks.** The `filter_by_prefix` port's `Forall.range` workaround is gone:
+the natural `if (xs[i] != null && xs[i].startsWith(prefix))` form verifies directly. New
+test group `P46d in-loop guards` proves three shapes:
+- `if (xs[i] != null) xs[i].length()` discharges in a loop.
+- `if (xs[i] != null && xs[i].startsWith(p))` discharges via short-circuit.
+- Removing the guard still refutes (the obligation is real; the guard is what dischargest it).
+
+The same machinery applies to ternary `(c ? t : e)` in any region — the branches' obligations
+each see their guard, which is just-in-time path-fact threading.
+
+## Phase 46e — `charAt` with per-position literal pinning + bounds  *(shipped)*
+
+The natural follow-on to Phase 46b's length oracle: `charAt(s, i): Int` returning the
+codepoint, with two pieces of machinery that make it useful even without Z3 string theory.
+
+**The shipped slice.**
+
+- **`SmtSession.stringCharAt(s, i) → Int`.** Uninterpreted `(String!Sort, Int) → Int` declared
+  lazily as `charAt$`. Two applications with the same `(s, i)` share the term.
+- **Per-position literal pinning at the backend's `litOfSort` mint site.** For a String
+  literal `"hello"`, each position is pinned: `charAt$($lit, 0) == 104`,
+  `charAt$($lit, 1) == 101`, …, one assertion per codepoint. Capped at a `CHAR_PIN_CAP`
+  of 64 characters — longer literals still get their length pinned but skip per-char pinning
+  to keep mint cost bounded. Lazy: `charAt$` is only declared if at least one literal is
+  short enough to pin.
+- **Bounds obligation via a new `StringCharAtSite`.** `ObligationCollector` emits one for
+  every `charAt(i)` call shape; `dischargeObligationUnder` checks `0 <= i < stringLength(s)`
+  on the receiver, gated on `currentScalarTypes` recognising the receiver as a String. Same
+  shape as `IndexSite` for list reads, but the upper bound comes from `stringLength` rather
+  than `sizeOf` (different oracle, same diagnostic — `IndexBounds`).
+- **Encoder dispatch.** `s.charAt(i)` on a String-typed receiver translates to
+  `stringCharAt(translate(s), translate(i))`. The CastExpression `(int) s.charAt(i)` is
+  also handled — Groovy's char-vs-int distinction shows up at return paths where the
+  method's declared return type is `int`.
+
+**Demos shipped with the tests:**
+
+- `"hello".charAt(0)` folds to 104 outright (literal pin).
+- A wrong-codepoint claim refutes (`"hello".charAt(0) == 65` is provably false).
+- An out-of-bounds index refutes with the IndexBounds diagnostic.
+- A `charAt(0) == X` precondition flows to the body — symbolic charAt is just an
+  uninterpreted function on the receiver, so the user's assumption echoes through.
+
+**Known limits.**
+
+- **No structural axioms.** `charAt(s, i)` doesn't relate to `charAt(t, i)` for distinct
+  `s`, `t` — even when `s.startsWith(t)`. The startsWith / endsWith / contains axioms in
+  Phase 46c are length-bound only; no character-content implication. A "palindrome property"
+  proof (`charAt(s, i) == charAt(s, length - 1 - i)` for all i) is **not** reachable today
+  without writing the bounded universal as an explicit precondition the user has to assume.
+- **No substring / concat.** `s.substring(i, j)` and `s + t` remain out of fragment. Z3
+  string theory or a dedicated phase would unblock these.
+- **`String.format`-like content reasoning** is out of scope and a `groovy-typecheckers`
+  sibling (`FormatStringChecker`) owns that territory.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
