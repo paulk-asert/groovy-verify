@@ -985,13 +985,13 @@ class VerifyHarness {
                             return s
                         }
                     }''')],
-        // Step 5 — an invariant whose body is outside the encoder fragment (a String charAt call —
-        // character-content reasoning is deferred behind Z3 string theory, post-Phase-46c) is
+        // Step 5 — an invariant whose body is outside the encoder fragment (a String substring
+        // call — substring/concat-shaped operations are deferred behind Z3 string theory) is
         // dropped with a single "Skipped class invariant" diagnostic at the method level.
         // Verification continues for everything else.
         [group: 'P15a class-invariant', name: 'unmodelled invariant skipped',
          expect: 'Skipped class invariant',
-         src: tc('''@groovy.contracts.Invariant({ name.charAt(0) == 65 })
+         src: tc('''@groovy.contracts.Invariant({ name.substring(1).length() > 0 })
                     class C { String name
                         int n() { 0 }
                     }''')],
@@ -1833,6 +1833,107 @@ class VerifyHarness {
                         static int f(String s) { s.length() }
                     }''')],
 
+        // ---------- Phase 46e: charAt with per-position literal pinning + bounds ----------
+        // Literal pinning: "hello".charAt(0) folds to 104 ('h' codepoint) via the mint pin. The
+        // explicit (int) cast bridges Groovy's char-vs-int type distinction at the return.
+        [group: 'P46e charAt', name: 'literal charAt at position 0', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 104 })
+                        static int f() { (int) "hello".charAt(0) }
+                    }''')],
+        [group: 'P46e charAt', name: 'literal charAt at last position', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 111 })
+                        static int f() { (int) "hello".charAt(4) }
+                    }''')],
+        // Wrong codepoint refutes — per-position pinning is exact.
+        [group: 'P46e charAt', name: 'wrong literal charAt refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 65 })
+                        static int f() { (int) "hello".charAt(0) }
+                    }''')],
+        // Bounds check: an out-of-bounds charAt index refutes with the IndexBounds diagnostic.
+        [group: 'P46e charAt', name: 'out-of-bounds charAt refutes',
+         expect: 'Possible IndexOutOfBoundsException',
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() > 0 })
+                        static int f(String s) { (int) s.charAt(s.length()) }
+                    }''')],
+        // Bounds check: a guarded charAt verifies.
+        [group: 'P46e charAt', name: 'guarded charAt verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() > 0 })
+                        static int f(String s) { (int) s.charAt(0) }
+                    }''')],
+        // Symbolic charAt as a sentinel — equality through the uninterpreted function.
+        [group: 'P46e charAt', name: 'charAt sentinel echoes assumption', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() > 0 && s.charAt(0) == 65 })
+                        @Ensures({ result == 65 })
+                        static int f(String s) { (int) s.charAt(0) }
+                    }''')],
+
+        // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------
+        // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
+        // straight-line case. Phase 46d extends the same path-fact mechanism to the loop body:
+        // dischargeRegion recurses into an in-region if-statement, asserting the cond in the
+        // then-branch and !cond in the else-branch, then descends through &&/||/ternary
+        // operands so the right operand is discharged under the short-circuit guard.
+        [group: 'P46d in-loop guards', name: 'in-loop if (xs[i] != null) discharges deref obligation', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        static int f(List<String> xs) {
+                            int n = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= xs.size() && n >= 0 })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                if (xs[i] != null) {
+                                    n = n + xs[i].length()
+                                }
+                                i = i + 1
+                            }
+                            return n
+                        }
+                    }''')],
+        // && short-circuit inside the if-cond — the natural way to write a guarded deref.
+        [group: 'P46d in-loop guards', name: 'in-loop && short-circuit discharges deref obligation', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && p != null })
+                        static int f(List<String> xs, String p) {
+                            int n = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= xs.size() && n >= 0 })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                if (xs[i] != null && xs[i].startsWith(p)) {
+                                    n = n + 1
+                                }
+                                i = i + 1
+                            }
+                            return n
+                        }
+                    }''')],
+        // Soundness: removing the null guard refutes — the obligation is still real, the
+        // path-fact mechanism only DISCHARGES the obligation when the guard establishes it.
+        [group: 'P46d in-loop guards', name: 'in-loop unguarded deref refutes',
+         expect: 'Possible NullPointerException',
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        static int f(List<String> xs) {
+                            int n = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= xs.size() && n >= 0 })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                n = n + xs[i].length()
+                                i = i + 1
+                            }
+                            return n
+                        }
+                    }''')],
+
         // ---------- HumanEval port — filter_by_prefix (Verus task 029) ----------
         // The Verus original is spec-free (only implicit overflow). groovy-verify ports the same
         // body and adds the natural size-bound spec: result.size() <= xs.size(). startsWith routes
@@ -1842,8 +1943,7 @@ class VerifyHarness {
         // substituted for xs[i] > 0.
         [group: 'HumanEval port', name: 'filter_by_prefix (Verus 029): result.size() <= xs.size()', ok: true,
          src: tc('''class C {
-                        @Requires({ xs != null && prefix != null &&
-                                    Forall.range(0, xs.size()) { i -> xs[i] != null } })
+                        @Requires({ xs != null && prefix != null })
                         @Ensures({ result.size() <= xs.size() })
                         static List<String> filterByPrefix(List<String> xs, String prefix) {
                             List<String> result = []
@@ -1851,7 +1951,7 @@ class VerifyHarness {
                             @Invariant({ result != null && 0 <= i && i <= xs.size() && result.size() <= i })
                             @Decreases({ xs.size() - i })
                             while (i < xs.size()) {
-                                if (xs[i].startsWith(prefix)) {
+                                if (xs[i] != null && xs[i].startsWith(prefix)) {
                                     result.add(xs[i])
                                 }
                                 i = i + 1

@@ -379,20 +379,30 @@ termination, and an `@Ensures` over the *returned list*'s size — the verifier 
 correctly. The Verus port of the same task has none of that — just the implementation.
 
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
-positivity check — ports with the same `result.size() <= xs.size()` spec. The Phase 46a
-slice translates `startsWith` / `endsWith` / `contains` / `isEmpty` on String-typed receivers
-as uninterpreted Bool predicates, which is enough for "every result element satisfied the
-filter" reasoning even though the verifier doesn't know what the predicate *means* internally.
-Reverse-style benchmarks port on the `List<Character>` API today (length preservation
-verifies cleanly); a true `String.reverse()` proof with character-position reasoning is
-deferred behind Z3 string theory adoption.
+positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
+in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46a translates
+the string predicates as uninterpreted Bool functions; Phase 46d threads the short-circuit
+`&&` and any enclosing in-loop `if` as path facts during obligation discharge — so the
+inner deref obligation discharges under the guard the conjunction establishes, just like
+a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks port
+on the `List<Character>` API today (length preservation verifies cleanly); a true
+`String.reverse()` proof with character-position reasoning is deferred behind Z3 string
+theory adoption.
+
+`s.length()` / `s.charAt(i)` reach the verifier (Phase 46b / 46e): literals pin their
+length and per-position codepoints at mint, so `"hello".length() == 5` and
+`(int) "hello".charAt(0) == 104` both fold; an out-of-range `s.charAt(i)` refutes with
+the same `IndexBounds` diagnostic list reads produce. Three universally-quantified axioms
+(non-negativity, prefix length bound, suffix length bound) let the verifier prove that
+a 4-char string *cannot* start with `"hello"` outright — not just "can't decide".
 
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
 The remaining honest gaps: tasks with non-linear int arithmetic (`i * i <= n` in
-prime-testing) hit the Phase 8a NIA opt-out, and tasks that reason about string *content*
-(`s.length()`, `s.charAt(i)`, the substring relation behind `startsWith`) need fragment
-extensions still to come. Sister task 023 (`strlen`) ports the same way — with the natural
-spec `result == xs.size()` added.
+prime-testing) hit the Phase 8a NIA opt-out, and tasks that reason structurally about
+string content (the substring relation, `s.charAt(i) == t.charAt(i)` across distinct
+strings, `concat` / `substring`) need Z3 string theory adoption — a deferred phase of
+its own. Sister task 023 (`strlen`) ports the same way — with the natural spec
+`result == xs.size()` added.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
@@ -761,7 +771,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **32-bit integer overflow (opt-in via `@CheckOverflow`)** | A method or class annotated `@CheckOverflow` gets a Verus-style guarantee: every `+`, `-`, `*` (sub-expressions included) becomes an implicit obligation that the math result stays in `[Integer.MIN_VALUE, Integer.MAX_VALUE]`. Unannotated code keeps the math-int default — the verifier's existing experience. Implicit JVM int bounds (size oracles, int parameters, int fields) are *always-on*, asserted from the JVM contract, so the math view and machine view coincide for the common case of in-bounds index arithmetic | ✅ Phase 44 |
 | **Cross-class `@Invariant` assumption** | A class-typed parameter carries its class's invariants into the calling method. `c.count >= 0` is assumed automatically when the receiver `c: Counter` has `@Invariant({ count >= 0 })`. Cross-class calls (`c.incr()`) discharge the callee's `@Requires` under a receiver context, then havoc the receiver's fields and re-assume its invariants on return. Field references are namespaced per receiver (`c$count` distinct from `b$count`), so two parameters of the same type carry independent state. Sound under the no-aliasing assumption (a project [non-goal](ROADMAP.md)) | ✅ Phase 45 |
 | **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
-| **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable. `charAt` and substring content are still deferred (Z3 string theory) | ✅ Phase 46b / 46c |
+| **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable | ✅ Phase 46b / 46c |
+| **In-loop `if`-condition + `&&` short-circuit as path facts** | `dischargeRegion` (which checks implicit obligations across a loop's prefix / guard / body / suffix) now recurses into in-region `if` statements with `cond` (then-branch) or `NotExpression(cond)` (else-branch) added to the assumption set, and descends through `&&`/`||`/ternary so each operand is discharged under the short-circuit guard. A natural in-loop `if (xs[i] != null) xs[i].method()` or `if (xs[i] != null && xs[i].startsWith(p))` discharges the per-element deref directly — the `Forall.range` workaround used in earlier ports is now optional, not required | ✅ Phase 46d |
+| **`charAt` with per-position literal pinning and bounds** | `s.charAt(i)` on a String-typed receiver routes to an uninterpreted `(String, Int) → Int` oracle returning the codepoint at position `i`. String literals are pinned per-position at mint: `"hello"` asserts `charAt(0)==104, charAt(1)==101, …`, capped at 64 chars to bound mint cost. A new `StringCharAtSite` synthesises the bounds obligation `0 <= i < s.length()` so out-of-range indices refute with the same `IndexBounds` diagnostic list reads produce. `(int) s.charAt(i)` casts route transparently. No structural axioms tying `charAt` to `startsWith` or to other strings — those are deferred behind Z3 string theory | ✅ Phase 46e |
 
 ## Building & testing
 

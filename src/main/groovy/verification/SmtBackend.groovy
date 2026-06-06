@@ -190,6 +190,18 @@ interface SmtSession extends AutoCloseable {
     Object stringContainsSub(Object s, Object sub)
 
     /**
+     * Phase 46e — character indexing: an uninterpreted {@code (String!Sort, Int) -> Int}
+     * returning the codepoint at the given position. Literal pinning happens at the backend
+     * for each interned string constant — for {@code "hello"} the mint asserts
+     * {@code charAt$("hello", 0) == 104}, etc., one assertion per character (capped at a
+     * literal-length threshold to keep mint cost bounded). The encoder lowers
+     * {@code s.charAt(i)} on a String-typed receiver to this, synthesising an
+     * {@code IndexSite}-like obligation so {@code 0 <= i < s.length()} is enforced like
+     * any other indexed read.
+     */
+    Object stringCharAt(Object s, Object i)
+
+    /**
      * Phase 46b — string length oracle: an uninterpreted {@code (String!Sort) -> Int}. Literal
      * pinning happens at the backend's {@code litOfSort} mint site — each new String constant
      * asserts {@code length($lit) == lit.length()} so the model has the right length for known

@@ -37,6 +37,7 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
@@ -1172,6 +1173,18 @@ class VerifyChecker extends TypeCheckingExtension {
         for (DivideSite s : col.divideSites) dischargeDivide(s, pf, reqAst)
         for (DerefSite s : col.derefSites)  dischargeDeref(s, pf, reqAst)
         for (OverflowSite s : col.overflowSites) dischargeOverflow(s, pf, reqAst)
+        for (StringCharAtSite s : col.stringCharAtSites) dischargeStringCharAt(s, pf, reqAst)
+    }
+
+    private void dischargeStringCharAt(StringCharAtSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            dischargeObligationUnder(s, enc, site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
     }
 
     /**
@@ -1314,12 +1327,14 @@ class VerifyChecker extends TypeCheckingExtension {
         col.overflowChecking = currentOverflowChecking
         try { e.visit(col) } catch (Throwable ignored) { return }
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() &&
-            col.derefSites.isEmpty() && col.overflowSites.isEmpty()) return
+            col.derefSites.isEmpty() && col.overflowSites.isEmpty() &&
+            col.stringCharAtSites.isEmpty()) return
         List<Object> snap = new ArrayList<Object>(steps)
         for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
         for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
         for (DerefSite s : col.derefSites)  out.add(mkVf(s, snap))
         for (OverflowSite s : col.overflowSites) out.add(mkVf(s, snap))
+        for (StringCharAtSite s : col.stringCharAtSites) out.add(mkVf(s, snap))
     }
 
     /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
@@ -1578,6 +1593,30 @@ class VerifyChecker extends TypeCheckingExtension {
                 addStaticTypeError(Reporter.formatNullDereference(df.receiver, df.method, r), df.node)
             }
         }
+        if (site instanceof StringCharAtSite) {
+            StringCharAtSite cs = (StringCharAtSite) site
+            // Discriminate by receiver type: charAt has a meaningful bounds obligation only on
+            // String receivers. A non-String receiver (a List-typed name that happens to be
+            // called .charAt — Groovy doesn't define that, but be defensive) skips silently.
+            ClassNode rt = currentScalarTypes.get(cs.receiver)
+            if (rt == null || rt.name != 'java.lang.String') return
+            Object idx = enc.translate(cs.indexExpr)
+            if (idx == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("charAt index",
+                    "index '${cs.indexExpr.text}' is outside fragment"), cs.node)
+                return
+            }
+            Object recvHandle = enc.varForOfSort(cs.receiver, s.declareSort('String'))
+            Object len = s.stringLength(recvHandle)
+            Object inBounds = s.and([s.le(s.intLit(0L), idx), s.lt(idx, len)])
+            s.assertExpr(s.not(inBounds))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatIndexBounds(
+                    cs.indexExpr.text, cs.receiver + '.length()', r), cs.node)
+            }
+            return
+        }
         if (site instanceof OverflowSite) {
             OverflowSite ov = (OverflowSite) site
             // Phase 44 — assert the negation of {@code INT_MIN <= result <= INT_MAX}; SAT means
@@ -1649,17 +1688,123 @@ class VerifyChecker extends TypeCheckingExtension {
         dischargeRegion(site.suffix, reqAst, spec.invariants, spec.guard)
     }
 
-    /** Discharge every obligation in a straight-line region, each under the seed plus the region's preceding statements. */
+    /**
+     * Discharge every obligation in a straight-line region, each under the seed plus the region's
+     * preceding statements. Phase 46d — two short-circuit-aware refinements over the original:
+     * <ul>
+     *   <li>For in-region {@code if (cond) { … }} statements, recurse into the then-branch with
+     *       {@code cond} added to {@code assumePos}, and (if present) into the else-branch with
+     *       {@code !cond} added. Threads an in-body null guard like {@code if (xs[i] != null) …}
+     *       as a path fact, same shape the straight-line {@link PathFacts} pass gets outside loops.</li>
+     *   <li>Within an expression, descend through {@code &&}/{@code ||}/ternary so the right
+     *       operand is discharged under the short-circuit guard. {@code xs[i] != null && xs[i].m()}
+     *       discharges the second deref under the first conjunct, the same way Groovy's runtime
+     *       short-circuits before evaluating it.</li>
+     * </ul>
+     */
     private void dischargeRegion(List<Statement> stmts, Expression reqAst,
                                  List<Expression> assumePos, Expression assumeNeg) {
         if (stmts == null) return
         for (int i = 0; i < stmts.size(); i++) {
-            List<Object> sites = sitesInStatement(stmts.get(i))
-            if (sites.isEmpty()) continue
+            Statement st = stmts.get(i)
             List<Statement> preceding = stmts.subList(0, i)
-            for (Object site : sites) {
-                dischargeSeeded(site, reqAst, assumePos, assumeNeg, preceding)
+            if (st instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) st
+                // Obligations in the if-condition itself: discharge with short-circuit awareness —
+                // {@code xs[i] != null && xs[i].m()} needs the right deref to see the left guard.
+                dischargeExpression(ifs.booleanExpression, reqAst, assumePos, assumeNeg, preceding)
+                List<Expression> thenAssume = new ArrayList<Expression>(assumePos)
+                thenAssume.add(ifs.booleanExpression)
+                dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg)
+                Statement elseBlk = ifs.elseBlock
+                if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
+                    List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
+                    elseAssume.add(new NotExpression(ifs.booleanExpression))
+                    dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg)
+                }
+                continue
             }
+            // Non-if statement: walk each top-level expression with short-circuit awareness too,
+            // not just {@code sitesInStatement}, so an inline {@code a != null && a.m()} in any
+            // statement gets the same treatment.
+            dischargeStatementShortCircuit(st, reqAst, assumePos, assumeNeg, preceding)
+        }
+    }
+
+    /**
+     * Phase 46d — short-circuit-aware discharge for one expression. Recurses through
+     * {@code &&}/{@code ||}/ternary so each operand is discharged under the guard implied by
+     * the operators that short-circuit before reaching it; leaf expressions are collected via
+     * {@link #sitesInExpression} and discharged under the accumulated guards.
+     */
+    private void dischargeExpression(Expression e, Expression reqAst,
+                                     List<Expression> assumePos, Expression assumeNeg,
+                                     List<Statement> preceding) {
+        if (e == null) return
+        if (e instanceof BooleanExpression) {
+            dischargeExpression(((BooleanExpression) e).expression, reqAst, assumePos, assumeNeg, preceding)
+            return
+        }
+        if (e instanceof BinaryExpression) {
+            int op = ((BinaryExpression) e).operation.type
+            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+                BinaryExpression be = (BinaryExpression) e
+                dischargeExpression(be.leftExpression, reqAst, assumePos, assumeNeg, preceding)
+                List<Expression> rightAssume = new ArrayList<Expression>(assumePos)
+                // && short-circuits when left is false → right runs when left is TRUE.
+                // || short-circuits when left is true  → right runs when left is FALSE.
+                rightAssume.add(op == Types.LOGICAL_AND
+                    ? be.leftExpression
+                    : new NotExpression(be.leftExpression))
+                dischargeExpression(be.rightExpression, reqAst, rightAssume, assumeNeg, preceding)
+                return
+            }
+        }
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            dischargeExpression(te.booleanExpression, reqAst, assumePos, assumeNeg, preceding)
+            List<Expression> thenAssume = new ArrayList<Expression>(assumePos)
+            thenAssume.add(te.booleanExpression)
+            dischargeExpression(te.trueExpression, reqAst, thenAssume, assumeNeg, preceding)
+            List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
+            elseAssume.add(new NotExpression(te.booleanExpression))
+            dischargeExpression(te.falseExpression, reqAst, elseAssume, assumeNeg, preceding)
+            return
+        }
+        // Leaf: collect any obligations syntactically present, discharge each under the
+        // accumulated assumptions.
+        for (Object site : sitesInExpression(e)) {
+            dischargeSeeded(site, reqAst, assumePos, assumeNeg, preceding)
+        }
+    }
+
+    /**
+     * Phase 46d — discharge a non-{@code if} statement's obligations with short-circuit
+     * awareness on its top-level expressions. For an {@code ExpressionStatement} or
+     * {@code ReturnStatement}, route the expression through {@link #dischargeExpression};
+     * for compound shapes (blocks, declarations with rhs), fall through to the original
+     * statement-level discharge.
+     */
+    private void dischargeStatementShortCircuit(Statement st, Expression reqAst,
+                                                List<Expression> assumePos, Expression assumeNeg,
+                                                List<Statement> preceding) {
+        if (st instanceof ExpressionStatement) {
+            dischargeExpression(((ExpressionStatement) st).expression,
+                reqAst, assumePos, assumeNeg, preceding)
+            return
+        }
+        if (st instanceof ReturnStatement) {
+            dischargeExpression(((ReturnStatement) st).expression,
+                reqAst, assumePos, assumeNeg, preceding)
+            return
+        }
+        // Fallback: collect statement-wide sites and discharge each — preserves the original
+        // behaviour for shapes we don't pattern-match (block statements that the loop body's
+        // top-level walk shouldn't encounter, etc.).
+        List<Object> sites = sitesInStatement(st)
+        if (sites.isEmpty()) return
+        for (Object site : sites) {
+            dischargeSeeded(site, reqAst, assumePos, assumeNeg, preceding)
         }
     }
 
@@ -1721,12 +1866,23 @@ class VerifyChecker extends TypeCheckingExtension {
     private static List<Object> combineSites(ObligationCollector col) {
         List<Object> r = new ArrayList<Object>()
         r.addAll(col.indexSites); r.addAll(col.divideSites); r.addAll(col.derefSites)
-        r.addAll(col.overflowSites)
+        r.addAll(col.overflowSites); r.addAll(col.stringCharAtSites)
         return r
     }
 
     @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
     @CompileStatic private static class DivideSite { ASTNode node; Expression divisor }
+    /**
+     * Phase 46e — character-index bounds: the implicit obligation {@code 0 <= i < s.length()}
+     * at an {@code s.charAt(i)} site. Modelled separately from {@link IndexSite} because the
+     * upper bound is the string length oracle ({@code stringLength(s)}) rather than a list's
+     * {@code sizeOf} — the two share the "indexed access" shape but the size source differs.
+     */
+    @CompileStatic private static class StringCharAtSite {
+        ASTNode node
+        String receiver
+        Expression indexExpr
+    }
     /**
      * A method-call dereference site to be discharged via the nullity oracle. Two shapes:
      * - Scalar receiver ({@code recv.method()}): {@code indexExpr} is null; nullity comes from {@code nullityOf(receiver)}.
@@ -1767,6 +1923,8 @@ class VerifyChecker extends TypeCheckingExtension {
         final List<DerefSite> derefSites = []
         /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
         final List<OverflowSite> overflowSites = []
+        /** Phase 46e — collected at every {@code charAt(i)} call shape (string-typing checked at discharge). */
+        final List<StringCharAtSite> stringCharAtSites = []
         /**
          * Phase 44 — gates {@link OverflowSite} collection. The walking pass still descends into
          * sub-expressions so nested {@code a + b * c} arithmetic generates one site per operation;
@@ -1884,6 +2042,14 @@ class VerifyChecker extends TypeCheckingExtension {
             } else if ((mName == 'first' || mName == 'head' ||
                         mName == 'removeLast' || mName == 'pop') && margs.isEmpty()) {
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: new ConstantExpression(0)))
+            } else if (mName == 'charAt' && margs.size() == 1) {
+                // Phase 46e — {@code s.charAt(i)} on a parameter / field. String vs list
+                // discrimination happens at discharge: a {@code List<Character>} doesn't have
+                // a {@code charAt} method (Groovy's {@code String.charAt} only — list reads use
+                // {@code get(i)}), so any {@code charAt} call shape that reaches here came
+                // from a String-typed receiver in practice.
+                stringCharAtSites.add(new StringCharAtSite(
+                    node: mce, receiver: name, indexExpr: margs.get(0)))
             }
         }
     }

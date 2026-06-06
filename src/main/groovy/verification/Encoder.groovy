@@ -1668,6 +1668,14 @@ class Encoder {
             return translate(((BooleanExpression) expr).expression)
         }
 
+        // Phase 46e — {@code (int) "hello".charAt(0)} bridges Groovy's char-vs-int distinction
+        // at the return path: charAt returns char, the method may return int, so the user adds
+        // a numeric cast. The verifier treats the cast as transparent — the inner term's sort
+        // is already Int — and translates through.
+        if (expr instanceof CastExpression) {
+            return translate(((CastExpression) expr).expression)
+        }
+
         if (expr instanceof TernaryExpression) {
             // cond ? a : b  ->  (ite cond a b). Also the shape an unfolded pure
             // function takes (e.g. pow2's `n == 0 ? 1 : ...`), see translateCall.
@@ -2219,6 +2227,14 @@ class Encoder {
                 if (m == 'startsWith') return session.stringStartsWith(sH, pH)
                 if (m == 'endsWith')   return session.stringEndsWith(sH, pH)
                 if (m == 'contains')   return session.stringContainsSub(sH, pH)
+            }
+            // Phase 46e — {@code s.charAt(i)} returns the codepoint at position {@code i}. The
+            // implicit bounds obligation ({@code 0 <= i < s.length()}) is synthesised by the
+            // ObligationCollector as a {@link StringCharAtSite}, not here — translation returns
+            // the value term only.
+            if (m == 'charAt' && args.size() == 1) {
+                Object idx = translate(args.get(0))
+                return idx == null ? null : session.stringCharAt(sH, idx)
             }
             return null   // unsupported op on a String receiver — honest skip, don't fall through to list dispatch
         }

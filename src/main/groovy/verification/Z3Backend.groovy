@@ -217,6 +217,21 @@ class Z3Session implements SmtSession {
                 ctx.mkInt((long) literalKey.length()))
             solver.add(pinLen)
             assertedExprs.add(pinLen)
+            // Phase 46e — per-position character pins. {@code "hello"} asserts
+            // {@code charAt$("hello", 0) == 104, charAt$("hello", 1) == 101, …} — one per
+            // codepoint. Capped at {@link #CHAR_PIN_CAP} to bound mint cost; longer literals
+            // still get their length pinned but skip per-char pinning. Materialised lazily —
+            // {@code strCharAtFn} is declared on first need rather than always.
+            if (literalKey.length() > 0 && literalKey.length() <= CHAR_PIN_CAP) {
+                ensureStrCharAt()
+                for (int k = 0; k < literalKey.length(); k++) {
+                    BoolExpr pinChar = ctx.mkEq(
+                        ctx.mkApp(strCharAtFn, v, ctx.mkInt((long) k)),
+                        ctx.mkInt((long) literalKey.charAt(k)))
+                    solver.add(pinChar)
+                    assertedExprs.add(pinChar)
+                }
+            }
         }
         v
     }
@@ -357,8 +372,17 @@ class Z3Session implements SmtSession {
     private FuncDecl containsSubFn
     /** Phase 46b — string length oracle, lazily declared. */
     private FuncDecl strLengthFn
+    /** Phase 46e — character indexing oracle, lazily declared. */
+    private FuncDecl strCharAtFn
     /** Phase 46c — session-level axioms asserted exactly once at first use of any string op. */
     private boolean stringAxiomsAsserted = false
+    /**
+     * Phase 46e — per-position literal pinning is bounded by this cap. Strings longer than the
+     * cap mint normally (with length pinned) but skip per-character charAt pins — keeps the
+     * cost of {@code "a very long literal"} predictable while still covering typical short
+     * literals used as character sentinels.
+     */
+    private static final int CHAR_PIN_CAP = 64
 
     private FuncDecl ensureStrPred2(FuncDecl current, String name) {
         if (current != null) return current
@@ -457,6 +481,21 @@ class Z3Session implements SmtSession {
         ensureStrLength()
         ensureStringAxiomsAsserted()
         ctx.mkApp(strLengthFn, (Expr) s)
+    }
+
+    /** Phase 46e — get-or-declare the charAt function. */
+    private FuncDecl ensureStrCharAt() {
+        if (strCharAtFn != null) return strCharAtFn
+        Sort strSort = (Sort) declareSort('String')
+        strCharAtFn = ctx.mkFuncDecl('charAt$', [strSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        strCharAtFn
+    }
+
+    @Override
+    Object stringCharAt(Object s, Object i) {
+        ensureStrCharAt()
+        ensureStringAxiomsAsserted()
+        ctx.mkApp(strCharAtFn, (Expr) s, (Expr) i)
     }
 
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
