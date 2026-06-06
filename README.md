@@ -33,6 +33,66 @@ This started life as the verification spike in the *groovy6-functional* blog
 companion repo. It was split out so it can grow on its own; that repo now
 consumes it (via a Gradle composite build) rather than vendoring it.
 
+## Where this sits
+
+groovy-verify is an **auto-active verifier** — contracts as annotations, an SMT solver
+discharging proof obligations at compile time, failed proofs surfacing as compile errors with
+concrete counterexamples. Same family as Dafny, SPARK, Why3, Verus, and OpenJML; *not* an
+interactive proof assistant in the Isabelle / Lean / Rocq style, nor a dependently-typed
+language in the Idris / Agda style.
+
+Within that family, the closest structural analogue isn't Dafny but
+[**Verus**](https://github.com/verus-lang/verus): Dafny is a new language with its own compiler,
+whereas Verus verifies an existing mainstream language by embedding in its native extension
+mechanism — Rust attribute macros there, Groovy's `@TypeChecked` type-checking-extension SPI
+here. The working one-liner: *experimental Verus for the JVM, with Dafny-style specifications.*
+
+**The distinctive angle — executable specs.** The contracts are stock
+[`groovy.contracts`](https://github.com/spockframework/groovy-contracts) annotations and the
+quantifiers are plain GDK idioms (`(0..<n).every { … }`, `xs.any { … }`) — so they *also* execute
+as ordinary runtime checks when verification is off. Write the spec once: what Z3 discharges is
+**proven**, and anything it couldn't discharge degrades to a **runtime assertion**, not to
+nothing. Design-by-Contract (the Eiffel lineage) with verification layered on top — neither
+demanding a new language nor a comment-dialect spec. The graceful-degradation story isn't really
+shared by anyone else in the auto-active family.
+
+**Prior art on the JVM.** [JML](https://www.openjml.org/) (OpenJML), KeY, and
+historically Krakatoa cover Java; JML is a comment-embedded spec dialect with aging tooling and
+KeY leans interactive. Arguably, the JVM lacks a modern,
+ergonomic, **auto-active** option: native annotation syntax, executable specs,
+counterexamples-as-compile-errors, all delivered via the standard type-checking-extension SPI
+rather than a separate build tool. The cross-language picture: Dafny (new language), SPARK
+(Ada subset), Verus/Prusti (Rust), Frama-C/ACSL (C), OpenJML/KeY (Java), groovy-verify
+(Groovy/JVM).
+
+**Loudly partial, not silently sound.** Verification is sound *within* a deliberately small
+fragment and **loudly unsound outside it** — anything the encoder can't model emits a
+"skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named (see
+the deferred row of the [capability table](#whats-demonstrated)); 32-bit integer overflow is
+covered opt-in via `@CheckOverflow` (Verus parity); heap aliasing is a deliberate
+[non-goal](ROADMAP.md). The failure mode the verifier family fears most is silent vacuous
+passes — saying *loudly partial* directly is the credible position, and it's the one this tool
+holds.
+
+**Depth that vouches for the architecture.** A fully verified in-place insertion sort
+(*sorted ∧ permutation*) under sound `@Modifies` framing, and a DFS over a functional graph
+with **termination, soundness, unconditional coverage, and completeness** all machine-checked —
+the benchmark proofs the Dafny community uses as credentials, here as worked examples below.
+
+**A JVM-specific bonus.** Composability with sibling type-checking extensions: groovy-verify
+sits alongside `NullChecker`, `PurityChecker`, `RegexChecker`, `FormatStringChecker`, and others
+from `groovy-typecheckers` — each owning a property the others don't, all under the same
+`@TypeChecked(extensions = […])` SPI. Pluralism of checkers over one language is itself an
+interesting model — see [Relationship to Groovy's other checkers](#relationship-to-groovys-other-checkers).
+
+> **Positioning sentence.** groovy-verify is an experimental auto-active verifier for a fragment
+> of Groovy — Verus-style (embedded in the host language, SMT-backed, counterexample-producing)
+> with Dafny-style specifications, distinctive in that:
+> * its specs are ordinary executable `groovy.contracts`, so unproven obligations degrade to runtime checks rather than disappearing.
+> * the verify type checker is composable with other type-checking extensions.
+>
+> "Dafny for Groovy" works as the informal shorthand.
+
 ## Examples
 
 Each snippet below is compiled under `@TypeChecked(extensions = 'verification.VerifyChecker')`,
@@ -135,7 +195,7 @@ A class invariant declares the bound once — every constructor proves it *at ex
 is valid by construction), and every method assumes it at entry and re-proves it at exit:
 
 ```groovy
-@groovy.contracts.Invariant({ count >= 0 && count <= max })
+@Invariant({ count >= 0 && count <= max })
 class Counter {
     int count, max
     @Requires({ m > 0 })
