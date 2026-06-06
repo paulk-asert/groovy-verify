@@ -2091,6 +2091,119 @@ class VerifyHarness {
                         @Requires({ a > Integer.MIN_VALUE && b == 1 })
                         static int dec(int a, int b) { a - b }
                     }''')],
+        // Unary minus overflow — -Integer.MIN_VALUE = 2147483648, one past INT_MAX.
+        [group: 'P44 overflow', name: 'unary minus on unbounded int refutes',
+         expect: 'negation overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        static int neg(int a) { -a }
+                    }''')],
+        // Guard against the only failing value (INT_MIN); negation then verifies.
+        [group: 'P44 overflow', name: 'unary minus with guard verifies', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ a > Integer.MIN_VALUE })
+                        static int neg(int a) { -a }
+                    }''')],
+
+        // ---------- Phase 45: cross-class @Invariant call-site assumption ----------
+        // Headline: a class-typed parameter c carries Counter's invariant into the calling method.
+        // Reading c.count under that invariant yields result >= 0 without any caller-side guard.
+        [group: 'P45 cross-class', name: 'foreign invariant assumed at entry: c.count >= 0', ok: true,
+         src: tc('''@Invariant({ count >= 0 && count <= max })
+                    class Counter { int count, max }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ c != null })
+                        @Ensures({ result >= 0 })
+                        static int read(Counter c) { c.count }
+                    }''')],
+        // Sub-fields independent: c.count and c.max are distinct SMT entities (receiver-qualified).
+        [group: 'P45 cross-class', name: 'foreign invariant: c.count <= c.max verifies', ok: true,
+         src: tc('''@Invariant({ count >= 0 && count <= max })
+                    class Counter { int count, max }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ c != null })
+                        @Ensures({ result <= c.max })
+                        static int read(Counter c) { c.count }
+                    }''')],
+        // Soundness anchor: claiming c.count > 0 isn't supported by the invariant (allows 0).
+        [group: 'P45 cross-class', name: 'foreign invariant: stronger claim refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''@Invariant({ count >= 0 && count <= max })
+                    class Counter { int count, max }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ c != null })
+                        @Ensures({ result > 0 })
+                        static int read(Counter c) { c.count }
+                    }''')],
+        // Two class-typed receivers carry separate invariants and don't conflate.
+        [group: 'P45 cross-class', name: 'two foreign receivers: invariants independent', ok: true,
+         src: tc('''@Invariant({ count >= 0 })
+                    class Counter { int count }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ result >= 0 })
+                        static int sum(Counter a, Counter b) { a.count + b.count }
+                    }''')],
+        // Cross-class call effect: c.someVoid() havocs c's fields but reasserts the invariant,
+        // so c.count >= 0 still holds afterwards.
+        [group: 'P45 cross-class', name: 'after cross-class call: invariant still holds', ok: true,
+         src: tc('''@Invariant({ count >= 0 && count <= max })
+                    class Counter {
+                        int count, max
+                        @Requires({ count < max })
+                        void incr() { count = count + 1 }
+                    }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ c != null && c.count < c.max })
+                        @Ensures({ result >= 0 })
+                        static int useCounter(Counter c) {
+                            c.incr()
+                            c.count
+                        }
+                    }''')],
+        // Cross-class @Requires discharge: caller must establish the callee's precondition under
+        // receiver context. With c.count < c.max in the caller's @Requires, incr()'s @Requires
+        // is discharged at the call site.
+        [group: 'P45 cross-class', name: 'cross-class @Requires discharges from receiver context', ok: true,
+         src: tc('''@Invariant({ count >= 0 && count <= max })
+                    class Counter {
+                        int count, max
+                        @Requires({ count < max })
+                        void incr() { count = count + 1 }
+                    }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ c != null && c.count < c.max })
+                        static int callIt(Counter c) {
+                            c.incr()
+                            0
+                        }
+                    }''')],
+        // Soundness: without c.count < c.max in the caller's @Requires, the @Requires of
+        // incr() can't be discharged — incr() is callable on a counter that's already at max.
+        // The counterexample names the receiver-qualified fields: c$count = 0, c$max = 0.
+        [group: 'P45 cross-class', name: 'cross-class @Requires without guard refutes',
+         expect: 'Cannot prove precondition of incr',
+         src: tc('''@Invariant({ count >= 0 && count <= max })
+                    class Counter {
+                        int count, max
+                        @Requires({ count < max })
+                        void incr() { count = count + 1 }
+                    }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class Client {
+                        @Requires({ c != null })
+                        static int callIt(Counter c) {
+                            c.incr()
+                            0
+                        }
+                    }''')],
         // Subtraction overflow: a - b could underflow Integer.MIN_VALUE.
         [group: 'P44 overflow', name: 'unguarded subtraction refutes',
          expect: 'subtraction overflows 32-bit signed range',

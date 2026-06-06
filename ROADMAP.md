@@ -2585,9 +2585,10 @@ scoping (only on selected methods, regardless of class).
 - **`long`, `short`, `byte`, `char`** still use the math-int model. A {@code @CheckOverflow long n; n + 1}
   is currently 32-bit-checked (sound but tighter than necessary). Type-driven dispatch to 64-bit
   / 16-bit / 8-bit ranges is the natural follow-on.
-- **Division edge cases.** {@code INT_MIN / -1} and {@code -INT_MIN} (unary minus on INT_MIN)
-  overflow at runtime but aren't yet checked. Phase 44b would add these — small, ~1 day; not
-  bundled here because the {@code +}/{@code -}/{@code *} cases are the headline.
+- **Division edge case** ({@code INT_MIN / -1}) overflows at runtime but isn't yet checked.
+  Unary {@code -INT_MIN} *is* checked — same {@code OverflowSite} pipeline, just an extra
+  {@code visitUnaryMinusExpression} collector hook and a {@code 'neg'} discharge branch with
+  Reporter wording "negation overflows 32-bit signed range".
 - **JDK boxed-range constants** (`Integer.MAX_VALUE`/`MIN_VALUE`, `Long`/`Short`/`Byte`/`Character`
   variants) fold to their literal values via {@code tryFoldJdkRangeConstant} in the
   {@link PropertyExpression} dispatch, so {@code @Requires({ n < Integer.MAX_VALUE })} works as
@@ -2598,6 +2599,111 @@ scoping (only on selected methods, regardless of class).
 - **Always-on mode.** Some safety-critical projects want overflow checked everywhere, no
   annotation needed. A future {@code @TypeChecked(strict = true)} mode could flip the default
   but isn't in scope here — the math-int default is too useful to drop unilaterally.
+
+## Phase 45 — Cross-class `@Invariant` call-site assumption  *(shipped)*
+
+**The last real capability gap closed.** Phase 15a/b verified class invariants *within* a class —
+every instance method assumes the invariant on entry, must re-prove on exit; constructors
+establish it. What didn't work until Phase 45: when method `f` on class `A` calls `b.method()`
+on object `b` of class `B`, the verifier didn't bring B's invariants into scope. A trivial
+{@code c.count >= 0} read for a {@code Counter c} parameter — guaranteed by Counter's invariant
+— couldn't be proved without restating the bound in `f`'s own @Requires.
+
+**Why this took a refactor and not a slice.** Until Phase 45, every field reference (`count`,
+`max`, etc.) resolved to a single SMT entity per source-name, regardless of which class declared
+the field or which object holds it. For cross-class reasoning that's unsound: `a.count` and
+`b.count` are distinct values at runtime, and you can't ascribe one invariant's facts to the
+other's state. The fix is **per-receiver field namespacing**: a class-typed parameter `b`
+introduces fresh SMT entities `b$count`, `b$max`, … distinct from anything named `count`
+elsewhere. The receiver's contracts (invariants, @Requires, @Ensures) are translated *under a
+receiver context* that rewires bare field references to the qualified entities.
+
+**The encoding.** A new field `receiverPrefix` on the Encoder is set during contract translation
+for a foreign receiver, and {@code varFor("count")} consults it:
+
+```groovy
+Object varFor(String name) {
+    if (receiverPrefix != null && receiverFields.contains(name)) {
+        return varForRaw(receiverPrefix + '$' + name)
+    }
+    // existing this-class regime
+}
+```
+
+A new public method {@code translateUnderReceiver(expr, recvName, fields)} sets the context for
+the scope of one translation and unwinds it on return. Used in three places:
+
+1. **Method entry**, via {@code assumeForeignReceiverInvariants}: for each class-typed parameter,
+   look up its declared class's invariants and assume each translated under the receiver. So a
+   method taking {@code Counter c} starts with {@code c$count >= 0 && c$count <= c$max} in scope.
+2. **Call site precondition discharge**, in {@code verifyCallSite}: when the call is
+   {@code b.method(...)} and `b` is a known class-typed parameter, translate the callee's
+   @Requires under the receiver context. So {@code count < max} in {@code Counter.incr()}'s
+   @Requires becomes {@code c$count < c$max} when checked at a call site `c.incr()`.
+3. **Cross-class call effects**, via {@code applyCrossClassCall}: havoc the receiver's fields
+   (the callee may have mutated any of them) and re-assume the receiver's class invariants
+   under the receiver context. The callee preserved them on exit (Phase 15a/b verified that
+   when the callee's class was compiled), so re-assuming them in the caller is sound.
+
+**Property expression translation** picks up the same rewrite for explicit `b.field` reads in
+contracts and bodies: the PropertyExpression handler now checks if the object expression is a
+known class-typed parameter and the property is one of that class's declared fields, routing to
+{@code varForRaw(recvName + '$' + prop)} when both hold.
+
+```groovy
+@Invariant({ count >= 0 && count <= max })
+class Counter {
+    int count, max
+    @Requires({ count < max })
+    void incr() { count = count + 1 }
+}
+
+class Client {
+    @Requires({ c != null })
+    @Ensures({ result >= 0 })
+    static int read(Counter c) { c.count }                      // ✓ (invariant assumed at entry)
+
+    @Requires({ c != null && c.count < c.max })
+    static int callIt(Counter c) { c.incr(); 0 }                // ✓ (@Requires discharged under c)
+
+    @Requires({ c != null })
+    static int unsafe(Counter c) { c.incr(); 0 }                // ✗ refutes — c.count could == c.max
+}
+```
+
+The refute diagnostic for `unsafe` names the receiver-qualified entities directly:
+
+```
+Cannot prove precondition of incr at this call site
+    required: (count < max)
+    counterexample: c$count = 0, c$max = 0
+    fails on: callIt(null)
+```
+
+— Z3 picked a Counter at-max state where the precondition can't hold.
+
+**Soundness boundary.** The encoding is sound *under the no-aliasing assumption*: distinct
+parameter names denote distinct objects. Heap aliasing is a [Non-goal](#non-goals), so this is
+the assumption the rest of the project already lives under. With aliasing, `b$count` and
+`c$count` could refer to the same JVM heap cell — the verifier doesn't model that.
+
+**Known limits.**
+
+- **`old.field` in cross-class @Ensures isn't assumed.** A callee that says
+  `@Ensures({ count == old.count + 1 })` would need the verifier to snapshot `b$count` before
+  the call and pin the callee's `old.count` to that snapshot. The infrastructure is there
+  (Phase 13's caller-side framing already does this for same-class calls); not yet wired for
+  cross-class. The invariant is what most cross-class contracts actually rely on.
+- **Cross-class fields that are collections.** A `Counter` with a `Set<String> roles` field
+  has its scalar fields handled, but `c.roles.contains("admin")` would need the set/map/list
+  oracles to be receiver-keyed too. The receiver-qualification concept extends; the
+  collect/dispatch wiring doesn't yet.
+- **Multi-level dereferencing.** `c.next.count` (a Counter with a `next: Counter` field, walked
+  one further step) skips. One level only.
+- **Same-class `b.method()` calls** (where `b` is also of the declaring class) currently
+  *don't* trigger cross-class machinery — they remain in the Phase 7 same-class call path,
+  which doesn't apply the receiver-qualified rewrite. Edge case; the typical use is foreign
+  receivers, which work.
 
 ## Non-goals
 

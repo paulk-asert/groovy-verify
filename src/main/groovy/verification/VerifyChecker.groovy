@@ -41,6 +41,7 @@ import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
+import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -135,6 +136,15 @@ class VerifyChecker extends TypeCheckingExtension {
      * the resulting obligation alongside the existing bounds/null/divide-by-zero checks.
      */
     private boolean currentOverflowChecking = false
+    /**
+     * Phase 45 — class-typed parameter names visible to the current method (each value is the
+     * parameter's declared {@link ClassNode}). Used by the cross-class reasoning machinery: a
+     * read {@code b.field} translates to a receiver-qualified entity {@code b$field}; the
+     * receiver's class invariants are assumed at method entry and re-assumed after a
+     * {@code b.method()} call. Only non-primitive, non-collection types end up here — sets, maps,
+     * lists, and the primitive wrappers have their own dispatch (collectSetElementTypes etc.).
+     */
+    private Map<String, ClassNode> currentObjectParams = new LinkedHashMap<String, ClassNode>()
 
     /**
      * Source-level names of {@code java.util.Set}-typed parameters and fields visible to the current
@@ -193,7 +203,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private Encoder mkEncoder(SmtSession session) {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
-                    currentNestedSetValueTypes, currentListNames)
+                    currentNestedSetValueTypes, currentListNames, currentObjectParams)
     }
 
     /**
@@ -209,6 +219,42 @@ class VerifyChecker extends TypeCheckingExtension {
         ClassNode dc = node.declaringClass
         if (dc != null) for (FieldNode f : dc.fields) if (isSetType(f.type)) out.put(f.name, firstGenericOrInt(f.type))
         out
+    }
+
+    /**
+     * Phase 45 — class-typed (object) parameters visible to {@code node}, paired with the declared
+     * {@link ClassNode}. Filters out anything already owned by the other dispatch paths (sets,
+     * maps, lists, primitives, primitive wrappers, String, enums, arrays) so this is the catch-all
+     * for "named object with fields, possibly carrying class invariants". A reference here drives
+     * the cross-class reasoning: receiver-qualified field reads, invariant assumption, etc.
+     */
+    private static Map<String, ClassNode> collectObjectParams(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        ClassNode declaring = node.declaringClass
+        for (Parameter p : node.parameters) {
+            if (isCrossClassObjectType(p.type, declaring)) out.put(p.name, p.type)
+        }
+        out
+    }
+
+    /** True if {@code t} is a non-primitive, non-collection, non-array class distinct from the declaring class. */
+    private static boolean isCrossClassObjectType(ClassNode t, ClassNode declaringClass) {
+        if (t == null) return false
+        if (t.isArray()) return false
+        if (isSetType(t) || isMapType(t) || isListType(t)) return false
+        if (isNonIntScalar(t)) return false   // String, enums — own dispatch (Phase 27)
+        if (isIntElement(t)) return false     // primitive wrappers — own dispatch
+        String n = t.name
+        // Filter out java.lang.Object, java.lang.* boxed, etc.
+        if (n == 'java.lang.Object' || n == 'java.lang.String' || n?.startsWith('java.lang.')) return false
+        // Same-class receivers (`this`) are handled by Phase 15a/b; foreign classes only.
+        if (declaringClass != null && n == declaringClass.name) return false
+        // Must have at least one field for the cross-class reads to be meaningful.
+        try {
+            return t.fields != null && !t.fields.isEmpty()
+        } catch (Throwable ignored) {
+            return false
+        }
     }
 
     /**
@@ -937,6 +983,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
+        currentObjectParams = collectObjectParams(node)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -1027,6 +1074,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentClassInvariants = Collections.<Expression> emptyList()
             currentIsConstructor = false
             currentOverflowChecking = false
+            currentObjectParams = new LinkedHashMap<String, ClassNode>()
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentNestedSetValueTypes = new HashMap<String, ClassNode>()
@@ -1484,15 +1532,18 @@ class VerifyChecker extends TypeCheckingExtension {
             // the fragment surface as a "skipped" diagnostic rather than a refute, mirroring the
             // bounds/null/div skip rule.
             Object L = enc.translate(ov.left)
-            Object R = enc.translate(ov.right)
-            if (L == null || R == null) {
+            Object R = ov.right != null ? enc.translate(ov.right) : null
+            if (L == null || (ov.right != null && R == null)) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("integer overflow",
                     "operand of '${ov.text}' is outside fragment"), ov.node)
                 return
             }
-            Object result = (ov.op == '+') ? s.plus(L, R) :
-                            (ov.op == '-') ? s.minus(L, R) :
-                                             s.times(L, R)
+            Object result = (ov.op == '+')   ? s.plus(L, R) :
+                            (ov.op == '-')   ? s.minus(L, R) :
+                            (ov.op == '*')   ? s.times(L, R) :
+                            (ov.op == 'neg') ? s.neg(L) :
+                                               null
+            if (result == null) return    // unrecognised op shouldn't happen, but be defensive
             Object intMin = s.intLit(-2147483648L)
             Object intMax = s.intLit(2147483647L)
             // ¬(INT_MIN ≤ result ∧ result ≤ INT_MAX)  ≡  result < INT_MIN ∨ result > INT_MAX
@@ -1680,6 +1731,18 @@ class VerifyChecker extends TypeCheckingExtension {
                     left: be.leftExpression, right: be.rightExpression, op: sym, text: be.text))
             }
             super.visitBinaryExpression(be)
+        }
+
+        @Override
+        void visitUnaryMinusExpression(UnaryMinusExpression ue) {
+            // Phase 44b-neg — unary {@code -a} overflows when {@code a == Integer.MIN_VALUE}
+            // (the math negation {@code 2147483648} is one past INT_MAX). Same OverflowSite
+            // pipeline as the binary cases; {@code right == null} marks the unary shape.
+            if (overflowChecking) {
+                overflowSites.add(new OverflowSite(node: ue,
+                    left: ue.expression, right: null, op: 'neg', text: ue.text))
+            }
+            super.visitUnaryMinusExpression(ue)
         }
 
         @Override
@@ -1987,6 +2050,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (!applySetMutation(session, enc, call) &&
                         !applyMapPut(session, enc, call) &&
                         !applyListMutation(session, enc, call, countVals) &&
+                        !applyCrossClassCall(session, enc, call) &&
                         !assumeCalleeEnsures(session, enc, call, node, null, hasDecreases(node))) {
                         throw new UnsupportedConstructException(
                             "standalone call '${call.text}' has no usable @Ensures")
@@ -2102,6 +2166,54 @@ class VerifyChecker extends TypeCheckingExtension {
 
         enc.bindSet(name, newS)
         return true
+    }
+
+    /**
+     * Phase 45 — apply the effect of a cross-class method call {@code b.method(...)} on a
+     * class-typed parameter {@code b}: havoc {@code b}'s declared fields (the callee may have
+     * mutated any of them) and re-assume {@code b}'s class invariants under the receiver
+     * context (the callee's exit obligation preserves them). The callee's @Requires is
+     * discharged separately by {@link #verifyCallSite} via {@link #onMethodSelection}; the
+     * callee's @Ensures is currently not assumed cross-class (a known limit — the invariant
+     * is what most cross-class contracts actually rely on).
+     *
+     * Returns false (so the caller falls through to {@link #assumeCalleeEnsures}) if the call
+     * isn't of the cross-class shape. Returns true on success, including for calls whose
+     * receiver type has no invariants (the havoc still happens — it's the conservative
+     * effect of "we don't know what the callee did to b's fields").
+     */
+    private boolean applyCrossClassCall(SmtSession s, Encoder enc, Expression call) {
+        if (!(call instanceof MethodCallExpression)) return false
+        MethodCallExpression mce = (MethodCallExpression) call
+        Expression recv = mce.objectExpression
+        if (!(recv instanceof VariableExpression)) return false
+        String recvName = ((VariableExpression) recv).name
+        if (!currentObjectParams.containsKey(recvName)) return false
+        ClassNode recvType = currentObjectParams.get(recvName)
+
+        // Step 1 — havoc every declared instance field of the receiver: rebind {@code b$field}
+        // to a fresh SMT constant. Subsequent reads of {@code b.field} pick up the fresh value,
+        // so the caller can no longer assume the pre-call state was preserved unless the
+        // invariant (re-asserted below) implies it.
+        Set<String> fields = new LinkedHashSet<String>()
+        List<FieldNode> fs = recvType.fields
+        if (fs != null) for (FieldNode f : fs) {
+            if (f.isStatic()) continue
+            String key = recvName + '$' + f.name
+            enc.bind(key, s.intVar('havoc$' + key + '$' + (havocCounter++)))
+            fields.add(f.name)
+        }
+
+        // Step 2 — re-assume the receiver's class invariants under the receiver context. The
+        // callee maintained the invariants on exit (verified by Phase 15a/b when the callee's
+        // class was compiled), so this is the sound caller-side companion to that proof.
+        List<Expression> invs = classInvariantTexts(recvType)
+        for (Expression inv : invs) {
+            Object h = enc.translateUnderReceiver(inv, recvName, fields)
+            if (h != null) s.assertExpr(h)
+        }
+
+        true
     }
 
     /**
@@ -2338,6 +2450,33 @@ class VerifyChecker extends TypeCheckingExtension {
         for (Expression inv : currentClassInvariants) {
             Object h = enc.translate(inv)
             if (h != null) s.assertExpr(h)
+        }
+        // Phase 45 — for each class-typed parameter, assume the parameter's class invariants under
+        // a receiver context so {@code count >= 0} in Counter's invariant becomes {@code c$count >= 0}
+        // when verifying a method that takes a {@code Counter c}. Sound: the caller's contract is
+        // "if you give me a Counter, you give me one whose invariants hold"; that's the standard
+        // OO contract every cross-class call site rests on.
+        assumeForeignReceiverInvariants(s, enc)
+    }
+
+    /**
+     * Phase 45 — walk {@link #currentObjectParams}, look up each receiver's class invariants, and
+     * assume each one translated under that receiver context. No-op if no class-typed parameters
+     * carry invariants. Sound under the no-aliasing assumption (a non-goal of this project).
+     */
+    private void assumeForeignReceiverInvariants(SmtSession s, Encoder enc) {
+        for (Map.Entry<String, ClassNode> e : currentObjectParams.entrySet()) {
+            String recvName = e.key
+            ClassNode recvType = e.value
+            List<Expression> invs = classInvariantTexts(recvType)
+            if (invs.isEmpty()) continue
+            Set<String> fields = new LinkedHashSet<String>()
+            List<FieldNode> fs = recvType.fields
+            if (fs != null) for (FieldNode f : fs) fields.add(f.name)
+            for (Expression inv : invs) {
+                Object h = enc.translateUnderReceiver(inv, recvName, fields)
+                if (h != null) s.assertExpr(h)
+            }
         }
     }
 
@@ -2578,7 +2717,28 @@ class VerifyChecker extends TypeCheckingExtension {
             //    AND the precondition fails? If yes, that model is the
             //    counterexample we report.
             formalBindings.each { name, handle -> enc.bind(name, handle) }
-            Object contractSmt = enc.translate(contractAst)
+            // Phase 45 — cross-class precondition discharge. If the call is {@code b.method(...)}
+            // for a class-typed parameter {@code b}, translate the callee's @Requires under the
+            // receiver context so {@code count} in the contract resolves to {@code b$count}.
+            String crossClassRecv = null
+            Set<String> crossClassFields = Collections.<String>emptySet()
+            if (callExpr instanceof MethodCallExpression) {
+                Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
+                if (recvExpr instanceof VariableExpression) {
+                    String rn = ((VariableExpression) recvExpr).name
+                    if (currentObjectParams.containsKey(rn)) {
+                        crossClassRecv = rn
+                        ClassNode rt = currentObjectParams.get(rn)
+                        Set<String> fs = new LinkedHashSet<String>()
+                        List<FieldNode> rfs = rt.fields
+                        if (rfs != null) for (FieldNode f : rfs) fs.add(f.name)
+                        crossClassFields = fs
+                    }
+                }
+            }
+            Object contractSmt = crossClassRecv != null ?
+                enc.translateUnderReceiver(contractAst, crossClassRecv, crossClassFields) :
+                enc.translate(contractAst)
             if (contractSmt == null) {
                 addStaticTypeError(
                     Reporter.formatSkipped(target.name,

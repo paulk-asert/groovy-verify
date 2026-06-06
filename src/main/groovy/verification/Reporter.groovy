@@ -171,7 +171,12 @@ class Reporter {
      * obligation echoes the {@code INT_MIN..INT_MAX} range the result must satisfy.
      */
     static String formatOverflow(String exprText, String op, CheckResult result) {
-        String kindWord = (op == '+') ? "addition" : (op == '-') ? "subtraction" : "multiplication"
+        String kindWord =
+            (op == '+')   ? "addition" :
+            (op == '-')   ? "subtraction" :
+            (op == '*')   ? "multiplication" :
+            (op == 'neg') ? "negation" :
+                            "arithmetic"
         implicit("Possible ArithmeticException: ${kindWord} overflows 32-bit signed range",
             "Integer.MIN_VALUE <= (${exprText}) && (${exprText}) <= Integer.MAX_VALUE",
             "Could not decide ${kindWord} stays in 32-bit range", result)

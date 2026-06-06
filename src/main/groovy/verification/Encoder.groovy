@@ -179,6 +179,24 @@ class Encoder {
     /** Counter for minting unique bound-variable names across nested/multiple quantifiers. */
     private int quantCounter = 0
 
+    /**
+     * Phase 45 — receiver-qualified field translation context. While translating a contract
+     * expression on behalf of a foreign receiver (e.g. assuming {@code b}'s class invariants
+     * after a call), bare {@code field} references that name a field of the receiver's class
+     * are rewritten to {@code recv$field} entities. Empty context (the default) is the normal
+     * "this-class" translation regime: bare {@code field} means {@code this.field}.
+     */
+    private String receiverPrefix = null
+    private Set<String> receiverFields = Collections.<String>emptySet()
+    /**
+     * Phase 45 — class-typed (object) parameter names visible to the current method, each
+     * paired with its declared {@link ClassNode}. Lets {@code b.field} on a known-class
+     * receiver translate to a receiver-qualified entity {@code b$field}, distinct from any
+     * same-named field of the declaring class. Sound only under the no-aliasing assumption
+     * the project takes as a non-goal.
+     */
+    private final Map<String, ClassNode> objectParams
+
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
     /**
@@ -200,7 +218,8 @@ class Encoder {
             Map<String, ClassNode> scalarTypes = null,
             Map<String, Integer> enumDomainSizes = null,
             Map<String, ClassNode> nestedSetValueTypes = null,
-            Set<String> listNames = null) {
+            Set<String> listNames = null,
+            Map<String, ClassNode> objectParams = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -210,6 +229,40 @@ class Encoder {
         this.enumDomainSizes = enumDomainSizes != null ? enumDomainSizes : new HashMap<String, Integer>()
         this.nestedSetValueTypes = nestedSetValueTypes != null ? nestedSetValueTypes : new HashMap<String, ClassNode>()
         this.listNames = listNames != null ? listNames : new HashSet<String>()
+        this.objectParams = objectParams != null ? objectParams : new LinkedHashMap<String, ClassNode>()
+    }
+
+    /**
+     * Phase 45 — run a translation under a foreign-receiver context: bare {@code field} references
+     * that name a field of the receiver's class are rewritten to {@code recv$field}. Used when
+     * assuming foreign-class invariants, asserting a callee's @Ensures across classes, or
+     * discharging a callee's @Requires from the call site. The context is unwound on return so
+     * subsequent translations resume the normal this-class regime.
+     */
+    Object translateUnderReceiver(Expression e, String recvName, Set<String> fieldNames) {
+        String savedPrefix = receiverPrefix
+        Set<String> savedFields = receiverFields
+        try {
+            receiverPrefix = recvName
+            receiverFields = fieldNames ?: Collections.<String>emptySet()
+            return translate(e)
+        } finally {
+            receiverPrefix = savedPrefix
+            receiverFields = savedFields
+        }
+    }
+
+    /** Phase 45 — true if {@code name} is a known class-typed parameter visible to the current method. */
+    boolean isObjectParam(String name) { objectParams.containsKey(name) }
+
+    /** Phase 45 — declared field names of an object parameter, used to drive the receiver-context substitution. */
+    Set<String> fieldsOfObjectParam(String name) {
+        ClassNode t = objectParams.get(name)
+        if (t == null) return Collections.<String>emptySet()
+        Set<String> out = new LinkedHashSet<String>()
+        List<org.codehaus.groovy.ast.FieldNode> fs = t.fields
+        if (fs != null) for (org.codehaus.groovy.ast.FieldNode f : fs) out.add(f.name)
+        out
     }
 
     /** Phase 41 — true if {@code name} is a List-typed parameter/field (use bcount, not count). */
@@ -374,6 +427,13 @@ class Encoder {
      * precondition refers to the same SMT constant.
      */
     Object varFor(String name) {
+        // Phase 45 — under a foreign-receiver context, a bare field reference (no qualifier)
+        // resolves to the receiver-qualified entity. So {@code count} inside a translated copy
+        // of {@code b}'s class invariant becomes {@code b$count}, distinct from this-class's
+        // own {@code count}.
+        if (receiverPrefix != null && receiverFields.contains(name)) {
+            return varForRaw(receiverPrefix + '$' + name)
+        }
         // Phase 27 step 9 — a non-Int scalar (String, Enum) parameter/field dispatches to
         // varForOfSort, which caches in sortedEnv. The standard env stays Int-only so the
         // counterexample model walk (which iterates Z3Backend.vars) keeps pinning Int values
@@ -383,6 +443,11 @@ class Encoder {
             Object sort = sortFor(declared)
             if (sort != session.intSort()) return varForOfSort(name, sort)
         }
+        return varForRaw(name)
+    }
+
+    /** Phase 45 — raw Int variable lookup without receiver-context or non-Int-sort routing. */
+    private Object varForRaw(String name) {
         Object cached = env.get(name)
         if (cached != null) return cached
         Object v = session.intVar(name)
@@ -1430,6 +1495,19 @@ class Encoder {
             // `field` is already a VariableExpression -> varFor(field), so both spellings unify.
             if (isThisReceiver(obj)) {
                 return varFor(prop)
+            }
+            // Phase 45 — b.field for a class-typed parameter b: resolves to {@code b$field}, a
+            // receiver-qualified SMT entity distinct from any same-named field on the declaring
+            // class. The field must exist on b's declared type; otherwise fall through (avoids
+            // misinterpreting a property name as a field).
+            if (obj instanceof VariableExpression) {
+                String recvName = ((VariableExpression) obj).name
+                if (objectParams.containsKey(recvName)) {
+                    Set<String> fields = fieldsOfObjectParam(recvName)
+                    if (fields.contains(prop)) {
+                        return varForRaw(recvName + '$' + prop)
+                    }
+                }
             }
             // s.size / m.size (property form) on a known set/map -> cardinality, ahead of the size oracle.
             if (prop == 'size') {
