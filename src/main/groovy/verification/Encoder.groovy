@@ -518,7 +518,14 @@ class Encoder {
         Object cached = sizeEnv.get(key)
         if (cached != null) return cached
         Object v = session.intVar(key)
-        session.assertExpr(session.ge(v, session.intLit(0L)))  // a size is never negative
+        // Java's collection contract: 0 ≤ size ≤ Integer.MAX_VALUE. The upper bound (Phase 44c)
+        // closes a subtle math-int unsoundness without opt-in: index arithmetic like {@code i + 1}
+        // for {@code i ∈ [0, size)} cannot overflow into a wrap-around index under the model,
+        // because {@code i + 1 ≤ size ≤ INT_MAX}. Asserted, not checked — the contract holds by
+        // the JVM, not by anything the verifier proves.
+        session.assertExpr(session.and([
+            session.ge(v, session.intLit(0L)),
+            session.le(v, session.intLit(2147483647L))]))
         sizeEnv.put(key, v)
         v
     }

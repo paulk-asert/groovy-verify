@@ -128,6 +128,13 @@ class VerifyChecker extends TypeCheckingExtension {
      * an instance method. Set in {@link #beforeVisitMethod}, cleared in the afterVisitMethod finally.
      */
     private boolean currentIsConstructor = false
+    /**
+     * Phase 44 — true if the current method (or its declaring class) carries {@code @CheckOverflow}.
+     * When set, the {@code ObligationCollector} emits an {@link OverflowSite} for each binary
+     * {@code +}/{@code -}/{@code *} on an Int-sorted operand, and the dispatch chain discharges
+     * the resulting obligation alongside the existing bounds/null/divide-by-zero checks.
+     */
+    private boolean currentOverflowChecking = false
 
     /**
      * Source-level names of {@code java.util.Set}-typed parameters and fields visible to the current
@@ -281,6 +288,32 @@ class VerifyChecker extends TypeCheckingExtension {
      * matches just as the top-level {@code @NonNull} does. Mirrors how NullChecker matches by
      * simple name, robust to annotation classes declared as inner types.
      */
+    /**
+     * Phase 44 — true if {@code node} or its declaring class carries an annotation whose simple
+     * name is {@code simpleName}. Used for {@code @CheckOverflow} detection; a class-level
+     * annotation enables the check for every method, the method-level form scopes it to one.
+     */
+    private static boolean methodOrClassHasAnnotation(MethodNode node, String simpleName) {
+        if (annotationsHave(node.annotations, simpleName)) return true
+        ClassNode dc = node.declaringClass
+        if (dc != null && annotationsHave(dc.annotations, simpleName)) return true
+        false
+    }
+
+    private static boolean annotationsHave(List<AnnotationNode> anns, String simpleName) {
+        if (anns == null) return false
+        for (AnnotationNode a : anns) {
+            ClassNode cn = a?.classNode
+            if (cn == null) continue
+            String n = cn.nameWithoutPackage
+            if (n == null) continue
+            int dollar = n.lastIndexOf('$')
+            String simple = dollar >= 0 ? n.substring(dollar + 1) : n
+            if (simple == simpleName) return true
+        }
+        false
+    }
+
     private static boolean hasAnnotationNamed(List<AnnotationNode> anns, Set<String> names) {
         if (anns == null) return false
         for (AnnotationNode a : anns) {
@@ -903,6 +936,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentScalarTypes = collectScalarTypes(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
+        currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -992,6 +1026,7 @@ class VerifyChecker extends TypeCheckingExtension {
             sizeAccessors = [:]
             currentClassInvariants = Collections.<Expression> emptyList()
             currentIsConstructor = false
+            currentOverflowChecking = false
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentNestedSetValueTypes = new HashMap<String, ClassNode>()
@@ -1055,6 +1090,7 @@ class VerifyChecker extends TypeCheckingExtension {
             pf = new PathFacts()
         }
         ObligationCollector col = new ObligationCollector()
+        col.overflowChecking = currentOverflowChecking
         try {
             body.visit(col)
         } catch (Throwable t) {
@@ -1063,6 +1099,7 @@ class VerifyChecker extends TypeCheckingExtension {
         for (IndexSite s : col.indexSites)  dischargeIndex(s, pf, reqAst)
         for (DivideSite s : col.divideSites) dischargeDivide(s, pf, reqAst)
         for (DerefSite s : col.derefSites)  dischargeDeref(s, pf, reqAst)
+        for (OverflowSite s : col.overflowSites) dischargeOverflow(s, pf, reqAst)
     }
 
     /**
@@ -1202,12 +1239,15 @@ class VerifyChecker extends TypeCheckingExtension {
         }
 
         ObligationCollector col = new ObligationCollector()
+        col.overflowChecking = currentOverflowChecking
         try { e.visit(col) } catch (Throwable ignored) { return }
-        if (col.indexSites.isEmpty() && col.divideSites.isEmpty() && col.derefSites.isEmpty()) return
+        if (col.indexSites.isEmpty() && col.divideSites.isEmpty() &&
+            col.derefSites.isEmpty() && col.overflowSites.isEmpty()) return
         List<Object> snap = new ArrayList<Object>(steps)
         for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
         for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
         for (DerefSite s : col.derefSites)  out.add(mkVf(s, snap))
+        for (OverflowSite s : col.overflowSites) out.add(mkVf(s, snap))
     }
 
     /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
@@ -1232,6 +1272,7 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             // Phase 15a — class invariants are method-entry facts, assumed before any
             // reaching step is replayed.
+            assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             // Phase 42 — replay the steps in source order. {@link Assign} factor handling
             // (materialised sets, factories) mirrors checkPath. {@link Guard} adds a path fact.
@@ -1272,6 +1313,12 @@ class VerifyChecker extends TypeCheckingExtension {
             Object pre = enc.translate(reqAst)
             if (pre != null) s.assertExpr(pre)
         }
+        // Phase 44c — every Int-typed parameter and field is JVM-bounded to
+        // {@code [Integer.MIN_VALUE, Integer.MAX_VALUE]}. Always asserted (not opt-in): the JVM
+        // contract guarantees it, the verifier just hadn't been modelling it. Especially material
+        // for {@code @CheckOverflow}, where Z3 would otherwise pick a math-int counterexample
+        // outside the 32-bit range and produce a refute that the runtime can't actually exhibit.
+        assumeIntJvmBounds(s, enc)
         // Phase 15a — class invariants are method-entry facts for the implicit-obligation discharge.
         // An invariant that bounds a field's length, for instance, lets a bare `a[i]` inside the body
         // verify under a loop-invariant-supplied range without restating the bound on every method.
@@ -1281,6 +1328,38 @@ class VerifyChecker extends TypeCheckingExtension {
             if (c == null) continue   // an unencodable fact just weakens the assumption set — safe
             s.assertExpr(f.inThenBranch ? c : s.not(c))
         }
+    }
+
+    /**
+     * Phase 44c — assert {@code INT_MIN ≤ x ≤ INT_MAX} for every Int-typed parameter and
+     * declaring-class field. Sound by the JVM's {@code int} contract; needed under
+     * {@code @CheckOverflow} so the verifier's math-int counterexamples match the values the
+     * runtime can actually exhibit. Locals are bounded transitively via their assignment rhs.
+     */
+    private void assumeIntJvmBounds(SmtSession s, Encoder enc) {
+        if (currentMethod == null) return
+        Object intMin = s.intLit(-2147483648L)
+        Object intMax = s.intLit(2147483647L)
+        for (Parameter p : currentMethod.parameters) {
+            if (isJvmInt(p.type)) {
+                Object v = enc.varFor(p.name)
+                s.assertExpr(s.and([s.le(intMin, v), s.le(v, intMax)]))
+            }
+        }
+        ClassNode dc = currentMethod.declaringClass
+        if (dc != null) {
+            for (FieldNode f : dc.fields) {
+                if (isJvmInt(f.type)) {
+                    Object v = enc.varFor(f.name)
+                    s.assertExpr(s.and([s.le(intMin, v), s.le(v, intMax)]))
+                }
+            }
+        }
+    }
+
+    private static boolean isJvmInt(ClassNode t) {
+        String n = t?.name
+        n == 'int' || n == 'java.lang.Integer'
     }
 
     private void dischargeIndex(IndexSite site, PathFacts pf, Expression reqAst) {
@@ -1306,6 +1385,17 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     private void dischargeDeref(DerefSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            dischargeObligationUnder(s, enc, site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    private void dischargeOverflow(OverflowSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
@@ -1387,6 +1477,31 @@ class VerifyChecker extends TypeCheckingExtension {
                 addStaticTypeError(Reporter.formatNullDereference(df.receiver, df.method, r), df.node)
             }
         }
+        if (site instanceof OverflowSite) {
+            OverflowSite ov = (OverflowSite) site
+            // Phase 44 — assert the negation of {@code INT_MIN <= result <= INT_MAX}; SAT means
+            // the math result can lie outside 32-bit signed range on this path. Operands outside
+            // the fragment surface as a "skipped" diagnostic rather than a refute, mirroring the
+            // bounds/null/div skip rule.
+            Object L = enc.translate(ov.left)
+            Object R = enc.translate(ov.right)
+            if (L == null || R == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("integer overflow",
+                    "operand of '${ov.text}' is outside fragment"), ov.node)
+                return
+            }
+            Object result = (ov.op == '+') ? s.plus(L, R) :
+                            (ov.op == '-') ? s.minus(L, R) :
+                                             s.times(L, R)
+            Object intMin = s.intLit(-2147483648L)
+            Object intMax = s.intLit(2147483647L)
+            // ¬(INT_MIN ≤ result ∧ result ≤ INT_MAX)  ≡  result < INT_MIN ∨ result > INT_MAX
+            s.assertExpr(s.or([s.lt(result, intMin), s.gt(result, intMax)]))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, r), ov.node)
+            }
+        }
     }
 
     /**
@@ -1447,6 +1562,7 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             // Phase 15a — class invariants are method-entry facts, in scope across the loop's
             // prefix/guard/body/suffix regions just like @Requires.
+            assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             if (assumePos != null) {
                 for (Expression e : assumePos) {
@@ -1469,14 +1585,16 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
-    private static List<Object> sitesInStatement(Statement st) {
+    private List<Object> sitesInStatement(Statement st) {
         ObligationCollector col = new ObligationCollector()
+        col.overflowChecking = currentOverflowChecking
         try { if (st != null) st.visit(col) } catch (Throwable ignored) {}
         return combineSites(col)
     }
 
-    private static List<Object> sitesInExpression(Expression e) {
+    private List<Object> sitesInExpression(Expression e) {
         ObligationCollector col = new ObligationCollector()
+        col.overflowChecking = currentOverflowChecking
         try { if (e != null) e.visit(col) } catch (Throwable ignored) {}
         return combineSites(col)
     }
@@ -1484,6 +1602,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private static List<Object> combineSites(ObligationCollector col) {
         List<Object> r = new ArrayList<Object>()
         r.addAll(col.indexSites); r.addAll(col.divideSites); r.addAll(col.derefSites)
+        r.addAll(col.overflowSites)
         return r
     }
 
@@ -1503,6 +1622,19 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /**
+     * Phase 44 — a binary arithmetic operation whose result must stay in {@code [INT_MIN, INT_MAX]}
+     * under {@code @CheckOverflow}. Sub-expressions are collected too, so {@code (a + b) * c} yields
+     * one site for {@code a + b} and one for the outer product.
+     */
+    @CompileStatic private static class OverflowSite {
+        ASTNode node
+        Expression left
+        Expression right
+        String op       // "+", "-", "*"
+        String text     // pretty-printed for the diagnostic, e.g. "(count + 1)"
+    }
+
+    /**
      * Walks a method body once, collecting the implicit-precondition sites:
      * array/list subscripts, integer division/modulo, and instance-method
      * dereferences on a named local/parameter receiver. Static calls, {@code this}
@@ -1514,6 +1646,15 @@ class VerifyChecker extends TypeCheckingExtension {
         final List<IndexSite> indexSites = []
         final List<DivideSite> divideSites = []
         final List<DerefSite> derefSites = []
+        /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
+        final List<OverflowSite> overflowSites = []
+        /**
+         * Phase 44 — gates {@link OverflowSite} collection. The walking pass still descends into
+         * sub-expressions so nested {@code a + b * c} arithmetic generates one site per operation;
+         * disabling this flag makes the overflow check a no-op without affecting bounds/null/div
+         * collection.
+         */
+        boolean overflowChecking = false
 
         @Override
         protected SourceUnit getSourceUnit() { null }
@@ -1530,6 +1671,13 @@ class VerifyChecker extends TypeCheckingExtension {
                     index: be.rightExpression))
             } else if (sym == '/' || sym == '%') {
                 divideSites.add(new DivideSite(node: be, divisor: be.rightExpression))
+            }
+            // Phase 44 — overflow check on +, -, * (only when enabled by @CheckOverflow). The
+            // assignment operator '=' shares Types.PLUS via compound assignment in some forms, so
+            // the check is operator-text gated rather than type-gated for robustness.
+            if (overflowChecking && (sym == '+' || sym == '-' || sym == '*')) {
+                overflowSites.add(new OverflowSite(node: be,
+                    left: be.leftExpression, right: be.rightExpression, op: sym, text: be.text))
             }
             super.visitBinaryExpression(be)
         }
@@ -1694,6 +1842,7 @@ class VerifyChecker extends TypeCheckingExtension {
             // precondition); instead we initialise Int-like fields to their JVM default (0) so a
             // constructor with an empty body whose invariant trivially holds at default values
             // verifies, matching runtime semantics.
+            assumeIntJvmBounds(session, enc)
             assumeClassInvariants(session, enc)
             if (currentIsConstructor) initFieldDefaults(session, enc, node)
 

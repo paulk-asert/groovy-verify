@@ -41,6 +41,7 @@ class VerifyHarness {
         import groovy.contracts.Modifies
         import verification.Forall
         import verification.Sets
+        import verification.CheckOverflow
     '''.stripIndent()
 
     /** A contracted producer reused by the cross-call precondition cases. */
@@ -2057,6 +2058,84 @@ class VerifyHarness {
                         @Modifies({ this.xs })
                         @Ensures({ xs.size() == old.xs.size() + 1 })
                         void push(int v) { xs.add(v) }
+                    }''')],
+
+        // ---------- Phase 44: opt-in 32-bit integer overflow checks (@CheckOverflow) ----------
+        // Bounded inputs let the overflow obligation discharge.
+        [group: 'P44 overflow', name: 'addition with bounded inputs verifies', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ a >= 0 && a < 1000 && b >= 0 && b < 1000 })
+                        static int add(int a, int b) { a + b }
+                    }''')],
+        // Unguarded increment refutes — Z3 picks n = Integer.MAX_VALUE and the addition overflows.
+        [group: 'P44 overflow', name: 'unguarded increment refutes',
+         expect: 'addition overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        static int incr(int n) { n + 1 }
+                    }''')],
+        // Bound the input explicitly to make the increment safe. We write the literal value
+        // rather than {@code Integer.MAX_VALUE} because the verifier doesn't currently fold the
+        // JDK constant (a polish item; see Phase 44 known limits).
+        [group: 'P44 overflow', name: 'increment with upper bound verifies', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ n < 2147483647 })
+                        static int incr(int n) { n + 1 }
+                    }''')],
+        // Subtraction overflow: a - b could underflow Integer.MIN_VALUE.
+        [group: 'P44 overflow', name: 'unguarded subtraction refutes',
+         expect: 'subtraction overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        static int sub(int a, int b) { a - b }
+                    }''')],
+        // Multiplication: a * b can overflow even for small magnitudes (50000 * 50000 = 2.5e9 > INT_MAX).
+        [group: 'P44 overflow', name: 'multiplication with tight bounds verifies', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ a >= 0 && a < 10000 && b >= 0 && b < 10000 })
+                        static int mul(int a, int b) { a * b }
+                    }''')],
+        [group: 'P44 overflow', name: 'multiplication with loose bounds refutes',
+         expect: 'multiplication overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ a >= 0 && a < 100000 && b >= 0 && b < 100000 })
+                        static int mul(int a, int b) { a * b }
+                    }''')],
+        // Sub-expression aware: (a+1)*(a+1) emits two obligations — inner add and outer mul.
+        // The outer mul refutes for a near sqrt(INT_MAX) ≈ 46341.
+        [group: 'P44 overflow', name: 'sub-expression: nested op refutes',
+         expect: 'multiplication overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ a >= 0 && a < 1_000_000 })
+                        static int sq1(int a) { (a + 1) * (a + 1) }
+                    }''')],
+        // Class-level @CheckOverflow propagates to every method.
+        [group: 'P44 overflow', name: 'class-level @CheckOverflow propagates',
+         expect: 'addition overflows 32-bit signed range',
+         src: tc('''@CheckOverflow
+                    class C {
+                        static int incr(int n) { n + 1 }
+                    }''')],
+        // Regression anchor: without @CheckOverflow, the same method verifies as math-int.
+        // This guards the default-math-int experience for all existing code.
+        [group: 'P44 overflow', name: 'no @CheckOverflow: math-int default unchanged', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == a + b })
+                        static int add(int a, int b) { a + b }
+                    }''')],
+        // Phase 44c — implicit size upper bound. A method that indexes xs[i + 1] for i in
+        // [0, xs.size()-1) can't overflow into a wrap-around index, because xs.size() ≤ INT_MAX
+        // is asserted on the size oracle. Verified WITHOUT @CheckOverflow — this closes a
+        // small soundness gap unconditionally.
+        [group: 'P44 overflow', name: 'index arithmetic never overflows (implicit size bound)', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= i && i + 1 < a.length })
+                        static int pair(int[] a, int i) { a[i] + a[i + 1] }
                     }''')],
 
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.

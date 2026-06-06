@@ -255,6 +255,37 @@ and a null receiver exact, solver-constrained array elements pinned as literals
 (`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
 (`new int[3]`).
 
+**32-bit integer overflow — Verus-style precision when you want it.** Anything in the fragment is
+encoded as Z3's mathematical (unbounded) Int by default — the experience that makes most existing
+proofs work. Methods (or classes) that annotate `@CheckOverflow` opt into a stronger guarantee:
+every `+`, `-`, `*` becomes an implicit obligation that the math result stays in
+`[Integer.MIN_VALUE, Integer.MAX_VALUE]`, refuted otherwise with a runnable repro:
+
+```groovy
+class C {
+    @CheckOverflow
+    static int incr(int n) { n + 1 }                  // refutes
+}
+```
+
+```
+Possible ArithmeticException: addition overflows 32-bit signed range
+    obligation: Integer.MIN_VALUE <= (n + 1) && (n + 1) <= Integer.MAX_VALUE
+    counterexample: n = 2147483647
+    fails on: incr(2147483647)
+```
+
+Add `@Requires({ n < 2147483647 })` and it verifies. Sub-expression aware: `(a + 1) * (a + 1)`
+generates an obligation for the inner add and one for the outer multiply, so an unguarded
+square-of-successor refutes at the multiplication step with a sqrt(INT_MAX)-territory
+counterexample.
+
+Method-level math-int reasoning (no annotation) is preserved verbatim — the entire existing test
+suite continues to verify unchanged, and the permutation-sort showcase still uses the unbounded
+`int[].count(v)`. `@CheckOverflow` is **additive**: it puts groovy-verify in the same
+machine-integer-precision territory as Verus or Dafny without forcing the typed-narrow ergonomic
+that limits adoption — *math by default, machine precision on demand.*
+
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
 sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in place under a
@@ -619,7 +650,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Size-changing list mutation** | `xs.add(v)` (append) threads `newSize = oldSize + 1` and `newArr = store(oldArr, oldSize, v)`; `xs.clear()` sets `newSize = 0`; `xs.removeLast()` / `xs.pop()` thread `newSize = oldSize - 1` with a synthesised `IndexSite(xs, 0)` obligation so pop-on-empty refutes with `fails on: f([])`. Consecutive mutations chain via expression composition (no SSA naming). Shift-based variants (`xs.add(i, v)`, `xs.remove(i)`) still defer | ✅ Phase 40 |
 | **Bounded `xs.count(v)` faithful to runtime semantics** | A list's `xs.count(v)` translates to `bcount(arr, v, 0, sizeOf(xs))` — bounded by the *current* size, matching Groovy's GDK semantics. The per-store law fires on `bcount` for List receivers; the boundary law fires on `xs.add(v)` (`+1` if `v` matches) and `xs.removeLast()` (`-1` if dropped tail matches). `xs.add(v); xs.removeLast()` provably preserves `xs.count(v)` — today's headline win. Arrays (`int[]`) keep the unbounded `count` (fixed size, no semantic mismatch) so the permutation sort showcase is untouched | ✅ Phase 41 |
 | **Implicit obligations downstream of mutations** | `VfObligation` now carries a single source-ordered step list (Assign / Guard / LemmaCall) replayed via the same handlers `checkPath` uses, so the implicit-obligation pass and the body-replay pass see the same oracle state. `xs.add(v); xs[0]` now passes the implicit bounds check; `xs.removeLast(); xs[n-1]` correctly refutes | ✅ Phase 42 |
-| Class `@Invariant` cross-class call-site assumption, 32-bit overflow, heap aliasing | — | ⏳ later |
+| **32-bit integer overflow (opt-in via `@CheckOverflow`)** | A method or class annotated `@CheckOverflow` gets a Verus-style guarantee: every `+`, `-`, `*` (sub-expressions included) becomes an implicit obligation that the math result stays in `[Integer.MIN_VALUE, Integer.MAX_VALUE]`. Unannotated code keeps the math-int default — the verifier's existing experience. Implicit JVM int bounds (size oracles, int parameters, int fields) are *always-on*, asserted from the JVM contract, so the math view and machine view coincide for the common case of in-bounds index arithmetic | ✅ Phase 44 |
+| Class `@Invariant` cross-class call-site assumption | — | ⏳ later |
 
 ## Building & testing
 

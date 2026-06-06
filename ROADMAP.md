@@ -420,11 +420,10 @@ combined measure); and cross-module measure *inheritance* (an override of a prec
 **Genuinely still optional, not done:**
 - **Full NIA** — lift the "a product needs a literal operand" restriction (Z3's `qfnia` is
   incomplete; needs timeout discipline, maybe per-VC tactic selection).
-- **Bounded-integer modelling** — catch overflow instead of silently working modulo 2^32
-  (fixed-width bitvectors; every arithmetic VC gains a range side-condition, ~2x solver time).
-  Bitwise / shift operators come for free with it.
-- **Heap / aliasing** — don't. Groovy makes it very hard and the payoff is small for the
-  fragment most developers care about.
+- ~~**Bounded-integer modelling**~~ — *closed (in its opt-in shape) by Phase 44 below* —
+  {@code @CheckOverflow} catches overflow via per-operation range obligations, with implicit
+  JVM Int bounds asserted unconditionally for parameters/fields/sizes. Bitwise / shift operators
+  are still outside the fragment.
 
 ---
 
@@ -2471,6 +2470,134 @@ The diagnostic shape is identical to the parameter-receiver version — same
   index isn't fabricated as an Expression; the @Ensures-driven check still catches correctness
   violations.
 
+## Phase 44 — Opt-in 32-bit integer overflow checks  *(shipped)*
+
+**Closes the major theory gap with Verus.** Until this phase, every {@code int} in groovy-verify
+was modelled as Z3's mathematical {@code Int} sort — unbounded, no overflow. This is great for
+proof ergonomics (most contracts hold for math integers and machine integers identically) but
+unsound vs. the JVM's actual semantics: {@code add(Integer.MAX_VALUE, 1)} returns a wrapped
+negative at runtime, and a {@code @Ensures({ result == a + b })} can pass under the math view
+while the program computes a non-equal wrapped value.
+
+**The design choice — opt-in, not always-on.** Verus is always-on because Rust's typed-narrow
+integers ({@code u32}, {@code i64}, etc.) drive overflow obligations at every arithmetic op.
+Groovy has only {@code int}/{@code long}/{@code short}/{@code byte}/{@code char} and no spec/impl
+type distinction. Making overflow always-on would refute the permutation-sort showcase
+({@code i + 1} loop indices), the Counter example ({@code count + 1} mutations), and ~200 other
+existing tests until each gets a fresh layer of bounds annotations. Instead, groovy-verify takes
+the path Groovy can support: a {@code @verification.CheckOverflow} marker enables the precise
+check method-by-method or class-by-class. Default code keeps the math-int experience; annotated
+code gets the Verus-style guarantee.
+
+This positions groovy-verify uniquely in the SMT-verifier landscape: *math by default, machine
+precision on demand* — the same engine handles both regimes with one annotation flip.
+
+**The encoding.**
+
+A new {@link OverflowSite} kind in {@link ObligationCollector}, collected only when
+{@code currentOverflowChecking} is set:
+
+```groovy
+@CompileStatic private static class OverflowSite {
+    ASTNode node
+    Expression left
+    Expression right
+    String op       // "+", "-", "*"
+    String text     // pretty-printed for the diagnostic
+}
+```
+
+The {@code ObligationCollector.visitBinaryExpression} adds a site for each {@code +}/{@code -}/
+{@code *} on Int-sorted operands, then recurses via {@code super.visitBinaryExpression} so a
+nested {@code (a + b) * c} emits two obligations — one for the inner add, one for the outer
+mul. The same operator-text gate as the existing {@code /} / {@code %} division check.
+
+The discharge ({@link dischargeOverflow}, called from both the havoc pass and the value-flow
+pass via {@link dischargeObligationUnder}) translates the operands as math ints, computes the
+result expression with the matching SMT operator, and asserts the negation of
+{@code INT_MIN ≤ result ≤ INT_MAX}:
+
+```groovy
+Object result = (ov.op == '+') ? s.plus(L, R) :
+                (ov.op == '-') ? s.minus(L, R) :
+                                 s.times(L, R)
+s.assertExpr(s.or([s.lt(result, s.intLit(-2147483648L)),
+                   s.gt(result, s.intLit(2147483647L))]))
+```
+
+SAT means the math result can lie outside 32-bit range on this path — refute with
+{@link Reporter#formatOverflow}, which mirrors the Java exception a developer would actually hit
+with {@code Math.addExact} et al.:
+
+```
+Possible ArithmeticException: addition overflows 32-bit signed range
+    obligation: Integer.MIN_VALUE <= (n + 1) && (n + 1) <= Integer.MAX_VALUE
+    counterexample: n = 2147483647
+    fails on: incr(2147483647)
+```
+
+**Phase 44c — Implicit JVM Int bounds, *always-on*.** Two pieces shipped alongside the opt-in
+overflow check, and together they're the *unconditional* slice of the work — they apply whether
+or not {@code @CheckOverflow} is set:
+
+1. {@code sizeOf(recv)} now asserts {@code 0 ≤ size ≤ Integer.MAX_VALUE} on every mint
+   (was just {@code ≥ 0}). Sound by Java's collection contract.
+2. {@code assumeIntJvmBounds(s, enc)} runs at the start of every verification pass
+   (body-replay {@code checkPath}, value-flow {@code dischargeVfObligation}, implicit-obligation
+   {@code assumeContext}, loop {@code dischargeRegion}) and asserts
+   {@code INT_MIN ≤ p ≤ INT_MAX} for every Int-typed parameter and declaring-class field.
+
+Locals are transitively bounded via their assignment RHS (an SSA-fresh local is constrained by
+{@code local == rhs}, and rhs operates on bounded values). The combined effect: under
+{@code @CheckOverflow}, Z3's counterexamples are always values the runtime can actually produce
+— a counterexample like {@code n = -2147483650} (below INT_MIN) is no longer possible.
+
+Without {@code @CheckOverflow}, the bounds are still asserted (because they're sound), but
+arithmetic isn't checked — so a math-int proof that doesn't depend on the range works
+unchanged, and the entire existing test suite verifies as before.
+
+```groovy
+class C {
+    @CheckOverflow
+    @Requires({ a >= 0 && a < 10000 && b >= 0 && b < 10000 })
+    static int mul(int a, int b) { a * b }                  // ✓ verifies (50_000_000 < INT_MAX)
+
+    @CheckOverflow
+    @Requires({ a >= 0 && a < 100000 && b >= 0 && b < 100000 })
+    static int mulLoose(int a, int b) { a * b }             // ✗ refutes (could exceed INT_MAX)
+
+    @CheckOverflow
+    @Requires({ a >= 0 && a < 1_000_000 })
+    static int sq1(int a) { (a + 1) * (a + 1) }             // ✗ refutes — sub-expression check
+}
+
+@CheckOverflow
+class D {
+    static int incr(int n) { n + 1 }                        // ✗ class-level propagation
+}
+```
+
+The class-level form covers every method and constructor; method-level overrides for finer
+scoping (only on selected methods, regardless of class).
+
+**Known limits.**
+
+- **`long`, `short`, `byte`, `char`** still use the math-int model. A {@code @CheckOverflow long n; n + 1}
+  is currently 32-bit-checked (sound but tighter than necessary). Type-driven dispatch to 64-bit
+  / 16-bit / 8-bit ranges is the natural follow-on.
+- **Division edge cases.** {@code INT_MIN / -1} and {@code -INT_MIN} (unary minus on INT_MIN)
+  overflow at runtime but aren't yet checked. Phase 44b would add these — small, ~1 day; not
+  bundled here because the {@code +}/{@code -}/{@code *} cases are the headline.
+- **`Integer.MAX_VALUE` / `Integer.MIN_VALUE` constants.** A {@code @Requires({ n < Integer.MAX_VALUE })}
+  doesn't fold the constant (the verifier doesn't recognise the PropertyExpression). Users write
+  the literal {@code 2147483647}. A small {@code tryFoldConstant} extension would close this; not
+  pursued today.
+- **Cast/conversion overflow.** {@code (byte) intVal}, {@code (int) longVal} need explicit
+  truncation modelling — not in the fragment regardless of {@code @CheckOverflow}.
+- **Always-on mode.** Some safety-critical projects want overflow checked everywhere, no
+  annotation needed. A future {@code @TypeChecked(strict = true)} mode could flip the default
+  but isn't in scope here — the math-int default is too useful to drop unilaterally.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -2490,6 +2617,12 @@ Things deliberately not pursued, because they don't pay back:
   `PurityChecker`/`ModifiesChecker` can verify the purity our pure-function evaluation (Phase 8a) and
   `@Modifies` framing (Phase 13) assume.
 - **Concurrency.** No race detection, no dataflow reasoning. A different tool.
+- **Heap / aliasing.** The fragment models collection state as value-semantics — every `@Modifies`
+  havoc is per-name, and `old` snapshots are independent copies. Reasoning about *shared mutable*
+  references (two parameters pointing at the same list, a field aliased into a local) would need
+  a separation logic or a points-to analysis layered above SMT. The payoff is small for the
+  contract-style code groovy-verify is built for, and the engineering would dwarf every shipped
+  phase combined. Sister tools (Viper, Verus' Linear-Permissions story) own this territory.
 - **Floating point.** SMT handles FP but slowly and with surprising results. If
   the project ever targets numeric code, revisit.
 - **Generated proof certificates.** Out of scope.
@@ -2555,16 +2688,3 @@ An increment is done when:
 Anything else — broader coverage, more examples, better messages — is polish
 that does not gate the next increment.
 
----
-
-## A note on ordering
-
-The temptation is to do Phase 6 (quantifiers) early because the binary-search
-example is so striking. The drop-off from "works on the example" to "works on
-the next thing someone tries" is steepest there, so the foundation came first:
-Phases 1 → 2 → 3 → 4, each catching a class of bug developers viscerally
-recognise, none leaning on quantifier heuristics. Phase 5 (value-flow &
-loop-fused safety) then followed — low-risk hardening that fixed the most
-recognisable everyday gap inside the shipped fragment — *before* Phase 6
-(quantifiers), which begins as its own multi-week effort, not a quick win bolted
-onto a demo.

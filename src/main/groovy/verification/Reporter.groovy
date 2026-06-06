@@ -165,6 +165,18 @@ class Reporter {
             "Could not decide receiver non-null", result)
     }
 
+    /**
+     * Phase 44 — refuted-overflow head mirrors the Java exception a developer would see if they
+     * had a runtime overflow check (e.g. via {@code Math.addExact}/{@code multiplyExact}). The
+     * obligation echoes the {@code INT_MIN..INT_MAX} range the result must satisfy.
+     */
+    static String formatOverflow(String exprText, String op, CheckResult result) {
+        String kindWord = (op == '+') ? "addition" : (op == '-') ? "subtraction" : "multiplication"
+        implicit("Possible ArithmeticException: ${kindWord} overflows 32-bit signed range",
+            "Integer.MIN_VALUE <= (${exprText}) && (${exprText}) <= Integer.MAX_VALUE",
+            "Could not decide ${kindWord} stays in 32-bit range", result)
+    }
+
     static String formatImplicitSkipped(String kind, String reason) {
         "Skipped ${kind} safety check (${reason}). The expression is outside the " +
         "spike's supported fragment (linear int arithmetic, comparisons, " +
