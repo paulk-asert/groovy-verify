@@ -413,22 +413,17 @@ like a straight-line method's `if (s != null) s.method()` shape. Reverse-style b
 port on the `List<Character>` API today; a true `String.reverse()` proof would need its
 own uninterpreted+axioms layer (Z3 has no `str.reverse` primitive).
 
-String content is first-class under Phase 47's Z3-native-string-theory adoption (and the
-47b–h follow-on slices). The full surface — `length()` / `charAt(i)` /
-`substring(b, e)` / `+` and `concat(t)` / `replace(old, new)` / `indexOf(sub)` /
-`matches(regex)` / `Integer.toString(n)` / `Integer.parseInt(s)` / `toUpperCase()` /
-`toLowerCase()` / `equalsIgnoreCase(t)` / `replaceAll(...)` / `lastIndexOf(...)` /
-`"hello $name"` GString interpolation — reaches the verifier through native Z3 primitives
-where available (`str.prefixof`, `str.substr`, `str.++`, `str.in_re`, …) and uninterpreted
-functions with weak axioms where Z3 doesn't yet ship a primitive (`replaceAll`,
-`lastIndexOf`, `toUpper`/`toLower` via per-literal pinning). Literals fold
-(`"hello".length() == 5`, `"foo" + "bar" == "foobar"`, `"Hello".toUpperCase() == "HELLO"`,
-`"hello $name"` with `name = "world"` folds to `"hello world"`), out-of-range indices
-refute with the same `IndexBounds` diagnostic that list reads produce, regex parses through
-an inline recursive-descent translator into Z3's regex ops, and the **structural
-cross-string facts** (`s.startsWith(t) ∧ i < t.length()` implying
-`s.charAt(i) == t.charAt(i)`) verify as free theory consequences. Composing several of
-these in one method:
+String content is first-class under Phase 47's Z3-native-string-theory adoption: predicates
+(`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
+`substring` / `indexOf`), composition (`+` / `concat` / `replace` / regex `matches`), and
+conversion (`Integer.toString` / `parseInt`) all route to Z3 seq-theory primitives;
+`toUpperCase` / `toLowerCase` / `equalsIgnoreCase` / `replaceAll` / `lastIndexOf` are
+shipped as uninterpreted functions with literal pinning and weak axioms where Z3 doesn't
+ship a primitive yet; GString interpolation (`"hello $name"`) folds to chained `str.++`.
+Literals fold to ground constants, out-of-range indices refute with the standard
+`IndexBounds` diagnostic, and **structural cross-string facts** like
+`s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` come free from the theory.
+Composing several in one method:
 
 ```groovy
 @Requires({ s != null && s.startsWith("user:") })
@@ -437,21 +432,17 @@ static int idLength(String s) { s.substring(5).length() }
 ```
 
 That verifies via two theory consequences chained — `startsWith ⟹ length(prefix) <= length(s)`
-gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` for in-bounds `k` gives the
-identity.
+gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identity.
 
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
-The remaining honest gaps: the *hard* corners of non-linear int arithmetic (general
-polynomial identities, square-root / factoring shapes) may timeout under Z3's NIA
-solver — the common bounded shapes (`i * i <= n` for prime testing, divisibility via
-`% 2`, bounded variable products) verify cleanly under Phase 48. `Integer.toString` and
-`Integer.parseInt`
-carry Z3's signed-semantics gap (`""` for negative ints, `-1` for non-digit input — use
-under non-negative-input contracts); `replaceAll` and `lastIndexOf` are uninterpreted
-with weak axioms (no Z3 primitive yet); `split` (returns array, structurally invasive),
-`toUpperCase` symbolic length-preservation (the universal axioms cause Z3 timeouts), and
-non-ASCII case folding remain deferred. Sister task 023 (`strlen`) ports the same way —
-with the natural spec `result == xs.size()` added.
+The remaining honest gaps: `Integer.toString` and `parseInt` carry Z3's signed-semantics
+gap (`""` for negative ints, `-1` for non-digit input — use under non-negative-input
+contracts); `split` (returns an array, structurally invasive) and symbolic
+length-preservation for `toUpperCase` (universal axioms over the seq sort cause Z3 to
+hang) remain deferred. The hard NIA corners (general polynomial identities,
+square-root / factoring shapes) may time out under Z3's solver — surfaces as "Could not
+decide," never silent. Sister task 023 (`strlen`) ports the same way — with the natural
+spec `result == xs.size()` added.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of

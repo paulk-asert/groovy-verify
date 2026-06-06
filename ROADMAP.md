@@ -418,8 +418,10 @@ combined measure); and cross-module measure *inheritance* (an override of a prec
 `@Decreases`), an upstream groovy-contracts limitation.
 
 **Genuinely still optional, not done:**
-- **Full NIA** — lift the "a product needs a literal operand" restriction (Z3's `qfnia` is
-  incomplete; needs timeout discipline, maybe per-VC tactic selection).
+- ~~**Full NIA**~~ — *closed by Phase 48: the "a product needs a literal operand" restriction
+  is lifted; `/` and `%` get first-class dispatch. The 2s per-VC timeout protects against
+  NIA hangs (UNKNOWN surfaces as "Could not decide"). Hard polynomial / square-root corners
+  may still time out — that's expected and honest, never silent.*
 - ~~**Bounded-integer modelling**~~ — *closed (in its opt-in shape) by Phase 44 below* —
   {@code @CheckOverflow} catches overflow via per-operation range obligations, with implicit
   JVM Int bounds asserted unconditionally for parameters/fields/sizes. Bitwise / shift operators
@@ -3007,16 +3009,14 @@ runs in ~37s as before.
 **Known limits.**
 
 - ~~**No regex matching / replace.**~~ — *closed by Phase 47b–c below.*
-- ~~**No `indexOf`.**~~ — *closed by Phase 47b.*
-- **No `lastIndexOf` / `split`.** `lastIndexOf` is expressible via Z3's seq theory but not
-  a single primitive; `split` returns an array, more invasive. Both deferred.
-- **`charAt(i)` returns int (codepoint), not `char`.** The encoder's existing `CastExpression`
-  handler (Phase 46e) bridges `(int) s.charAt(i)` for users who want the cast explicit.
-  Comparing `s.charAt(0) == 'h'` directly works in Groovy because char-to-int promotion
-  happens at the language level.
+- ~~**No `indexOf` / `lastIndexOf`.**~~ — *closed by Phase 47b (indexOf) and 47f (lastIndexOf
+  as uninterpreted with weak axioms).*
+- **No `split`.** Returns an array, structurally invasive; deferred.
+- **`charAt(i)` returns int (codepoint), not `char`.** The encoder's `CastExpression`
+  handler (Phase 46e) bridges `(int) s.charAt(i)`; comparing `s.charAt(0) == 'h'` directly
+  works in Groovy because char-to-int promotion happens at the language level.
 - **Performance.** Z3's string solver isn't QF_LIA — some queries can hang. Per-VC timeouts
-  guard the build; the full 427-test suite stays at ~37s, the same as before string-theory
-  adoption.
+  guard the build; the current 480-test suite stays at ~30-45s.
 
 ## Phase 47b — `replace` + `indexOf` dispatch  *(shipped)*
 
@@ -3200,9 +3200,9 @@ unequal-length swap" — explicitly *not* provable.
 uninterpreted functions and axioms in `Z3Backend` swap out for native dispatch in one
 edit — same shape as Phase 47's swap-out of the Phase 46a–c hand-axiomatized predicates.
 
-**Build cost.** The Phase 47f axioms add modest quantifier load on every check; suite
-wall-clock went from ~27s to ~56s. Acceptable for the win, and the axioms are gated so
-they're only asserted when a replaceAll / lastIndexOf call appears.
+**Build cost.** The Phase 47f axioms add modest quantifier load. Axioms are gated so
+they're asserted only when a replaceAll / lastIndexOf call appears, keeping methods that
+don't use either feature unaffected.
 
 **Shipped tests**: `replaceAll(s, "XYZ", "A") == s` under `!s.contains("XYZ")`,
 length-preservation under `replaceAll("a", "b")`, refute under
@@ -3290,9 +3290,8 @@ ASCII semantics. This is the documented compromise — the user explicitly asked
 "standard ASCII, less worried about charsets like tr_TR".
 
 **Build cost.** The recursive literal pinning expands the literal universe (each new
-String literal triggers its upper / lower forms). Suite wall-clock went from ~33s to ~60s
-under default JVM settings. Acceptable trade-off for the win, and the expansion is bounded
-(eventually closes when no new literals appear).
+String literal triggers its upper / lower forms). The expansion is bounded — closes once
+no new literals appear in the source.
 
 **Future upgrade paths.** A `toUpperChar$(c)` uninterpreted function with an ASCII case-folding
 axiom over `[A-Z]` / `[a-z]` codepoints, paired with a universal that ties
