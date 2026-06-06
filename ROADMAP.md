@@ -3461,6 +3461,62 @@ modulo range, division identity, divide-by-zero refute, even predicate.
 **Build cost**: unchanged at 30-45s. The NIA queries that fire are fast for the shapes the
 suite exercises; the timeout protection means worst-case is bounded per VC.
 
+## Phase 49 (Slice A) — Early-return in loop prefix  *(shipped)*
+
+Until Phase 49, a method with an annotated loop had to be straight-line around it — any
+`return` statement before or after the loop crashed `LoopEncoder.symExec` with
+"ReturnStatement in loop region". That blocked the idiomatic guard pattern that opens most
+HumanEval shapes (and `is_prime` was the canonical sufferer):
+
+```groovy
+if (n <= 1) return false                  // ← early-return guards before the loop
+if (n <= 3) return true
+if (n % 2 == 0 || n % 3 == 0) return false
+int i = 5
+@Invariant({ i >= 5 })
+while (i * i <= n) { … }
+return …
+```
+
+**The Slice A shape**: an "early-exit if" is `if (cond) return e;` (or
+`if (cond) { return e; }`) with no else-branch. Anything more elaborate stays in the
+existing path-fact route inside `LoopEncoder`.
+
+**Verification.** `findLoopSite` now partitions the prefix into early-exit ifs (each
+captured as an `EarlyExit { guard, result, priorStmts, priorGuards }`) and the non-exit
+statements (kept in `LoopSite.prefix` for the existing `symExec` calls). Then `verifyLoop`
+runs:
+
+- `checkEstablishment` and `checkUse` get `¬each-prefix-guard` assumed before sym-exec'ing
+  the kept prefix — the loop machinery only fires on the "no early-exit taken" path.
+- A new `checkEarlyExit` per exit:
+  1. Assume `@Requires` + class invariants.
+  2. Assume `¬each-prior-guard` (we got here, not at an earlier exit).
+  3. Sym-exec this exit's `priorStmts` (the non-exit statements that ran in source order
+     before this guard).
+  4. Assume this exit's guard.
+  5. Bind `result` to the return expression and check `@Ensures`.
+
+**Suffix exits are still deferred** (Slice B territory). The state-dependent guard
+ordering — a `¬suffix-guard` assertion needs to fire AT the suffix point in the walk,
+after the prior suffix statements have run, not at the start of `checkUse` — requires
+restructuring `LoopEncoder.resultExpr`. The existing "unsupported statement
+ReturnStatement after loop" diagnostic is the right honest skip; no soundness risk.
+
+**In-body early returns also still deferred** (Slice B's other half). Each in-body return
+forks the loop into "exited via this return" vs "continued" paths, with the method's
+`@Ensures` checked at each return point under the loop invariant. A genuine restructure
+of `checkPreservation`/`checkUse`; ~3-5 days as documented in the original sizing.
+
+**What this unlocks** — `is_prime` ports with its natural prefix-guards (the inner
+`if (num % i == 0) return false` still becomes a `composite` flag for now). Any
+HumanEval-style method that opens with sanity checks (`if (xs.size() == 0) return …`,
+`if (s == null) return …`, etc.) ports verbatim.
+
+**Co-shipped tests** (5): single prefix early-return, multiple stacked early-returns,
+postcondition violation refute, loop invariant using `¬prefix-guard`, prior assignment
+running before an exit.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

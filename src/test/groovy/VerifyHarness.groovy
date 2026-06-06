@@ -2387,6 +2387,168 @@ class VerifyHarness {
                         static String greet(String name) { "Hi, $name" }
                     }''')],
 
+        // ---------- Phase 49 (Slice A): early-return in loop prefix ----------
+        // The headline shape: an early-return guard before the loop. The prefix exit's
+        // @Ensures verifies on its own path (assumes the guard); the loop's establishment /
+        // use checks fire on the no-exit path (assumes ¬guard).
+        [group: 'P49 prefix-exits', name: 'single prefix early-return verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            if (n == 0) return 7
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) { i = i + 1 }
+                            return i
+                        }
+                    }''')],
+        // Stacked early-returns: each is verified independently with prior guards negated.
+        [group: 'P49 prefix-exits', name: 'multiple stacked prefix early-returns', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            if (n == 0) return 1
+                            if (n == 1) return 2
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) { i = i + 1 }
+                            return i
+                        }
+                    }''')],
+        // Soundness: an early-return whose value violates the postcondition refutes.
+        [group: 'P49 prefix-exits', name: 'early-return postcondition violation refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            if (n == 0) return -1
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) { i = i + 1 }
+                            return i
+                        }
+                    }''')],
+        // Loop establishment USES the negated guard: the invariant after the prefix needs to
+        // hold on the "no early-exit" path. Here the invariant assumes n >= 1, which only
+        // holds when the early-exit didn't fire (n != 0).
+        [group: 'P49 prefix-exits', name: 'loop invariant uses ¬prefix-guard', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 1 })
+                        static int f(int n) {
+                            if (n == 0) return 1
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) { i = i + 1 }
+                            return i
+                        }
+                    }''')],
+        // Prior statements + early-return: the prior assignment runs, then the exit's @Ensures
+        // is verified with that state.
+        [group: 'P49 prefix-exits', name: 'prior assignment + early-return', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            int x = n + 1
+                            if (x == 1) return 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) { i = i + 1 }
+                            return i
+                        }
+                    }''')],
+
+        // ---------- HumanEval port — is_prime (Verus task 039) ----------
+        // The Verus original combines two pieces this checker previously couldn't do:
+        // (1) the {@code while (i * i <= num)} NIA loop bound — closed by Phase 48; (2)
+        // multiple early-returns in the prefix ({@code if (num <= 1) return false;} etc.) —
+        // closed by Phase 49 (Slice A). The Verus version's last gap is in-body early returns
+        // (the {@code if (num % i == 0) return false} inside the loop), which Slice A still
+        // skips honestly; refactored to a {@code composite} flag in the body.
+        [group: 'HumanEval port', name: 'is_prime (Verus 039) — NIA bound + prefix early-returns', ok: true,
+         src: tc('''class C {
+                        @Requires({ num >= 0 })
+                        static int isPrime(int num) {
+                            if (num <= 1) return 0
+                            if (num <= 3) return 1
+                            if (num % 2 == 0 || num % 3 == 0) return 0
+                            int i = 5
+                            boolean composite = false
+                            @Invariant({ i >= 5 })
+                            while (!composite && i * i <= num) {
+                                if (num % i == 0 || num % (i + 2) == 0) {
+                                    composite = true
+                                } else {
+                                    i = i + 6
+                                }
+                            }
+                            return composite ? 0 : 1
+                        }
+                    }''')],
+
+        // ---------- HumanEval port — get_positive (Verus task 030, stronger spec) ----------
+        // The Verus original has no postcondition. The first port (above) added the natural
+        // size-bound spec. This stronger port matches what a Verus user would naturally write
+        // *if they wrote a spec*: every result element is positive. Requires a per-element
+        // bounded-universal invariant via {@code Forall.range} (the verus-style explicit form
+        // the encoder's quantifier path understands); the GDK {@code (0..<n).every} sugar
+        // doesn't yet route through that path for a mutating local's size.
+        [group: 'HumanEval port', name: 'get_positive (Verus 030, stronger): every result element is positive', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        @Ensures({ verification.Forall.range(0, result.size(), { int k -> result[k] > 0 }) })
+                        static List<Integer> getPositive(List<Integer> xs) {
+                            List<Integer> positive = []
+                            int i = 0
+                            @Invariant({ positive != null && 0 <= i && i <= xs.size() &&
+                                         verification.Forall.range(0, positive.size(), { int k -> positive[k] > 0 }) })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                int x = xs[i]
+                                if (x > 0) {
+                                    positive.add(x)
+                                }
+                                i = i + 1
+                            }
+                            return positive
+                        }
+                    }''')],
+
+        // ---------- HumanEval port — filter_by_prefix (Verus 029, stronger spec) ----------
+        // The Verus original's postcondition is {@code forall i. strings.contains(result[i])
+        // && result[i].starts_with(prefix)}. Phase 47 native string theory + Phase 46d in-loop
+        // path facts + the bounded universal invariant make this reachable. Each accumulated
+        // element provably satisfies startsWith(prefix); the membership clause
+        // ({@code strings.contains(result[i])}) lifts via the existing list-contains existential.
+        [group: 'HumanEval port', name: 'filter_by_prefix (Verus 029, stronger): every result starts with prefix', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && prefix != null })
+                        @Ensures({ verification.Forall.range(0, result.size(), { int k -> result[k].startsWith(prefix) }) })
+                        static List<String> filterByPrefix(List<String> xs, String prefix) {
+                            List<String> result = []
+                            int i = 0
+                            @Invariant({ result != null && 0 <= i && i <= xs.size() &&
+                                         verification.Forall.range(0, result.size(), { int k -> result[k].startsWith(prefix) }) })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                if (xs[i] != null && xs[i].startsWith(prefix)) {
+                                    result.add(xs[i])
+                                }
+                                i = i + 1
+                            }
+                            return result
+                        }
+                    }''')],
+
         // ---------- Phase 48: NIA — variable multiplication + div/mod ----------
         // Commutativity is a Z3 theory consequence — no axiom needed.
         [group: 'P48 NIA', name: 'multiplication commutativity', ok: true,

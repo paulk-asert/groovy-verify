@@ -743,9 +743,35 @@ class Z3Session implements SmtSession {
         if (triggers == null || triggers.isEmpty()) return null
         List<Pattern> pats = new ArrayList<Pattern>()
         for (Object t : triggers) {
-            if (mentions((Expr) t, bound)) pats.add(ctx.mkPattern((Expr) t))
+            Expr e = (Expr) t
+            if (mentions(e, bound) && !containsForbiddenPattern(e)) {
+                pats.add(ctx.mkPattern(e))
+            }
         }
         pats.isEmpty() ? null : (pats as Pattern[])
+    }
+
+    /**
+     * SMT-LIB rejects patterns that contain Boolean operators ({@code and}, {@code or},
+     * {@code not}, {@code implies}), arithmetic, or {@code ite} at any position. After a
+     * conditional list mutation (Phase 45c ITE-combine), the array binding is an
+     * {@code ite}-expression — selecting from that array would produce a
+     * {@code select(ite, …)} term that Z3 won't accept as a quantifier trigger. Walking the
+     * term and skipping any such candidate keeps the rest of the trigger set valid; if
+     * everything is filtered out, the caller falls back to auto-patterns.
+     */
+    private static boolean containsForbiddenPattern(Expr e) {
+        if (e == null) return false
+        if (e.isITE() || e.isAnd() || e.isOr() || e.isNot() || e.isImplies() ||
+            e.isAdd() || e.isSub() || e.isMul() || e.isDiv() || e.isModulus()) {
+            return true
+        }
+        if (e.isApp()) {
+            for (Expr a : e.getArgs()) {
+                if (containsForbiddenPattern(a)) return true
+            }
+        }
+        false
     }
 
     /** True if {@code term} contains any of the {@code vars} as a subterm. */

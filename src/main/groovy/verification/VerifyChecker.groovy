@@ -187,6 +187,12 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
     /**
+     * Phase 48b — body-local {@code boolean} variable names. Tracked so the SSA-fresh handle
+     * in {@code checkPath}'s {@code Assign} step mints a {@code boolVar} rather than an
+     * {@code intVar}, avoiding the {@code eq(intFresh, boolRhs)} sort-mismatch crash.
+     */
+    private Set<String> currentBooleanLocals = new HashSet<String>()
+    /**
      * Phase 28 — enum classes in the same module, mapped from source-level simple name to value
      * count. Lets the encoder fold {@code Color.values().length} (and {@code .size()}) to the
      * literal enum-constant count even in re-parsed contracts where {@code Color} is just a
@@ -205,7 +211,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private Encoder mkEncoder(SmtSession session) {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
-                    currentNestedSetValueTypes, currentListNames, currentObjectParams)
+                    currentNestedSetValueTypes, currentListNames, currentObjectParams,
+                    currentBooleanLocals)
     }
 
     /**
@@ -568,6 +575,38 @@ class VerifyChecker extends TypeCheckingExtension {
                         if (t == null) t = de.leftExpression.type
                         if (t != null && isNonIntScalar(t)) {
                             out.putIfAbsent(((VariableExpression) de.leftExpression).name, t)
+                        }
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
+        out
+    }
+
+    /**
+     * Phase 48b — collect names of {@code boolean} locals declared in the method body. Used by
+     * the SSA-fresh-handle path so {@code boolean composite = false} mints {@code boolVar('composite#1')}
+     * rather than {@code intVar} (which then crashes at {@code eq(intFresh, boolRhs)}). Same
+     * clean-body + closure-skip pattern as {@link #collectScalarTypes}.
+     */
+    private static Set<String> collectBooleanLocals(MethodNode node) {
+        Set<String> out = new HashSet<String>()
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody == null) return out
+        try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitClosureExpression(ClosureExpression ce) {}
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (t != null && (t.name == 'boolean' || t.name == 'java.lang.Boolean')) {
+                            out.add(((VariableExpression) de.leftExpression).name)
                         }
                     }
                     super.visitDeclarationExpression(de)
@@ -1051,6 +1090,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListNames = collectListNames(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
+        currentBooleanLocals = collectBooleanLocals(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
@@ -1153,6 +1193,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListNames = new HashSet<String>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
+            currentBooleanLocals = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
         }
     }
@@ -2343,6 +2384,10 @@ class VerifyChecker extends TypeCheckingExtension {
                     Object fresh
                     if (declaredType != null && !isIntElement(declaredType)) {
                         fresh = session.varOfSort(a.name + '#' + (++ssaVersion), enc.sortForType(declaredType))
+                    } else if (currentBooleanLocals.contains(a.name)) {
+                        // Phase 48b — boolean locals get a boolVar fresh handle so the
+                        // {@code eq(fresh, rhs)} assertion matches sorts.
+                        fresh = session.boolVar(a.name + '#' + (++ssaVersion))
                     } else {
                         fresh = session.intVar(a.name + '#' + (++ssaVersion))
                     }
@@ -2734,13 +2779,46 @@ class VerifyChecker extends TypeCheckingExtension {
 
     // ---- Loops (@Invariant / @Decreases) ----
 
-    /** A body shaped as: straight-line prefix; one annotated loop; straight-line suffix. */
+    /**
+     * A body shaped as: straight-line prefix; one annotated loop; straight-line suffix.
+     * Phase 49 (Slice A) — the prefix/suffix may include "early-exit" if-statements whose
+     * then-branch ends with a {@code return} (and whose else-branch is absent or empty).
+     * Each such if becomes an {@link EarlyExit} entry; the surrounding statements that run
+     * unconditionally before the loop end up in {@link #prefix} (or {@link #suffix}). All
+     * exit guards' negations are assumed when verifying the loop establishment / use, so the
+     * loop machinery only fires on the "no early-exit taken" path.
+     */
     @CompileStatic
     private static class LoopSite {
         Statement loopStmt
         LoopSpec spec
+        /** Non-exit prefix statements only — what {@link LoopEncoder#symExec} executes. */
         List<Statement> prefix
+        /** Non-exit suffix statements only. */
         List<Statement> suffix
+        /** Phase 49 — source-order prefix including early-exit if-statements. */
+        List<Statement> originalPrefix
+        /** Phase 49 — source-order suffix including early-exit if-statements. */
+        List<Statement> originalSuffix
+        /** Phase 49 — early-return paths in prefix and suffix, in source order. */
+        List<EarlyExit> earlyExits = new ArrayList<EarlyExit>()
+    }
+
+    /**
+     * Phase 49 — an early-return path through a loop's prefix / suffix region. {@code guard}
+     * is the if-condition; {@code result} is the return-expression in the then-branch;
+     * {@code priorStmts} captures the non-exit statements that ran before this guard in source
+     * order; {@code priorGuards} are the earlier-exit guards (each negated when verifying this
+     * exit — "we didn't take any earlier exit"). {@code beforeLoop} marks the region.
+     */
+    @CompileStatic
+    private static class EarlyExit {
+        Expression guard
+        Expression result
+        List<Statement> priorStmts
+        List<Expression> priorGuards
+        boolean beforeLoop
+        Statement node
     }
 
     /**
@@ -2765,9 +2843,73 @@ class VerifyChecker extends TypeCheckingExtension {
         LoopSite site = new LoopSite()
         site.loopStmt = top.get(idx)
         site.spec = (LoopSpec) site.loopStmt.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-        site.prefix = new ArrayList<Statement>(top.subList(0, idx))
-        site.suffix = new ArrayList<Statement>(top.subList(idx + 1, top.size()))
+        site.originalPrefix = new ArrayList<Statement>(top.subList(0, idx))
+        site.originalSuffix = new ArrayList<Statement>(top.subList(idx + 1, top.size()))
+        // Phase 49 (Slice A) — prefix early-exits are partitioned and verified per-path;
+        // suffix exits aren't yet supported (would need state-aware {@code ¬guard} interleaving
+        // at the right point in the suffix walk; the existing {@code LoopEncoder.resultExpr}
+        // will reject return-shaped if-statements with its standard "unsupported statement"
+        // diagnostic, which is the right honest-skip behaviour for Slice A's scope).
+        site.prefix = partitionEarlyExits(site.originalPrefix, true, site.earlyExits)
+        site.suffix = new ArrayList<Statement>(site.originalSuffix)
         return site
+    }
+
+    /**
+     * Phase 49 (Slice A) — walk a region's top-level statements and split out
+     * "early-exit if" shapes ({@code if (cond) return expr;} or
+     * {@code if (cond) { return expr; }}, no else). Each such if becomes an
+     * {@link EarlyExit} entry; the surrounding always-running statements form the returned
+     * trimmed region. Other if-shapes (with non-trivial else, or with then-blocks that
+     * don't end with a return) stay in the region as ordinary statements, and the existing
+     * {@code LoopEncoder.symExec} path-fact handling (Phase 45c) covers them.
+     */
+    private static List<Statement> partitionEarlyExits(List<Statement> stmts, boolean beforeLoop,
+                                                       List<EarlyExit> out) {
+        List<Statement> kept = new ArrayList<Statement>()
+        List<Expression> priorGuards = new ArrayList<Expression>()
+        for (Statement st : stmts) {
+            Expression returnExpr = earlyExitReturnFor(st)
+            if (returnExpr != null) {
+                IfStatement ifs = (IfStatement) st
+                EarlyExit ex = new EarlyExit()
+                ex.guard = ifs.booleanExpression
+                ex.result = returnExpr
+                ex.priorStmts = new ArrayList<Statement>(kept)
+                ex.priorGuards = new ArrayList<Expression>(priorGuards)
+                ex.beforeLoop = beforeLoop
+                ex.node = st
+                out.add(ex)
+                priorGuards.add(ifs.booleanExpression)
+                // The if-statement itself doesn't run on the no-exit path: don't add to kept.
+            } else {
+                kept.add(st)
+            }
+        }
+        kept
+    }
+
+    /**
+     * Phase 49 — return the early-exit return expression if {@code st} matches the
+     * {@code if (cond) return e} shape (with no else or empty else, then-branch a single
+     * return statement). Otherwise null. The check is deliberately strict: anything more
+     * elaborate falls back to the existing path-fact route inside {@link LoopEncoder}.
+     */
+    private static Expression earlyExitReturnFor(Statement st) {
+        if (!(st instanceof IfStatement)) return null
+        IfStatement ifs = (IfStatement) st
+        // Reject any else-branch (we'd need to model both branches as exits otherwise).
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return null
+        Statement then = ifs.ifBlock
+        // Unwrap a single-statement block.
+        if (then instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) then).statements
+            if (ss.size() == 1) then = ss.get(0)
+        }
+        if (then instanceof ReturnStatement) {
+            return ((ReturnStatement) then).expression
+        }
+        null
     }
 
     private static List<Statement> topStatements(Statement body) {
@@ -2793,9 +2935,86 @@ class VerifyChecker extends TypeCheckingExtension {
             checkPreservation(node, site)
             if (site.spec.variant != null) checkProgress(node, site)
             if (postAst != null) checkUse(node, site, reqAst, postAst)
+            // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
+            // when the method has an @Ensures to prove).
+            if (postAst != null) {
+                for (EarlyExit ex : site.earlyExits) {
+                    checkEarlyExit(node, site, ex, reqAst, postAst)
+                }
+            }
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), site.loopStmt)
         }
+    }
+
+    /**
+     * Phase 49 — verify the @Ensures on an early-exit path:
+     * <ol>
+     *   <li>Assume {@code @Requires} and class invariants.</li>
+     *   <li>For a <b>prefix</b> exit: assume {@code ¬each-earlier-prefix-guard}, sym-exec the
+     *       prefix priors (the non-exit statements that ran before this exit), assume this
+     *       guard, bind {@code result} to the return expression.</li>
+     *   <li>For a <b>suffix</b> exit: same as a prefix non-exit run (full prefix, assuming
+     *       all prefix guards' negations), then assume the loop invariant and {@code ¬loop-guard},
+     *       then sym-exec suffix priors with their earlier guards negated, assume this guard,
+     *       bind {@code result}.</li>
+     *   <li>Assert {@code ¬@Ensures}; check unsat.</li>
+     * </ol>
+     */
+    private void checkEarlyExit(MethodNode node, LoopSite site, EarlyExit ex,
+                                Expression reqAst, Expression postAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            assumeIntJvmBounds(s, enc)
+            assumeClassInvariants(s, enc)
+            if (ex.beforeLoop) {
+                // Assume each earlier prefix-exit's guard is false (we got here, not there).
+                for (Expression g : ex.priorGuards) {
+                    Object gh = enc.translate(g)
+                    if (gh != null) s.assertExpr(s.not(gh))
+                }
+                LoopEncoder.symExec(ex.priorStmts, enc, s)
+            } else {
+                // Full prefix runs (no prefix exit taken), then the loop completes, then the
+                // suffix priors before this exit. Loop's effect is captured by assuming the
+                // invariant and ¬guard at the post-loop point.
+                for (EarlyExit pe : site.earlyExits) {
+                    if (pe.beforeLoop) {
+                        Object gh = enc.translate(pe.guard)
+                        if (gh != null) s.assertExpr(s.not(gh))
+                    }
+                }
+                LoopEncoder.symExec(site.prefix, enc, s)
+                s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+                s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
+                for (Expression g : ex.priorGuards) {
+                    Object gh = enc.translate(g)
+                    if (gh != null) s.assertExpr(s.not(gh))
+                }
+                LoopEncoder.symExec(ex.priorStmts, enc, s)
+            }
+            // Assume the exit's own guard (we did take this exit).
+            Object guardH = enc.translate(ex.guard)
+            if (guardH != null) s.assertExpr(guardH)
+            // Bind result to the return expression, then assert ¬postcondition.
+            Object resH = enc.translate(ex.result)
+            if (resH != null) enc.bind('result', resH)
+            aliasResultToReturnedListLocal(s, enc, ex.result)
+            Object post = enc.translate(postAst)
+            if (post == null) {
+                addStaticTypeError(Reporter.formatPostconditionSkipped(node.name,
+                    "early-exit postcondition is outside fragment"), ex.node)
+                return
+            }
+            s.assertExpr(s.not(post))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(
+                    Reporter.formatPostconditionFailure(node.name, postAst.text, r), ex.node)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
     /**
@@ -2864,13 +3083,22 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
-    /** Establishment: precondition ∧ class invariants ∧ prefix ⇒ invariant. */
+    /** Establishment: precondition ∧ class invariants ∧ prefix ⇒ invariant.
+     *  Phase 49 — assume {@code ¬each prefix early-exit guard} (the loop is only reached on
+     *  the no-exit-taken path). */
     private void checkEstablishment(MethodNode node, LoopSite site, Expression reqAst) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
+            for (EarlyExit ex : site.earlyExits) {
+                if (ex.beforeLoop) {
+                    Object gh = enc.translate(ex.guard)
+                    if (gh != null) s.assertExpr(s.not(gh))
+                }
+            }
             LoopEncoder.symExec(site.prefix, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
             CheckResult r = shown(s.check())
@@ -2926,7 +3154,15 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
+            // Phase 49 — assume no early-exit fired in either region (we reached the natural
+            // return-after-loop path). Each early-exit's @Ensures is verified independently in
+            // {@link #checkEarlyExit}.
+            for (EarlyExit ex : site.earlyExits) {
+                Object gh = enc.translate(ex.guard)
+                if (gh != null) s.assertExpr(s.not(gh))
+            }
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)

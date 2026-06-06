@@ -212,6 +212,14 @@ class Encoder {
     /** Call terms {@code f#(args)} whose defining equation has already been asserted (assert-once per term). */
     private final Set<Object> definedCalls = new HashSet<Object>()
 
+    /**
+     * Phase 48b — names of boolean locals (set by VerifyChecker from a clean-body scan). Used
+     * by {@link #varFor} so a fresh-session reference to a body-local boolean mints a
+     * {@code boolVar} rather than the default {@code intVar} — without this, a loop guard
+     * like {@code !composite} hits {@code session.not(intExpr)} and crashes Z3.
+     */
+    private final Set<String> booleanLocals
+
     Encoder(SmtSession session, PureEvaluator pureEvaluator = null,
             Map<String, ClassNode> setElementTypes = null,
             Map<String, ClassNode[]> mapTypes = null,
@@ -220,7 +228,8 @@ class Encoder {
             Map<String, Integer> enumDomainSizes = null,
             Map<String, ClassNode> nestedSetValueTypes = null,
             Set<String> listNames = null,
-            Map<String, ClassNode> objectParams = null) {
+            Map<String, ClassNode> objectParams = null,
+            Set<String> booleanLocals = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -231,6 +240,7 @@ class Encoder {
         this.nestedSetValueTypes = nestedSetValueTypes != null ? nestedSetValueTypes : new HashMap<String, ClassNode>()
         this.listNames = listNames != null ? listNames : new HashSet<String>()
         this.objectParams = objectParams != null ? objectParams : new LinkedHashMap<String, ClassNode>()
+        this.booleanLocals = booleanLocals != null ? booleanLocals : new HashSet<String>()
     }
 
     /**
@@ -828,6 +838,17 @@ class Encoder {
         if (declared != null) {
             Object sort = sortFor(declared)
             if (sort != session.intSort()) return varForOfSort(name, sort)
+        }
+        // Phase 48b — boolean local: mint a Bool variable (not Int) so subsequent {@code not(v)},
+        // {@code and([v, …])} etc. translate without a sort-mismatch crash. {@code env} caches
+        // it by name, so a follow-up bind to a concrete BoolExpr (e.g. {@code composite = true}
+        // in a loop body) replaces it under the same key.
+        if (booleanLocals.contains(name)) {
+            Object cached = env.get(name)
+            if (cached != null) return cached
+            Object v = session.boolVar(name)
+            env.put(name, v)
+            return v
         }
         return varForRaw(name)
     }
@@ -2220,12 +2241,20 @@ class Encoder {
         if (op == Types.LEFT_SQUARE_BRACKET) {
             // Phase 38 — `[a, b, c][i]` / `Map.of(k, v)[k']` / `[k:v][k']`: factory receiver
             // peephole-folds to the i-th element (for constant i) or an ite-chain over entries.
+            // For an EMPTY list factory ({@code positive = []}) with a symbolic index — common
+            // in invariants over a list local that's being filled — the fold returns null and we
+            // fall through to the regular array-handle path below, which gets the right element
+            // sort from {@code listElementTypes} (so {@code result[k].startsWith(p)} works for
+            // a {@code List<String> result = []}).
             FactoryContainer factoryL = factoryContainerFor(be.leftExpression)
             if (factoryL != null) {
-                if (factoryL.kind == 'list')
-                    return foldFactoryListIndex(factoryL.args, be.rightExpression)
-                if (factoryL.kind == 'map')
+                if (factoryL.kind == 'list') {
+                    Object foldedList = foldFactoryListIndex(factoryL.args, be.rightExpression)
+                    if (foldedList != null) return foldedList
+                    // fall through to arrayHandleFor for the empty-factory case.
+                } else if (factoryL.kind == 'map') {
                     return foldFactoryMapLookup(factoryL, be.rightExpression)
+                }
             }
             // m[k] over a map reads its value array (key in map's key sort); a[i] over an array
             // or list reads its contents (index in Int). Phase 27: route map keys through the
