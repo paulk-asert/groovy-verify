@@ -538,6 +538,12 @@ class VerifyChecker extends TypeCheckingExtension {
             ClassNode t = f.type
             if (isNonIntScalar(t)) out.put(f.name, t)
         }
+        // Phase 47h — the implicit {@code result} variable in {@code @Ensures} takes the
+        // method's return type. Without this entry, a {@code @Ensures({ result.startsWith(…) })}
+        // postcondition on a String-returning method would fall through {@link Encoder#isStringReceiver}
+        // (not a parameter / field / typed local) and skip honestly.
+        ClassNode retType = node.returnType
+        if (retType != null && isNonIntScalar(retType)) out.put('result', retType)
         // Phase 47h — typed locals like {@code String name = "world"} carry their type on the
         // DeclarationExpression's LHS. Without this, GString interpolation of a String local
         // falls into the int path and crashes Z3 with a sort mismatch. Scan the CLEAN

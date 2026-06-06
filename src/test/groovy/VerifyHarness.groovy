@@ -2376,6 +2376,16 @@ class VerifyHarness {
                         @Ensures({ result == s.length() - 5 })
                         static int idLength(String s) { s.substring(5).length() }
                     }''')],
+        // Showcase 2: GString + regex + structural concat facts. Verifies via four
+        // theory consequences in one method: regex membership preserved through the
+        // precondition, GString folds to chained str.++, prefix-of-concat with the literal
+        // first operand, suffix-of-concat with the second operand.
+        [group: 'P47h gstring', name: 'showcase: greet via gstring + regex + concat facts', ok: true,
+         src: tc('''class C {
+                        @Requires({ name != null && name.matches("[a-zA-Z]+") })
+                        @Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
+                        static String greet(String name) { "Hi, $name" }
+                    }''')],
 
         // ---------- Phase 48: NIA — variable multiplication + div/mod ----------
         // Commutativity is a Z3 theory consequence — no axiom needed.

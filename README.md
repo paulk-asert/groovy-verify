@@ -432,7 +432,19 @@ static int idLength(String s) { s.substring(5).length() }
 ```
 
 That verifies via two theory consequences chained — `startsWith ⟹ length(prefix) <= length(s)`
-gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identity.
+gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identity. A second
+showcase blending regex, GString interpolation, and the structural concat facts:
+
+```groovy
+@Requires({ name != null && name.matches("[a-zA-Z]+") })
+@Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
+static String greet(String name) { "Hi, $name" }
+```
+
+The body folds to `mkConcat(mkString("Hi, "), name)`. Z3's seq theory then knows two
+free facts: a literal-prefixed concat starts with that literal (`prefixof(a, a ++ b)`),
+and the right operand of the concat is its suffix (`suffixof(b, a ++ b)`). The regex
+precondition rides along through whatever shape the body assembles.
 
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
 The remaining honest gaps: `Integer.toString` and `parseInt` carry Z3's signed-semantics
