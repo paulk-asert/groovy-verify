@@ -2011,22 +2011,28 @@ kicks in: the literal fold means Z3 sees {@code 3 == 4} on the residual goal, re
 
 - ~~**No local-variable propagation.**~~ *Closed by Phase 38b below* — a factory RHS recorded
   on the {@code Assign} step lifts the fold across the variable boundary.
-- **Set.of uniqueness is not enforced.** {@code Set.of(1, 1, 1).size() == 3} folds to true,
-  which is technically unsound (the runtime call throws {@code IllegalArgumentException} for
-  duplicates and the runtime set has size 1). Dedup-aware sizing would need a static distinct-
-  pairs analysis on the literal args; skipped because real code that calls Set.of with
-  duplicates is itself a bug.
-- **No {@code Collections.unmodifiableX} or {@code .asImmutable()}.** Those wrap an existing
-  container — the result inherits its size from the operand, which the size oracle already
-  models for named operands; folding would require recognising the wrap explicitly. Out of
-  scope for this slice.
-- **No {@code .values()} / {@code .keySet()} forwarding.** A factory map's {@code .values()}
-  could in principle yield a recognised set factory of the values, composing with downstream
-  {@code .contains}. Not wired here — most contracts that care about map values do so via
-  {@code containsValue}, which already folds.
-- **{@code .get(non-constant-i)} skips honestly.** Folding for a symbolic index would emit an
-  {@code ite}-chain plus an explicit out-of-bounds handling; deferred to the same slice that
-  threads factories through assignment.
+- ~~**Set.of uniqueness is not enforced.**~~ *Closed in Phase 38c* — literal-arg pair check
+  refuses the fold when duplicates are syntactically present, so {@code Set.of(1, 1, 1).size()}
+  produces an honest-skip diagnostic rather than claiming size 3. Symbolic-arg distinctness
+  ({@code Set.of(a, b)} where Z3 would have to prove {@code a != b}) is still out of scope.
+- ~~**No {@code Collections.unmodifiableX} or {@code .asImmutable()}.**~~ *Closed in Phase 38c*
+  — a new {@code unwrapImmutableWrap} helper strips the wrapper from a receiver before dispatch,
+  so {@code Collections.unmodifiableList(xs).size()} and {@code xs.asImmutable().contains(y)}
+  fold the same as the unwrapped forms. Wired into {@code translateMethodCall},
+  {@code translateBinary}'s bracket and {@code in} paths, and {@code factoryContainerFor} so a
+  wrapped factory literal still recognises.
+- ~~**No {@code .values()} / {@code .keySet()} forwarding.**~~ *Closed in Phase 38c* — both
+  projections return fresh FactoryContainers (set for keySet, list for values) over the inner
+  keys / values. Composes downstream: {@code Map.of("a", 1).keySet().contains("a")} folds via
+  the existing set {@code .contains} disjunction; {@code keySet().size()} folds to the literal
+  key count.
+- ~~**{@code .get(non-constant-i)} skips honestly.**~~ *Closed in Phase 38c* — symbolic-{@code i}
+  reads on a list factory build an {@code ite}-chain over the literal elements with an
+  unconstrained fresh-Int default for the out-of-bounds case. Sound: a contract that asserts a
+  specific element must {@code @Requires} {@code i} to the literal-size range, otherwise the
+  default branch refutes the @Ensures (the counterexample shows {@code factory$out$N = …, i = -1}
+  for an obvious out-of-bound). No bounds-check obligation is synthesised because the factory
+  has no named receiver to attach a size oracle to — the @Requires path carries the bound.
 
 ### Phase 38b — Factory through assignment  *(shipped)*
 

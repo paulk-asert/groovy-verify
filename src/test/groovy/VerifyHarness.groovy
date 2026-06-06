@@ -1616,6 +1616,124 @@ class VerifyHarness {
                         static int f() { Map.of("a", 1, "b", 2).get("b") }
                     }''')],
 
+        // ---------- Phase 38c: Set.of dedup check + transparent immutable wrappers ----------
+        // Set.of with literal duplicates would throw IllegalArgumentException at runtime. We
+        // refuse the fold rather than claim a wrong size. The test verifies the SKIP — without
+        // a fold, the contract about size on Set.of(1, 1, 1) doesn't translate, so the
+        // verifier emits a "postcondition outside fragment" diagnostic. (We could also refute,
+        // but a skip is consistent with "honest unsoundness".)
+        [group: 'P38c immutable', name: 'Set.of with literal duplicates skips the fold',
+         expect: 'outside fragment',
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { Set.of(1, 1, 1).size() }
+                    }''')],
+        // Sanity: Set.of with literal-distinct args still folds the same as before.
+        [group: 'P38c immutable', name: 'Set.of with distinct literals still folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { Set.of(1, 2, 3).size() }
+                    }''')],
+        // Collections.unmodifiableList wraps a list-factory transparently; subsequent .size()
+        // / .contains() / [i] operations fold as if the wrapper weren't there.
+        [group: 'P38c immutable', name: 'Collections.unmodifiableList wraps factory transparently', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { Collections.unmodifiableList(List.of(1, 2, 3)).size() }
+                    }''')],
+        [group: 'P38c immutable', name: 'unmodifiableList(...).contains folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() {
+                            Collections.unmodifiableList(List.of(10, 20, 30)).contains(20) ? 1 : 0
+                        }
+                    }''')],
+        // Groovy's .asImmutable() is the same idea via the GDK.
+        [group: 'P38c immutable', name: '.asImmutable() unwraps for .size()', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { [10, 20, 30].asImmutable().size() }
+                    }''')],
+        // Set.of wrapped by Collections.unmodifiableSet folds the same way.
+        [group: 'P38c immutable', name: 'Collections.unmodifiableSet wraps Set.of', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { Collections.unmodifiableSet(Set.of(1, 2, 3)).size() }
+                    }''')],
+        // Bracket access through a wrapper: unwrap, then fold the inner factory's i-th element.
+        [group: 'P38c immutable', name: 'wrapped factory bracket-index folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 20 })
+                        static int f() {
+                            Collections.unmodifiableList([10, 20, 30])[1]
+                        }
+                    }''')],
+        // Composes with factory-through-assignment (Phase 38b): wrap a local factory.
+        [group: 'P38c immutable', name: 'wrap a local factory through assignment', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() {
+                            List<Integer> xs = List.of(1, 2, 3)
+                            xs.asImmutable().size()
+                        }
+                    }''')],
+
+        // ---------- Phase 38c-3: keySet / values projections on map factories ----------
+        // Map.of(...).keySet() returns a set factory of the keys; .contains folds via disjunction.
+        [group: 'P38c projection', name: 'Map.of(...).keySet().contains folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { Map.of("a", 1, "b", 2).keySet().contains("a") ? 1 : 0 }
+                    }''')],
+        // Soundness: a key not in the map doesn't appear in the keySet projection.
+        [group: 'P38c projection', name: 'Map.of(...).keySet().contains refutes for absent key',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { Map.of("a", 1, "b", 2).keySet().contains("z") ? 1 : 0 }
+                    }''')],
+        // Map.of(...).values() returns a list factory of the values; .contains folds.
+        [group: 'P38c projection', name: 'Map.of(...).values().contains folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { Map.of("a", 10, "b", 20).values().contains(20) ? 1 : 0 }
+                    }''')],
+        // .size() on a keySet projection folds to the literal key count.
+        [group: 'P38c projection', name: 'keySet().size() folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int f() { Map.of("a", 1, "b", 2).keySet().size() }
+                    }''')],
+
+        // ---------- Phase 38c-4: non-constant-i ite-chain for factory list indexing ----------
+        // Symbolic i in range: the ite-chain returns one of the literal elements; the disjunctive
+        // @Ensures covers all three branches.
+        [group: 'P38c symbolic i', name: 'List.of(...)[i] for symbolic i in range', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= i && i < 3 })
+                        @Ensures({ result == 10 || result == 20 || result == 30 })
+                        static int f(int i) { [10, 20, 30][i] }
+                    }''')],
+        // Soundness anchor: without the @Requires constraint on i, the ite-chain's default branch
+        // (an unconstrained int) makes the @Ensures refute.
+        [group: 'P38c symbolic i', name: 'List.of(...)[i] without bound refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 10 || result == 20 || result == 30 })
+                        static int f(int i) { [10, 20, 30][i] }
+                    }''')],
+        // Composes with factory-through-assignment: local factory, symbolic index, bounded by
+        // the (pinned) size oracle from Phase 38b.
+        [group: 'P38c symbolic i', name: 'xs = List.of(...); xs[i] for symbolic i in range', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= i && i < 3 })
+                        @Ensures({ result == 10 || result == 20 || result == 30 })
+                        static int f(int i) {
+                            List<Integer> xs = List.of(10, 20, 30)
+                            xs[i]
+                        }
+                    }''')],
+
         // ---------- Phase 38b: factory through assignment ----------
         // The Phase 38 known limit closed: a local bound to a factory carries the fold across the
         // variable boundary. xs = List.of(args); xs.size() now folds the same as the inline form.

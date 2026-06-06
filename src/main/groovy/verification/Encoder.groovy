@@ -1014,9 +1014,80 @@ class Encoder {
      *   - Groovy map literal {@code [k1: v1, k2: v2]}
      * Returns null for anything else, so callers fall through to their default receiver handling.
      */
+    /**
+     * Phase 38c — true if {@code args} contains two {@link ConstantExpression}s with equal values.
+     * Used to refuse {@code Set.of} folds where the literal arg list already shows a runtime
+     * duplicate. Non-literal args are conservatively treated as distinct (the verifier doesn't
+     * try to prove symbolic distinctness — out of scope for this peephole).
+     */
+    private static boolean hasDuplicateLiteralArgs(List<Expression> args) {
+        if (args == null || args.size() < 2) return false
+        List<Object> literals = new ArrayList<Object>()
+        for (Expression a : args) {
+            if (a instanceof ConstantExpression) {
+                Object v = ((ConstantExpression) a).value
+                if (v != null) literals.add(v)
+            }
+        }
+        for (int i = 0; i < literals.size(); i++) {
+            for (int j = i + 1; j < literals.size(); j++) {
+                if (literals.get(i) == literals.get(j)) return true
+            }
+        }
+        false
+    }
+
+    /**
+     * Phase 38c — transparent immutability wrappers: {@code xs.asImmutable()} and
+     * {@code Collections.unmodifiableList/Set/Map(xs)} return a wrapper around their argument
+     * with identical read behaviour (only writes throw). For verification, the wrapper IS the
+     * operand for {@code .size()}/{@code .contains}/{@code .get(i)}/etc. — unwrap and continue
+     * dispatch on the inner expression. Returns {@code e} unchanged if it isn't a recognised
+     * wrapper, so calls remain idempotent.
+     */
+    private static Expression unwrapImmutableWrap(Expression e) {
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            String m = mce.methodAsString
+            // xs.asImmutable() — Groovy GDK idiom, no args.
+            if (m == 'asImmutable' && argList(mce).isEmpty()) {
+                return mce.objectExpression
+            }
+            // Collections.unmodifiableList(xs) / unmodifiableSet(xs) / unmodifiableMap(xs)
+            if (mce.objectExpression instanceof ClassExpression) {
+                String tn = ((ClassExpression) mce.objectExpression).type?.nameWithoutPackage
+                if (tn == 'Collections' &&
+                    (m == 'unmodifiableList' || m == 'unmodifiableSet' || m == 'unmodifiableMap')) {
+                    List<Expression> a = argList(mce)
+                    if (a.size() == 1) return a.get(0)
+                }
+            }
+        }
+        e
+    }
+
     private FactoryContainer factoryContainerFor(Expression e) {
         Expression target = e
         String kindOverride = null
+        // Phase 38c — strip transparent immutability wrappers before the cast unwrap, so a
+        // {@code Collections.unmodifiableList(List.of(1, 2, 3))} still recognises as a list
+        // factory of {1, 2, 3} for downstream folds.
+        target = unwrapImmutableWrap(target)
+        // Phase 38c — keySet / values projection on a map factory: returns a fresh
+        // FactoryContainer over the inner keys (as a set) or values (as a list). Composes
+        // recursively, so {@code Map.of("a", 1).keySet().contains("a")} folds via this branch
+        // into a singleton set factory, then the existing .contains lowering takes over.
+        if (target instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) target
+            String mm = mce.methodAsString
+            if ((mm == 'keySet' || mm == 'values') && argList(mce).isEmpty()) {
+                FactoryContainer inner = factoryContainerFor(mce.objectExpression)
+                if (inner != null && inner.kind == 'map') {
+                    if (mm == 'keySet') return new FactoryContainer(kind: 'set', args: inner.keys)
+                    return new FactoryContainer(kind: 'list', args: inner.values)
+                }
+            }
+        }
         if (target instanceof CastExpression) {
             CastExpression ce = (CastExpression) target
             // Name check rather than isAssignableFrom — we just need to distinguish "cast to Set"
@@ -1037,7 +1108,16 @@ class Encoder {
                 String tn = ((ClassExpression) mce.objectExpression).type?.name
                 List<Expression> args = argList(mce)
                 if (tn == 'java.util.List') return new FactoryContainer(kind: kindOverride ?: 'list', args: args)
-                if (tn == 'java.util.Set')  return new FactoryContainer(kind: 'set', args: args)
+                if (tn == 'java.util.Set') {
+                    // Phase 38c — refuse to fold {@code Set.of(...)} when literal args collide.
+                    // The runtime call throws {@code IllegalArgumentException} for duplicates and
+                    // the actual set has the deduped size, so folding to {@code args.size()} would
+                    // claim a size the runtime never produces. Non-literal arg pairs would need
+                    // Z3 to prove distinctness — out of scope; the verifier honestly skips by
+                    // continuing only when all literal pairs are distinct.
+                    if (hasDuplicateLiteralArgs(args)) return null
+                    return new FactoryContainer(kind: 'set', args: args)
+                }
                 if (tn == 'java.util.Map') {
                     if (args.size() % 2 != 0) return null
                     List<Expression> ks = new ArrayList<Expression>()
@@ -1142,20 +1222,41 @@ class Encoder {
         null
     }
 
-    /** {@code listFactory.get(i)} — fold only if {@code i} is a known constant int in range. */
+    /**
+     * {@code listFactory.get(i)} / {@code [a, b, c][i]} — direct lookup for a literal {@code i}
+     * in range, otherwise an ite-chain {@code ite(i==0, a, ite(i==1, b, …, default))} where
+     * {@code default} is a fresh unconstrained Int (Phase 38c).
+     *
+     * <p>Soundness for the symbolic-i case rests on the user constraining {@code i} to
+     * {@code [0, size)} via {@code @Requires} — out-of-range {@code i} resolves to the
+     * unconstrained default, so any @Ensures that asserts a specific element must refute
+     * unless the constraint rules out the out-of-range case. (The verifier doesn't synthesise
+     * a bounds-check obligation for a factory expression because the factory has no named
+     * receiver to attach a size oracle to; the @Requires path is the contract.)
+     */
     private Object foldFactoryListIndex(List<Expression> elems, Expression idxExpr) {
         Object idxH = translate(idxExpr)
         if (idxH == null) return null
-        // Build ite-chain only if i is a literal int in range — for non-constant i, we'd need to
-        // also model the out-of-bounds case and threads of array equality, beyond this slice.
+        if (elems.isEmpty()) return null
+        // Const-i fast path.
         if (idxExpr instanceof ConstantExpression) {
             Object v = ((ConstantExpression) idxExpr).value
             if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) {
                 int idx = ((Number) v).intValue()
                 if (idx >= 0 && idx < elems.size()) return translate(elems.get(idx))
+                // Out-of-range literal index — fall through to the ite-chain so the default
+                // branch fires (and the @Ensures correctly refutes for the wrong literal).
             }
         }
-        null
+        // Symbolic-i (or out-of-range literal): build the ite-chain from right to left.
+        Object defaultV = session.intVar('factory$out$' + (quantCounter++))
+        Object current = defaultV
+        for (int i = elems.size() - 1; i >= 0; i--) {
+            Object elH = translate(elems.get(i))
+            if (elH == null) return null   // any element outside fragment → honest skip
+            current = session.ite(session.eq(idxH, session.intLit((long) i)), elH, current)
+        }
+        current
     }
 
     /** {@code mapFactory.get(k)} / {@code mapFactory[k]} — ite-chain over the literal entries. */
@@ -1653,8 +1754,11 @@ class Encoder {
             // m[k] over a map reads its value array (key in map's key sort); a[i] over an array
             // or list reads its contents (index in Int). Phase 27: route map keys through the
             // declared key sort so a Map<String, Integer> can do m["admin"] cleanly.
-            String mlog = mapLogicalFor(be.leftExpression)
-            Object arr = mlog != null ? mapValsFor(mlog) : arrayHandleFor(be.leftExpression)
+            // Phase 38c — unwrap a transparent immutability wrapper on the receiver so
+            // {@code Collections.unmodifiableList(xs)[i]} resolves to {@code xs[i]}.
+            Expression bracketRecv = unwrapImmutableWrap(be.leftExpression)
+            String mlog = mapLogicalFor(bracketRecv)
+            Object arr = mlog != null ? mapValsFor(mlog) : arrayHandleFor(bracketRecv)
             if (arr == null) return null
             Object idx
             if (mlog != null) {
@@ -1677,8 +1781,11 @@ class Encoder {
         String sym = be.operation.text
         if (sym == 'in' || sym == '!in') {
             // `x in s` (set membership) or `k in m` (map key membership — same as m.containsKey(k)).
-            String setKey = setKeyFor(be.rightExpression)
-            String mapLog = setKey == null ? mapLogicalFor(be.rightExpression) : null
+            // Phase 38c — unwrap a transparent immutability wrapper on the receiver so
+            // {@code x in Collections.unmodifiableList(xs)} resolves to {@code x in xs}.
+            Expression inRecv = unwrapImmutableWrap(be.rightExpression)
+            String setKey = setKeyFor(inRecv)
+            String mapLog = setKey == null ? mapLogicalFor(inRecv) : null
             if (setKey != null || mapLog != null) {
                 Object elemSort = setKey != null ? setKeySortForKey(setKey) :
                                   sortFor(mapTypes.get(mapLog) != null ? mapTypes.get(mapLog)[0] : null)
@@ -1691,7 +1798,7 @@ class Encoder {
             // Phase 33 — `x in (a + b)` / `x !in (a + b)` / `x in a.intersect(b)`: the lazy
             // union/intersection lowering applied to the membership operator. Mirror of the
             // (s + t).contains(x) path in translateMethodCall.
-            SetBinop binop = setBinopFor(be.rightExpression)
+            SetBinop binop = setBinopFor(inRecv)
             if (binop != null) {
                 Object elem = translateInSort(be.leftExpression, binop.elemSort)
                 if (elem == null) return null
@@ -1702,7 +1809,7 @@ class Encoder {
             }
             // Phase 36 — `x in m[k]` over a known Map<K, Set<V>>: lower to membership in the inner
             // set (an SMT array term, never minted as a named handle).
-            NestedSetReceiver nr = nestedSetReceiverFor(be.rightExpression)
+            NestedSetReceiver nr = nestedSetReceiverFor(inRecv)
             if (nr != null) {
                 Object elem = translateInSort(be.leftExpression, nr.innerElemSort)
                 if (elem == null) return null
@@ -1712,7 +1819,7 @@ class Encoder {
             // Phase 38 — `x in [a, b, c]` / `x in List.of(…)` / `x in [k: v]`: peephole disjunction
             // over the recognised factory's elements (or keys, for map factories — matching the
             // Groovy `in` semantics: `k in m` tests key membership, mirror of containsKey).
-            FactoryContainer factoryR = factoryContainerFor(be.rightExpression)
+            FactoryContainer factoryR = factoryContainerFor(inRecv)
             if (factoryR != null) {
                 Object xH = translate(be.leftExpression)
                 if (xH == null) return null
@@ -1773,7 +1880,9 @@ class Encoder {
     private Object translateMethodCall(MethodCallExpression mce) {
         String m = mce.methodAsString
         if (m == null) return null
-        Expression recv = mce.objectExpression
+        // Phase 38c — strip a transparent immutability wrapper on the receiver so subsequent
+        // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
+        Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
 
         // Forall.range(lo, hi, { i -> body }) -> bounded universal quantifier.
