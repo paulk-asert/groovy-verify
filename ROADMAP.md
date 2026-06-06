@@ -3383,6 +3383,85 @@ static String f() { int a = 1; int b = 2; "sum=${a + b}" }   // ${expr} block fo
 literal, refute on wrong interpolation, `${expr}` block-form expression, chained
 `.startsWith` through string-receiver dispatch.
 
+## Phase 48 — Non-linear integer arithmetic + integer div/mod  *(shipped)*
+
+The Phase 8a pure-NIA opt-out (refusing `a * b` when both sides are non-literal) was
+conservative — written before per-VC timeouts were in place and before the suite had
+demonstrated how many natural specs are blocked by the cliff. Phase 48 lifts the
+restriction and adds the missing `/` / `%` dispatch.
+
+**What changed:**
+
+- `MULTIPLY` translates unconditionally via Z3's NIA solver. Z3's per-VC 2s timeout
+  protects against the NIA-hang case — a query that doesn't terminate returns `UNKNOWN`,
+  which surfaces as "Could not decide" (honest, never silent). Phase 8a's
+  `tryFoldConstant` still folds closed numeric subexpressions before they reach the
+  encoder, so `(2 + 2) * (2 + 2) == 16` continues to verify the fast way.
+- `DIVIDE` and `MOD` dispatch to new `SmtSession.intDiv` / `intMod`, implemented as Z3's
+  `mkDiv` / `mkMod`. Operator-text matching (`be.operation.text == '/'` and `== '%'`)
+  rather than `Types.DIVIDE`/`Types.MOD` — Groovy's parser doesn't assign `%` the
+  `Types.MOD` token (a caveat the existing `ObligationCollector` already documented).
+- `\` (the Groovy intdiv operator) also routes through `intDiv`.
+
+**What this unlocks** — natural shapes that previously hit the cliff:
+
+```groovy
+// Sign reasoning (Z3 NIA solves quickly).
+@Requires({ a > 0 && b > 0 }) @Ensures({ result > 0 })
+static int product(int a, int b) { a * b }
+
+// Squaring is non-negative — without bounds.
+@Ensures({ result >= 0 })
+static int sq(int i) { i * i }
+
+// Bounded squaring stays bounded.
+@Requires({ 0 <= i && i <= 10 }) @Ensures({ result <= 100 })
+static int sqBound(int i) { i * i }
+
+// Division identity (Euclidean / truncated agree for non-negative).
+@Requires({ a >= 0 && b > 0 }) @Ensures({ result == a })
+static int divId(int a, int b) { (int)((a / b) * b + a % b) }
+
+// Even-number predicate via modulo.
+@Requires({ n >= 0 && n % 2 == 0 }) @Ensures({ result == 1 })
+static int isEven(int n) { (n % 2 == 0) ? 1 : 0 }
+```
+
+**Known semantic gap — Java vs SMT-LIB div/mod**:
+
+SMT-LIB defines `(mod a b)` as **Euclidean** — the remainder is always in `[0, |b|)`.
+Java's `%` is **truncated toward zero** — the sign of the remainder matches the dividend.
+For non-negative dividends the two agree; for negative they differ:
+
+| `a` | `b` | Java `a % b` | SMT-LIB `(mod a b)` |
+|---:|---:|---:|---:|
+|  7 |  2 |  1 |  1 |
+| -7 |  2 | -1 |  1 |
+|  7 | -2 |  1 |  1 |
+| -7 | -2 | -1 |  1 |
+
+The identity `(a/b)*b + a%b == a` holds in **both** conventions (only the intermediate
+`a/b` and `a%b` values differ); shipped tests anchor that explicitly. A spec that needs
+Java's exact sign-of-dividend behaviour should constrain operands non-negative via
+`@Requires({ a >= 0 && b > 0 })`. Z3 also exposes `mkRem` (truncated, sign-matches-dividend
+— Java-faithful for `%`), but mixing `mkRem` with `mkDiv` would break the
+`(a/b)*b + a%b == a` identity internally; we keep both Euclidean for consistency.
+
+**Hard NIA cases still skip honestly**:
+
+- Unbounded polynomial identities (`(a + b)² == a² + 2ab + b²` for arbitrary signed `a, b`)
+  may timeout — Z3's NIA solver heuristics don't always reach them. UNKNOWN surfaces as
+  "Could not decide" — never an unsound pass.
+- Square-root / general factoring shapes (`a * a == n`, find `a`) hang predictably.
+- Power (`a ** b` / `STAR_STAR`) isn't dispatched yet; Z3 has `mkPower` if wired.
+
+**Co-shipped tests** (11): commutativity, positive product, square non-negativity,
+bounded square bound, unbounded-square refute, bounded variable product, division floor,
+modulo range, division identity, divide-by-zero refute, even predicate.
+
+**Build cost**: unchanged at 30-45s. The NIA queries that fire are fast for the shapes the
+suite exercises; the timeout protection means worst-case is bounded per VC.
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

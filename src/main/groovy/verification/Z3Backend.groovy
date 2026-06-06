@@ -766,6 +766,8 @@ class Z3Session implements SmtSession {
     @Override Object minus(Object a, Object b) { ctx.mkSub((ArithExpr) a, (ArithExpr) b) }
     @Override Object times(Object a, Object b) { ctx.mkMul((ArithExpr) a, (ArithExpr) b) }
     @Override Object neg(Object a)             { ctx.mkUnaryMinus((ArithExpr) a) }
+    @Override Object intDiv(Object a, Object b) { ctx.mkDiv((Expr) a, (Expr) b) }
+    @Override Object intMod(Object a, Object b) { ctx.mkMod((Expr) a, (Expr) b) }
 
     @Override Object eq(Object a, Object b) { ctx.mkEq((Expr) a, (Expr) b) }
     @Override Object ne(Object a, Object b) { ctx.mkNot(ctx.mkEq((Expr) a, (Expr) b)) }

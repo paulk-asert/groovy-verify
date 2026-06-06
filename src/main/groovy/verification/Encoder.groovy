@@ -2341,16 +2341,27 @@ class Encoder {
         Object L = translate(be.leftExpression)
         Object R = translate(be.rightExpression)
         if (L == null || R == null) return null
+        // Phase 48 — operator-text dispatch for {@code /} and {@code %}: Groovy's parser
+        // assigns {@code %} a token outside {@code Types.MOD} (same caveat ObligationCollector
+        // notes), so {@code op.text} is the robust key. Used for both div and mod for parity
+        // with the existing divide-site collection logic.
+        String opText = be.operation.text
+        if (opText == '/' || opText == '\\') {
+            return session.intDiv(L, R)
+        }
+        if (opText == '%') {
+            return session.intMod(L, R)
+        }
         switch (op) {
             case Types.PLUS:                return session.plus(L, R)
             case Types.MINUS:               return session.minus(L, R)
             case Types.MULTIPLY:
-                // Pure-NIA opt-out: refuse if BOTH sides are non-literal,
-                // so the encoder stays in QF_LIA for the spike.
-                if (!(be.leftExpression instanceof ConstantExpression) &&
-                    !(be.rightExpression instanceof ConstantExpression)) {
-                    return null
-                }
+                // Phase 48 — NIA: any-operand multiplication translates directly through to
+                // Z3's NIA solver. Previously (Phase 8a) this opted out when both operands
+                // were non-literal, conservatively staying in QF_LIA. Z3's per-VC 2s timeout
+                // now protects against the NIA-hang case (an "UNKNOWN" returns "could not
+                // decide" — honest, never silent), and the suite-wide tryFoldConstant in
+                // Phase 8a still folds closed numeric subexpressions before reaching here.
                 return session.times(L, R)
             case Types.COMPARE_EQUAL:       return session.eq(L, R)
             case Types.COMPARE_NOT_EQUAL:   return session.ne(L, R)

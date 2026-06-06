@@ -346,6 +346,32 @@ suite continues to verify unchanged, and the permutation-sort showcase still use
 machine-integer-precision territory as Verus or Dafny without forcing the typed-narrow ergonomic
 that limits adoption — *math by default, machine precision on demand.*
 
+**Non-linear arithmetic and integer div/mod — NIA when you need it.** Variable multiplication
+(`a * b` for two non-literal operands) used to opt out into a "skipped: outside fragment"
+diagnostic — a deliberate Phase 8a guard against Z3 NIA hangs. The per-VC 2s timeout has
+proved a more robust guard, so the opt-out is gone and `/` / `%` get first-class dispatch
+too. The natural shapes verify directly:
+
+```groovy
+// Bounded squaring — the prime-testing bound check that previously hit the opt-out.
+@Requires({ 0 <= i && i <= 100 })
+@Ensures({ result <= 10000 })
+static int squareInBounds(int i) { i * i }
+
+// Multiplication, division, and modulo compose under the Euclidean identity.
+@Requires({ a >= 0 && b > 0 })
+@Ensures({ result == a })
+static int divModRoundTrip(int a, int b) { (int)((a / b) * b + a % b) }
+```
+
+Soundness boundaries are unchanged: the implicit `b != 0` obligation still fires on
+division by zero, refuting with the standard runnable repro. The hard NIA corners
+(general polynomial identities for symbolic-signed operands, square-root / factoring
+shapes) can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide,"
+never a silent pass. Java's `%` is truncated-toward-zero where SMT-LIB's is Euclidean;
+they agree for non-negative operands, and the identity `(a/b)*b + a%b == a` holds in
+both conventions.
+
 **HumanEval-style benchmarks — same algorithms, stronger specs.** Verus' HumanEval suite
 ([secure-foundations/human-eval-verus](https://github.com/secure-foundations/human-eval-verus))
 is the standard benchmark for auto-active verifiers on LeetCode-shape problems. Most of its
@@ -415,8 +441,11 @@ gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` for in-bounds `k
 identity.
 
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
-The remaining honest gaps: tasks with non-linear int arithmetic (`i * i <= n` in
-prime-testing) hit the Phase 8a NIA opt-out; `Integer.toString` and `Integer.parseInt`
+The remaining honest gaps: the *hard* corners of non-linear int arithmetic (general
+polynomial identities, square-root / factoring shapes) may timeout under Z3's NIA
+solver — the common bounded shapes (`i * i <= n` for prime testing, divisibility via
+`% 2`, bounded variable products) verify cleanly under Phase 48. `Integer.toString` and
+`Integer.parseInt`
 carry Z3's signed-semantics gap (`""` for negative ints, `-1` for non-digit input — use
 under non-negative-input contracts); `replaceAll` and `lastIndexOf` are uninterpreted
 with weak axioms (no Z3 primitive yet); `split` (returns array, structurally invasive),
@@ -801,6 +830,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`replaceAll` / `lastIndexOf` (uninterpreted with weak axioms)** | Z3 has no native primitive for either. Phase 47f ships them as uninterpreted functions with two universally-quantified axioms each: `replaceAll` knows non-occurrence is a no-op + same-length swaps preserve length; `lastIndexOf` knows the result is `>= -1` and `== -1` when the substring is absent. Sound under-approximation — proofs that need finer reasoning (e.g. "post-replace charAt matches one of two values") gracefully skip. When Z3 ships `mkReplaceAll`, the uninterpreted form swaps out for native in one edit | ✅ Phase 47f |
 | **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
+| **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). New `/` and `%` dispatch via Z3's `mkDiv` / `mkMod` (SMT-LIB Euclidean; matches Java for non-negative operands, differs in sign-of-remainder for negative dividends — documented gap). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, the division identity `(a/b)*b + a%b == a`, and the implicit divide-by-zero obligation still fires for `b != 0` | ✅ Phase 48 |
 
 ## Building & testing
 

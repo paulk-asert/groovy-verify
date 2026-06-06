@@ -2377,6 +2377,86 @@ class VerifyHarness {
                         static int idLength(String s) { s.substring(5).length() }
                     }''')],
 
+        // ---------- Phase 48: NIA — variable multiplication + div/mod ----------
+        // Commutativity is a Z3 theory consequence — no axiom needed.
+        [group: 'P48 NIA', name: 'multiplication commutativity', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f(int a, int b) { (a * b == b * a) ? 1 : 0 }
+                    }''')],
+        // Sign reasoning: positive × positive = positive.
+        [group: 'P48 NIA', name: 'positive product is positive', ok: true,
+         src: tc('''class C {
+                        @Requires({ a > 0 && b > 0 })
+                        @Ensures({ result > 0 })
+                        static int f(int a, int b) { a * b }
+                    }''')],
+        // Squaring is non-negative — Z3 NIA handles this.
+        [group: 'P48 NIA', name: 'square is non-negative', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result >= 0 })
+                        static int f(int i) { i * i }
+                    }''')],
+        // Bounded squaring: i in [0, 10] gives i*i in [0, 100].
+        [group: 'P48 NIA', name: 'bounded square stays bounded', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= i && i <= 10 })
+                        @Ensures({ result <= 100 })
+                        static int f(int i) { i * i }
+                    }''')],
+        // Refute: unbounded square can exceed any specific bound.
+        [group: 'P48 NIA', name: 'unbounded square can exceed 100',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result <= 100 })
+                        static int f(int i) { i * i }
+                    }''')],
+        // Two-variable multiplication with bounds.
+        [group: 'P48 NIA', name: 'bounded variable product', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= a && a < 100 && 0 <= b && b < 100 })
+                        @Ensures({ result < 10000 })
+                        static int f(int a, int b) { a * b }
+                    }''')],
+        // Division by variable. Groovy's {@code /} on ints promotes to BigDecimal, so the
+        // test casts back to int — same dance the existing Phase 8a tests use. The verifier
+        // collects {@code DivideSite} for the {@code b != 0} check; the value goes through
+        // {@code intDiv}.
+        [group: 'P48 NIA', name: 'division floor behaviour', ok: true,
+         src: tc('''class C {
+                        @Requires({ b > 0 && a >= 0 })
+                        @Ensures({ result * b <= a })
+                        static int f(int a, int b) { (int)(a / b) }
+                    }''')],
+        // Modulo bound: a % b is in [0, b) for non-negative a and positive b.
+        [group: 'P48 NIA', name: 'modulo result in [0, b)', ok: true,
+         src: tc('''class C {
+                        @Requires({ a >= 0 && b > 0 })
+                        @Ensures({ result >= 0 && result < b })
+                        static int f(int a, int b) { a % b }
+                    }''')],
+        // Division identity: (a / b) * b + a % b == a, for non-negative operands.
+        // Both sides Euclidean/Java for these inputs — identity is theory-known.
+        [group: 'P48 NIA', name: 'division identity holds', ok: true,
+         src: tc('''class C {
+                        @Requires({ a >= 0 && b > 0 })
+                        @Ensures({ result == a })
+                        static int f(int a, int b) { (int)((a / b) * b + a % b) }
+                    }''')],
+        // Soundness: division by zero is still caught — implicit DivideSite obligation.
+        [group: 'P48 NIA', name: 'division by zero refutes',
+         expect: 'Possible ArithmeticException: Division by zero',
+         src: tc('''class C {
+                        static int f(int a, int b) { (int)(a / b) }
+                    }''')],
+        // Even-number predicate via modulo: n % 2 == 0 holds for the even branch.
+        [group: 'P48 NIA', name: 'even predicate via modulo', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 && n % 2 == 0 })
+                        @Ensures({ result == 1 })
+                        static int f(int n) { (n % 2 == 0) ? 1 : 0 }
+                    }''')],
+
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
         // straight-line case. Phase 46d extends the same path-fact mechanism to the loop body:

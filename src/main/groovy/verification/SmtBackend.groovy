@@ -378,6 +378,19 @@ interface SmtSession extends AutoCloseable {
     Object times(Object a, Object b)
     Object neg(Object a)
 
+    /**
+     * Phase 48 — integer division and modulo. {@code intDiv(a, b)} maps to SMT-LIB's
+     * {@code (div a b)} and {@code intMod(a, b)} to {@code (mod a b)} — both Euclidean (mod
+     * always in {@code [0, |b|)}). For non-negative operands the semantics match Java's
+     * {@code /} / {@code %}; for negative dividends the sign of the remainder differs (Java
+     * is truncated-toward-zero, sign-matches-dividend; Z3 is Euclidean). The identity
+     * {@code (a/b)*b + a%b == a} holds in both conventions; the intermediate values differ.
+     * The implicit obligation that {@code b != 0} is collected as a {@code DivideSite} by
+     * the encoder regardless.
+     */
+    Object intDiv(Object a, Object b)
+    Object intMod(Object a, Object b)
+
     Object eq(Object a, Object b)
     Object ne(Object a, Object b)
     Object lt(Object a, Object b)
