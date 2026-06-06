@@ -1700,6 +1700,31 @@ class VerifyHarness {
                             return count
                         }
                     }''')],
+        // ---------- HumanEval port — get_positive (Verus task 030) ----------
+        // The Verus original is spec-free. groovy-verify adds the natural spec — the result list
+        // has at most as many elements as the input — verifying through the empty-factory init,
+        // the conditional add, and a returned-list result. Closes the empty-factory + mutate gap
+        // (the factory record is invalidated on add) and the returned-list-oracle gap (result's
+        // size/array are aliased to the local's threaded state).
+        [group: 'HumanEval port', name: 'get_positive (Verus 030): result.size() <= xs.size()', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null })
+                        @Ensures({ result.size() <= xs.size() })
+                        static List<Integer> getPositive(List<Integer> xs) {
+                            List<Integer> positive = []
+                            int i = 0
+                            @Invariant({ positive != null && 0 <= i && i <= xs.size() && positive.size() <= i })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                int x = xs[i]
+                                if (x > 0) {
+                                    positive.add(x)
+                                }
+                                i = i + 1
+                            }
+                            return positive
+                        }
+                    }''')],
 
         // ---------- Phase 38c-3: keySet / values projections on map factories ----------
         // Map.of(...).keySet() returns a set factory of the keys; .contains folds via disjunction.

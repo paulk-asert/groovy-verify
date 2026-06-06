@@ -523,6 +523,45 @@ class Encoder {
     Object peekArray(String name) { arrEnv.get(name) }
 
     /**
+     * Phase 45c — snapshot the encoder's mutable binding state so it can be restored after
+     * exploring a side branch. Used by {@code LoopEncoder}'s {@code if}-statement handling to
+     * apply each branch in turn and then ITE-combine the resulting bindings. Captures the
+     * binding maps that {@link #bind}/{@link #bindArray}/{@link #bindSize}/{@link #bindSet}/
+     * {@link #tryRecordFactoryAssign} mutate; the factory record map is captured too so a
+     * conditional mutation can roll back the record if the else-branch didn't make the same
+     * change.
+     */
+    @CompileStatic
+    static class EncoderSnapshot {
+        Map<String, Object> env
+        Map<String, Object> arrEnv
+        Map<String, Object> sizeEnv
+        Map<String, Object> setEnv
+        Map<String, Object> nullEnv
+        Map<String, FactoryContainer> localFactories
+    }
+
+    EncoderSnapshot snapshotState() {
+        EncoderSnapshot snap = new EncoderSnapshot()
+        snap.env = new LinkedHashMap<String, Object>(env)
+        snap.arrEnv = new LinkedHashMap<String, Object>(arrEnv)
+        snap.sizeEnv = new LinkedHashMap<String, Object>(sizeEnv)
+        snap.setEnv = new LinkedHashMap<String, Object>(setEnv)
+        snap.nullEnv = new LinkedHashMap<String, Object>(nullEnv)
+        snap.localFactories = new LinkedHashMap<String, FactoryContainer>(localFactories)
+        snap
+    }
+
+    void restoreState(EncoderSnapshot snap) {
+        env.clear(); env.putAll(snap.env)
+        arrEnv.clear(); arrEnv.putAll(snap.arrEnv)
+        sizeEnv.clear(); sizeEnv.putAll(snap.sizeEnv)
+        setEnv.clear(); setEnv.putAll(snap.setEnv)
+        nullEnv.clear(); nullEnv.putAll(snap.nullEnv)
+        localFactories.clear(); localFactories.putAll(snap.localFactories)
+    }
+
+    /**
      * Translate {@code expr} with {@code bindings} (source-name → handle) applied
      * over the current environment, then restore it. Used to assume a callee's
      * {@code @Ensures} in the caller's context — its formal parameters substituted
@@ -604,6 +643,15 @@ class Encoder {
      */
     void bindSize(String recv, Object handle) {
         sizeEnv.put(recv + '.size', handle)
+    }
+
+    /**
+     * Phase 45c — raw size-oracle rebind by full key (e.g. {@code xs.size}), bypassing the
+     * {@code .size}-suffix manipulation of {@link #bindSize}. Used by the snapshot/restore
+     * ITE-combine in {@code LoopEncoder} where snapshot keys already carry the suffix.
+     */
+    void bindSizeRaw(String fullKey, Object handle) {
+        sizeEnv.put(fullKey, handle)
     }
 
     /** True if a size oracle has already been minted for {@code recv} (i.e. a contract referenced its size). */
@@ -997,7 +1045,7 @@ class Encoder {
      * live in parallel {@code keys}/{@code values} lists.
      */
     @CompileStatic
-    private static class FactoryContainer {
+    static class FactoryContainer {
         String kind                    // 'list' | 'set' | 'map'
         List<Expression> args          // list/set elements; null for maps
         List<Expression> keys          // map keys; null for list/set
@@ -1169,6 +1217,18 @@ class Encoder {
             session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
         }
         true
+    }
+
+    /**
+     * Phase 38d — drop a factory record from {@link #localFactories}. Called by
+     * {@code applyListMutation} after {@code xs.add(v)} / {@code xs.removeLast()} / {@code
+     * xs.clear()} so subsequent {@code factoryContainerFor(xs)} lookups fall through to the
+     * threaded {@code sizeOf}/{@code arrayFor} oracles (which Phase 40 keeps current across
+     * the mutation) rather than the now-stale literal-arg list. Closes a soundness gap where
+     * {@code xs = []; xs.add(v); xs.size()} folded to 0.
+     */
+    void clearFactoryRecord(String name) {
+        localFactories.remove(name)
     }
 
     /** Disjunction of equalities — {@code x == a_0 ∨ x == a_1 ∨ …}; null if any element fails to translate. */

@@ -16,12 +16,16 @@
 package verification
 
 import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
@@ -81,11 +85,95 @@ class LoopEncoder {
                 symExec(((BlockStatement) st).statements, enc, s)
             } else if (st instanceof ExpressionStatement) {
                 applyAssign((ExpressionStatement) st, enc, s)
+            } else if (st instanceof IfStatement) {
+                applyIf((IfStatement) st, enc, s)
             } else {
                 throw new UnsupportedConstructException(
                     "unsupported statement ${st.class.simpleName} in loop region (line ${st.lineNumber})")
             }
         }
+    }
+
+    /**
+     * Phase 45c — model an {@code if (cond) { then } else { else }} in a loop body via
+     * snapshot-restore + SMT ITE: apply each branch in turn against a snapshot of the entry
+     * bindings, then for any binding that differs between the two branches, rebind to
+     * {@code ite(cond, thenValue, elseValue)}. A binding modified only in one branch uses the
+     * entry value for the other side. Bindings unchanged in both branches are left alone.
+     *
+     * <p>Factory records (Phase 38b) that differ between branches are conservatively dropped
+     * — the SMT ITE machinery only models the size/array oracles, not the literal-arg list,
+     * so a conditional mutation must invalidate the factory fold regardless.
+     */
+    private static void applyIf(IfStatement ifs, Encoder enc, SmtSession s) {
+        Object cond = enc.translate(ifs.booleanExpression)
+        if (cond == null) {
+            throw new UnsupportedConstructException(
+                "if-condition '${ifs.booleanExpression.text}' is outside fragment in loop body")
+        }
+        Encoder.EncoderSnapshot entry = enc.snapshotState()
+        // Then branch.
+        Statement thenBlk = ifs.ifBlock
+        if (thenBlk != null && !(thenBlk instanceof EmptyStatement)) {
+            symExec(asList(thenBlk), enc, s)
+        }
+        Encoder.EncoderSnapshot afterThen = enc.snapshotState()
+        // Restore + else branch.
+        enc.restoreState(entry)
+        Statement elseBlk = ifs.elseBlock
+        if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
+            symExec(asList(elseBlk), enc, s)
+        }
+        Encoder.EncoderSnapshot afterElse = enc.snapshotState()
+        // ITE-combine: for each map, walk the union of keys touched in either branch.
+        iteCombineMap(afterThen.env, afterElse.env, entry.env, cond, enc, s,
+            { String n, Object h -> enc.bind(n, h) })
+        iteCombineMap(afterThen.arrEnv, afterElse.arrEnv, entry.arrEnv, cond, enc, s,
+            { String n, Object h -> enc.bindArray(n, h) })
+        iteCombineMap(afterThen.sizeEnv, afterElse.sizeEnv, entry.sizeEnv, cond, enc, s,
+            { String n, Object h -> enc.bindSizeRaw(n, h) })
+        iteCombineMap(afterThen.setEnv, afterElse.setEnv, entry.setEnv, cond, enc, s,
+            { String n, Object h -> enc.bindSet(n, h) })
+        // Conservative: drop any factory record that wasn't preserved by *both* branches.
+        Set<String> factoryNames = new LinkedHashSet<String>()
+        factoryNames.addAll(afterThen.localFactories.keySet())
+        factoryNames.addAll(afterElse.localFactories.keySet())
+        for (String n : factoryNames) {
+            if (afterThen.localFactories.get(n) != afterElse.localFactories.get(n)) {
+                enc.clearFactoryRecord(n)
+            }
+        }
+    }
+
+    /**
+     * Combine two post-branch maps via SMT ITE, calling {@code apply} once per name whose
+     * binding differs between branches. Names absent in one snapshot fall back to the entry
+     * value; names absent in both fall back to the encoder's natural mint, which is rare here
+     * because at least one branch must have changed the binding for the name to be in scope.
+     */
+    private static void iteCombineMap(Map<String, Object> thenMap, Map<String, Object> elseMap,
+                                      Map<String, Object> entryMap, Object cond, Encoder enc,
+                                      SmtSession s, Closure<Void> apply) {
+        Set<String> names = new LinkedHashSet<String>()
+        names.addAll(thenMap.keySet())
+        names.addAll(elseMap.keySet())
+        for (String n : names) {
+            Object thenV = thenMap.get(n)
+            Object elseV = elseMap.get(n)
+            Object entryV = entryMap.get(n)
+            if (thenV == null) thenV = entryV
+            if (elseV == null) elseV = entryV
+            if (thenV == null || elseV == null) continue   // truly fresh on both sides — leave alone
+            if (thenV != elseV) {
+                apply.call(n, s.ite(cond, thenV, elseV))
+            }
+        }
+    }
+
+    /** Helper to coerce a single-statement branch into a List for the recursive {@link #symExec}. */
+    private static List<Statement> asList(Statement st) {
+        if (st instanceof BlockStatement) return ((BlockStatement) st).statements
+        Collections.singletonList(st)
     }
 
     /**
@@ -161,8 +249,55 @@ class LoopEncoder {
             throw new UnsupportedConstructException(
                 "assignment to a non-variable target (line ${st.lineNumber})")
         }
+        // Phase 45c — a standalone list mutation as an ExpressionStatement, e.g.
+        // {@code positive.add(x)} inside the loop body. Thread the same SMT effects
+        // {@code VerifyChecker.applyListMutation} does, sans count-law tracking (the loop
+        // pass doesn't carry countVals).
+        if (e instanceof MethodCallExpression) {
+            if (applyListMutationInLoop((MethodCallExpression) e, enc, s)) return
+        }
         throw new UnsupportedConstructException(
             "unsupported statement in loop region (line ${st.lineNumber})")
+    }
+
+    /**
+     * Phase 45c — minimal list-mutation handling for loop bodies. Mirrors
+     * {@code VerifyChecker.applyListMutation}'s effect on the size/array oracles + factory
+     * record, sans count-law assertions (the loop pass doesn't track {@code countVals}).
+     * Returns true if the call was recognised as a list mutation; false otherwise so the
+     * caller can throw an honest skip.
+     */
+    private static boolean applyListMutationInLoop(MethodCallExpression mce, Encoder enc, SmtSession s) {
+        Expression recv = mce.objectExpression
+        if (!(recv instanceof VariableExpression)) return false
+        String name = ((VariableExpression) recv).name
+        String m = mce.methodAsString
+        List<Expression> args = mce.arguments instanceof ArgumentListExpression ?
+            ((ArgumentListExpression) mce.arguments).expressions :
+            Collections.<Expression>emptyList()
+        Object one = s.intLit(1L), zero = s.intLit(0L)
+        if (m == 'add' && args.size() == 1) {
+            Object x = enc.translate(args.get(0))
+            if (x == null) return false
+            Object oldSize = enc.sizeOf(name)
+            Object oldArr = enc.arrayFor(name)
+            enc.bindArray(name, s.store(oldArr, oldSize, x))
+            enc.bindSize(name, s.plus(oldSize, one))
+            enc.clearFactoryRecord(name)
+            return true
+        }
+        if (m == 'clear' && args.isEmpty()) {
+            enc.bindSize(name, zero)
+            enc.clearFactoryRecord(name)
+            return true
+        }
+        if ((m == 'removeLast' || m == 'pop') && args.isEmpty()) {
+            Object oldSize = enc.sizeOf(name)
+            enc.bindSize(name, s.minus(oldSize, one))
+            enc.clearFactoryRecord(name)
+            return true
+        }
+        false
     }
 
     /**
@@ -174,6 +309,12 @@ class LoopEncoder {
      * only on them — can still be reasoned about.
      */
     private static void rebind(Encoder enc, String name, Expression rhs) {
+        // Phase 38b/35 — try the materialised-set and factory-record paths first, so a loop
+        // prefix like {@code List<Integer> positive = []} pins the size/nullity oracles the
+        // invariant check sees. Without this, the assign would havoc {@code positive} and the
+        // invariant {@code positive.size() <= i} would refute at iteration 0.
+        if (enc.tryMaterialiseSetBinopAssign(name, rhs)) return
+        if (enc.tryRecordFactoryAssign(name, rhs)) return
         Object h = enc.translate(rhs)
         if (h == null) enc.havoc(name)
         else enc.bind(name, h)

@@ -1384,6 +1384,35 @@ class VerifyChecker extends TypeCheckingExtension {
      * {@code @CheckOverflow} so the verifier's math-int counterexamples match the values the
      * runtime can actually exhibit. Locals are bounded transitively via their assignment rhs.
      */
+    /**
+     * Phase 45b — when a method returns a list-typed local, alias {@code result}'s size and
+     * array oracles to the local's threaded state. Without this, {@code result.size()} in an
+     * @Ensures resolves to a fresh unconstrained {@code sizeOf("result")} that has no
+     * relationship to the actual returned list — so a {@code @Ensures({ result.size() <= n })}
+     * couldn't verify even when the body provably maintained that bound on the local.
+     */
+    private void aliasResultToReturnedListLocal(SmtSession s, Encoder enc, Expression returnExpr) {
+        if (!(returnExpr instanceof VariableExpression)) return
+        String localName = ((VariableExpression) returnExpr).name
+        if (localName == null || localName == 'result') return
+        // Alias when the name is a known list-typed identifier from any of three signals:
+        //   (a) currentListNames — parameter / field declared list.
+        //   (b) peekArray(localName) — array oracle already minted (body-replay path: the local
+        //       was bound by a factory or a list mutation).
+        //   (c) hasSizeOracle(localName) — size oracle already minted, e.g. by an invariant
+        //       that referenced {@code positive.size()} (the loop pass: checkUse asserts the
+        //       invariant first, which mints sizeOf even when the body wasn't replayed).
+        if (currentListNames.contains(localName) ||
+            enc.peekArray(localName) != null ||
+            enc.hasSizeOracle(localName)) {
+            enc.bindSize('result', enc.sizeOf(localName))
+            enc.bindArray('result', enc.arrayFor(localName))
+            // Add 'result' to currentListNames so {@code result.count(v)} routes through bcount
+            // (Phase 41) the same way the local would.
+            currentListNames.add('result')
+        }
+    }
+
     private void assumeIntJvmBounds(SmtSession s, Encoder enc) {
         if (currentMethod == null) return
         Object intMin = s.intLit(-2147483648L)
@@ -2091,6 +2120,12 @@ class VerifyChecker extends TypeCheckingExtension {
                         "return expression '${p.result.text}' is outside fragment")
                 }
                 enc.bind('result', resHandle)
+                // Phase 45b — when the return expression is a list-typed local, also alias the
+                // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures
+                // resolve to the same threaded state the local carries. Without this, the result
+                // is a bare Int handle that doesn't connect to the size/contents oracles —
+                // postconditions about a returned collection couldn't reference its shape.
+                aliasResultToReturnedListLocal(session, enc, p.result)
             }
 
             // Exit obligation: postcondition (if any) AND each class invariant. A single
@@ -2285,6 +2320,10 @@ class VerifyChecker extends TypeCheckingExtension {
             Object newSize = s.plus(oldSize, one)
             enc.bindArray(name, newArr)
             enc.bindSize(name, newSize)
+            // Phase 38d — invalidate any factory record on the local: post-mutation, the literal
+            // args no longer describe xs's contents, and factoryContainerFor lookups should fall
+            // through to the threaded size/array oracles instead of folding to the stale literals.
+            enc.clearFactoryRecord(name)
             // Phase 41 — bcount boundary law: bcount(newArr, w, 0, newSize) =
             //   bcount(oldArr, w, 0, oldSize) + (x == w ? 1 : 0). The prefix [0, oldSize) is
             //   unchanged by the store at oldSize, and the new tail-slot value is x.
@@ -2301,6 +2340,7 @@ class VerifyChecker extends TypeCheckingExtension {
             // irrelevant. (Modelling clear as a havoc'd fresh array would be sounder against an
             // out-of-bounds read, but we already model that case via the bounds-check obligation.)
             enc.bindSize(name, zero)
+            enc.clearFactoryRecord(name)
             // Phase 41 — bcount over the empty range is 0 by definition; assert per tracked v
             // so the user's @Ensures({ xs.count(v) == 0 }) discharges trivially after clear.
             Object arr = enc.arrayFor(name)
@@ -2318,6 +2358,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Object newSize = s.minus(oldSize, one)
             Object arr = enc.arrayFor(name)
             enc.bindSize(name, newSize)
+            enc.clearFactoryRecord(name)
             // Phase 41 — bcount boundary law: bcount(arr, w, 0, oldSize) =
             //   bcount(arr, w, 0, newSize) + (arr[newSize] == w ? 1 : 0). Equivalently, the
             //   new bcount is the old bcount minus the contribution of the dropped tail element.
@@ -2572,6 +2613,9 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
             enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
+            // Phase 45b — alias result's size/array oracles to the returned list local so
+            // {@code result.size()} in the postcondition resolves to the local's threaded state.
+            aliasResultToReturnedListLocal(s, enc, resultExpr)
             s.assertExpr(s.not(LoopEncoder.tr(enc, postAst, "postcondition")))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
