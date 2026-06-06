@@ -31,6 +31,7 @@ import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
@@ -279,6 +280,10 @@ class Encoder {
         if (recv instanceof ConstantExpression) {
             return ((ConstantExpression) recv).value instanceof String
         }
+        // Phase 47h — a GString {@code "hello $name"} produces a {@code CharSequence} at runtime
+        // and equals a {@code String} by content. The encoder translates GString to chained
+        // {@code stringConcat}, yielding a Seq Char term — same sort, same equality semantics.
+        if (recv instanceof GStringExpression) return true
         if (recv instanceof VariableExpression) {
             String n = ((VariableExpression) recv).name
             ClassNode t = scalarTypes.get(n)
@@ -316,7 +321,8 @@ class Encoder {
             // {@code concat}, and {@code replace} all return String, so a chained
             // {@code s.substring(1, 4).length()} or {@code s.replace("a", "b").length()}
             // resolves correctly through the string-receiver path.
-            if ((m == 'substring' || m == 'concat' || m == 'replace' || m == 'replaceAll') &&
+            if ((m == 'substring' || m == 'concat' || m == 'replace' || m == 'replaceAll' ||
+                 m == 'toUpperCase' || m == 'toLowerCase') &&
                 isStringReceiver(mc.objectExpression)) {
                 return true
             }
@@ -332,6 +338,66 @@ class Encoder {
             if (isStrCls && m == 'valueOf' && argList(mc).size() == 1) return true
         }
         return false
+    }
+
+    /**
+     * Phase 47h — translate a {@link GStringExpression} ({@code "hello $name"}) to chained
+     * {@code stringConcat}. The expression carries parallel lists of static text
+     * ({@code strings}, all {@code ConstantExpression}s of String type) and interpolated
+     * values ({@code values}, arbitrary expressions). Interleaved as
+     * {@code strings[0] · values[0] · strings[1] · values[1] · … · strings[n]}, the static
+     * texts always sandwiching the values. Empty static parts are common at the start / end
+     * ({@code "$name"} produces {@code strings=["", ""]}, {@code values=[name]}).
+     *
+     * <p>Returns null if any value can't be coerced to a String term — the dispatch then
+     * surfaces "outside fragment" cleanly.
+     */
+    private Object translateGString(GStringExpression gs) {
+        Object strSort = session.declareSort('String')
+        List<ConstantExpression> strs = gs.strings
+        List<Expression> vals = gs.values
+        List<Object> parts = new ArrayList<Object>(strs.size() + vals.size())
+        for (int i = 0; i < strs.size(); i++) {
+            Object lit = translateInSort(strs.get(i), strSort)
+            if (lit == null) return null
+            parts.add(lit)
+            if (i < vals.size()) {
+                Object val = translateValueAsString(vals.get(i))
+                if (val == null) return null
+                parts.add(val)
+            }
+        }
+        // Fold concat from left. Z3's varargs accepts the whole list; we chain pairwise
+        // through the existing {@link SmtSession#stringConcat} which already handles the
+        // {@code mkConcat} overload disambiguation.
+        Object acc = parts.get(0)
+        for (int i = 1; i < parts.size(); i++) {
+            acc = session.stringConcat(acc, parts.get(i))
+        }
+        acc
+    }
+
+    /**
+     * Phase 47h — coerce an interpolated value into a String term. Strategy:
+     * <ul>
+     *   <li>If {@link #isStringReceiver} recognises the expression (String literal, String
+     *       parameter, {@code s + t}, {@code s.substring(...)}, etc., plus a nested GString),
+     *       translate as String via {@link #translateInSort}.</li>
+     *   <li>Otherwise try {@link #translate} (yielding an Int handle in the common case) and
+     *       convert via {@link SmtSession#stringFromInt} — same Z3 {@code intToString} the
+     *       Phase 47e {@code Integer.toString} dispatch uses. Carries the same semantic gap
+     *       for negative inputs (Z3 yields the empty string).</li>
+     * </ul>
+     * Boolean and other types aren't recognised yet; null returned → honest skip.
+     */
+    private Object translateValueAsString(Expression v) {
+        if (isStringReceiver(v)) {
+            Object strSort = session.declareSort('String')
+            return translateInSort(v, strSort)
+        }
+        Object h = translate(v)
+        if (h == null) return null
+        return session.stringFromInt(h)
     }
 
     /**
@@ -833,9 +899,22 @@ class Encoder {
         translate(e)
     }
 
-    /** Explicit binding, used to wire formal parameters to actual-argument expressions. */
+    /**
+     * Explicit binding, used to wire formal parameters to actual-argument expressions.
+     * Phase 47h — when {@code name} is recorded in {@link #scalarTypes} as a non-Int type
+     * (String / Enum), also populate {@link #sortedEnv} so subsequent {@link #varForOfSort}
+     * lookups (used by the GString interpolation path and other String-typed dispatches)
+     * see the bound term rather than minting a fresh unconstrained constant.
+     */
     void bind(String name, Object handle) {
         env.put(name, handle)
+        ClassNode declared = scalarTypes.get(name)
+        if (declared != null) {
+            Object sort = sortFor(declared)
+            if (sort != session.intSort()) {
+                sortedEnv.put(name + ':' + sort.toString(), handle)
+            }
+        }
     }
 
     /** Current scalar/array binding, or null if unbound — for save/restore around a call's framing. */
@@ -1953,6 +2032,15 @@ class Encoder {
             return translate(((CastExpression) expr).expression)
         }
 
+        // Phase 47h — GString interpolation. {@code "hello $name"} parses as a
+        // {@link GStringExpression} with parallel lists of static strings and interpolated
+        // values; translate to chained {@code stringConcat} via Z3's seq theory. Each value
+        // is converted to its String representation via {@link #translateValueAsString} —
+        // String values flow directly, integers go through {@code intToString}, others skip.
+        if (expr instanceof GStringExpression) {
+            return translateGString((GStringExpression) expr)
+        }
+
         if (expr instanceof TernaryExpression) {
             // cond ? a : b  ->  (ite cond a b). Also the shape an unfolded pure
             // function takes (e.g. pow2's `n == 0 ? 1 : ...`), see translateCall.
@@ -2629,6 +2717,17 @@ class Encoder {
                 Object from = translate(args.get(1))
                 if (sub == null || from == null) return null
                 return session.stringLastIndexOf(sH, sub, from)
+            }
+            // Phase 47g — case folding. Uninterpreted with per-literal pinning (ASCII via
+            // Locale.ROOT) and structural axioms (length, idempotence, cascade).
+            if (m == 'toUpperCase' && args.isEmpty()) return session.stringToUpper(sH)
+            if (m == 'toLowerCase' && args.isEmpty()) return session.stringToLower(sH)
+            // {@code s.equalsIgnoreCase(t)} ≡ {@code toLower(s) == toLower(t)}. ASCII-faithful,
+            // matches the Locale.ROOT contract used at the literal mint.
+            if (m == 'equalsIgnoreCase' && args.size() == 1) {
+                Object t = translateInSort(args.get(0), strSort)
+                if (t == null) return null
+                return session.eq(session.stringToLower(sH), session.stringToLower(t))
             }
             return null   // unsupported op on a String receiver — honest skip, don't fall through to list dispatch
         }

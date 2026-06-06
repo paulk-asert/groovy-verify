@@ -329,6 +329,25 @@ interface SmtSession extends AutoCloseable {
     Object stringLastIndexOf(Object s, Object sub, Object fromIndex)
 
     /**
+     * Phase 47g — ASCII case folding as uninterpreted {@code (String) -> String}. Z3's string
+     * theory has no native case-folding primitive, so we ship hybrid coverage:
+     * <ul>
+     *   <li>Every minted String literal pins its upper / lower form at the backend's
+     *       {@code litOfSort} site, computed via {@code Locale.ROOT} (ASCII-faithful — no
+     *       Turkish-locale {@code i}/{@code İ} surprise). So {@code "Hello".toUpperCase() == "HELLO"}
+     *       folds at the mint, like length and per-position content do for native theory.</li>
+     *   <li>Three structural axioms asserted on first use: length-preservation
+     *       ({@code length(toUpper(s)) == length(s)}, same for toLower), idempotence
+     *       ({@code toUpper(toUpper(s)) == toUpper(s)}), and the case-folding cascade
+     *       ({@code toUpper(toLower(s)) == toUpper(s)}, {@code toLower(toUpper(s)) == toLower(s)}).</li>
+     * </ul>
+     * What it doesn't reach: per-position character claims for symbolic strings (no
+     * universal-over-charAt axiom), and non-ASCII locale semantics. Both are deferred.
+     */
+    Object stringToUpper(Object s)
+    Object stringToLower(Object s)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

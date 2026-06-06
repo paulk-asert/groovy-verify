@@ -211,7 +211,14 @@ class Z3Session implements SmtSession {
             // ({@code len("hello") == 5}, {@code at("hello", 0) == "h"}) are theory consequences
             // too — no mint-time pinning required. This replaces the Phase-27 (cascade) +
             // Phase-46b (length pin) + Phase-46e (char pin, capped at 64) machinery in one move.
-            return ctx.mkString(literalKey)
+            Expr lit = ctx.mkString(literalKey)
+            // Phase 47g — track minted literals for case-folding pinning (only when the case
+            // functions are in play). {@link #pinCaseLiteral} computes and asserts the upper /
+            // lower form at mint time so {@code "Hello".toUpperCase() == "HELLO"} folds.
+            if (stringLiteralKeys.add(literalKey) && (toUpperFn != null || toLowerFn != null)) {
+                pinCaseLiteral(literalKey, lit)
+            }
+            return lit
         }
         Sort sortHandle = (Sort) sort
         String sortName = sortHandle.getName().toString()
@@ -611,6 +618,105 @@ class Z3Session implements SmtSession {
         ctx.mkApp(lastIndexOfFn, (Expr) s, (Expr) sub, (Expr) fromIndex)
     }
 
+    /**
+     * Phase 47g — case-folding state. {@code toUpperFn}/{@code toLowerFn} are uninterpreted
+     * declarations brought up on first use; {@code stringLiteralKeys} tracks every minted
+     * String literal so we can pin its case forms on the spot, and re-pin retroactively when
+     * the case ops are first referenced (rare for typical workloads). The pinning uses
+     * {@link Locale#ROOT} — ASCII-faithful, no Turkish-locale {@code i}/{@code İ} surprise.
+     */
+    private FuncDecl toUpperFn
+    private FuncDecl toLowerFn
+    private boolean caseAxiomsAsserted = false
+    private final Set<String> stringLiteralKeys = new LinkedHashSet<String>()
+
+    private FuncDecl ensureToUpperFn() {
+        if (toUpperFn != null) return toUpperFn
+        toUpperFn = ctx.mkFuncDecl('toUpper$', [stringSort()] as Sort[], stringSort())
+        // Newly declared — pin every literal that was minted before this point.
+        pinExistingLiterals()
+        toUpperFn
+    }
+
+    private FuncDecl ensureToLowerFn() {
+        if (toLowerFn != null) return toLowerFn
+        toLowerFn = ctx.mkFuncDecl('toLower$', [stringSort()] as Sort[], stringSort())
+        pinExistingLiterals()
+        toLowerFn
+    }
+
+    /** Phase 47g — pin case forms for every literal currently in the universe. */
+    private void pinExistingLiterals() {
+        // Snapshot to avoid concurrent-modification while pinCaseLiteral expands the set.
+        List<String> snapshot = new ArrayList<String>(stringLiteralKeys)
+        for (String key : snapshot) {
+            pinCaseLiteral(key, ctx.mkString(key))
+        }
+    }
+
+    /**
+     * Phase 47g — assert {@code toUpper(lit) == mkString(upper(key))} and the toLower mirror.
+     * Recursively pins the derived literals (the upper/lower forms themselves) so the case
+     * universe is closed. {@link Locale#ROOT} is the case-folding contract — ASCII-faithful.
+     */
+    private void pinCaseLiteral(String key, Expr lit) {
+        if (toUpperFn != null) {
+            String upperKey = key.toUpperCase(java.util.Locale.ROOT)
+            Expr upperLit = ctx.mkString(upperKey)
+            BoolExpr pin = ctx.mkEq(ctx.mkApp(toUpperFn, lit), upperLit)
+            solver.add(pin)
+            assertedExprs.add(pin)
+            if (stringLiteralKeys.add(upperKey)) {
+                pinCaseLiteral(upperKey, upperLit)
+            }
+        }
+        if (toLowerFn != null) {
+            String lowerKey = key.toLowerCase(java.util.Locale.ROOT)
+            Expr lowerLit = ctx.mkString(lowerKey)
+            BoolExpr pin = ctx.mkEq(ctx.mkApp(toLowerFn, lit), lowerLit)
+            solver.add(pin)
+            assertedExprs.add(pin)
+            if (stringLiteralKeys.add(lowerKey)) {
+                pinCaseLiteral(lowerKey, lowerLit)
+            }
+        }
+    }
+
+    /**
+     * Phase 47g — case-folding axioms. The natural set is length-preservation +
+     * idempotence + cascade as universals, but each universal over a {@code (Seq Char) -> Seq Char}
+     * uninterpreted function defeats Z3's model construction whenever the conjecture *negates*
+     * a literal equation involving {@code toUpper}/{@code toLower}. Confirmed by a standalone
+     * probe: {@code "Hello".toUpperCase() != "hello"} solves in 9ms with literal-pin only,
+     * hangs for 60s+ (any timeout — not a slow-laptop issue) once even the length-preservation
+     * universal is asserted. The unsat-direction (positive verification) is fast either way;
+     * the sat-direction (refute) is where Z3 stalls trying to build a model that satisfies
+     * the universal for the uninterpreted seq-to-seq function.
+     *
+     * <p>Resolution: no universals; rely on per-literal pinning at the mint site. Literal-only
+     * cases work; symbolic length / idempotence / cascade claims aren't reachable. The
+     * structural facts remain true mathematically. Future Z3 releases (or a different solver
+     * tactic) may handle this better.
+     */
+    private void ensureCaseAxioms() {
+        if (caseAxiomsAsserted) return
+        caseAxiomsAsserted = true
+        ensureToUpperFn()
+        ensureToLowerFn()
+    }
+
+    @Override
+    Object stringToUpper(Object s) {
+        ensureCaseAxioms()
+        ctx.mkApp(toUpperFn, (Expr) s)
+    }
+
+    @Override
+    Object stringToLower(Object s) {
+        ensureCaseAxioms()
+        ctx.mkApp(toLowerFn, (Expr) s)
+    }
+
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
 
     @Override
@@ -726,7 +832,14 @@ class Z3Session implements SmtSession {
     }
 
     private CheckResult computeCheck() {
+        // {@code Z3_TIMING=1} env var reports any check slower than 500ms — a forensic hook
+        // for spotting solver hot spots without paying overhead in normal runs.
+        long t0 = System.nanoTime()
         Status status = solver.check()
+        long elapsedMs = (long)((System.nanoTime() - t0) / 1_000_000L)
+        if (System.getenv('Z3_TIMING') == '1' && elapsedMs > 500) {
+            System.err.println("[Z3] check ${status} in ${elapsedMs}ms")
+        }
         if (status == Status.UNSATISFIABLE) {
             return CheckResult.verified()
         }

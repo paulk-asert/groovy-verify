@@ -380,30 +380,49 @@ correctly. The Verus port of the same task has none of that — just the impleme
 
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
 positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
-in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46a translates
-the string predicates as uninterpreted Bool functions; Phase 46d threads the short-circuit
-`&&` and any enclosing in-loop `if` as path facts during obligation discharge — so the
-inner deref obligation discharges under the guard the conjunction establishes, just like
-a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks port
-on the `List<Character>` API today (length preservation verifies cleanly); a true
-`String.reverse()` proof with character-position reasoning is deferred behind Z3 string
-theory adoption.
+in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
+short-circuit `&&` and any enclosing in-loop `if` as path facts during obligation discharge,
+so the inner deref obligation discharges under the guard the conjunction establishes — just
+like a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks
+port on the `List<Character>` API today; a true `String.reverse()` proof would need its
+own uninterpreted+axioms layer (Z3 has no `str.reverse` primitive).
 
-`s.length()` / `s.charAt(i)` / `s.substring(b, e)` / `s + t` all reach the verifier under
-Phase 47's Z3-native-string-theory adoption: literals fold (`"hello".length() == 5`,
-`"foo" + "bar" == "foobar"`), bounds check naturally
-(out-of-range `s.charAt(i)` / `s.substring(...)` refute with `IndexBounds`), and the
-**structural cross-string facts** that motivated the move — `s.startsWith(t) ∧ i < t.length()`
-implying `s.charAt(i) == t.charAt(i)` — verify as free theory consequences. The
-length-bound facts that the older uninterpreted approach axiomatized by hand (non-negativity,
-prefix/suffix length bounds) come from Z3's seq theory.
+String content is first-class under Phase 47's Z3-native-string-theory adoption (and the
+47b–h follow-on slices). The full surface — `length()` / `charAt(i)` /
+`substring(b, e)` / `+` and `concat(t)` / `replace(old, new)` / `indexOf(sub)` /
+`matches(regex)` / `Integer.toString(n)` / `Integer.parseInt(s)` / `toUpperCase()` /
+`toLowerCase()` / `equalsIgnoreCase(t)` / `replaceAll(...)` / `lastIndexOf(...)` /
+`"hello $name"` GString interpolation — reaches the verifier through native Z3 primitives
+where available (`str.prefixof`, `str.substr`, `str.++`, `str.in_re`, …) and uninterpreted
+functions with weak axioms where Z3 doesn't yet ship a primitive (`replaceAll`,
+`lastIndexOf`, `toUpper`/`toLower` via per-literal pinning). Literals fold
+(`"hello".length() == 5`, `"foo" + "bar" == "foobar"`, `"Hello".toUpperCase() == "HELLO"`,
+`"hello $name"` with `name = "world"` folds to `"hello world"`), out-of-range indices
+refute with the same `IndexBounds` diagnostic that list reads produce, regex parses through
+an inline recursive-descent translator into Z3's regex ops, and the **structural
+cross-string facts** (`s.startsWith(t) ∧ i < t.length()` implying
+`s.charAt(i) == t.charAt(i)`) verify as free theory consequences. Composing several of
+these in one method:
+
+```groovy
+@Requires({ s != null && s.startsWith("user:") })
+@Ensures({ result == s.length() - 5 })
+static int idLength(String s) { s.substring(5).length() }
+```
+
+That verifies via two theory consequences chained — `startsWith ⟹ length(prefix) <= length(s)`
+gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` for in-bounds `k` gives the
+identity.
 
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
 The remaining honest gaps: tasks with non-linear int arithmetic (`i * i <= n` in
-prime-testing) hit the Phase 8a NIA opt-out, and string operations beyond the shipped
-surface — regex matching, `replace`, `indexOf`, `split` — aren't yet dispatched, though
-Z3's theory supports them. Sister task 023 (`strlen`) ports the same way — with the
-natural spec `result == xs.size()` added.
+prime-testing) hit the Phase 8a NIA opt-out; `Integer.toString` and `Integer.parseInt`
+carry Z3's signed-semantics gap (`""` for negative ints, `-1` for non-digit input — use
+under non-negative-input contracts); `replaceAll` and `lastIndexOf` are uninterpreted
+with weak axioms (no Z3 primitive yet); `split` (returns array, structurally invasive),
+`toUpperCase` symbolic length-preservation (the universal axioms cause Z3 timeouts), and
+non-ASCII case folding remain deferred. Sister task 023 (`strlen`) ports the same way —
+with the natural spec `result == xs.size()` added.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
@@ -780,6 +799,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Regex feature expansion** | The Phase 47c parser grew predefined character classes (`\d`/`\w`/`\s` and their negations `\D`/`\W`/`\S`), negated character classes (`[^abc]`/`[^a-z]` via Z3's `mkComplement` + `mkIntersect`), quantified ranges (`{n}`/`{n,m}`/`{n,}` via `mkLoop`), and anchors `^`/`$` as silent no-ops (matches() is already whole-string anchored). Still deferred: word-boundary `\b`, inline flags `(?i)`, backreferences, lookbehind | ✅ Phase 47d |
 | **Integer ↔ String conversion** | `Integer.toString(n)` / `n.toString()` (when statically dispatched) / `String.valueOf(int)` → Z3's `intToString`; `Integer.parseInt(s)` → `stringToInt`. The round-trip `parseInt(toString(n)) == n` verifies for `n >= 0`. **Known semantic gaps**: Z3 returns the empty string for `intToString(n < 0)` and `-1` for `stringToInt` on non-digit input; Java's signed semantics differ. Use under non-negative-input contracts | ✅ Phase 47e |
 | **`replaceAll` / `lastIndexOf` (uninterpreted with weak axioms)** | Z3 has no native primitive for either. Phase 47f ships them as uninterpreted functions with two universally-quantified axioms each: `replaceAll` knows non-occurrence is a no-op + same-length swaps preserve length; `lastIndexOf` knows the result is `>= -1` and `== -1` when the substring is absent. Sound under-approximation — proofs that need finer reasoning (e.g. "post-replace charAt matches one of two values") gracefully skip. When Z3 ships `mkReplaceAll`, the uninterpreted form swaps out for native in one edit | ✅ Phase 47f |
+| **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
+| **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
 
 ## Building & testing
 

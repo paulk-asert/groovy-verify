@@ -985,13 +985,13 @@ class VerifyHarness {
                             return s
                         }
                     }''')],
-        // Step 5 — an invariant whose body is outside the encoder fragment (a case-conversion
-        // {@code toUpperCase} call — case folding isn't yet wired through Z3's string theory)
+        // Step 5 — an invariant whose body is outside the encoder fragment (a {@code split} call,
+        // which returns an array — list-from-string is structurally invasive and not yet wired)
         // is dropped with a single "Skipped class invariant" diagnostic at the method level.
         // Verification continues for everything else.
         [group: 'P15a class-invariant', name: 'unmodelled invariant skipped',
          expect: 'Skipped class invariant',
-         src: tc('''@groovy.contracts.Invariant({ name.toUpperCase().length() > 0 })
+         src: tc('''@groovy.contracts.Invariant({ name.split(",").length > 0 })
                     class C { String name
                         int n() { 0 }
                     }''')],
@@ -2241,6 +2241,140 @@ class VerifyHarness {
                         @Requires({ s != null && t != null && !s.contains(t) })
                         @Ensures({ result == -1 })
                         static int f(String s, String t) { s.lastIndexOf(t) }
+                    }''')],
+
+        // ---------- Phase 47g: case folding (toUpperCase / toLowerCase / equalsIgnoreCase) ----------
+        // Literal pinning at mint: "Hello".toUpperCase() folds to "HELLO".
+        [group: 'P47g case', name: 'literal toUpperCase folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "HELLO" })
+                        static String f() { "Hello".toUpperCase() }
+                    }''')],
+        [group: 'P47g case', name: 'literal toLowerCase folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "hello" })
+                        static String f() { "HELLO".toLowerCase() }
+                    }''')],
+        // Wrong-case literal refutes.
+        [group: 'P47g case', name: 'wrong-case literal refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == "hello" })
+                        static String f() { "Hello".toUpperCase() }
+                    }''')],
+        // Length-preservation for literal arguments still folds via the mint pin.
+        [group: 'P47g case', name: 'toUpperCase preserves length (literal)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f() { "hello".toUpperCase().length() }
+                    }''')],
+        // equalsIgnoreCase via toLower equivalence.
+        [group: 'P47g case', name: 'equalsIgnoreCase literals folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "Hello".equalsIgnoreCase("HELLO") ? 1 : 0 }
+                    }''')],
+        [group: 'P47g case', name: 'equalsIgnoreCase distinguishes content',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "Hello".equalsIgnoreCase("World") ? 1 : 0 }
+                    }''')],
+        // Reflexive: s.equalsIgnoreCase(s) is true — toLower applied to the same argument is
+        // pointwise-equal regardless of axioms (Z3 sees the two terms as syntactically identical).
+        [group: 'P47g case', name: 'equalsIgnoreCase is reflexive', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == 1 })
+                        static int f(String s) { s.equalsIgnoreCase(s) ? 1 : 0 }
+                    }''')],
+        // Symbolic: a precondition that names the lowered form connects to the dispatch
+        // by syntactic identity — toLower(s) on the precondition side is the same term as
+        // toLower(s) inside the equalsIgnoreCase lowering.
+        [group: 'P47g case', name: 'equalsIgnoreCase symmetric to toLower equality', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null && s.toLowerCase() == t.toLowerCase() })
+                        @Ensures({ result == 1 })
+                        static int f(String s, String t) { s.equalsIgnoreCase(t) ? 1 : 0 }
+                    }''')],
+
+        // ---------- Phase 47h: GString interpolation ----------
+        // Single String interpolation: "hello $name" with literal name folds to the
+        // concrete concatenated string.
+        [group: 'P47h gstring', name: 'GString with String literal interpolation folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "hello world" })
+                        static String f() { String name = "world"; "hello $name" }
+                    }''')],
+        // Single int interpolation: "x = $x" routes the int through intToString.
+        [group: 'P47h gstring', name: 'GString with int literal interpolation folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "x = 5" })
+                        static String f() { int x = 5; "x = $x" }
+                    }''')],
+        // Mixed: multiple interpolations, mixed types.
+        [group: 'P47h gstring', name: 'GString with multiple interpolations', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "a=1, b=hi" })
+                        static String f() {
+                            int a = 1
+                            String b = "hi"
+                            "a=$a, b=$b"
+                        }
+                    }''')],
+        // Length of a GString — sums static parts with int.toString length.
+        [group: 'P47h gstring', name: 'GString length composes', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == 4 + Integer.toString(n).length() })
+                        static int f(int n) { "n = $n".length() }
+                    }''')],
+        // Symbolic String parameter: "hello $name" length is "hello ".length + name.length.
+        [group: 'P47h gstring', name: 'GString length with String param', ok: true,
+         src: tc('''class C {
+                        @Requires({ name != null })
+                        @Ensures({ result == 6 + name.length() })
+                        static int f(String name) { "hello $name".length() }
+                    }''')],
+        // GString as comparison RHS: matches a String literal at runtime.
+        [group: 'P47h gstring', name: 'GString equals literal String', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() {
+                            String name = "Alice"
+                            "hi $name" == "hi Alice" ? 1 : 0
+                        }
+                    }''')],
+        // Refute: wrong interpolated value.
+        [group: 'P47h gstring', name: 'GString refutes wrong interpolation',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == "hello Bob" })
+                        static String f() { String name = "Alice"; "hello $name" }
+                    }''')],
+        // GString with ${...} block-form interpolation (computed expression).
+        [group: 'P47h gstring', name: 'GString with block-form expression', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "sum=3" })
+                        static String f() { int a = 1; int b = 2; "sum=${a + b}" }
+                    }''')],
+        // GString chained with .startsWith — the result is a String-typed receiver.
+        [group: 'P47h gstring', name: 'GString routes through string-receiver dispatch', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() {
+                            String name = "Alice"
+                            "hi $name".startsWith("hi") ? 1 : 0
+                        }
+                    }''')],
+        // Showcase: idLength under a prefix-constrained input. Verifies via the seq theory's
+        // structural fact (startsWith → length(prefix) <= length(s)) composed with substring's
+        // length identity.
+        [group: 'P47h gstring', name: 'showcase: idLength via startsWith + substring', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.startsWith("user:") })
+                        @Ensures({ result == s.length() - 5 })
+                        static int idLength(String s) { s.substring(5).length() }
                     }''')],
 
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------

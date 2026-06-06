@@ -110,6 +110,15 @@ def verifyTask = tasks.register('verify', JavaExec) {
     jvmArgs = ['--enable-native-access=ALL-UNNAMED']  // quiet the JDK25 native-access warning from z3
 }
 
+tasks.register('caseAxiomTiming', JavaExec) {
+    group = 'verification'
+    description = 'Standalone Z3 timing probe for the toUpper/toLower axiom set'
+    dependsOn 'compileGroovy', 'compileTestGroovy'
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'CaseAxiomTiming'
+    jvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
 tasks.named('check') {
     dependsOn verifyTask
 }

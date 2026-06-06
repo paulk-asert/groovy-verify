@@ -3103,12 +3103,285 @@ contract." A program that benefits from both stacks both extensions in its
 
 **Known limits.**
 
-- Limited parser grammar (see list above). Adding features is purely additive — the parser
-  is ~100 LoC of recursive descent in `Encoder.groovy`.
+- ~~Limited parser grammar~~ — *most common features closed by Phase 47d below.*
 - Dynamic regex strings (`s.matches(variableRegex)`) skip — translation requires the regex
   text be statically known. A field with a `final String PATTERN = "…"` could in principle
   be const-folded, but the encoder's pure-fold path doesn't currently reach into static
   field initialisers.
+
+## Phase 47d — Regex feature expansion  *(shipped)*
+
+Extends the Phase 47c recursive-descent parser with the features users actually reach for:
+
+- **Predefined character classes**: `\d` → `[0-9]`, `\w` → `[a-zA-Z0-9_]`, `\s` → ASCII
+  whitespace set (space, tab, LF, CR, FF, VT). The capital-letter complements (`\D`, `\W`,
+  `\S`) are single-character complements: `mkIntersect(reAllChar, mkComplement(class))`.
+- **Negated character classes**: `[^abc]`, `[^a-z]`. Same single-character-complement
+  treatment as the predefined complements — parse the inner class as positive, then
+  invert.
+- **Quantified ranges**: `{n}`, `{n,m}`, `{n,}` via Z3's `mkLoop`. The two-int form
+  bounds both sides; the single-int form is open-upper-bound.
+- **Anchors `^` and `$`** as silent no-ops. `String.matches` is whole-string anchored, so
+  top-level anchors are redundant; mid-position they're tolerated as the empty-string
+  regex (matches only "", which composes correctly with concat).
+
+`SmtSession` grew three regex constructors: `reComplement(re)`, `reIntersect(a, b)`,
+`reLoop(re, lo, hi)` / `reLoopAtLeast(re, lo)`. All four map to Z3 primitives
+(`mkComplement` / `mkIntersect` / `mkLoop` with two overloads).
+
+**Still deferred**: word-boundary anchors (`\b`, `\B`), inline flags (`(?i)` / `(?m)`),
+backreferences, lookahead / lookbehind. Each is structurally larger than the recursive
+parser handles today; honest-skipped for now.
+
+**Shipped tests**: `\d+` matches digits / rejects letters, `\w+` matches alphanumeric +
+underscore, `\s+` matches whitespace, `\D+` rejects digits, `[^0-9]+` matches non-digits,
+anchors as no-op (`^abc$` ≡ `abc`), `a{3}` matches exactly three, `a{2,4}` range,
+`a{2,}` open-upper.
+
+## Phase 47e — Integer ↔ String conversion  *(shipped)*
+
+Maps `Integer.toString(n)` / `n.toString()` (when statically dispatched) /
+`String.valueOf(int)` to Z3's `intToString`; `Integer.parseInt(s)` to Z3's `stringToInt`.
+Receiver discrimination handles all three AST shapes the type-checker produces:
+`VariableExpression` (unresolved), `PropertyExpression` (FQN), `ClassExpression`
+(post-resolution). `isStringReceiver` extended to recognise these as String-producing
+expressions, so `Integer.toString(n).length()` resolves correctly.
+
+**Known semantic gaps** (carried into the verifier's view of the operations):
+
+- **Z3's `int.to.str(n)` returns the empty string for `n < 0`**; Java's
+  `Integer.toString(-5)` returns `"-5"`. A spec that reasons over `Integer.toString(n)`
+  for symbolic `n` may produce refutes that Java wouldn't.
+- **Z3's `str.to.int(s)` returns `-1` for any string that isn't a sequence of decimal
+  digits**; Java's `Integer.parseInt` parses signs and throws on non-numeric input.
+- The round-trip identity `parseInt(toString(n)) == n` holds *for non-negative `n`* only,
+  and is shipped as a verified test in exactly that form.
+
+These follow the SMT-LIB spec — patches in Z3 (or a wrapper here) could close the
+sign-handling gap, but doing it right would mean rebuilding the conversions on top of the
+seq-of-char layer rather than the integer-to-string primitive. Out of scope for this
+phase.
+
+**Shipped tests**: `Integer.toString(5) == "5"`, `String.valueOf(42) == "42"`,
+`Integer.parseInt("123") == 123`, `Integer.parseInt("abc") == -1` (Z3 semantics),
+wrong-value refute, round-trip `parseInt(toString(n)) == n` under `n >= 0`.
+
+## Phase 47f — `replaceAll` + `lastIndexOf` as uninterpreted  *(shipped)*
+
+Z3 has no native `mkReplaceAll` and no `mkLastIndexOf`. Phase 47f ships both as
+*uninterpreted functions with weak universally-quantified axioms* — sound
+under-approximations: the verifier knows less than Z3 native would if it had the
+primitive, but everything it does know is true.
+
+**`replaceAll(s, old, new)` — axioms asserted on first use:**
+
+1. `¬contains(s, old) ⟹ replaceAll(s, old, new) == s`. When the target isn't present,
+   the result is the input. (Cleanest single fact we can carry without a primitive.)
+2. `length(old) == length(new) ⟹ length(replaceAll(s, old, new)) == length(s)`. Length
+   preservation under same-size swaps — the single-character `s.replaceAll("a", "b")`
+   case, common in practice.
+
+**`lastIndexOf(s, sub, fromIndex)` — axioms asserted on first use:**
+
+1. `lastIndexOf(s, sub, from) >= -1`. The return is a valid sentinel-or-position.
+2. `¬contains(s, sub) ⟹ lastIndexOf(s, sub, from) == -1`. Absent means -1.
+
+Each axiom has a single-`mkPattern` trigger on the call term, so Z3 instantiates only at
+ground call sites that already appear in the proof — no blind-fire over the Herbrand
+universe.
+
+**Soundness boundary.** The axioms are deliberately minimal. A specification that needs
+finer reasoning ("`replaceAll(s, "a", "b").charAt(i)` is either `s.charAt(i)` or `'b'`")
+will skip — there's no axiom that connects post-replace `charAt` to pre-replace `charAt`.
+Tests cover the axiomatic facts and a refute for "claiming length-preservation under
+unequal-length swap" — explicitly *not* provable.
+
+**Future upgrade path.** When Z3 ships `mkReplaceAll` (and a `lastIndexOf` primitive), the
+uninterpreted functions and axioms in `Z3Backend` swap out for native dispatch in one
+edit — same shape as Phase 47's swap-out of the Phase 46a–c hand-axiomatized predicates.
+
+**Build cost.** The Phase 47f axioms add modest quantifier load on every check; suite
+wall-clock went from ~27s to ~56s. Acceptable for the win, and the axioms are gated so
+they're only asserted when a replaceAll / lastIndexOf call appears.
+
+**Shipped tests**: `replaceAll(s, "XYZ", "A") == s` under `!s.contains("XYZ")`,
+length-preservation under `replaceAll("a", "b")`, refute under
+`replaceAll("a", "bc").length() == s.length()` (unequal-length not provable),
+`lastIndexOf(s, t) >= -1`, `lastIndexOf == -1` when absent.
+
+## Phase 47g — ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)  *(shipped)*
+
+Z3's seq theory has no case-folding primitive — there's no `str.upper` or
+`str.case-fold`. Phase 47g ships hybrid coverage built on uninterpreted functions plus
+exhaustive literal pinning at mint, all done under `Locale.ROOT` (ASCII-faithful — no
+Turkish-locale `i`/`İ` surprise).
+
+**The shipped surface:**
+
+- `s.toUpperCase()` → `toUpper$(s)` uninterpreted.
+- `s.toLowerCase()` → `toLower$(s)` uninterpreted.
+- `s.equalsIgnoreCase(t)` lowers to `toLower$(s) == toLower$(t)` — no separate session
+  method; the encoder lowers directly. ASCII-faithful since both sides use the same
+  `toLower$` definition.
+
+**Per-literal pinning at the backend's `litOfSort` mint site.** When `"Hello"` is interned
+for the first time and case ops are in play, the backend asserts:
+
+- `toUpper$(mkString("Hello")) == mkString("HELLO")`
+- `toLower$(mkString("Hello")) == mkString("hello")`
+
+…and recursively pins the derived `"HELLO"` and `"hello"` literals' case forms. The
+`stringLiteralKeys` set tracks what's already minted so the recursion is bounded; the case
+universe closes after every literal's idempotent and case-swapped forms exist. The pinning
+is gated — only fires when `toUpper$` or `toLower$` has been declared (lazy on first
+encoder reference).
+
+**Why no universal axioms.** First try was length-preservation
+(`∀s. length(toUpper(s)) == length(s)`), idempotence
+(`∀s. toUpper(toUpper(s)) == toUpper(s)`), and cascade
+(`∀s. toUpper(toLower(s)) == toUpper(s)`). Z3's seq theory + universals over the seq sort
+interacted poorly: literal-only refutes like `"Hello".toUpperCase() == "hello"` timed out
+at 2s.
+
+A standalone probe (`./gradlew caseAxiomTiming` — kept as forensic evidence) confirmed
+this is **not** a slow-laptop issue:
+
+| Scenario | Result |
+|---|---|
+| Positive equation, no axioms | UNSAT in 1ms |
+| Positive equation, 6 universal axioms | UNSAT in 0ms |
+| **Negated equation, no axioms** | SAT in 9ms |
+| **Negated equation, length axioms (2)** | UNKNOWN at 60000ms |
+| **Negated equation, all 6 axioms** | UNKNOWN at 60000ms |
+
+The asymmetry is structural: the *positive* direction (proving `toUpper("Hello") == "HELLO"`)
+unifies the conjecture against the literal pin and finishes in microseconds either way. The
+*negated* direction (which is how the verifier discharges a refute test, asking SAT for the
+negated postcondition) needs Z3 to construct a model for the uninterpreted seq-to-seq
+function that satisfies the universal for *all strings*. That construction blocks
+indefinitely — any timeout, any axiom set involving the universal, same result. Bumping the
+verifier's per-VC timeout doesn't help.
+
+Resolution: ship literal-pin-only. The cost of the structural facts (symbolic length /
+idempotence / cascade claims aren't reachable) is real but bounded, and the verifier stays
+fast on every other proof shape. A future Z3 release with better seq+UF model construction
+(or a `str.upper` / `str.lower` primitive) could close the gap; the uninterpreted form
+swaps out cleanly when that happens.
+
+**What this covers (and what it doesn't):**
+
+| Shape | Status |
+|---|---|
+| `"Hello".toUpperCase() == "HELLO"` | ✅ literal pin |
+| `"HELLO".toLowerCase() == "hello"` | ✅ literal pin |
+| `"Hello".equalsIgnoreCase("HELLO")` | ✅ both lower to `"hello"`, pin |
+| `s.equalsIgnoreCase(s)` (reflexive) | ✅ pointwise term equality |
+| `s.toLowerCase() == t.toLowerCase() ⟹ s.equalsIgnoreCase(t)` | ✅ direct lowering |
+| `s.toUpperCase().length() == s.length()` for symbolic `s` | ❌ would need universal |
+| `s.toUpperCase().toUpperCase() == s.toUpperCase()` for symbolic `s` | ❌ would need universal |
+| Non-ASCII case folding (locale-specific) | ❌ ASCII-only via `Locale.ROOT` |
+| `s.toUpperCase().charAt(i)` claims | ❌ no per-position axiom |
+
+**Known semantic gap.** `Locale.ROOT` matches what most programs assume but is *not*
+necessarily what `s.toUpperCase()` does at runtime if the JVM's default locale is, say,
+Turkish (`i` → `İ` rather than `I`). Users running under non-default locales should
+either set `Locale.ROOT` explicitly or be aware that the verifier reasons under
+ASCII semantics. This is the documented compromise — the user explicitly asked for
+"standard ASCII, less worried about charsets like tr_TR".
+
+**Build cost.** The recursive literal pinning expands the literal universe (each new
+String literal triggers its upper / lower forms). Suite wall-clock went from ~33s to ~60s
+under default JVM settings. Acceptable trade-off for the win, and the expansion is bounded
+(eventually closes when no new literals appear).
+
+**Future upgrade paths.** A `toUpperChar$(c)` uninterpreted function with an ASCII case-folding
+axiom over `[A-Z]` / `[a-z]` codepoints, paired with a universal that ties
+`charAt(toUpper(s), i) == toUpperChar$(charAt(s, i))`, could close the per-position gap.
+Alternatively a future Z3 release shipping `str.upper` / `str.lower` would let the
+uninterpreted functions retire entirely — same shape as Phase 47's swap-out of
+Phase 46a–c hand axioms.
+
+**Shipped tests**: literal toUpperCase / toLowerCase folding (both directions), wrong-case
+refute, literal length identity, literal equalsIgnoreCase (matching pairs and distinct
+pairs), reflexive equalsIgnoreCase, symbolic equalsIgnoreCase via toLower equality.
+
+## Phase 47h — GString interpolation  *(shipped)*
+
+Groovy's `"hello $name"` parses as a `GStringExpression` (not a `ConstantExpression`) with
+two parallel lists: static text fragments and interpolated value expressions. The runtime
+value is a `GStringImpl` that implements `CharSequence` and compares equal to a `String`
+of the same content. Phase 47h translates the AST shape to chained `str.++` from Phase 47's
+seq theory.
+
+**Translation pipeline.**
+
+- The static parts (`gs.strings`) are `ConstantExpression`s of String type — mint via
+  `mkString` through the existing `litOfSort` route.
+- Each interpolated value (`gs.values[i]`) goes through `translateValueAsString`:
+  - If `isStringReceiver(v)` recognises it (String literal, String param, `s + t`,
+    `s.substring(...)`, a nested GString, …), translate as a String term.
+  - Otherwise default to Int and convert via Phase 47e's `intToString`. Carries the
+    Phase-47e semantic gap for negative inputs.
+- The parts are folded left into a chain of pairwise `stringConcat`.
+
+**Co-shipped fixes the implementation needed.**
+
+1. **`collectScalarTypes` body-scan.** Typed locals like `String name = "world"` weren't
+   tracked — `scalarTypes` only collected method parameters and fields. Without the
+   addition, the GString interpolation of `name` would fall into the int path and crash
+   Z3 with a sort mismatch. The body-scan uses the *clean pre-contract body snapshot*
+   (`ContractExpansionTransform.ORIGINAL_BODY_KEY`) to avoid picking up groovy-contracts'
+   injected `final String result = …` declarations, which would otherwise route `result`
+   through `sortedEnv` and break dozens of pre-existing tests. Closure bodies are skipped
+   as a belt-and-braces measure.
+2. **`Encoder.bind` sort-aware storage.** The body-replay path's
+   `enc.bind('name', stringTerm)` was putting String-sorted bindings into `env` (Int
+   default), while `varForOfSort` reads from `sortedEnv`. The fix: `bind` now also writes
+   into `sortedEnv` for any name whose scalar type is non-Int. Symmetric round-trip.
+3. **SSA-fresh sort matching.** `checkPath`'s `Assign` step always minted
+   `session.intVar('name#1')` for the SSA-fresh handle, then asserted
+   `eq(fresh, rhs)` — `eq(int, string)` is a Z3 sort mismatch. The fix: when the
+   variable's declared type is non-Int (per `currentScalarTypes`), mint
+   `session.varOfSort('name#1', sortFor(declaredType))` instead.
+4. **`isStringReceiver` recognises `GStringExpression`.** So a chained
+   `"hello $name".length()` or `"$x".startsWith("0")` routes through the string-receiver
+   dispatch.
+5. **`collectListElementTypes` got the same clean-body + closure-skip treatment** for
+   parity (the same hazard would have hit it if a user wrote `@Ensures` referencing a
+   contract-injected list).
+
+**What this unlocks.**
+
+```groovy
+@Ensures({ result == "hello world" })
+static String f() { String name = "world"; "hello $name" }   // verifies via concat-fold
+
+@Ensures({ result == 4 + Integer.toString(n).length() })
+static int f(int n) {
+    @Requires-decoration n >= 0
+    "n = $n".length()
+}   // length composes: |"n = "| + |Integer.toString(n)|
+
+@Ensures({ result == "sum=3" })
+static String f() { int a = 1; int b = 2; "sum=${a + b}" }   // ${expr} block form
+```
+
+**Known limits.**
+
+- Boolean / null / collection interpolation falls into the int default (`null` becomes
+  an int term, mismatches sorts). Honest skip — `isStringReceiver` returns false; the
+  GString translation returns null overall. A small extension could special-case
+  `Boolean` (`"true"`/`"false"`) and `null` (`"null"`); deferred.
+- Closure-form `"${->name}"` (lazy evaluation) isn't parsed specially — falls back to
+  generic translation, likely null. Rare in practice.
+- The negative-int semantic gap from Phase 47e (Z3's `int.to.str(n)` returns `""` for
+  `n < 0`) flows through to GString. `"$x"` with negative `x` produces an empty
+  interpolation in Z3's view, vs `"-5"` at runtime.
+
+**Shipped tests**: literal String / int interpolation folding, multi-interpolation
+(mixed types), length composition (literal + symbolic), GString-equals-String
+literal, refute on wrong interpolation, `${expr}` block-form expression, chained
+`.startsWith` through string-receiver dispatch.
 
 ## Non-goals
 

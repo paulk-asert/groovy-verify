@@ -32,6 +32,7 @@ import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ListExpression
@@ -459,9 +460,18 @@ class VerifyChecker extends TypeCheckingExtension {
         // a default Int-element array and a subsequent {@code result.add(stringValue)} crashes Z3
         // with a sort-mismatch. The body walk is best-effort (failures here just leave the entry
         // unset, the same state as today).
-        if (node.code != null) try {
-            node.code.visit(new ClassCodeVisitorSupport() {
+        // Same clean-body scan as collectScalarTypes (Phase 47h fix): use the pre-contract body
+        // so groovy-contracts' injected {@code final String result = …} declaration doesn't
+        // pollute the type map.
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
                 protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitClosureExpression(ClosureExpression ce) {
+                    // Skip contract closures.
+                }
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
                     if (de.leftExpression instanceof VariableExpression) {
@@ -528,6 +538,36 @@ class VerifyChecker extends TypeCheckingExtension {
             ClassNode t = f.type
             if (isNonIntScalar(t)) out.put(f.name, t)
         }
+        // Phase 47h — typed locals like {@code String name = "world"} carry their type on the
+        // DeclarationExpression's LHS. Without this, GString interpolation of a String local
+        // falls into the int path and crashes Z3 with a sort mismatch. Scan the CLEAN
+        // pre-contract body snapshot (groovy-contracts injects {@code final String result = …}
+        // and other synthetic declarations into {@code node.code}; the user's untouched body
+        // lives in {@link ContractExpansionTransform#ORIGINAL_BODY_KEY}). Closure bodies (where
+        // contract {@code @Requires}/{@code @Ensures} closures stand even in the clean body) are
+        // skipped as a belt-and-braces measure.
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitClosureExpression(ClosureExpression ce) {
+                    // Skip — contract closures contain re-bound variables we shouldn't pick up.
+                }
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (t != null && isNonIntScalar(t)) {
+                            out.putIfAbsent(((VariableExpression) de.leftExpression).name, t)
+                        }
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
         out
     }
 
@@ -2287,8 +2327,19 @@ class VerifyChecker extends TypeCheckingExtension {
                     // `count = count + 1` becomes `count#1 == count + 1` (not the false `count == count + 1`)
                     // — and a method's @Requires (asserted above) saw the entry version, its @Ensures the
                     // final one. This is what makes re-assignable state, incl. instance fields, sound.
+                    //
+                    // Phase 47h — fresh-handle sort matches the variable's declared scalar type so a
+                    // {@code String name = "world"} or similar non-Int local doesn't crash at
+                    // {@code eq(intFresh, stringRhs)}. The {@link Encoder#bind} hook also populates
+                    // {@code sortedEnv} for non-Int names, completing the round-trip.
                     Object rhs = enc.translate(a.rhs)
-                    Object fresh = session.intVar(a.name + '#' + (++ssaVersion))
+                    ClassNode declaredType = currentScalarTypes.get(a.name)
+                    Object fresh
+                    if (declaredType != null && !isIntElement(declaredType)) {
+                        fresh = session.varOfSort(a.name + '#' + (++ssaVersion), enc.sortForType(declaredType))
+                    } else {
+                        fresh = session.intVar(a.name + '#' + (++ssaVersion))
+                    }
                     if (rhs != null) {
                         session.assertExpr(session.eq(fresh, rhs))
                         enc.bind(a.name, fresh)
