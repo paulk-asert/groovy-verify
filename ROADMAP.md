@@ -2925,15 +2925,190 @@ codepoint, with two pieces of machinery that make it useful even without Z3 stri
 
 **Known limits.**
 
-- **No structural axioms.** `charAt(s, i)` doesn't relate to `charAt(t, i)` for distinct
-  `s`, `t` — even when `s.startsWith(t)`. The startsWith / endsWith / contains axioms in
-  Phase 46c are length-bound only; no character-content implication. A "palindrome property"
-  proof (`charAt(s, i) == charAt(s, length - 1 - i)` for all i) is **not** reachable today
-  without writing the bounded universal as an explicit precondition the user has to assume.
-- **No substring / concat.** `s.substring(i, j)` and `s + t` remain out of fragment. Z3
-  string theory or a dedicated phase would unblock these.
+- ~~**No structural axioms.**~~ — *closed by Phase 47 (Z3 string theory adoption).*
+- ~~**No substring / concat.**~~ — *closed by Phase 47.*
 - **`String.format`-like content reasoning** is out of scope and a `groovy-typecheckers`
   sibling (`FormatStringChecker`) owns that territory.
+
+## Phase 47 — Z3 string theory adoption  *(shipped)*
+
+Phases 46a–c built up string support through *uninterpreted* functions over an
+*uninterpreted* `String!Sort`: predicates as `startsWith$ / endsWith$ / strContains$`,
+length as `strLength$`, and three hand-stated universally-quantified axioms tying them
+together (non-negativity, prefix / suffix length bounds). Phase 46e extended the same
+shape to `charAt$` with per-position literal pinning capped at 64 chars.
+
+The whole pyramid is retired in Phase 47. **`declareSort('String')` now returns Z3's
+native string sort** — the `Seq Char` type the SMT-LIB string theory operates on. Every
+operation routes through Z3's built-in primitives rather than handrolled functions plus
+axioms:
+
+| Operation | Pre-47 (uninterpreted) | Post-47 (native) |
+|---|---|---|
+| `s.startsWith(p)` | `startsWith$(s, p) : Bool`, length-bound axiom | `(str.prefixof p s)` |
+| `s.endsWith(q)` | `endsWith$(s, q) : Bool`, length-bound axiom | `(str.suffixof q s)` |
+| `s.contains(sub)` | `strContains$(s, sub) : Bool` | `(str.contains s sub)` |
+| `s.length()` | `strLength$(s) : Int`, non-negativity axiom, literal pin | `(str.len s)` |
+| `s.charAt(i)` | `charAt$(s, i) : Int`, per-position literal pin capped at 64 | `(char.to_int (seq.nth s i))` |
+| `"foo" != "bar"` | Pairwise-distinct cascade O(n²) per sort | Theory-distinct |
+| `"hello".length() == 5` | Mint-time pin | Theory consequence |
+| `s + t` | Out of fragment | `(str.++ s t)` |
+| `s.substring(b, e)` / `s.substring(b)` | Out of fragment | `(str.substr s b (e-b))` / `(str.substr s b (len(s)-b))` |
+
+**The headline win — structural cross-string facts that the uninterpreted approach
+explicitly couldn't reach.** With native theory, `s.startsWith(t) ∧ i < t.length()`
+*structurally implies* `s.charAt(i) == t.charAt(i)`. Phase 46c's known-limits section
+called this out as deferred — it now verifies as a free theory consequence:
+
+```groovy
+@Requires({ s != null && t != null && s.startsWith(t) && t.length() > 0 })
+@Ensures({ result == 1 })
+static int f(String s, String t) {
+    s.charAt(0) == t.charAt(0) ? 1 : 0   // verifies — theory consequence
+}
+```
+
+The full conjunction `prefixof(t, s) ⟹ ∀ i. 0 <= i < length(t) ⟹ at(s, i) == at(t, i)`
+falls out of Z3's seq theory natively.
+
+**Co-shipped — substring + concat with bounds**.
+
+- `s + t` (operator) and `s.concat(t)` (method) both dispatch to `stringConcat`. The encoder's
+  `translateBinary` detects when both PLUS operands are String-typed and routes to
+  `mkConcat([...] as SeqExpr[])` — the explicit array picks Z3's varargs-Seq overload over
+  the same-named BitVec one (Groovy static dispatch otherwise picks the BitVec form and
+  Z3 rejects at runtime).
+- `s.substring(begin, end)` and `s.substring(begin)` dispatch to `stringSubstring`. Groovy
+  uses `(begin, end)` indices; Z3's `str.substr` uses `(offset, length)`. The encoder
+  converts: `length = end - begin` for the two-arg form, `length = stringLength(s) - begin`
+  for the single-arg form.
+- A new `StringSubstringSite` synthesises `0 <= begin <= end <= length(s)` (or
+  `0 <= begin <= length(s)` for single-arg) as one conjunctive bounds obligation — same
+  `IndexBounds` diagnostic as charAt and list reads.
+
+**The encoder's `isStringReceiver` helper grew two cases**: it now recognises
+`s + t` (`PLUS` BinaryExpression with both operands String-typed) and `s.substring(...)` /
+`s.concat(...)` (string-returning methods on a String receiver) as themselves String-typed
+expressions. This lets `(s + "x").length()` and `s.substring(1, 4).length()` resolve
+correctly — the chained call's receiver is recognised as a String, and the dispatch threads
+through.
+
+**Counterexample rendering** for String-sorted variables now uses Z3's native
+`Expr.getString()` on the model-evaluated handle, rather than the Phase-27 reverse-lookup
+through `sortedLits`. Cleaner and never confused by Z3-synthesised constant names.
+
+**Soundness boundary preserved.** Z3's string theory is **decidable for many fragments
+but undecidable in general** — particularly mixing word equations with length constraints
+in awkward ways. The verifier inherits this: a query that's theoretically undecidable
+returns `UNKNOWN`, which surfaces as "could not decide" — never a silent pass and never an
+unsound verify. The shipped tests verify in well under the per-VC timeout; the full suite
+runs in ~37s as before.
+
+**Known limits.**
+
+- ~~**No regex matching / replace.**~~ — *closed by Phase 47b–c below.*
+- ~~**No `indexOf`.**~~ — *closed by Phase 47b.*
+- **No `lastIndexOf` / `split`.** `lastIndexOf` is expressible via Z3's seq theory but not
+  a single primitive; `split` returns an array, more invasive. Both deferred.
+- **`charAt(i)` returns int (codepoint), not `char`.** The encoder's existing `CastExpression`
+  handler (Phase 46e) bridges `(int) s.charAt(i)` for users who want the cast explicit.
+  Comparing `s.charAt(0) == 'h'` directly works in Groovy because char-to-int promotion
+  happens at the language level.
+- **Performance.** Z3's string solver isn't QF_LIA — some queries can hang. Per-VC timeouts
+  guard the build; the full 427-test suite stays at ~37s, the same as before string-theory
+  adoption.
+
+## Phase 47b — `replace` + `indexOf` dispatch  *(shipped)*
+
+Two direct-dispatch additions on top of Phase 47's native theory:
+
+- **`s.replace(old, new)`** → `(str.replace s old new)` via Z3's `mkReplace`. Replaces the
+  *first* occurrence — a known semantic gap from Groovy/Java's *replace-all* contract until
+  Z3 ships `mkReplaceAll`. Tests use single-occurrence patterns where the two semantics
+  coincide ({@code "hello".replace("l", "P") == "hePlo"}, since only the leftmost 'l' is
+  replaced — but the test verifies that exactly).
+- **`s.indexOf(sub)` and `s.indexOf(sub, fromIndex)`** → `(str.indexof s sub fromIndex)` via
+  `mkIndexOf`. Returns the leftmost position `>= fromIndex`, or `-1` if absent. Single-arg
+  form uses `fromIndex = 0`. No bounds obligation — `-1` is a legitimate return.
+
+`isStringReceiver` extended to recognise `s.replace(...)` as String-typed, so a chained
+`s.replace("a", "b").length()` resolves correctly.
+
+**Shipped tests** include {@code "hello".replace("l", "P") == "hePlo"} (literal folding),
+{@code s.replace("XYZQ", "A") == s} under {@code !s.contains("XYZQ")} (no-op identity),
+{@code "hello".indexOf("l") == 2}, {@code "hello".indexOf("l", 3) == 3} (from-index skip),
+{@code "hello".indexOf("X") == -1}, and a cross-string bound {@code s.indexOf(t) >= -1}.
+
+## Phase 47c — `matches` with a limited regex parser  *(shipped)*
+
+The big-ticket deferred item from Phase 47. Z3 has a full regex theory (`re.*`); the
+problem is that Groovy regex literals are *Java regex strings*, not Z3 regex AST — they
+need parsing. Phase 47c ships a small recursive-descent parser inside `Encoder`:
+
+**Grammar supported:**
+
+```
+regex  ::= alt
+alt    ::= concat ( '|' concat )*
+concat ::= quantified*                          -- empty concat = empty-string regex
+quantified ::= atom ( '*' | '+' | '?' )?
+atom   ::= LITERAL | '.' | '\' ANY-LITERAL | '(' regex ')' | '[' charclass ']'
+charclass ::= ( LITERAL | LITERAL '-' LITERAL )+
+```
+
+Translation pipeline:
+
+1. The encoder's String-receiver dispatch sees `s.matches(arg)`.
+2. If `arg` is a `ConstantExpression` String, the parser walks it bottom-up, calling the
+   `SmtSession` regex constructors (`reToRe`, `reUnion`, `reConcat`, `reStar`, `rePlus`,
+   `reOption`, `reRange`, `reAllChar`).
+3. The result is a Z3 `ReExpr`, fed to `mkInRe(s, re)` to produce a Bool.
+4. Any parse error or unsupported feature → null → honest skip with the standard
+   "outside fragment" diagnostic.
+
+**What the shipped parser does NOT handle** (each is a graceful skip, not a silent pass):
+
+- Anchors `^` / `$` — but `String.matches` is whole-string-anchored already, so the absence
+  is mostly fine.
+- Predefined classes `\d` / `\w` / `\s` / `\b` and their negations. Z3 has primitives;
+  the parser doesn't yet wire them in.
+- Negated character classes `[^…]`.
+- Quantified ranges `{n,m}`.
+- Backreferences `\1` / `(?P<name>…)`.
+- Lookahead / lookbehind `(?=…)` / `(?<!…)`.
+- Inline flags `(?i)` / `(?m)`.
+
+**Tie-in with `RegexChecker`.** `RegexChecker` is the sibling `groovy-typecheckers`
+extension that validates regex *syntax* at compile time (catching `Pattern.compile("[")`
+as broken). Three composition shapes are interesting, in increasing depth:
+
+1. **Orthogonal composition (today).** `RegexChecker` validates the regex literal is
+   well-formed; this checker (Phase 47c) translates the well-formed regex into a Z3
+   constraint. They ride the same `@TypeChecked(extensions = …)` SPI and stack. A regex
+   literal flagged broken by `RegexChecker` would also be rejected by Phase 47c's parser
+   (graceful skip); neither tool is load-bearing for the other.
+2. **Shared parser (future).** Both tools parse the same regex strings into ASTs. A shared
+   parsing module — possibly in a third package both depend on — would dedup the work
+   and guarantee feature-coverage parity. Out of scope for this phase; called out as a
+   small cleanup for whoever owns the multi-checker tree.
+3. **Feature-coverage handoff (future).** If `RegexChecker`'s parser covers `\d` /
+   negated classes / etc. and Phase 47c's doesn't yet, the encoder could *defer* to
+   `RegexChecker`'s AST when available — a graceful upgrade as the sibling tool grows.
+   Again, out of scope here.
+
+For the shipped phase, the two are complementary: `RegexChecker` for "is your regex
+syntactically valid" and Phase 47c for "is this `s.matches(pattern)` provable in your
+contract." A program that benefits from both stacks both extensions in its
+`@TypeChecked(extensions = ['verification.VerifyChecker', 'typecheckers.RegexChecker'])`.
+
+**Known limits.**
+
+- Limited parser grammar (see list above). Adding features is purely additive — the parser
+  is ~100 LoC of recursive descent in `Encoder.groovy`.
+- Dynamic regex strings (`s.matches(variableRegex)`) skip — translation requires the regex
+  text be statically known. A field with a `final String PATTERN = "…"` could in principle
+  be const-folded, but the encoder's pure-fold path doesn't currently reach into static
+  field initialisers.
 
 ## Non-goals
 

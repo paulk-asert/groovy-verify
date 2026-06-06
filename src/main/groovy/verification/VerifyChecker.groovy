@@ -1174,9 +1174,21 @@ class VerifyChecker extends TypeCheckingExtension {
         for (DerefSite s : col.derefSites)  dischargeDeref(s, pf, reqAst)
         for (OverflowSite s : col.overflowSites) dischargeOverflow(s, pf, reqAst)
         for (StringCharAtSite s : col.stringCharAtSites) dischargeStringCharAt(s, pf, reqAst)
+        for (StringSubstringSite s : col.stringSubstringSites) dischargeStringSubstring(s, pf, reqAst)
     }
 
     private void dischargeStringCharAt(StringCharAtSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            dischargeObligationUnder(s, enc, site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    private void dischargeStringSubstring(StringSubstringSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
@@ -1328,13 +1340,14 @@ class VerifyChecker extends TypeCheckingExtension {
         try { e.visit(col) } catch (Throwable ignored) { return }
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() &&
             col.derefSites.isEmpty() && col.overflowSites.isEmpty() &&
-            col.stringCharAtSites.isEmpty()) return
+            col.stringCharAtSites.isEmpty() && col.stringSubstringSites.isEmpty()) return
         List<Object> snap = new ArrayList<Object>(steps)
         for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
         for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
         for (DerefSite s : col.derefSites)  out.add(mkVf(s, snap))
         for (OverflowSite s : col.overflowSites) out.add(mkVf(s, snap))
         for (StringCharAtSite s : col.stringCharAtSites) out.add(mkVf(s, snap))
+        for (StringSubstringSite s : col.stringSubstringSites) out.add(mkVf(s, snap))
     }
 
     /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
@@ -1617,6 +1630,43 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             return
         }
+        if (site instanceof StringSubstringSite) {
+            StringSubstringSite ss = (StringSubstringSite) site
+            ClassNode rt = currentScalarTypes.get(ss.receiver)
+            if (rt == null || rt.name != 'java.lang.String') return
+            Object begin = enc.translate(ss.beginExpr)
+            if (begin == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("substring begin",
+                    "argument '${ss.beginExpr.text}' is outside fragment"), ss.node)
+                return
+            }
+            Object recvHandle = enc.varForOfSort(ss.receiver, s.declareSort('String'))
+            Object len = s.stringLength(recvHandle)
+            Object inBounds
+            if (ss.endExpr == null) {
+                // Single-arg: 0 <= begin <= length
+                inBounds = s.and([s.le(s.intLit(0L), begin), s.le(begin, len)])
+            } else {
+                Object end = enc.translate(ss.endExpr)
+                if (end == null) {
+                    addStaticTypeError(Reporter.formatImplicitSkipped("substring end",
+                        "argument '${ss.endExpr.text}' is outside fragment"), ss.node)
+                    return
+                }
+                // Two-arg: 0 <= begin <= end <= length
+                inBounds = s.and([s.le(s.intLit(0L), begin), s.le(begin, end), s.le(end, len)])
+            }
+            s.assertExpr(s.not(inBounds))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                String accessor = ss.endExpr == null
+                    ? "${ss.beginExpr.text}"
+                    : "${ss.beginExpr.text}, ${ss.endExpr.text}"
+                addStaticTypeError(Reporter.formatIndexBounds(
+                    accessor, ss.receiver + '.length()', r), ss.node)
+            }
+            return
+        }
         if (site instanceof OverflowSite) {
             OverflowSite ov = (OverflowSite) site
             // Phase 44 — assert the negation of {@code INT_MIN <= result <= INT_MAX}; SAT means
@@ -1867,6 +1917,7 @@ class VerifyChecker extends TypeCheckingExtension {
         List<Object> r = new ArrayList<Object>()
         r.addAll(col.indexSites); r.addAll(col.divideSites); r.addAll(col.derefSites)
         r.addAll(col.overflowSites); r.addAll(col.stringCharAtSites)
+        r.addAll(col.stringSubstringSites)
         return r
     }
 
@@ -1882,6 +1933,19 @@ class VerifyChecker extends TypeCheckingExtension {
         ASTNode node
         String receiver
         Expression indexExpr
+    }
+
+    /**
+     * Phase 47 — substring bounds: at an {@code s.substring(begin, end)} call, the implicit
+     * obligation {@code 0 <= begin && begin <= end && end <= s.length()} is asserted as one
+     * conjunctive check. Single-argument {@code s.substring(begin)} uses
+     * {@code 0 <= begin <= s.length()} (with {@code endExpr == null} marking that shape).
+     */
+    @CompileStatic private static class StringSubstringSite {
+        ASTNode node
+        String receiver
+        Expression beginExpr
+        Expression endExpr   // null = single-arg substring(begin)
     }
     /**
      * A method-call dereference site to be discharged via the nullity oracle. Two shapes:
@@ -1925,6 +1989,8 @@ class VerifyChecker extends TypeCheckingExtension {
         final List<OverflowSite> overflowSites = []
         /** Phase 46e — collected at every {@code charAt(i)} call shape (string-typing checked at discharge). */
         final List<StringCharAtSite> stringCharAtSites = []
+        /** Phase 47 — collected at every {@code substring(...)} call shape (string-typing checked at discharge). */
+        final List<StringSubstringSite> stringSubstringSites = []
         /**
          * Phase 44 — gates {@link OverflowSite} collection. The walking pass still descends into
          * sub-expressions so nested {@code a + b * c} arithmetic generates one site per operation;
@@ -2050,6 +2116,11 @@ class VerifyChecker extends TypeCheckingExtension {
                 // from a String-typed receiver in practice.
                 stringCharAtSites.add(new StringCharAtSite(
                     node: mce, receiver: name, indexExpr: margs.get(0)))
+            } else if (mName == 'substring' && (margs.size() == 1 || margs.size() == 2)) {
+                // Phase 47 — bounds: 0 <= begin (<= end)? <= length(s).
+                stringSubstringSites.add(new StringSubstringSite(
+                    node: mce, receiver: name, beginExpr: margs.get(0),
+                    endExpr: margs.size() == 2 ? margs.get(1) : null))
             }
         }
     }

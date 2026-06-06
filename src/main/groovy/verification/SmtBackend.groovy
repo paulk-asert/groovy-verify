@@ -202,16 +202,76 @@ interface SmtSession extends AutoCloseable {
     Object stringCharAt(Object s, Object i)
 
     /**
-     * Phase 46b — string length oracle: an uninterpreted {@code (String!Sort) -> Int}. Literal
-     * pinning happens at the backend's {@code litOfSort} mint site — each new String constant
-     * asserts {@code length($lit) == lit.length()} so the model has the right length for known
-     * literals. Variables only get the non-negativity bound (from the Phase-46c session-level
-     * axiom); their length is otherwise unconstrained until tied to a literal or another length
-     * via the contract. The encoder lowers both {@code s.length()} and the GDK alias
-     * {@code s.size()} to this; {@code s.isEmpty()} lowers to {@code length(s) == 0}, replacing
-     * the Phase-46a uninterpreted predicate with a length-coupled one.
+     * Phase 47 — string length, {@code str.len(s)} from Z3's native string theory.
+     * Non-negativity ({@code length(s) >= 0}) and literal-length identities
+     * ({@code length("hello") == 5}) are theory consequences, not axioms the backend asserts.
+     * The encoder lowers both {@code s.length()} and the GDK alias {@code s.size()} here;
+     * {@code s.isEmpty()} lowers to {@code length(s) == 0}.
+     *
+     * <p>(Phase 46b — 46c history: this was an uninterpreted {@code (String!Sort) -> Int} with
+     * mint-time literal pinning and three universally-quantified axioms. Phase 47 retires both
+     * the uninterpreted function and the axioms; the SMT-LIB string theory provides them.)
      */
     Object stringLength(Object s)
+
+    /**
+     * Phase 47 — string concatenation, {@code str.++(a, b)}. The encoder lowers Groovy's
+     * {@code s.concat(t)} method form and {@code s + t} operator form (when both operands
+     * are String-typed) to this.
+     */
+    Object stringConcat(Object a, Object b)
+
+    /**
+     * Phase 47 — substring extraction, {@code str.substr(s, offset, length)}. The encoder
+     * lowers Groovy's {@code s.substring(begin, end)} here with {@code length = end - begin};
+     * the single-arg form {@code s.substring(begin)} uses
+     * {@code length = stringLength(s) - begin}. Implicit bounds obligations
+     * ({@code 0 <= begin <= end <= s.length()}) are synthesised by the encoder.
+     */
+    Object stringSubstring(Object s, Object offset, Object length)
+
+    /**
+     * Phase 47b — {@code str.replace(s, src, dst)} — replace the *first* occurrence of
+     * {@code src} in {@code s} with {@code dst}. Z3's seq theory provides this directly; the
+     * encoder lowers Groovy's {@code s.replace(old, new)} (which Groovy and Java define as
+     * replace-all, *not* replace-first — TODO: an extra dispatch step or a {@code mkReplaceAll}
+     * when Z3 ships it). Returns a SeqExpr.
+     */
+    Object stringReplace(Object s, Object oldSub, Object newSub)
+
+    /**
+     * Phase 47b — {@code str.indexof(s, sub, fromIndex)} — leftmost position {@code i >= fromIndex}
+     * where {@code sub} occurs in {@code s}, or {@code -1} if absent. The encoder lowers Groovy's
+     * {@code s.indexOf(sub)} with {@code fromIndex = 0}.
+     */
+    Object stringIndexOf(Object s, Object sub, Object fromIndex)
+
+    /**
+     * Phase 47c — {@code str.in_re(s, regex)} — string-in-regex membership. The encoder lowers
+     * Groovy's {@code s.matches(regex)} for regex literals it can parse (literals, alternation,
+     * concatenation, {@code .}, {@code *}/{@code +}/{@code ?}, character classes
+     * {@code [a-z]}/{@code [abc]}, groups). Unsupported regex features (anchors, predefined
+     * classes {@code \d}/{@code \w}/{@code \s}, lookbehind, backreferences, {@code {n,m}}) return
+     * null and surface as honest skips.
+     */
+    Object stringInRegex(Object s, Object regex)
+
+    /**
+     * Phase 47c — regex constructors. Build a Z3 {@code ReExpr} bottom-up from a parsed
+     * pattern. {@link #stringInRegex} consumes the result. {@code reToRe(s)} converts a
+     * string expression (typically a single-char literal or short fixed substring) into an
+     * exact-match regex; {@code reRange(loChar, hiChar)} takes two single-char string
+     * expressions and produces the character range; {@code reAllChar()} is the SMT-LIB
+     * {@code re.allchar} (any single character).
+     */
+    Object reToRe(Object stringExpr)
+    Object reUnion(Object a, Object b)
+    Object reConcat(Object a, Object b)
+    Object reStar(Object re)
+    Object rePlus(Object re)
+    Object reOption(Object re)
+    Object reRange(Object loChar, Object hiChar)
+    Object reAllChar()
 
     /**
      * A fresh integer constant to be universally quantified over by {@link

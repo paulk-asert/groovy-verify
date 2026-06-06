@@ -24,6 +24,7 @@ import com.microsoft.z3.FuncDecl
 import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
 import com.microsoft.z3.Model
+import com.microsoft.z3.SeqExpr
 import com.microsoft.z3.Params
 import com.microsoft.z3.Pattern
 import com.microsoft.z3.Solver
@@ -152,8 +153,24 @@ class Z3Session implements SmtSession {
         ctx.getIntSort()
     }
 
+    /**
+     * Phase 47 — Z3's native String sort, cached on first request. Replaces the Phase-27
+     * uninterpreted {@code String!Sort} so {@code str.prefixof}/{@code str.len}/{@code str.at}/
+     * etc. fire through the seq theory directly. Sort identity (reference equality) is the
+     * discriminator used elsewhere in this file to route String-handling separately from
+     * uninterpreted sorts (Enums still use the uninterpreted path).
+     */
+    private Sort cachedStringSort
+    private Sort stringSort() {
+        if (cachedStringSort == null) {
+            cachedStringSort = ctx.mkStringSort()
+        }
+        cachedStringSort
+    }
+
     @Override
     Object declareSort(String name) {
+        if (name == 'String') return stringSort()
         Sort cached = sorts.get(name)
         if (cached != null) return cached
         Sort s = ctx.mkUninterpretedSort(name)
@@ -167,7 +184,11 @@ class Z3Session implements SmtSession {
         // `vars`) still pins their values for counterexamples.
         if (sort == ctx.getIntSort()) return intVar(name)
         Sort sortHandle = (Sort) sort
-        String key = name + ':' + sortHandle.getName()
+        // Phase 47 — Z3 native String sort goes through sortedVars too, but with a stable
+        // 'String' tag rather than {@code sortHandle.getName()} (which may render as a long
+        // {@code "Seq Char"}-shape symbol depending on Z3 version).
+        String tag = (sort == stringSort()) ? 'String' : sortHandle.getName().toString()
+        String key = name + ':' + tag
         Expr cached = sortedVars.get(key)
         if (cached != null) return cached
         Expr v = ctx.mkConst(name, sortHandle)
@@ -182,6 +203,15 @@ class Z3Session implements SmtSession {
             // common case; this branch keeps the interface uniform when the caller doesn't know
             // statically whether the element sort is Int or uninterpreted.
             return ctx.mkInt(Long.parseLong(literalKey))
+        }
+        if (sort == stringSort()) {
+            // Phase 47 — Z3 native string literal. {@code mkString} returns the canonical
+            // interned form, so distinctness ({@code "a" != "b"}) is a theory consequence — no
+            // pairwise-distinct cascade required. Length and per-position content
+            // ({@code len("hello") == 5}, {@code at("hello", 0) == "h"}) are theory consequences
+            // too — no mint-time pinning required. This replaces the Phase-27 (cascade) +
+            // Phase-46b (length pin) + Phase-46e (char pin, capped at 64) machinery in one move.
+            return ctx.mkString(literalKey)
         }
         Sort sortHandle = (Sort) sort
         String sortName = sortHandle.getName().toString()
@@ -206,33 +236,6 @@ class Z3Session implements SmtSession {
             solver.add((BoolExpr) ctx.mkNot(ctx.mkEq(v, prior)))
         }
         bucket.add(v)
-        // Phase 46b — pin the literal's length to its Java {@code String.length()} for String-sorted
-        // mints. This is the only fact about the literal's content the encoder can name today
-        // (charAt is deferred behind Z3 string theory); together with the session-level
-        // non-negativity and prefix/suffix-length axioms, it lets {@code "hello".length() == 5}
-        // and {@code s.startsWith("hello") ⟹ s.length() >= 5} both verify.
-        if (sortName == 'String') {
-            ensureStringAxiomsAsserted()
-            BoolExpr pinLen = ctx.mkEq(ctx.mkApp(strLengthFn, v),
-                ctx.mkInt((long) literalKey.length()))
-            solver.add(pinLen)
-            assertedExprs.add(pinLen)
-            // Phase 46e — per-position character pins. {@code "hello"} asserts
-            // {@code charAt$("hello", 0) == 104, charAt$("hello", 1) == 101, …} — one per
-            // codepoint. Capped at {@link #CHAR_PIN_CAP} to bound mint cost; longer literals
-            // still get their length pinned but skip per-char pinning. Materialised lazily —
-            // {@code strCharAtFn} is declared on first need rather than always.
-            if (literalKey.length() > 0 && literalKey.length() <= CHAR_PIN_CAP) {
-                ensureStrCharAt()
-                for (int k = 0; k < literalKey.length(); k++) {
-                    BoolExpr pinChar = ctx.mkEq(
-                        ctx.mkApp(strCharAtFn, v, ctx.mkInt((long) k)),
-                        ctx.mkInt((long) literalKey.charAt(k)))
-                    solver.add(pinChar)
-                    assertedExprs.add(pinChar)
-                }
-            }
-        }
         v
     }
 
@@ -364,138 +367,117 @@ class Z3Session implements SmtSession {
         ctx.mkApp(fd, (Expr) set, (Expr) k)
     }
 
-    // Phase 46a — string predicates over String!Sort, declared lazily on first use. The function
-    // name is suffixed with '$' (matching the count$/bcount$/card$ pattern) so it's
-    // unambiguously SMT-internal — never collides with a user identifier.
-    private FuncDecl startsWithFn
-    private FuncDecl endsWithFn
-    private FuncDecl containsSubFn
-    /** Phase 46b — string length oracle, lazily declared. */
-    private FuncDecl strLengthFn
-    /** Phase 46e — character indexing oracle, lazily declared. */
-    private FuncDecl strCharAtFn
-    /** Phase 46c — session-level axioms asserted exactly once at first use of any string op. */
-    private boolean stringAxiomsAsserted = false
-    /**
-     * Phase 46e — per-position literal pinning is bounded by this cap. Strings longer than the
-     * cap mint normally (with length pinned) but skip per-character charAt pins — keeps the
-     * cost of {@code "a very long literal"} predictable while still covering typical short
-     * literals used as character sentinels.
-     */
-    private static final int CHAR_PIN_CAP = 64
-
-    private FuncDecl ensureStrPred2(FuncDecl current, String name) {
-        if (current != null) return current
-        Sort strSort = (Sort) declareSort('String')
-        ctx.mkFuncDecl(name, [strSort, strSort] as Sort[], ctx.getBoolSort())
-    }
-
-    /** Phase 46b — get-or-declare the string length function and ensure session axioms exist. */
-    private FuncDecl ensureStrLength() {
-        if (strLengthFn != null) return strLengthFn
-        Sort strSort = (Sort) declareSort('String')
-        strLengthFn = ctx.mkFuncDecl('strLength$', [strSort] as Sort[], ctx.getIntSort())
-        strLengthFn
-    }
-
-    /**
-     * Phase 46c — assert the universally-quantified string axioms once per session, lazily on
-     * first use of any string op. Each axiom carries a single-{@code mkPattern} trigger so Z3
-     * only instantiates on ground terms that already appear in the user's proof — no blind-fire
-     * explosion across the Herbrand universe.
-     */
-    private void ensureStringAxiomsAsserted() {
-        if (stringAxiomsAsserted) return
-        stringAxiomsAsserted = true
-        Sort strSort = (Sort) declareSort('String')
-        FuncDecl len = ensureStrLength()
-        if (startsWithFn == null) startsWithFn = ensureStrPred2(startsWithFn, 'startsWith$')
-        if (endsWithFn   == null) endsWithFn   = ensureStrPred2(endsWithFn,   'endsWith$')
-
-        // Axiom 1: ∀s. length(s) >= 0. The trigger is the length term itself, so Z3 instantiates
-        // exactly for the strings whose length the user (or the encoder) actually mentions.
-        Expr q1 = ctx.mkConst('q$strLen', strSort)
-        Expr lenQ1 = ctx.mkApp(len, q1)
-        BoolExpr nonNeg = ctx.mkGe((ArithExpr) lenQ1, (ArithExpr) ctx.mkInt(0))
-        addAxiom(ctx.mkForall([q1] as Expr[], nonNeg, 1,
-            [ctx.mkPattern(lenQ1)] as Pattern[], (Expr[]) null,
-            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
-
-        // Axiom 2: ∀s,p. startsWith(s, p) → length(p) <= length(s). The contrapositive — the
-        // load-bearing direction — is "length(p) > length(s) ⟹ ¬startsWith(s, p)": a prefix
-        // longer than the string can't match.
-        Expr q2s = ctx.mkConst('q$swS', strSort)
-        Expr q2p = ctx.mkConst('q$swP', strSort)
-        BoolExpr sw = (BoolExpr) ctx.mkApp(startsWithFn, q2s, q2p)
-        Expr lenS2 = ctx.mkApp(len, q2s)
-        Expr lenP2 = ctx.mkApp(len, q2p)
-        BoolExpr bound2 = ctx.mkImplies(sw,
-            ctx.mkLe((ArithExpr) lenP2, (ArithExpr) lenS2))
-        addAxiom(ctx.mkForall([q2s, q2p] as Expr[], bound2, 1,
-            [ctx.mkPattern(sw)] as Pattern[], (Expr[]) null,
-            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
-
-        // Axiom 3: ∀s,p. endsWith(s, p) → length(p) <= length(s). Same shape as axiom 2 for the
-        // suffix predicate.
-        Expr q3s = ctx.mkConst('q$ewS', strSort)
-        Expr q3p = ctx.mkConst('q$ewP', strSort)
-        BoolExpr ew = (BoolExpr) ctx.mkApp(endsWithFn, q3s, q3p)
-        Expr lenS3 = ctx.mkApp(len, q3s)
-        Expr lenP3 = ctx.mkApp(len, q3p)
-        BoolExpr bound3 = ctx.mkImplies(ew,
-            ctx.mkLe((ArithExpr) lenP3, (ArithExpr) lenS3))
-        addAxiom(ctx.mkForall([q3s, q3p] as Expr[], bound3, 1,
-            [ctx.mkPattern(ew)] as Pattern[], (Expr[]) null,
-            (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null))
-    }
-
-    private void addAxiom(Object ax) {
-        BoolExpr be = (BoolExpr) ax
-        solver.add(be)
-        assertedExprs.add(be)
-    }
+    // Phase 47 — string operations are now Z3 native primitives via the seq theory, not
+    // uninterpreted functions. The previous Phase-46a/b/e {@code startsWithFn} / {@code strLengthFn}
+    // / {@code strCharAtFn} declarations are retired along with the Phase-46c session-level
+    // axioms (non-negativity + prefix/suffix length bound); all three are theory consequences.
 
     @Override
     Object stringStartsWith(Object s, Object prefix) {
-        startsWithFn = ensureStrPred2(startsWithFn, 'startsWith$')
-        ensureStringAxiomsAsserted()
-        ctx.mkApp(startsWithFn, (Expr) s, (Expr) prefix)
+        // {@code (str.prefixof prefix s)} — is prefix a prefix of s? Argument order matters.
+        ctx.mkPrefixOf((Expr) prefix, (Expr) s)
     }
 
     @Override
     Object stringEndsWith(Object s, Object suffix) {
-        endsWithFn = ensureStrPred2(endsWithFn, 'endsWith$')
-        ensureStringAxiomsAsserted()
-        ctx.mkApp(endsWithFn, (Expr) s, (Expr) suffix)
+        ctx.mkSuffixOf((Expr) suffix, (Expr) s)
     }
 
     @Override
     Object stringContainsSub(Object s, Object sub) {
-        containsSubFn = ensureStrPred2(containsSubFn, 'strContains$')
-        ensureStringAxiomsAsserted()
-        ctx.mkApp(containsSubFn, (Expr) s, (Expr) sub)
+        ctx.mkContains((Expr) s, (Expr) sub)
     }
 
     @Override
     Object stringLength(Object s) {
-        ensureStrLength()
-        ensureStringAxiomsAsserted()
-        ctx.mkApp(strLengthFn, (Expr) s)
-    }
-
-    /** Phase 46e — get-or-declare the charAt function. */
-    private FuncDecl ensureStrCharAt() {
-        if (strCharAtFn != null) return strCharAtFn
-        Sort strSort = (Sort) declareSort('String')
-        strCharAtFn = ctx.mkFuncDecl('charAt$', [strSort, ctx.getIntSort()] as Sort[], ctx.getIntSort())
-        strCharAtFn
+        ctx.mkLength((Expr) s)
     }
 
     @Override
     Object stringCharAt(Object s, Object i) {
-        ensureStrCharAt()
-        ensureStringAxiomsAsserted()
-        ctx.mkApp(strCharAtFn, (Expr) s, (Expr) i)
+        // Z3 native: {@code (char.to_int (seq.nth s i))} — extract the char at position {@code i}
+        // (a single-character sequence is the seq theory's "char" view) and convert to its int
+        // codepoint. The Phase-46e wrapper {@code charAt$} is retired; both literal-position
+        // identities and cross-string facts now come from the seq theory directly.
+        ctx.charToInt(ctx.mkNth((Expr) s, (Expr) i))
+    }
+
+    @Override
+    Object stringConcat(Object a, Object b) {
+        // {@code mkConcat} is overloaded: a 2-arg BitVec form and a varargs Seq form. Groovy's
+        // static dispatch with two {@code Expr} args picks the BitVec one, which Z3 then
+        // rejects at runtime with "operator applied to wrong sort". Passing an explicit
+        // {@code SeqExpr[]} array forces the Seq varargs overload.
+        SeqExpr[] args = [(SeqExpr) a, (SeqExpr) b] as SeqExpr[]
+        ctx.mkConcat(args)
+    }
+
+    @Override
+    Object stringSubstring(Object s, Object offset, Object length) {
+        ctx.mkExtract((Expr) s, (Expr) offset, (Expr) length)
+    }
+
+    @Override
+    Object stringReplace(Object s, Object oldSub, Object newSub) {
+        ctx.mkReplace((Expr) s, (Expr) oldSub, (Expr) newSub)
+    }
+
+    @Override
+    Object stringIndexOf(Object s, Object sub, Object fromIndex) {
+        ctx.mkIndexOf((Expr) s, (Expr) sub, (Expr) fromIndex)
+    }
+
+    @Override
+    Object stringInRegex(Object s, Object regex) {
+        ctx.mkInRe((Expr) s, (com.microsoft.z3.ReExpr) regex)
+    }
+
+    @Override
+    Object reToRe(Object stringExpr) {
+        ctx.mkToRe((Expr) stringExpr)
+    }
+
+    @Override
+    Object reUnion(Object a, Object b) {
+        com.microsoft.z3.ReExpr[] args = [(com.microsoft.z3.ReExpr) a, (com.microsoft.z3.ReExpr) b] as com.microsoft.z3.ReExpr[]
+        ctx.mkUnion(args)
+    }
+
+    @Override
+    Object reConcat(Object a, Object b) {
+        com.microsoft.z3.ReExpr[] args = [(com.microsoft.z3.ReExpr) a, (com.microsoft.z3.ReExpr) b] as com.microsoft.z3.ReExpr[]
+        ctx.mkConcat(args)
+    }
+
+    @Override
+    Object reStar(Object re) {
+        ctx.mkStar((Expr) re)
+    }
+
+    @Override
+    Object rePlus(Object re) {
+        ctx.mkPlus((Expr) re)
+    }
+
+    @Override
+    Object reOption(Object re) {
+        ctx.mkOption((Expr) re)
+    }
+
+    @Override
+    Object reRange(Object loChar, Object hiChar) {
+        ctx.mkRange((Expr) loChar, (Expr) hiChar)
+    }
+
+    /** Phase 47c — the {@code re.allchar} regex ("any single character"). */
+    private com.microsoft.z3.ReExpr cachedAllChar
+    @Override
+    Object reAllChar() {
+        if (cachedAllChar == null) {
+            com.microsoft.z3.ReSort reSort = ctx.mkReSort(stringSort())
+            cachedAllChar = ctx.mkAllcharRe(reSort)
+        }
+        cachedAllChar
     }
 
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }
@@ -661,10 +643,23 @@ class Z3Session implements SmtSession {
         // recovers. Const-name string-matching alone misses these synthetic-name cases.
         Map<String, String> sce = [:]
         sortedVars.each { String key, Expr var ->
-            com.microsoft.z3.Sort varSort = var.getSort()
-            Expr mv = m.evaluate(var, false)
             int vColon = key.indexOf(':')
             String name = vColon >= 0 ? key.substring(0, vColon) : key
+            // Phase 47 — Z3 native strings expose the model value directly via
+            // {@code getString()}; no reverse-lookup through {@code sortedLits} needed.
+            if (var.getSort() == cachedStringSort) {
+                Expr mv = m.evaluate(var, false)
+                if (mv != null && mv.isString()) {
+                    sce[name] = mv.getString()
+                }
+                return  // continue
+            }
+            // Uninterpreted sorts (Enum): equality-evaluate against every interned literal,
+            // since Z3 may pin the var to a synthetic constant (e.g. {@code Color!val!1})
+            // distinct from our minted ones but equal-by-model — getName-matching alone misses
+            // that case.
+            com.microsoft.z3.Sort varSort = var.getSort()
+            Expr mv = m.evaluate(var, false)
             for (Map.Entry<String, Expr> entry : sortedLits.entrySet()) {
                 Expr litExpr = entry.value
                 if (litExpr.getSort() != varSort) continue

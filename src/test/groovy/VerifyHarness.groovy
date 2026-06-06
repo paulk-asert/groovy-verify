@@ -985,13 +985,13 @@ class VerifyHarness {
                             return s
                         }
                     }''')],
-        // Step 5 — an invariant whose body is outside the encoder fragment (a String substring
-        // call — substring/concat-shaped operations are deferred behind Z3 string theory) is
-        // dropped with a single "Skipped class invariant" diagnostic at the method level.
+        // Step 5 — an invariant whose body is outside the encoder fragment (a case-conversion
+        // {@code toUpperCase} call — case folding isn't yet wired through Z3's string theory)
+        // is dropped with a single "Skipped class invariant" diagnostic at the method level.
         // Verification continues for everything else.
         [group: 'P15a class-invariant', name: 'unmodelled invariant skipped',
          expect: 'Skipped class invariant',
-         src: tc('''@groovy.contracts.Invariant({ name.substring(1).length() > 0 })
+         src: tc('''@groovy.contracts.Invariant({ name.toUpperCase().length() > 0 })
                     class C { String name
                         int n() { 0 }
                     }''')],
@@ -1872,6 +1872,216 @@ class VerifyHarness {
                         @Requires({ s != null && s.length() > 0 && s.charAt(0) == 65 })
                         @Ensures({ result == 65 })
                         static int f(String s) { (int) s.charAt(0) }
+                    }''')],
+
+        // ---------- Phase 47: Z3 string theory adoption ----------
+        // The big-ticket structural fact: charAt across a prefix relationship. With the
+        // uninterpreted approach (Phase 46a-e), startsWith was opaque to charAt — there was
+        // no axiom relating them. With Z3's native seq theory, prefix-of structurally implies
+        // that every position before the prefix length has equal characters in both strings.
+        // This is the headline win of the theory adoption.
+        [group: 'P47 string theory', name: 'prefixof structurally implies equal chars', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null && s.startsWith(t) &&
+                                    t.length() > 0 })
+                        @Ensures({ result == 1 })
+                        static int f(String s, String t) {
+                            s.charAt(0) == t.charAt(0) ? 1 : 0
+                        }
+                    }''')],
+        // Distinct literals: theory-distinct via seq theory, no pairwise cascade needed.
+        [group: 'P47 string theory', name: 'distinct literals are theory-distinct', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "foo" != "bar" ? 1 : 0 }
+                    }''')],
+        // Concatenation: literal + literal folds, and length composes.
+        [group: 'P47 string theory', name: 'literal concat folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "foobar" })
+                        static String f() { "foo" + "bar" }
+                    }''')],
+        [group: 'P47 string theory', name: 'concat method form folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "foobar" })
+                        static String f() { "foo".concat("bar") }
+                    }''')],
+        // Concat length composes structurally: |s + "x"| = |s| + 1.
+        [group: 'P47 string theory', name: 'concat length composes', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s.length() + 1 })
+                        static int f(String s) { (s + "x").length() }
+                    }''')],
+        // Substring: literal substring folds.
+        [group: 'P47 string theory', name: 'literal substring folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "ell" })
+                        static String f() { "hello".substring(1, 4) }
+                    }''')],
+        // Substring single-arg form.
+        [group: 'P47 string theory', name: 'literal substring single-arg folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "llo" })
+                        static String f() { "hello".substring(2) }
+                    }''')],
+        // Substring bounds: out-of-bounds end refutes.
+        [group: 'P47 string theory', name: 'substring out-of-bounds end refutes',
+         expect: 'Possible IndexOutOfBoundsException',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        static String f(String s) { s.substring(0, s.length() + 1) }
+                    }''')],
+        // Substring bounds: negative begin refutes.
+        [group: 'P47 string theory', name: 'substring negative begin refutes',
+         expect: 'Possible IndexOutOfBoundsException',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        static String f(String s) { s.substring(-1, 2) }
+                    }''')],
+        // Substring length identity: |substring(s, a, b)| = b - a when in bounds.
+        [group: 'P47 string theory', name: 'substring length identity', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() >= 5 })
+                        @Ensures({ result == 3 })
+                        static int f(String s) { s.substring(1, 4).length() }
+                    }''')],
+        // Cross-string: two strings sharing a prefix have equal chars there.
+        [group: 'P47 string theory', name: 'prefix sharing gives charAt equality at i==1', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null && s.startsWith("ab") && t.startsWith("ab") })
+                        @Ensures({ result == 1 })
+                        static int f(String s, String t) {
+                            s.charAt(1) == t.charAt(1) ? 1 : 0
+                        }
+                    }''')],
+        // Refute: structurally-equal-at-prefix doesn't imply equal at a position past the prefix.
+        [group: 'P47 string theory', name: 'past-prefix charAt not structurally tied',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null && t != null && s.startsWith("ab") && t.startsWith("ab")
+                                    && s.length() > 2 && t.length() > 2 })
+                        @Ensures({ result == 1 })
+                        static int f(String s, String t) {
+                            s.charAt(2) == t.charAt(2) ? 1 : 0
+                        }
+                    }''')],
+        // s contains t implies t.length() <= s.length() — a theory consequence.
+        [group: 'P47 string theory', name: 'contains implies length bound', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null && s.contains(t) })
+                        @Ensures({ result >= t.length() })
+                        static int f(String s, String t) { s.length() }
+                    }''')],
+
+        // ---------- Phase 47b: replace + indexOf ----------
+        // Literal replace folds.
+        [group: 'P47b replace/indexOf', name: 'literal replace folds (single occurrence)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "hePlo" })
+                        static String f() { "hello".replace("l", "P") }
+                    }''')],
+        // Replace identity: replacing a non-occurring substring is a no-op (requires a
+        // {@code !contains} precondition so the verifier knows the substring isn't present).
+        [group: 'P47b replace/indexOf', name: 'replace non-occurring is no-op', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && !s.contains("XYZQ") })
+                        @Ensures({ result == s })
+                        static String f(String s) { s.replace("XYZQ", "A") }
+                    }''')],
+        // indexOf literal: position is exact.
+        [group: 'P47b replace/indexOf', name: 'literal indexOf folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int f() { "hello".indexOf("l") }
+                    }''')],
+        // indexOf with fromIndex: skipping past first occurrence finds the second.
+        [group: 'P47b replace/indexOf', name: 'indexOf from-index finds later occurrence', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int f() { "hello".indexOf("l", 3) }
+                    }''')],
+        // indexOf not-found returns -1.
+        [group: 'P47b replace/indexOf', name: 'indexOf returns -1 when absent', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == -1 })
+                        static int f() { "hello".indexOf("X") }
+                    }''')],
+        // Cross-string indexOf bound: indexOf result is always >= -1.
+        [group: 'P47b replace/indexOf', name: 'indexOf result is always >= -1', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && t != null })
+                        @Ensures({ result >= -1 })
+                        static int f(String s, String t) { s.indexOf(t) }
+                    }''')],
+
+        // ---------- Phase 47c: matches with regex parser ----------
+        // Literal-only regex: matches iff string equals the literal.
+        [group: 'P47c regex', name: 'literal regex matches exact string', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc".matches("abc") ? 1 : 0 }
+                    }''')],
+        [group: 'P47c regex', name: 'literal regex refutes wrong string',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc".matches("xyz") ? 1 : 0 }
+                    }''')],
+        // {@code .} matches any single character.
+        [group: 'P47c regex', name: 'any-char dot matches single position', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc".matches("a.c") ? 1 : 0 }
+                    }''')],
+        // Quantifier: {@code a*} matches zero or more 'a's.
+        [group: 'P47c regex', name: 'star quantifier matches zero occurrences', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "".matches("a*") ? 1 : 0 }
+                    }''')],
+        [group: 'P47c regex', name: 'plus quantifier requires one occurrence', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 0 })
+                        static int f() { "".matches("a+") ? 1 : 0 }
+                    }''')],
+        // Character range: digits.
+        [group: 'P47c regex', name: 'digit range matches numeric string', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "123".matches("[0-9]+") ? 1 : 0 }
+                    }''')],
+        [group: 'P47c regex', name: 'digit range rejects alphabetic string', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 0 })
+                        static int f() { "abc".matches("[0-9]+") ? 1 : 0 }
+                    }''')],
+        // Character set + range: alphanumeric.
+        [group: 'P47c regex', name: 'alphanumeric class matches mixed', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "abc123".matches("[a-zA-Z0-9]+") ? 1 : 0 }
+                    }''')],
+        // Alternation.
+        [group: 'P47c regex', name: 'alternation matches either branch', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "yes".matches("yes|no") ? 1 : 0 }
+                    }''')],
+        // Symbolic matches: assumed precondition flows through.
+        [group: 'P47c regex', name: 'symbolic matches assumption echoes', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.matches("[0-9]+") })
+                        @Ensures({ result == 1 })
+                        static int f(String s) { s.matches("[0-9]+") ? 1 : 0 }
+                    }''')],
+        // Unsupported feature: predefined class {@code \d} returns null = honest skip.
+        // Reaches the verifier as an "outside fragment" postcondition skip.
+        [group: 'P47c regex', name: 'unsupported regex feature honest-skips',
+         expect: 'Skipped verification of postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f() { "123".matches("\\\\d+") ? 1 : 0 }
                     }''')],
 
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------

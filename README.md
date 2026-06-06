@@ -389,20 +389,21 @@ on the `List<Character>` API today (length preservation verifies cleanly); a tru
 `String.reverse()` proof with character-position reasoning is deferred behind Z3 string
 theory adoption.
 
-`s.length()` / `s.charAt(i)` reach the verifier (Phase 46b / 46e): literals pin their
-length and per-position codepoints at mint, so `"hello".length() == 5` and
-`(int) "hello".charAt(0) == 104` both fold; an out-of-range `s.charAt(i)` refutes with
-the same `IndexBounds` diagnostic list reads produce. Three universally-quantified axioms
-(non-negativity, prefix length bound, suffix length bound) let the verifier prove that
-a 4-char string *cannot* start with `"hello"` outright — not just "can't decide".
+`s.length()` / `s.charAt(i)` / `s.substring(b, e)` / `s + t` all reach the verifier under
+Phase 47's Z3-native-string-theory adoption: literals fold (`"hello".length() == 5`,
+`"foo" + "bar" == "foobar"`), bounds check naturally
+(out-of-range `s.charAt(i)` / `s.substring(...)` refute with `IndexBounds`), and the
+**structural cross-string facts** that motivated the move — `s.startsWith(t) ∧ i < t.length()`
+implying `s.charAt(i) == t.charAt(i)` — verify as free theory consequences. The
+length-bound facts that the older uninterpreted approach axiomatized by hand (non-negativity,
+prefix/suffix length bounds) come from Z3's seq theory.
 
 Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
 The remaining honest gaps: tasks with non-linear int arithmetic (`i * i <= n` in
-prime-testing) hit the Phase 8a NIA opt-out, and tasks that reason structurally about
-string content (the substring relation, `s.charAt(i) == t.charAt(i)` across distinct
-strings, `concat` / `substring`) need Z3 string theory adoption — a deferred phase of
-its own. Sister task 023 (`strlen`) ports the same way — with the natural spec
-`result == xs.size()` added.
+prime-testing) hit the Phase 8a NIA opt-out, and string operations beyond the shipped
+surface — regex matching, `replace`, `indexOf`, `split` — aren't yet dispatched, though
+Z3's theory supports them. Sister task 023 (`strlen`) ports the same way — with the
+natural spec `result == xs.size()` added.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
@@ -773,7 +774,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
 | **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable | ✅ Phase 46b / 46c |
 | **In-loop `if`-condition + `&&` short-circuit as path facts** | `dischargeRegion` (which checks implicit obligations across a loop's prefix / guard / body / suffix) now recurses into in-region `if` statements with `cond` (then-branch) or `NotExpression(cond)` (else-branch) added to the assumption set, and descends through `&&`/`||`/ternary so each operand is discharged under the short-circuit guard. A natural in-loop `if (xs[i] != null) xs[i].method()` or `if (xs[i] != null && xs[i].startsWith(p))` discharges the per-element deref directly — the `Forall.range` workaround used in earlier ports is now optional, not required | ✅ Phase 46d |
-| **`charAt` with per-position literal pinning and bounds** | `s.charAt(i)` on a String-typed receiver routes to an uninterpreted `(String, Int) → Int` oracle returning the codepoint at position `i`. String literals are pinned per-position at mint: `"hello"` asserts `charAt(0)==104, charAt(1)==101, …`, capped at 64 chars to bound mint cost. A new `StringCharAtSite` synthesises the bounds obligation `0 <= i < s.length()` so out-of-range indices refute with the same `IndexBounds` diagnostic list reads produce. `(int) s.charAt(i)` casts route transparently. No structural axioms tying `charAt` to `startsWith` or to other strings — those are deferred behind Z3 string theory | ✅ Phase 46e |
+| **`charAt` with per-position literal pinning and bounds** | `s.charAt(i)` on a String-typed receiver routes to an uninterpreted `(String, Int) → Int` oracle returning the codepoint at position `i`. String literals are pinned per-position at mint: `"hello"` asserts `charAt(0)==104, charAt(1)==101, …`, capped at 64 chars to bound mint cost. A new `StringCharAtSite` synthesises the bounds obligation `0 <= i < s.length()` so out-of-range indices refute with the same `IndexBounds` diagnostic list reads produce. `(int) s.charAt(i)` casts route transparently. *Superseded by Phase 47 — `charAt` is now native, structural cross-string facts now hold* | ✅ Phase 46e |
+| **Z3 native string theory** | `declareSort('String')` returns Z3's native `Seq Char` sort, replacing the Phase-27 uninterpreted `String!Sort` and retiring the Phase 46a–c uninterpreted predicates + axioms. `startsWith` / `endsWith` / `contains` / `length` / `charAt` all dispatch to Z3 native primitives (`str.prefixof`, `str.len`, `seq.nth + char.to_int`, etc.); structural cross-string facts like `s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` now verify as free theory consequences. `s + t` (operator) and `s.concat(t)` (method) translate to `str.++`; `s.substring(begin, end)` / `s.substring(begin)` translate to `str.substr` with synthesised bounds obligations. Distinct literals are theory-distinct (no pairwise cascade needed); literal length and per-position content are theory consequences (no mint-time pinning needed). Counterexample rendering uses Z3's native `getString()` | ✅ Phase 47 |
+| **`replace`, `indexOf`, regex `matches`** | `s.replace(old, new)` → `str.replace` (first-occurrence; replace-all awaits Z3's `mkReplaceAll`). `s.indexOf(sub)` and `s.indexOf(sub, fromIndex)` → `str.indexof`. `s.matches(literalRegex)` → `str.in_re` via an inline recursive-descent parser supporting alternation, concatenation, `.`, `*`/`+`/`?`, character classes `[a-z]`/`[abc]`, and groups. Unsupported features (predefined classes `\d`/`\w`/`\s`, anchors, lookbehind, backreferences, `{n,m}`, negated classes) → honest skip. Composes with `groovy-typecheckers`' `RegexChecker` orthogonally — RegexChecker validates syntax, this checker proves contracts over the regex result | ✅ Phase 47b / 47c |
 
 ## Building & testing
 

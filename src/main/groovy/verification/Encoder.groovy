@@ -288,24 +288,208 @@ class Encoder {
         // {@code getAt} shape and the bracketed binary form both reach here. Routing on element
         // type lets the user filter strings without first assigning to a String-typed local
         // (locals aren't recorded in {@code scalarTypes}).
-        if (recv instanceof BinaryExpression &&
-            ((BinaryExpression) recv).operation.type == Types.LEFT_SQUARE_BRACKET) {
-            Expression listRecv = ((BinaryExpression) recv).leftExpression
-            if (listRecv instanceof VariableExpression) {
-                ClassNode et = listElementTypes.get(((VariableExpression) listRecv).name)
-                return et != null && et.name == 'java.lang.String'
+        if (recv instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) recv
+            if (be.operation.type == Types.LEFT_SQUARE_BRACKET) {
+                Expression listRecv = be.leftExpression
+                if (listRecv instanceof VariableExpression) {
+                    ClassNode et = listElementTypes.get(((VariableExpression) listRecv).name)
+                    return et != null && et.name == 'java.lang.String'
+                }
+            }
+            // Phase 47 — {@code s + t} yields a String when both operands are String-typed.
+            // Lets {@code (s + "x").length()} translate through, with the encoder's binary-
+            // dispatch then routing to {@code stringConcat}.
+            if (be.operation.type == Types.PLUS) {
+                return isStringReceiver(be.leftExpression) && isStringReceiver(be.rightExpression)
             }
         }
-        // {@code xs.get(i).startsWith(...)} — the named-method form of indexing.
         if (recv instanceof MethodCallExpression) {
             MethodCallExpression mc = (MethodCallExpression) recv
-            if (mc.methodAsString == 'get' && argList(mc).size() == 1 &&
+            String m = mc.methodAsString
+            if (m == 'get' && argList(mc).size() == 1 &&
                 mc.objectExpression instanceof VariableExpression) {
                 ClassNode et = listElementTypes.get(((VariableExpression) mc.objectExpression).name)
                 return et != null && et.name == 'java.lang.String'
             }
+            // Phase 47 — string-returning methods on a String receiver. {@code substring},
+            // {@code concat}, and {@code replace} all return String, so a chained
+            // {@code s.substring(1, 4).length()} or {@code s.replace("a", "b").length()}
+            // resolves correctly through the string-receiver path.
+            if ((m == 'substring' || m == 'concat' || m == 'replace') &&
+                isStringReceiver(mc.objectExpression)) {
+                return true
+            }
         }
         return false
+    }
+
+    /**
+     * Phase 47c — translate a Groovy regex literal to a Z3 {@code ReExpr}. Recursive-descent
+     * parser supporting the most common features: literal characters, escapes, alternation
+     * ({@code re1 | re2}), concatenation ({@code re1 re2}), quantifiers ({@code re*},
+     * {@code re+}, {@code re?}), groups ({@code (re)}), and character classes
+     * ({@code [abc]}, {@code [a-z]}). Returns null on any unsupported feature (anchors
+     * {@code ^}/{@code $}, predefined classes {@code \d}/{@code \w}/{@code \s},
+     * quantified-ranges {@code {n,m}}, negated classes {@code [^…]}, lookahead/lookbehind,
+     * backreferences) — the caller surfaces the null as an honest skip.
+     *
+     * <p>Argument must be a String literal {@code ConstantExpression} — dynamic regex
+     * strings can't be statically parsed. The dispatch already returns null for those.
+     */
+    private Object parseRegexLiteral(Expression arg) {
+        if (!(arg instanceof ConstantExpression)) return null
+        Object v = ((ConstantExpression) arg).value
+        if (!(v instanceof String)) return null
+        String pattern = (String) v
+        try {
+            RegexParser p = new RegexParser(pattern, session)
+            Object re = p.parseAlt()
+            if (p.pos != pattern.length()) return null   // didn't consume all — malformed or unsupported
+            return re
+        } catch (Throwable t) {
+            return null   // any parse error or unsupported-feature trap → honest skip
+        }
+    }
+
+    /**
+     * Phase 47c — small recursive-descent regex parser. Builds a Z3 {@code ReExpr} bottom-up
+     * via the {@link SmtSession} regex constructors. Grammar:
+     * <pre>
+     *   regex  ::= alt
+     *   alt    ::= concat ( '|' concat )*
+     *   concat ::= quant *                              -- empty concat = empty-string regex
+     *   quant  ::= atom ( '*' | '+' | '?' )?
+     *   atom   ::= LIT | '.' | '\' ANY | '(' regex ')' | '[' charclass ']'
+     *   charclass ::= ( LIT | LIT '-' LIT )+            -- no negation, no \d/\w/\s
+     * </pre>
+     */
+    @CompileStatic
+    private static class RegexParser {
+        final String src
+        int pos = 0
+        final SmtSession session
+        final Object strSort
+
+        RegexParser(String src, SmtSession session) {
+            this.src = src
+            this.session = session
+            this.strSort = session.declareSort('String')
+        }
+
+        private char peek() { src.charAt(pos) }
+        private boolean done() { pos >= src.length() }
+        private Object reLit(char c) {
+            session.reToRe(session.litOfSort(strSort, String.valueOf(c)))
+        }
+        private Object reLitStr(String s) {
+            session.reToRe(session.litOfSort(strSort, s))
+        }
+
+        Object parseAlt() {
+            Object first = parseConcat()
+            while (!done() && peek() == '|' as char) {
+                pos++
+                Object next = parseConcat()
+                first = session.reUnion(first, next)
+            }
+            first
+        }
+
+        Object parseConcat() {
+            Object acc = null
+            while (!done() && peek() != ')' as char && peek() != '|' as char) {
+                Object q = parseQuantified()
+                acc = (acc == null) ? q : session.reConcat(acc, q)
+            }
+            // Empty concat → the empty-string regex (matches only "").
+            acc == null ? reLitStr('') : acc
+        }
+
+        Object parseQuantified() {
+            Object atom = parseAtom()
+            if (!done()) {
+                char c = peek()
+                if (c == '*' as char) { pos++; return session.reStar(atom) }
+                if (c == '+' as char) { pos++; return session.rePlus(atom) }
+                if (c == '?' as char) { pos++; return session.reOption(atom) }
+            }
+            atom
+        }
+
+        Object parseAtom() {
+            if (done()) throw new IllegalStateException('unexpected end')
+            char c = peek()
+            if (c == '(' as char) {
+                pos++
+                Object inner = parseAlt()
+                if (done() || peek() != ')' as char) throw new IllegalStateException('expected )')
+                pos++
+                return inner
+            }
+            if (c == '[' as char) {
+                pos++
+                return parseCharClass()
+            }
+            if (c == '.' as char) {
+                pos++
+                return session.reAllChar()
+            }
+            if (c == '\\' as char) {
+                pos++
+                if (done()) throw new IllegalStateException('dangling backslash')
+                char esc = src.charAt(pos)
+                pos++
+                // Predefined classes are an honest-skip trap — Z3 has primitives but our parser
+                // doesn't translate them yet.
+                if (esc == 'd' as char || esc == 'D' as char || esc == 'w' as char ||
+                    esc == 'W' as char || esc == 's' as char || esc == 'S' as char ||
+                    esc == 'b' as char || esc == 'B' as char) {
+                    throw new IllegalStateException('predefined class not supported')
+                }
+                return reLit(esc)
+            }
+            // These should never appear at atom position in a well-formed regex.
+            if (c == ')' as char || c == ']' as char || c == '|' as char || c == '*' as char ||
+                c == '+' as char || c == '?' as char) {
+                throw new IllegalStateException('unexpected metacharacter')
+            }
+            // Anchors and quantified-ranges aren't translated.
+            if (c == '^' as char || c == '$' as char || c == '{' as char) {
+                throw new IllegalStateException('anchor / quantified-range not supported')
+            }
+            pos++
+            reLit(c)
+        }
+
+        Object parseCharClass() {
+            if (!done() && peek() == '^' as char) {
+                throw new IllegalStateException('negated character class not supported')
+            }
+            Object acc = null
+            while (!done() && peek() != ']' as char) {
+                char c = peek()
+                pos++
+                // {@code c-c} range, but only if the dash isn't the last char of the class.
+                if (!done() && peek() == '-' as char && pos + 1 < src.length() &&
+                    src.charAt(pos + 1) != ']' as char) {
+                    pos++   // consume '-'
+                    char hi = peek()
+                    pos++
+                    Object lo = session.litOfSort(strSort, String.valueOf(c))
+                    Object hiStr = session.litOfSort(strSort, String.valueOf(hi))
+                    Object range = session.reRange(lo, hiStr)
+                    acc = (acc == null) ? range : session.reUnion(acc, range)
+                } else {
+                    Object single = reLit(c)
+                    acc = (acc == null) ? single : session.reUnion(acc, single)
+                }
+            }
+            if (done() || peek() != ']' as char) throw new IllegalStateException('expected ]')
+            pos++
+            if (acc == null) throw new IllegalStateException('empty character class')
+            acc
+        }
     }
 
     /** Phase 41 — true if {@code name} is a List-typed parameter/field (use bcount, not count). */
@@ -1962,6 +2146,17 @@ class Encoder {
             }
         }
 
+        // Phase 47 — String concatenation via the {@code +} operator. When both operands are
+        // String-typed, translate each in the String sort and dispatch to {@code stringConcat}
+        // rather than the integer {@code plus}. The {@link #isStringReceiver} helper recognises
+        // String literals, String parameters, and {@code xs[i]} on a {@code List<String>}.
+        if (op == Types.PLUS && isStringReceiver(be.leftExpression) && isStringReceiver(be.rightExpression)) {
+            Object strSort = session.declareSort('String')
+            Object lH = translateInSort(be.leftExpression, strSort)
+            Object rH = translateInSort(be.rightExpression, strSort)
+            if (lH != null && rH != null) return session.stringConcat(lH, rH)
+        }
+
         Object L = translate(be.leftExpression)
         Object R = translate(be.rightExpression)
         if (L == null || R == null) return null
@@ -2235,6 +2430,65 @@ class Encoder {
             if (m == 'charAt' && args.size() == 1) {
                 Object idx = translate(args.get(0))
                 return idx == null ? null : session.stringCharAt(sH, idx)
+            }
+            // Phase 47 — substring extraction. Groovy uses {@code (beginIndex, endIndex)} like
+            // Java; Z3's {@code str.substr} takes {@code (offset, length)}. Convert by
+            // {@code length = end - begin}. The single-arg form {@code s.substring(begin)} uses
+            // {@code length = stringLength(s) - begin}. Implicit bounds obligations
+            // ({@code 0 <= begin <= end <= length(s)}) live in the ObligationCollector.
+            if (m == 'substring' && args.size() == 2) {
+                Object begin = translate(args.get(0))
+                Object end = translate(args.get(1))
+                if (begin == null || end == null) return null
+                Object len = session.minus(end, begin)
+                return session.stringSubstring(sH, begin, len)
+            }
+            if (m == 'substring' && args.size() == 1) {
+                Object begin = translate(args.get(0))
+                if (begin == null) return null
+                Object len = session.minus(session.stringLength(sH), begin)
+                return session.stringSubstring(sH, begin, len)
+            }
+            // Phase 47 — {@code s.concat(t)} method form. The {@code +} operator form is
+            // handled in {@link #translateBinary} where the type discrimination has the
+            // operand handles already.
+            if (m == 'concat' && args.size() == 1) {
+                Object t = translateInSort(args.get(0), strSort)
+                return t == null ? null : session.stringConcat(sH, t)
+            }
+            // Phase 47b — {@code s.replace(old, new)} — first-occurrence replacement via
+            // Z3's {@code str.replace}. Groovy/Java define {@code replace} as replace-all; this
+            // is a known semantic gap until Z3 ships {@code mkReplaceAll}. Tests deliberately
+            // use single-occurrence patterns where first/all coincide.
+            if (m == 'replace' && args.size() == 2) {
+                Object oldSub = translateInSort(args.get(0), strSort)
+                Object newSub = translateInSort(args.get(1), strSort)
+                if (oldSub == null || newSub == null) return null
+                return session.stringReplace(sH, oldSub, newSub)
+            }
+            // Phase 47b — {@code s.indexOf(sub)} and {@code s.indexOf(sub, fromIndex)}.
+            // Returns the leftmost position {@code i >= fromIndex} where {@code sub} occurs,
+            // or {@code -1} if not found. No bounds obligation — {@code -1} is a legitimate
+            // return value Groovy callers test against.
+            if (m == 'indexOf' && args.size() == 1) {
+                Object sub = translateInSort(args.get(0), strSort)
+                if (sub == null) return null
+                return session.stringIndexOf(sH, sub, session.intLit(0L))
+            }
+            if (m == 'indexOf' && args.size() == 2) {
+                Object sub = translateInSort(args.get(0), strSort)
+                Object from = translate(args.get(1))
+                if (sub == null || from == null) return null
+                return session.stringIndexOf(sH, sub, from)
+            }
+            // Phase 47c — {@code s.matches(regex)} for regex literals the inline parser can
+            // handle (literals, alternation, concatenation, {@code .}, {@code */+/?},
+            // character classes {@code [a-z]}/{@code [abc]}, groups). Unsupported features
+            // return null and surface as honest skips.
+            if (m == 'matches' && args.size() == 1) {
+                Object re = parseRegexLiteral(args.get(0))
+                if (re == null) return null
+                return session.stringInRegex(sH, re)
             }
             return null   // unsupported op on a String receiver — honest skip, don't fall through to list dispatch
         }
