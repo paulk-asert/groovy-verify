@@ -167,6 +167,13 @@ interface SmtSession extends AutoCloseable {
     Object strConcatRange(Object arr, Object lo, Object hi)
 
     /**
+     * The Fibonacci function {@code fib(k)} — an uninterpreted {@code Int -> Int}. Meaning from the base
+     * ({@code fib(0)==0}, {@code fib(1)==1}) and step ({@code ∀k. k>=2 ⟹ fib(k)==fib(k-1)+fib(k-2)})
+     * axioms the caller asserts (mint-once, globally). Recognised from the {@code Fib.of(i)} helper.
+     */
+    Object fib(Object k)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store

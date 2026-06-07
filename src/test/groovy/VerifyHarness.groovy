@@ -41,6 +41,7 @@ class VerifyHarness {
         import groovy.contracts.Modifies
         import verification.Forall
         import verification.Sets
+        import verification.Fib
         import verification.CheckOverflow
     '''.stripIndent()
 
@@ -2952,6 +2953,47 @@ class VerifyHarness {
          src: tc('''class C {
                         @Ensures({ result == n })
                         static int f(int n) { Integer.parseInt(Integer.toString(n)) }
+                    }''')],
+
+        // ---------- Phase 55: Fibonacci generation via the Fib.of(i) helper ----------
+        // A literal index unfolds through the step axiom to a concrete value (0,1,1,2,3,5).
+        [group: 'P55 fib', name: 'Fib.of(5) == 5', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Fib.of(5) == 5 })
+                        static void f() { }
+                    }''')],
+        // Non-vacuousness anchor (positive): the step law holds at a literal index. (Refuting a *false*
+        // fib claim is the known weak direction — Z3 can't model the ∀ step axiom, so it returns honest
+        // UNKNOWN rather than a counterexample.)
+        [group: 'P55 fib', name: 'Fib step law at 6 holds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Fib.of(6) == Fib.of(5) + Fib.of(4) })
+                        static void f() { }
+                    }''')],
+        // The textbook proof: an iterative Fibonacci provably equals the recursive definition. The
+        // invariant carries the two-term recurrence (a == fib(i), b == fib(i+1)); the step axiom
+        // re-establishes it across `b = a + b`. Terminates (`n - i`), unlike the outer prime_fib search.
+        // (FQN `verification.Fib` inside @Invariant: groovy-contracts compiles that closure without the
+        // import in scope — the same wart `Forall` carries.)
+        [group: 'P55 fib', name: 'iterative Fibonacci equals Fib.of(n)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == Fib.of(n) })
+                        static int fibIter(int n) {
+                            int a = 0
+                            int b = 1
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n &&
+                                         a == verification.Fib.of(i) && b == verification.Fib.of(i + 1) })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int t = a + b
+                                a = b
+                                b = t
+                                i = i + 1
+                            }
+                            return a
+                        }
                     }''')],
 
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------

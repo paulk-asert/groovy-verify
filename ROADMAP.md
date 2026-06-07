@@ -3691,6 +3691,31 @@ case *loud*.
 
 ---
 
+## Phase 55 — Fibonacci generation: the `Fib.of(i)` helper  *(shipped)*
+
+The two-term-recurrence sibling of the Phase-51/52 `sum`/`prod` aggregations, prompted by HumanEval 39
+(`prime_fib`). A `Fib.of(i)` spec helper (runtime-executable, like `Sets.boundedCount` / `Forall.range`)
+is recognised and lowered to an uninterpreted `fib$ : Int → Int` with mint-once defining axioms:
+
+- base `fib(0) == 0`, `fib(1) == 1`
+- step `∀k. k >= 2 ⟹ fib(k) == fib(k-1) + fib(k-2)` (triggered on `fib(k)`)
+
+The headline is the **textbook iterative-equals-recursive proof**: an iterative Fibonacci provably
+equals `Fib.of(n)`, the invariant carrying the recurrence `a == fib(i) ∧ b == fib(i+1)`, re-established
+across `b = a + b` by the step axiom at `i+2` (a congruence). `Fib.of(5) == 5` unfolds through the
+axioms; the step law verifies as a positive anchor (refuting a *false* fib claim is the usual
+quantified-axiom weak direction — honest UNKNOWN). Inside an `@Invariant` the helper needs the FQN
+`verification.Fib.of(i)` (groovy-contracts compiles that closure without the import in scope — the
+same wart `Forall` carries).
+
+**The outer `prime_fib` is a deliberate non-target.** Returning the n-th number that is both prime
+*and* Fibonacci is an *unbounded search* (`while true`) with no termination measure — and whether
+there are infinitely many Fibonacci primes is an **open problem in number theory**, so no `@Decreases`
+can exist for symbolic `n` (even Verus' HumanEval port leaves task 039 a `TODO`). The Fibonacci
+generation it rests on verifies; the search does not, and saying so cleanly is the honest boundary.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

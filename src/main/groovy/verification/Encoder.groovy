@@ -2042,6 +2042,30 @@ class Encoder {
     /** True if {@code t} is the {@code String} element type. */
     private static boolean isStringElementType(ClassNode t) { t != null && t.name == 'java.lang.String' }
 
+    /** Whether fib's defining axioms have been asserted (mint-once — fib is one global function). */
+    private boolean fibConstrained = false
+
+    /**
+     * The Fibonacci function {@code fib(k)}, asserting its defining axioms the first time it is seen:
+     * base {@code fib(0)==0} / {@code fib(1)==1}, step {@code ∀k. k>=2 ⟹ fib(k)==fib(k-1)+fib(k-2)}.
+     * The step (triggered on {@code fib(k)}) is what preserves a generation invariant {@code b ==
+     * Fib.of(i+1)} across {@code b = a + b}: at {@code i+2} it e-matches to {@code fib(i+2) ==
+     * fib(i+1) + fib(i)}, exactly the body's update (a congruence, not a fresh nonlinearity).
+     */
+    Object fibOf(Object kH) {
+        if (!fibConstrained) {
+            fibConstrained = true
+            Object zero = session.intLit(0L), one = session.intLit(1L), two = session.intLit(2L)
+            session.assertExpr(session.eq(session.fib(zero), zero))
+            session.assertExpr(session.eq(session.fib(one), one))
+            Object k = session.boundIntVar('fib$k' + (quantCounter++))
+            Object term = session.fib(k)
+            Object rhs = session.plus(session.fib(session.minus(k, one)), session.fib(session.minus(k, two)))
+            session.assertExpr(session.forall([k], session.implies(session.ge(k, two), session.eq(term, rhs)), [term]))
+        }
+        session.fib(kH)
+    }
+
     /**
      * For a two-parameter fold closure {@code { a, x -> a OP x }} whose operands are exactly the two
      * parameters (either order), return the operator text when {@code OP} is {@code *} (product) or
@@ -2700,6 +2724,15 @@ class Encoder {
                     }
                 }
             }
+        }
+
+        // Fib.of(i) — the Fibonacci spec helper (Phase 55), lowered to the axiomatised fib$ primitive.
+        boolean isFib = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Fib') ||
+                        (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Fib') ||
+                        (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Fib')
+        if (m == 'of' && isFib && args.size() == 1) {
+            Object k = translate(args.get(0))
+            return k == null ? null : fibOf(k)
         }
 
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||

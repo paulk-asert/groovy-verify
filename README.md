@@ -814,6 +814,30 @@ Three previously-deferred capabilities compose in one method: **prefix early-ret
 Verus original has no `@Ensures` (Verus checks implicit overflow); we add a sound
 `@Requires({ num >= 0 })` to keep the bound check honest.
 
+Task 039's *outer* `prime_fib` (the n-th number that is both prime and Fibonacci) is a clean example
+of a **deliberate non-target**: it's an unbounded `while true` search whose termination depends on the
+*open* question of whether infinitely many Fibonacci primes exist — no `@Decreases` can exist (even
+Verus leaves task 039 a `TODO`). But the Fibonacci generation it rests on *does* verify — the textbook
+iterative-equals-recursive proof, via a `Fib.of(i)` spec helper (the two-term-recurrence sibling of
+`xs.sum()`):
+
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result == Fib.of(n) })
+static int fibIter(int n) {
+    int a = 0, b = 1, i = 0
+    @Invariant({ 0 <= i && i <= n && a == verification.Fib.of(i) && b == verification.Fib.of(i + 1) })
+    @Decreases({ n - i })
+    while (i < n) { int t = a + b; a = b; b = t; i = i + 1 }
+    return a
+}
+```
+
+`Fib.of(i)` lowers to an uninterpreted `fib$` with base/step axioms; the invariant carries the
+recurrence `a == fib(i) ∧ b == fib(i+1)`, re-established across `b = a + b` by the step axiom — so the
+loop is proven to compute the recursive definition. (The `verification.Fib` FQN inside `@Invariant` is
+the same closure-scope wart `Forall` carries.)
+
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
 positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
 in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
@@ -950,6 +974,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Early-`return` inside the loop body** | An `if (cond) return e;` at the top level of the loop body verifies on its own path (assume invariant ∧ loop-guard, walk body up to this exit interleaving `¬prior-body-guards` with sym-exec of non-exit body statements, assume this guard, bind `result`, check `@Ensures`). Preservation and progress walk the body interleaving `¬each-in-body-guard` (we're on the no-exit-fired path). The `is_prime` HumanEval port now matches the Verus source structurally — prefix guards + in-body returns + NIA bound check, all verifying. Suffix-region exits and exits nested in non-top-level if-branches remain deferred | ✅ Phase 49b |
 | **Sum aggregation over a list (Int *and* String)** | `xs[lo..<hi].sum()` (prefix sum, for loop invariants) and `xs.sum()` (whole list) lower to base/step axioms — `sum$(arr,lo,hi)` for an Int list (a running total provably equals the list sum, `s == xs[0..<i].sum()` carried across the loop) and **`strConcat$`** for a `List<String>` (duck-typed `['a','b','c'].sum() == 'abc'`, over the `str.++` monoid). Other element domains skip honestly. The value-sum analogue of `count`/`bcount`. Empty range modelled as `0`/`""` (Groovy's `[].sum()` is `null` — needs a non-empty guard); refuting a false claim returns honest UNKNOWN. HumanEval 3 `below_zero` (`result ⟺ ∃ prefix < 0`) verifies on it | ✅ Phase 51 |
 | **Product aggregation via the `inject` fold** | `xs.inject(1) { a, x -> a * x }` (and `xs[lo..<hi]`-ranged) is recognised as a product → `prod$(arr,lo,hi)` with base (empty = 1) / step (`× arr[h-1]`) axioms; `inject(0){ a, x -> a + x }` is the sum fold. A running product proof mirrors the sum loop (preservation closes by congruence, not NIA). HumanEval 8 `sum_product` verifies sum + product in one loop | ✅ Phase 52 |
+| **Recursive-sequence spec: `Fib.of(i)`** | a Fibonacci spec helper lowering to `fib$` with base (`0`,`1`) / step (`fib(k)=fib(k-1)+fib(k-2)`) axioms — the two-term-recurrence sibling of `sum`/`prod`. The textbook iterative-equals-recursive proof verifies (`result == Fib.of(n)`). HumanEval 39's outer `prime_fib` search is a deliberate non-target (open-problem termination) | ✅ Phase 55 |
 
 ## Building & testing
 
@@ -1107,6 +1132,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
 | `Forall` | the `Forall.range(lo, hi){…}` bounded-quantifier helper (the native GDK `every`/`any` idioms are the preferred surface) |
+| `Sets` / `Fib` | runtime-executable spec helpers the encoder recognises — `Sets.boundedBy`/`boundedCount` (cardinality) and `Fib.of(i)` (Fibonacci), each lowered to an axiomatised primitive |
 | `PathFacts` | enclosing-`if` path conditions per expression site |
 | `ContractExpansionTransform` / `ContractSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`) + clean body snapshots onto the runtime `@ContractSource` carrier the checker re-parses |
 | `SmtBackend` / `Z3Backend` | the solver seam and its z3-turnkey implementation |
