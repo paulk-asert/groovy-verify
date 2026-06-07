@@ -2241,6 +2241,7 @@ class Encoder {
         }
 
         if (expr instanceof UnaryMinusExpression) {
+            if (isDecimalExpr(expr)) return asReal(expr)   // Phase 67 — decimal negation in the Real sort
             Object inner = translate(((UnaryMinusExpression) expr).expression)
             return inner == null ? null : session.neg(inner)
         }
@@ -2468,6 +2469,9 @@ class Encoder {
      *  Int-typed slot (which would crash Z3 on a sort mismatch) and skip loudly instead. */
     boolean isDecimalValued(Expression e) { isDecimalExpr(e) }
 
+    /** Phase 67 — translate {@code e} into the Real sort (for a decimal-valued binding); null = skip. */
+    Object asRealValue(Expression e) { asReal(e) }
+
     /** True if {@code e} denotes a decimal (BigDecimal/Double/Float) value in Groovy's semantics. */
     private boolean isDecimalExpr(Expression e) {
         if (e instanceof ConstantExpression) {
@@ -2477,6 +2481,7 @@ class Encoder {
         if (e instanceof VariableExpression) {
             return decimalNames.contains(((VariableExpression) e).name)
         }
+        if (e instanceof UnaryMinusExpression) return isDecimalExpr(((UnaryMinusExpression) e).expression)
         if (e instanceof BinaryExpression) {
             String t = ((BinaryExpression) e).operation.text
             if (t == '/') return true   // Groovy: `/` on integers is BigDecimal division
@@ -2504,6 +2509,10 @@ class Encoder {
             String n = ((VariableExpression) e).name
             Object bound = env.get(n)
             return bound != null ? bound : realVarFor(n)
+        }
+        if (e instanceof UnaryMinusExpression) {
+            Object o = asReal(((UnaryMinusExpression) e).expression)
+            return o == null ? null : session.neg(o)
         }
         if (e instanceof BinaryExpression) {
             String t = ((BinaryExpression) e).operation.text
@@ -2706,6 +2715,11 @@ class Encoder {
             }
             return null
         }
+        // Phase 67 — a decimal operand on an operator the Real path doesn't model (notably `%`, whose
+        // BigDecimal remainder Z3's real theory has no clean primitive for): skip loudly rather than
+        // fall through to the integer path below, which would translate the decimals as meaningless
+        // int shadows (a spurious divide-by-zero / wrong remainder).
+        if (isDecimalExpr(be.leftExpression) || isDecimalExpr(be.rightExpression)) return null
 
         Object L = translate(be.leftExpression)
         Object R = translate(be.rightExpression)

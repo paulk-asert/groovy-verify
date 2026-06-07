@@ -2606,7 +2606,11 @@ class VerifyChecker extends TypeCheckingExtension {
                     throw new UnsupportedConstructException(
                         "return expression '${p.result.text}' is BigDecimal but the method's return type is not decimal")
                 }
-                Object resHandle = enc.translate(p.result)
+                // Phase 67 — a decimal-valued return (a `-2.5` literal, a bare decimal variable) is
+                // bound through the Real path; `translate` alone leaves a decimal constant unmodelled
+                // (null) and a decimal variable an int shadow.
+                Object resHandle = enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
+                                                                 : enc.translate(p.result)
                 if (resHandle == null) {
                     throw new UnsupportedConstructException(
                         "return expression '${p.result.text}' is outside fragment")
