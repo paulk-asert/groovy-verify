@@ -3787,6 +3787,40 @@ quantified UNKNOWNs also get repros) is the natural follow-on.
 
 ---
 
+## Phase 63 — `for (x in xs)` loops  *(shipped)*
+
+The for-in (for-each) loop is the most idiomatic Groovy iteration; Phase 59 left it skipping. Both
+spellings — `for (x in xs)` and the Java-style `for (T x : xs)` — parse to the same `ForStatement`
+shape and are handled identically. It now desugars to an **indexed** while over the collection — the one wrinkle being that for-in exposes no
+index for the user to write an invariant against. The resolution (the brief asked for it explicitly):
+**synthesize a hidden index, but retain the loop variable's name for reporting.**
+
+In `ContractExpansionTransform.buildLoopSpec`, a `ForStatement` whose `collectionExpression` is a plain
+`VariableExpression` `xs` (a named list/array — a literal or method-call collection skips) is lowered:
+a synthetic index `__gvForInIdx` initialised in the prefix (`int idx = 0`), guard `idx < xs.size()`,
+and an update `idx = idx + 1` appended to the body. The loop **variable keeps its source name**, bound
+to `xs[idx]` as the first body statement (`x = xs[idx]`), so the body, contracts, and counterexamples
+all read in terms of `x`, never the index. Because the index isn't user-nameable, two clauses are
+**auto-injected**: an index-bounds invariant `0 <= idx && idx <= xs.size()` (added after the user's, so
+preservation of a user invariant has the bound in scope, and the synthetic `xs[idx]` read is provably
+in-bounds) and a `xs.size() - idx` variant (so for-in loops are proved terminating for free, unless the
+user supplied a `@Decreases`).
+
+The synthetic index is suppressed everywhere user-facing: filtered from the displayed counterexample
+(`VerifyChecker.shown`, alongside the SSA/array-element keys) and from the invariant text in a loop
+diagnostic (`invText`). So a broken `@Invariant({ s == 0 })` over `for (x in xs) { s = s + x }` reports
+`invariant: (s == 0)` / `counterexample: s = 0, xs.size() = 1` / `fails on: sumIn([-1])` — the loop
+variable and a runnable repro, no `__gvForInIdx` in sight.
+
+**Known limits.** Preservation does not assume `@Requires` (sound — a precondition over mutable state
+can go stale in the body), so element facts must come from the body's *structure* (`x < 0 ? -x : x` is
+provably `>= 0`, a conditional `c = c + 1` keeps `c >= 0`), not from a precondition `xs.every { … }`
+instantiated at the element. An invariant that references the loop variable directly can't be
+*established* (there's no current element before the first iteration). Int-element collections are the
+modelled case; a non-Int element doesn't translate and skips.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

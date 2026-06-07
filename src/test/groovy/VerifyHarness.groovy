@@ -5006,15 +5006,78 @@ class VerifyHarness {
                            return i
                        }
                    }''')],
-        // A for-in loop is outside the fragment (no index to bound the invariant against) —
-        // it must skip loudly, never silently pass.
-        [group: 'P59 for-loop', name: 'for-in loop skipped loudly', expect: 'Skipped',
+        // ---------- Phase 63: for-in loops (synthesized hidden index, loop var retained) ----------
+        // `for (x in xs)` desugars to an indexed while: a hidden index drives iteration, the loop
+        // variable `x` is bound to xs[idx] each pass. Element reasoning comes from the body's
+        // structure (preservation doesn't assume @Requires): |x| is provably >= 0, so a running
+        // sum of absolute values stays >= 0 — verified, with auto-injected index bounds + termination.
+        [group: 'P63 for-in', name: 'for-in sum-of-abs stays non-negative', ok: true,
+         src: tc('''class C {
+                       @Ensures({ result >= 0 })
+                       static int sumAbs(List<Integer> xs) {
+                           int s = 0
+                           @Invariant({ s >= 0 })
+                           for (x in xs) { s = s + (x < 0 ? -x : x) }
+                           return s
+                       }
+                   }''')],
+        // The Java-style colon syntax `for (T x : xs)` parses to the same ForStatement and verifies
+        // identically to the `in` form.
+        [group: 'P63 for-in', name: 'for-colon (Java-style) verified', ok: true,
+         src: tc('''class C {
+                       @Ensures({ result >= 0 })
+                       static int sumAbs(List<Integer> xs) {
+                           int s = 0
+                           @Invariant({ s >= 0 })
+                           for (int x : xs) { s = s + (x < 0 ? -x : x) }
+                           return s
+                       }
+                   }''')],
+        // Conditional accumulation over the loop variable: a count only ever grows, so c >= 0 holds.
+        [group: 'P63 for-in', name: 'for-in conditional count stays non-negative', ok: true,
+         src: tc('''class C {
+                       @Ensures({ result >= 0 })
+                       static int countEvens(List<Integer> xs) {
+                           int c = 0
+                           @Invariant({ c >= 0 })
+                           for (x in xs) { if (x % 2 == 0) c = c + 1 }
+                           return c
+                       }
+                   }''')],
+        // Loud refutation, not a silent pass: `s == 0` isn't preserved by `s = s + x` (x may be
+        // non-zero). The counterexample names the loop variable `x`, not the hidden index.
+        [group: 'P63 for-in', name: 'for-in broken invariant refuted (preservation)',
+         expect: 'invariant is preserved',
          src: tc('''class C {
                        @Ensures({ result == 0 })
                        static int sumIn(List<Integer> xs) {
                            int s = 0
                            @Invariant({ s == 0 })
                            for (x in xs) { s = s + x }
+                           return s
+                       }
+                   }''')],
+        // The synthetic index is hidden — the counterexample reads in terms of the loop variable,
+        // never `__gvForInIdx`.
+        [group: 'P63 for-in', name: 'for-in counterexample hides synthetic index',
+         expect: 'invariant is preserved', refute: '__gvForInIdx',
+         src: tc('''class C {
+                       @Ensures({ result >= 0 })
+                       static int sumIn(List<Integer> xs) {
+                           int s = 0
+                           @Invariant({ s >= 0 })
+                           for (x in xs) { s = s + x }
+                           return s
+                       }
+                   }''')],
+        // A for-in over a literal (not a named collection) has no size oracle to index — skips loudly.
+        [group: 'P63 for-in', name: 'for-in over a list literal skips', expect: 'Skipped',
+         src: tc('''class C {
+                       @Ensures({ result >= 0 })
+                       static int f() {
+                           int s = 0
+                           @Invariant({ s >= 0 })
+                           for (x in [1, 2, 3]) { s = s + x }
                            return s
                        }
                    }''')],
@@ -5181,6 +5244,12 @@ class VerifyHarness {
                 detail = ok ? '' : (errors == null
                     ? "expected error containing '${c.expect}', but compiled cleanly"
                     : "expected '${c.expect}', got:\n      ${all.replaceAll('\n', '\n      ')}")
+                // Optional `refute`: assert a substring is ABSENT from the diagnostic (e.g. an
+                // internal/synthetic name that must not leak into a user-facing counterexample).
+                if (ok && c.refute && all.contains((String) c.refute)) {
+                    ok = false
+                    detail = "diagnostic should NOT contain '${c.refute}', but did:\n      ${all.replaceAll('\n', '\n      ')}"
+                }
             }
             if (ok) {
                 passed++

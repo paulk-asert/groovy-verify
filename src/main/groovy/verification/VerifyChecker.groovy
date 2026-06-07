@@ -764,6 +764,9 @@ class VerifyChecker extends TypeCheckingExtension {
             // internal keys: nullity flag, array element, SSA version — surfaced via failingCall / the
             // base (entry) variable, not shown raw.
             if (k.endsWith('?null') || k.endsWith(']') || k.contains('#')) return
+            // Phase 63 — the for-in desugar's synthetic index is internal; the loop variable carries
+            // the source name, so suppress the index from the displayed counterexample.
+            if (k.contains(ContractExpansionTransform.FOR_IN_INDEX)) return
             if (k.endsWith('.size')) {
                 String recv = k.substring(0, k.length() - '.size'.length())
                 display.put(recv + sizeAccessor(recv), v)
@@ -3383,7 +3386,12 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     private static String invText(LoopSite site) {
-        site.spec.invariants.collect { it.text }.join(' && ')
+        // Phase 63 — the for-in desugar's auto-injected index-bounds clause is internal; show only the
+        // user-written invariant clauses so the diagnostic reads in source terms (the loop variable),
+        // not the synthetic index.
+        site.spec.invariants.collect { it.text }
+            .findAll { !it.contains(ContractExpansionTransform.FOR_IN_INDEX) }
+            .join(' && ')
     }
 
     @Override

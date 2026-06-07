@@ -38,6 +38,7 @@ import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
@@ -96,6 +97,13 @@ class ContractExpansionTransform implements ASTTransformation {
      * transforms inject invariant asserts into the live loop body.
      */
     static final String LOOP_SPEC_KEY = 'verification.loopSpec'
+
+    /**
+     * Phase 63 — name of the synthetic index a {@code for (x in xs)} desugar introduces. Hidden from
+     * counterexamples (filtered by {@code VerifyChecker.shown}); distinctive enough not to collide
+     * with a real local.
+     */
+    static final String FOR_IN_INDEX = '__gvForInIdx'
 
     @Override
     void visit(ASTNode[] nodes, SourceUnit source) {
@@ -254,27 +262,53 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source) {
-        // Phase 59 — a classic for-loop is desugared to while-shape: its condition is
-        // the guard, its init becomes a prefix statement, and its update is normalised
-        // to a plain assignment and appended to the loop body. A for-in loop (no
-        // ClosureListExpression) or any non-standard for shape returns null → loud skip.
+        // Phase 59 — a classic for-loop is desugared to while-shape: its condition is the guard, its
+        // init becomes a prefix statement, and its update is normalised to a plain assignment and
+        // appended to the loop body. Phase 63 — a for-in loop `for (x in xs)` desugars to an *indexed*
+        // while over xs's elements: a hidden synthetic index drives the guard/update, the loop variable
+        // keeps its source name (bound to `xs[idx]` at the top of each iteration) so contracts and
+        // counterexamples read in terms of `x`, and an index-bounds invariant + a `size - idx` variant
+        // are auto-injected (the index isn't user-nameable). Other for shapes return null → loud skip.
         List<Statement> initStmts = null
         Statement updateStmt = null
+        List<Statement> bodyPrefix = null
+        Expression autoInvariant = null
+        Expression autoVariant = null
         Expression guard
         if (loop instanceof ForStatement) {
             ForStatement f = (ForStatement) loop
-            if (!(f.collectionExpression instanceof ClosureListExpression)) return null
-            List<Expression> parts = ((ClosureListExpression) f.collectionExpression).expressions
-            if (parts.size() != 3 || parts.get(1) instanceof EmptyExpression) return null
-            guard = parts.get(1)
-            Expression initE = parts.get(0)
-            Expression updE = parts.get(2)
-            if (!(initE instanceof EmptyExpression)) {
-                initStmts = [(Statement) new ExpressionStatement(initE)]
-            }
-            if (!(updE instanceof EmptyExpression)) {
-                updateStmt = normalizeUpdate(updE)
-                if (updateStmt == null) return null   // unsupported update shape → loud skip
+            if (f.collectionExpression instanceof ClosureListExpression) {
+                List<Expression> parts = ((ClosureListExpression) f.collectionExpression).expressions
+                if (parts.size() != 3 || parts.get(1) instanceof EmptyExpression) return null
+                guard = parts.get(1)
+                Expression initE = parts.get(0)
+                Expression updE = parts.get(2)
+                if (!(initE instanceof EmptyExpression)) {
+                    initStmts = [(Statement) new ExpressionStatement(initE)]
+                }
+                if (!(updE instanceof EmptyExpression)) {
+                    updateStmt = normalizeUpdate(updE)
+                    if (updateStmt == null) return null   // unsupported update shape → loud skip
+                }
+            } else if (f.collectionExpression instanceof VariableExpression) {
+                // for-in over a named collection. The element type is left to the encoder (Int list/
+                // array is the modelled case); a non-Int element simply doesn't translate and skips.
+                String xs = ((VariableExpression) f.collectionExpression).name
+                String x = f.variable?.name
+                if (x == null) return null
+                String idx = FOR_IN_INDEX
+                guard       = reparse("${idx} < ${xs}.size()")
+                Statement initS = assignStmt("int ${idx} = 0")
+                Statement bindX = assignStmt("${x} = ${xs}[${idx}]")
+                updateStmt  = assignStmt("${idx} = ${idx} + 1")
+                autoInvariant = reparse("0 <= ${idx} && ${idx} <= ${xs}.size()")
+                autoVariant   = reparse("${xs}.size() - ${idx}")
+                if (guard == null || initS == null || bindX == null || updateStmt == null
+                        || autoInvariant == null || autoVariant == null) return null
+                initStmts  = [initS]
+                bodyPrefix = [bindX]
+            } else {
+                return null   // for-in over a literal / method-call collection → loud skip
             }
         } else {
             guard = loopGuard(loop)
@@ -303,13 +337,20 @@ class ContractExpansionTransform implements ASTTransformation {
             // the runtime invariant/variant checks from it; we add the compile-time
             // Z3 proof on top.
         }
-        if (invariants.isEmpty()) return null
+        if (invariants.isEmpty()) return null   // a loop needs a user @Invariant to be verified
+        // Phase 63 — the for-in index-bounds invariant is added *after* the user's (so its synthetic
+        // name trails the user-facing clauses in any diagnostic), and `size - idx` is the variant
+        // unless the user supplied a @Decreases (they have no index to write a better one).
+        if (autoInvariant != null) invariants.add(autoInvariant)
         LoopSpec spec = new LoopSpec()
         spec.invariants = invariants
-        spec.variant = variant
+        spec.variant = (variant != null) ? variant : autoVariant
         spec.guard = guard
-        spec.body = loopBodyCopy(loop)
-        if (updateStmt != null) spec.body.add(updateStmt)   // for-loop: body; update
+        List<Statement> body = new ArrayList<Statement>()
+        if (bodyPrefix != null) body.addAll(bodyPrefix)             // for-in: x = xs[idx]; …
+        body.addAll(loopBodyCopy(loop))
+        if (updateStmt != null) body.add(updateStmt)                // for/for-in: …; update
+        spec.body = body
         spec.init = initStmts
         return spec
     }
