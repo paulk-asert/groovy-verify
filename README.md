@@ -247,6 +247,12 @@ with `count = 0`, and the `@Requires({ m > 0 })` lets the invariant's `0 <= max`
     fails on: <init>(-1)
 ```
 
+**One honest edge:** if a method's loop *mutates* a field the class invariant constrains, the loop's
+preservation check still assumes that invariant about the very field being changed — sound only when
+the loop body leaves invariant-referenced fields alone, so until a per-loop frame analysis (the
+`@Modifies` analogue for loops) tightens it, keep actively-mutated state in the loop's own
+`@Invariant` rather than relying on the class one.
+
 A postcondition can relate the *exit* state to the *entry* state with `old` — `@Ensures({ count
 == old.count + 1 })` — and `old` reaches into array contents too, which is how a method frames what
 it leaves alone: a setter that touches only `a[j]` proves every *other* element is unchanged, which
