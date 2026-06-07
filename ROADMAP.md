@@ -94,13 +94,11 @@ class Demo {
 ```
 
 **Path-sensitivity, and the value-flow that followed.** The implicit checks are
-path-sensitive (they honour enclosing `if`s). They were originally
-*value-flow-blind* — local assignments were not tracked, and a bounds obligation
-inside or after a loop was checked without the `@Invariant`. Both gaps are now
-closed by [Phase 5](#phase-5--value-flow--loop-fused-safety-obligations-shipped),
-which threads single-assignment locals and discharges loop obligations under the
-invariant. Counterexamples report integer values; nullity is boolean, so a
-null-dereference refutation names the obligation but not a concrete value.
+path-sensitive (they honour enclosing `if`s). Originally *value-flow-blind* — local
+assignments untracked, loop obligations checked without the `@Invariant` — both gaps
+were closed by [Phase 5](#phase-5--value-flow--loop-fused-safety-obligations-shipped).
+Counterexamples report integer values; nullity is boolean, so a null-dereference
+refutation names the obligation but not a concrete value.
 
 ---
 
@@ -417,19 +415,13 @@ self-recursion gives an inductive-hypothesis point — a cycle needs SCC-aware r
 combined measure); and cross-module measure *inheritance* (an override of a precompiled super's
 `@Decreases`), an upstream groovy-contracts limitation.
 
-**Genuinely still optional, not done:**
-- ~~**Full NIA**~~ — *closed by Phase 48: the "a product needs a literal operand" restriction
-  is lifted; `/` and `%` get first-class dispatch. The 2s per-VC timeout protects against
-  NIA hangs (UNKNOWN surfaces as "Could not decide"). Hard polynomial / square-root corners
-  may still time out — that's expected and honest, never silent.*
-- ~~**Bounded-integer modelling**~~ — *closed (in its opt-in shape) by Phase 44 below* —
-  {@code @CheckOverflow} catches overflow via per-operation range obligations, with implicit
-  JVM Int bounds asserted unconditionally for parameters/fields/sizes. Bitwise / shift operators
-  are still outside the fragment.
+**Listed here as "still optional" — both since shipped:** full NIA (Phase 48 — variable products
+and `/`/`%` dispatch; hard polynomial/square-root corners may still time out, an honest UNKNOWN) and
+opt-in bounded-integer overflow (Phase 44 — `@CheckOverflow`; bitwise/shift remain out of fragment).
 
 ---
 
-## Phase 8 — Beyond SMT: proof by computation and proof hints
+## Phase 8 — Beyond SMT: proof by computation and proof hints  *(8a shipped; 8b/8c opt-in)*
 
 **A different axis from Phases 1–6.** Everything above widens the *fragment*
 that gets encoded to Z3; the proof *mechanism* stays "collect obligations, hand
@@ -517,7 +509,7 @@ language that would make it a different product.
 
 ---
 
-## Phase 9 — Programmer-facing surface (authoring & diagnostics)
+## Phase 9 — Programmer-facing surface (authoring & diagnostics)  *(shipped)*
 
 **Adoption, not capability.** Everything above is about *what* can be proved;
 this is about whether a working Groovy developer understands what to write and
@@ -610,8 +602,8 @@ the entry/exit distinction made visible). Framing within a single method is triv
 fields are unchanged); the receiver's fields are assumed unaliased, the same boundary arrays draw.
 
 **Class-level `@Invariant`** (the natural next layer for OO code) was originally listed as the open
-piece here; the **instance-method slice landed in Phase 15a** (see below). *Cross-method* field
-effects — the `@Modifies`/framing slice — followed in Phase 13. (Array-typed fields work already —
+piece here; it **shipped in full — Phase 15a** (instance methods), **15b** (constructors), **45**
+(cross-class). *Cross-method* field effects — the `@Modifies`/framing slice — followed in Phase 13. (Array-typed fields work already —
 `a[j] = v` on a field threads through `arrayFor` like a param.)
 
 ---
@@ -887,8 +879,8 @@ class C {
   `Set<Object>` would need an element→Int mapping (Route 2 in the design notes), not done.
 - **Set *algebra* stays out of fragment.** Union / intersection / subset (`s.containsAll(t)`,
   `s + t`, `s <= t`) need an unbounded `∀x. x∈s ⇒ x∈t` — the explicit quantifier non-goal — so they
-  emit a loud "skipped", never a silent pass. The bounded-domain `every`-over-`0..<N` lowering that
-  would bring subset into the fragment is the natural next slice.
+  emit a loud "skipped", never a silent pass. *(Since shipped: subset via the bounded-domain lowering —
+  enum-element sets in Phase 30, Int-element in Phase 31; inline union/intersection in Phase 33/35.)*
 - **Maps** build directly on this phase (a key-*set* that is itself a set) — shipped in Phase 17 below.
 
 **Wired into recursion termination.** The cardinality law now drives a recursive `@Decreases` measure: the
@@ -1010,7 +1002,7 @@ recorded as future work because each needs a genuinely new capability, not just 
   need the **domain-cardinality fact**: for `S ⊆ {0..n-1}`, `|S| ≤ n`, and `|S| = n ⇒ S = {0..n-1}`. The
   uninterpreted `card` (Phase 16) knows only its per-mutation deltas, not this relation to the domain. The
   fix is a bounded **cardinality axiom** — e.g. `card(S)` defined as `Σ_{i<n} (i ∈ S ? 1 : 0)`, a bounded
-  sum tying cardinality to membership over `0..<n` — the natural next increment for set reasoning.
+  sum tying cardinality to membership over `0..<n`. *(Since shipped as `bcount`, Phases 19–22.)*
 - **Completeness — every reachable node is visited (the closure fixpoint).** This is the deep half of DFS
   correctness. It is *not* a simple inductive set property: the invariant DFS actually maintains is "`visited`
   is closed under successors **except** for nodes on the current recursion stack", so it needs the stack
@@ -1061,10 +1053,10 @@ across the add that *fills* the set — and proving `Sets.boundedBy(s ∪ {u}, n
 `u` is precisely that element. The definitional `Sets.boundedBy` does not yield "exact membership from exact
 count". Closing it needs a **bounded-sum cardinality** `bcard(s, k) = Σ_{i<k} (i ∈ s ? 1 : 0)` with its
 recursive defining axioms, plus the monotonicity/exact-count lemmas proved by induction (Phase 7) — at which
-point `card(s)` over a domain *equals* `bcard(s, n)` and the counting closes. That bounded-sum cardinality is
-the next set-reasoning increment; `Sets.boundedBy` is the usable pigeonhole layer above the uninterpreted
-`card` and below it, and stands on its own (the `HOLE ⟹ NOT FULL` fact is the DFS coverage branch in
-isolation).
+point `card(s)` over a domain *equals* `bcard(s, n)` and the counting closes. *(Since shipped: that
+bounded-sum cardinality is `bcount`, Phases 20–22, with the recursive defining axioms landing in Phase 25.)*
+`Sets.boundedBy` is the usable pigeonhole layer above the uninterpreted `card` and below it, and stands on
+its own (the `HOLE ⟹ NOT FULL` fact is the DFS coverage branch in isolation).
 
 ---
 
@@ -1101,10 +1093,11 @@ this is the recursive-function induction (Phase 7) over the set membership and b
 9/16) already present, which is itself the point: the bounded-sum cardinality is *in reach of the existing
 fragment*.
 
-**What this unlocks, and what is still open for whole-DFS coverage.** `bcount` supplies the counting facts
+**What this unlocks, and what was then open for whole-DFS coverage.** `bcount` supplies the counting facts
 `card`/`Sets.boundedBy` lacked. To finish wiring it into a DFS that proves *unconditional* coverage, two steps
-remain, both needing **recursive-definition reasoning inside contracts** (so a `bcount(...)` term carries its
-defining equation rather than reducing to an uninterpreted symbol):
+remained, both needing **recursive-definition reasoning inside contracts** (so a `bcount(...)` term carries its
+defining equation rather than reducing to an uninterpreted symbol) — *both since shipped (per-add law Phase 21,
+cross-lemma/defining-equation use Phase 25, full-characterization + unconditional coverage Phase 22)*:
 
 - the **per-add law** — `bcount(s ∪ {u}, k) = bcount(s, k) + (0 <= u < k ∧ u ∉ s ? 1 : 0)` — the `bcount`
   analogue of the per-store `count` law (Phase 12), threading the count across a set mutation; and
@@ -1160,8 +1153,8 @@ other — **cross-lemma/definitional use** — is subsumed by giving `Sets.bound
 per-add law's bound does not by itself supply). With it, the preservation argument closes — adding the fresh
 in-domain `u` to a set whose count is `n-1` raises the count to `n`, which *forces* domain coverage, so
 `Sets.boundedBy` is preserved across the filling add and the cardinality-terminating DFS proves unconditional
-`start ∈ visited`. That full-characterization axiom (and then the frontier/stack invariant for *completeness*)
-is the remaining work; the per-add law shipped here is its other half.
+`start ∈ visited`. *(Since shipped: the full-characterization axiom in Phase 22, the frontier/stack invariant
+for completeness in Phase 26.)* The per-add law shipped here is its other half.
 
 ---
 
@@ -2009,32 +2002,11 @@ class C {
 All four verify. Replace {@code result == 3} with {@code result == 4} and the soundness anchor
 kicks in: the literal fold means Z3 sees {@code 3 == 4} on the residual goal, refutes immediately.
 
-**Known limits.**
-
-- ~~**No local-variable propagation.**~~ *Closed by Phase 38b below* — a factory RHS recorded
-  on the {@code Assign} step lifts the fold across the variable boundary.
-- ~~**Set.of uniqueness is not enforced.**~~ *Closed in Phase 38c* — literal-arg pair check
-  refuses the fold when duplicates are syntactically present, so {@code Set.of(1, 1, 1).size()}
-  produces an honest-skip diagnostic rather than claiming size 3. Symbolic-arg distinctness
-  ({@code Set.of(a, b)} where Z3 would have to prove {@code a != b}) is still out of scope.
-- ~~**No {@code Collections.unmodifiableX} or {@code .asImmutable()}.**~~ *Closed in Phase 38c*
-  — a new {@code unwrapImmutableWrap} helper strips the wrapper from a receiver before dispatch,
-  so {@code Collections.unmodifiableList(xs).size()} and {@code xs.asImmutable().contains(y)}
-  fold the same as the unwrapped forms. Wired into {@code translateMethodCall},
-  {@code translateBinary}'s bracket and {@code in} paths, and {@code factoryContainerFor} so a
-  wrapped factory literal still recognises.
-- ~~**No {@code .values()} / {@code .keySet()} forwarding.**~~ *Closed in Phase 38c* — both
-  projections return fresh FactoryContainers (set for keySet, list for values) over the inner
-  keys / values. Composes downstream: {@code Map.of("a", 1).keySet().contains("a")} folds via
-  the existing set {@code .contains} disjunction; {@code keySet().size()} folds to the literal
-  key count.
-- ~~**{@code .get(non-constant-i)} skips honestly.**~~ *Closed in Phase 38c* — symbolic-{@code i}
-  reads on a list factory build an {@code ite}-chain over the literal elements with an
-  unconstrained fresh-Int default for the out-of-bounds case. Sound: a contract that asserts a
-  specific element must {@code @Requires} {@code i} to the literal-size range, otherwise the
-  default branch refutes the @Ensures (the counterexample shows {@code factory$out$N = …, i = -1}
-  for an obvious out-of-bound). No bounds-check obligation is synthesised because the factory
-  has no named receiver to attach a size oracle to — the @Requires path carries the bound.
+**Known limits — all but one closed in Phases 38b/38c** (detailed below): local-variable
+propagation of a factory RHS, `Set.of` duplicate enforcement, `Collections.unmodifiableX` /
+`.asImmutable()` unwrapping, `.keySet()` / `.values()` forwarding, and symbolic-index `.get(i)`
+(an `ite`-chain over the literals). The one residual: **symbolic-arg distinctness** — `Set.of(a, b)`
+where Z3 would have to prove `a != b` to know the size — stays out of scope.
 
 ### Phase 38b — Factory through assignment  *(shipped)*
 
@@ -2256,15 +2228,8 @@ class C {
   defer. They require modelling arbitrary element shifts via a quantifier ({@code ∀j. j < i → new[j] == old[j];
   ∀j. j >= i → new[j] == old[j-1]}) and quantifier instantiation depends on Z3 e-matching —
   higher risk of trigger-cliff issues. A separate phase.
-- ~~**Count tracking across mutations.**~~ *Closed by Phase 41 below* — list {@code .count(v)}
-  now routes through a bounded count oracle with per-store + boundary laws on every mutation.
-- ~~**Field-receiver bounds synthesis.**~~ *Closed by Phase 43 below* —
-  {@link ObligationCollector} now synthesises IndexSites for runtime-throwing list shapes on
-  field receivers, so {@code xs.removeLast()} on a possibly-empty instance field refutes the
-  same way it does on a parameter.
-- ~~**Implicit obligations downstream of a mutation.**~~ *Closed by Phase 42 below* —
-  {@code dischargeVfObligation} now replays Assign / Guard / LemmaCall steps in source order, so
-  the implicit pass sees the same oracle state the body-replay pass does.
+- *Since closed (detailed below):* count-tracking across mutations (Phase 41), field-receiver
+  bounds synthesis (Phase 43), and implicit obligations downstream of a mutation (Phase 42).
 
 ## Phase 41 — Bounded list count, faithful to runtime semantics  *(shipped)*
 
@@ -2927,8 +2892,7 @@ codepoint, with two pieces of machinery that make it useful even without Z3 stri
 
 **Known limits.**
 
-- ~~**No structural axioms.**~~ — *closed by Phase 47 (Z3 string theory adoption).*
-- ~~**No substring / concat.**~~ — *closed by Phase 47.*
+- *Since closed by Phase 47 (Z3 string theory): structural cross-string axioms, substring, concat.*
 - **`String.format`-like content reasoning** is out of scope and a `groovy-typecheckers`
   sibling (`FormatStringChecker`) owns that territory.
 
@@ -3008,24 +2972,23 @@ runs in ~37s as before.
 
 **Known limits.**
 
-- ~~**No regex matching / replace.**~~ — *closed by Phase 47b–c below.*
-- ~~**No `indexOf` / `lastIndexOf`.**~~ — *closed by Phase 47b (indexOf) and 47f (lastIndexOf
-  as uninterpreted with weak axioms).*
+- *Since closed: regex `matches`/`replace` (Phase 47b–c), `indexOf` (47b), `lastIndexOf`
+  (47f, uninterpreted + weak axioms).*
 - **No `split`.** Returns an array, structurally invasive; deferred.
 - **`charAt(i)` returns int (codepoint), not `char`.** The encoder's `CastExpression`
   handler (Phase 46e) bridges `(int) s.charAt(i)`; comparing `s.charAt(0) == 'h'` directly
   works in Groovy because char-to-int promotion happens at the language level.
 - **Performance.** Z3's string solver isn't QF_LIA — some queries can hang. Per-VC timeouts
-  guard the build; the current 480-test suite stays at ~30-45s.
+  guard the build; the full self-test suite stays at ~30-45s.
 
 ## Phase 47b — `replace` + `indexOf` dispatch  *(shipped)*
 
 Two direct-dispatch additions on top of Phase 47's native theory:
 
 - **`s.replace(old, new)`** → `(str.replace s old new)` via Z3's `mkReplace`. Replaces the
-  *first* occurrence — a known semantic gap from Groovy/Java's *replace-all* contract until
-  Z3 ships `mkReplaceAll`. Tests use single-occurrence patterns where the two semantics
-  coincide ({@code "hello".replace("l", "P") == "hePlo"}, since only the leftmost 'l' is
+  *first* occurrence; the distinct *replace-all* method (`s.replaceAll`) is a separate operation,
+  shipped uninterpreted-with-axioms in Phase 47f. Tests use single-occurrence patterns where the
+  two semantics coincide ({@code "hello".replace("l", "P") == "hePlo"}, since only the leftmost 'l' is
   replaced — but the test verifies that exactly).
 - **`s.indexOf(sub)` and `s.indexOf(sub, fromIndex)`** → `(str.indexof s sub fromIndex)` via
   `mkIndexOf`. Returns the leftmost position `>= fromIndex`, or `-1` if absent. Single-arg
@@ -3311,8 +3274,8 @@ seq theory.
 - Each interpolated value (`gs.values[i]`) goes through `translateValueAsString`:
   - If `isStringReceiver(v)` recognises it (String literal, String param, `s + t`,
     `s.substring(...)`, a nested GString, …), translate as a String term.
-  - Otherwise default to Int and convert via Phase 47e's `intToString`. Carries the
-    Phase-47e semantic gap for negative inputs.
+  - Otherwise default to Int and convert via the `intToString` dispatch — now sign-faithful
+    (Phase 54), so a negative interpolated value renders as `"-5"`, matching runtime.
 - The parts are folded left into a chain of pairwise `stringConcat`.
 
 **Co-shipped fixes the implementation needed.**
@@ -3365,9 +3328,9 @@ static String f() { int a = 1; int b = 2; "sum=${a + b}" }   // ${expr} block fo
   `Boolean` (`"true"`/`"false"`) and `null` (`"null"`); deferred.
 - Closure-form `"${->name}"` (lazy evaluation) isn't parsed specially — falls back to
   generic translation, likely null. Rare in practice.
-- The negative-int semantic gap from Phase 47e (Z3's `int.to.str(n)` returns `""` for
-  `n < 0`) flows through to GString. `"$x"` with negative `x` produces an empty
-  interpolation in Z3's view, vs `"-5"` at runtime.
+- *(The Phase-47e negative-int gap that once flowed through to GString — `"$x"` rendering empty
+  for negative `x` — was closed in Phase 54: `intToString` is now sign-faithful, so `"$x"` for
+  `x == -5` is `"-5"` in the verifier's view as well.)*
 
 **Shipped tests**: literal String / int interpolation folding, multi-interpolation
 (mixed types), length composition (literal + symbolic), GString-equals-String

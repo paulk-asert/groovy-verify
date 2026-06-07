@@ -67,10 +67,10 @@ rather than a separate build tool. The cross-language picture: Dafny (new langua
 
 **Loudly partial, not silently sound.** Verification is sound *within* a deliberately small
 fragment and **loudly unsound outside it** — anything the encoder can't model emits a
-"skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named (see
-the deferred row of the [capability table](#whats-demonstrated)); 32-bit integer overflow is
-covered opt-in via `@CheckOverflow` (Verus parity); heap aliasing is a deliberate
-[non-goal](ROADMAP.md). The failure mode the verifier family fears most is silent vacuous
+"skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named per
+capability (the "deferred"/"residual" notes in the [capability table](#whats-demonstrated) and the
+[ROADMAP](ROADMAP.md)); 32-bit integer overflow is covered opt-in via `@CheckOverflow` (Verus
+parity); heap aliasing is a deliberate [non-goal](ROADMAP.md). The failure mode the verifier family fears most is silent vacuous
 passes — saying *loudly partial* directly is the credible position, and it's the one this tool
 holds.
 
@@ -207,7 +207,7 @@ contents oracles SSA-style and pairs with a runtime-faithful `xs.count(v)` (see 
 "Lists — mutation" beat below); only the shift-based variants (`xs.add(i, v)`, `xs.remove(i)`)
 still defer. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
 peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`, and the same
-folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 20`.
+folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 2`.
 
 **Object state — instance fields, valid by construction.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
@@ -733,6 +733,31 @@ termination, and an `@Ensures` over the *returned list*'s size — the verifier 
 `result.size()` to the returned local's threaded size oracle so the postcondition resolves
 correctly. The Verus port of the same task has none of that — just the implementation.
 
+Task 035 (`max_element`) is the **witnessed extremum** — its spec is *both* universal and existential
+at once: the result is `>=` every element **and** is *equal to* one of them (without the second
+clause, a "max" that returned `Integer.MAX_VALUE` would pass). The loop invariant carries both as the
+running maximum grows:
+
+```groovy
+@Requires({ a != null && a.length > 0 })
+@Ensures({ (0..<a.length).every { a[it] <= result } &&
+           (0..<a.length).any  { a[it] == result } })
+static int maxElement(int[] a) {
+    int m = a[0], i = 1
+    @Invariant({ 1 <= i && i <= a.length &&
+                 (0..<i).every { a[it] <= m } && (0..<i).any { a[it] == m } })
+    @Decreases({ a.length - i })
+    while (i < a.length) { if (a[i] > m) m = a[i]; i = i + 1 }
+    return m
+}
+```
+
+The `any` (bounded existential) is the interesting half — the witness is carried through the loop (and
+replaced by index `i` whenever a larger element is found), so the postcondition's existential closes on
+a ground witness rather than asking Z3 to invent one. `min` is symmetric, and a "max" that returns
+`a[0]` correctly refutes (the universal clause fails — a later element can exceed it; the existential
+witness alone isn't enough). No new machinery — just `every`/`any` (Phase 9) inside a loop.
+
 Task 003 (`below_zero`) — detect whether a running balance ever goes negative — is the
 **sum-aggregation** showcase, and the spec is the *full biconditional*: the result is true iff
 **some prefix sum is negative**.
@@ -1018,9 +1043,10 @@ Verification is sound *within* a deliberately small fragment and **loudly
 unsound outside it**: anything the encoder cannot model emits a "skipped"
 warning rather than passing silently. In expressions the fragment is:
 
-- integer `+`, `-`, and *linear* `*` — a product needs a constant operand, but any
-  closed constant subterm is folded first, so `(2 + 2) * (2 + 2)` and `a[(1 + 1) * 2]`
-  are fine; `/` and `%` are checked for divide-by-zero but not otherwise modelled;
+- integer `+`, `-`, `*` (variable products dispatch to Z3's NIA solver under a per-VC timeout, with
+  closed subterms folded first; Phase 48), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50) — the
+  `/` operator is `BigDecimal` division and skips; divide-by-zero and `.mod`-non-positive obligations
+  fire; `**`/bitwise are out;
 - comparisons, the boolean connectives `&&`/`||`/`!`, and the conditional `?:` — all
   short-circuit-aware, so a guard's left operand protects accesses in its right
   (`i > 0 && a[i - 1] < a[i]`) and a `?:` branch is checked under its condition;

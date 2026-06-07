@@ -2996,7 +2996,58 @@ class VerifyHarness {
                         }
                     }''')],
 
-        // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------
+        // ---------- HumanEval 35 (max_element): the witnessed extremum ----------
+        // The spec is BOTH universal and existential: the result is >= every element AND is *equal to*
+        // one of them (the "witness"). The invariant carries both as the running max grows.
+        [group: 'P56 max', name: 'max_element is a witnessed extremum', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ (0..<a.length).every { a[it] <= result } &&
+                                   (0..<a.length).any { a[it] == result } })
+                        static int maxElement(int[] a) {
+                            int m = a[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= a.length &&
+                                         (0..<i).every { a[it] <= m } &&
+                                         (0..<i).any { a[it] == m } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                if (a[i] > m) m = a[i]
+                                i = i + 1
+                            }
+                            return m
+                        }
+                    }''')],
+        // min — the symmetric witnessed extremum (result <= every element, and is one of them).
+        [group: 'P56 max', name: 'min_element is a witnessed extremum', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ (0..<a.length).every { result <= a[it] } &&
+                                   (0..<a.length).any { a[it] == result } })
+                        static int minElement(int[] a) {
+                            int m = a[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= a.length &&
+                                         (0..<i).every { m <= a[it] } &&
+                                         (0..<i).any { a[it] == m } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                if (a[i] < m) m = a[i]
+                                i = i + 1
+                            }
+                            return m
+                        }
+                    }''')],
+        // Soundness anchor: returning the first element isn't the max — the universal clause refutes
+        // (some later element can exceed it). The existential witness alone isn't enough.
+        [group: 'P56 max', name: 'returning a[0] is not the max (refutes)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ (0..<a.length).every { a[it] <= result } &&
+                                   (0..<a.length).any { a[it] == result } })
+                        static int badMax(int[] a) { a[0] }
+                    }''')],
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
         // straight-line case. Phase 46d extends the same path-fact mechanism to the loop body:
         // dischargeRegion recurses into an in-region if-statement, asserting the cond in the
