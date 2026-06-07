@@ -1656,6 +1656,15 @@ class VerifyChecker extends TypeCheckingExtension {
                     "divisor '${dv.divisor.text}' is outside fragment"), dv.node)
                 return
             }
+            if (dv.requirePositive) {
+                // a.mod(b) throws ArithmeticException("BigInteger: modulus not positive") unless b > 0.
+                s.assertExpr(s.not(s.gt(divisor, s.intLit(0L))))   // negation of (divisor > 0)
+                CheckResult r = shown(s.check())
+                if (r.status != CheckResult.Status.VERIFIED) {
+                    addStaticTypeError(Reporter.formatModulusNotPositive(dv.divisor.text, r), dv.node)
+                }
+                return
+            }
             s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
@@ -2009,7 +2018,9 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
-    @CompileStatic private static class DivideSite { ASTNode node; Expression divisor }
+    // requirePositive: Groovy's a.mod(b) (BigInteger.mod) throws unless b > 0; the `%`/`/`/intdiv/
+    // remainder forms only require b != 0.
+    @CompileStatic private static class DivideSite { ASTNode node; Expression divisor; boolean requirePositive = false }
     /**
      * Phase 46e — character-index bounds: the implicit obligation {@code 0 <= i < s.length()}
      * at an {@code s.charAt(i)} site. Modelled separately from {@link IndexSite} because the
@@ -2137,6 +2148,17 @@ class VerifyChecker extends TypeCheckingExtension {
         @Override
         void visitMethodCallExpression(MethodCallExpression mce) {
             Expression recv = mce.objectExpression
+            // Groovy integer-division / modulo method forms: the obligation is on the divisor, not
+            // the (numeric, non-null-tracked) receiver — so collect a DivideSite and skip the deref/
+            // index synthesis below. intdiv/remainder require b != 0; mod requires b > 0.
+            String mm = mce.methodAsString
+            List<Expression> dargs = mce.arguments instanceof ArgumentListExpression ?
+                ((ArgumentListExpression) mce.arguments).expressions : Collections.<Expression>emptyList()
+            if (dargs.size() == 1 && (mm == 'intdiv' || mm == 'remainder' || mm == 'mod')) {
+                divideSites.add(new DivideSite(node: mce, divisor: dargs.get(0), requirePositive: mm == 'mod'))
+                super.visitMethodCallExpression(mce)
+                return
+            }
             if (!mce.implicitThis && recv instanceof VariableExpression) {
                 VariableExpression v = (VariableExpression) recv
                 Variable accessed = v.accessedVariable

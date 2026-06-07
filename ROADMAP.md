@@ -3400,7 +3400,10 @@ restriction and adds the missing `/` / `%` dispatch.
   `mkDiv` / `mkMod`. Operator-text matching (`be.operation.text == '/'` and `== '%'`)
   rather than `Types.DIVIDE`/`Types.MOD` — Groovy's parser doesn't assign `%` the
   `Types.MOD` token (a caveat the existing `ObligationCollector` already documented).
-- `\` (the Groovy intdiv operator) also routes through `intDiv`.
+  > **Corrected in [Phase 50](#phase-50--groovy-faithful-division--modulo-shipped).** This
+  > mapping was *Java*-shaped and unsound for Groovy: Groovy's `/` is **BigDecimal** division
+  > (`5 / 2 == 2.5G`), not integer division, and `%` is the **sign-of-dividend** remainder
+  > (`-5 % 2 == -1`), not Euclidean. Phase 50 re-grounds all of div/mod on Groovy semantics.
 
 **What this unlocks** — natural shapes that previously hit the cliff:
 
@@ -3428,23 +3431,11 @@ static int isEven(int n) { (n % 2 == 0) ? 1 : 0 }
 
 **Known semantic gap — Java vs SMT-LIB div/mod**:
 
-SMT-LIB defines `(mod a b)` as **Euclidean** — the remainder is always in `[0, |b|)`.
-Java's `%` is **truncated toward zero** — the sign of the remainder matches the dividend.
-For non-negative dividends the two agree; for negative they differ:
-
-| `a` | `b` | Java `a % b` | SMT-LIB `(mod a b)` |
-|---:|---:|---:|---:|
-|  7 |  2 |  1 |  1 |
-| -7 |  2 | -1 |  1 |
-|  7 | -2 |  1 |  1 |
-| -7 | -2 | -1 |  1 |
-
-The identity `(a/b)*b + a%b == a` holds in **both** conventions (only the intermediate
-`a/b` and `a%b` values differ); shipped tests anchor that explicitly. A spec that needs
-Java's exact sign-of-dividend behaviour should constrain operands non-negative via
-`@Requires({ a >= 0 && b > 0 })`. Z3 also exposes `mkRem` (truncated, sign-matches-dividend
-— Java-faithful for `%`), but mixing `mkRem` with `mkDiv` would break the
-`(a/b)*b + a%b == a` identity internally; we keep both Euclidean for consistency.
+*Superseded by [Phase 50](#phase-50--groovy-faithful-division--modulo-shipped).* The original
+Phase 48 mapping (`/` → `mkDiv`, `%` → `mkMod`, both Euclidean) was **Java-shaped and silently
+unsound for Groovy** — it modelled `/` as integer division (Groovy gives a `BigDecimal`) and `%` as
+the non-negative Euclidean remainder (Groovy is sign-of-dividend). Phase 50 re-grounds the whole
+family on Groovy semantics; see it for the corrected encoding.
 
 **Hard NIA cases still skip honestly**:
 
@@ -3568,6 +3559,41 @@ stacked in-body returns.
 **Still deferred**: suffix exits (the original Slice B's other half), and in-body
 returns nested inside other if-branches or for-loops. The nested form would need the
 partition logic to recurse, which adds complexity for a relatively rare shape.
+
+## Phase 50 — Groovy-faithful division / modulo  *(shipped)*
+
+Phase 48 mapped the `/` and `%` *operators* to integer `mkDiv` / `mkMod` (Euclidean) — a *Java*
+model. Groovy's arithmetic is different, and the mismatch was **silently unsound**: the verifier
+could return a green "verified" for a program that fails at runtime (e.g. `@Ensures({ result >= 0 })
+int rem(int a) { a % 3 }` — `rem(-7) == -1`). Phase 50 re-grounds the whole family on Groovy's actual
+semantics (confirmed against `org.codehaus.groovy.runtime.typehandling.IntegerMath`):
+
+| Groovy form | semantics | encoding |
+|---|---|---|
+| `a / b` (operator) | **`BigDecimal` division** (`5 / 2 == 2.5G`) — `IntegerMath.divideImpl` → `BigDecimalMath` | out of the integer fragment → **loud skip** |
+| `a % b`, `a.remainder(b)` | remainder, **sign of dividend** (`-5 % 2 == -1`) | `intRem` (truncated) |
+| `a.intdiv(b)`, `(int)(a / b)` | integer division, **truncate toward zero** (`(-7).intdiv(2) == -3`) | `intDiv(a − intRem(a,b), b)` (exact ⇒ truncates) |
+| `a.mod(b)` | **`BigInteger.mod`**: non-negative, **divisor must be > 0** (else `ArithmeticException`) | `intMod` (Euclidean) + a `b > 0` obligation |
+
+Implementation notes:
+- `intRem` is **built from the (non-negative) Euclidean `mkMod`** — `rem = (a >= 0 ∨ mod == 0) ? mod :
+  mod − |b|` — because Z3's own `mkRem` does *not* follow the dividend's sign. Correct for all signs.
+- The `/` operator returns `null` from the encoder (BigDecimal is unmodelled, adjacent to the
+  floating-point non-goal); its `b != 0` safety obligation is still collected. `(int)(a / b)` — the
+  idiomatic truncating-int-div — is recognised at the `CastExpression` and routes to `intDiv`.
+- `.intdiv` / `.remainder` carry a `b != 0` obligation; `.mod` carries `b > 0`
+  (`Reporter.formatModulusNotPositive`), a Groovy-specific bug class. Both are `DivideSite`s, so the
+  receiver's (numeric) nullity isn't spuriously checked.
+- The "division identity" anchor became `a.intdiv(b) * b + (a % b) == a` (true for all `b != 0`) —
+  the BigDecimal form `(a / b) * b + a % b` does **not** equal `a` in Groovy (`(5/2)*2 + 5%2 == 6`),
+  so the old anchor was asserting a falsehood that only held under the mis-model.
+- Soundness regression guard: `@Ensures({ result >= 0 }) int f(int a) { a % 3 }` now **refutes**
+  (it wrongly verified before). A "divergent-semantics audit" lane (P50 group) anchors each form.
+
+This closes the one place the engine could be *confidently wrong* rather than honestly silent —
+restoring the "loud unsoundness" promise across all of integer arithmetic.
+
+---
 
 ## Non-goals
 

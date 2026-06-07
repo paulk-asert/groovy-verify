@@ -379,17 +379,26 @@ interface SmtSession extends AutoCloseable {
     Object neg(Object a)
 
     /**
-     * Phase 48 — integer division and modulo. {@code intDiv(a, b)} maps to SMT-LIB's
-     * {@code (div a b)} and {@code intMod(a, b)} to {@code (mod a b)} — both Euclidean (mod
-     * always in {@code [0, |b|)}). For non-negative operands the semantics match Java's
-     * {@code /} / {@code %}; for negative dividends the sign of the remainder differs (Java
-     * is truncated-toward-zero, sign-matches-dividend; Z3 is Euclidean). The identity
-     * {@code (a/b)*b + a%b == a} holds in both conventions; the intermediate values differ.
-     * The implicit obligation that {@code b != 0} is collected as a {@code DivideSite} by
-     * the encoder regardless.
+     * Integer division / modulo / remainder, mapped to model Groovy's three distinct operations
+     * (Phase 50 — corrected from the Phase 48 Java/Euclidean conflation):
+     * <ul>
+     *   <li>{@code intMod} → SMT-LIB {@code (mod a b)} (Euclidean, always {@code [0, |b|)}). This is
+     *       Groovy's {@code a.mod(b)} ({@code BigInteger.mod}): non-negative, and the caller adds a
+     *       {@code b > 0} obligation (Groovy throws {@code ArithmeticException} on a non-positive
+     *       modulus).</li>
+     *   <li>{@code intRem} → SMT-LIB {@code (rem a b)} (truncated, sign-of-dividend). This is Groovy's
+     *       {@code %} operator and {@code a.remainder(b)} ({@code -5 % 2 == -1}).</li>
+     *   <li>{@code intDiv} → SMT-LIB {@code (div a b)} (Euclidean/floor). Used only to build Groovy's
+     *       {@code a.intdiv(b)} / {@code (int)(a / b)} (truncate-toward-zero) as
+     *       {@code intDiv(a - intRem(a, b), b)} — an exact division, so floor and truncation agree.</li>
+     * </ul>
+     * The Groovy {@code /} operator itself is <em>not</em> integer division — it yields a
+     * {@code BigDecimal} ({@code 5 / 2 == 2.5G}), which the integer fragment doesn't model, so the
+     * encoder skips it loudly. The {@code b != 0} obligation is collected as a {@code DivideSite}.
      */
     Object intDiv(Object a, Object b)
     Object intMod(Object a, Object b)
+    Object intRem(Object a, Object b)
 
     Object eq(Object a, Object b)
     Object ne(Object a, Object b)

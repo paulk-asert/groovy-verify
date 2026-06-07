@@ -2050,7 +2050,19 @@ class Encoder {
         // a numeric cast. The verifier treats the cast as transparent — the inner term's sort
         // is already Int — and translates through.
         if (expr instanceof CastExpression) {
-            return translate(((CastExpression) expr).expression)
+            CastExpression ce = (CastExpression) expr
+            // {@code (int)(a / b)} (and {@code (a / b) as int}) is Groovy's other truncate-toward-zero
+            // integer-division idiom: BigDecimal division then narrow-to-int. Model it as the same
+            // truncating division as {@code a.intdiv(b)}, rather than skipping the inner `/`.
+            if (isIntegralCastType(ce.type) && ce.expression instanceof BinaryExpression) {
+                BinaryExpression inner = (BinaryExpression) ce.expression
+                if (inner.operation.text == '/' || inner.operation.text == '\\') {
+                    Object a = translate(inner.leftExpression)
+                    Object b = translate(inner.rightExpression)
+                    return (a == null || b == null) ? null : truncDiv(a, b)
+                }
+            }
+            return translate(ce.expression)
         }
 
         // Phase 47h — GString interpolation. {@code "hello $name"} parses as a
@@ -2376,10 +2388,16 @@ class Encoder {
         // with the existing divide-site collection logic.
         String opText = be.operation.text
         if (opText == '/' || opText == '\\') {
-            return session.intDiv(L, R)
+            // Groovy's `/` on integers is *BigDecimal* division (5 / 2 == 2.5G), not integer
+            // division — outside the integer fragment, so skip loudly. Genuine integer division is
+            // `a.intdiv(b)` (translateMethodCall) or `(int)(a / b)` (the CastExpression handler).
+            // The `b != 0` safety obligation is still collected as a DivideSite.
+            return null
         }
         if (opText == '%') {
-            return session.intMod(L, R)
+            // Groovy's `%` operator is the truncated, sign-of-dividend remainder (-5 % 2 == -1),
+            // i.e. `a.remainder(b)` — NOT the non-negative `a.mod(b)`.
+            return session.intRem(L, R)
         }
         switch (op) {
             case Types.PLUS:                return session.plus(L, R)
@@ -2401,6 +2419,29 @@ class Encoder {
             case Types.LOGICAL_AND:         return session.and([L, R])
             case Types.LOGICAL_OR:          return session.or([L, R])
             default:                        return null
+        }
+    }
+
+    /**
+     * Groovy's truncate-toward-zero integer division ({@code a.intdiv(b)} / {@code (int)(a / b)}).
+     * Derived from the (sign-of-dividend) remainder: {@code (a - rem) / b} divides exactly, so the
+     * Euclidean {@code intDiv} and truncation agree on it — and the identity
+     * {@code intdiv(a,b)*b + a.remainder(b) == a} holds by construction.
+     */
+    private Object truncDiv(Object a, Object b) {
+        session.intDiv(session.minus(a, session.intRem(a, b)), b)
+    }
+
+    /** True if {@code t} is an integral (int/long/short/byte or their wrappers) cast target. */
+    private static boolean isIntegralCastType(ClassNode t) {
+        if (t == null) return false
+        switch (t.nameWithoutPackage) {
+            case 'int': case 'Integer':
+            case 'long': case 'Long':
+            case 'short': case 'Short':
+            case 'byte': case 'Byte':
+                return true
+            default: return false
         }
     }
 
@@ -2452,6 +2493,22 @@ class Encoder {
             // (honest skip — the caller's site is outside fragment).
             Object n = translate(args.get(0))
             return n == null ? null : session.stringFromInt(n)
+        }
+
+        // Groovy's integer-division / modulo *method* forms (the `/` and `%` operators are handled in
+        // translateBinary). Receiver and divisor are integer expressions; translate() yields a non-null
+        // Int handle only for the integral types the fragment models (else honest skip).
+        //   a.intdiv(b)    — integer division, truncate toward zero
+        //   a.remainder(b) — remainder, sign of dividend (same as the `%` operator)
+        //   a.mod(b)       — BigInteger.mod: non-negative result (the b > 0 obligation is added in
+        //                    the ObligationCollector, matching Groovy's "modulus not positive" throw)
+        if (args.size() == 1 && (m == 'intdiv' || m == 'remainder' || m == 'mod')) {
+            Object a = translate(recv)
+            Object b = translate(args.get(0))
+            if (a == null || b == null) return null
+            if (m == 'remainder') return session.intRem(a, b)
+            if (m == 'mod')       return session.intMod(a, b)
+            return truncDiv(a, b)   // intdiv
         }
 
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||

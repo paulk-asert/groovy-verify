@@ -358,130 +358,21 @@ too. The natural shapes verify directly:
 @Ensures({ result <= 10000 })
 static int squareInBounds(int i) { i * i }
 
-// Multiplication, division, and modulo compose under the Euclidean identity.
-@Requires({ a >= 0 && b > 0 })
+// Integer division/modulo, modelled on Groovy's *actual* semantics: intdiv truncates toward
+// zero, % is the sign-of-dividend remainder. The round-trip identity holds for every non-zero b.
+@Requires({ b != 0 })
 @Ensures({ result == a })
-static int divModRoundTrip(int a, int b) { (int)((a / b) * b + a % b) }
+static int divModRoundTrip(int a, int b) { a.intdiv(b) * b + (a % b) }
 ```
 
-Soundness boundaries are unchanged: the implicit `b != 0` obligation still fires on
-division by zero, refuting with the standard runnable repro. The hard NIA corners
-(general polynomial identities for symbolic-signed operands, square-root / factoring
-shapes) can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide,"
-never a silent pass. Java's `%` is truncated-toward-zero where SMT-LIB's is Euclidean;
-they agree for non-negative operands, and the identity `(a/b)*b + a%b == a` holds in
-both conventions.
-
-**HumanEval-style benchmarks — same algorithms, stronger specs.** Verus' HumanEval suite
-([secure-foundations/human-eval-verus](https://github.com/secure-foundations/human-eval-verus))
-is the standard benchmark for auto-active verifiers on LeetCode-shape problems. Most of its
-entries are GPT-generated implementations with *no* explicit specs — Verus checks implicit
-overflow only. groovy-verify ports many of them faithfully and *adds the spec the original
-lacks*. Task 030 — filter a list to its positive elements — is one shape:
-
-```groovy
-@Requires({ xs != null })
-@Ensures({ result.size() <= xs.size() })            // ← the spec the Verus original omits
-static List<Integer> getPositive(List<Integer> xs) {
-    List<Integer> positive = []
-    int i = 0
-    @Invariant({ positive != null && 0 <= i && i <= xs.size() && positive.size() <= i })
-    @Decreases({ xs.size() - i })
-    while (i < xs.size()) {
-        int x = xs[i]
-        if (x > 0) {
-            positive.add(x)
-        }
-        i = i + 1
-    }
-    return positive
-}
-```
-
-This exercises a wide slice of the fragment in one method: an empty-list factory local
-(`[]`), a *conditional list mutation* inside a `while` loop, a `@Decreases` measure for
-termination, and an `@Ensures` over the *returned list*'s size — the verifier aliases
-`result.size()` to the returned local's threaded size oracle so the postcondition resolves
-correctly. The Verus port of the same task has none of that — just the implementation.
-
-Task 039's inner `is_prime` — the canonical NIA-plus-control-flow benchmark — ports
-verbatim to the Verus source shape:
-
-```groovy
-@Requires({ num >= 0 })
-static int isPrime(int num) {
-    if (num <= 1) return 0
-    if (num <= 3) return 1
-    if (num % 2 == 0 || num % 3 == 0) return 0
-    int i = 5
-    @Invariant({ i >= 5 })
-    while (i * i <= num) {
-        if (num % i == 0 || num % (i + 2) == 0) return 0
-        i = i + 6
-    }
-    return 1
-}
-```
-
-Three previously-deferred capabilities compose in one method: **prefix early-returns**
-(Phase 49a) carry the trivial-input bailouts, the **NIA bound check `i * i <= num`**
-(Phase 48) replaces what used to be the Phase 8a opt-out cliff, the **in-body early-return**
-(Phase 49b) covers the "found a divisor → not prime" shortcut, and the loop invariant
-`i >= 5` discharges the divide-by-zero obligations on `num % i` and `num % (i + 2)`. The
-Verus original has no `@Ensures` (Verus checks implicit overflow); we add a sound
-`@Requires({ num >= 0 })` to keep the bound check honest.
-
-Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
-positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
-in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
-short-circuit `&&` and any enclosing in-loop `if` as path facts during obligation discharge,
-so the inner deref obligation discharges under the guard the conjunction establishes — just
-like a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks
-port on the `List<Character>` API today; a true `String.reverse()` proof would need its
-own uninterpreted+axioms layer (Z3 has no `str.reverse` primitive).
-
-String content is first-class under Phase 47's Z3-native-string-theory adoption: predicates
-(`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
-`substring` / `indexOf`), composition (`+` / `concat` / `replace` / regex `matches`), and
-conversion (`Integer.toString` / `parseInt`) all route to Z3 seq-theory primitives;
-`toUpperCase` / `toLowerCase` / `equalsIgnoreCase` / `replaceAll` / `lastIndexOf` are
-shipped as uninterpreted functions with literal pinning and weak axioms where Z3 doesn't
-ship a primitive yet; GString interpolation (`"hello $name"`) folds to chained `str.++`.
-Literals fold to ground constants, out-of-range indices refute with the standard
-`IndexBounds` diagnostic, and **structural cross-string facts** like
-`s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` come free from the theory.
-Composing several in one method:
-
-```groovy
-@Requires({ s != null && s.startsWith("user:") })
-@Ensures({ result == s.length() - 5 })
-static int idLength(String s) { s.substring(5).length() }
-```
-
-That verifies via two theory consequences chained — `startsWith ⟹ length(prefix) <= length(s)`
-gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identity. A second
-showcase blending regex, GString interpolation, and the structural concat facts:
-
-```groovy
-@Requires({ name != null && name.matches("[a-zA-Z]+") })
-@Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
-static String greet(String name) { "Hi, $name" }
-```
-
-The body folds to `mkConcat(mkString("Hi, "), name)`. Z3's seq theory then knows two
-free facts: a literal-prefixed concat starts with that literal (`prefixof(a, a ++ b)`),
-and the right operand of the concat is its suffix (`suffixof(b, a ++ b)`). The regex
-precondition rides along through whatever shape the body assembles.
-
-Where the HumanEval algorithms are list/map/loop-shaped, groovy-verify matches or exceeds.
-The remaining honest gaps: `Integer.toString` and `parseInt` carry Z3's signed-semantics
-gap (`""` for negative ints, `-1` for non-digit input — use under non-negative-input
-contracts); `split` (returns an array, structurally invasive) and symbolic
-length-preservation for `toUpperCase` (universal axioms over the seq sort cause Z3 to
-hang) remain deferred. The hard NIA corners (general polynomial identities,
-square-root / factoring shapes) may time out under Z3's solver — surfaces as "Could not
-decide," never silent. Sister task 023 (`strlen`) ports the same way — with the natural
-spec `result == xs.size()` added.
+The division/modulo handling follows **Groovy**, not Java (they differ): `/` on integers is
+*`BigDecimal`* division (`5 / 2 == 2.5G`), so it's outside the integer fragment and skipped loudly —
+genuine integer division is `a.intdiv(b)` or `(int)(a / b)`. `%` and `.remainder(b)` are the
+sign-of-dividend remainder (`-5 % 2 == -1`); `.mod(b)` is `BigInteger.mod` (non-negative, and the
+verifier adds the Groovy-specific obligation that the modulus is `> 0`). The implicit `b != 0`
+obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnable repro. Hard NIA
+corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
+can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
@@ -779,6 +670,126 @@ mutations before a callee's precondition, so a naive closure-threading DFS passe
 **every correctness property of DFS** — termination, soundness, unconditional coverage, and completeness — is
 machine-checked, over a cyclic graph, by induction (no loops). See the roadmap.
 
+## HumanEval Examples
+
+The examples above are ours — chosen to showcase the fragment. To check the engine against problems
+*we didn't pick*, it's also been run over an **external, real-world corpus**: Verus'
+[HumanEval suite](https://github.com/secure-foundations/human-eval-verus), the standard benchmark
+for auto-active verifiers on LeetCode-shape problems. Its entries are GPT-generated implementations
+that Verus checks for implicit overflow only — *no* functional specs. groovy-verify ports a selection
+of them faithfully and **adds the spec the original lacks**, turning an overflow-only check into a
+correctness proof.
+
+These weren't tailored to the fragment — they're un-cherry-picked control flow (counted loops, early
+returns, conditional list/string mutation, NIA bounds), and porting them is what *drove* several of
+the later phases (49a/b early-returns, 48 NIA, 46d in-loop path facts). Where the algorithms are
+list / map / loop-shaped, the engine matches or exceeds Verus on what it proves.
+
+Task 030 — filter a list to its positive elements:
+
+```groovy
+@Requires({ xs != null })
+@Ensures({ result.size() <= xs.size() })            // ← the spec the Verus original omits
+static List<Integer> getPositive(List<Integer> xs) {
+    List<Integer> positive = []
+    int i = 0
+    @Invariant({ positive != null && 0 <= i && i <= xs.size() && positive.size() <= i })
+    @Decreases({ xs.size() - i })
+    while (i < xs.size()) {
+        int x = xs[i]
+        if (x > 0) {
+            positive.add(x)
+        }
+        i = i + 1
+    }
+    return positive
+}
+```
+
+This exercises a wide slice of the fragment in one method: an empty-list factory local
+(`[]`), a *conditional list mutation* inside a `while` loop, a `@Decreases` measure for
+termination, and an `@Ensures` over the *returned list*'s size — the verifier aliases
+`result.size()` to the returned local's threaded size oracle so the postcondition resolves
+correctly. The Verus port of the same task has none of that — just the implementation.
+
+Task 039's inner `is_prime` — the canonical NIA-plus-control-flow benchmark — ports
+verbatim to the Verus source shape:
+
+```groovy
+@Requires({ num >= 0 })
+static int isPrime(int num) {
+    if (num <= 1) return 0
+    if (num <= 3) return 1
+    if (num % 2 == 0 || num % 3 == 0) return 0
+    int i = 5
+    @Invariant({ i >= 5 })
+    while (i * i <= num) {
+        if (num % i == 0 || num % (i + 2) == 0) return 0
+        i = i + 6
+    }
+    return 1
+}
+```
+
+Three previously-deferred capabilities compose in one method: **prefix early-returns**
+(Phase 49a) carry the trivial-input bailouts, the **NIA bound check `i * i <= num`**
+(Phase 48) replaces what used to be the Phase 8a opt-out cliff, the **in-body early-return**
+(Phase 49b) covers the "found a divisor → not prime" shortcut, and the loop invariant
+`i >= 5` discharges the divide-by-zero obligations on `num % i` and `num % (i + 2)`. The
+Verus original has no `@Ensures` (Verus checks implicit overflow); we add a sound
+`@Requires({ num >= 0 })` to keep the bound check honest.
+
+Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
+positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
+in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
+short-circuit `&&` and any enclosing in-loop `if` as path facts during obligation discharge,
+so the inner deref obligation discharges under the guard the conjunction establishes — just
+like a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks
+port on the `List<Character>` API today; a true `String.reverse()` proof would need its
+own uninterpreted+axioms layer (Z3 has no `str.reverse` primitive).
+
+String content is first-class under Phase 47's Z3-native-string-theory adoption: predicates
+(`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
+`substring` / `indexOf`), composition (`+` / `concat` / `replace` / regex `matches`), and
+conversion (`Integer.toString` / `parseInt`) all route to Z3 seq-theory primitives;
+`toUpperCase` / `toLowerCase` / `equalsIgnoreCase` / `replaceAll` / `lastIndexOf` are
+shipped as uninterpreted functions with literal pinning and weak axioms where Z3 doesn't
+ship a primitive yet; GString interpolation (`"hello $name"`) folds to chained `str.++`.
+Literals fold to ground constants, out-of-range indices refute with the standard
+`IndexBounds` diagnostic, and **structural cross-string facts** like
+`s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` come free from the theory.
+Composing several in one method:
+
+```groovy
+@Requires({ s != null && s.startsWith("user:") })
+@Ensures({ result == s.length() - 5 })
+static int idLength(String s) { s.substring(5).length() }
+```
+
+That verifies via two theory consequences chained — `startsWith ⟹ length(prefix) <= length(s)`
+gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identity. A second
+showcase blending regex, GString interpolation, and the structural concat facts:
+
+```groovy
+@Requires({ name != null && name.matches("[a-zA-Z]+") })
+@Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
+static String greet(String name) { "Hi, $name" }
+```
+
+The body folds to `mkConcat(mkString("Hi, "), name)`. Z3's seq theory then knows two
+free facts: a literal-prefixed concat starts with that literal (`prefixof(a, a ++ b)`),
+and the right operand of the concat is its suffix (`suffixof(b, a ++ b)`). The regex
+precondition rides along through whatever shape the body assembles.
+
+The remaining honest gaps: `Integer.toString` and `parseInt` carry Z3's signed-semantics
+gap (`""` for negative ints, `-1` for non-digit input — use under non-negative-input
+contracts); `split` (returns an array, structurally invasive) and symbolic
+length-preservation for `toUpperCase` (universal axioms over the seq sort cause Z3 to
+hang) remain deferred. The hard NIA corners (general polynomial identities,
+square-root / factoring shapes) may time out under Z3's solver — surfaces as "Could not
+decide," never silent. Sister task 023 (`strlen`) ports the same way — with the natural
+spec `result == xs.size()` added.
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -860,7 +871,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`replaceAll` / `lastIndexOf` (uninterpreted with weak axioms)** | Z3 has no native primitive for either. Phase 47f ships them as uninterpreted functions with two universally-quantified axioms each: `replaceAll` knows non-occurrence is a no-op + same-length swaps preserve length; `lastIndexOf` knows the result is `>= -1` and `== -1` when the substring is absent. Sound under-approximation — proofs that need finer reasoning (e.g. "post-replace charAt matches one of two values") gracefully skip. When Z3 ships `mkReplaceAll`, the uninterpreted form swaps out for native in one edit | ✅ Phase 47f |
 | **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
-| **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). New `/` and `%` dispatch via Z3's `mkDiv` / `mkMod` (SMT-LIB Euclidean; matches Java for non-negative operands, differs in sign-of-remainder for negative dividends — documented gap). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, the division identity `(a/b)*b + a%b == a`, and the implicit divide-by-zero obligation still fires for `b != 0` | ✅ Phase 48 |
+| **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
+| **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (skipped, not integer); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
 | **Early-`return` guards in the loop prefix** | A method with an annotated loop can now lead with the idiomatic `if (cond) return e;` guard pattern — multiple stacked guards work. Each early-exit `if` is partitioned out of the prefix and verified on its own path (assume `¬prior-guards`, sym-exec prior non-exit statements, assume this guard, bind `result`, check `@Ensures`); the loop's establishment / use checks fire with `¬each-prefix-guard` assumed, so the loop machinery only runs on the no-exit path | ✅ Phase 49a |
 | **Early-`return` inside the loop body** | An `if (cond) return e;` at the top level of the loop body verifies on its own path (assume invariant ∧ loop-guard, walk body up to this exit interleaving `¬prior-body-guards` with sym-exec of non-exit body statements, assume this guard, bind `result`, check `@Ensures`). Preservation and progress walk the body interleaving `¬each-in-body-guard` (we're on the no-exit-fired path). The `is_prime` HumanEval port now matches the Verus source structurally — prefix guards + in-body returns + NIA bound check, all verifying. Suffix-region exits and exits nested in non-top-level if-branches remain deferred | ✅ Phase 49b |
 

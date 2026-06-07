@@ -794,6 +794,15 @@ class Z3Session implements SmtSession {
     @Override Object neg(Object a)             { ctx.mkUnaryMinus((ArithExpr) a) }
     @Override Object intDiv(Object a, Object b) { ctx.mkDiv((Expr) a, (Expr) b) }
     @Override Object intMod(Object a, Object b) { ctx.mkMod((Expr) a, (Expr) b) }
+    @Override Object intRem(Object a, Object b) {
+        // Groovy's % / .remainder: truncated, sign-of-dividend (-5 % 2 == -1). Z3's mkRem does NOT
+        // follow the dividend's sign, so build it from the Euclidean mod (mkMod ∈ [0, |b|)):
+        //   rem = (a >= 0 || mod == 0) ? mod : mod - |b|
+        Expr mod = (Expr) ctx.mkMod((Expr) a, (Expr) b)
+        Expr absb = ctx.mkITE(ctx.mkGe((ArithExpr) b, ctx.mkInt(0)), (Expr) b, ctx.mkUnaryMinus((ArithExpr) b))
+        BoolExpr nonneg = ctx.mkOr(ctx.mkGe((ArithExpr) a, ctx.mkInt(0)), ctx.mkEq(mod, ctx.mkInt(0)))
+        ctx.mkITE(nonneg, mod, ctx.mkSub((ArithExpr) mod, (ArithExpr) absb))
+    }
 
     @Override Object eq(Object a, Object b) { ctx.mkEq((Expr) a, (Expr) b) }
     @Override Object ne(Object a, Object b) { ctx.mkNot(ctx.mkEq((Expr) a, (Expr) b)) }

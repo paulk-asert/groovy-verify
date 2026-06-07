@@ -157,6 +157,13 @@ class Reporter {
             "Could not decide divisor non-zero", result)
     }
 
+    static String formatModulusNotPositive(String divisorText, CheckResult result) {
+        // Groovy's a.mod(b) delegates to BigInteger.mod, which requires a positive modulus.
+        implicit("Possible ArithmeticException: BigInteger: modulus not positive",
+            "(${divisorText}) > 0",
+            "Could not decide modulus positive", result)
+    }
+
     static String formatNullDereference(String receiver, String method, CheckResult result) {
         // Groovy's own NPE message for a null receiver: "Cannot invoke method size() on null object".
         String invoked = method ? "method ${method}()" : "a method"

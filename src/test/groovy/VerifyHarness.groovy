@@ -2674,13 +2674,15 @@ class VerifyHarness {
                         @Ensures({ result >= 0 && result < b })
                         static int f(int a, int b) { a % b }
                     }''')],
-        // Division identity: (a / b) * b + a % b == a, for non-negative operands.
-        // Both sides Euclidean/Java for these inputs — identity is theory-known.
+        // Division identity, Groovy-faithful: a.intdiv(b) * b + (a % b) == a, for ALL b != 0
+        // (intdiv truncates, % is the sign-of-dividend remainder — the pair Groovy guarantees).
+        // NB: the BigDecimal form `(a / b) * b + a % b` does NOT equal a in Groovy
+        // ((5/2)*2 + 5%2 == 6), so the identity must use intdiv, not `/`.
         [group: 'P48 NIA', name: 'division identity holds', ok: true,
          src: tc('''class C {
-                        @Requires({ a >= 0 && b > 0 })
+                        @Requires({ b != 0 })
                         @Ensures({ result == a })
-                        static int f(int a, int b) { (int)((a / b) * b + a % b) }
+                        static int f(int a, int b) { a.intdiv(b) * b + (a % b) }
                     }''')],
         // Soundness: division by zero is still caught — implicit DivideSite obligation.
         [group: 'P48 NIA', name: 'division by zero refutes',
@@ -2695,6 +2697,72 @@ class VerifyHarness {
                         @Ensures({ result == 1 })
                         static int f(int n) { (n % 2 == 0) ? 1 : 0 }
                     }''')],
+
+        // ---------- Phase 50: Groovy-faithful division / modulo semantics ----------
+        // `%` operator is the sign-of-dividend remainder: -5 % 2 == -1 (NOT the Euclidean +1).
+        [group: 'P50 groovy div/mod', name: 'percent is sign-of-dividend remainder', ok: true,
+         src: tc('''class C {
+                        @Requires({ a == -5 })
+                        @Ensures({ result == -1 })
+                        static int f(int a) { a % 2 }
+                    }''')],
+        // Soundness regression guard: the old Euclidean `mkMod` wrongly "verified" this
+        // (`a % 3 >= 0`); with sign-of-dividend semantics it correctly refutes (a = -7 → -1).
+        [group: 'P50 groovy div/mod', name: 'negative modulo can be negative (refutes)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result >= 0 })
+                        static int f(int a) { a % 3 }
+                    }''')],
+        // `intdiv()` is truncate-toward-zero integer division.
+        [group: 'P50 groovy div/mod', name: 'intdiv truncates toward zero', ok: true,
+         src: tc('''class C {
+                        @Requires({ a == -7 })
+                        @Ensures({ result == -3 })
+                        static int f(int a) { a.intdiv(2) }
+                    }''')],
+        // `(int)(a / b)` is the other truncating-int-div idiom (BigDecimal division then narrow).
+        [group: 'P50 groovy div/mod', name: 'int-cast of division truncates', ok: true,
+         src: tc('''class C {
+                        @Requires({ a == 5 && b == 2 })
+                        @Ensures({ result == 2 })
+                        static int f(int a, int b) { (int)(a / b) }
+                    }''')],
+        // `.mod()` is BigInteger.mod — always non-negative (differs from `%` / `.remainder()`).
+        [group: 'P50 groovy div/mod', name: 'mod is non-negative', ok: true,
+         src: tc('''class C {
+                        @Requires({ a == -5 })
+                        @Ensures({ result == 1 })
+                        static int f(int a) { a.mod(2) }
+                    }''')],
+        // `.remainder()` matches the `%` operator (sign of dividend).
+        [group: 'P50 groovy div/mod', name: 'remainder is sign-of-dividend', ok: true,
+         src: tc('''class C {
+                        @Requires({ a == -5 })
+                        @Ensures({ result == -1 })
+                        static int f(int a) { a.remainder(2) }
+                    }''')],
+        // `.mod()` throws unless the modulus is positive — a Groovy-specific implicit obligation.
+        [group: 'P50 groovy div/mod', name: 'mod requires positive modulus (refutes)',
+         expect: 'modulus not positive',
+         src: tc('class C { static int f(int a, int b) { a.mod(b) } }')],
+        [group: 'P50 groovy div/mod', name: 'mod with positive divisor verified', ok: true,
+         src: tc('''class C {
+                        @Requires({ b > 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int a, int b) { a.mod(b) }
+                    }''')],
+        // The bare `/` operator yields a BigDecimal — outside the integer fragment, skipped loudly.
+        [group: 'P50 groovy div/mod', name: 'bare division is BigDecimal (skipped)',
+         expect: 'Skipped verification of postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int f(int a, int b) { a / b }
+                    }''')],
+        // intdiv divide-by-zero is still caught.
+        [group: 'P50 groovy div/mod', name: 'intdiv by zero refutes',
+         expect: 'Division by zero',
+         src: tc('class C { static int f(int a, int b) { a.intdiv(b) } }')],
 
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
