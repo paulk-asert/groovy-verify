@@ -1490,7 +1490,7 @@ class VerifyHarness {
                         enum Role { ADMIN, USER, GUEST }
                         enum Perm { READ, WRITE, DELETE }
                         @Requires({ grants[Role.ADMIN].containsAll(required) })
-                        @Ensures({ !(Perm.WRITE in required) || Perm.WRITE in grants[Role.ADMIN] })
+                        @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })
                         static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
                     }''')],
         // Soundness anchor: without the containsAll precondition, the postcondition refutes.
@@ -1499,7 +1499,7 @@ class VerifyHarness {
          src: tc('''class Acl {
                         enum Role { ADMIN, USER, GUEST }
                         enum Perm { READ, WRITE, DELETE }
-                        @Ensures({ !(Perm.WRITE in required) || Perm.WRITE in grants[Role.ADMIN] })
+                        @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })
                         static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
                     }''')],
 
@@ -3106,6 +3106,22 @@ class VerifyHarness {
                         static int cmp(int a, int b) { a <=> b }
                     }''')],
 
+        // ---------- `!in` operator (negated membership; `x !in s` ≡ `!(x in s)`) ----------
+        // It lowers to the identical `not(member)` term as `!(x in s)` — recognised in contracts.
+        [group: 'P16 sets', name: '!in is negated membership', ok: true,
+         src: tc('''class C {
+                        @Requires({ x !in s })
+                        @Ensures({ !(x in s) })
+                        static int f(Set<Integer> s, int x) { 0 }
+                    }''')],
+        [group: 'P16 sets', name: '!in does not imply membership (refutes)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ x !in s })
+                        @Ensures({ x in s })
+                        static int f(Set<Integer> s, int x) { 0 }
+                    }''')],
+
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
         // straight-line case. Phase 46d extends the same path-fact mechanism to the loop body:
         // dischargeRegion recurses into an in-region if-statement, asserting the cond in the
@@ -4020,7 +4036,7 @@ class VerifyHarness {
         // Cardinality law (headline): adding an element NOT already present grows the size by one.
         [group: 'P16 sets', name: 'add of new element grows size by one', ok: true,
          src: tc('''class C { Set<Integer> s
-                        @Requires({ !(x in s) })
+                        @Requires({ x !in s })
                         @Modifies({ this.s })
                         @Ensures({ s.size() == old.s.size() + 1 })
                         void put(int x) { s.add(x) }
@@ -4058,7 +4074,7 @@ class VerifyHarness {
         [group: 'P16 sets', name: 'subset op outside fragment skipped', expect: 'Skipped verification of postcondition',
          src: tc('class C { @Requires({ s.containsAll(t) }) @Ensures({ s.containsAll(t) }) static int f(Set<Integer> s, Set<Integer> t) { 0 } }')],
         // The cardinality law wired into a recursive @Decreases measure: each call adds a *fresh* element
-        // to `s` (the guard `!(x in s)` makes it fresh), so the measure `n - s.size()` strictly decreases —
+        // to `s` (the guard `x !in s` makes it fresh), so the measure `n - s.size()` strictly decreases —
         // a finite recursion over a bounded domain (the DFS-shaped termination argument), proved with no
         // quantifier. Termination + the recursion's own well-foundedness, end to end.
         [group: 'P16 sets', name: 'set-cardinality decreases measure', ok: true,
@@ -4066,13 +4082,13 @@ class VerifyHarness {
                         @Modifies({ this.s })
                         @Decreases({ n - s.size() })
                         void fill(int x) {
-                            if (!(x in s) && s.size() < n) {
+                            if (x !in s && s.size() < n) {
                                 s.add(x)
                                 fill(x + 1)
                             }
                         }
                     }''')],
-        // Soundness: drop the freshness guard `!(x in s)` and the added element may already be present,
+        // Soundness: drop the freshness guard `x !in s` and the added element may already be present,
         // so `s.size()` need not grow — the measure does not provably decrease → termination refuted.
         [group: 'P16 sets', name: 'non-fresh add does not decrease measure', expect: 'recursion measure',
          src: tc('''class C { Set<Integer> s; int n
@@ -4184,10 +4200,10 @@ class VerifyHarness {
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
                         @Decreases({ fuel })
-                        @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } &&
+                        @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } &&
                                    (fuel <= 0 || (u in visited)) })
                         void visit(int u, int fuel) {
-                            if (fuel > 0 && !(u in visited)) {
+                            if (fuel > 0 && u !in visited) {
                                 visited.add(u)
                                 visit(next[u], fuel - 1)
                             }
@@ -4206,7 +4222,7 @@ class VerifyHarness {
                         @Decreases({ fuel })
                         @Ensures({ u in visited })
                         void visit(int u, int fuel) {
-                            if (fuel > 0 && !(u in visited)) {
+                            if (fuel > 0 && u !in visited) {
                                 visited.add(u)
                                 visit(next[u], fuel - 1)
                             }
@@ -4223,9 +4239,9 @@ class VerifyHarness {
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
                         @Decreases({ n - visited.size() })
-                        @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } })
+                        @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && visited.size() < n) {
+                            if (u !in visited && visited.size() < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -4240,7 +4256,7 @@ class VerifyHarness {
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
                         @Decreases({ fuel })
-                        @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } })
+                        @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } })
                         void visit(int u, int fuel) {
                             if (fuel > 0 && (u in visited)) {
                                 visited.remove(u)
@@ -4277,14 +4293,14 @@ class VerifyHarness {
         // cardinality-terminating DFS needs at its coverage branch (an unvisited in-domain node ⟹ room remains).
         [group: 'P19 cardinality', name: 'a hole means the set is not full', ok: true,
          src: tc('''class C {
-                        @Requires({ Sets.boundedBy(s, n) && 0 <= u && u < n && !(u in s) })
+                        @Requires({ Sets.boundedBy(s, n) && 0 <= u && u < n && u !in s })
                         @Ensures({ s.size() < n })
                         static int f(Set<Integer> s, int n, int u) { 0 }
                     }''')],
         // Soundness: without the bound, a missing element says nothing about the (uninterpreted) size.
         [group: 'P19 cardinality', name: 'hole needs the bound (refuted)', expect: 'Cannot prove postcondition',
          src: tc('''class C {
-                        @Requires({ 0 <= u && u < n && !(u in s) })
+                        @Requires({ 0 <= u && u < n && u !in s })
                         @Ensures({ s.size() < n })
                         static int f(Set<Integer> s, int n, int u) { 0 }
                     }''')],
@@ -4338,7 +4354,7 @@ class VerifyHarness {
         // the per-store `count` law, now threading the count across a set mutation.
         [group: 'P21 bcount law', name: 'fresh in-domain add increments count', ok: true,
          src: tc('''class C { Set<Integer> s
-                        @Requires({ 0 <= u && u < k && !(u in s) })
+                        @Requires({ 0 <= u && u < k && u !in s })
                         @Modifies({ this.s })
                         @Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) + 1 })
                         void put(int u, int k) { s.add(u) }
@@ -4412,9 +4428,9 @@ class VerifyHarness {
                         @Modifies({ this.visited })
                         @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ (u in visited) &&
-                                   (0..<n).every { !(it in old.visited) || (it in visited) } })
+                                   (0..<n).every { (it in old.visited) ==> (it in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
+                            if (u !in visited && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -4433,7 +4449,7 @@ class VerifyHarness {
                         @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ next[u] in visited })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
+                            if (u !in visited && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -4451,7 +4467,7 @@ class VerifyHarness {
                         int n
                         @Requires({ 0 <= u && u < n && (u in visited) &&
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
-                                    (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                                    (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         @Ensures({ next[u] in visited })
                         int f(int u) { 0 }
                     }''')],
@@ -4466,9 +4482,9 @@ class VerifyHarness {
                         int n
                         @Requires({ 0 <= u && u < n &&
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
-                                    (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                                    (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         @Modifies({ this.visited })
-                        @Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                        @Ensures({ (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         void mark(int u) { visited.add(u) }
                     }''')],
         // Phase 24 (call-site soundness): a recursive closure-threading DFS now REFUTES at the recursive
@@ -4482,12 +4498,12 @@ class VerifyHarness {
                         int n
                         @Requires({ 0 <= u && u < n &&
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
-                                    (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                                    (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         @Modifies({ this.visited })
                         @Decreases({ n - Sets.boundedCount(visited, n) })
-                        @Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                        @Ensures({ (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
+                            if (u !in visited && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 visit(next[u])
                             }
@@ -4537,7 +4553,7 @@ class VerifyHarness {
                         int chain(int u, int d) { d <= 0 ? u : chain(next[u], d - 1) }
                         @Requires({ d >= 0 && 0 <= u && u < n && (u in visited) &&
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
-                                    (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                                    (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         @Ensures({ chain(u, d) in visited })
                         @Decreases({ d })
                         void propagate(int u, int d) {
@@ -4583,17 +4599,17 @@ class VerifyHarness {
                         int n
                         @Requires({ 0 <= u && u < n &&
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
-                                    (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&
-                                    (0..<n).every { !(it in onStack) || (it in visited) } })
+                                    (0..<n).every { (it in visited) ==> (it in onStack || next[it] in visited) } &&
+                                    (0..<n).every { (it in onStack) ==> (it in visited) } })
                         @Modifies({ [this.visited, this.onStack] })
                         @Decreases({ n - Sets.boundedCount(visited, n) })
                         @Ensures({ (u in visited) &&
-                                   (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&
-                                   (0..<n).every { !(it in onStack) || (it in visited) } &&
+                                   (0..<n).every { (it in visited) ==> (it in onStack || next[it] in visited) } &&
+                                   (0..<n).every { (it in onStack) ==> (it in visited) } &&
                                    (0..<n).every { (it in onStack) == (it in old.onStack) } &&
-                                   (0..<n).every { !(it in old.visited) || (it in visited) } })
+                                   (0..<n).every { (it in old.visited) ==> (it in visited) } })
                         void visit(int u) {
-                            if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
+                            if (u !in visited && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
                                 onStack.add(u)
                                 visit(next[u])
@@ -4606,10 +4622,10 @@ class VerifyHarness {
                         // *establishing* closure — the (a) half, the last piece of DFS completeness.
                         @Requires({ 0 <= start && start < n &&
                                     (0..<n).every { 0 <= next[it] && next[it] < n } &&
-                                    (0..<n).every { !(it in visited) } &&
-                                    (0..<n).every { !(it in onStack) } })
+                                    (0..<n).every { it !in visited } &&
+                                    (0..<n).every { it !in onStack } })
                         @Modifies({ [this.visited, this.onStack] })
-                        @Ensures({ (0..<n).every { !(it in visited) || (next[it] in visited) } })
+                        @Ensures({ (0..<n).every { (it in visited) ==> (next[it] in visited) } })
                         void dfs(int start) {
                             visit(start)
                         }

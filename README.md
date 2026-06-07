@@ -286,7 +286,7 @@ class Acl {
     enum Role { ADMIN, USER, GUEST }
     enum Perm { READ, WRITE, DELETE }
     @Requires({ grants[Role.ADMIN].containsAll(required) })            // ADMIN covers required …
-    @Ensures({ !(Perm.WRITE in required) || Perm.WRITE in grants[Role.ADMIN] })   // … so WRITE, when requested, is held
+    @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })   // … so WRITE, when requested, is held
     static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
 }
 ```
@@ -462,7 +462,7 @@ the building block a set-valued termination measure (e.g. DFS over a finite node
 ```groovy
 class C {
     Set<Integer> s
-    @Requires({ !(x in s) })            // x is new …
+    @Requires({ x !in s })            // x is new …
     @Modifies({ this.s })
     @Ensures({ x in s &&                // … so after add it is a member …
                s.size() == old.s.size() + 1 })   // … and the size grew by one
@@ -470,7 +470,7 @@ class C {
 }
 ```
 
-Drop the `!(x in s)` precondition and the `+ 1` no longer holds — `x` might already be present — so
+Drop the `x !in s` precondition and the `+ 1` no longer holds — `x` might already be present — so
 the proof fails with a concrete `put(2)`. **Subset** (`s.containsAll(t)`) and **equality**
 (`s.equals(t)`) are in the fragment for enum-element sets (finite-conjunction lowering over the
 enum's constants) and for Int-element sets under a `Sets.boundedBy(t, n)` context (bounded
@@ -547,10 +547,10 @@ class C {
     @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
     @Modifies({ this.visited })
     @Decreases({ fuel })
-    @Ensures({ (0..<n).every { !(it in old.visited) || (it in visited) } &&   // soundness: visited only grows
+    @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } &&   // soundness: visited only grows
                (fuel <= 0 || (u in visited)) })                               // progress: u gets visited
     void visit(int u, int fuel) {
-        if (fuel > 0 && !(u in visited)) {
+        if (fuel > 0 && u !in visited) {
             visited.add(u)
             visit(next[u], fuel - 1)
         }
@@ -574,7 +574,7 @@ facts cardinality-driven search rests on:
 @Ensures({ u in s })                       // FULL ⇒ MEMBER: a full bounded set covers the whole domain
 static int f(Set<Integer> s, int n, int u) { 0 }
 
-@Requires({ Sets.boundedBy(s, n) && 0 <= u && u < n && !(u in s) })
+@Requires({ Sets.boundedBy(s, n) && 0 <= u && u < n && u !in s })
 @Ensures({ s.size() < n })                 // HOLE ⇒ NOT FULL: a missing in-domain node means room remains
 static int g(Set<Integer> s, int n, int u) { 0 }
 ```
@@ -615,7 +615,7 @@ axiom, and, at every set mutation, the bcount analogue of the per-store `count` 
 count by exactly one:
 
 ```groovy
-@Requires({ 0 <= u && u < k && !(u in s) })
+@Requires({ 0 <= u && u < k && u !in s })
 @Modifies({ this.s })
 @Ensures({ Sets.boundedCount(s, k) == Sets.boundedCount(old.s, k) + 1 })
 void put(int u, int k) { s.add(u) }
@@ -640,9 +640,9 @@ class C {
     @Modifies({ this.visited })
     @Decreases({ n - Sets.boundedCount(visited, n) })          // strictly decreases — the per-add law
     @Ensures({ (u in visited) &&                         // ← UNCONDITIONAL coverage
-               (0..<n).every { !(it in old.visited) || (it in visited) } })
+               (0..<n).every { (it in old.visited) ==> (it in visited) } })
     void visit(int u) {
-        if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
+        if (u !in visited && Sets.boundedCount(visited, n) < n) {
             visited.add(u)
             visit(next[u])
         }
@@ -673,17 +673,17 @@ subtlety. *Completeness* (every reachable node is visited) is the closure fixpoi
 
 ```groovy
 @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } &&
-            (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&   // closed-except-on-stack
-            (0..<n).every { !(it in onStack) || (it in visited) } })                            // onStack ⊆ visited
+            (0..<n).every { (it in visited) ==> (it in onStack || next[it] in visited) } &&   // closed-except-on-stack
+            (0..<n).every { (it in onStack) ==> (it in visited) } })                            // onStack ⊆ visited
 @Modifies({ [this.visited, this.onStack] })
 @Decreases({ n - Sets.boundedCount(visited, n) })
 @Ensures({ (u in visited) &&
-           (0..<n).every { !(it in visited) || (it in onStack) || (next[it] in visited) } &&   // invariant kept
-           (0..<n).every { !(it in onStack) || (it in visited) } &&
+           (0..<n).every { (it in visited) ==> (it in onStack || next[it] in visited) } &&   // invariant kept
+           (0..<n).every { (it in onStack) ==> (it in visited) } &&
            (0..<n).every { (it in onStack) == (it in old.onStack) } &&                          // stack restored
-           (0..<n).every { !(it in old.visited) || (it in visited) } })
+           (0..<n).every { (it in old.visited) ==> (it in visited) } })
 void visit(int u) {
-    if (!(u in visited) && Sets.boundedCount(visited, n) < n) {
+    if (u !in visited && Sets.boundedCount(visited, n) < n) {
         visited.add(u); onStack.add(u); visit(next[u]); onStack.remove(u)
     }
 }
@@ -956,7 +956,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Class `@Invariant` — instance methods (assume on entry, prove on exit, super-walked)** | `@Invariant({ count >= 0 })` on a class | ✅ Phase 15a |
 | **Class `@Invariant` — constructors establish the invariant at exit** | `@Invariant({ count >= 0 }) class C { C(int n) { count = n } }` — refutes without `@Requires({ n >= 0 })`. Int fields default-init to 0 to match JVM semantics. | ✅ Phase 15b |
 | **Boxed scalars & index-accessed collections** | `Integer`, `Integer[]`, `List<Integer>` via `xs[i]` / `xs.size()` | ✅ (structural) |
-| **Finite sets — membership, add/remove, cardinality law** | `x in s`, `s.contains(x)`, `s.add(x)`, `s.size()` over `Set<Integer>` | ✅ Phase 16 |
+| **Finite sets — membership, add/remove, cardinality law** | `x in s` / `x !in s` (negated membership), `s.contains(x)`, `s.add(x)`, `s.size()` over `Set<Integer>` | ✅ Phase 16 |
 | **Set-cardinality `@Decreases` measure (DFS-shaped termination)** | `@Decreases({ n - s.size() })` on a recursion that adds a fresh element | ✅ Phase 16 |
 | **Finite maps — lookup, key membership, put, key-set cardinality law** | `m[k]`, `m.get(k)`, `k in m`, `m.containsKey(k)`, `m.put(k,v)`, `m.size()` over `Map<Integer,Integer>` | ✅ Phase 17 |
 | **Reachability — recursive graph traversal: visited grows (soundness) + node covered (progress)** | DFS over a `Map<Node,Node>` graph marking a `Set<Node>`, fuel- or cardinality-terminated | ✅ Phase 18 |
