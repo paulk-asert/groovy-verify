@@ -194,22 +194,29 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     private static void augment(MethodNode mn, ModuleNode module, SourceUnit source) {
-        String requires = null
-        String ensures = null
+        // {@code @Requires}/{@code @Ensures} are {@code @Repeatable}: groovy-contracts enforces *each*
+        // at runtime, so multiple of them mean the *conjunction* of their conditions. Collect them all
+        // (whether the parser left a sequence of annotations or collapsed them into a
+        // {@code @RequiresConditions}/{@code @EnsuresConditions} container) and AND the captured texts —
+        // a single annotation passes through unchanged. (Previously only the last was kept.)
+        List<String> requiresTexts = new ArrayList<String>()
+        List<String> ensuresTexts = new ArrayList<String>()
+        List<String> modifiesTexts = new ArrayList<String>()
         String decreases = null
-        String modifies = null
         for (AnnotationNode an : mn.annotations) {
             String kind = contractKind(an, module)
             if (kind == null) continue
-            Expression value = an.getMember('value')
-            if (!(value instanceof ClosureExpression)) continue
-            String text = captureSource((ClosureExpression) value, source)
-            if (!text) continue
-            if (kind == 'requires') requires = text
-            else if (kind == 'ensures') ensures = text
-            else if (kind == 'modifies') modifies = text
-            else decreases = text   // method-level @Decreases (recursion termination measure)
+            if (kind == 'requires') addClosureText(an, source, requiresTexts)
+            else if (kind == 'ensures') addClosureText(an, source, ensuresTexts)
+            else if (kind == 'modifies') addClosureText(an, source, modifiesTexts)
+            else if (kind == 'requiresContainer') addContainerTexts(an, source, requiresTexts)
+            else if (kind == 'ensuresContainer') addContainerTexts(an, source, ensuresTexts)
+            else if (kind == 'modifiesContainer') addContainerTexts(an, source, modifiesTexts)
+            else { String t = closureText(an, source); if (t) decreases = t }  // method-level @Decreases
         }
+        String requires = conjoinTexts(requiresTexts)
+        String ensures = conjoinTexts(ensuresTexts)
+        String modifies = combineModifies(modifiesTexts)
         if (requires != null || ensures != null || decreases != null || modifies != null) {
             AnnotationNode holder = new AnnotationNode(ClassHelper.make(ContractSource))
             if (requires != null) holder.addMember('requires', new ConstantExpression(requires))
@@ -460,6 +467,10 @@ class ContractExpansionTransform implements ASTTransformation {
     private static String contractKind(AnnotationNode an, ModuleNode module) {
         String name = an.classNode?.name
         if (name == null) return null
+        // Repeatable-annotation containers (synthetic, never user-written, so matched by simple name too).
+        if (name == 'RequiresConditions' || name == CONTRACTS_PKG + 'RequiresConditions') return 'requiresContainer'
+        if (name == 'EnsuresConditions'  || name == CONTRACTS_PKG + 'EnsuresConditions')  return 'ensuresContainer'
+        if (name == 'ModifiesConditions' || name == CONTRACTS_PKG + 'ModifiesConditions') return 'modifiesContainer'
         if (name == CONTRACTS_PKG + 'Requires') return 'requires'
         if (name == CONTRACTS_PKG + 'Ensures') return 'ensures'
         if (name == CONTRACTS_PKG + 'Decreases') return 'decreases'
@@ -474,6 +485,60 @@ class ContractExpansionTransform implements ASTTransformation {
             }
         }
         return null
+    }
+
+    /** Capture one annotation's closure-condition text into {@code out} (if it has one). */
+    private static void addClosureText(AnnotationNode an, SourceUnit source, List<String> out) {
+        String t = closureText(an, source)
+        if (t) out.add(t)
+    }
+
+    /** The verbatim source of an annotation's {@code value} closure condition, or null. */
+    private static String closureText(AnnotationNode an, SourceUnit source) {
+        Expression value = an.getMember('value')
+        if (!(value instanceof ClosureExpression)) return null
+        captureSource((ClosureExpression) value, source)
+    }
+
+    /** Capture every inner condition of a repeatable container ({@code @RequiresConditions} etc.). */
+    private static void addContainerTexts(AnnotationNode an, SourceUnit source, List<String> out) {
+        Expression value = an.getMember('value')
+        if (!(value instanceof ListExpression)) return
+        for (Expression child : ((ListExpression) value).expressions) {
+            if (child instanceof AnnotationConstantExpression) {
+                Object inner = ((AnnotationConstantExpression) child).value
+                if (inner instanceof AnnotationNode) addClosureText((AnnotationNode) inner, source, out)
+            }
+        }
+    }
+
+    /**
+     * Merge repeated {@code @Modifies} frames into one list of locations. Unlike a predicate, a frame
+     * is a *union* of locations, so the texts are wrapped in a single {@code [ … ]} (the consumer's
+     * {@code addModifiedLocation} recursively flattens, so an already-list frame nests harmlessly). A
+     * lone {@code @Modifies} passes through unchanged.
+     */
+    private static String combineModifies(List<String> texts) {
+        if (texts.isEmpty()) return null
+        if (texts.size() == 1) return texts.get(0)
+        StringBuilder sb = new StringBuilder('[')
+        for (int i = 0; i < texts.size(); i++) {
+            if (i > 0) sb.append(', ')
+            sb.append(texts.get(i))
+        }
+        sb.append(']').toString()
+    }
+
+    /** AND a list of condition texts into one (each parenthesised); a single text passes through. */
+    private static String conjoinTexts(List<String> texts) {
+        if (texts.isEmpty()) return null
+        if (texts.size() == 1) return texts.get(0)
+        StringBuilder sb = new StringBuilder()
+        for (int i = 0; i < texts.size(); i++) {
+            if (i > 0) sb.append(' && ')
+            sb.append('(').append(texts.get(i)).append(')')
+        }
+        sb.toString()
     }
 
     private static boolean importedFromContracts(String simpleName, ModuleNode module) {

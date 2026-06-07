@@ -3052,9 +3052,12 @@ class VerifyHarness {
         // ---------- Phase 57: logical implication — `==>` operator and `.implies()` method ----------
         // The `==>` operator (Groovy 5) is a BinaryExpression lowered to `implies(a, b) = !a || b`.
         // Modus ponens: from `(a>=0) ==> (b>=0)` and `a>=0`, derive `b>=0`.
+        // The two premises read naturally as two @Requires (conjoined automatically since Phase 66 —
+        // this once needed a single combined @Requires, before repeated annotations were captured).
         [group: 'P57 implies', name: 'modus ponens via ==> operator', ok: true,
          src: tc('''class C {
-                        @Requires({ ((a >= 0) ==> (b >= 0)) && a >= 0 })
+                        @Requires({ (a >= 0) ==> (b >= 0) })
+                        @Requires({ a >= 0 })
                         @Ensures({ result >= 0 })
                         static int f(int a, int b) { b }
                     }''')],
@@ -5191,6 +5194,35 @@ class VerifyHarness {
                            for (x in xs) { }
                        }
                    }''')],
+
+        // ---------- Phase 66: repeated @Requires / @Ensures are conjoined ----------
+        // groovy-contracts is @Repeatable and enforces each at runtime, so multiple @Requires mean
+        // their conjunction. Both are now captured: result = a + b >= 0 needs BOTH a >= 0 and b >= 0
+        // (previously only the last was kept, so `a` was unconstrained and this refuted).
+        [group: 'P66 repeated contracts', name: 'two @Requires both assumed', ok: true,
+         src: tc('class C { @Requires({ a >= 0 }) @Requires({ b >= 0 }) @Ensures({ result >= 0 }) static int f(int a, int b) { a + b } }')],
+        // Soundness: a method must satisfy EVERY @Ensures. Here the body returns 3 — it meets the
+        // *last* postcondition (3 <= 100) but violates the *first* (3 >= 5), which used to be dropped
+        // (silently "verifying" a method that breaks its own spec). Now correctly refuted.
+        [group: 'P66 repeated contracts', name: 'two @Ensures both proven (violates first → refuted)',
+         expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ result >= 5 }) @Ensures({ result <= 100 }) static int f() { 3 } }')],
+        // A body satisfying both postconditions verifies.
+        [group: 'P66 repeated contracts', name: 'two @Ensures both satisfied verified', ok: true,
+         src: tc('class C { @Ensures({ result >= 5 }) @Ensures({ result <= 100 }) static int f() { 50 } }')],
+        // Three @Requires conjoin too, and a precondition that rules out the unsafe input verifies the body.
+        [group: 'P66 repeated contracts', name: 'three @Requires conjoined verify index', ok: true,
+         src: tc('class C { @Requires({ a != null }) @Requires({ i >= 0 }) @Requires({ i < a.length }) static int f(int[] a, int i) { a[i] } }')],
+        // @Modifies is @Repeatable too, but a frame is a *union* of locations (not a conjunction): two
+        // @Modifies are merged, so a method writing both declared fields passes the frame check
+        // (previously only the last was kept, wrongly flagging the write to the dropped field).
+        [group: 'P66 repeated contracts', name: 'two @Modifies frames merged (both writes allowed)', ok: true,
+         src: tc('class C { int a; int b; @Modifies({ this.a }) @Modifies({ this.b }) void setBoth() { a = 1; b = 2 } }')],
+        // A write outside the merged frame is still caught — both declared locations are in scope, the
+        // undeclared third field is the violation.
+        [group: 'P66 repeated contracts', name: 'two @Modifies, undeclared write violates',
+         expect: 'not in its @Modifies clause',
+         src: tc('class C { int a; int b; int c; @Modifies({ this.a }) @Modifies({ this.b }) void m() { a = 1; b = 2; c = 3 } }')],
 
         // ---------- Phase 60: xs.max() / xs.min() as the witnessed-extremum spec ----------
         // The ergonomic win: `result == a.max()` means exactly the every/any spec the

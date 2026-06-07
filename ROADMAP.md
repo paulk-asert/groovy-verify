@@ -3866,6 +3866,33 @@ the refutation counterexample names the offending element and a *non-empty* coll
 
 ---
 
+## Phase 66 — Repeated `@Requires` / `@Ensures` / `@Modifies`  *(shipped)*
+
+`@Requires`, `@Ensures`, and `@Modifies` are all `@Repeatable`, and groovy-contracts enforces *each* at
+runtime. The capture in `ContractExpansionTransform` kept only the *last* (a plain overwrite), silently
+dropping the rest — unsound in several directions, not merely incomplete:
+
+- a dropped `@Ensures` let a method violate a postcondition it declared and still "verify" (the body only
+  had to satisfy the last one);
+- a dropped `@Requires` under-constrained a *caller* (the call-site precondition check required less than
+  the callee actually demanded);
+- a dropped `@Modifies` location both raised a spurious frame violation (a write to the dropped-but-declared
+  location looked undeclared) and, at a call site, was *not* havoced — so a caller wrongly assumed it
+  unchanged across the call.
+
+The fix collects *all* closure texts of each kind — whether the parser left a sequence of annotations or
+collapsed them into a `@RequiresConditions`/`@EnsuresConditions`/`@ModifiesConditions` repeatable
+container. The two **predicate** kinds (`@Requires`/`@Ensures`) are ANDed (each parenthesised) — so
+`@Requires({ a >= 0 }) @Requires({ b >= 0 })` behaves exactly like `@Requires({ a >= 0 && b >= 0 })`, and
+a body meeting only the last of two `@Ensures` is correctly refuted. `@Modifies` is a **frame** (a *union*
+of locations, not a predicate), so its texts are merged into one `[ … ]` list — the consumer's
+`addModifiedLocation` recursively flattens, so an already-list frame nests harmlessly. A lone annotation of
+any kind passes through unchanged. The earlier "combine your premises into one `@Requires`" workaround (it
+predated repeatable capture) is no longer needed — the modus-ponens example now reads as two separate
+`@Requires`. (`@Decreases` is genuinely single — one termination measure — so it stays last-wins.)
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
