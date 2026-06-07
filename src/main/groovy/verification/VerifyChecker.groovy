@@ -40,6 +40,8 @@ import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
@@ -3104,10 +3106,13 @@ class VerifyChecker extends TypeCheckingExtension {
     private void verifyLoop(MethodNode node, LoopSite site) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
         Expression postAst = findEnsures(node) != null ? contractAstFor(node, 'ensures') : null
+        // Phase 64 — the precondition conjuncts the loop body provably can't invalidate, sound to
+        // assume in preservation/progress (computed once; establishment/use already see the full reqAst).
+        List<Expression> stableReqs = loopStableRequires(reqAst, site)
         try {
             checkEstablishment(node, site, reqAst)
-            checkPreservation(node, site)
-            if (site.spec.variant != null) checkProgress(node, site)
+            checkPreservation(node, site, stableReqs)
+            if (site.spec.variant != null) checkProgress(node, site, stableReqs)
             if (postAst != null) checkUse(node, site, reqAst, postAst)
             // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
             // when the method has an @Ensures to prove).
@@ -3119,6 +3124,184 @@ class VerifyChecker extends TypeCheckingExtension {
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), site.loopStmt)
         }
+    }
+
+    // ── Phase 64 — loop-stable @Requires ───────────────────────────────────────────────────────
+    // Preservation/progress deliberately omit @Requires (a precondition over mutable state goes stale
+    // mid-loop). But a conjunct referencing only state the loop *doesn't* modify stays true on every
+    // iteration and is sound to assume — which unlocks element reasoning over a collection the loop
+    // merely reads (`xs.every { it >= 0 }` instantiated at the current element). Soundness rests on the
+    // write-set being a sound *over*-approximation: a conjunct is dropped if any of its free names
+    // might be written, and *all* conjuncts are dropped if the body has a construct whose writes can't
+    // be bounded (an unrecognised call/statement → loopWriteSet returns null).
+
+    private static final Set<String> LOOP_MUTATORS = [
+        'add','remove','put','clear','set','addAll','removeAll','retainAll','putAll','push','pop',
+        'poll','offer','removeLast','removeFirst','addFirst','addLast','removeAt','putIfAbsent'] as Set
+
+    private static final Set<String> LOOP_PURE_READS = [
+        'size','length','get','getAt','contains','containsKey','containsValue','isEmpty','indexOf',
+        'lastIndexOf','charAt','substring','keySet','values','entrySet','sum','max','min','count',
+        'every','any','find','findAll','collect','intdiv','mod','remainder','abs','compareTo','equals',
+        'startsWith','endsWith','toUpperCase','toLowerCase','first','last','head','tail','of','range',
+        'boundedBy','boundedCount','intValue','longValue'] as Set
+
+    /** The @Requires conjuncts referencing only loop-stable state — sound to assume mid-loop. */
+    private static List<Expression> loopStableRequires(Expression reqAst, LoopSite site) {
+        if (reqAst == null) return Collections.<Expression>emptyList()
+        Set<String> writes = loopWriteSet(site)
+        if (writes == null) return Collections.<Expression>emptyList()   // unbounded writes → assume nothing
+        List<Expression> conjuncts = new ArrayList<Expression>()
+        splitConjuncts(reqAst, conjuncts)
+        List<Expression> stable = new ArrayList<Expression>()
+        for (Expression c : conjuncts) {
+            if (Collections.disjoint(freeNames(c), writes)) stable.add(c)
+        }
+        stable
+    }
+
+    private static void assumeStableRequires(SmtSession s, Encoder enc, List<Expression> stable) {
+        for (Expression c : stable) {
+            Object h = enc.translate(c)
+            if (h != null) s.assertExpr(h)
+        }
+    }
+
+    /** Split a (possibly nested) `a && b && c` into its conjuncts; anything else is a single conjunct. */
+    private static void splitConjuncts(Expression e, List<Expression> out) {
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
+            splitConjuncts(((BinaryExpression) e).leftExpression, out)
+            splitConjuncts(((BinaryExpression) e).rightExpression, out)
+        } else if (e instanceof BooleanExpression) {
+            splitConjuncts(((BooleanExpression) e).expression, out)
+        } else {
+            out.add(e)
+        }
+    }
+
+    /** Free variable / `this`-field names a contract clause references. Over-collects closure
+     *  parameters (e.g. `it`), which is sound — it only makes a clause *more* likely to be dropped. */
+    private static Set<String> freeNames(Expression e) {
+        final Set<String> out = new HashSet<String>()
+        if (e == null) return out
+        e.visit(new ClassCodeVisitorSupport() {
+            protected SourceUnit getSourceUnit() { null }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (ve.name != 'this') out.add(ve.name)
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name == 'this') {
+                    out.add(pe.propertyAsString)   // this.field → field
+                }
+                super.visitPropertyExpression(pe)
+            }
+        })
+        out
+    }
+
+    /**
+     * Names the loop's prefix + body may write, or null when it contains a construct whose write
+     * effects can't be bounded (→ the caller assumes no precondition, the always-sound default). A
+     * sound over-approximation: surplus names only drop more conjuncts.
+     */
+    private static Set<String> loopWriteSet(LoopSite site) {
+        Set<String> ws = new HashSet<String>()
+        if (!collectWritesStmts(site.prefix, ws)) return null
+        if (!collectWritesStmts(site.spec.body, ws)) return null
+        ws
+    }
+
+    private static boolean collectWritesStmts(List<Statement> stmts, Set<String> ws) {
+        if (stmts == null) return true
+        for (Statement st : stmts) if (!collectWritesStmt(st, ws)) return false
+        true
+    }
+
+    private static boolean collectWritesStmt(Statement st, Set<String> ws) {
+        if (st == null || st instanceof EmptyStatement) return true
+        if (st instanceof BlockStatement) return collectWritesStmts(((BlockStatement) st).statements, ws)
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            return collectWritesExpr(ifs.booleanExpression, ws) &&
+                   collectWritesStmt(ifs.ifBlock, ws) &&
+                   (ifs.elseBlock == null || collectWritesStmt(ifs.elseBlock, ws))
+        }
+        if (st instanceof ExpressionStatement) return collectWritesExpr(((ExpressionStatement) st).expression, ws)
+        false   // unknown statement → bail
+    }
+
+    private static boolean collectWritesExpr(Expression e, Set<String> ws) {
+        if (e == null) return true
+        if (e instanceof ConstantExpression || e instanceof VariableExpression ||
+            e instanceof ClassExpression) return true
+        if (e instanceof BooleanExpression) return collectWritesExpr(((BooleanExpression) e).expression, ws)
+        if (e instanceof NotExpression) return collectWritesExpr(((NotExpression) e).expression, ws)
+        if (e instanceof UnaryMinusExpression) return collectWritesExpr(((UnaryMinusExpression) e).expression, ws)
+        if (e instanceof PropertyExpression) return collectWritesExpr(((PropertyExpression) e).objectExpression, ws)
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            return collectWritesExpr(te.booleanExpression, ws) &&
+                   collectWritesExpr(te.trueExpression, ws) &&
+                   collectWritesExpr(te.falseExpression, ws)
+        }
+        if (e instanceof PostfixExpression) return recordTarget(((PostfixExpression) e).expression, ws)
+        if (e instanceof PrefixExpression)  return recordTarget(((PrefixExpression) e).expression, ws)
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            if (!(de.leftExpression instanceof VariableExpression)) return false
+            ws.add(((VariableExpression) de.leftExpression).name)
+            return collectWritesExpr(de.rightExpression, ws)
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            int t = be.operation.type
+            if (Types.ofType(t, Types.ASSIGNMENT_OPERATOR)) {
+                return recordTarget(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
+            }
+            switch (t) {
+                case Types.PLUS: case Types.MINUS: case Types.MULTIPLY: case Types.DIVIDE:
+                case Types.MOD: case Types.LEFT_SQUARE_BRACKET:
+                case Types.COMPARE_EQUAL: case Types.COMPARE_NOT_EQUAL:
+                case Types.COMPARE_LESS_THAN: case Types.COMPARE_LESS_THAN_EQUAL:
+                case Types.COMPARE_GREATER_THAN: case Types.COMPARE_GREATER_THAN_EQUAL:
+                case Types.LOGICAL_AND: case Types.LOGICAL_OR:
+                    return collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
+                default:
+                    return false   // shift/power/membership/etc. → bail (could be a collection mutation)
+            }
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            String m = mce.methodAsString
+            if (LOOP_MUTATORS.contains(m)) {
+                if (!recordTarget(mce.objectExpression, ws)) return false
+            } else if (!LOOP_PURE_READS.contains(m)) {
+                return false   // unknown call → can't bound effects → bail
+            } else {
+                if (!collectWritesExpr(mce.objectExpression, ws)) return false
+            }
+            return collectWritesArgs(mce.arguments, ws)
+        }
+        false   // unknown expression kind → bail
+    }
+
+    private static boolean collectWritesArgs(Expression args, Set<String> ws) {
+        if (!(args instanceof TupleExpression)) return true
+        for (Expression a : ((TupleExpression) args).expressions) if (!collectWritesExpr(a, ws)) return false
+        true
+    }
+
+    /** Record an assignment/mutation target's base name (a local, a `this.field`, or `a[i]`'s array). */
+    private static boolean recordTarget(Expression lhs, Set<String> ws) {
+        if (lhs instanceof VariableExpression) { ws.add(((VariableExpression) lhs).name); return true }
+        if (lhs instanceof PropertyExpression) { ws.add(((PropertyExpression) lhs).propertyAsString); return true }
+        if (lhs instanceof BinaryExpression &&
+                ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            Expression recv = ((BinaryExpression) lhs).leftExpression
+            if (recv instanceof VariableExpression) { ws.add(((VariableExpression) recv).name); return true }
+        }
+        false   // unusual target → bail
     }
 
     /**
@@ -3292,12 +3475,13 @@ class VerifyChecker extends TypeCheckingExtension {
      *  Phase 49b — when the body has in-body early-exits, walk it interleaving sym-exec of
      *  non-exit statements with {@code ¬each-in-body-guard} (the preservation check fires
      *  only on the "no early-exit taken" path; each exit's @Ensures is verified separately). */
-    private void checkPreservation(MethodNode node, LoopSite site) {
+    private void checkPreservation(MethodNode node, LoopSite site, List<Expression> stableReqs) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+            assumeStableRequires(s, enc, stableReqs)   // Phase 64 — loop-stable precondition facts
             assumeClassInvariants(s, enc)
             symExecBodyWithExits(site, enc, s)
             // Re-translating the invariant reads the post-body bindings → inv'.
@@ -3313,12 +3497,13 @@ class VerifyChecker extends TypeCheckingExtension {
     /** Progress: invariant ∧ guard ∧ class invariants ⇒ the variant strictly decreases and stays ≥ 0.
      *  Phase 49b — same body-walk treatment as preservation: progress is checked on the
      *  "no early-exit taken" path. */
-    private void checkProgress(MethodNode node, LoopSite site) {
+    private void checkProgress(MethodNode node, LoopSite site, List<Expression> stableReqs) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+            assumeStableRequires(s, enc, stableReqs)   // Phase 64 — loop-stable precondition facts
             assumeClassInvariants(s, enc)
             Object oldV = LoopEncoder.tr(enc, site.spec.variant, "variant")
             symExecBodyWithExits(site, enc, s)

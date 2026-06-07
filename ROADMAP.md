@@ -3812,12 +3812,36 @@ diagnostic (`invText`). So a broken `@Invariant({ s == 0 })` over `for (x in xs)
 `invariant: (s == 0)` / `counterexample: s = 0, xs.size() = 1` / `fails on: sumIn([-1])` — the loop
 variable and a runnable repro, no `__gvForInIdx` in sight.
 
-**Known limits.** Preservation does not assume `@Requires` (sound — a precondition over mutable state
-can go stale in the body), so element facts must come from the body's *structure* (`x < 0 ? -x : x` is
-provably `>= 0`, a conditional `c = c + 1` keeps `c >= 0`), not from a precondition `xs.every { … }`
-instantiated at the element. An invariant that references the loop variable directly can't be
-*established* (there's no current element before the first iteration). Int-element collections are the
-modelled case; a non-Int element doesn't translate and skips.
+**Known limits.** An invariant that references the loop variable directly can't be *established*
+(there's no current element before the first iteration). Int-element collections are the modelled case;
+a non-Int element doesn't translate and skips. *(Phase 64 lifts the earlier "preservation can't assume
+`@Requires`" limit for loop-stable conjuncts — element reasoning from `xs.every { … }` now works.)*
+
+---
+
+## Phase 64 — Loop-stable `@Requires` in preservation/progress  *(shipped)*
+
+Preservation and progress deliberately omit `@Requires`: a precondition over mutable state goes stale
+once the loop runs (`@Requires({ i < n })` is false after the body increments `i`). But a conjunct that
+references only state the loop body *doesn't* modify stays true on every iteration and is sound to
+assume — which is exactly what for-in element reasoning needs (`xs.every { it >= 0 }` instantiated at
+the current element, where the loop only *reads* `xs`).
+
+The discrimination is a **sound write-set over-approximation** of the loop's prefix + body
+(`loopWriteSet`): assignment / declaration / `++` / compound-assign targets, `a[i] =` array names,
+`this.field` writes, and the receivers of a fixed set of known collection mutators (`add`/`remove`/
+`put`/…). Anything whose effects can't be bounded — an unrecognised method call, a shift operator that
+might be a `<<` append, an unusual statement — makes `loopWriteSet` return null, and **all** conjuncts
+are dropped (the prior, always-sound behaviour). A `@Requires` is split into top-level `&&` conjuncts;
+a conjunct is assumed in preservation/progress iff its free names (over-collected via a visitor —
+closure params like `it` included, which only makes the test stricter) are disjoint from the write-set.
+
+Over-approximation is the safe direction: surplus write-set names, or surplus free names, only cause
+*more* conjuncts to be conservatively dropped — never a stale fact assumed. The soundness anchor: a loop
+that decrements `cap` puts `cap` in the write-set, so `@Requires({ cap >= 1000 })` is dropped and
+`@Invariant({ cap >= 0 })` correctly refutes at `cap = 0` (assuming the stale bound would wrongly verify
+it). The mechanism is loop-shape-agnostic — while, classic-for, and for-in all benefit; establishment
+and use already saw the full `@Requires`.
 
 ---
 
