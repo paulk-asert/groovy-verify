@@ -2572,6 +2572,12 @@ class Encoder {
             // i.e. `a.remainder(b)` — NOT the non-negative `a.mod(b)`.
             return session.intRem(L, R)
         }
+        if (opText == '==>') {
+            // Groovy 5's logical-implication operator (a BinaryExpression with the IMPLIES token):
+            // `a ==> b` ≡ `!a || b`. The boolean-method form `a.implies(b)` is handled in
+            // translateMethodCall; both reuse the backend's existing `implies` primitive.
+            return session.implies(L, R)
+        }
         switch (op) {
             case Types.PLUS:                return session.plus(L, R)
             case Types.MINUS:               return session.minus(L, R)
@@ -2682,6 +2688,14 @@ class Encoder {
             if (m == 'remainder') return session.intRem(a, b)
             if (m == 'mod')       return session.intMod(a, b)
             return truncDiv(a, b)   // intdiv
+        }
+
+        // Groovy's `a.implies(b)` (DGM `Boolean.implies` = `!a || b`) — the method twin of the `==>`
+        // operator (translateBinary). Both reduce to the backend's `implies`.
+        if (m == 'implies' && args.size() == 1) {
+            Object a = translate(recv)
+            Object b = translate(args.get(0))
+            return (a == null || b == null) ? null : session.implies(a, b)
         }
 
         // Numeric sum/product aggregation over an *Int* list/array — the Groovy-idiomatic spellings:

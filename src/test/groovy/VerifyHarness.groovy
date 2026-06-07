@@ -3048,6 +3048,41 @@ class VerifyHarness {
                                    (0..<a.length).any { a[it] == result } })
                         static int badMax(int[] a) { a[0] }
                     }''')],
+
+        // ---------- Phase 57: logical implication — `==>` operator and `.implies()` method ----------
+        // The `==>` operator (Groovy 5) is a BinaryExpression lowered to `implies(a, b) = !a || b`.
+        // Modus ponens: from `(a>=0) ==> (b>=0)` and `a>=0`, derive `b>=0`.
+        [group: 'P57 implies', name: 'modus ponens via ==> operator', ok: true,
+         src: tc('''class C {
+                        @Requires({ ((a >= 0) ==> (b >= 0)) && a >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int a, int b) { b }
+                    }''')],
+        // The `.implies()` method form (DGM Boolean.implies) lowers the same way.
+        [group: 'P57 implies', name: 'modus ponens via .implies() method', ok: true,
+         src: tc('''class C {
+                        @Requires({ (a >= 0).implies(b >= 0) && a >= 0 })
+                        @Ensures({ result >= 0 })
+                        static int f(int a, int b) { b }
+                    }''')],
+        // Soundness: the implication alone (without the antecedent) doesn't give the consequent.
+        [group: 'P57 implies', name: 'implication without antecedent refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ (a >= 0) ==> (b >= 0) })
+                        @Ensures({ result >= 0 })
+                        static int f(int a, int b) { b }
+                    }''')],
+        // Simplification showcase: the array-element frame reads as an implication — every index
+        // OTHER than j is unchanged — `it != j ==> a[it] == old.a[it]` (vs `it == j || …`).
+        [group: 'P57 implies', name: 'array frame via ==> implication', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ 0 <= j && j < a.length })
+                       @Ensures({ (0..<a.length).every { it != j ==> a[it] == old.a[it] } })
+                       void set(int j, int v) { a[j] = v }
+                   }''')],
+
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
         // straight-line case. Phase 46d extends the same path-fact mechanism to the loop body:
         // dischargeRegion recurses into an in-region if-statement, asserting the cond in the

@@ -239,9 +239,12 @@ with `count = 0`, and the `@Requires({ m > 0 })` lets the invariant's `0 <= max`
 
 A postcondition can relate the *exit* state to the *entry* state with `old` — `@Ensures({ count
 == old.count + 1 })` — and `old` reaches into array contents too, which is how a method frames what
-it leaves alone: a setter that touches only `a[j]` proves every other element is unchanged,
-`@Ensures({ (0..<a.length).every { it == j || a[it] == old.a[it] } })` (groovy-contracts clones the
-field for `old`, so this holds at runtime as well as in the proof).
+it leaves alone: a setter that touches only `a[j]` proves every *other* element is unchanged, which
+reads naturally as an implication using Groovy 5's `==>` operator —
+`@Ensures({ (0..<a.length).every { it != j ==> a[it] == old.a[it] } })` (groovy-contracts clones the
+field for `old`, so this holds at runtime as well as in the proof). The `==>` operator and the
+equivalent `.implies()` method both lower to `!a || b`; the older spelling `it == j || a[it] ==
+old.a[it]` works too.
 
 **String-keyed sets and maps, with the same machinery.** Sets and maps work over `Set<Integer>` /
 `Map<Integer,Integer>` and likewise over `Set<String>` / `Map<String,Integer>` (and the enum
@@ -1000,6 +1003,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Sum aggregation over a list (Int *and* String)** | `xs[lo..<hi].sum()` (prefix sum, for loop invariants) and `xs.sum()` (whole list) lower to base/step axioms — `sum$(arr,lo,hi)` for an Int list (a running total provably equals the list sum, `s == xs[0..<i].sum()` carried across the loop) and **`strConcat$`** for a `List<String>` (duck-typed `['a','b','c'].sum() == 'abc'`, over the `str.++` monoid). Other element domains skip honestly. The value-sum analogue of `count`/`bcount`. Empty range modelled as `0`/`""` (Groovy's `[].sum()` is `null` — needs a non-empty guard); refuting a false claim returns honest UNKNOWN. HumanEval 3 `below_zero` (`result ⟺ ∃ prefix < 0`) verifies on it | ✅ Phase 51 |
 | **Product aggregation via the `inject` fold** | `xs.inject(1) { a, x -> a * x }` (and `xs[lo..<hi]`-ranged) is recognised as a product → `prod$(arr,lo,hi)` with base (empty = 1) / step (`× arr[h-1]`) axioms; `inject(0){ a, x -> a + x }` is the sum fold. A running product proof mirrors the sum loop (preservation closes by congruence, not NIA). HumanEval 8 `sum_product` verifies sum + product in one loop | ✅ Phase 52 |
 | **Recursive-sequence spec: `Fib.of(i)`** | a Fibonacci spec helper lowering to `fib$` with base (`0`,`1`) / step (`fib(k)=fib(k-1)+fib(k-2)`) axioms — the two-term-recurrence sibling of `sum`/`prod`. The textbook iterative-equals-recursive proof verifies (`result == Fib.of(n)`). HumanEval 39's outer `prime_fib` search is a deliberate non-target (open-problem termination) | ✅ Phase 55 |
+| **Logical implication — `==>` operator & `.implies()` method** | Groovy 5's `a ==> b` (a BinaryExpression) and the DGM `a.implies(b)` both lower to `!a ∨ b` (the backend's `implies`). Frame conditions read naturally — `every { it != j ==> a[it] == old.a[it] }` — and modus ponens / DFS "closed-except-on-stack" invariants simplify. (Eager, like the method; the short-circuit-obligation path for a body-level `==>` guarding an access is a residual — use `if` there) | ✅ Phase 57 |
 
 ## Building & testing
 
