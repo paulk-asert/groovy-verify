@@ -274,6 +274,8 @@ class ContractExpansionTransform implements ASTTransformation {
         List<Statement> bodyPrefix = null
         Expression autoInvariant = null
         Expression autoVariant = null
+        String forInVarName = null
+        Statement forInBindStmt = null
         Expression guard
         if (loop instanceof ForStatement) {
             ForStatement f = (ForStatement) loop
@@ -307,6 +309,8 @@ class ContractExpansionTransform implements ASTTransformation {
                         || autoInvariant == null || autoVariant == null) return null
                 initStmts  = [initS]
                 bodyPrefix = [bindX]
+                forInVarName = x
+                forInBindStmt = bindX
             } else {
                 return null   // for-in over a literal / method-call collection → loud skip
             }
@@ -352,6 +356,8 @@ class ContractExpansionTransform implements ASTTransformation {
         if (updateStmt != null) body.add(updateStmt)                // for/for-in: …; update
         spec.body = body
         spec.init = initStmts
+        spec.forInVar = forInVarName
+        spec.forInBind = forInBindStmt
         return spec
     }
 

@@ -3106,6 +3106,12 @@ class VerifyChecker extends TypeCheckingExtension {
     private void verifyLoop(MethodNode node, LoopSite site) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
         Expression postAst = findEnsures(node) != null ? contractAstFor(node, 'ensures') : null
+        // Phase 65 — for a for-in, an invariant clause referencing the loop variable is checked at
+        // body-entry (x bound to the current element), exactly as groovy-contracts does at runtime —
+        // not at the loop head, where x is undefined (which spuriously "failed" on the empty
+        // collection, the one case the runtime never checks). Partition such clauses out of the
+        // classic VCs into a per-element check; the x-free clauses stay inductive as usual.
+        List<Expression> perElement = partitionForInPerElement(site)
         // Phase 64 — the precondition conjuncts the loop body provably can't invalidate, sound to
         // assume in preservation/progress (computed once; establishment/use already see the full reqAst).
         List<Expression> stableReqs = loopStableRequires(reqAst, site)
@@ -3113,6 +3119,7 @@ class VerifyChecker extends TypeCheckingExtension {
             checkEstablishment(node, site, reqAst)
             checkPreservation(node, site, stableReqs)
             if (site.spec.variant != null) checkProgress(node, site, stableReqs)
+            if (!perElement.isEmpty()) checkForInElement(node, site, perElement, stableReqs)
             if (postAst != null) checkUse(node, site, reqAst, postAst)
             // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
             // when the method has an @Ensures to prove).
@@ -3145,6 +3152,54 @@ class VerifyChecker extends TypeCheckingExtension {
         'every','any','find','findAll','collect','intdiv','mod','remainder','abs','compareTo','equals',
         'startsWith','endsWith','toUpperCase','toLowerCase','first','last','head','tail','of','range',
         'boundedBy','boundedCount','intValue','longValue'] as Set
+
+    /**
+     * Phase 65 — for a for-in loop, split the invariant clauses that reference the loop variable out
+     * of {@code spec.invariants} (mutating it to the x-free clauses the classic loop-head VCs use) and
+     * return them for the per-element check. A no-op for non-for-in loops and for clauses that don't
+     * mention the loop variable.
+     */
+    private static List<Expression> partitionForInPerElement(LoopSite site) {
+        String x = site.spec.forInVar
+        if (x == null) return Collections.<Expression>emptyList()
+        // Split each invariant into top-level conjuncts first, so a mixed `s >= 0 && x >= 0` separates
+        // its accumulator clause (inductive, loop-head) from its per-element clause (over the element).
+        List<Expression> conjuncts = new ArrayList<Expression>()
+        for (Expression inv : site.spec.invariants) splitConjuncts(inv, conjuncts)
+        List<Expression> perElement = new ArrayList<Expression>()
+        List<Expression> xFree = new ArrayList<Expression>()
+        for (Expression c : conjuncts) {
+            (freeNames(c).contains(x) ? perElement : xFree).add(c)
+        }
+        site.spec.invariants = xFree
+        perElement
+    }
+
+    /**
+     * Phase 65 — verify a for-in's per-element invariant clauses (those referencing the loop variable).
+     * At an arbitrary valid iteration — the x-free invariants (including {@code 0 <= idx <= size}) and
+     * the guard ({@code idx < size}, so {@code 0 <= idx < size}) hold, the loop-stable preconditions
+     * hold, and {@code x = xs[idx]} — each clause must hold. On an empty collection the antecedent is
+     * unsatisfiable, so the check is vacuous (matching the runtime, which never reaches the body).
+     */
+    private void checkForInElement(MethodNode node, LoopSite site, List<Expression> perElement,
+                                   List<Expression> stableReqs) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))   // x-free invariants + index bounds
+            s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))    // idx < size
+            assumeStableRequires(s, enc, stableReqs)
+            assumeClassInvariants(s, enc)
+            if (site.spec.forInBind != null) LoopEncoder.symExec([site.spec.forInBind], enc, s)  // x = xs[idx]
+            s.assertExpr(s.not(LoopEncoder.conj(enc, s, perElement)))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                String text = perElement.collect { it.text }.join(' && ')
+                addStaticTypeError(Reporter.formatLoopPerElement(node.name, text, r), site.loopStmt)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
 
     /** The @Requires conjuncts referencing only loop-stable state — sound to assume mid-loop. */
     private static List<Expression> loopStableRequires(Expression reqAst, LoopSite site) {

@@ -3812,10 +3812,10 @@ diagnostic (`invText`). So a broken `@Invariant({ s == 0 })` over `for (x in xs)
 `invariant: (s == 0)` / `counterexample: s = 0, xs.size() = 1` / `fails on: sumIn([-1])` — the loop
 variable and a runnable repro, no `__gvForInIdx` in sight.
 
-**Known limits.** An invariant that references the loop variable directly can't be *established*
-(there's no current element before the first iteration). Int-element collections are the modelled case;
-a non-Int element doesn't translate and skips. *(Phase 64 lifts the earlier "preservation can't assume
-`@Requires`" limit for loop-stable conjuncts — element reasoning from `xs.every { … }` now works.)*
+**Known limits.** Int-element collections are the modelled case; a non-Int element doesn't translate
+and skips. *(Phase 64 lifts the earlier "preservation can't assume `@Requires`" limit for loop-stable
+conjuncts; Phase 65 lifts the "an invariant can't reference the loop variable" limit — such clauses are
+now verified as per-element checks.)*
 
 ---
 
@@ -3842,6 +3842,27 @@ that decrements `cap` puts `cap` in the write-set, so `@Requires({ cap >= 1000 }
 `@Invariant({ cap >= 0 })` correctly refutes at `cap = 0` (assuming the stale bound would wrongly verify
 it). The mechanism is loop-shape-agnostic — while, classic-for, and for-in all benefit; establishment
 and use already saw the full `@Requires`.
+
+---
+
+## Phase 65 — For-in invariants over the loop variable (per-element checks)  *(shipped)*
+
+groovy-contracts checks a loop invariant at **body-entry** — inside the loop, with the loop variable
+bound to the current element (`@Invariant({ x < 5 })` over `for (x in xs)` fires at runtime when `x`
+reaches an element `>= 5`). The Phase 63 desugar checked the invariant at the **loop head** instead,
+where the synthetic `x = xs[idx]` binding hasn't run, so `x` was havoced — and the spurious counterexample
+was always the *empty* collection (`xs.size() = 0`), the one case the runtime never reaches. A true
+per-element invariant like `x >= 0` was wrongly refuted; a false one failed for the wrong reason.
+
+The fix splits a for-in's invariants (after breaking each into top-level conjuncts) into the clauses
+that reference the loop variable and those that don't. The **x-free** clauses (`s >= 0`, the auto index
+bound) stay inductive loop-head invariants — establishment + preservation as before. The **per-element**
+clauses are discharged by one extra VC (`checkForInElement`): at an arbitrary valid iteration — x-free
+invariants ∧ guard (so `0 <= idx < size`) ∧ loop-stable preconditions ∧ `x = xs[idx]` — each clause must
+hold. This matches the runtime exactly and is naturally **vacuous on an empty collection** (the guard
+makes the antecedent unsatisfiable, so no spurious failure). Combined with Phase 64, `@Requires({ xs.every
+{ it >= 0 } })` now discharges `@Invariant({ x >= 0 })` by instantiating the precondition at the element;
+the refutation counterexample names the offending element and a *non-empty* collection.
 
 ---
 
