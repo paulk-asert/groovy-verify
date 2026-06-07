@@ -2501,10 +2501,17 @@ class VerifyChecker extends TypeCheckingExtension {
                     // {@code String name = "world"} or similar non-Int local doesn't crash at
                     // {@code eq(intFresh, stringRhs)}. The {@link Encoder#bind} hook also populates
                     // {@code sortedEnv} for non-Int names, completing the round-trip.
-                    Object rhs = enc.translate(a.rhs)
+                    // Phase 67 — a decimal (BigDecimal/Double/Float) field/local is bound through the
+                    // Real path: the RHS via asReal and a Real fresh handle, so the SSA equality is
+                    // sort-matched (an intVar fresh + a Real rhs silently mis-modelled the write — a
+                    // syphon `b = b + amt - 0.01` could then "verify" conservation it actually breaks).
+                    boolean isDecimal = enc.isDecimalName(a.name)
+                    Object rhs = isDecimal ? enc.asRealValue(a.rhs) : enc.translate(a.rhs)
                     ClassNode declaredType = currentScalarTypes.get(a.name)
                     Object fresh
-                    if (declaredType != null && !isIntElement(declaredType)) {
+                    if (isDecimal) {
+                        fresh = session.realVar(a.name + '#' + (++ssaVersion))
+                    } else if (declaredType != null && !isIntElement(declaredType)) {
                         fresh = session.varOfSort(a.name + '#' + (++ssaVersion), enc.sortForType(declaredType))
                     } else if (currentBooleanLocals.contains(a.name)) {
                         // Phase 48b — boolean locals get a boolVar fresh handle so the
