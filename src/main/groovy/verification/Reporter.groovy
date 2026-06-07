@@ -253,6 +253,13 @@ class Reporter {
             "Could not decide loop-invariant preservation in ${methodName}", result)
     }
 
+    /** Phase 65 — a for-in invariant clause over the loop variable that fails for some element. */
+    static String formatLoopPerElement(String methodName, String invariantText, CheckResult result) {
+        loopFailure("Cannot prove loop invariant holds for every element in ${methodName}",
+            "invariant", invariantText,
+            "Could not decide per-element loop invariant in ${methodName}", result)
+    }
+
     static String formatLoopProgress(String methodName, String variantText, CheckResult result) {
         loopFailure("Cannot prove loop variant decreases and stays >= 0 in ${methodName}",
             "variant", variantText,
