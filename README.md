@@ -16,18 +16,21 @@
 
 # groovy-verify
 
-An SMT-backed verification extension for Groovy, packaged as a standalone
-type-checking extension. Annotate code with stock
-[`groovy.contracts`](https://github.com/spockframework/groovy-contracts) contracts,
-compile a caller under
+groovy-verify **proves your code can't hit whole classes of bug — at compile time, before you run
+it.** An array index out of bounds, a null dereference, a divide-by-zero, a broken class invariant,
+or simply *the wrong answer*: you say what should be true with stock
+[`groovy.contracts`](https://github.com/spockframework/groovy-contracts) annotations
+(`@Requires` / `@Ensures` / `@Invariant`), compile under
 
 ```groovy
 @TypeChecked(extensions = 'verification.VerifyChecker')
 ```
 
-and Z3 discharges the proof obligations **at compile time** — before the
-runtime contract checks would ever fire. Failed proofs surface as ordinary
-compile errors with Dafny-style counterexamples.
+and the [Z3](https://github.com/Z3Prover/z3) solver — an automated theorem prover — checks those
+contracts hold for *every possible* input, or fails the build with a concrete counterexample (the
+exact arguments that break it). It's a verification extension built on the standard `@TypeChecked`
+extension mechanism, and the check runs *before* the contracts' own runtime assertions would ever
+fire — so a bug that would surface as an exception in production surfaces as a compile error instead.
 
 This started life as the verification spike in the *groovy6-functional* blog
 companion repo. It was split out so it can grow on its own; that repo now
@@ -66,13 +69,13 @@ rather than a separate build tool. The cross-language picture: Dafny (new langua
 (Groovy/JVM).
 
 **Loudly partial, not silently sound.** Verification is sound *within* a deliberately small
-fragment and **loudly unsound outside it** — anything the encoder can't model emits a
-"skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named per
+**fragment** — the subset of Groovy it can model — and **loudly unsound outside it**: anything the
+encoder can't model emits a "skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named per
 capability (the "deferred"/"residual" notes in the [capability table](#whats-demonstrated) and the
 [ROADMAP](ROADMAP.md)); 32-bit integer overflow is covered opt-in via `@CheckOverflow` (Verus
-parity); heap aliasing is a deliberate [non-goal](ROADMAP.md). The failure mode the verifier family fears most is silent vacuous
-passes — saying *loudly partial* directly is the credible position, and it's the one this tool
-holds.
+parity); heap aliasing is a deliberate [non-goal](ROADMAP.md). The failure mode the verifier family fears most is a silent *vacuous*
+pass — a "proof" that succeeds only because its assumptions can never all hold, so it proves nothing.
+Saying *loudly partial* directly is the credible position, and it's the one this tool holds.
 
 **Depth that vouches for the architecture.** A fully verified in-place insertion sort
 (*sorted ∧ permutation*) under sound `@Modifies` framing, and a DFS over a functional graph
@@ -117,11 +120,12 @@ time with an input that breaks it:
     fails on: max(-1, 0)
 ```
 
-**Loop invariants & termination.** The invariant carries the proof across iterations and
-`@Decreases` shows the loop ends — so the postcondition `result == n` is *proven of the
-computed value*, not assumed. (Recursion is handled the same way: a method-level
-`@Decreases` lets the method's own `@Ensures` serve as the inductive hypothesis at the
-recursive call.)
+**Loop invariants & termination.** The two classic loop bugs — an off-by-one that computes the wrong
+result, and a loop that never ends — are exactly what `@Invariant` and `@Decreases` rule out: the
+invariant carries the proof across iterations and `@Decreases` (a measure that must strictly shrink)
+shows the loop terminates, so the postcondition `result == n` is *proven of the computed value*, not
+assumed. (Recursion works the same way — a method-level `@Decreases` lets the method's own `@Ensures`
+be assumed at the recursive call: the proof-by-induction step.)
 
 ```groovy
 @Requires({ n >= 0 })
@@ -135,9 +139,10 @@ static int countUp(int n) {
 }
 ```
 
-The same machinery handles **aggregation** — the textbook running-total proof, with the loop
-invariant carrying a *prefix sum* `xs[0..<i].sum()` (the idiomatic Groovy spelling) so the returned
-value is proven equal to the whole-list sum:
+The same machinery handles **aggregation** — and running totals are a classic source of *silently
+wrong* answers (an off-by-one or a forgotten element yields a plausible-but-wrong number, with no
+exception to flag it). Here the loop invariant carries a *prefix sum* `xs[0..<i].sum()` (the idiomatic
+Groovy spelling), so the returned value is *proven* equal to the whole-list sum:
 
 ```groovy
 @Requires({ xs != null && xs.size() > 0 })
@@ -152,13 +157,17 @@ static int total(List<Integer> xs) {
 }
 ```
 
-`sum` is the value-aggregation analogue of the multiset `count` — an uninterpreted `sum(arr, lo, hi)`
-with base/step axioms, so the body's `s = s + xs[i]` provably re-establishes `s == xs[0..<i].sum()`
-each iteration. (The non-empty guard reflects a real Groovy semantic: `[].sum()` is `null`, not `0`.)
+Under the hood the solver is told just two facts about `sum` — the sum of an empty range is `0`, and
+extending a range by one element adds that element — which is exactly enough to prove the body's
+`s = s + xs[i]` keeps `s == xs[0..<i].sum()` true on every iteration. (The non-empty guard reflects a
+real Groovy semantic: `[].sum()` is `null`, not `0`.)
 
-**Bounded quantifiers over arrays — in the idiom you'd already write.** A *sorted*
-precondition (every element ≤ its successor) lets the checker conclude adjacent elements
-are ordered. The quantifier is plain GDK Groovy, so the runtime contract evaluates it too:
+**Properties over whole arrays — in the idiom you'd already write.** This is how you turn a *latent*
+assumption like "this method only works on a sorted array" into one the compiler enforces — so passing
+unsorted input is a build error, not a surprise at runtime. The contract is a plain `.every { … }`
+(a "for all" over the elements); a *sorted* precondition (every element ≤ its successor) lets the
+checker conclude adjacent elements are ordered, and because it's ordinary GDK Groovy it runs as a
+runtime check too:
 
 ```groovy
 @Requires({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && 0 <= k && k + 1 < a.length })
@@ -189,9 +198,10 @@ static int diff(List<Integer> xs, int k) { xs[k] - xs[k + 1] }
 ```
 
 A `List<String>` index is bounds-checked the same way — the element type is irrelevant to the access.
-And the *element* itself is now nullity-checked: `xs[i].method()` (or `xs.get(i).method()`) becomes
-an implicit NPE obligation against a per-element nullity oracle, discharged by an `@Requires` or an
-`if` guard, refuted otherwise with a `fails on: f([null])`-shape repro:
+And the *element* itself is now nullity-checked: calling a method on `xs[i]` (or `xs.get(i)`) raises
+an obligation to prove the element non-null — the verifier tracks a per-element nullity flag — which
+an `@Requires` or an `if` guard discharges, and which is otherwise refuted with a `fails on: f([null])`
+repro (the input that triggers the NPE):
 
 ```groovy
 @Requires({ xs.size() > 0 && xs[0] != null })
@@ -370,11 +380,12 @@ suite continues to verify unchanged, and the permutation-sort showcase still use
 machine-integer-precision territory as Verus or Dafny without forcing the typed-narrow ergonomic
 that limits adoption — *math by default, machine precision on demand.*
 
-**Non-linear arithmetic and integer div/mod — NIA when you need it.** Variable multiplication
-(`a * b` for two non-literal operands) used to opt out into a "skipped: outside fragment"
-diagnostic — a deliberate Phase 8a guard against Z3 NIA hangs. The per-VC 2s timeout has
-proved a more robust guard, so the opt-out is gone and `/` / `%` get first-class dispatch
-too. The natural shapes verify directly:
+**Arithmetic that matches Groovy — including the surprises.** Two things here trip up real code.
+First, **`/` on integers is `BigDecimal` division in Groovy** — `5 / 2 == 2.5`, not `2` — so the
+verifier models it that way and won't pretend a spec assuming `5 / 2 == 2` is correct (integer
+division is `a.intdiv(b)` or `(int)(a / b)`). Second, *variable* multiplication (`a * b` where
+neither side is a constant) is now handled by Z3's non-linear integer arithmetic, so sign facts
+(`i * i >= 0`), divisibility (`n % 2 == 0`), and bounded products verify directly:
 
 ```groovy
 // Bounded squaring — the prime-testing bound check that previously hit the opt-out.
@@ -401,8 +412,9 @@ can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide,
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
 sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in place under a
-sound `@Modifies` frame (the checker *havocs* the array across each call and reframes it from the callee's
-`@Ensures`, so nothing is assumed unchanged for free).
+sound `@Modifies` frame (across each call the checker *havocs* the array — conservatively forgets everything
+it knew about its contents — and re-derives what it needs from the callee's `@Ensures`, so nothing is
+assumed unchanged for free).
 
 > **Soundly, under Phase 24.** The recursive call `insert(m-1, a[m], v)` passes the pivot `a[m]` as the new,
 > tight bound — so its precondition needs the *transitive* bound `a[it] <= a[m-1]` for all `it`, which Z3
@@ -453,11 +465,11 @@ that left elements out of order fails the sortedness clause — bounded quantifi
 the multiset `count` law, `old` pre-state, sound `@Modifies` framing, and a monotone-bound lemma, in one
 proof.
 
-**Finite sets — membership and a cardinality law.** A `Set<Integer>` is modelled as a characteristic
-array (`x in s` is a membership read; `s.add(x)` is a store threaded through the body), so a method's
-effect on the set is provable. `s.size()` is an uninterpreted cardinality carrying a per-mutation
-*update law* — adding an element that isn't already present grows the size by exactly one — which is
-the building block a set-valued termination measure (e.g. DFS over a finite node domain) rests on:
+**Finite sets — membership and a cardinality law.** A `Set<Integer>` is modelled as a *characteristic
+array* — a flag per possible element saying in/out — so `x in s` is a read and `s.add(x)` is a write
+the verifier can track. `s.size()` carries one rule: adding an element that isn't already present grows
+the size by exactly one. That's the building block for proving a loop or recursion that keeps adding to
+a set actually terminates — and that it didn't double-count (e.g. a graph traversal over finite nodes):
 
 ```groovy
 class C {
@@ -561,6 +573,11 @@ class C {
 The same soundness half also goes through under the set-cardinality measure `@Decreases({ n - visited.size() })`
 — the DFS-shaped termination from Phase 16. A traversal that *removes* a node breaks monotonic growth and
 refutes.
+
+> *The next four beats build the verified DFS up from its parts — the counting machinery that proves the
+> traversal both **terminates** and **visits every reachable node**. This is the deepest material in the
+> README (the kind of proof the Dafny/Verus community uses as a benchmark credential); if you'd rather see
+> the tool applied to everyday problems, skip ahead to the [HumanEval Examples](#humaneval-examples).*
 
 **The cardinality axiom — `Sets.boundedBy`.** The uninterpreted set size (Phase 16) knows only its per-mutation
 deltas — it has no link to *which* elements a set holds. `Sets.boundedBy(s, n)` supplies the **pigeonhole**
@@ -875,8 +892,9 @@ like a straight-line method's `if (s != null) s.method()` shape. Reverse-style b
 port on the `List<Character>` API today; a true `String.reverse()` proof would need its
 own uninterpreted+axioms layer (Z3 has no `str.reverse` primitive).
 
-String content is first-class under Phase 47's Z3-native-string-theory adoption: predicates
-(`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
+**The string methods you use every day — now provable, not just asserted.** Because they map to Z3's
+built-in theory of strings (rather than being treated as opaque), a contract over them can be *proven*:
+predicates (`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
 `substring` / `indexOf`), composition (`+` / `concat` / `replace` / regex `matches`), and
 conversion (`Integer.toString` / `parseInt`) all route to Z3 seq-theory primitives;
 `toUpperCase` / `toLowerCase` / `equalsIgnoreCase` / `replaceAll` / `lastIndexOf` are
