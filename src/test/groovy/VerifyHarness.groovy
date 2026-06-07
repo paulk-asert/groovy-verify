@@ -3083,6 +3083,29 @@ class VerifyHarness {
                        void set(int j, int v) { a[j] = v }
                    }''')],
 
+        // ---------- Phase 58: spaceship operator `<=>` (three-way Int comparison) ----------
+        // `a <=> b` is a correct three-way comparator: its sign matches the direct comparison.
+        [group: 'P58 spaceship', name: 'spaceship is a correct three-way comparator', ok: true,
+         src: tc('''class C {
+                        @Ensures({ (result < 0) == (a < b) && (result == 0) == (a == b) &&
+                                   (result > 0) == (a > b) })
+                        static int cmp(int a, int b) { a <=> b }
+                    }''')],
+        // For a < b the spaceship is exactly -1 (Integer.compareTo semantics).
+        [group: 'P58 spaceship', name: 'spaceship of a<b is -1', ok: true,
+         src: tc('''class C {
+                        @Requires({ a < b })
+                        @Ensures({ result == -1 })
+                        static int cmp(int a, int b) { a <=> b }
+                    }''')],
+        // Soundness: unconstrained, the spaceship isn't always 1.
+        [group: 'P58 spaceship', name: 'spaceship is not always 1 (refutes)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int cmp(int a, int b) { a <=> b }
+                    }''')],
+
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the
         // straight-line case. Phase 46d extends the same path-fact mechanism to the loop body:
         // dischargeRegion recurses into an in-region if-statement, asserting the cond in the

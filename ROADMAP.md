@@ -3700,6 +3700,19 @@ translation is all that's needed.
 
 ---
 
+## Phase 58 — Spaceship operator `<=>`  *(shipped)*
+
+Groovy's `a <=> b` (compareTo) is a `BinaryExpression` with the `COMPARE_TO` token. For Int operands it
+lowers to the three-way sign `ite(a < b, -1, ite(a == b, 0, 1))` — exactly `Integer.compareTo`'s
+`-1/0/1` — so a three-way comparator's contract verifies (`(result < 0) == (a < b) ∧ …`, and `a < b ⟹
+result == -1`). Int-oriented like the other comparison operators; a `String <=>` (lexicographic,
+arbitrary-valued) would need Z3's string ordering, so it skips honestly rather than mis-applying int
+comparison. **Modest** — the three-way result is rarely the *subject* of a spec (direct `<`/`==`
+comparisons read clearer, and don't need it), but it rounds out comparison-operator coverage and lets
+a `compareTo`/`compare` method be verified directly.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -2595,6 +2595,14 @@ class Encoder {
             case Types.COMPARE_LESS_THAN_EQUAL:     return session.le(L, R)
             case Types.COMPARE_GREATER_THAN:        return session.gt(L, R)
             case Types.COMPARE_GREATER_THAN_EQUAL:  return session.ge(L, R)
+            case Types.COMPARE_TO:
+                // Groovy's spaceship `a <=> b` (compareTo): the three-way sign. For Int operands it is
+                // exactly -1 / 0 / 1 (Integer.compareTo), modelled as nested `ite`. A non-Int receiver
+                // (e.g. String, whose `<=>` is lexicographic and arbitrary-valued) would need Z3 string
+                // ordering, so it skips honestly rather than mis-applying int comparison.
+                if (isStringReceiver(be.leftExpression) || isStringReceiver(be.rightExpression)) return null
+                return session.ite(session.lt(L, R), session.intLit(-1L),
+                           session.ite(session.eq(L, R), session.intLit(0L), session.intLit(1L)))
             case Types.LOGICAL_AND:         return session.and([L, R])
             case Types.LOGICAL_OR:          return session.or([L, R])
             default:                        return null
