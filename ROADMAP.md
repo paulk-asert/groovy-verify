@@ -3679,6 +3679,27 @@ generation it rests on verifies; the search does not, and saying so cleanly is t
 
 ---
 
+## Phase 57 — Logical implication: `==>` and `.implies()`  *(shipped)*
+
+The backend already had an `implies` primitive (used internally for quantifier ranges); this exposes
+it at the surface. Both Groovy spellings of logical implication are now recognised in contracts:
+
+- **`a ==> b`** — Groovy 5's implication operator, which the parser produces as a `BinaryExpression`
+  with the `IMPLIES` (`==>`) token; `translateBinary` lowers it (by operator text) to `implies(L, R)`.
+- **`a.implies(b)`** — the DGM `Boolean.implies` method (`!a || b`); `translateMethodCall` lowers it
+  the same way.
+
+Both are `!a ∨ b`. This is *ergonomics, not capability* — `a ==> b` was always expressible as
+`!a || b` / `a ? b : true` — but it reads far better for the shapes that recur here: the array-element
+**frame** `every { it != j ==> a[it] == old.a[it] }` (every index other than `j` is unchanged), modus
+ponens, and the DFS "closed-except-on-stack" invariant `(it in visited) ==> (it in onStack ∨ next[it]
+in visited)`. *Residual:* like the DGM method, the operator is **eager**, and the implicit-obligation
+short-circuit scan doesn't yet treat a *body-level* `a ==> b` as guarding `b`'s accesses by `a` (use
+an `if` to guard an access in a body); in contract position — the overwhelming use — the value
+translation is all that's needed.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
