@@ -140,6 +140,33 @@ interface SmtSession extends AutoCloseable {
     Object bcount(Object arr, Object v, Object lo, Object hi)
 
     /**
+     * The bounded sum of element *values* {@code sum(arr, lo, hi) = Σ_{lo <= i < hi} arr[i]} — an
+     * uninterpreted {@code (Array, Int, Int) -> Int}. The value-sum analogue of {@link #bcount}'s
+     * occurrence-count. Two applications with the same {@code (arr, lo, hi)} share the term; its
+     * meaning comes from the base ({@code hi <= lo ⟹ sum == 0}) and step
+     * ({@code lo < hi ⟹ sum(arr,lo,hi) == sum(arr,lo,hi-1) + arr[hi-1]}) axioms the caller asserts,
+     * which let a loop invariant {@code s == sum(arr,0,i)} be preserved by {@code s = s + arr[i]}.
+     */
+    Object sum(Object arr, Object lo, Object hi)
+
+    /**
+     * The bounded product of element values {@code prod(arr, lo, hi) = Π_{lo <= i < hi} arr[i]} — the
+     * multiplicative sibling of {@link #sum}. Meaning comes from the base ({@code hi <= lo ⟹ prod == 1},
+     * the empty product) and step ({@code lo < hi ⟹ prod(arr,lo,hi) == prod(arr,lo,hi-1) * arr[hi-1]})
+     * axioms the caller asserts. Recognised from the Groovy fold idiom {@code inject(1){ a, x -> a * x }}.
+     */
+    Object prod(Object arr, Object lo, Object hi)
+
+    /**
+     * The bounded *string concatenation* {@code concat(arr, lo, hi) = arr[lo] ++ … ++ arr[hi-1]} over a
+     * {@code (Int -> String)} array — the String-monoid analogue of {@link #sum}, modelling Groovy's
+     * duck-typed {@code ['a','b','c'].sum() == 'abc'}. Meaning from the base ({@code hi <= lo ⟹ concat ==
+     * ""}) and step ({@code lo < hi ⟹ concat(arr,lo,hi) == concat(arr,lo,hi-1) ++ arr[hi-1]}, via
+     * {@link #stringConcat}) axioms the caller asserts.
+     */
+    Object strConcatRange(Object arr, Object lo, Object hi)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store
@@ -309,6 +336,13 @@ interface SmtSession extends AutoCloseable {
      * {@code Integer.parseInt(s)} here.
      */
     Object parseIntFromString(Object s)
+
+    /**
+     * A Bool term: true iff {@code Integer.parseInt(s)} would not throw — the sign-stripped magnitude
+     * is a valid digit sequence. Used for the loud {@code NumberFormatException} obligation, the
+     * companion to the sign-faithful {@link #parseIntFromString}.
+     */
+    Object parseIntValid(Object s)
 
     /**
      * Phase 47f — {@code s.replaceAll(old, new)} as an uninterpreted {@code (String, String, String)

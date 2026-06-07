@@ -327,6 +327,43 @@ class Z3Session implements SmtSession {
         ctx.mkApp(bcountFn, (Expr) arr, (Expr) v, (Expr) lo, (Expr) hi)
     }
 
+    private FuncDecl sumFn
+    @Override
+    Object sum(Object arr, Object lo, Object hi) {
+        if (sumFn == null) {
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
+            sumFn = ctx.mkFuncDecl('sumArr$',
+                [arrSort, ctx.getIntSort(), ctx.getIntSort()] as Sort[],
+                ctx.getIntSort())
+        }
+        ctx.mkApp(sumFn, (Expr) arr, (Expr) lo, (Expr) hi)
+    }
+
+    private FuncDecl prodFn
+    @Override
+    Object prod(Object arr, Object lo, Object hi) {
+        if (prodFn == null) {
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), ctx.getIntSort())
+            prodFn = ctx.mkFuncDecl('prodArr$',
+                [arrSort, ctx.getIntSort(), ctx.getIntSort()] as Sort[],
+                ctx.getIntSort())
+        }
+        ctx.mkApp(prodFn, (Expr) arr, (Expr) lo, (Expr) hi)
+    }
+
+    private FuncDecl strConcatFn
+    @Override
+    Object strConcatRange(Object arr, Object lo, Object hi) {
+        if (strConcatFn == null) {
+            // Domain array is (Int -> String), matching arrayFor(List<String>); range is String.
+            Sort arrSort = ctx.mkArraySort(ctx.getIntSort(), stringSort())
+            strConcatFn = ctx.mkFuncDecl('strConcatArr$',
+                [arrSort, ctx.getIntSort(), ctx.getIntSort()] as Sort[],
+                stringSort())
+        }
+        ctx.mkApp(strConcatFn, (Expr) arr, (Expr) lo, (Expr) hi)
+    }
+
     @Override
     Object setVar(String name) {
         ArrayExpr cached = sets.get(name)
@@ -510,12 +547,41 @@ class Z3Session implements SmtSession {
 
     @Override
     Object stringFromInt(Object n) {
-        ctx.intToString((Expr) n)
+        // Java/Groovy-faithful: Integer.toString(-7) == "-7" == "-" ++ Integer.toString(7). Z3's
+        // intToString is correct for non-negative inputs only (it returns "" for n < 0), so thread
+        // the sign explicitly rather than reasoning over Z3's SMT-LIB semantics.
+        ArithExpr nn = (ArithExpr) n
+        BoolExpr nonneg = ctx.mkGe(nn, ctx.mkInt(0))
+        Expr pos = ctx.intToString((Expr) nn)
+        SeqExpr[] negParts = [(SeqExpr) ctx.mkString('-'),
+                              (SeqExpr) ctx.intToString((Expr) ctx.mkUnaryMinus(nn))] as SeqExpr[]
+        ctx.mkITE(nonneg, pos, ctx.mkConcat(negParts))
     }
 
     @Override
     Object parseIntFromString(Object s) {
-        ctx.stringToInt((Expr) s)
+        // Java/Groovy-faithful sign handling: parseInt("-7") == -7. Z3's stringToInt returns -1 for a
+        // signed string, so strip a leading "-" and negate the magnitude. (Malformed-input
+        // well-formedness is a separate, loud obligation — see parseIntValid.)
+        Expr ss = (Expr) s
+        BoolExpr neg = ctx.mkPrefixOf((Expr) ctx.mkString('-'), ss)
+        Expr mag = ctx.mkExtract((Expr) ss, (Expr) ctx.mkInt(1),
+            (Expr) ctx.mkSub((ArithExpr) ctx.mkLength(ss), ctx.mkInt(1)))   // substring(s, 1, len-1)
+        Expr negVal = ctx.mkUnaryMinus((ArithExpr) ctx.stringToInt((Expr) mag))
+        ctx.mkITE(neg, negVal, ctx.stringToInt((Expr) ss))
+    }
+
+    @Override
+    Object parseIntValid(Object s) {
+        // Well-formedness: Integer.parseInt(s) doesn't throw iff the sign-stripped magnitude is a
+        // valid sequence of digits — equivalently Z3's stringToInt(magnitude) >= 0 (it returns -1 for
+        // empty / non-digit / bare-"-" inputs). The loud obligation discharged at each parseInt site.
+        Expr ss = (Expr) s
+        BoolExpr neg = ctx.mkPrefixOf((Expr) ctx.mkString('-'), ss)
+        Expr rest = ctx.mkExtract((Expr) ss, (Expr) ctx.mkInt(1),
+            (Expr) ctx.mkSub((ArithExpr) ctx.mkLength(ss), ctx.mkInt(1)))
+        Expr mag = ctx.mkITE(neg, rest, ss)
+        ctx.mkGe((ArithExpr) ctx.stringToInt((Expr) mag), ctx.mkInt(0))
     }
 
     /**

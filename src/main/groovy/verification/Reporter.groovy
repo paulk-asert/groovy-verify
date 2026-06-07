@@ -164,6 +164,13 @@ class Reporter {
             "Could not decide modulus positive", result)
     }
 
+    static String formatNumberFormat(String argText, CheckResult result) {
+        // Integer.parseInt(s) throws NumberFormatException unless s is a valid integer numeral.
+        implicit("Possible NumberFormatException: not a valid integer",
+            "${argText} is a valid integer numeral",
+            "Could not decide parse-input well-formed", result)
+    }
+
     static String formatNullDereference(String receiver, String method, CheckResult result) {
         // Groovy's own NPE message for a null receiver: "Cannot invoke method size() on null object".
         String invoked = method ? "method ${method}()" : "a method"

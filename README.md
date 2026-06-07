@@ -135,6 +135,27 @@ static int countUp(int n) {
 }
 ```
 
+The same machinery handles **aggregation** — the textbook running-total proof, with the loop
+invariant carrying a *prefix sum* `xs[0..<i].sum()` (the idiomatic Groovy spelling) so the returned
+value is proven equal to the whole-list sum:
+
+```groovy
+@Requires({ xs != null && xs.size() > 0 })
+@Ensures({ result == xs.sum() })
+static int total(List<Integer> xs) {
+    int s = xs[0]
+    int i = 1
+    @Invariant({ 1 <= i && i <= xs.size() && s == xs[0..<i].sum() })
+    @Decreases({ xs.size() - i })
+    while (i < xs.size()) { s = s + xs[i]; i = i + 1 }
+    return s
+}
+```
+
+`sum` is the value-aggregation analogue of the multiset `count` — an uninterpreted `sum(arr, lo, hi)`
+with base/step axioms, so the body's `s = s + xs[i]` provably re-establishes `s == xs[0..<i].sum()`
+each iteration. (The non-empty guard reflects a real Groovy semantic: `[].sum()` is `null`, not `0`.)
+
 **Bounded quantifiers over arrays — in the idiom you'd already write.** A *sorted*
 precondition (every element ≤ its successor) lets the checker conclude adjacent elements
 are ordered. The quantifier is plain GDK Groovy, so the runtime contract evaluates it too:
@@ -712,6 +733,60 @@ termination, and an `@Ensures` over the *returned list*'s size — the verifier 
 `result.size()` to the returned local's threaded size oracle so the postcondition resolves
 correctly. The Verus port of the same task has none of that — just the implementation.
 
+Task 003 (`below_zero`) — detect whether a running balance ever goes negative — is the
+**sum-aggregation** showcase, and the spec is the *full biconditional*: the result is true iff
+**some prefix sum is negative**.
+
+```groovy
+@Requires({ operations != null })
+@Ensures({ result == (0..operations.size()).any { ((int) operations[0..<it].sum(0)) < 0 } })
+static boolean belowZero(List<Integer> operations) {
+    int s = 0, i = 0
+    @Invariant({ 0 <= i && i <= operations.size() &&
+                 s == operations[0..<i].sum(0) &&
+                 (0..i).every { ((int) operations[0..<it].sum(0)) >= 0 } })   // no prefix negative yet
+    @Decreases({ operations.size() - i })
+    while (i < operations.size()) {
+        s = s + operations[i]
+        if (s < 0) return true
+        i = i + 1
+    }
+    return false
+}
+```
+
+Both directions of the `⟺` are machine-checked: the early `return true` *witnesses* the existential
+(`any`), and the invariant "no prefix is negative yet" (`every`) carries the converse to the
+`return false` path. The prefix sum `operations[0..<i].sum(0)` is the idiomatic Groovy spelling, on
+the Phase-51 `sum` aggregation. Two Groovy-surface accommodations are worth calling out (the *logic*
+needs neither): `sum(0)` rather than `sum()` because Groovy's `[].sum()` is `null`, not `0` (the
+`sum(0)` form returns `0` for an empty prefix, keeping the contract runtime-safe); and an `(int)`
+cast because the GDK `sum()` is typed `Object`, so a `< 0` comparison won't type-check without it.
+
+Task 008 (`sum_product`) — return both the sum and the product of a list — exercises *two*
+aggregations at once. Sum is `xs.sum()`; product has no GDK method, so the idiom is the fold
+`xs.inject(1) { a, x -> a * x }`, which the verifier recognises as a product (`prod$`, the
+multiplicative sibling of `sum$`). Both accumulate in one loop, each proven against its aggregate:
+
+```groovy
+@Requires({ xs != null && xs.size() > 0 })
+@Ensures({ result == ((int) xs.sum()) + ((int) xs.inject(1) { a, x -> a * x }) })
+static int sumPlusProduct(List<Integer> xs) {
+    int s = xs[0], p = xs[0], i = 1
+    @Invariant({ 1 <= i && i <= xs.size() &&
+                 s == xs[0..<i].sum() && p == xs[0..<i].inject(1) { a, x -> a * x } })
+    @Decreases({ xs.size() - i })
+    while (i < xs.size()) { s = s + xs[i]; p = p * xs[i]; i = i + 1 }
+    return s + p
+}
+```
+
+(HumanEval returns a *tuple*; groovy-verify doesn't model tuple/array returns, so this returns
+`s + p` to expose both in one int — the point is the two aggregations composing.) The duck-typed
+`sum()` also covers concatenation — `['a','b','c'].sum() == 'abc'` over a `List<String>` lowers to
+the same base/step machinery on the `str.++` monoid, so a running concatenation verifies just like
+the numeric running total.
+
 Task 039's inner `is_prime` — the canonical NIA-plus-control-flow benchmark — ports
 verbatim to the Verus source shape:
 
@@ -781,9 +856,7 @@ free facts: a literal-prefixed concat starts with that literal (`prefixof(a, a +
 and the right operand of the concat is its suffix (`suffixof(b, a ++ b)`). The regex
 precondition rides along through whatever shape the body assembles.
 
-The remaining honest gaps: `Integer.toString` and `parseInt` carry Z3's signed-semantics
-gap (`""` for negative ints, `-1` for non-digit input — use under non-negative-input
-contracts); `split` (returns an array, structurally invasive) and symbolic
+The remaining honest gaps: `split` (returns an array, structurally invasive) and symbolic
 length-preservation for `toUpperCase` (universal axioms over the seq sort cause Z3 to
 hang) remain deferred. The hard NIA corners (general polynomial identities,
 square-root / factoring shapes) may time out under Z3's solver — surfaces as "Could not
@@ -867,7 +940,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Z3 native string theory** | `declareSort('String')` returns Z3's native `Seq Char` sort, replacing the Phase-27 uninterpreted `String!Sort` and retiring the Phase 46a–c uninterpreted predicates + axioms. `startsWith` / `endsWith` / `contains` / `length` / `charAt` all dispatch to Z3 native primitives (`str.prefixof`, `str.len`, `seq.nth + char.to_int`, etc.); structural cross-string facts like `s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` now verify as free theory consequences. `s + t` (operator) and `s.concat(t)` (method) translate to `str.++`; `s.substring(begin, end)` / `s.substring(begin)` translate to `str.substr` with synthesised bounds obligations. Distinct literals are theory-distinct (no pairwise cascade needed); literal length and per-position content are theory consequences (no mint-time pinning needed). Counterexample rendering uses Z3's native `getString()` | ✅ Phase 47 |
 | **`replace`, `indexOf`, regex `matches`** | `s.replace(old, new)` → `str.replace` (first-occurrence; replace-all awaits Z3's `mkReplaceAll` — see the next row for the uninterpreted fallback). `s.indexOf(sub)` and `s.indexOf(sub, fromIndex)` → `str.indexof`. `s.matches(literalRegex)` → `str.in_re` via an inline recursive-descent parser. Composes with `groovy-typecheckers`' `RegexChecker` orthogonally — RegexChecker validates syntax, this checker proves contracts over the regex result | ✅ Phase 47b / 47c |
 | **Regex feature expansion** | The Phase 47c parser grew predefined character classes (`\d`/`\w`/`\s` and their negations `\D`/`\W`/`\S`), negated character classes (`[^abc]`/`[^a-z]` via Z3's `mkComplement` + `mkIntersect`), quantified ranges (`{n}`/`{n,m}`/`{n,}` via `mkLoop`), and anchors `^`/`$` as silent no-ops (matches() is already whole-string anchored). Still deferred: word-boundary `\b`, inline flags `(?i)`, backreferences, lookbehind | ✅ Phase 47d |
-| **Integer ↔ String conversion** | `Integer.toString(n)` / `n.toString()` (when statically dispatched) / `String.valueOf(int)` → Z3's `intToString`; `Integer.parseInt(s)` → `stringToInt`. The round-trip `parseInt(toString(n)) == n` verifies for `n >= 0`. **Known semantic gaps**: Z3 returns the empty string for `intToString(n < 0)` and `-1` for `stringToInt` on non-digit input; Java's signed semantics differ. Use under non-negative-input contracts | ✅ Phase 47e |
+| **Integer ↔ String conversion (sign-faithful)** | `Integer.toString(n)` / `n.toString()` / `String.valueOf(int)` and `Integer.parseInt(s)`. **Phase 54** threads the sign explicitly (`toString(-7) == "-7"`, not Z3's raw `""`), so the round-trip `parseInt(toString(n)) == n` holds for **all** `n` — closing a silent-unsoundness hole. `parseInt` carries a loud `NumberFormatException` obligation: an unprovably-valid argument refutes rather than silently modelling `-1`. *Residual:* numeral overflow not yet checked | ✅ Phase 47e / 54 |
 | **`replaceAll` / `lastIndexOf` (uninterpreted with weak axioms)** | Z3 has no native primitive for either. Phase 47f ships them as uninterpreted functions with two universally-quantified axioms each: `replaceAll` knows non-occurrence is a no-op + same-length swaps preserve length; `lastIndexOf` knows the result is `>= -1` and `== -1` when the substring is absent. Sound under-approximation — proofs that need finer reasoning (e.g. "post-replace charAt matches one of two values") gracefully skip. When Z3 ships `mkReplaceAll`, the uninterpreted form swaps out for native in one edit | ✅ Phase 47f |
 | **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
@@ -875,6 +948,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (skipped, not integer); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
 | **Early-`return` guards in the loop prefix** | A method with an annotated loop can now lead with the idiomatic `if (cond) return e;` guard pattern — multiple stacked guards work. Each early-exit `if` is partitioned out of the prefix and verified on its own path (assume `¬prior-guards`, sym-exec prior non-exit statements, assume this guard, bind `result`, check `@Ensures`); the loop's establishment / use checks fire with `¬each-prefix-guard` assumed, so the loop machinery only runs on the no-exit path | ✅ Phase 49a |
 | **Early-`return` inside the loop body** | An `if (cond) return e;` at the top level of the loop body verifies on its own path (assume invariant ∧ loop-guard, walk body up to this exit interleaving `¬prior-body-guards` with sym-exec of non-exit body statements, assume this guard, bind `result`, check `@Ensures`). Preservation and progress walk the body interleaving `¬each-in-body-guard` (we're on the no-exit-fired path). The `is_prime` HumanEval port now matches the Verus source structurally — prefix guards + in-body returns + NIA bound check, all verifying. Suffix-region exits and exits nested in non-top-level if-branches remain deferred | ✅ Phase 49b |
+| **Sum aggregation over a list (Int *and* String)** | `xs[lo..<hi].sum()` (prefix sum, for loop invariants) and `xs.sum()` (whole list) lower to base/step axioms — `sum$(arr,lo,hi)` for an Int list (a running total provably equals the list sum, `s == xs[0..<i].sum()` carried across the loop) and **`strConcat$`** for a `List<String>` (duck-typed `['a','b','c'].sum() == 'abc'`, over the `str.++` monoid). Other element domains skip honestly. The value-sum analogue of `count`/`bcount`. Empty range modelled as `0`/`""` (Groovy's `[].sum()` is `null` — needs a non-empty guard); refuting a false claim returns honest UNKNOWN. HumanEval 3 `below_zero` (`result ⟺ ∃ prefix < 0`) verifies on it | ✅ Phase 51 |
+| **Product aggregation via the `inject` fold** | `xs.inject(1) { a, x -> a * x }` (and `xs[lo..<hi]`-ranged) is recognised as a product → `prod$(arr,lo,hi)` with base (empty = 1) / step (`× arr[h-1]`) axioms; `inject(0){ a, x -> a + x }` is the sum fold. A running product proof mirrors the sum loop (preservation closes by congruence, not NIA). HumanEval 8 `sum_product` verifies sum + product in one loop | ✅ Phase 52 |
 
 ## Building & testing
 

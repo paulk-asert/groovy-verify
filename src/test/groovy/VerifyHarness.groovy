@@ -2184,9 +2184,11 @@ class VerifyHarness {
                     }''')],
         // Length composes: Integer.toString(n) for n >= 0 has at least one character.
         // (Z3 knows int.to.str(n) is "" iff n < 0, else has len >= 1 digit count.)
-        [group: 'P47e int/string', name: 'parseInt of non-numeric returns -1 (Z3 semantics)', ok: true,
+        // parseInt of a non-numeric literal now refutes loudly (Phase 54): Java throws
+        // NumberFormatException, so the well-formedness obligation flags it (was: silently == -1).
+        [group: 'P47e int/string', name: 'parseInt of non-numeric refutes (NumberFormatException)',
+         expect: 'NumberFormatException',
          src: tc('''class C {
-                        @Ensures({ result == -1 })
                         static int f() { Integer.parseInt("abc") }
                     }''')],
         // Refute wrong toString result.
@@ -2763,6 +2765,194 @@ class VerifyHarness {
         [group: 'P50 groovy div/mod', name: 'intdiv by zero refutes',
          expect: 'Division by zero',
          src: tc('class C { static int f(int a, int b) { a.intdiv(b) } }')],
+
+        // ---------- Phase 51: numeric sum aggregation over an Int list (xs[lo..<hi].sum()) ----------
+        [group: 'P51 sum', name: 'range sum unfolds to elements', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 2 })
+                        @Ensures({ xs[0..<2].sum() == xs[0] + xs[1] })
+                        static void f(List<Integer> xs) { }
+                    }''')],
+        [group: 'P51 sum', name: 'prefix-extension step law holds', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 2 })
+                        @Ensures({ xs[0..<2].sum() == xs[0..<1].sum() + xs[1] })
+                        static void f(List<Integer> xs) { }
+                    }''')],
+        // The canonical loop-invariant proof: a running total equals the prefix sum at each step,
+        // so the returned value equals the whole-list sum. Non-empty per the GDK `[].sum()==null` limit.
+        [group: 'P51 sum', name: 'running total equals list sum', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == xs.sum() })
+                        static int total(List<Integer> xs) {
+                            int s = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() && s == xs[0..<i].sum() })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                s = s + xs[i]
+                                i = i + 1
+                            }
+                            return s
+                        }
+                    }''')],
+        // Duck-typed String `sum()` IS concatenation (`['a','b','c'].sum() == 'abc'`): a String-element
+        // list lowers to the `strConcat$` monoid analogue, and a range sum unfolds to the element concat.
+        [group: 'P51 sum', name: 'string-list range sum concatenates', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 2 })
+                        @Ensures({ xs[0..<2].sum() == xs[0] + xs[1] })
+                        static void f(List<String> xs) { }
+                    }''')],
+        // The canonical loop-invariant proof, String monoid: a running concatenation equals the
+        // whole-list `sum()` (`s == xs[0..<i].sum()` carried across the loop with `str.++`).
+        [group: 'P51 sum', name: 'running concatenation equals list sum', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == xs.sum() })
+                        static String concatAll(List<String> xs) {
+                            String s = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() && s == xs[0..<i].sum() })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                s = s + xs[i]
+                                i = i + 1
+                            }
+                            return s
+                        }
+                    }''')],
+
+        // ---------- HumanEval 3 (below_zero): running balance ever negative ----------
+        // The FULL biconditional spec — result ⟺ some prefix sum is negative — verifies: the early
+        // return witnesses the existential (`any`), and the invariant "no prefix negative so far"
+        // (`every`) carries the converse to the `return false` path. Uses `sum(0)` (runtime-safe: 0
+        // for the empty prefix, vs `[].sum() == null`) and an `(int)` cast (GDK `sum()` is typed
+        // `Object`, so a `< 0` comparison needs it). Both are surface accommodations; the proof logic
+        // is groovy-verify's sum aggregation + bounded ∀/∃.
+        [group: 'P52 below_zero', name: 'below_zero full biconditional spec', ok: true,
+         src: tc('''class C {
+                        @Requires({ operations != null })
+                        @Ensures({ result == (0..operations.size()).any { ((int) operations[0..<it].sum(0)) < 0 } })
+                        static boolean belowZero(List<Integer> operations) {
+                            int s = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= operations.size() &&
+                                         s == operations[0..<i].sum(0) &&
+                                         (0..i).every { ((int) operations[0..<it].sum(0)) >= 0 } })
+                            @Decreases({ operations.size() - i })
+                            while (i < operations.size()) {
+                                s = s + operations[i]
+                                if (s < 0) return true
+                                i = i + 1
+                            }
+                            return false
+                        }
+                    }''')],
+
+        // ---------- Phase 53: product aggregation via the inject(1){a,x->a*x} fold ----------
+        // A literal-bounded range product unfolds via the step axiom to the element product.
+        [group: 'P53 product', name: 'range product unfolds to elements', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 2 })
+                        @Ensures({ xs[0..<2].inject(1) { a, x -> a * x } == xs[0] * xs[1] })
+                        static void f(List<Integer> xs) { }
+                    }''')],
+        // The canonical loop-invariant proof: a running product equals the prefix product at each
+        // step, so the returned value equals the whole-list product (the inject fold).
+        [group: 'P53 product', name: 'running product equals list product', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == xs.inject(1) { a, x -> a * x } })
+                        static int product(List<Integer> xs) {
+                            int p = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() &&
+                                         p == xs[0..<i].inject(1) { a, x -> a * x } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                p = p * xs[i]
+                                i = i + 1
+                            }
+                            return p
+                        }
+                    }''')],
+        // inject(0){a,x->a+x} is recognised as a sum fold too (same machinery, `+` instead of `*`).
+        [group: 'P53 product', name: 'inject sum fold unfolds', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 2 })
+                        @Ensures({ xs[0..<2].inject(0) { a, x -> a + x } == xs[0] + xs[1] })
+                        static void f(List<Integer> xs) { }
+                    }''')],
+        // HumanEval 8 (sum_product) shape: compute the sum AND the product in one loop, each proven
+        // against its aggregate. (Returns `s + p` to expose both in one int — groovy-verify doesn't
+        // model tuple/array returns; the two aggregations composing in one method is the point.)
+        [group: 'P53 product', name: 'sum_product: both aggregations in one loop', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == ((int) xs.sum()) + ((int) xs.inject(1) { a, x -> a * x }) })
+                        static int sumPlusProduct(List<Integer> xs) {
+                            int s = xs[0]
+                            int p = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() &&
+                                         s == xs[0..<i].sum() &&
+                                         p == xs[0..<i].inject(1) { a, x -> a * x } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                s = s + xs[i]
+                                p = p * xs[i]
+                                i = i + 1
+                            }
+                            return s + p
+                        }
+                    }''')],
+
+        // ---------- Phase 54: sign-faithful Integer.toString / parseInt ----------
+        // toString of a negative int is non-empty ("-7"); the old raw `intToString` modelled it as ""
+        // and silently *verified* result.isEmpty() — now fixed.
+        [group: 'P54 int-string signs', name: 'negative toString is non-empty', ok: true,
+         src: tc('''class C {
+                        @Requires({ n < 0 })
+                        @Ensures({ !result.isEmpty() })
+                        static String f(int n) { Integer.toString(n) }
+                    }''')],
+        [group: 'P54 int-string signs', name: 'negative toString isEmpty now refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n < 0 })
+                        @Ensures({ result.isEmpty() })
+                        static String f(int n) { Integer.toString(n) }
+                    }''')],
+        // toString(-7) == "-7" exactly.
+        [group: 'P54 int-string signs', name: 'toString of a specific negative', ok: true,
+         src: tc('''class C {
+                        @Requires({ n == -7 })
+                        @Ensures({ result == "-7" })
+                        static String f(int n) { Integer.toString(n) }
+                    }''')],
+        // Round-trip now holds for ALL n, not just n >= 0 (the old gap needed a non-negative guard).
+        [group: 'P54 int-string signs', name: 'parseInt(toString(n)) == n for negative n', ok: true,
+         src: tc('''class C {
+                        @Requires({ n < 0 })
+                        @Ensures({ result == n })
+                        static int f(int n) { Integer.parseInt(Integer.toString(n)) }
+                    }''')],
+        // Loud obligation: parseInt of an *unconstrained* String might throw → refuted (the engine
+        // no longer silently models malformed input as -1).
+        [group: 'P54 int-string signs', name: 'parseInt of arbitrary string refutes (NFE)',
+         expect: 'NumberFormatException',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        static int f(String s) { Integer.parseInt(s) }
+                    }''')],
+        // ...and parseInt(toString(n)) is *provably* well-formed → no NumberFormatException fires.
+        [group: 'P54 int-string signs', name: 'parseInt of toString is well-formed', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == n })
+                        static int f(int n) { Integer.parseInt(Integer.toString(n)) }
+                    }''')],
 
         // ---------- Phase 46d: in-loop if-cond and && short-circuit as path facts ----------
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the

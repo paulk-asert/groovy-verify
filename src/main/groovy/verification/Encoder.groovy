@@ -1914,6 +1914,155 @@ class Encoder {
         c
     }
 
+    /** Array handles whose sum base/step axioms have been asserted (mint-once, per array). */
+    private final Set<Object> sumConstrained = new HashSet<Object>()
+
+    /**
+     * The bounded sum {@code sum(arr, lo, hi) = Σ_{lo<=i<hi} arr[i]}, asserting its two defining axioms
+     * the first time each array handle is seen (quantified over all ranges, so once per array suffices):
+     * <ul>
+     *   <li>base — {@code ∀ l,h. h <= l ⟹ sum(arr,l,h) == 0}</li>
+     *   <li>step — {@code ∀ l,h. l < h ⟹ sum(arr,l,h) == sum(arr,l,h-1) + arr[h-1]}</li>
+     * </ul>
+     * The step axiom is what makes a loop invariant {@code s == sum(arr,0,i)} provable: at {@code i+1}
+     * it e-matches to {@code sum(arr,0,i+1) == sum(arr,0,i) + arr[i]}, exactly the body's update.
+     */
+    Object sumOf(Object arr, Object loH, Object hiH) {
+        if (sumConstrained.add(arr)) {
+            Object zero = session.intLit(0L)
+            Object one = session.intLit(1L)
+            // base
+            Object bl = session.boundIntVar('sum$bl' + (quantCounter++))
+            Object bh = session.boundIntVar('sum$bh' + (quantCounter++))
+            Object bterm = session.sum(arr, bl, bh)
+            session.assertExpr(session.forall([bl, bh],
+                session.implies(session.le(bh, bl), session.eq(bterm, zero)), [bterm]))
+            // step
+            Object sl = session.boundIntVar('sum$sl' + (quantCounter++))
+            Object sh = session.boundIntVar('sum$sh' + (quantCounter++))
+            Object sterm = session.sum(arr, sl, sh)
+            Object hm1 = session.minus(sh, one)
+            Object rhs = session.plus(session.sum(arr, sl, hm1), session.select(arr, hm1))
+            session.assertExpr(session.forall([sl, sh],
+                session.implies(session.lt(sl, sh), session.eq(sterm, rhs)), [sterm]))
+        }
+        session.sum(arr, loH, hiH)
+    }
+
+    /** Array handles whose product base/step axioms have been asserted (mint-once, per array). */
+    private final Set<Object> prodConstrained = new HashSet<Object>()
+
+    /**
+     * The bounded product {@code prod(arr, lo, hi) = Π_{lo<=i<hi} arr[i]}, the multiplicative sibling
+     * of {@link #sumOf}. Axioms asserted mint-once per array: base {@code ∀ l,h. h <= l ⟹ prod == 1}
+     * (the empty product), step {@code ∀ l,h. l < h ⟹ prod(arr,l,h) == prod(arr,l,h-1) * arr[h-1]}.
+     * A loop invariant {@code p == prod(arr,0,i)} is preserved by {@code p = p * arr[i]} (the step at
+     * {@code i+1} gives {@code prod(arr,0,i+1) == prod(arr,0,i) * arr[i]} — a congruence, not NIA).
+     */
+    Object prodOf(Object arr, Object loH, Object hiH) {
+        if (prodConstrained.add(arr)) {
+            Object one = session.intLit(1L)
+            // base — empty product is 1
+            Object bl = session.boundIntVar('prod$bl' + (quantCounter++))
+            Object bh = session.boundIntVar('prod$bh' + (quantCounter++))
+            Object bterm = session.prod(arr, bl, bh)
+            session.assertExpr(session.forall([bl, bh],
+                session.implies(session.le(bh, bl), session.eq(bterm, one)), [bterm]))
+            // step
+            Object sl = session.boundIntVar('prod$sl' + (quantCounter++))
+            Object sh = session.boundIntVar('prod$sh' + (quantCounter++))
+            Object sterm = session.prod(arr, sl, sh)
+            Object hm1 = session.minus(sh, one)
+            Object rhs = session.times(session.prod(arr, sl, hm1), session.select(arr, hm1))
+            session.assertExpr(session.forall([sl, sh],
+                session.implies(session.lt(sl, sh), session.eq(sterm, rhs)), [sterm]))
+        }
+        session.prod(arr, loH, hiH)
+    }
+
+    /**
+     * Resolve a list-aggregation receiver to {@code [listName, arrayHandle, loH, hiH]}, or null.
+     * Handles the whole-list {@code xs} (range {@code [0, size)}) and the sublist {@code xs[lo..<hi]};
+     * an inclusive {@code ..} range normalises to half-open. The element type is *not* gated here — the
+     * caller decides (Int → `sum$`/`prod$`, String → `strConcat$`, other → skip) from {@code listName}.
+     */
+    private Object[] listAggHandles(Expression recv) {
+        if (recv instanceof BinaryExpression &&
+            ((BinaryExpression) recv).operation.type == Types.LEFT_SQUARE_BRACKET &&
+            ((BinaryExpression) recv).leftExpression instanceof VariableExpression &&
+            ((BinaryExpression) recv).rightExpression instanceof RangeExpression) {
+            BinaryExpression sub = (BinaryExpression) recv
+            String xs = ((VariableExpression) sub.leftExpression).name
+            RangeExpression re = (RangeExpression) sub.rightExpression
+            Object lo = translate(re.from)
+            Object hi = translate(re.to)
+            if (lo == null || hi == null) return null
+            if (re.inclusive) hi = session.plus(hi, session.intLit(1L))
+            return [xs, arrayFor(xs), lo, hi] as Object[]
+        }
+        if (recv instanceof VariableExpression) {
+            String xs = ((VariableExpression) recv).name
+            return [xs, arrayFor(xs), session.intLit(0L), sizeOf(xs)] as Object[]
+        }
+        null
+    }
+
+    /** Array handles whose String-concat base/step axioms have been asserted (mint-once, per array). */
+    private final Set<Object> strConcatConstrained = new HashSet<Object>()
+
+    /**
+     * The bounded string concatenation {@code concat(arr, lo, hi)} over a {@code (Int -> String)} array
+     * — the String-monoid analogue of {@link #sumOf}, for Groovy's {@code ['a','b'].sum() == 'ab'}.
+     * Axioms asserted mint-once per array: base {@code ∀ l,h. h <= l ⟹ concat == ""}, step
+     * {@code ∀ l,h. l < h ⟹ concat(arr,l,h) == concat(arr,l,h-1) ++ arr[h-1]} (via Z3 seq {@code str.++}).
+     */
+    Object strConcatOf(Object arr, Object loH, Object hiH) {
+        if (strConcatConstrained.add(arr)) {
+            Object strSort = session.declareSort('String')
+            Object empty = session.litOfSort(strSort, '')
+            Object one = session.intLit(1L)
+            // base — empty concatenation is ""
+            Object bl = session.boundIntVar('cat$bl' + (quantCounter++))
+            Object bh = session.boundIntVar('cat$bh' + (quantCounter++))
+            Object bterm = session.strConcatRange(arr, bl, bh)
+            session.assertExpr(session.forall([bl, bh],
+                session.implies(session.le(bh, bl), session.eq(bterm, empty)), [bterm]))
+            // step
+            Object sl = session.boundIntVar('cat$sl' + (quantCounter++))
+            Object sh = session.boundIntVar('cat$sh' + (quantCounter++))
+            Object sterm = session.strConcatRange(arr, sl, sh)
+            Object hm1 = session.minus(sh, one)
+            Object rhs = session.stringConcat(session.strConcatRange(arr, sl, hm1), session.select(arr, hm1))
+            session.assertExpr(session.forall([sl, sh],
+                session.implies(session.lt(sl, sh), session.eq(sterm, rhs)), [sterm]))
+        }
+        session.strConcatRange(arr, loH, hiH)
+    }
+
+    /** True if {@code t} is the {@code String} element type. */
+    private static boolean isStringElementType(ClassNode t) { t != null && t.name == 'java.lang.String' }
+
+    /**
+     * For a two-parameter fold closure {@code { a, x -> a OP x }} whose operands are exactly the two
+     * parameters (either order), return the operator text when {@code OP} is {@code *} (product) or
+     * {@code +} (sum); null otherwise. Recognises {@code inject(init){ a, x -> a * x }} as a product.
+     */
+    private String foldClosureOp(ClosureExpression clo) {
+        Parameter[] ps = clo.parameters
+        if (ps == null || ps.length != 2) return null
+        Expression body = singleExprOf(clo.code)
+        if (!(body instanceof BinaryExpression)) return null
+        BinaryExpression be = (BinaryExpression) body
+        String op = be.operation.text
+        if (op != '*' && op != '+') return null
+        if (!(be.leftExpression instanceof VariableExpression) ||
+            !(be.rightExpression instanceof VariableExpression)) return null
+        Set<String> got = [((VariableExpression) be.leftExpression).name,
+                           ((VariableExpression) be.rightExpression).name] as Set
+        Set<String> want = [ps[0].name, ps[1].name] as Set
+        got == want ? op : null
+    }
+
     /** The bounded universal {@code ∀ i. 0 <= i < k ⟹ i ∈ s}, with {@code (select s i)} as its trigger. */
     private Object domainCoverageForall(Object setHandle, Object kH) {
         Object iv = session.boundIntVar('cov$q' + (quantCounter++))
@@ -2509,6 +2658,48 @@ class Encoder {
             if (m == 'remainder') return session.intRem(a, b)
             if (m == 'mod')       return session.intMod(a, b)
             return truncDiv(a, b)   // intdiv
+        }
+
+        // Numeric sum/product aggregation over an *Int* list/array — the Groovy-idiomatic spellings:
+        //   xs[lo..<hi].sum() / xs.sum() / xs.sum(init)        → init + sum$(arr,lo,hi)   (sum)
+        //   xs.inject(1){ a,x -> a*x } / xs[lo..<hi].inject…   → init * prod$(arr,lo,hi)  (product fold)
+        //   xs.inject(0){ a,x -> a+x }                         → init + sum$(arr,lo,hi)   (sum fold)
+        // Lowered to the `sum$`/`prod$` primitives + their base/step axioms (see sumOf/prodOf).
+        // Gated to Int-element lists: `sum()` is duck-typed (`['a','b'].sum() == 'ab'`) and the
+        // primitives are Int-sorted, so a non-Int element list honestly skips (no Z3 sort mismatch).
+        // Empty: Groovy's `[].sum()` is *null*; the `sum(init)`/`inject(init)` forms return `init`.
+        if (m == 'sum' && (args.isEmpty() || args.size() == 1)) {
+            Object[] r = listAggHandles(recv)
+            if (r == null) return null
+            ClassNode et = listElementTypes.get((String) r[0])
+            if (et == null) {                          // Int list → numeric sum
+                Object init = args.isEmpty() ? session.intLit(0L) : translate(args.get(0))
+                if (init == null) return null
+                Object base = sumOf(r[1], r[2], r[3])
+                return args.isEmpty() ? base : session.plus(init, base)
+            }
+            if (isStringElementType(et)) {              // String list → concatenation (`['a','b'].sum()`)
+                Object strSort = session.declareSort('String')
+                Object init = args.isEmpty() ? session.litOfSort(strSort, '') : translateInSort(args.get(0), strSort)
+                if (init == null) return null
+                Object base = strConcatOf(r[1], r[2], r[3])
+                return args.isEmpty() ? base : session.stringConcat(init, base)
+            }
+            return null                                 // other element domain → honest skip
+        }
+        if (m == 'inject' && args.size() == 2 && args.get(1) instanceof ClosureExpression) {
+            String op = foldClosureOp((ClosureExpression) args.get(1))   // '*' (product), '+' (sum), or null
+            if (op != null) {
+                Object[] r = listAggHandles(recv)
+                // Int-element only: the * / + folds are numeric (string concat is `sum()`, handled above).
+                if (r != null && listElementTypes.get((String) r[0]) == null) {
+                    Object init = translate(args.get(0))
+                    if (init != null) {
+                        if (op == '*') return session.times(init, prodOf(r[1], r[2], r[3]))
+                        if (op == '+') return session.plus(init, sumOf(r[1], r[2], r[3]))
+                    }
+                }
+            }
         }
 
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||

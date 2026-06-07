@@ -40,6 +40,7 @@ import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
@@ -1262,6 +1263,7 @@ class VerifyChecker extends TypeCheckingExtension {
         for (OverflowSite s : col.overflowSites) dischargeOverflow(s, pf, reqAst)
         for (StringCharAtSite s : col.stringCharAtSites) dischargeStringCharAt(s, pf, reqAst)
         for (StringSubstringSite s : col.stringSubstringSites) dischargeStringSubstring(s, pf, reqAst)
+        for (ParseSite s : col.parseSites) dischargeParse(s, pf, reqAst)
     }
 
     private void dischargeStringCharAt(StringCharAtSite site, PathFacts pf, Expression reqAst) {
@@ -1427,7 +1429,8 @@ class VerifyChecker extends TypeCheckingExtension {
         try { e.visit(col) } catch (Throwable ignored) { return }
         if (col.indexSites.isEmpty() && col.divideSites.isEmpty() &&
             col.derefSites.isEmpty() && col.overflowSites.isEmpty() &&
-            col.stringCharAtSites.isEmpty() && col.stringSubstringSites.isEmpty()) return
+            col.stringCharAtSites.isEmpty() && col.stringSubstringSites.isEmpty() &&
+            col.parseSites.isEmpty()) return
         List<Object> snap = new ArrayList<Object>(steps)
         for (IndexSite s : col.indexSites)  out.add(mkVf(s, snap))
         for (DivideSite s : col.divideSites) out.add(mkVf(s, snap))
@@ -1435,6 +1438,7 @@ class VerifyChecker extends TypeCheckingExtension {
         for (OverflowSite s : col.overflowSites) out.add(mkVf(s, snap))
         for (StringCharAtSite s : col.stringCharAtSites) out.add(mkVf(s, snap))
         for (StringSubstringSite s : col.stringSubstringSites) out.add(mkVf(s, snap))
+        for (ParseSite s : col.parseSites) out.add(mkVf(s, snap))
     }
 
     /** Append a single step ({@link Guard} / {@link Assign} / {@link LemmaCall}) to a copy of {@code base}. */
@@ -1600,6 +1604,17 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
+    private void dischargeParse(ParseSite site, PathFacts pf, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            assumeContext(s, enc, reqAst, site.node, pf)
+            dischargeObligationUnder(s, enc, site)
+        } finally {
+            try { s.close() } catch (Throwable ignored) {}
+        }
+    }
+
     private void dischargeDeref(DerefSite site, PathFacts pf, Expression reqAst) {
         SmtSession s = backend.session()
         try {
@@ -1669,6 +1684,21 @@ class VerifyChecker extends TypeCheckingExtension {
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(Reporter.formatDivisionByZero(dv.divisor.text, r), dv.node)
+            }
+            return
+        }
+        if (site instanceof ParseSite) {
+            ParseSite ps = (ParseSite) site
+            Object str = enc.translateInSort(ps.arg, s.declareSort('String'))
+            if (str == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("parse",
+                    "argument '${ps.arg.text}' is outside fragment"), ps.node)
+                return
+            }
+            s.assertExpr(s.not(s.parseIntValid(str)))   // negation of "is a valid numeral"
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatNumberFormat(ps.arg.text, r), ps.node)
             }
             return
         }
@@ -2013,7 +2043,7 @@ class VerifyChecker extends TypeCheckingExtension {
         List<Object> r = new ArrayList<Object>()
         r.addAll(col.indexSites); r.addAll(col.divideSites); r.addAll(col.derefSites)
         r.addAll(col.overflowSites); r.addAll(col.stringCharAtSites)
-        r.addAll(col.stringSubstringSites)
+        r.addAll(col.stringSubstringSites); r.addAll(col.parseSites)
         return r
     }
 
@@ -2021,6 +2051,17 @@ class VerifyChecker extends TypeCheckingExtension {
     // requirePositive: Groovy's a.mod(b) (BigInteger.mod) throws unless b > 0; the `%`/`/`/intdiv/
     // remainder forms only require b != 0.
     @CompileStatic private static class DivideSite { ASTNode node; Expression divisor; boolean requirePositive = false }
+    /** Phase 54 — {@code Integer.parseInt(arg)}: the implicit obligation that {@code arg} is a valid
+     *  integer numeral (else {@code NumberFormatException}). */
+    @CompileStatic private static class ParseSite { ASTNode node; Expression arg }
+
+    /** True if {@code e} refers to the {@code Integer} class (any of the three AST shapes). */
+    @CompileStatic
+    private static boolean isIntegerClassRef(Expression e) {
+        (e instanceof VariableExpression && ((VariableExpression) e).name == 'Integer') ||
+        (e instanceof PropertyExpression && ((PropertyExpression) e).propertyAsString == 'Integer') ||
+        (e instanceof ClassExpression && ((ClassExpression) e).type?.nameWithoutPackage == 'Integer')
+    }
     /**
      * Phase 46e — character-index bounds: the implicit obligation {@code 0 <= i < s.length()}
      * at an {@code s.charAt(i)} site. Modelled separately from {@link IndexSite} because the
@@ -2082,6 +2123,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private static class ObligationCollector extends ClassCodeVisitorSupport {
         final List<IndexSite> indexSites = []
         final List<DivideSite> divideSites = []
+        final List<ParseSite> parseSites = []
         final List<DerefSite> derefSites = []
         /** Phase 44 — populated only when the enclosing method/class carries {@code @CheckOverflow}. */
         final List<OverflowSite> overflowSites = []
@@ -2156,6 +2198,12 @@ class VerifyChecker extends TypeCheckingExtension {
                 ((ArgumentListExpression) mce.arguments).expressions : Collections.<Expression>emptyList()
             if (dargs.size() == 1 && (mm == 'intdiv' || mm == 'remainder' || mm == 'mod')) {
                 divideSites.add(new DivideSite(node: mce, divisor: dargs.get(0), requirePositive: mm == 'mod'))
+                super.visitMethodCallExpression(mce)
+                return
+            }
+            // Integer.parseInt(arg): the arg must be a valid numeral (else NumberFormatException).
+            if (dargs.size() == 1 && mm == 'parseInt' && isIntegerClassRef(recv)) {
+                parseSites.add(new ParseSite(node: mce, arg: dargs.get(0)))
                 super.visitMethodCallExpression(mce)
                 return
             }

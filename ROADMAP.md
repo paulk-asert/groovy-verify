@@ -3147,20 +3147,12 @@ Receiver discrimination handles all three AST shapes the type-checker produces:
 (post-resolution). `isStringReceiver` extended to recognise these as String-producing
 expressions, so `Integer.toString(n).length()` resolves correctly.
 
-**Known semantic gaps** (carried into the verifier's view of the operations):
-
-- **Z3's `int.to.str(n)` returns the empty string for `n < 0`**; Java's
-  `Integer.toString(-5)` returns `"-5"`. A spec that reasons over `Integer.toString(n)`
-  for symbolic `n` may produce refutes that Java wouldn't.
-- **Z3's `str.to.int(s)` returns `-1` for any string that isn't a sequence of decimal
-  digits**; Java's `Integer.parseInt` parses signs and throws on non-numeric input.
-- The round-trip identity `parseInt(toString(n)) == n` holds *for non-negative `n`* only,
-  and is shipped as a verified test in exactly that form.
-
-These follow the SMT-LIB spec — patches in Z3 (or a wrapper here) could close the
-sign-handling gap, but doing it right would mean rebuilding the conversions on top of the
-seq-of-char layer rather than the integer-to-string primitive. Out of scope for this
-phase.
+**Semantic gaps — *closed* in [Phase 54](#phase-54--sign-faithful-integer-tostring--parseint-shipped).**
+At this phase the conversions were the raw Z3 primitives, whose SMT-LIB semantics diverge from Java
+for negatives: `int.to.str(-5)` is `""` (Java `"-5"`), and `str.to.int` is `-1` for any
+non-`[0-9]+` string. That was **silent unsoundness** (the engine *verified* `Integer.toString(n <
+0).isEmpty()`). Phase 54 threads the sign explicitly and adds a loud well-formedness obligation; the
+round-trip `parseInt(toString(n)) == n` now holds for *all* `n`.
 
 **Shipped tests**: `Integer.toString(5) == "5"`, `String.valueOf(42) == "42"`,
 `Integer.parseInt("123") == 123`, `Integer.parseInt("abc") == -1` (Z3 semantics),
@@ -3592,6 +3584,110 @@ Implementation notes:
 
 This closes the one place the engine could be *confidently wrong* rather than honestly silent —
 restoring the "loud unsoundness" promise across all of integer arithmetic.
+
+---
+
+## Phase 51 — Numeric sum aggregation over a list  *(shipped)*
+
+The engine had *occurrence*-count aggregation (`count` / `bcount` / `Sets.boundedCount`) but no
+**value-sum** — so the textbook loop-invariant pattern `s == sum(a[0..i))` couldn't even be stated.
+That blocked a whole class of HumanEval tasks (3 `below_zero`, 8 `sum_product`, 60 `sum_to_n`) and
+everyday totals/averages/running-balances. Phase 51 adds it, mirroring the `bcount` machinery.
+
+**Surface (Groovy-idiomatic):**
+- `xs[lo..<hi].sum()` — the bounded / prefix sum, the natural spelling inside a loop `@Invariant`.
+- `xs.sum()` — the whole-list sum (≡ `xs[0..<xs.size()].sum()`), used in `@Ensures`.
+
+**Encoding:** an uninterpreted `sumArr$ : (Array, Int, Int) → Int`, with two defining axioms asserted
+mint-once per array handle, quantified over all ranges (triggered on the `sum$` application):
+- base — `∀ l,h. h <= l ⟹ sum(arr,l,h) == 0`
+- step — `∀ l,h. l < h ⟹ sum(arr,l,h) == sum(arr,l,h-1) + arr[h-1]`
+
+The step axiom is what makes `s == sum(arr,0,i)` survive `s = s + a[i]; i = i+1`: at `i+1` it
+e-matches to `sum(arr,0,i+1) == sum(arr,0,i) + a[i]`, exactly the body's update. The headline proof —
+a running total provably equals the whole-list sum — verifies; so does a literal-bounded range sum
+unfolding to its elements (`xs[0..<2].sum() == xs[0] + xs[1]`).
+
+**Honest limitations:**
+- **`sum()` is duck-typed — Int *and* String are modelled.** Groovy's `sum()` folds with `plus`, so
+  `[1,2,3].sum() == 6` is numeric sum while `['a','b','c'].sum() == 'abc'` is *String concatenation*.
+  The dispatch branches on the element type (`listElementTypes`): an Int list lowers to `sum$`, a
+  String list to **`strConcat$`** — the same base/step shape over the String monoid (base `""`, step
+  `concat(l,h-1) ++ arr[h-1]` via the Phase-47 `str.++`), so a running concatenation provably equals
+  the whole-list `sum()` exactly like the numeric running total. Any *other* element domain (enum,
+  etc.) has no aggregation monoid here and honestly **skips** rather than hitting a Z3 sort mismatch.
+- **Groovy `[].sum()` is `null`, not `0`.** The no-arg `sum()` models the empty range as `0` (so a
+  spec evaluating it on a possibly-empty range needs a non-empty guard for *runtime* fidelity). The
+  **`sum(initial)` form is also recognised** (`xs[lo..<hi].sum(0)` → `0 + sum$(arr,lo,hi)`): since
+  `[].sum(0) == 0` at runtime, it's the runtime-safe spelling for specs that genuinely range over the
+  empty prefix (e.g. `below_zero`'s balance-before-any-operation).
+- **GDK `sum()` is typed `Object`.** So `xs.sum() == …` works (Groovy `==` is lenient) but a
+  *comparison* `xs.sum() < 0` doesn't type-check — it needs an explicit `(int)` cast. A Groovy
+  type-system reality, not a verifier limit; the cast is transparent to the encoder.
+
+**Capstone — HumanEval 3 (`below_zero`).** The sum primitive composes with bounded `∀`/`∃` and the
+early-return-in-loop (Phase 49) to verify the *full biconditional* `result ⟺ ∃ prefix. sum < 0`: the
+early `return true` witnesses the `any`, and a "no prefix negative yet" `every`-invariant carries the
+converse to the `return false` path. Verifies end-to-end (the tight biconditional self-anchors — a
+wrong body wouldn't satisfy it), using the runtime-safe `sum(0)` + the `(int)` cast above.
+- **`xs.sum()` as a method *body* returning `int` doesn't type-check** under `@TypeChecked` (the GDK
+  `sum()` is typed `Object`); it's usable in *contracts*, which is where the aggregation spec lives.
+- **Refuting a *false* sum claim returns UNKNOWN.** Z3 can't construct a model satisfying the ∀
+  base/step axioms (MBQI), so a wrong sum postcondition surfaces as an honest "could not decide,"
+  never an unsound pass. Soundness rests on the axioms being theorems of the real sum; non-vacuousness
+  on the positive proofs (the running-total loop, the unfold, the step law). This is the same
+  weak-refutation caveat the other quantified features carry.
+
+This is the loop-invariant aggregation pattern that was conspicuously missing — and the foundation for
+the `below_zero` / `sum_product` HumanEval shapes.
+
+---
+
+## Phase 52 — Product aggregation and the `inject` fold  *(shipped)*
+
+The multiplicative sibling of Phase 51's sum, and the surface that comes with it. Groovy has no GDK
+`product()`, so the idiom for a fold is `xs.inject(1) { a, x -> a * x }` — which the encoder now
+recognises as a **product** (and `inject(0) { a, x -> a + x }` as a **sum**, an alternative spelling).
+
+- **`prod$ : (Array, Int, Int) → Int`** uninterpreted primitive, with base/step axioms mirroring
+  `sum$`: base `∀ l,h. h <= l ⟹ prod == 1` (the empty product), step
+  `∀ l,h. l < h ⟹ prod(arr,l,h) == prod(arr,l,h-1) * arr[h-1]`. A running product invariant
+  `p == xs[0..<i].inject(1){…}` is preserved by `p = p * xs[i]` — the step at `i+1` instantiates to
+  `prod(0,i+1) == prod(0,i) * xs[i]`, which closes by *congruence* (`p == prod(0,i)`), not NIA solving,
+  so it's as robust as the sum loop.
+- **`inject` recognition** matches a two-parameter closure `{ a, x -> a OP x }` whose operands are
+  exactly the two parameters (either order), with `OP ∈ {*, +}`; the initial value lifts in as
+  `init * prod$` / `init + sum$`. Any other fold shape (different operator, non-parameter operands)
+  falls through to an honest skip. Gated to Int-element lists, like sum.
+
+**Capstone — HumanEval 8 (`sum_product`).** Sum and product accumulate in one loop, each proven
+against its aggregate (`s == xs[0..<i].sum()` ∧ `p == xs[0..<i].inject(1){…}`). groovy-verify doesn't
+model tuple/array *returns*, so the showcase returns `s + p` to expose both in one int — the point is
+the two aggregations composing in a single method. The `(int)` casts are the same GDK-`Object`-typing
+accommodation as `below_zero` (an `Object + Object` in the postcondition won't type-check otherwise).
+
+---
+
+## Phase 54 — Sign-faithful `Integer.toString` / `parseInt`  *(shipped)*
+
+Phase 47e mapped the conversions to Z3's raw `int.to.str` / `str.to.int`, whose SMT-LIB semantics are
+correct only for *non-negative* integers — a **silent-unsoundness** hole (the engine *verified*
+`Integer.toString(n).isEmpty()` for `n < 0`, false in Groovy). Like the Phase 50 div/mod fix, Phase 54
+threads the sign explicitly rather than reasoning over Z3's convention, and makes the malformed-input
+case *loud*.
+
+- **`Integer.toString`** — `ite(n >= 0, intToString(n), "-" ++ intToString(-n))`. Java-faithful for
+  all `n` (`toString(-7) == "-" + toString(7)`, and Z3 is correct for the non-negative magnitude).
+- **`Integer.parseInt`** — `ite(prefixof("-", s), -stringToInt(substring(s, 1)), stringToInt(s))`,
+  stripping a leading sign. The round-trip `parseInt(toString(n)) == n` now holds for **every** `n`
+  (the Phase-47e test's `n >= 0` guard is no longer needed).
+- **Loud obligation (`NumberFormatException`)** — a new `ParseSite` discharged at each
+  `Integer.parseInt(s)` call: the sign-stripped magnitude must be a valid digit sequence
+  (`stringToInt(magnitude) >= 0`). An arbitrary `String` argument can't prove it, so it **refutes**
+  (`Reporter.formatNumberFormat`) — the engine no longer silently models `parseInt("abc")` as `-1`.
+  `parseInt(Integer.toString(n))` discharges cleanly (`toString` produces valid numerals).
+  *Residual:* integer overflow on a too-long numeral (Java throws, Z3's `str.to.int` is unbounded) is
+  not yet checked — a `@CheckOverflow`-style follow-on.
 
 ---
 
