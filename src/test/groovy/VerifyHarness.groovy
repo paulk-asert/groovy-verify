@@ -4937,6 +4937,201 @@ class VerifyHarness {
                         @Ensures({ c == Color.BLUE })
                         static int f(Color c) { 0 }
                     }''')],
+
+        // ---------- Phase 59: classic for-loops (desugared to while-shape) ----------
+        // The headline win: an array-bounds obligation `a[i]` inside a for-loop body is
+        // discharged from the loop @Invariant, exactly as for a while loop.
+        [group: 'P59 for-loop', name: 'for-loop bounds verified from invariant', ok: true,
+         src: tc('''class C {
+                       @Requires({ 0 <= n && n <= a.length })
+                       static int sumFor(int[] a, int n) {
+                           int s = 0, i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           for (i = 0; i < n; i++) { s = s + a[i] }
+                           return s
+                       }
+                   }''')],
+        // Drop `n <= a.length` and the in-loop `a[i]` is refuted out of bounds — the for-loop
+        // body's obligations are checked under the invariant, which no longer bounds the index.
+        [group: 'P59 for-loop', name: 'for-loop bounds refuted (missing precondition)',
+         expect: 'IndexOutOfBoundsException',
+         src: tc('''class C {
+                       @Requires({ 0 <= n })
+                       static int sumFor(int[] a, int n) {
+                           int s = 0, i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           for (i = 0; i < n; i++) { s = s + a[i] }
+                           return s
+                       }
+                   }''')],
+        // Postcondition + termination over a for-loop: all four loop VCs discharge, the
+        // i++ update normalised to i = i + 1, the init `i = 0` threaded into the prefix.
+        [group: 'P59 for-loop', name: 'for-loop postcondition + decreases verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result == n })
+                       static int countUp(int n) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           @Decreases({ n - i })
+                           for (i = 0; i < n; i++) { }
+                           return i
+                       }
+                   }''')],
+        // A broken invariant (`i == 0`, falsified by the i++ update) fails preservation — a
+        // loud refutation, not a silent pass: the for-loop rides the same inductive machinery.
+        [group: 'P59 for-loop', name: 'for-loop broken invariant refuted',
+         expect: 'invariant is preserved',
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result == n })
+                       static int countUp(int n) {
+                           int i = 0
+                           @Invariant({ i == 0 })
+                           @Decreases({ n - i })
+                           for (i = 0; i < n; i++) { }
+                           return i
+                       }
+                   }''')],
+        // The compound-assignment update form `i += 1` normalises the same way.
+        [group: 'P59 for-loop', name: 'for-loop compound update (i += 1) verified', ok: true,
+         src: tc('''class C {
+                       @Requires({ n >= 0 })
+                       @Ensures({ result == n })
+                       static int countUp(int n) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= n })
+                           @Decreases({ n - i })
+                           for (i = 0; i < n; i += 1) { }
+                           return i
+                       }
+                   }''')],
+        // A for-in loop is outside the fragment (no index to bound the invariant against) —
+        // it must skip loudly, never silently pass.
+        [group: 'P59 for-loop', name: 'for-in loop skipped loudly', expect: 'Skipped',
+         src: tc('''class C {
+                       @Ensures({ result == 0 })
+                       static int sumIn(List<Integer> xs) {
+                           int s = 0
+                           @Invariant({ s == 0 })
+                           for (x in xs) { s = s + x }
+                           return s
+                       }
+                   }''')],
+
+        // ---------- Phase 60: xs.max() / xs.min() as the witnessed-extremum spec ----------
+        // The ergonomic win: `result == a.max()` means exactly the every/any spec the
+        // maxElement example spells out by hand — and the same max-finding loop discharges it.
+        [group: 'P60 max/min', name: 'result == a.max() verified', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ result == a.max() })
+                        static int maxOf(int[] a) {
+                            int m = a[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= a.length &&
+                                         (0..<i).every { a[it] <= m } &&
+                                         (0..<i).any { a[it] == m } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                if (a[i] > m) m = a[i]
+                                i = i + 1
+                            }
+                            return m
+                        }
+                    }''')],
+        [group: 'P60 max/min', name: 'result == a.min() verified', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ result == a.min() })
+                        static int minOf(int[] a) {
+                            int m = a[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= a.length &&
+                                         (0..<i).every { m <= a[it] } &&
+                                         (0..<i).any { a[it] == m } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                if (a[i] < m) m = a[i]
+                                i = i + 1
+                            }
+                            return m
+                        }
+                    }''')],
+        // Soundness anchor: returning the first element isn't the max — `result == a.max()` refutes
+        // (a later element can exceed a[0], so result fails the bound half of the extremum spec).
+        [group: 'P60 max/min', name: 'returning a[0] is not a.max() (refutes)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ result == a.max() })
+                        static int firstOf(int[] a) { a[0] }
+                    }''')],
+        // Mint-once: two `a.max()` occurrences are the same term, so reflexive equality holds.
+        [group: 'P60 max/min', name: 'a.max() == a.max() (mint-once)', ok: true,
+         src: tc('class C { @Requires({ a != null }) @Ensures({ a.max() == a.max() }) static int f(int[] a) { 0 } }')],
+        // Vacuity guard: on an empty array the extremum is unconstrained (Groovy's [].max() is
+        // undefined), so a claim about it is NOT provable — the existential can't fire vacuously.
+        [group: 'P60 max/min', name: 'empty-range max claim refuted (no vacuous pass)',
+         expect: 'Cannot prove postcondition',
+         src: tc('class C { @Requires({ a != null && a.length == 0 }) @Ensures({ a.max() == 5 }) static int f(int[] a) { 0 } }')],
+
+        // ---------- Phase 61: Groovy-faithful BigDecimal division (Z3 Real sort) ----------
+        // The headline Groovy surprise, now provable: `/` on integers is BigDecimal division, so
+        // 5 / 2 is 2.5 — not 2. (A variable defeats the constant-folder so the `/` path is exercised.)
+        [group: 'P61 decimal', name: 'a / 2 == 2.5 verified (BigDecimal division)', ok: true,
+         src: tc('class C { @Requires({ a == 5 }) @Ensures({ a / 2 == 2.5 }) static int f(int a) { 0 } }')],
+        // The lock-in that `/` is NOT integer division: 5 / 2 == 2 is false (it is 2.5).
+        [group: 'P61 decimal', name: 'a / 2 == 2 refuted (/ is not intdiv)',
+         expect: 'Cannot prove postcondition',
+         src: tc('class C { @Requires({ a == 5 }) @Ensures({ a / 2 == 2 }) static int f(int a) { 0 } }')],
+        // Contrast: intdiv still truncates toward zero, so 5.intdiv(2) == 2 verifies — the two
+        // operators are modelled distinctly (Real division vs Euclidean intdiv).
+        [group: 'P61 decimal', name: 'a.intdiv(2) == 2 verified (contrast)', ok: true,
+         src: tc('class C { @Requires({ a == 5 }) @Ensures({ a.intdiv(2) == 2 }) static int f(int a) { 0 } }')],
+        // The compelling example: a BigDecimal average is *exactly* (a + b) / 2 — int operands
+        // coerced to Real, the result a decimal name, the spec proven (not just asserted).
+        [group: 'P61 decimal', name: 'BigDecimal avg == (a+b)/2 verified', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == (a + b) / 2 })
+                        static BigDecimal avg(int a, int b) { (a + b) / 2 }
+                    }''')],
+        // Soundness anchor: claiming the average is (a + b) / 3 refutes.
+        [group: 'P61 decimal', name: 'BigDecimal avg wrong divisor refuted',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == (a + b) / 3 })
+                        static BigDecimal avg(int a, int b) { (a + b) / 2 }
+                    }''')],
+        // A BigDecimal-typed parameter compared against a decimal literal: price >= 10.0 ⇒ price > 9.99.
+        [group: 'P61 decimal', name: 'BigDecimal param decimal comparison verified', ok: true,
+         src: tc('class C { @Requires({ price >= 10.0 }) @Ensures({ price > 9.99 }) static int f(BigDecimal price) { 0 } }')],
+        // The divide-by-zero obligation still fires for `/` — guarded it verifies...
+        [group: 'P61 decimal', name: 'decimal division guarded by b != 0 verified', ok: true,
+         src: tc('class C { @Requires({ b != 0 }) static BigDecimal f(int a, int b) { a / b } }')],
+        // ...and unguarded it refutes with the ArithmeticException diagnostic.
+        [group: 'P61 decimal', name: 'unguarded decimal division refuted',
+         expect: 'ArithmeticException: Division by zero',
+         src: tc('class C { static BigDecimal f(int a, int b) { a / b } }')],
+
+        // ---------- Phase 62: bounded property-based refutation when the solver says UNKNOWN ----------
+        // `result == Fib.of(n)` is the weak refutation direction (recurrence-axiom timeout → UNKNOWN);
+        // bounded testing of the executable contract finds the concrete failing input f(2): the body
+        // returns 2 but Fib.of(2) is 1. UNKNOWN becomes a runnable repro.
+        [group: 'P62 pbt', name: 'Fib UNKNOWN refuted by testing (fails on f(2))',
+         expect: 'fails on: f(2)',
+         src: tc('class C { @Requires({ n >= 0 }) @Ensures({ result == verification.Fib.of(n) }) static int f(int n) { n } }')],
+        // The diagnostic is explicit that the counterexample came from testing, not a proof.
+        [group: 'P62 pbt', name: 'Fib off-by-const UNKNOWN refuted by testing',
+         expect: 'counterexample found by bounded testing',
+         src: tc('class C { @Requires({ n >= 2 }) @Ensures({ result == verification.Fib.of(n) + 1 }) static int f(int n) { n } }')],
+        // Honest bail: an array-`sum()` postcondition is UNKNOWN (aggregation-axiom timeout), but the
+        // concrete tester can't evaluate array contents, so it finds nothing and the diagnostic stays an
+        // honest "could not decide" — bounded testing never fabricates a false refutation outside its
+        // (integer-only) fragment.
+        [group: 'P62 pbt', name: 'array-sum UNKNOWN stays could-not-decide (testing bails)',
+         expect: 'Could not decide postcondition',
+         src: tc('class C { @Requires({ a != null && a.length > 0 }) @Ensures({ result == a.sum() }) static int f(int[] a) { 0 } }')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

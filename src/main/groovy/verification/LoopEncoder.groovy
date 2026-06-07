@@ -43,6 +43,11 @@ class LoopSpec {
     Expression variant            // null when no @Decreases
     Expression guard
     List<Statement> body = []
+    // Phase 59 — a classic {@code for (init; cond; update)} desugars to
+    // {@code init; while (cond) { body; update }}: {@code init} is threaded into the
+    // loop prefix and {@code update} is appended to {@code body} at capture time, so
+    // every downstream path (loop VCs and value-flow) sees a plain while-shaped loop.
+    List<Statement> init = null   // null for while/do-while
 }
 
 /**

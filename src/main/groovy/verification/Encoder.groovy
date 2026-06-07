@@ -219,6 +219,12 @@ class Encoder {
      * like {@code !composite} hits {@code session.not(intExpr)} and crashes Z3.
      */
     private final Set<String> booleanLocals
+    /**
+     * Phase 61 — names (params, fields, locals, and {@code result}) whose declared type is a decimal
+     * (BigDecimal / Double / Float / double / float). A reference to one of these — or any {@code /}
+     * operation, or arithmetic touching a decimal literal — is translated in Z3's Real sort.
+     */
+    private final Set<String> decimalNames
 
     Encoder(SmtSession session, PureEvaluator pureEvaluator = null,
             Map<String, ClassNode> setElementTypes = null,
@@ -229,7 +235,8 @@ class Encoder {
             Map<String, ClassNode> nestedSetValueTypes = null,
             Set<String> listNames = null,
             Map<String, ClassNode> objectParams = null,
-            Set<String> booleanLocals = null) {
+            Set<String> booleanLocals = null,
+            Set<String> decimalNames = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -241,6 +248,7 @@ class Encoder {
         this.listNames = listNames != null ? listNames : new HashSet<String>()
         this.objectParams = objectParams != null ? objectParams : new LinkedHashMap<String, ClassNode>()
         this.booleanLocals = booleanLocals != null ? booleanLocals : new HashSet<String>()
+        this.decimalNames = decimalNames != null ? decimalNames : new HashSet<String>()
     }
 
     /**
@@ -2007,6 +2015,39 @@ class Encoder {
         null
     }
 
+    /** Cache of minted {@code max()}/{@code min()} extremum constants, keyed by receiver-text + op. */
+    private final Map<String, Object> extremumCache = new HashMap<String, Object>()
+
+    /**
+     * Model {@code xs.max()} / {@code xs.min()} over the Int contents of {@code arr} on the half-open
+     * range {@code [loH, hiH)} as a fresh constant {@code r} carrying the two facts that define an
+     * extremum (Phase 60): {@code r} bounds every element ({@code ∀i. lo<=i<hi ⟹ a[i] <= r}, or
+     * {@code >=} for min, triggered on {@code a[i]}) and {@code r} is *achieved* by some element
+     * ({@code ∃j. lo<=j<hi ∧ a[j] == r}). The achieved-fact is guarded by non-emptiness
+     * ({@code lo < hi ⟹ …}) so an empty range — Groovy's {@code [].max()} is undefined — cannot make
+     * the context vacuously unsatisfiable and "prove" anything. Mint-once per receiver so repeated
+     * {@code xs.max()} occurrences are the same term.
+     */
+    Object maxMinOf(String key, Object arr, Object loH, Object hiH, boolean isMax) {
+        Object cached = extremumCache.get(key)
+        if (cached != null) return cached
+        Object r = session.intVar('extremum$' + (quantCounter++))
+        extremumCache.put(key, r)
+        // bound: ∀i. lo <= i < hi ⟹ (isMax ? a[i] <= r : a[i] >= r)
+        Object iv = session.boundIntVar('ext$b' + (quantCounter++))
+        Object seli = session.select(arr, iv)
+        Object rangei = session.and([session.le(loH, iv), session.lt(iv, hiH)])
+        Object bound = isMax ? session.le(seli, r) : session.ge(seli, r)
+        session.assertExpr(session.forall([iv], session.implies(rangei, bound), [seli]))
+        // achieved (guarded non-empty): lo < hi ⟹ ∃j. lo <= j < hi ∧ a[j] == r
+        Object jv = session.boundIntVar('ext$a' + (quantCounter++))
+        Object selj = session.select(arr, jv)
+        Object rangej = session.and([session.le(loH, jv), session.lt(jv, hiH)])
+        Object ach = session.exists([jv], session.and([rangej, session.eq(selj, r)]), [selj])
+        session.assertExpr(session.implies(session.lt(loH, hiH), ach))
+        return r
+    }
+
     /** Array handles whose String-concat base/step axioms have been asserted (mint-once, per array). */
     private final Set<Object> strConcatConstrained = new HashSet<Object>()
 
@@ -2410,6 +2451,88 @@ class Encoder {
         return null
     }
 
+    /** Phase 61 — cache of minted Real constants for decimal-typed names (one per source name). */
+    private final Map<String, Object> realVars = new HashMap<String, Object>()
+
+    private Object realVarFor(String name) {
+        Object v = realVars.get(name)
+        if (v == null) { v = session.realVar(name); realVars.put(name, v) }
+        v
+    }
+
+    /** Phase 61 — true if {@code name} is a decimal-typed (BigDecimal/Double/Float) name. */
+    boolean isDecimalName(String name) { decimalNames.contains(name) }
+
+    /** Phase 61 — true if {@code e} produces a decimal value (a `/`, a decimal literal/name, or
+     *  decimal arithmetic). Exposed so binding sites can refuse to put a Real handle into an
+     *  Int-typed slot (which would crash Z3 on a sort mismatch) and skip loudly instead. */
+    boolean isDecimalValued(Expression e) { isDecimalExpr(e) }
+
+    /** True if {@code e} denotes a decimal (BigDecimal/Double/Float) value in Groovy's semantics. */
+    private boolean isDecimalExpr(Expression e) {
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            return v instanceof BigDecimal || v instanceof Double || v instanceof Float
+        }
+        if (e instanceof VariableExpression) {
+            return decimalNames.contains(((VariableExpression) e).name)
+        }
+        if (e instanceof BinaryExpression) {
+            String t = ((BinaryExpression) e).operation.text
+            if (t == '/') return true   // Groovy: `/` on integers is BigDecimal division
+            if (t == '+' || t == '-' || t == '*') {
+                return isDecimalExpr(((BinaryExpression) e).leftExpression) ||
+                       isDecimalExpr(((BinaryExpression) e).rightExpression)
+            }
+        }
+        false
+    }
+
+    /** Translate {@code e} into the Real sort, coercing Int subexpressions via int→real. Null = skip. */
+    private Object asReal(Expression e) {
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof BigDecimal || v instanceof Double || v instanceof Float) {
+                return session.realLit(rationalOf(v))
+            }
+            if (v instanceof Number) return session.intToReal(session.intLit(((Number) v).longValue()))
+            return null
+        }
+        if (e instanceof VariableExpression && decimalNames.contains(((VariableExpression) e).name)) {
+            // A threaded binding (e.g. `result` bound to its Real return handle, or a decimal local
+            // assigned in the body) is already Real — reuse it; otherwise mint the param's constant.
+            String n = ((VariableExpression) e).name
+            Object bound = env.get(n)
+            return bound != null ? bound : realVarFor(n)
+        }
+        if (e instanceof BinaryExpression) {
+            String t = ((BinaryExpression) e).operation.text
+            if (t == '/' || t == '+' || t == '-' || t == '*') {
+                Object L = asReal(((BinaryExpression) e).leftExpression)
+                Object R = asReal(((BinaryExpression) e).rightExpression)
+                if (L == null || R == null) return null
+                if (t == '/') return session.realDiv(L, R)
+                if (t == '+') return session.plus(L, R)
+                if (t == '-') return session.minus(L, R)
+                return session.times(L, R)
+            }
+        }
+        // Any other Int-valued expression (a named int var, a[i], a method call): coerce to Real.
+        Object h = translate(e)
+        return h == null ? null : session.intToReal(h)
+    }
+
+    /** A BigDecimal/Double/Float as a Z3 rational numeral string ("25/10" for 2.5G). */
+    private static String rationalOf(Object value) {
+        BigDecimal bd = (value instanceof BigDecimal) ? (BigDecimal) value : new BigDecimal(value.toString())
+        bd = bd.stripTrailingZeros()
+        int scale = bd.scale()
+        if (scale <= 0) {
+            return bd.unscaledValue().multiply(BigInteger.TEN.pow(-scale)).toString()
+        }
+        return bd.unscaledValue().toString() + '/' + BigInteger.TEN.pow(scale).toString()
+    }
+
     private Object translateBinary(BinaryExpression be) {
         // Phase 8a — normalise-then-SMT: fold a closed numeric subexpression to a
         // literal before encoding. This dissolves the NIA opt-out for *constant*
@@ -2550,6 +2673,38 @@ class Encoder {
             Object lH = translateInSort(be.leftExpression, strSort)
             Object rH = translateInSort(be.rightExpression, strSort)
             if (lH != null && rH != null) return session.stringConcat(lH, rH)
+        }
+
+        // Phase 61 — BigDecimal arithmetic & comparison via Z3's exact Real sort. Fires when an
+        // operand is a decimal (literal or BigDecimal-typed name) or the operator is `/` (Groovy's
+        // `/` on integers is BigDecimal division: 5 / 2 == 2.5). Int operands are coerced via
+        // int→real; the `b != 0` divide obligation is still collected as a DivideSite. Anything that
+        // can't be lowered to Real returns null (loud skip) rather than the integer path.
+        boolean cmpOp = (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL ||
+                         op == Types.COMPARE_LESS_THAN || op == Types.COMPARE_LESS_THAN_EQUAL ||
+                         op == Types.COMPARE_GREATER_THAN || op == Types.COMPARE_GREATER_THAN_EQUAL)
+        boolean decimalCmp = cmpOp && (isDecimalExpr(be.leftExpression) || isDecimalExpr(be.rightExpression))
+        if (isDecimalExpr(be) || decimalCmp) {
+            Object dl = asReal(be.leftExpression)
+            Object dr = asReal(be.rightExpression)
+            if (dl == null || dr == null) return null
+            if (decimalCmp) {
+                switch (op) {
+                    case Types.COMPARE_EQUAL:              return session.eq(dl, dr)
+                    case Types.COMPARE_NOT_EQUAL:          return session.not(session.eq(dl, dr))
+                    case Types.COMPARE_LESS_THAN:          return session.lt(dl, dr)
+                    case Types.COMPARE_LESS_THAN_EQUAL:    return session.le(dl, dr)
+                    case Types.COMPARE_GREATER_THAN:       return session.gt(dl, dr)
+                    case Types.COMPARE_GREATER_THAN_EQUAL: return session.ge(dl, dr)
+                }
+            }
+            switch (be.operation.text) {
+                case '/': return session.realDiv(dl, dr)
+                case '+': return session.plus(dl, dr)
+                case '-': return session.minus(dl, dr)
+                case '*': return session.times(dl, dr)
+            }
+            return null
         }
 
         Object L = translate(be.leftExpression)
@@ -2746,6 +2901,15 @@ class Encoder {
                     }
                 }
             }
+        }
+
+        // xs.max() / xs.min() over an Int list/array (Phase 60) — the witnessed-extremum spec a
+        // Groovy developer writes as `result == a.max()` instead of spelling the every/any by hand.
+        if ((m == 'max' || m == 'min') && args.isEmpty()) {
+            Object[] r = listAggHandles(recv)
+            if (r == null) return null
+            if (listElementTypes.get((String) r[0]) != null) return null   // non-Int element domain → skip
+            return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max')
         }
 
         // Fib.of(i) — the Fibonacci spec helper (Phase 55), lowered to the axiomatised fib$ primitive.

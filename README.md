@@ -407,8 +407,10 @@ static int divModRoundTrip(int a, int b) { a.intdiv(b) * b + (a % b) }
 ```
 
 The division/modulo handling follows **Groovy**, not Java (they differ): `/` on integers is
-*`BigDecimal`* division (`5 / 2 == 2.5G`), so it's outside the integer fragment and skipped loudly —
-genuine integer division is `a.intdiv(b)` or `(int)(a / b)`. `%` and `.remainder(b)` are the
+*`BigDecimal`* division (`5 / 2 == 2.5G`), now modelled with Z3's exact-real arithmetic so a spec
+over it is *proven* — `a / 2 == 2.5` verifies and `a / 2 == 2` refutes, and a `BigDecimal` average is
+provably `(a + b) / 2` (genuine integer division is `a.intdiv(b)` or `(int)(a / b)`, truncating toward
+zero, modelled distinctly). `%` and `.remainder(b)` are the
 sign-of-dividend remainder (`-5 % 2 == -1`); `.mod(b)` is `BigInteger.mod` (non-negative, and the
 verifier adds the Groovy-specific obligation that the modulus is `> 0`). The implicit `b != 0`
 obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnable repro. Hard NIA
@@ -1021,7 +1023,11 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
 | **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
-| **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (skipped, not integer); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
+| **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (now modelled with Z3's exact Real sort — see below — *not* skipped); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
+| **BigDecimal division as exact reals** | `/` on integers is `BigDecimal` division in Groovy (`5 / 2 == 2.5`, not `2`) — modelled with Z3's exact **Real** sort: int operands coerced via int→real, `BigDecimal`/`Double`/`Float` literals and params decimal-typed. So `a / 2 == 2.5` proves, `a / 2 == 2` refutes, and a `BigDecimal avg(int a, int b)` is provably `(a + b) / 2`. Retires the old "`/` skips" caveat; the `b != 0` obligation still fires | ✅ Phase 61 |
+| **`xs.max()` / `xs.min()` as a witnessed extremum** | An Int list/array's `max()`/`min()` lowers to a fresh `r` carrying the two defining facts — `r` bounds every element (`∀i. a[i] <= r`) and is achieved by one (`∃i. a[i] == r`, guarded by non-emptiness so `[].max()` can't prove vacuously). `result == a.max()` now means exactly the every/any spec a developer would otherwise write by hand | ✅ Phase 60 |
+| **Classic `for (init; cond; update)` loops** | A `for` loop with `@Invariant`/`@Decreases` desugars to the existing while-machinery — init threaded into the prefix, `i++`/`i += k` normalised to a plain assignment and appended to the body — so all four loop VCs (establishment / preservation / use / progress) discharge. `for`-in and `.each` stay outside the fragment (no index to bind the invariant to) and skip loudly | ✅ Phase 59 |
+| **Bounded property-based refutation on UNKNOWN** | When the solver can't *decide* a postcondition (a quantifier/recurrence-axiom timeout — the weak refutation direction), a concrete pass runs the executable contract over a small integer grid and reports the first failing input as a best-effort `fails on:` repro (e.g. `result == Fib.of(n)` → `fails on: f(2)`). A *witness*, not a proof of falsity; outside its integer fragment it bails to an honest "could not decide", never a false refutation | ✅ Phase 62 |
 | **Early-`return` guards in the loop prefix** | A method with an annotated loop can now lead with the idiomatic `if (cond) return e;` guard pattern — multiple stacked guards work. Each early-exit `if` is partitioned out of the prefix and verified on its own path (assume `¬prior-guards`, sym-exec prior non-exit statements, assume this guard, bind `result`, check `@Ensures`); the loop's establishment / use checks fire with `¬each-prefix-guard` assumed, so the loop machinery only runs on the no-exit path | ✅ Phase 49a |
 | **Early-`return` inside the loop body** | An `if (cond) return e;` at the top level of the loop body verifies on its own path (assume invariant ∧ loop-guard, walk body up to this exit interleaving `¬prior-body-guards` with sym-exec of non-exit body statements, assume this guard, bind `result`, check `@Ensures`). Preservation and progress walk the body interleaving `¬each-in-body-guard` (we're on the no-exit-fired path). The `is_prime` HumanEval port now matches the Verus source structurally — prefix guards + in-body returns + NIA bound check, all verifying. Suffix-region exits and exits nested in non-top-level if-branches remain deferred | ✅ Phase 49b |
 | **Sum aggregation over a list (Int *and* String)** | `xs[lo..<hi].sum()` (prefix sum, for loop invariants) and `xs.sum()` (whole list) lower to base/step axioms — `sum$(arr,lo,hi)` for an Int list (a running total provably equals the list sum, `s == xs[0..<i].sum()` carried across the loop) and **`strConcat$`** for a `List<String>` (duck-typed `['a','b','c'].sum() == 'abc'`, over the `str.++` monoid). Other element domains skip honestly. The value-sum analogue of `count`/`bcount`. Empty range modelled as `0`/`""` (Groovy's `[].sum()` is `null` — needs a non-empty guard); refuting a false claim returns honest UNKNOWN. HumanEval 3 `below_zero` (`result ⟺ ∃ prefix < 0`) verifies on it | ✅ Phase 51 |
@@ -1073,9 +1079,14 @@ unsound outside it**: anything the encoder cannot model emits a "skipped"
 warning rather than passing silently. In expressions the fragment is:
 
 - integer `+`, `-`, `*` (variable products dispatch to Z3's NIA solver under a per-VC timeout, with
-  closed subterms folded first; Phase 48), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50) — the
-  `/` operator is `BigDecimal` division and skips; divide-by-zero and `.mod`-non-positive obligations
-  fire; `**`/bitwise are out;
+  closed subterms folded first; Phase 48), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
+  `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) so
+  `5 / 2 == 2.5` and decimal-typed contracts prove (int operands coerced; `BigDecimal`/`Double`/`Float`
+  literals and params are decimal); divide-by-zero and `.mod`-non-positive obligations fire;
+  `**`/bitwise are out;
+- `xs.max()` / `xs.min()` over an Int list/array (Phase 60), as the witnessed-extremum spec — `r`
+  bounds every element and is achieved by one of them — so `result == a.max()` means what you'd write
+  by hand;
 - comparisons, the boolean connectives `&&`/`||`/`!`, and the conditional `?:` — all
   short-circuit-aware, so a guard's left operand protects accesses in its right
   (`i > 0 && a[i - 1] < a[i]`) and a `?:` branch is checked under its condition;
@@ -1114,8 +1125,12 @@ warning rather than passing silently. In expressions the fragment is:
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
-tracked in SSA so a mutator's pre/post state differ), and a single annotated `while` loop. See
-`Encoder` and the roadmap for the exact boundaries.
+tracked in SSA so a mutator's pre/post state differ), and a single annotated loop — `while` or a
+classic `for (init; cond; update)`, which desugars to the same machinery (Phase 59; `for`-in and
+`.each` stay outside the fragment and skip loudly). When the solver returns *UNKNOWN* on a
+postcondition (a quantifier/recurrence-axiom timeout), a bounded property-based pass runs the
+executable contract over a small grid of integer inputs and reports any concrete failing input as a
+best-effort `fails on:` repro (Phase 62). See `Encoder` and the roadmap for the exact boundaries.
 
 ## Relationship to Groovy's other checkers
 

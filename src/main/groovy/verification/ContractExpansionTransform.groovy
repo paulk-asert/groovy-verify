@@ -28,17 +28,25 @@ import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.ast.VariableScope
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
+import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
+import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ListExpression
+import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PrefixExpression
+import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.WhileStatement
+import org.codehaus.groovy.syntax.Types
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.Janitor
 import org.codehaus.groovy.control.SourceUnit
@@ -246,8 +254,32 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source) {
-        Expression guard = loopGuard(loop)
-        if (guard == null) return null   // only while/do-while guards are modelled
+        // Phase 59 — a classic for-loop is desugared to while-shape: its condition is
+        // the guard, its init becomes a prefix statement, and its update is normalised
+        // to a plain assignment and appended to the loop body. A for-in loop (no
+        // ClosureListExpression) or any non-standard for shape returns null → loud skip.
+        List<Statement> initStmts = null
+        Statement updateStmt = null
+        Expression guard
+        if (loop instanceof ForStatement) {
+            ForStatement f = (ForStatement) loop
+            if (!(f.collectionExpression instanceof ClosureListExpression)) return null
+            List<Expression> parts = ((ClosureListExpression) f.collectionExpression).expressions
+            if (parts.size() != 3 || parts.get(1) instanceof EmptyExpression) return null
+            guard = parts.get(1)
+            Expression initE = parts.get(0)
+            Expression updE = parts.get(2)
+            if (!(initE instanceof EmptyExpression)) {
+                initStmts = [(Statement) new ExpressionStatement(initE)]
+            }
+            if (!(updE instanceof EmptyExpression)) {
+                updateStmt = normalizeUpdate(updE)
+                if (updateStmt == null) return null   // unsupported update shape → loud skip
+            }
+        } else {
+            guard = loopGuard(loop)
+        }
+        if (guard == null) return null   // only while/do-while/for guards are modelled
         List<Expression> invariants = new ArrayList<Expression>()
         Expression variant = null
         for (AnnotationNode an : ((Statement) loop).getStatementAnnotations()) {
@@ -277,6 +309,8 @@ class ContractExpansionTransform implements ASTTransformation {
         spec.variant = variant
         spec.guard = guard
         spec.body = loopBodyCopy(loop)
+        if (updateStmt != null) spec.body.add(updateStmt)   // for-loop: body; update
+        spec.init = initStmts
         return spec
     }
 
@@ -284,6 +318,46 @@ class ContractExpansionTransform implements ASTTransformation {
         if (loop instanceof WhileStatement) return ((WhileStatement) loop).booleanExpression
         if (loop instanceof DoWhileStatement) return ((DoWhileStatement) loop).booleanExpression
         return null
+    }
+
+    /**
+     * Phase 59 — normalise a for-loop update expression to a plain assignment statement so
+     * the loop machinery sees the same shape it already handles for while loops:
+     * {@code i++}/{@code ++i} → {@code i = i + 1}, {@code i--}/{@code --i} → {@code i = i - 1},
+     * {@code i += k} → {@code i = i + (k)}, {@code i -= k} → {@code i = i - (k)}, and a plain
+     * {@code i = ...} is kept as-is. Anything else (a non-variable target, an unusual operator)
+     * returns null so the whole loop is honestly skipped rather than mis-modelled.
+     */
+    private static Statement normalizeUpdate(Expression upd) {
+        String name
+        int op
+        Expression operand
+        if (upd instanceof PostfixExpression) {
+            operand = ((PostfixExpression) upd).expression; op = ((PostfixExpression) upd).operation.type
+        } else if (upd instanceof PrefixExpression) {
+            operand = ((PrefixExpression) upd).expression; op = ((PrefixExpression) upd).operation.type
+        } else if (upd instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) upd
+            if (!(be.leftExpression instanceof VariableExpression)) return null
+            if (be.operation.type == Types.ASSIGN) return new ExpressionStatement(upd)
+            name = ((VariableExpression) be.leftExpression).name
+            String rhs = be.rightExpression.text
+            if (be.operation.type == Types.PLUS_EQUAL) return assignStmt("${name} = ${name} + (${rhs})")
+            if (be.operation.type == Types.MINUS_EQUAL) return assignStmt("${name} = ${name} - (${rhs})")
+            return null
+        } else {
+            return null
+        }
+        if (!(operand instanceof VariableExpression)) return null
+        name = ((VariableExpression) operand).name
+        if (op == Types.PLUS_PLUS) return assignStmt("${name} = ${name} + 1")
+        if (op == Types.MINUS_MINUS) return assignStmt("${name} = ${name} - 1")
+        return null
+    }
+
+    private static Statement assignStmt(String text) {
+        Expression e = reparse(text)
+        return e != null ? new ExpressionStatement(e) : null
     }
 
     private static List<Statement> loopBodyCopy(LoopingStatement loop) {

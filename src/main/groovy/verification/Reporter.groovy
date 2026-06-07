@@ -88,6 +88,20 @@ class Reporter {
         sb.toString()
     }
 
+    /**
+     * Phase 62 — the solver couldn't decide the postcondition, but bounded property-based testing of
+     * the executable contract found a concrete input on which it fails. Reported as a genuine
+     * refutation (with a runnable repro), distinguished from a proof by the "by testing" wording.
+     */
+    static String formatPostconditionRefutedByTesting(String methodName, String contractText, String failingCall) {
+        StringBuilder sb = new StringBuilder()
+        sb.append("Postcondition of ").append(methodName)
+          .append(" fails (solver could not decide; counterexample found by bounded testing)")
+        if (contractText) sb.append("\n    ensured: ").append(contractText)
+        sb.append("\n    fails on: ").append(failingCall)
+        sb.toString()
+    }
+
     static String formatClassInvariantViolation(String methodName,
                                                 String invariantText,
                                                 CheckResult result) {

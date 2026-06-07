@@ -441,6 +441,14 @@ interface SmtSession extends AutoCloseable {
     Object intMod(Object a, Object b)
     Object intRem(Object a, Object b)
 
+    // Phase 61 — exact-rational (Z3 Real) support for Groovy's BigDecimal arithmetic. The
+    // arithmetic/comparison ops above (plus/minus/times/eq/lt/…) are sort-polymorphic and accept
+    // Real operands directly; only these four are Real-specific.
+    Object realLit(String rational)        // a rational numeral string, e.g. "25/10" for 2.5G
+    Object realVar(String name)
+    Object realDiv(Object a, Object b)      // exact real division (a/b over Reals)
+    Object intToReal(Object a)              // coerce an Int handle into the Real sort
+
     Object eq(Object a, Object b)
     Object ne(Object a, Object b)
     Object lt(Object a, Object b)

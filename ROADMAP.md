@@ -3713,6 +3713,80 @@ a `compareTo`/`compare` method be verified directly.
 
 ---
 
+## Phase 59 — Classic `for` loops  *(shipped)*
+
+The verifiable-loop story was `while`-only; the most common Groovy loop is the C-style
+`for (init; cond; update)`. groovy-contracts already injects `@Invariant`/`@Decreases` on a
+`ForStatement` (its `LoopContractSupport` visits `for`/`while`/`do-while` uniformly via
+`LoopingStatement.getLoopBlock()`), so this is purely a verifier-side desugar — no upstream change.
+
+In `ContractExpansionTransform.buildLoopSpec`, a `ForStatement` whose collection is the classic
+`ClosureListExpression` `[init, cond, update]` is lowered to while-shape: **`cond`** becomes the guard,
+**`init`** is captured into a new `LoopSpec.init` and threaded into the loop prefix by `findLoopSite`,
+and **`update`** is normalised to a plain assignment (`i++`/`++i` → `i = i + 1`, `i += k` → `i = i + (k)`,
+a bare `i = …` kept) and *appended to the loop body*. Every downstream path — the four loop VCs
+(`LoopEncoder`) and the value-flow loop-fused obligation pass — then sees an ordinary while-shaped loop,
+so a `for`-loop array-bounds obligation discharges from the invariant exactly as a `while` does. A
+`for`-in loop (no index to bind the invariant to) and an unsupported update shape return null → loud skip.
+
+---
+
+## Phase 60 — `xs.max()` / `xs.min()` as the witnessed extremum  *(shipped)*
+
+`a.max()` is what a Groovy developer writes; the explicit witnessed-extremum spell (a `.every` bound
+plus a `.any` witness, as in the HumanEval `maxElement` port) is what the proof needs. This recognises
+`xs.max()` / `xs.min()` over an Int list/array and lowers each to a fresh constant `r` (`Encoder.maxMinOf`,
+mint-once per receiver) carrying the two defining facts over the modelled contents: a **bound**
+(`∀i. lo<=i<hi ⟹ a[i] <= r`, or `>=` for min, triggered on `a[i]`) and an **achieved** witness
+(`∃j. lo<=j<hi ∧ a[j] == r`). The achieved-fact is guarded by non-emptiness (`lo < hi ⟹ …`) so an empty
+range — Groovy's `[].max()` is undefined — can't make the context vacuously unsatisfiable. `result == a.max()`
+then proves against the same max-finding loop the explicit spec did (Z3 closes `result == r` by
+antisymmetry: each bounds the other's witness). Non-Int element domains skip.
+
+---
+
+## Phase 61 — BigDecimal division as exact reals  *(shipped)*
+
+The headline Groovy arithmetic surprise — `/` on integers is **`BigDecimal` division** (`5 / 2 == 2.5`,
+not `2`) — was previously skipped loudly. It is now modelled with Z3's exact **Real** sort, retiring that
+caveat. The backend gains four Real primitives (`realLit`/`realVar`/`realDiv`/`intToReal`); the existing
+`plus`/`minus`/`times`/`eq`/`lt`/… are sort-polymorphic (Z3 arithmetic accepts Real), so no other backend
+op changed. In `Encoder.translateBinary`, a binary fires the Real path when an operand is decimal (a
+`BigDecimal`/`Double`/`Float` literal or a decimal-typed name) or the operator is `/` (always BigDecimal
+in Groovy); `asReal` translates the subtree, coercing Int operands via int→real, and a comparison with a
+decimal operand emits a Real comparison. Decimal-typed names (params, fields, the implicit `result`,
+typed locals) come from `VerifyChecker.collectDecimalNames`, threaded into the encoder as `decimalNames`.
+
+**Soundness containment.** A decimal value can only reach an Int slot via Groovy's implicit
+BigDecimal→int narrowing — and Groovy's own static type checker rejects the body/local forms
+(`int x = a / b` is a compile error), leaving only the `int f() { a / b }` return narrowing, which the
+result-binding guard skips loudly (its old behaviour) rather than binding a Real where Int is expected.
+A full crash audit of the suite confirms no Z3 sort-mismatch. **Out of fragment:** true IEEE-754
+`double`/`float` (modelled as exact reals, not bit-exact), and decimal `%`.
+
+---
+
+## Phase 62 — Bounded property-based refutation on UNKNOWN  *(shipped)*
+
+The weak direction is *refutation* of a quantified/recurrence contract: Z3's MBQI can't build a model
+violating the aggregation/`Fib` axioms, so a false `@Ensures({ result == Fib.of(n) })` surfaces as an
+honest UNKNOWN (timeout), not a counterexample. Because the contracts are executable Groovy, the natural
+fallback is to *run the spec the solver couldn't prove*. `ContractTester` (a self-contained concrete
+interpreter, kept separate from `PureEvaluator` so the Phase-8a folding path is untouched) is invoked
+from `checkPath` only on a postcondition UNKNOWN: it searches a small symmetric integer grid, checks the
+`@Requires`, executes the body to a `result`, and evaluates the `@Ensures`, reporting the first failing
+input as a runnable `fails on:` repro via `Reporter.formatPostconditionRefutedByTesting`.
+
+It is a **witness, not a proof of falsity** — a bug needing inputs outside the grid escapes, so the
+diagnostic says "counterexample found by bounded testing". The evaluable fragment mirrors `PureEvaluator`
+(Int arithmetic, comparisons, boolean connectives, `?:`, `if`/`return`, single-assignment locals,
+same-class contract-free calls) over `Long`, plus the `Fib.of` helper. Outside it — notably array /
+quantified contracts (`result == xs.sum()`), the Long-only limit — the search bails to the honest "could
+not decide", never fabricating a false refutation. Extending the concrete domain to arrays/lists (so
+quantified UNKNOWNs also get repros) is the natural follow-on.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

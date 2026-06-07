@@ -187,6 +187,8 @@ class VerifyChecker extends TypeCheckingExtension {
      * the default Int. Without this, `s == "admin"` would mismatch (Int s vs String!Sort literal).
      */
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
+    /** Phase 61 — decimal-typed (BigDecimal/Double/Float) param/field/local/result names. */
+    private Set<String> currentDecimalNames = new HashSet<String>()
     /**
      * Phase 48b — body-local {@code boolean} variable names. Tracked so the SSA-fresh handle
      * in {@code checkPath}'s {@code Assign} step mints a {@code boolVar} rather than an
@@ -213,7 +215,7 @@ class VerifyChecker extends TypeCheckingExtension {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals)
+                    currentBooleanLocals, currentDecimalNames)
     }
 
     /**
@@ -577,6 +579,49 @@ class VerifyChecker extends TypeCheckingExtension {
                         if (t != null && isNonIntScalar(t)) {
                             out.putIfAbsent(((VariableExpression) de.leftExpression).name, t)
                         }
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
+        out
+    }
+
+    /** True if {@code t} is a decimal type Groovy models with exact reals: BigDecimal/Double/Float. */
+    private static boolean isDecimalType(ClassNode t) {
+        if (t == null) return false
+        String n = t.name
+        return n == 'java.math.BigDecimal' || n == 'java.lang.Double' || n == 'java.lang.Float' ||
+               n == 'double' || n == 'float'
+    }
+
+    /**
+     * Phase 61 — names (params, declaring-class fields, the implicit {@code result}, and typed
+     * locals) whose declared type is a decimal (BigDecimal/Double/Float). A reference to one of
+     * these lowers to Z3's Real sort. Same clean-body + closure-skip scan as {@link #collectScalarTypes}.
+     */
+    private static Set<String> collectDecimalNames(MethodNode node) {
+        Set<String> out = new LinkedHashSet<String>()
+        for (Parameter p : node.parameters) {
+            if (isDecimalType(p.type)) out.add(p.name)
+        }
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) {
+            if (isDecimalType(f.type)) out.add(f.name)
+        }
+        if (isDecimalType(node.returnType)) out.add('result')
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitClosureExpression(ClosureExpression ce) { /* skip contract closures */ }
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (isDecimalType(t)) out.add(((VariableExpression) de.leftExpression).name)
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1091,6 +1136,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListNames = collectListNames(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
+        currentDecimalNames = collectDecimalNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
@@ -1194,6 +1240,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListNames = new HashSet<String>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
+            currentDecimalNames = new HashSet<String>()
             currentBooleanLocals = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
         }
@@ -2547,6 +2594,13 @@ class VerifyChecker extends TypeCheckingExtension {
 
             // A void method (e.g. a lemma) has no result; its postcondition is over parameters.
             if (p.result != null) {
+                // Phase 61 — a BigDecimal-valued return narrowed into a non-decimal result (e.g.
+                // `int f() { a / b }`, Groovy truncating the quotient) can't be bound as a Real
+                // without a sort mismatch; skip loudly, as the bare-`/` int case always has.
+                if (enc.isDecimalValued(p.result) && !enc.isDecimalName('result')) {
+                    throw new UnsupportedConstructException(
+                        "return expression '${p.result.text}' is BigDecimal but the method's return type is not decimal")
+                }
                 Object resHandle = enc.translate(p.result)
                 if (resHandle == null) {
                     throw new UnsupportedConstructException(
@@ -2588,6 +2642,17 @@ class VerifyChecker extends TypeCheckingExtension {
 
             ASTNode anchor = (p.result != null && p.result.lineNumber > 0) ?
                 (ASTNode) p.result : (ASTNode) node
+            // Phase 62 — when the solver could not *decide* a postcondition (a quantifier/recurrence
+            // timeout, the weak refutation direction), fall back to bounded property-based testing of
+            // the executable contract: a concrete failing input turns an honest UNKNOWN into a repro.
+            if (r.status == CheckResult.Status.UNKNOWN && postAst != null) {
+                String failing = pbtFailingCall(node, postAst, reqAst)
+                if (failing != null) {
+                    addStaticTypeError(
+                        Reporter.formatPostconditionRefutedByTesting(node.name, postAst.text, failing), anchor)
+                    return
+                }
+            }
             if (postAst != null) {
                 // Combined or pure @Ensures failure — keep the existing message; the
                 // counterexample distinguishes whether the @Ensures or an invariant clause
@@ -2603,6 +2668,29 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally {
             currentBcountKExprs = Collections.<Expression> emptyList()
             try { session.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * Phase 62 — run bounded property-based testing of a method's postcondition over a small grid of
+     * integer inputs, returning a {@code name(args)} repro string for the first failing input, or null
+     * if none is found / the method is outside the concrete-evaluable fragment. Best-effort: any
+     * failure is swallowed so the fallback can never break the build.
+     */
+    private static String pbtFailingCall(MethodNode node, Expression postAst, Expression reqAst) {
+        try {
+            ClassNode dc = node.declaringClass
+            if (dc == null) return null
+            List<Long> args = new ContractTester(dc).findCounterexample(node, reqAst, postAst)
+            if (args == null) return null
+            StringBuilder sb = new StringBuilder(node.name).append('(')
+            for (int i = 0; i < args.size(); i++) {
+                if (i > 0) sb.append(', ')
+                sb.append(args.get(i))
+            }
+            sb.append(')').toString()
+        } catch (Throwable ignored) {
+            null
         }
     }
 
@@ -2915,6 +3003,10 @@ class VerifyChecker extends TypeCheckingExtension {
         site.loopStmt = top.get(idx)
         site.spec = (LoopSpec) site.loopStmt.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
         site.originalPrefix = new ArrayList<Statement>(top.subList(0, idx))
+        // Phase 59 — a desugared for-loop's init runs immediately before the loop, after any
+        // real pre-loop statements, so append it to the prefix (the value-flow/establishment
+        // walks then see `int i = 0` exactly as they would for a while-shaped loop).
+        if (site.spec.init != null) site.originalPrefix.addAll(site.spec.init)
         site.originalSuffix = new ArrayList<Statement>(top.subList(idx + 1, top.size()))
         // Phase 49 (Slice A) — prefix early-exits are partitioned and verified per-path;
         // suffix exits aren't yet supported (would need state-aware {@code ¬guard} interleaving

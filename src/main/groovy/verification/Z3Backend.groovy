@@ -879,6 +879,12 @@ class Z3Session implements SmtSession {
         ctx.mkITE(nonneg, mod, ctx.mkSub((ArithExpr) mod, (ArithExpr) absb))
     }
 
+    // Phase 61 — Real (exact rational) primitives for Groovy BigDecimal arithmetic.
+    @Override Object realLit(String rational) { ctx.mkReal(rational) }
+    @Override Object realVar(String name)     { ctx.mkRealConst(name) }
+    @Override Object realDiv(Object a, Object b) { ctx.mkDiv((ArithExpr) a, (ArithExpr) b) }
+    @Override Object intToReal(Object a)      { ctx.mkInt2Real((IntExpr) a) }
+
     @Override Object eq(Object a, Object b) { ctx.mkEq((Expr) a, (Expr) b) }
     @Override Object ne(Object a, Object b) { ctx.mkNot(ctx.mkEq((Expr) a, (Expr) b)) }
     @Override Object lt(Object a, Object b) { ctx.mkLt((ArithExpr) a, (ArithExpr) b) }
