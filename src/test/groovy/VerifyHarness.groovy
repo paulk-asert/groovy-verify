@@ -5319,6 +5319,81 @@ class VerifyHarness {
          expect: 'ArithmeticException: Division by zero',
          src: tc('class C { static BigDecimal f(int a, int b) { a / b } }')],
 
+        // ---------- Phase 67: decimal negation (unary minus, negative literal) ----------
+        // Unary minus on a BigDecimal is Real negation — previously it fell to the int path (int
+        // shadow) and refuted a true postcondition.
+        [group: 'P67 decimal negation', name: 'decimal unary minus verified', ok: true,
+         src: tc('class C { @Requires({ a == 2.5 }) @Ensures({ result == -2.5 }) static BigDecimal f(BigDecimal a) { -a } }')],
+        // Negating a negative is positive — composes with the comparison path.
+        [group: 'P67 decimal negation', name: 'negate a negative is positive', ok: true,
+         src: tc('class C { @Requires({ a < 0.0 }) @Ensures({ result > 0.0 }) static BigDecimal f(BigDecimal a) { -a } }')],
+        // A negative decimal literal as the return value (was skipped — translate left it unmodelled).
+        [group: 'P67 decimal negation', name: 'negative decimal literal verified', ok: true,
+         src: tc('class C { @Ensures({ result < 0.0 }) static BigDecimal f() { -2.5 } }')],
+        // Soundness anchor: a wrong negation refutes.
+        [group: 'P67 decimal negation', name: 'wrong decimal negation refuted',
+         expect: 'Cannot prove postcondition',
+         src: tc('class C { @Requires({ a == 2.5 }) @Ensures({ result == 2.5 }) static BigDecimal f(BigDecimal a) { -a } }')],
+        // Boundary: aggregation over a *decimal* list isn't modelled (the contents would need a Real
+        // element sort) — it skips loudly, never silently passes or crashes.
+        [group: 'P67 decimal negation', name: 'decimal-list sum skips loudly', expect: 'outside fragment',
+         src: tc('class C { @Requires({ xs.size() > 0 }) @Ensures({ result == xs.sum() }) static BigDecimal f(List<BigDecimal> xs) { xs.sum() } }')],
+
+        // ---------- Phase 68: financial conservation & no-cents-lost proofs ----------
+        // "No money is lost in an account transfer": the total across two BigDecimal balances is
+        // invariant. Z3's exact Real sort models BigDecimal +/- faithfully, so this is a real proof.
+        [group: 'P68 financial', name: 'transfer conserves total (no money lost)', ok: true,
+         src: tc('''class Bank {
+                       BigDecimal alice
+                       BigDecimal bob
+                       @Requires({ amt >= 0.0 && amt <= alice })
+                       @Ensures({ alice + bob == old.alice + old.bob })
+                       void transfer(BigDecimal amt) { alice = alice - amt; bob = bob + amt }
+                   }''')],
+        // The proof is NOT vacuous: a transfer that skims a cent (the classic "salami slice") is
+        // caught — the total drops by 0.01, so conservation refutes. (This needed the Phase 67
+        // decimal-assignment fix: an int-shadowed field write used to hide the skim.)
+        [group: 'P68 financial', name: 'salami-slice skim is caught (refutes)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class Bank {
+                       BigDecimal alice
+                       BigDecimal bob
+                       @Requires({ amt >= 0.0 })
+                       @Ensures({ alice + bob == old.alice + old.bob })
+                       void transfer(BigDecimal amt) { alice = alice - amt; bob = bob + amt - 0.01 }
+                   }''')],
+        // "No fractional cents are syphoned in an interest calculation": modelling money as integer
+        // cents, the credited (floored) amount plus the retained remainder equals the exact interest
+        // — nothing vanishes. (Integer cents is the soundest money model; the framework is strongest here.)
+        [group: 'P68 financial', name: 'interest credits every cent (round-trip)', ok: true,
+         src: tc('''class C {
+                       @Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
+                       @Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })
+                       static int interestCents(int principal, int rateNum, int rateDen) {
+                           (principal * rateNum).intdiv(rateDen)
+                       }
+                   }''')],
+        // The retained remainder is a real, bounded fraction of a cent — accounted for, not pocketed.
+        [group: 'P68 financial', name: 'interest remainder is bounded [0, den)', ok: true,
+         src: tc('''class C {
+                       @Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
+                       @Ensures({ result >= 0 && result < rateDen })
+                       static int leftoverCents(int principal, int rateNum, int rateDen) {
+                           (principal * rateNum) % rateDen
+                       }
+                   }''')],
+        // Soundness anchor: a calc claiming it credits the *exact* interest (no remainder) is refuted
+        // whenever a remainder exists — the framework catches the lost fractional cents.
+        [group: 'P68 financial', name: 'claiming exact credit (losing remainder) refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
+                       @Ensures({ result * rateDen == principal * rateNum })
+                       static int interestCents(int principal, int rateNum, int rateDen) {
+                           (principal * rateNum).intdiv(rateDen)
+                       }
+                   }''')],
+
         // ---------- Phase 62: bounded property-based refutation when the solver says UNKNOWN ----------
         // `result == Fib.of(n)` is the weak refutation direction (recurrence-axiom timeout → UNKNOWN);
         // bounded testing of the executable contract finds the concrete failing input f(2): the body

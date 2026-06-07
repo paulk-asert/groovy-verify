@@ -3893,6 +3893,73 @@ predated repeatable capture) is no longer needed — the modus-ponens example no
 
 ---
 
+## Phase 67 — Decimal negation, and a clean boundary for unmodelled decimal ops  *(shipped)*
+
+Phase 61 modelled BigDecimal `+`/`-`/`*`/`/` and comparisons in Z3's Real sort, but two everyday cases
+slipped through the binary-operator path: **unary minus** (`-a`, a `UnaryMinusExpression`) and a
+**negative decimal literal** (`-2.5`). Both fell to the integer path — `-a` negated `a`'s meaningless int
+shadow (refuting a true postcondition), and `-2.5` left the decimal constant unmodelled (a loud "outside
+fragment" skip). Now `isDecimalExpr`/`asReal` handle `UnaryMinusExpression`, `translate` routes a decimal
+negation to the Real path, and a decimal-valued *return* is bound through `asReal` (so a bare decimal
+literal/variable result is Real, not an int shadow). So `BigDecimal f(BigDecimal a) { -a }` proving
+`result == -a`, and `-2.5` as a return, now verify. Scalar decimal arithmetic is complete: `+ - * /`,
+unary minus, negative literals, and comparisons.
+
+A second fix closes a confusing edge: a decimal operand on an operator the Real path *doesn't* model —
+notably `%` (BigDecimal remainder, which Z3's real theory has no clean primitive for) — used to fall
+through to the integer path and translate the decimals as int shadows (a spurious divide-by-zero /
+wrong remainder). It now **skips loudly** instead.
+
+A third fix is a genuine **soundness** repair found while exercising financial conservation proofs. A
+decimal field/local *assignment* (`checkPath`'s SSA step) minted an **`intVar`** fresh handle while the
+RHS was translated to a Real — a sort-mismatched binding that silently mis-modelled some writes. The
+symptom: a transfer that skims a cent (`bob = bob + amt - 0.01`) could "verify" the conservation
+`alice + bob == old.alice + old.bob` it actually breaks. Now a decimal-named target gets a `realVar`
+fresh handle and an `asReal` RHS (mirroring the return-binding), so the SSA equality is sort-matched and
+the skim is correctly refuted.
+
+**Still out of fragment (reported, not yet built):** aggregation and extremum over a *decimal-element*
+collection (`List<BigDecimal>.sum()` / `.max()` / `.min()`) and `BigDecimal.abs()` — these need the
+list/array *contents* modelled in the Real sort (a Real element array), a larger change than the scalar
+path; they skip loudly today. The divide-by-zero obligation for a *decimal* divisor is also still checked
+on the int shadow (sound — it refutes rather than wrongly verifying — but imprecise for a provably
+non-zero decimal divisor; a literal/int divisor like `(a + b) / 2` is unaffected).
+
+---
+
+## Phase 68 — Financial proofs: conservation & no-cents-lost  *(application; partial)*
+
+A real-world driver: large financial institutions model currency and prices with Groovy + BigDecimal,
+and want proofs like *"no money is lost in an account transfer"* and *"no fractional cents are syphoned
+in an interest/trade calculation"*. This phase records where the framework sits and what Z3 Real can and
+can't do for money.
+
+**Z3 Real is an excellent vehicle for conservation, with one caveat.** BigDecimal `+`/`-`/`*` are *exact*
+(never lose precision), and Z3's Real sort models exact rationals — so they coincide exactly, and a
+conservation invariant (`alice + bob == old.alice + old.bob`) is a faithful, sound proof. Two- and
+N-fixed-account transfers verify today (scalar BigDecimal fields + `old`), and the skim that breaks
+conservation is refuted (after the Phase 67 assignment-soundness fix). The caveat: BigDecimal `/` either
+terminates exactly or *throws/rounds*, whereas Z3 Real gives the exact rational (1/3) — so a proof using
+`/` can assert something true over rationals but false over rounded BigDecimal. **Rounding itself
+(`setScale`, `RoundingMode`) is not modelled** — and that is exactly what "no fractional cents" needs.
+
+**The soundest money model is integer minor units (cents), and the framework is strongest there.** Cast
+the "no cents syphoned" proof in integer cents: the credited (floored) amount plus the retained remainder
+equals the exact interest, and the remainder is bounded `[0, den)` — both verify today via NIA + exact
+`intdiv`/`%` (Phase 48/50), and a calc claiming it credits the *exact* interest is refuted whenever a
+remainder exists. This is the round-trip identity (`result*den + p*num % den == p*num`) — salami-slicing
+made impossible.
+
+**The gap — conservation over a *dynamic* collection of money.** `List<BigDecimal>` / `BigDecimal[]`
+aggregation (`.sum()`/`.max()`/`.min()`) is not modelled: the list/array *contents* are an `Array Int
+Int`, and decimal elements need an `Array Int Real` plus a Real-sorted `sum`/extremum primitive — and, for
+"transfer preserves the total over N accounts", a **sum-under-store law** (`sumAll(store(a,i,v)) ==
+sumAll(a) - a[i] + v`, the additive analogue of the Phase 12 `count` law). The same sum-under-store law is
+also missing for *Int* arrays (integer-cents N-account conservation), so it is the keystone for both. This
+is the decimal-element slice, scoped but not yet built.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
