@@ -4390,6 +4390,48 @@ nested access *in contracts* (the erasure), symbolic-slot `t[i]`.
 
 ---
 
+## Phase 83 — maps as named tuples (`m.key`)  *(shipped)*
+
+Groovy's map literal is the *string-named* fixed-arity product (list = positional, `Tuple` = typed,
+map = named), and the foundation was already there: a map literal `[sum: s, product: p]` is a `'map'`-kind
+factory container, a returned map binds `result` (Phase 78), and the subscript form `result['sum']` folds via
+`foldFactoryMapLookup`. The one gap was the **property form** `result.sum` — which *does* type-check under
+`@TypeChecked` (map property access is allowed) but the verifier skipped. So this phase is one helper:
+`foldMapPropertyByName(f, prop)` returns the value at the constant string key matching `prop` by a *direct
+compile-time match* (no SMT key equality), or null if `prop` isn't an entry (so `m.size` etc. still reach
+their own handling). Wired into `translate(PropertyExpression)`.
+
+So `sum_product` now ports as the most self-documenting shape — `return [sum: s, product: p]` with
+`@Ensures({ result.sum == xs.sum() && result.product == xs.inject(1){a,x->a*x} })` — joining the typed
+`Tuple2` and positional `[sum, product]` forms; a wrong value refutes. The named map reads naturally for the
+typical spec shape (each component *compared* to its aggregate). It is **not** exempt from the @TypeChecked
+erasure, though — see Phase 84: *arithmetic* on a map value in a contract closure still erases to
+`Object#plus`, exactly like tuple slots / `List<Double>`; only comparisons survive. **Still out:** non-constant
+keys, and map *parameters* (Phase 84, below).
+
+---
+
+## Phase 84 — map parameters with `.key` access  *(shipped)*
+
+The dual of Phase 83 (and of the Phase-80 tuple-param work). A map *parameter* `Map<String,V> m` is already
+modelled as a Z3 value array (Phase 27), so the subscript form `m['sum']` already read the value; the gap —
+identical to Phase 83 — was the **property form** `m.sum`, which type-checks but the verifier skipped. One
+helper `foldMapParamProperty(obj, prop)` routes `m.<key>` to a `select` of the map's value array at the
+constant string key (`m.sum ≡ m['sum']`), in the value sort, placed *after* the `.size`/cardinality handling
+and skipping a small reserved set (`empty`/`class`/`metaClass`) so map-API properties aren't misread as data
+keys; a non-String key sort yields null (`m.prop` isn't a meaningful named access there). Unlike a tuple
+param's fixed slots, a map param's keys are the caller's, so each `m.key` is a fresh uninterpreted value in
+the value sort — consistent (same key ⇒ same `select`), e.g. `m.sum == 3 ⇒ result == 3`, and a wrong value
+refutes.
+
+**The erasure pattern is universal** (the honest correction to Phase 83): every generic-typed accessor — a
+`List<Double>` element, a tuple slot, a map value (factory *or* param) — erases to `Object` inside a
+re-parsed contract closure, so *arithmetic* (`m.x + m.y`) fails `@TypeChecked` there while *comparisons*
+(`m.sum == 3`, `m.x >= 5`) work. The consistent idiom across all of them: compare in the contract, compute in
+the body. **Still out:** non-constant keys; map property `m.size` on a literal `size` key (the method wins).
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

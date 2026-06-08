@@ -1969,6 +1969,40 @@ class Encoder {
     }
 
     /** {@code mapFactory.get(k)} / {@code mapFactory[k]} — ite-chain over the literal entries. */
+    /** Map property names that are the JDK/Groovy API, not data keys — never folded to a key read. */
+    private static final Set<String> MAP_RESERVED_PROPS = ['empty', 'class', 'metaClass'] as Set
+
+    /**
+     * Phase 84 — {@code m.key} (property form) on a map <em>parameter</em>: the value at the constant string
+     * key, read through the map's value array (the dual of {@link #foldMapPropertyByName} for factories).
+     * `m.sum` ≡ `m['sum']`. Null unless {@code obj} is a String-keyed map and {@code prop} isn't reserved.
+     */
+    private Object foldMapParamProperty(Expression obj, String prop) {
+        if (MAP_RESERVED_PROPS.contains(prop)) return null
+        String mlog = mapLogicalFor(obj)
+        if (mlog == null) return null
+        ClassNode[] pair = mapTypes.get(mlog)
+        Object keyH = translateInSort(new ConstantExpression(prop), sortFor(pair != null ? pair[0] : null))
+        if (keyH == null) return null   // non-String key sort ⇒ `m.prop` isn't a meaningful named access
+        return session.select(mapValsFor(mlog), keyH)
+    }
+
+    /**
+     * Phase 83 — the value at a constant string key {@code propName} in a map factory, by direct
+     * compile-time key match (no SMT key equality), or null if {@code f} isn't a map or {@code propName}
+     * isn't one of its (constant) keys. Backs the Groovy {@code m.key} map-as-named-tuple property access.
+     */
+    private Object foldMapPropertyByName(FactoryContainer f, String propName) {
+        if (f == null || f.kind != 'map' || f.keys == null) return null
+        for (int i = 0; i < f.keys.size(); i++) {
+            Expression k = f.keys.get(i)
+            if (k instanceof ConstantExpression && propName == String.valueOf(((ConstantExpression) k).value)) {
+                return translate(f.values.get(i))
+            }
+        }
+        null
+    }
+
     private Object foldFactoryMapLookup(FactoryContainer f, Expression keyExpr) {
         Object kH = translate(keyExpr)
         if (kH == null) return null
@@ -2680,6 +2714,11 @@ class Encoder {
                 Object te = tupleParamSlot(obj, slot)
                 if (te != null) return te
             }
+            // Phase 83 — Groovy map-as-named-tuple: `m.key` (property form) on a map factory folds to the
+            // value at that key — only when `prop` actually names an entry, so `m.size` etc. still reach
+            // their own handling below. Covers `result.sum` on a returned `[sum: s, product: p]`.
+            Object mapVal = foldMapPropertyByName(factoryContainerFor(obj), prop)
+            if (mapVal != null) return mapVal
             // Phase 80 — t.size on a tuple parameter folds to its arity (a literal).
             if (prop == 'size' && obj instanceof VariableExpression) {
                 int ar = tupleArity(tupleParams.get(((VariableExpression) obj).name))
@@ -2696,6 +2735,10 @@ class Encoder {
             if ((prop == 'length' || prop == 'size') && obj instanceof VariableExpression) {
                 return sizeOf(((VariableExpression) obj).name)
             }
+            // Phase 84 — `m.key` on a map *parameter* (after .size etc.): the value at key `prop`,
+            // routed to the map's value array — `m.sum` ≡ `m['sum']`. The dual of Phase 83's map factories.
+            Object mapParamVal = foldMapParamProperty(obj, prop)
+            if (mapParamVal != null) return mapParamVal
             // Phase 28 — `Color.values().length` folds to the literal enum-constant count, so a
             // contract like `Sets.boundedBy(s, Color.values().length)` or a body returning the count
             // becomes ground.
