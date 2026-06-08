@@ -192,7 +192,7 @@ class VerifyChecker extends TypeCheckingExtension {
     /** Phase 61 — decimal-typed (BigDecimal/Double/Float) param/field/local/result names. */
     private Set<String> currentDecimalNames = new HashSet<String>()
     /** Phase 72 — double/float names; references skip (IEEE-754 is the FP non-goal). */
-    private Set<String> currentDoubleNames = new HashSet<String>()
+    private Map<String, Boolean> currentFpNames = new HashMap<String, Boolean>()
     /**
      * Phase 48b — body-local {@code boolean} variable names. Tracked so the SSA-fresh handle
      * in {@code checkPath}'s {@code Assign} step mints a {@code boolVar} rather than an
@@ -219,7 +219,7 @@ class VerifyChecker extends TypeCheckingExtension {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames, currentDoubleNames)
+                    currentBooleanLocals, currentDecimalNames, currentFpNames)
     }
 
     /**
@@ -640,18 +640,23 @@ class VerifyChecker extends TypeCheckingExtension {
         n == 'double' || n == 'float' || n == 'java.lang.Double' || n == 'java.lang.Float'
     }
 
+    /** True if {@code t} is double-precision (double/Double), vs single-precision (float/Float). */
+    private static boolean isDoublePrecision(ClassNode t) {
+        t != null && (t.name == 'double' || t.name == 'java.lang.Double')
+    }
+
     /**
-     * Phase 72 — names of {@code double}/{@code float} params/fields/result/locals. A reference to one
-     * is skipped (translate → null), because IEEE-754 floating point is the FP non-goal and modelling a
-     * {@code double} as exact Int or Real would be unsound (`(a + b) - b == a` and `0.1d + 0.2d == 0.3d`
-     * hold exactly but are false at runtime).
+     * Phase 73 — {@code double}/{@code float} names (params/fields/result/locals) → precision
+     * ({@code true} = double/Float64). Modelled with Z3's faithful IEEE-754 FP theory in straight-line
+     * code (Phase 72 skipped them; exact Int/Real modelling was unsound — `(a + b) - b == a` and
+     * `0.1d + 0.2d == 0.3d` hold exactly but are false at runtime).
      */
-    private static Set<String> collectDoubleNames(MethodNode node) {
-        Set<String> out = new LinkedHashSet<String>()
-        for (Parameter p : node.parameters) if (isDoubleType(p.type)) out.add(p.name)
+    private static Map<String, Boolean> collectFpNames(MethodNode node) {
+        Map<String, Boolean> out = new LinkedHashMap<String, Boolean>()
+        for (Parameter p : node.parameters) if (isDoubleType(p.type)) out.put(p.name, isDoublePrecision(p.type))
         ClassNode dc = node.declaringClass
-        if (dc != null) for (FieldNode f : dc.fields) if (isDoubleType(f.type)) out.add(f.name)
-        if (isDoubleType(node.returnType)) out.add('result')
+        if (dc != null) for (FieldNode f : dc.fields) if (isDoubleType(f.type)) out.put(f.name, isDoublePrecision(f.type))
+        if (isDoubleType(node.returnType)) out.put('result', isDoublePrecision(node.returnType))
         Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
         if (cleanBody == null) cleanBody = node.code
         if (cleanBody != null) try {
@@ -663,7 +668,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (de.leftExpression instanceof VariableExpression) {
                         ClassNode t = ((VariableExpression) de.leftExpression).originType
                         if (t == null) t = de.leftExpression.type
-                        if (isDoubleType(t)) out.add(((VariableExpression) de.leftExpression).name)
+                        if (isDoubleType(t)) out.put(((VariableExpression) de.leftExpression).name, isDoublePrecision(t))
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1228,7 +1233,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentDecimalNames = collectDecimalNames(node)
-        currentDoubleNames = collectDoubleNames(node)
+        currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
@@ -1337,7 +1342,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentDecimalNames = new HashSet<String>()
-            currentDoubleNames = new HashSet<String>()
+            currentFpNames = new HashMap<String, Boolean>()
             currentBooleanLocals = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
         }
@@ -2755,8 +2760,10 @@ class VerifyChecker extends TypeCheckingExtension {
                 // Phase 67 — a decimal-valued return (a `-2.5` literal, a bare decimal variable) is
                 // bound through the Real path; `translate` alone leaves a decimal constant unmodelled
                 // (null) and a decimal variable an int shadow.
-                Object resHandle = enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
-                                                                 : enc.translate(p.result)
+                // Phase 73 — a double/float return is bound through the FP path (Z3 IEEE-754).
+                Object resHandle = enc.isFpValued(p.result) ? enc.asFp(p.result)
+                                 : enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
+                                 : enc.translate(p.result)
                 if (resHandle == null) {
                     throw new UnsupportedConstructException(
                         "return expression '${p.result.text}' is outside fragment")

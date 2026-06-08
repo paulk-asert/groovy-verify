@@ -237,7 +237,7 @@ class Encoder {
             Map<String, ClassNode> objectParams = null,
             Set<String> booleanLocals = null,
             Set<String> decimalNames = null,
-            Set<String> doubleNames = null) {
+            Map<String, Boolean> fpNames = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -250,12 +250,13 @@ class Encoder {
         this.objectParams = objectParams != null ? objectParams : new LinkedHashMap<String, ClassNode>()
         this.booleanLocals = booleanLocals != null ? booleanLocals : new HashSet<String>()
         this.decimalNames = decimalNames != null ? decimalNames : new HashSet<String>()
-        this.doubleNames = doubleNames != null ? doubleNames : new HashSet<String>()
+        this.fpNames = fpNames != null ? fpNames : new HashMap<String, Boolean>()
     }
 
-    /** Phase 72 — names of {@code double}/{@code float} type. IEEE-754 is the FP non-goal and exact
-     *  Int/Real modelling would be unsound, so any reference to one translates to null (loud skip). */
-    private final Set<String> doubleNames
+    /** Phase 73 — {@code double}/{@code float} names mapped to precision ({@code true} = double/Float64,
+     *  {@code false} = float/Float32). Modelled with Z3's faithful IEEE-754 FP theory in straight-line
+     *  code; an FP construct outside the fragment (a loop, a transcendental, int-mixing) still skips. */
+    private final Map<String, Boolean> fpNames
 
     /**
      * Phase 45 — run a translation under a foreign-receiver context: bare {@code field} references
@@ -2286,7 +2287,7 @@ class Encoder {
             // point post-parse, but defensive:
             if (name == "true")  return session.boolLit(true)
             if (name == "false") return session.boolLit(false)
-            if (doubleNames.contains(name)) return null   // Phase 72 — double/float: IEEE-754, skip loudly
+            if (fpNames.containsKey(name)) return session.fpVar(name, fpNames.get(name))   // Phase 73 — IEEE-754
             return varFor(name)
         }
 
@@ -2521,6 +2522,116 @@ class Encoder {
 
     /** Phase 67 — translate {@code e} into the Real sort (for a decimal-valued binding); null = skip. */
     Object asRealValue(Expression e) { asReal(e) }
+
+    // ── Phase 73 — IEEE-754 floating point (double/float via Z3's FP theory) ──────────────────────
+    /** True if {@code e} produces a {@code double}/{@code float} value (an FP name, literal, or +,-,*,/). */
+    boolean isFpValued(Expression e) {
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            return v instanceof Double || v instanceof Float
+        }
+        if (e instanceof VariableExpression) return fpNames.containsKey(((VariableExpression) e).name)
+        if (e instanceof UnaryMinusExpression) return isFpValued(((UnaryMinusExpression) e).expression)
+        if (e instanceof BinaryExpression) {
+            String t = ((BinaryExpression) e).operation.text
+            if (t == '+' || t == '-' || t == '*' || t == '/') {
+                return isFpValued(((BinaryExpression) e).leftExpression) ||
+                       isFpValued(((BinaryExpression) e).rightExpression)
+            }
+        }
+        if (isFpMathCall(e) != null) return true   // Math.sqrt(fp) / Math.abs(fp)
+        false
+    }
+
+    /** {@code Math.sqrt}/{@code Math.abs} over an FP argument → ['sqrt'|'abs', argExpr]; null otherwise. */
+    private Object[] isFpMathCall(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) e
+        String mm = mce.methodAsString
+        if ((mm != 'sqrt' && mm != 'abs') || !isMathReceiver(mce.objectExpression)) return null
+        List<Expression> a = argList(mce)
+        if (a.size() != 1 || !isFpValued(a.get(0))) return null
+        [mm, a.get(0)] as Object[]
+    }
+
+    /** Precision of an FP expression — {@code true} = double/Float64, from its first FP leaf; null if none. */
+    private Boolean fpDoubleOf(Expression e) {
+        Object[] math = isFpMathCall(e)
+        if (math != null) return math[0] == 'sqrt' ? Boolean.TRUE : fpDoubleOf((Expression) math[1])
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof Double) return Boolean.TRUE
+            if (v instanceof Float) return Boolean.FALSE
+            return null
+        }
+        if (e instanceof VariableExpression) return fpNames.get(((VariableExpression) e).name)
+        if (e instanceof UnaryMinusExpression) return fpDoubleOf(((UnaryMinusExpression) e).expression)
+        if (e instanceof BinaryExpression) {
+            Boolean l = fpDoubleOf(((BinaryExpression) e).leftExpression)
+            return l != null ? l : fpDoubleOf(((BinaryExpression) e).rightExpression)
+        }
+        null
+    }
+
+    /** Translate {@code e} into the FP sort. Pure FP only (FP names/literals + `+ - * /`, unary minus);
+     *  an int operand or anything else returns null → loud skip (no silent int↔fp coercion). */
+    Object asFp(Expression e) {
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof Double) return session.fpLit(((Double) v).doubleValue(), true)
+            if (v instanceof Float)  return session.fpLit(((Float) v).doubleValue(), false)
+            return null
+        }
+        if (e instanceof VariableExpression && fpNames.containsKey(((VariableExpression) e).name)) {
+            String n = ((VariableExpression) e).name
+            Object bound = env.get(n)            // e.g. result bound to its FP return handle
+            return bound != null ? bound : session.fpVar(n, fpNames.get(n))
+        }
+        if (e instanceof UnaryMinusExpression) {
+            Object o = asFp(((UnaryMinusExpression) e).expression)
+            return o == null ? null : session.fpNeg(o)
+        }
+        if (e instanceof BinaryExpression) {
+            String t = ((BinaryExpression) e).operation.text
+            if (t == '+' || t == '-' || t == '*' || t == '/') {
+                Object L = asFp(((BinaryExpression) e).leftExpression)
+                Object R = asFp(((BinaryExpression) e).rightExpression)
+                if (L == null || R == null) return null
+                if (t == '+') return session.fpAdd(L, R)
+                if (t == '-') return session.fpSub(L, R)
+                if (t == '*') return session.fpMul(L, R)
+                return session.fpDiv(L, R)
+            }
+        }
+        Object[] math = isFpMathCall(e)
+        if (math != null) {
+            // Math.sqrt always returns double; a float arg widens in Java, which fp.sqrt over Float32
+            // wouldn't model — so only model double-precision sqrt. abs preserves precision (sound for both).
+            if (math[0] == 'sqrt' && fpDoubleOf((Expression) math[1]) != Boolean.TRUE) return null
+            Object x = asFp((Expression) math[1])
+            if (x == null) return null
+            return math[0] == 'sqrt' ? session.fpSqrt(x) : session.fpAbs(x)
+        }
+        null
+    }
+
+    /** True if {@code recv} is the {@code Math} class (for {@code Math.sqrt(x)} / {@code Math.abs(x)}). */
+    private static boolean isMathReceiver(Expression recv) {
+        String n = null
+        if (recv instanceof VariableExpression) n = ((VariableExpression) recv).name
+        else if (recv instanceof PropertyExpression) n = ((PropertyExpression) recv).propertyAsString
+        else if (recv instanceof ClassExpression) n = ((ClassExpression) recv).type?.nameWithoutPackage
+        n == 'Math'
+    }
+
+    /** True if {@code recv} is the {@code Double}/{@code Float} class (for {@code Double.isNaN(x)} etc.). */
+    private static boolean isFpClassReceiver(Expression recv) {
+        String n = null
+        if (recv instanceof VariableExpression) n = ((VariableExpression) recv).name
+        else if (recv instanceof PropertyExpression) n = ((PropertyExpression) recv).propertyAsString
+        else if (recv instanceof ClassExpression) n = ((ClassExpression) recv).type?.nameWithoutPackage
+        n == 'Double' || n == 'Float'
+    }
 
     /** True if {@code e} denotes a decimal (BigDecimal/Double/Float) value in Groovy's semantics. */
     private boolean isDecimalExpr(Expression e) {
@@ -2773,6 +2884,27 @@ class Encoder {
         // int shadows (a spurious divide-by-zero / wrong remainder).
         if (isDecimalExpr(be.leftExpression) || isDecimalExpr(be.rightExpression)) return null
 
+        // Phase 73 — IEEE-754 floating point: double/float arithmetic and comparison via Z3's FP theory.
+        // Fires when an operand is FP (a double/float name or a Double/Float literal). Comparisons use
+        // IEEE semantics (`==` is fp.eq, so NaN != NaN); arithmetic rounds RNE. Anything not purely FP
+        // (e.g. an int operand) returns null → loud skip.
+        boolean fpCmp = cmpOp && (isFpValued(be.leftExpression) || isFpValued(be.rightExpression))
+        if (isFpValued(be) || fpCmp) {
+            if (fpCmp) {
+                Object fl = asFp(be.leftExpression), fr = asFp(be.rightExpression)
+                if (fl == null || fr == null) return null
+                switch (op) {
+                    case Types.COMPARE_EQUAL:              return session.fpEq(fl, fr)
+                    case Types.COMPARE_NOT_EQUAL:          return session.not(session.fpEq(fl, fr))
+                    case Types.COMPARE_LESS_THAN:          return session.fpLt(fl, fr)
+                    case Types.COMPARE_LESS_THAN_EQUAL:    return session.fpLeq(fl, fr)
+                    case Types.COMPARE_GREATER_THAN:       return session.fpGt(fl, fr)
+                    case Types.COMPARE_GREATER_THAN_EQUAL: return session.fpGeq(fl, fr)
+                }
+            }
+            return asFp(be)   // arithmetic (or null → skip)
+        }
+
         Object L = translate(be.leftExpression)
         Object R = translate(be.rightExpression)
         if (L == null || R == null) return null
@@ -2860,6 +2992,16 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // Phase 73 — Double.isNaN(x) / isInfinite(x) / isFinite(x) over an FP argument → IEEE predicates.
+        if ((m == 'isNaN' || m == 'isInfinite' || m == 'isFinite') && args.size() == 1 &&
+            isFpClassReceiver(recv) && isFpValued(args.get(0))) {
+            Object x = asFp(args.get(0))
+            if (x == null) return null
+            if (m == 'isNaN') return session.fpIsNaN(x)
+            if (m == 'isInfinite') return session.fpIsInfinite(x)
+            return session.and([session.not(session.fpIsNaN(x)), session.not(session.fpIsInfinite(x))])  // isFinite
+        }
 
         // Forall.range(lo, hi, { i -> body }) -> bounded universal quantifier.
         // Accept both the imported `Forall` (a VariableExpression) and the

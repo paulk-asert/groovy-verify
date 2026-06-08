@@ -448,6 +448,23 @@ two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.
 balance") is proven. One honest edge: Z3 Real models exact `BigDecimal` *arithmetic* faithfully but not
 *rounding* (`setScale`) — the other reason integer minor units are the soundest money model.
 
+**The same sum, two number models — both proven.** `BigDecimal` is exact decimal; `double` is IEEE-754.
+The checker models each *faithfully* — `BigDecimal` on Z3's exact-real arithmetic, `double` on Z3's
+floating-point theory (bit-exact: round-nearest-even, NaN, ±∞) — so it proves the famous discrepancy
+rather than papering over it:
+
+```groovy
+@Ensures({ result == 0.3 })   static BigDecimal exact() { 0.1 + 0.2 }    // verified — 0.1 + 0.2 IS 0.3
+@Ensures({ result != 0.3d })  static double    ieee()  { 0.1d + 0.2d }  // verified — 0.1d + 0.2d is NOT 0.3d
+```
+
+For `double`, the high-value proofs are **no-NaN / finiteness** — `Double.isFinite(x) ⟹ !Double.isNaN(x + x)`
+verifies, and over `Math.sqrt`/`Math.abs` too (Z3's `fp.sqrt`/`fp.abs`): `x >= 0 ⟹ !Double.isNaN(Math.sqrt(x))`
+is proven, while *unguarded* `Math.sqrt(x)` can be NaN (refutes). It's sound where exact reasoning isn't:
+`(a + b) - b == a` *refutes* (FP isn't associative), `x == x` *refutes* (a NaN isn't equal to itself). Z3
+bit-blasts FP, so it's straight-line and timeout-gated — loops, the other transcendentals (`sin`/`exp`/…),
+and tight error bounds stay out of the fragment.
+
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
 sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in place under a
@@ -1055,7 +1072,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
 | **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
 | **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (now modelled with Z3's exact Real sort — see below — *not* skipped); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
-| **BigDecimal arithmetic as exact reals** | `/` on integers is `BigDecimal` division in Groovy (`5 / 2 == 2.5`, not `2`) — modelled with Z3's exact **Real** sort: int operands coerced via int→real, `BigDecimal` literals and params decimal-typed (only `BigDecimal` — its `+`/`-`/`*` are exact; `double`/`float` are IEEE-754, the FP non-goal, and *skip* rather than be mis-modelled as exact). So `a / 2 == 2.5` proves, `a / 2 == 2` refutes, a `BigDecimal avg(int a, int b)` is provably `(a + b) / 2`, and the full scalar set works — `+ - * /`, unary minus (`-a`), negative literals (`-2.5`), comparisons (Phase 67). Retires the old "`/` skips" caveat; the `b != 0` obligation still fires. *(Out of fragment: `max`/`min`/`abs` over decimal-element collections, and decimal `%`, which skip loudly.)* | ✅ Phase 61 / 67 / 72 |
+| **BigDecimal arithmetic as exact reals** | `/` on integers is `BigDecimal` division in Groovy (`5 / 2 == 2.5`, not `2`) — modelled with Z3's exact **Real** sort: int operands coerced via int→real, `BigDecimal` literals and params decimal-typed (only `BigDecimal` — its `+`/`-`/`*` are exact; `double`/`float` are IEEE-754 and take the separate FP path below, *not* the exact-Real one). So `a / 2 == 2.5` proves, `a / 2 == 2` refutes, a `BigDecimal avg(int a, int b)` is provably `(a + b) / 2`, and the full scalar set works — `+ - * /`, unary minus (`-a`), negative literals (`-2.5`), comparisons (Phase 67). Retires the old "`/` skips" caveat; the `b != 0` obligation still fires. *(Out of fragment: `max`/`min`/`abs` over decimal-element collections, and decimal `%`, which skip loudly.)* | ✅ Phase 61 / 67 / 72 |
+| **IEEE-754 floating point** (`double`/`float`) | Straight-line `double`/`float` modelled with Z3's **FP theory** — bit-exact with the JVM (RNE rounding, NaN, ±∞, signed zero), the opposite of treating them as exact reals. So the same expression proves in *two* number models: `0.1 + 0.2 == 0.3` for `BigDecimal` (exact) **and** `0.1d + 0.2d != 0.3d` for `double` (IEEE-754). Exact FP facts prove (`0.5d * 2.0d == 1.0d`); the high-value class — **no-NaN / finiteness** (`Double.isFinite`/`isNaN`/`isInfinite`) — proves, including over `Math.sqrt`/`Math.abs` (Z3 `fp.sqrt`/`fp.abs`: `x >= 0 ⟹ !isNaN(Math.sqrt(x))`, `Math.abs` non-negative); and it's sound (`(a + b) - b == a` refutes — FP non-associativity; `x == x` refutes — NaN ≠ NaN; unguarded `Math.sqrt` can be NaN). Z3 bit-blasts FP, so it's timeout-gated. *(Out of fragment: FP loops, the other transcendentals, tight error bounds.)* | ✅ Phase 73 |
 | **`List<BigDecimal>.sum()` + conservation** | A decimal list's contents are an `Array Int Real` and `.sum()` a Real-codomain aggregation (base/step axioms over Z3 Real), so `xs.sum()` proves; a per-store **sum-under-store law** (`sum(store(a,i,v)) == sum(a) - a[i] + v`, for Int *and* Real elements) makes the two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.sum()` ("no money lost") is proven over a dynamic list. Verify is clean; refuting a violation is the weak direction (sum-axiom timeout → loud "could not decide", not a counterexample) | ✅ Phase 69 / 70 |
 | **`xs.max()` / `xs.min()` as a witnessed extremum** | An Int list/array's `max()`/`min()` lowers to a fresh `r` carrying the two defining facts — `r` bounds every element (`∀i. a[i] <= r`) and is achieved by one (`∃i. a[i] == r`, guarded by non-emptiness so `[].max()` can't prove vacuously). `result == a.max()` now means exactly the every/any spec a developer would otherwise write by hand | ✅ Phase 60 |
 | **Classic `for (init; cond; update)` loops** | A `for` loop with `@Invariant`/`@Decreases` desugars to the existing while-machinery — init threaded into the prefix, `i++`/`i += k` normalised to a plain assignment and appended to the body — so all four loop VCs (establishment / preservation / use / progress) discharge. `.each` stays outside the fragment and skips loudly | ✅ Phase 59 |
@@ -1116,9 +1134,12 @@ warning rather than passing silently. In expressions the fragment is:
 - integer `+`, `-`, `*` (variable products dispatch to Z3's NIA solver under a per-VC timeout, with
   closed subterms folded first; Phase 48), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
   `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) so
-  `5 / 2 == 2.5` and decimal-typed contracts prove (int operands coerced; `BigDecimal`/`Double`/`Float`
-  literals and params are decimal); divide-by-zero and `.mod`-non-positive obligations fire;
-  `**`/bitwise are out;
+  `5 / 2 == 2.5` and `BigDecimal` contracts prove (int operands coerced; only `BigDecimal` is
+  exact-Real — `double`/`float` take the IEEE-754 FP path, below); divide-by-zero and
+  `.mod`-non-positive obligations fire; `**`/bitwise are out;
+- straight-line `double`/`float` on Z3's IEEE-754 **FP theory** (Phase 73) — bit-exact (NaN, ±∞, RNE),
+  with `Math.sqrt`/`Math.abs`; `0.1d + 0.2d != 0.3d` and no-NaN/finiteness prove, FP loops/transcendentals
+  skip;
 - `xs.max()` / `xs.min()` over an Int list/array (Phase 60), as the witnessed-extremum spec — `r`
   bounds every element and is achieved by one of them — so `result == a.max()` means what you'd write
   by hand;

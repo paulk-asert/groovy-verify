@@ -20,6 +20,9 @@ import com.microsoft.z3.ArrayExpr
 import com.microsoft.z3.BoolExpr
 import com.microsoft.z3.Context
 import com.microsoft.z3.Expr
+import com.microsoft.z3.FPExpr
+import com.microsoft.z3.FPRMExpr
+import com.microsoft.z3.FPSort
 import com.microsoft.z3.FuncDecl
 import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
@@ -353,6 +356,28 @@ class Z3Session implements SmtSession {
         }
         ctx.mkApp(sumRealFn, (Expr) arr, (Expr) lo, (Expr) hi)
     }
+
+    // Phase 73 — IEEE-754 floating point. Arithmetic rounds round-nearest-ties-to-even (the JVM default).
+    private FPRMExpr rneMode
+    private FPRMExpr rne() { if (rneMode == null) rneMode = ctx.mkFPRoundNearestTiesToEven(); rneMode }
+    private FPSort fp(boolean isDouble) { isDouble ? ctx.mkFPSortDouble() : ctx.mkFPSortSingle() }
+    @Override Object fpLit(double v, boolean isDouble) { ctx.mkFP(v, fp(isDouble)) }
+    @Override Object fpVar(String name, boolean isDouble) { ctx.mkConst(name, fp(isDouble)) }
+    @Override Object fpAdd(Object a, Object b) { ctx.mkFPAdd(rne(), (FPExpr) a, (FPExpr) b) }
+    @Override Object fpSub(Object a, Object b) { ctx.mkFPSub(rne(), (FPExpr) a, (FPExpr) b) }
+    @Override Object fpMul(Object a, Object b) { ctx.mkFPMul(rne(), (FPExpr) a, (FPExpr) b) }
+    @Override Object fpDiv(Object a, Object b) { ctx.mkFPDiv(rne(), (FPExpr) a, (FPExpr) b) }
+    @Override Object fpNeg(Object a) { ctx.mkFPNeg((FPExpr) a) }
+    @Override Object fpSqrt(Object a) { ctx.mkFPSqrt(rne(), (FPExpr) a) }
+    @Override Object fpAbs(Object a) { ctx.mkFPAbs((FPExpr) a) }
+    @Override Object fpEq(Object a, Object b) { ctx.mkFPEq((FPExpr) a, (FPExpr) b) }
+    @Override Object fpLt(Object a, Object b) { ctx.mkFPLt((FPExpr) a, (FPExpr) b) }
+    @Override Object fpLeq(Object a, Object b) { ctx.mkFPLEq((FPExpr) a, (FPExpr) b) }
+    @Override Object fpGt(Object a, Object b) { ctx.mkFPGt((FPExpr) a, (FPExpr) b) }
+    @Override Object fpGeq(Object a, Object b) { ctx.mkFPGEq((FPExpr) a, (FPExpr) b) }
+    @Override Object fpIsNaN(Object a) { ctx.mkFPIsNaN((FPExpr) a) }
+    @Override Object fpIsInfinite(Object a) { ctx.mkFPIsInfinite((FPExpr) a) }
+    @Override boolean isFp(Object handle) { ((Expr) handle).getSort() instanceof FPSort }
 
     private FuncDecl prodFn
     @Override

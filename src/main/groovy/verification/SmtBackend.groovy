@@ -156,6 +156,27 @@ interface SmtSession extends AutoCloseable {
     Object sumReal(Object arr, Object lo, Object hi)   // (Array Int Real, Int, Int) -> Real
     boolean isReal(Object handle)
 
+    // Phase 73 — IEEE-754 floating point (Z3's FP theory): faithful double/float, bit-exact with the
+    // JVM runtime (round-nearest-even, NaN, ±inf, signed zero). Arithmetic rounds RNE; `fpEq` is IEEE
+    // equality (NaN != NaN), distinct from structural eq. `isDouble` picks Float64 vs Float32.
+    Object fpLit(double v, boolean isDouble)
+    Object fpVar(String name, boolean isDouble)
+    Object fpAdd(Object a, Object b)
+    Object fpSub(Object a, Object b)
+    Object fpMul(Object a, Object b)
+    Object fpDiv(Object a, Object b)
+    Object fpNeg(Object a)
+    Object fpSqrt(Object a)             // RNE-rounded IEEE square root (sqrt of a negative is NaN)
+    Object fpAbs(Object a)
+    Object fpEq(Object a, Object b)     // IEEE == (NaN != NaN)
+    Object fpLt(Object a, Object b)
+    Object fpLeq(Object a, Object b)
+    Object fpGt(Object a, Object b)
+    Object fpGeq(Object a, Object b)
+    Object fpIsNaN(Object a)
+    Object fpIsInfinite(Object a)
+    boolean isFp(Object handle)
+
     /**
      * The bounded product of element values {@code prod(arr, lo, hi) = Π_{lo <= i < hi} arr[i]} — the
      * multiplicative sibling of {@link #sum}. Meaning comes from the base ({@code hi <= lo ⟹ prod == 1},

@@ -5500,10 +5500,48 @@ class VerifyHarness {
          src: tc('class C { @Requires({ s == null && s != null }) @Ensures({ result == 1 }) static int f(String s) { 1 } }')],
         [group: 'P71 soundness', name: 'anchor: decimal conservation not vacuous', expect: 'Could not decide postcondition',
          src: tc('class C { List<BigDecimal> b; @Requires({ 0 <= i && i < b.size() }) @Ensures({ b.sum() == old.b.sum() }) void f(int i, BigDecimal amt) { b[i] = b[i] + amt } }')],
-        // double/float are IEEE-754 (the FP non-goal): `(a + b) - b == a` holds in exact Int/Real but
-        // NOT at runtime, so a double is modelled by skipping — never silently "proven" exact.
-        [group: 'P71 soundness', name: 'anchor: double arithmetic skips (not exact)', expect: 'outside fragment',
+        // double is IEEE-754: `(a + b) - b == a` holds in exact Int/Real but NOT at runtime. Modelled
+        // faithfully with Z3's FP theory (Phase 73), the verifier *refutes* it — proving the rounding
+        // non-associativity rather than silently "proving" the false exact identity.
+        [group: 'P71 soundness', name: 'anchor: FP non-associativity refuted', expect: 'Cannot prove postcondition',
          src: tc('class C { @Ensures({ result == a }) static double f(double a, double b) { (a + b) - b } }')],
+
+        // ---------- Phase 73: IEEE-754 floating point (double/float via Z3's FP theory) ----------
+        // The flagship pairing — the same expression, two number models, both proven:
+        //   BigDecimal is exact decimal, so 0.1 + 0.2 IS 0.3;
+        //   double is IEEE-754, so 0.1d + 0.2d is NOT 0.3d (it is 0.30000000000000004).
+        [group: 'P73 floating point', name: 'BigDecimal: 0.1 + 0.2 == 0.3 (exact)', ok: true,
+         src: tc('class C { @Ensures({ result == 0.3 }) static BigDecimal f() { 0.1 + 0.2 } }')],
+        [group: 'P73 floating point', name: 'double: 0.1d + 0.2d != 0.3d (IEEE-754)', ok: true,
+         src: tc('class C { @Ensures({ result != 0.3d }) static double f() { 0.1d + 0.2d } }')],
+        // Soundness anchor: claiming the double sum IS 0.3 is refuted (it genuinely is not).
+        [group: 'P73 floating point', name: 'double: claiming == 0.3d refutes', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ result == 0.3d }) static double f() { 0.1d + 0.2d } }')],
+        // FP exact cases still prove (powers of two are representable).
+        [group: 'P73 floating point', name: 'double: 0.5d * 2.0d == 1.0d (exact)', ok: true,
+         src: tc('class C { @Ensures({ result == 1.0d }) static double f() { 0.5d * 2.0d } }')],
+        // No-NaN / finiteness — the highest-value FP safety class: a finite input stays non-NaN.
+        [group: 'P73 floating point', name: 'double: finite input ⇒ result not NaN', ok: true,
+         src: tc('class C { @Requires({ Double.isFinite(x) }) @Ensures({ !Double.isNaN(result) }) static double g(double x) { x + x } }')],
+        // ...and an unconstrained input can be NaN, so the no-NaN claim refutes without the guard.
+        [group: 'P73 floating point', name: 'double: no-NaN needs the finite guard', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ !Double.isNaN(result) }) static double g(double x) { x + x } }')],
+        // IEEE equality: NaN != NaN. `x == x` is false for a NaN, so claiming it holds for any x refutes.
+        [group: 'P73 floating point', name: 'double: x == x not universal (NaN)', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ x == x }) static double g(double x) { x } }')],
+        // Math.sqrt / Math.abs (Z3 fp.sqrt / fp.abs): sqrt of a non-negative is non-negative and not NaN.
+        [group: 'P73 floating point', name: 'Math.sqrt of non-negative is non-negative', ok: true,
+         src: tc('class C { @Requires({ x >= 0.0d }) @Ensures({ result >= 0.0d }) static double f(double x) { Math.sqrt(x) } }')],
+        [group: 'P73 floating point', name: 'Math.sqrt of non-negative is not NaN', ok: true,
+         src: tc('class C { @Requires({ x >= 0.0d }) @Ensures({ !Double.isNaN(result) }) static double f(double x) { Math.sqrt(x) } }')],
+        // ...but sqrt of a possibly-negative input CAN be NaN — the no-NaN claim refutes without the guard.
+        [group: 'P73 floating point', name: 'Math.sqrt without guard can be NaN', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ !Double.isNaN(result) }) static double f(double x) { Math.sqrt(x) } }')],
+        // Math.abs is non-negative for any non-NaN input, and never negative (soundness anchor).
+        [group: 'P73 floating point', name: 'Math.abs of non-NaN is non-negative', ok: true,
+         src: tc('class C { @Requires({ !Double.isNaN(x) }) @Ensures({ result >= 0.0d }) static double f(double x) { Math.abs(x) } }')],
+        [group: 'P73 floating point', name: 'Math.abs claiming negative refutes', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Requires({ !Double.isNaN(x) }) @Ensures({ result < 0.0d }) static double f(double x) { Math.abs(x) } }')],
 
         // ---------- Phase 62: bounded property-based refutation when the solver says UNKNOWN ----------
         // `result == Fib.of(n)` is the weak refutation direction (recurrence-axiom timeout → UNKNOWN);

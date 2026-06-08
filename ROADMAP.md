@@ -3525,7 +3525,7 @@ semantics (confirmed against `org.codehaus.groovy.runtime.typehandling.IntegerMa
 
 | Groovy form | semantics | encoding |
 |---|---|---|
-| `a / b` (operator) | **`BigDecimal` division** (`5 / 2 == 2.5G`) — `IntegerMath.divideImpl` → `BigDecimalMath` | out of the integer fragment → **loud skip** |
+| `a / b` (operator) | **`BigDecimal` division** (`5 / 2 == 2.5G`) — `IntegerMath.divideImpl` → `BigDecimalMath` | Z3 exact **Real** sort (Phase 61) — `5 / 2 == 2.5` proves |
 | `a % b`, `a.remainder(b)` | remainder, **sign of dividend** (`-5 % 2 == -1`) | `intRem` (truncated) |
 | `a.intdiv(b)`, `(int)(a / b)` | integer division, **truncate toward zero** (`(-7).intdiv(2) == -3`) | `intDiv(a − intRem(a,b), b)` (exact ⇒ truncates) |
 | `a.mod(b)` | **`BigInteger.mod`**: non-negative, **divisor must be > 0** (else `ArithmeticException`) | `intMod` (Euclidean) + a `b > 0` obligation |
@@ -3533,9 +3533,10 @@ semantics (confirmed against `org.codehaus.groovy.runtime.typehandling.IntegerMa
 Implementation notes:
 - `intRem` is **built from the (non-negative) Euclidean `mkMod`** — `rem = (a >= 0 ∨ mod == 0) ? mod :
   mod − |b|` — because Z3's own `mkRem` does *not* follow the dividend's sign. Correct for all signs.
-- The `/` operator returns `null` from the encoder (BigDecimal is unmodelled, adjacent to the
-  floating-point non-goal); its `b != 0` safety obligation is still collected. `(int)(a / b)` — the
-  idiomatic truncating-int-div — is recognised at the `CastExpression` and routes to `intDiv`.
+- The `/` operator returns `null` from the encoder at this phase (BigDecimal unmodelled); its `b != 0`
+  safety obligation is still collected. *(Superseded: Phase 61 models `/` via Z3's exact Real sort, and
+  Phase 73 models `double`/`float` via Z3's FP theory — neither is a non-goal any more.)* `(int)(a / b)` —
+  the idiomatic truncating-int-div — is recognised at the `CastExpression` and routes to `intDiv`.
 - `.intdiv` / `.remainder` carry a `b != 0` obligation; `.mod` carries `b > 0`
   (`Reporter.formatModulusNotPositive`), a Groovy-specific bug class. Both are `DivideSite`s, so the
   receiver's (numeric) nullity isn't spuriously checked.
@@ -3918,12 +3919,12 @@ symptom: a transfer that skims a cent (`bob = bob + amt - 0.01`) could "verify" 
 fresh handle and an `asReal` RHS (mirroring the return-binding), so the SSA equality is sort-matched and
 the skim is correctly refuted.
 
-**Still out of fragment (reported, not yet built):** aggregation and extremum over a *decimal-element*
-collection (`List<BigDecimal>.sum()` / `.max()` / `.min()`) and `BigDecimal.abs()` — these need the
-list/array *contents* modelled in the Real sort (a Real element array), a larger change than the scalar
-path; they skip loudly today. The divide-by-zero obligation for a *decimal* divisor is also still checked
-on the int shadow (sound — it refutes rather than wrongly verifying — but imprecise for a provably
-non-zero decimal divisor; a literal/int divisor like `(a + b) / 2` is unaffected).
+**Still out of fragment (reported):** *extremum* over a decimal-element collection
+(`List<BigDecimal>.max()` / `.min()`) and `BigDecimal.abs()` — `.sum()` since shipped in Phase 70 (Real
+element arrays), so `.max()`/`.min()` are now a small follow-on (a Real extremum primitive over the same
+array). The divide-by-zero obligation for a *decimal* divisor is also still checked on the int shadow
+(sound — it refutes rather than wrongly verifying — but imprecise for a provably non-zero decimal divisor;
+a literal/int divisor like `(a + b) / 2` is unaffected).
 
 ---
 
@@ -4068,6 +4069,38 @@ scope). `BigDecimal` is unaffected and remains a faithful exact-Real model.
 
 ---
 
+## Phase 73 — IEEE-754 floating point: a straight-line `double`/`float` fragment  *(shipped)*
+
+Phase 72 made `double`/`float` *skip* (exact Int/Real is unsound for them). But Z3 has a **floating-point
+theory** that models IEEE-754 *bit-exactly* — round-nearest-even, NaN, ±∞, signed zero, subnormals — so it
+is *faithful* to the JVM runtime, the opposite of the exact-Real over-reach. This phase supersedes the
+skip with a real sub-fragment, built as a parallel **FP path** mirroring the Real one:
+
+- backend FP primitives — `Float64`/`Float32` sorts, RNE-rounded `fpAdd`/`fpSub`/`fpMul`/`fpDiv`/`fpNeg`,
+  IEEE comparisons (`fpEq` — **NaN ≠ NaN** — `fpLt`/`fpLeq`/…), `fpIsNaN`/`fpIsInfinite`, literals from a
+  `double`, and an `isFp` sort test;
+- the Phase-72 `doubleNames` skip-set becomes an `fpNames` map (name → precision); a `double`/`float`
+  name resolves to an `fpVar`, a `Double`/`Float` literal to an `fpLit`, and `asFp`/`isFpValued` carry FP
+  arithmetic + comparisons through `translateBinary`, the result-binding, and `Double.isNaN`/`isFinite`/
+  `isInfinite`;
+- **straight-line only** — `asFp` returns null (→ loud skip) for anything not purely FP (an int operand, a
+  transcendental, a loop body), so the unsound/expensive cases stay out.
+
+The flagship is the **same expression proven in two number models**: `0.1 + 0.2 == 0.3` for `BigDecimal`
+(exact decimal) *and* `0.1d + 0.2d != 0.3d` for `double` (IEEE-754) — both verify. Exact FP facts prove
+(`0.5d * 2.0d == 1.0d`); the highest-value class, **no-NaN / finiteness**, proves (`Double.isFinite(x) ⟹
+!Double.isNaN(x + x)`); and it's sound — a false claim refutes (`(a + b) - b == a` is refuted, FP
+non-associativity proven; `x == x` is refuted because a NaN isn't equal to itself; the no-NaN claim
+refutes without the finite guard). `Math.sqrt` and `Math.abs` are modelled too, on Z3's `fp.sqrt` (RNE)
+and `fp.abs`: `x >= 0 ⟹ Math.sqrt(x) >= 0 ∧ !isNaN`, `Math.abs` non-negative for non-NaN — and soundly,
+`Math.sqrt(x)` without a non-negative guard *can* be NaN (refutes), `Math.abs(x) < 0` refutes. (`sqrt`
+only models a double-precision argument, since Java widens a `float` argument to `double`.) Z3 bit-blasts
+FP, so it's the expensive end and subject to the per-VC timeout, but small straight-line snippets are
+fast. **Still out of fragment:** FP *loops* (accumulated rounding error), the other transcendentals
+(`sin`/`cos`/`exp`/`log`/… — no Z3 FP primitive), and tight relative-error bounds.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -4093,8 +4126,12 @@ Things deliberately not pursued, because they don't pay back:
   a separation logic or a points-to analysis layered above SMT. The payoff is small for the
   contract-style code groovy-verify is built for, and the engineering would dwarf every shipped
   phase combined. Sister tools (Viper, Verus' Linear-Permissions story) own this territory.
-- **Floating point.** SMT handles FP but slowly and with surprising results. If
-  the project ever targets numeric code, revisit.
+- **Floating point — *partially revisited* (Phase 73).** A faithful straight-line `double`/`float`
+  sub-fragment now ships on Z3's IEEE-754 theory (bit-exact: NaN, ±∞, RNE rounding) — the useful core
+  being **no-NaN / finiteness / bounds / exact-comparison** proofs, plus `Math.sqrt`/`Math.abs`. What
+  stays out: FP *loops* (accumulated rounding error), the other transcendentals (`sin`/`cos`/`exp`/`log`),
+  and tight relative-error bounds.
+  Z3 bit-blasts FP, so it's the slow end and timeout-gated — fine for small straight-line code.
 - **Generated proof certificates.** Out of scope.
 - **Interactive tactics / proof terms.** The Coq/Lean/F\* style where the user
   drives the proof with `intro`/`split`/`qed` and builds an explicit proof term.
