@@ -342,9 +342,24 @@ class Encoder {
     /** Phase 89 — the object identity of an alias-modelled reference: an unconstrained {@code name$id} Int. */
     private Object objId(String name) { varForRaw(name + '$id') }
 
-    /** Phase 89 — the per-(class, field) heap map for an Int field — an {@code Int → Int} array. */
-    private Object fieldMap(String className, String field) {
-        session.arrayVarOfSort('$fmap$' + className + '$' + field, session.intSort(), session.intSort())
+    /** Phase 89 — the per-(class, field) heap map for an Int field — an {@code Int → Int} array.
+     *  Routed through {@link #arrayFor} (the SSA-able array env) so a field *write* (Phase 89 slice 2)
+     *  rebinds it and subsequent reads — including through an aliased reference — see the store. */
+    private String fieldMapKey(String className, String field) { '$fmap$' + className + '$' + field }
+    private Object fieldMap(String className, String field) { arrayFor(fieldMapKey(className, field)) }
+
+    /**
+     * Phase 89 slice 2 — {@code obj.field = val} for an alias-modelled object's Int field: store into
+     * the identity-keyed heap map, so a later read of {@code obj.field} (or {@code other.field} when
+     * {@code other === obj}) sees it. Returns false when not applicable (caller then skips loudly).
+     */
+    boolean storeField(String objName, String field, Object valHandle) {
+        if (valHandle == null || !isAliasModeled(objName)) return false
+        ClassNode ft = fieldTypeOfObjectParam(objName, field)
+        if (ft == null || !isIntLikeType(ft)) return false
+        String key = fieldMapKey(objectParams.get(objName).name, field)
+        bindArray(key, session.store(arrayFor(key), objId(objName), valHandle))
+        true
     }
 
     /** Phase 89 — declared type of {@code field} on object parameter {@code name}, or null. */

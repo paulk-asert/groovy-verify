@@ -957,6 +957,35 @@ class VerifyHarness {
                         static int twice(Account a, Account b) { a.balance + b.balance }
                     }''')],
 
+        // ---------- Phase 89 (slice 2): field WRITES through object references ----------
+        // `a.balance = v` stores into the identity-keyed heap map, so a post-state read sees it.
+        [group: 'P89 field-write', name: 'write seen through the same reference', ok: true,
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Ensures({ a.balance == 100 })
+                        static void setHundred(Account a, Account b) { a.balance = 100 }
+                    }''')],
+        // THE HEADLINE: a write through `a` is observed through `b` *exactly when* they alias. With
+        // `a.is(b)` the store at id(a) is read back at id(b) — "mutate via one handle, observe via another".
+        [group: 'P89 field-write', name: 'aliased write observed through the other reference', ok: true,
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Requires({ a.is(b) })
+                        @Ensures({ b.balance == 100 })
+                        static void setHundred(Account a, Account b) { a.balance = 100 }
+                    }''')],
+        // Without the alias assumption the write to `a` need NOT be visible through `b` — refuted.
+        [group: 'P89 field-write', name: 'write not observed through a non-aliased reference (refuted)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Ensures({ b.balance == 100 })
+                        static void setHundred(Account a, Account b) { a.balance = 100 }
+                    }''')],
+
         // ---------- Regression: loops ----------
         [group: 'regression loop', name: 'countUp verified', ok: true,
          src: tc('''class C {

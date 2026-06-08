@@ -62,6 +62,16 @@ class ArrayStore {
     Expression value
 }
 
+/** Phase 89 slice 2 — a field write through an object reference on a path: {@code obj.field = value}.
+ *  Applied (in VerifyChecker) as a store into the identity-keyed heap map for an alias-modelled receiver. */
+@CompileStatic
+@TupleConstructor
+class PropStore {
+    String obj
+    String field
+    Expression value
+}
+
 /** A standalone call statement on a path, used purely to inject the callee's {@code @Ensures} as a fact (a lemma). */
 @CompileStatic
 @TupleConstructor
@@ -298,6 +308,24 @@ class BodyEncoder {
                     np.steps.add(new ArrayStore(arr, sub.rightExpression, be.rightExpression))
                     if (tail) {
                         np.result = be.leftExpression   // the assigned element's value
+                        res.terminated.add(np)
+                    } else {
+                        res.live.add(np)
+                    }
+                    return res
+                }
+                // Phase 89 slice 2 — obj.field = v through an object reference (non-this variable
+                // receiver). Emitted structurally; the step application gates it (alias-modelled Int
+                // field) and otherwise skips loudly, so a non-alias-modelled property write doesn't
+                // silently slip through.
+                if (be.leftExpression instanceof PropertyExpression &&
+                    ((PropertyExpression) be.leftExpression).objectExpression instanceof VariableExpression) {
+                    PropertyExpression lpe = (PropertyExpression) be.leftExpression
+                    String obj = ((VariableExpression) lpe.objectExpression).name
+                    Path np = copy(prefix)
+                    np.steps.add(new PropStore(obj, lpe.propertyAsString, be.rightExpression))
+                    if (tail) {
+                        np.result = be.leftExpression
                         res.terminated.add(np)
                     } else {
                         res.live.add(np)

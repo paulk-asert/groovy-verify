@@ -4558,10 +4558,12 @@ annotated loop per method.
 
 ---
 
-## Phase 89 — Reference identity + identity-keyed field maps  *(slice 1 shipped; writes proposed)*
+## Phase 89 — Reference identity + identity-keyed field maps  *(slices 1–2 shipped; `old`/transfer proposed)*
 
-**Status:** **slice 1 — reference identity (`===` / `!==` / `.is()`) + identity-keyed field *reads* — is
-shipped**; field *writes* / the `transfer` mutator are **slice 2 (proposed)**, below. A **contained** revisit
+**Status:** **slices 1 & 2 shipped** — reference identity (`===` / `!==` / `.is()`), identity-keyed field
+*reads* (slice 1) **and** straight-line field *writes* (slice 2, the headline "write through `a` observed
+through `b` iff they alias"). The **`old(obj.field)`-relative `transfer`** mutator is **slice 2b (proposed)**,
+below. A **contained** revisit
 of the Heap / aliasing non-goal (below) — the *flat-field* slice of it, with a boundary that can be stated in
 one sentence. This carves out the part of aliasing that pays back (two-object mutators, frame soundness under
 sharing) while explicitly leaving the part that doesn't (object-graph shape, reachability, separation logic).
@@ -4576,11 +4578,23 @@ still constrains the map read. Implementation: `Encoder.isAliasModeled` / `objId
 hooks in `varFor` (bare field under a receiver) and the explicit `recv.field` translation; `===`/`!==` in
 `translateBinary` and `.is()` in `translateMethodCall`. Read-only and Int-field-only by design.
 
-**Slice 2 (proposed) — field writes / `transfer`.** Body assignment `a.f = v` becomes `f$ = store(f$, id(a), v)`
-(SSA on the field-map), `old(a.f)` snapshots the field-map at entry, and `@Modifies` frames which
-`(field-map, identity)` cells may change. That is what lights up the headline `transfer` proof (verifies when
-`!from.is(to)`, refutes under aliasing). It is deferred because it touches `BodyEncoder`/`old`/`@Modifies`,
-whereas slice 1 is a self-contained read-side change.
+**Slice 2 (shipped) — straight-line field writes.** Body assignment `a.f = v` becomes `f$ = store(f$, id(a), v)`
+— a new `PropStore` path step (`BodyEncoder`) applied via `Encoder.storeField`, which rebinds the field-map
+through the SSA-able array env (`arrayFor`/`bindArray`), so a later read — *including through an aliased
+reference* — sees the store. This lights up the conceptual core: **a write through `a` is observed through `b`
+exactly when `a === b`** (`a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, refuted without the alias) — the
+"mutate via one handle, observe via another" reasoning the per-name model structurally cannot do. Int fields,
+straight-line bodies.
+
+**Slice 2b (proposed) — `old(obj.field)` and the full `transfer`.** The `transfer` postcondition relates the
+post-state to the *pre-state* (`from.balance == old(from.balance) - amt`). Two pieces remain: (1) recognise the
+`old(obj.field)` form — today it parses as a `this.old(...)` method call the `old`-handling (built for
+`old.field` of `this`) rejects — and snapshot the field-map at entry, translating to `select(entryMap, id(obj))`;
+(2) confirm the *dual-tenet* runtime semantics — whether groovy-contracts' `old` actually captures a
+*parameter's* field at runtime, or whether the contract must be spelled differently to stay executable.
+`@Modifies` per-`(field, identity)` framing (for the *caller* side) and writes under loops/recursion (the
+`PropStore` step is handled in the main body replay, not yet in the recursion-termination / early-exit replays)
+are also part of this follow-on.
 
 **The problem it removes.** Today a foreign-receiver field `b.field` translates to a *per-name* SMT entity
 `b$field` (`Encoder.groovy:208`), "sound only under the no-aliasing assumption" (`:209`). Two references of
@@ -4667,7 +4681,7 @@ Things deliberately not pursued, because they don't pay back:
   `PurityChecker`/`ModifiesChecker` can verify the purity our pure-function evaluation (Phase 8a) and
   `@Modifies` framing (Phase 13) assume.
 - **Concurrency.** No race detection, no dataflow reasoning. A different tool.
-- **Heap / aliasing — *partially revisited* (Phase 89, above; slice 1 shipped).**
+- **Heap / aliasing — *partially revisited* (Phase 89, above; slices 1–2 shipped — reference identity + identity-keyed field reads & writes).**
   The fragment models collection state as value-semantics — every `@Modifies` havoc is per-name, and `old`
   snapshots are independent copies. The *general* problem — reachability through object graphs, "everything
   reachable from `x` is unchanged" — would need a separation logic or a points-to analysis layered above SMT,

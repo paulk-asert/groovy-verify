@@ -2692,6 +2692,15 @@ class VerifyChecker extends TypeCheckingExtension {
                         throw new UnsupportedConstructException(
                             "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                     }
+                } else if (step instanceof PropStore) {
+                    // Phase 89 slice 2 — obj.field = v: store into the identity-keyed heap map so a
+                    // subsequent read of obj.field (or other.field when other === obj) sees it.
+                    PropStore ps = (PropStore) step
+                    Object val = enc.translate(ps.value)
+                    if (val == null || !enc.storeField(ps.obj, ps.field, val)) {
+                        throw new UnsupportedConstructException(
+                            "field write '${ps.obj}.${ps.field} = ${ps.value.text}' is outside fragment")
+                    }
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step
                     // Phase 27 — index/value sorts depend on the receiver kind: map key/value
