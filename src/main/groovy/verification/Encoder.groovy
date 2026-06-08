@@ -101,7 +101,7 @@ class Encoder {
      * it fires only for nodes in this set; elsewhere an unbounded stream {@code every} skips loudly.
      */
     private final Set<Expression> goalPositiveEvery =
-        java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Expression, Boolean>())
+        Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
     /** Max element count for the bounded-unroll path; a larger / symbolic limit takes the induction path. */
     private static final int STREAM_UNROLL_CAP = 256
     /** Cache of size-oracle constants, keyed by their SMT name. */

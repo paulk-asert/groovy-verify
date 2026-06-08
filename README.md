@@ -73,7 +73,10 @@ rather than a separate build tool. The cross-language picture: Dafny (new langua
 encoder can't model emits a "skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named per
 capability (the "deferred"/"residual" notes in the [capability table](#whats-demonstrated) and the
 [ROADMAP](ROADMAP.md)); 32-bit integer overflow is covered opt-in via `@CheckOverflow` (Verus
-parity); heap aliasing is a deliberate [non-goal](ROADMAP.md). The failure mode the verifier family fears most is a silent *vacuous*
+parity); heap aliasing has a **deliberately drawn boundary** — *flat object fields* are modelled (two
+references' fields are identity-keyed, so a write through one is seen through another exactly when they are
+the same object, `a === b`), while the *shape* of object graphs — reachability, linked structures, separation
+logic — stays an explicit [non-goal](ROADMAP.md). The failure mode the verifier family fears most is a silent *vacuous*
 pass — a "proof" that succeeds only because its assumptions can never all hold, so it proves nothing.
 Saying *loudly partial* directly is the credible position, and it's the one this tool holds.
 
@@ -316,6 +319,38 @@ reads naturally as an implication using Groovy 5's `==>` operator —
 field for `old`, so this holds at runtime as well as in the proof). The `==>` operator and the
 equivalent `.implies()` method both lower to `!a || b`; the older spelling `it == j || a[it] ==
 old.a[it]` works too.
+
+**Aliasing — the bug value-semantics tools miss.** When two references can point at the *same* object, a write
+through one is visible through the other — something lightweight checkers ignore by treating distinct names as
+distinct objects. This method *looks* obviously correct:
+
+```groovy
+@Ensures({ a.balance == 100 && b.balance == 200 })
+static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
+```
+
+but the verifier **refuses** it — because if `a` and `b` are the *same* account, the second write wins and
+`a.balance` ends at `200`, not `100`:
+
+```
+[Static type checking] - Cannot prove postcondition of setBoth holds on this return path
+    ensured: ((a.balance == 100) && (b.balance == 200))
+    counterexample: a$id = 3, b$id = 3      // same identity ⇒ a and b are the same object
+```
+
+Adding the distinctness precondition — Groovy's identity operator `!==` — makes it verify:
+
+```groovy
+@Requires({ a !== b })
+@Ensures({ a.balance == 100 && b.balance == 200 })
+static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
+```
+
+Under the hood, two parameters of the same class are modelled as a per-field map indexed by object *identity*,
+so `a === b` / `a.is(b)` (and `!==`) is identity equality and a write through `a` is seen through `b` exactly
+when they alias. *(Straight-line `int` fields today; the natural `transfer` with `from.balance ==
+old(from.balance) - amt` is deliberately out — groovy-contracts' `old` snapshots only `this`'s own fields, not
+a parameter's, so that contract couldn't **also run** at runtime, and an executable spec is the whole point.)*
 
 **String-keyed sets and maps, with the same machinery.** Sets and maps work over `Set<Integer>` /
 `Map<Integer,Integer>` and likewise over `Set<String>` / `Map<String,Integer>` (and the enum
@@ -1175,7 +1210,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Implicit obligations downstream of mutations** | `VfObligation` now carries a single source-ordered step list (Assign / Guard / LemmaCall) replayed via the same handlers `checkPath` uses, so the implicit-obligation pass and the body-replay pass see the same oracle state. `xs.add(v); xs[0]` now passes the implicit bounds check; `xs.removeLast(); xs[n-1]` correctly refutes | ✅ Phase 42 |
 | **32-bit integer overflow (opt-in via `@CheckOverflow`)** | A method or class annotated `@CheckOverflow` gets a Verus-style guarantee: every `+`, `-`, `*` (sub-expressions included) becomes an implicit obligation that the math result stays in `[Integer.MIN_VALUE, Integer.MAX_VALUE]`. Unannotated code keeps the math-int default — the verifier's existing experience. Implicit JVM int bounds (size oracles, int parameters, int fields) are *always-on*, asserted from the JVM contract, so the math view and machine view coincide for the common case of in-bounds index arithmetic | ✅ Phase 44 |
 | **Cross-class `@Invariant` assumption** | A class-typed parameter carries its class's invariants into the calling method. `c.count >= 0` is assumed automatically when the receiver `c: Counter` has `@Invariant({ count >= 0 })`. Cross-class calls (`c.incr()`) discharge the callee's `@Requires` under a receiver context, then havoc the receiver's fields and re-assume its invariants on return. Field references are namespaced per receiver (`c$count` distinct from `b$count`); for a *single* receiver this is sound under the no-aliasing assumption (a project [non-goal](ROADMAP.md)), and when *two* parameters of the same class are present the identity model below (Phase 89) engages instead — they may alias | ✅ Phase 45 |
-| **Reference identity + identity-keyed object fields (reads + writes)** | Two object parameters of the same class are *alias-modelled*: their `int` fields are a per-`(class, field)` heap map indexed by object identity, and `a === b` / `a.is(b)` lowers to identity equality `id(a) == id(b)`. **Reads** (slice 1): `a.is(b)` makes the fields **provably coincide** (`a.is(b) ⟹ a.balance == b.balance`), **refuted without it** — reasoning the per-name model (distinct names ⇒ distinct objects) structurally cannot do. **Writes** (slice 2): `a.balance = v` stores into the map, so a write through `a` is **observed through `b` exactly when they alias** — `a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, refuted without the alias. Straight-line, `int`-field-only; single-object-param and distinct-class methods keep the per-name model untouched. Still out (slice 2b): `old(obj.field)`-relative postconditions — the full `transfer` mutator — and writes under loops/recursion | ✅ Phase 89 (slices 1–2) |
+| **Reference identity + identity-keyed object fields (reads + writes)** | Two object parameters of the same class are *alias-modelled*: their `int` fields are a per-`(class, field)` heap map indexed by object identity, and `a === b` / `a.is(b)` lowers to identity equality `id(a) == id(b)`. **Reads** (slice 1): `a.is(b)` makes the fields **provably coincide** (`a.is(b) ⟹ a.balance == b.balance`), **refuted without it** — reasoning the per-name model (distinct names ⇒ distinct objects) structurally cannot do. **Writes** (slice 2): `a.balance = v` stores into the map, so a write through `a` is **observed through `b` exactly when they alias** — `a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, refuted without the alias. Straight-line, `int`-field-only; single-object-param and distinct-class methods keep the per-name model untouched. **Not pursued** (a dual-tenet boundary): the `old(obj.field)`-relative `transfer` — groovy-contracts' `old` is a `Map` of `this`-field snapshots and never captures a *parameter's* field, so such a contract can't run at runtime; modelling it would be verify-only, breaking the executable-specs principle | ✅ Phase 89 (slices 1–2) |
 | **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
 | **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable | ✅ Phase 46b / 46c |
 | **In-loop `if`-condition + `&&` short-circuit as path facts** | `dischargeRegion` (which checks implicit obligations across a loop's prefix / guard / body / suffix) now recurses into in-region `if` statements with `cond` (then-branch) or `NotExpression(cond)` (else-branch) added to the assumption set, and descends through `&&`/`||`/ternary so each operand is discharged under the short-circuit guard. A natural in-loop `if (xs[i] != null) xs[i].method()` or `if (xs[i] != null && xs[i].startsWith(p))` discharges the per-element deref directly — the `Forall.range` workaround used in earlier ports is now optional, not required | ✅ Phase 46d |

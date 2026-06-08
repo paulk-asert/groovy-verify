@@ -985,6 +985,24 @@ class VerifyHarness {
                         @Ensures({ b.balance == 100 })
                         static void setHundred(Account a, Account b) { a.balance = 100 }
                     }''')],
+        // The aliasing bug-catch: setBoth *looks* correct, but if a === b the second write wins
+        // (a.balance ends at 200, not 100) — the verifier refuses it and the counterexample is a === b.
+        [group: 'P89 field-write', name: 'setBoth refuted under aliasing (forgot a !== b)', expect: 'Cannot prove postcondition',
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Ensures({ a.balance == 100 && b.balance == 200 })
+                        static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
+                    }''')],
+        // The distinctness precondition `a !== b` (the identity operator) makes it verify.
+        [group: 'P89 field-write', name: 'setBoth verifies with a !== b', ok: true,
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Requires({ a !== b })
+                        @Ensures({ a.balance == 100 && b.balance == 200 })
+                        static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
+                    }''')],
 
         // ---------- Regression: loops ----------
         [group: 'regression loop', name: 'countUp verified', ok: true,

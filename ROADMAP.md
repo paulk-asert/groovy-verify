@@ -4558,12 +4558,13 @@ annotated loop per method.
 
 ---
 
-## Phase 89 — Reference identity + identity-keyed field maps  *(slices 1–2 shipped; `old`/transfer proposed)*
+## Phase 89 — Reference identity + identity-keyed field maps  *(slices 1–2 shipped; 2b closed as a dual-tenet boundary)*
 
 **Status:** **slices 1 & 2 shipped** — reference identity (`===` / `!==` / `.is()`), identity-keyed field
 *reads* (slice 1) **and** straight-line field *writes* (slice 2, the headline "write through `a` observed
-through `b` iff they alias"). The **`old(obj.field)`-relative `transfer`** mutator is **slice 2b (proposed)**,
-below. A **contained** revisit
+through `b` iff they alias"). The **`old(obj.field)`-relative `transfer`** mutator (slice 2b) was investigated
+and **deliberately not pursued** — it cannot be an executable groovy-contracts contract (a dual-tenet boundary,
+detailed below). A **contained** revisit
 of the Heap / aliasing non-goal (below) — the *flat-field* slice of it, with a boundary that can be stated in
 one sentence. This carves out the part of aliasing that pays back (two-object mutators, frame soundness under
 sharing) while explicitly leaving the part that doesn't (object-graph shape, reachability, separation logic).
@@ -4586,15 +4587,21 @@ exactly when `a === b`** (`a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, 
 "mutate via one handle, observe via another" reasoning the per-name model structurally cannot do. Int fields,
 straight-line bodies.
 
-**Slice 2b (proposed) — `old(obj.field)` and the full `transfer`.** The `transfer` postcondition relates the
-post-state to the *pre-state* (`from.balance == old(from.balance) - amt`). Two pieces remain: (1) recognise the
-`old(obj.field)` form — today it parses as a `this.old(...)` method call the `old`-handling (built for
-`old.field` of `this`) rejects — and snapshot the field-map at entry, translating to `select(entryMap, id(obj))`;
-(2) confirm the *dual-tenet* runtime semantics — whether groovy-contracts' `old` actually captures a
-*parameter's* field at runtime, or whether the contract must be spelled differently to stay executable.
-`@Modifies` per-`(field, identity)` framing (for the *caller* side) and writes under loops/recursion (the
-`PropStore` step is handled in the main body replay, not yet in the recursion-termination / early-exit replays)
-are also part of this follow-on.
+**Slice 2b (investigated — deliberately NOT pursued, a dual-tenet boundary).** The full `transfer` relates the
+post-state to the *pre-state* (`from.balance == old(from.balance) - amt`), which needs `old(obj.field)`. The
+slice-2b plan was to start with a *dual-tenet check* — does groovy-contracts capture a parameter's field at
+runtime? — and the answer is **no**: groovy-contracts' `old` is a **`Map` of `this`-class field snapshots keyed
+by field name** (`OldVariableGenerationUtility.addOldVariableMethodNode` iterates `classNode.getFields()`;
+`PostconditionGenerator` binds it as a `Map`-typed closure parameter), with **no `old(expr)` form** and, for a
+`static` method, an **empty `old` whose references are rejected at compile time**. So `old(from.balance)` for a
+parameter can only ever be a *verify-only* spec that **throws at runtime** when the dual check fires — which
+breaks the executable-specs tenet that is the whole point. Implementing it would make the verifier bless a
+contract that can't run, the inverse of the project's value. **So `old`-of-parameter-field is not implemented.**
+The dual-compatible reasoning over the same write machinery is the slice-2 headline (no `old`). A genuinely
+*dual* pre/post-relating mutator would need `this`-class *scalar* fields (where `old.field` works and is already
+supported, Phase 13/45) — not object-reference parameters. (Also out, for the same scoping reasons: `@Modifies`
+per-`(field, identity)` caller framing, and writes under loops/recursion — `PropStore` is handled in the main
+body replay, not the recursion-termination / early-exit replays.)
 
 **The problem it removes.** Today a foreign-receiver field `b.field` translates to a *per-name* SMT entity
 `b$field` (`Encoder.groovy:208`), "sound only under the no-aliasing assumption" (`:209`). Two references of
@@ -4642,6 +4649,16 @@ precondition and the verifier returns the aliasing counterexample (`from === to`
 `old − amt + amt = old`, not `old − amt`) → it **refutes** — a refutation the current per-name model cannot
 produce (it would wrongly verify).
 
+> **Dual-tenet caveat (the slice-2b finding).** This exact `transfer` is **not** an executable groovy-contracts
+> contract: `old(from.balance)` cannot run at runtime. groovy-contracts' `old` is a **`Map` of `this`-class
+> field snapshots keyed by field name** (`OldVariableGenerationUtility` / `PostconditionGenerator`) — it never
+> captures a *parameter's* field, there is no `old(expr)` function form, and for a `static` method `old` is an
+> empty map whose references are rejected at compile time. So `old(from.balance)` would be a *verify-only* spec
+> that throws when the runtime check fires — which violates the executable-specs tenet. The **dual-compatible**
+> way to exercise the same write machinery is the slice-2 headline (no `old`): a write through `a` observed
+> through `b` iff `a === b`. The `old`-relative `transfer` is therefore **deliberately not pursued** — see
+> Slice 2b below.
+
 **What it unlocks:** two-object mutators (`transfer`, `swap`, `merge`), `@Modifies` framing that is honest
 under sharing, "mutate via one handle / observe via another", reflexivity facts (`a === b ⟹ a.f == b.f`), and
 "requires distinct inputs" specs — across object *parameters*, `this`, and `new`-minted objects.
@@ -4681,7 +4698,7 @@ Things deliberately not pursued, because they don't pay back:
   `PurityChecker`/`ModifiesChecker` can verify the purity our pure-function evaluation (Phase 8a) and
   `@Modifies` framing (Phase 13) assume.
 - **Concurrency.** No race detection, no dataflow reasoning. A different tool.
-- **Heap / aliasing — *partially revisited* (Phase 89, above; slices 1–2 shipped — reference identity + identity-keyed field reads & writes).**
+- **Heap / aliasing — *partially revisited* (Phase 89, above; slices 1–2 shipped — reference identity + identity-keyed field reads & writes; the `old`-relative `transfer` is a dual-tenet boundary, not pursued).**
   The fragment models collection state as value-semantics — every `@Modifies` havoc is per-name, and `old`
   snapshots are independent copies. The *general* problem — reachability through object graphs, "everything
   reachable from `x` is unchanged" — would need a separation logic or a points-to analysis layered above SMT,
