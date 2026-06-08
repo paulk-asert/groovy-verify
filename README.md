@@ -878,7 +878,7 @@ static Tuple2<Integer, Integer> sumProduct(List<Integer> xs) {
     @Invariant({ 1 <= i && i <= xs.size() &&
                  s == xs[0..<i].sum() && p == xs[0..<i].inject(1) { a, x -> a * x } })
     @Decreases({ xs.size() - i })
-    while (i < xs.size()) { s = s + xs[i]; p = p * xs[i]; i = i + 1 }
+    while (i < xs.size()) { s += xs[i]; p *= xs[i]; i += 1 }
     return Tuple.tuple(s, p)
 }
 ```

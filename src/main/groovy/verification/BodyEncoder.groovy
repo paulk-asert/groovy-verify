@@ -253,6 +253,10 @@ class BodyEncoder {
                 return res
             }
 
+            // Phase 85/86 — compound assignment `s += e` and increment/decrement `i++` / `--i` desugar to
+            // `s = s + e` / `i = i ± 1` so the variable / field / array-element assignment paths apply.
+            if (Encoder.isIncDec(e)) e = Encoder.desugarIncDec(e)
+            else if (Encoder.isCompoundAssign(e)) e = Encoder.desugarCompoundAssign((BinaryExpression) e)
             if (e instanceof BinaryExpression &&
                 ((BinaryExpression) e).operation.type == Types.ASSIGN) {
                 BinaryExpression be = (BinaryExpression) e

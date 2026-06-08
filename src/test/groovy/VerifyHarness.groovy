@@ -2991,6 +2991,84 @@ class VerifyHarness {
                         static int f(Map m) { 0 }
                     }''')],
 
+        // ---------- Phase 85: compound assignment operators (+= -= *= /= %=) ----------
+        // A statement-level desugar `s += e` → `s = s + e`, applied in both the straight-line and loop
+        // body processors — so the same variable / field / array-element assignment paths handle it.
+        // (No overlap with contracts: contract closures are pure predicates and never contain assignments.)
+        [group: 'P85 compound assign', name: 'sumProduct loop body with += *=', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == ((int) xs.sum()) + ((int) xs.inject(1) { a, x -> a * x }) })
+                        static int sumProduct(List<Integer> xs) {
+                            int s = xs[0]
+                            int p = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() &&
+                                         s == xs[0..<i].sum() && p == xs[0..<i].inject(1) { a, x -> a * x } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) { s += xs[i]; p *= xs[i]; i += 1 }
+                            return s + p
+                        }
+                    }''')],
+        [group: 'P85 compound assign', name: 'straight-line += then *=', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 6 })
+                        static int f() { int s = 1; s += 2; s *= 2; s }
+                    }''')],
+        [group: 'P85 compound assign', name: 'straight-line -= symbolic', ok: true,
+         src: tc('''class C {
+                        @Requires({ x >= 3 })
+                        @Ensures({ result == x - 3 })
+                        static int f(int x) { int s = x; s -= 3; s }
+                    }''')],
+        [group: 'P85 compound assign', name: 'wrong compound result refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f() { int s = 1; s += 2; s }
+                    }''')],
+        // Array-element compound assignment desugars to an array store.
+        [group: 'P85 compound assign', name: 'array element a[i] += 1', ok: true,
+         src: tc('''class C {
+                        int[] a
+                        @Requires({ a != null && 0 <= i && i < a.length })
+                        @Ensures({ a[i] == old.a[i] + 1 })
+                        void bump(int i) { a[i] += 1 }
+                    }''')],
+
+        // ---------- Phase 86: pre/post increment & decrement (++ / --) as statements ----------
+        // `i++` / `++i` / `i--` / `--i` desugar to `i = i ± 1` (pre/post is irrelevant as a statement),
+        // in both straight-line and loop-body positions (the for-loop *update* slot already handled them).
+        [group: 'P86 inc/dec', name: 'straight-line i++', ok: true,
+         src: tc('class C { @Ensures({ result == 6 }) static int f() { int s = 5; s++; s } }')],
+        [group: 'P86 inc/dec', name: 'straight-line ++i (prefix)', ok: true,
+         src: tc('class C { @Ensures({ result == 6 }) static int f() { int s = 5; ++s; s } }')],
+        [group: 'P86 inc/dec', name: 'straight-line i--', ok: true,
+         src: tc('class C { @Ensures({ result == 4 }) static int f() { int s = 5; s--; s } }')],
+        [group: 'P86 inc/dec', name: 'wrong inc result refutes', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ result == 5 }) static int f() { int s = 5; s++; s } }')],
+        // The idiomatic loop counter: `i++` in the while body.
+        [group: 'P86 inc/dec', name: 'while body i++ counter', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n })
+                        static int count(int n) {
+                            int c = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && c == i })
+                            @Decreases({ n - i })
+                            while (i < n) { c++; i++ }
+                            c
+                        }
+                    }''')],
+        // Array-element increment desugars to an array store.
+        [group: 'P86 inc/dec', name: 'array element a[i]++', ok: true,
+         src: tc('''class C {
+                        int[] a
+                        @Requires({ a != null && 0 <= i && i < a.length })
+                        @Ensures({ a[i] == old.a[i] + 1 })
+                        void bump(int i) { a[i]++ }
+                    }''')],
+
         // ---------- Phase 78: list-literal returns + constant-index result[k] ----------
         // A method may now return a list literal and have @Ensures reference its elements by constant
         // index: `result` is bound as a factory container, so result.size()/result[k] fold.
@@ -3062,11 +3140,7 @@ class VerifyHarness {
                                          s == xs[0..<i].sum() &&
                                          p == xs[0..<i].inject(1) { a, x -> a * x } })
                             @Decreases({ xs.size() - i })
-                            while (i < xs.size()) {
-                                s = s + xs[i]
-                                p = p * xs[i]
-                                i = i + 1
-                            }
+                            while (i < xs.size()) { s += xs[i]; p *= xs[i]; i += 1 }
                             return Tuple.tuple(s, p)
                         }
                     }''')],

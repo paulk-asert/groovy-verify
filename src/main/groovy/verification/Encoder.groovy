@@ -35,6 +35,8 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
+import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
@@ -4141,6 +4143,68 @@ class Encoder {
         if (a instanceof ArgumentListExpression) return ((ArgumentListExpression) a).expressions
         if (a instanceof TupleExpression) return ((TupleExpression) a).expressions
         return Collections.<Expression> emptyList()
+    }
+
+    /** A compound-assignment op type → its base binary op type, or -1 if not a modelled compound assignment. */
+    private static int compoundBaseOp(int t) {
+        if (t == Types.PLUS_EQUAL)     return Types.PLUS
+        if (t == Types.MINUS_EQUAL)    return Types.MINUS
+        if (t == Types.MULTIPLY_EQUAL) return Types.MULTIPLY
+        if (t == Types.DIVIDE_EQUAL)   return Types.DIVIDE
+        if (t == Types.MOD_EQUAL)      return Types.MOD
+        -1
+    }
+
+    /** True if {@code e} is a compound assignment {@code lhs += rhs} (or {@code -= *= /= %=}). */
+    static boolean isCompoundAssign(Expression e) {
+        e instanceof BinaryExpression && compoundBaseOp(((BinaryExpression) e).operation.type) >= 0
+    }
+
+    /**
+     * Desugar a compound assignment {@code lhs OP= rhs} to the plain assignment {@code lhs = (lhs OP rhs)},
+     * so the existing assignment handling (variable / field / array-element targets) applies unchanged.
+     * Phase 85 — purely a statement-level rewrite; contract closures never contain assignments.
+     */
+    static BinaryExpression desugarCompoundAssign(BinaryExpression be) {
+        org.codehaus.groovy.syntax.Token op = be.operation
+        org.codehaus.groovy.syntax.Token baseTok =
+            org.codehaus.groovy.syntax.Token.newSymbol(compoundBaseOp(op.type), op.startLine, op.startColumn)
+        Expression combined = new BinaryExpression(be.leftExpression, baseTok, be.rightExpression)
+        org.codehaus.groovy.syntax.Token assignTok =
+            org.codehaus.groovy.syntax.Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
+        new BinaryExpression(be.leftExpression, assignTok, combined)
+    }
+
+    /** The {@code ++}/{@code --} operation and operand of a postfix/prefix expression, or null. */
+    private static Object[] incDecParts(Expression e) {
+        if (e instanceof PostfixExpression) return [((PostfixExpression) e).operation, ((PostfixExpression) e).expression] as Object[]
+        if (e instanceof PrefixExpression)  return [((PrefixExpression) e).operation, ((PrefixExpression) e).expression] as Object[]
+        null
+    }
+
+    /** True if {@code e} is an increment/decrement {@code i++} / {@code ++i} / {@code i--} / {@code --i}. */
+    static boolean isIncDec(Expression e) {
+        Object[] p = incDecParts(e)
+        if (p == null) return false
+        int t = ((org.codehaus.groovy.syntax.Token) p[0]).type
+        t == Types.PLUS_PLUS || t == Types.MINUS_MINUS
+    }
+
+    /**
+     * Desugar an increment/decrement <em>statement</em> {@code i++} / {@code ++i} / {@code i--} / {@code --i}
+     * to {@code i = i + 1} / {@code i = i - 1}. As a statement the pre/post distinction is irrelevant (it
+     * differs only in the expression's *value*, which a statement discards) — and the operand may be a
+     * variable, array element, or field, so the existing assignment paths apply (Phase 86).
+     */
+    static BinaryExpression desugarIncDec(Expression e) {
+        Object[] p = incDecParts(e)
+        org.codehaus.groovy.syntax.Token op = (org.codehaus.groovy.syntax.Token) p[0]
+        Expression operand = (Expression) p[1]
+        int baseType = (op.type == Types.PLUS_PLUS) ? Types.PLUS : Types.MINUS
+        org.codehaus.groovy.syntax.Token baseTok = org.codehaus.groovy.syntax.Token.newSymbol(baseType, op.startLine, op.startColumn)
+        Expression combined = new BinaryExpression(operand, baseTok, new ConstantExpression(Integer.valueOf(1)))
+        org.codehaus.groovy.syntax.Token assignTok = org.codehaus.groovy.syntax.Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
+        new BinaryExpression(operand, assignTok, combined)
     }
 
     /**

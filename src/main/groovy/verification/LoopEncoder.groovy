@@ -222,11 +222,16 @@ class LoopEncoder {
 
     private static boolean isAssign(Expression e) {
         (e instanceof DeclarationExpression) ||
-        (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN)
+        (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) ||
+        Encoder.isCompoundAssign(e) || Encoder.isIncDec(e)
     }
 
     private static void applyAssign(ExpressionStatement st, Encoder enc, SmtSession s) {
         Expression e = st.expression
+        // Phase 85/86 — `s += xs[i]` and `i++` / `--i` desugar to `s = s + xs[i]` / `i = i ± 1` so the
+        // assignment paths apply.
+        if (Encoder.isIncDec(e)) e = Encoder.desugarIncDec(e)
+        else if (Encoder.isCompoundAssign(e)) e = Encoder.desugarCompoundAssign((BinaryExpression) e)
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
             if (!(de.leftExpression instanceof VariableExpression)) {

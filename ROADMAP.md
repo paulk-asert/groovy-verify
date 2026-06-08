@@ -4443,6 +4443,41 @@ method wins).
 
 ---
 
+## Phase 85 — compound assignment operators (`+= -= *= /= %=`)  *(shipped)*
+
+A statement-level desugar: Groovy keeps `s += xs[i]` as a distinct `PLUS_EQUAL` token (not pre-lowered), so
+the body processors skipped it as an "unsupported statement." `Encoder.isCompoundAssign` / `desugarCompoundAssign`
+rewrite `lhs OP= rhs` to the plain assignment `lhs = (lhs OP rhs)`, and both statement processors —
+`BodyEncoder` (straight-line) and `LoopEncoder` (loop region) — desugar before their existing
+variable/field/array-element assignment paths run, so all targets work uniformly: `s += xs[i]` (variable),
+`a[i] += 1` (array element → an array store), and `this.f += e` (field). So `sumProduct`'s loop can read
+`while (i < xs.size()) { s += xs[i]; p *= xs[i]; i += 1 }` and still verify, and a wrong result refutes.
+
+**No overlap with contracts** — the obvious worry, ruled out: a contract closure is a side-effect-free
+boolean predicate and never contains an assignment, so `+=` only ever appears as a *statement* in a method
+body, handled by a code path entirely separate from the contract-expression translator. The desugar can't
+touch contract semantics. (`==` vs `=` vs `+=` stay cleanly partitioned: `==` is contract equality, `=`/`+=`
+are body statements.)
+
+---
+
+## Phase 86 — pre/post increment & decrement (`++` / `--`)  *(shipped)*
+
+The sibling of Phase 85. The for-loop *update* slot already normalised `i++`/`--i` (Phase 59
+`normalizeUpdate`), but `++`/`--` as **statements** elsewhere — straight-line `s++`, a while-body counter
+`while (i < n) { c++; i++ }` — skipped ("statement with no modelled effect" / "unsupported statement in loop
+region"). `Encoder.isIncDec` / `desugarIncDec` rewrite the inc/dec *statement* to `i = i + 1` / `i = i - 1`,
+wired into `BodyEncoder` and `LoopEncoder` alongside the compound-assignment desugar. **As a statement the
+pre/post distinction is irrelevant** — `i++` and `++i` differ only in the expression's *value*, which a
+statement discards — so all four (`i++`/`++i`/`i--`/`--i`) collapse to the same assignment, and the operand
+may be a variable, array element (`a[i]++` → an array store), or field. A wrong result refutes. Same
+no-overlap-with-contracts property as Phase 85 (predicates never contain `++`).
+
+**Still out:** `++`/`--` in *expression* position (`x = i++`, `a[i++]`) — a side-effecting subexpression that
+both mutates and yields a (pre- vs post-) value, which the straight-line/path model doesn't thread.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
