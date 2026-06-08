@@ -54,6 +54,11 @@ class LoopSpec {
     // invariant — verified with x = xs[idx] under 0 <= idx < size (vacuous on an empty collection).
     String forInVar = null
     Statement forInBind = null
+    // Phase 88 — a {@code do B while (G)} loop ({@code do-while}). Semantically {@code B; while (G) B}:
+    // the body runs once unconditionally before the first guard/invariant check, so establishment must
+    // hold AFTER that first iteration, not at loop entry. Preservation/progress/use (the residual while)
+    // are identical to a plain while. (Treating do-while as while was silently unsound — see Phase 88.)
+    boolean isDoWhile = false
 }
 
 /**

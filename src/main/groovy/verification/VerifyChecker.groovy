@@ -3713,11 +3713,17 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
             }
             LoopEncoder.symExec(site.prefix, enc, s)
+            // Phase 88 — a do-while (`do B while (G)` ≡ `B; while (G) B`) runs its body once before the
+            // first guard/invariant check, so the invariant must hold AFTER that first iteration, not at
+            // loop entry. Execute the body once here (no guard assumed — the first pass is unconditional)
+            // before checking the invariant. Without this, do-while was treated as while and a vacuously-
+            // preserved false invariant could be "established" pre-body, silently proving a wrong spec.
+            if (site.spec.isDoWhile) symExecBodyWithExits(site, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
-                    Reporter.formatLoopEstablishment(node.name, invText(site), r), site.loopStmt)
+                    Reporter.formatLoopEstablishment(node.name, invText(site), r, site.spec.isDoWhile), site.loopStmt)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }

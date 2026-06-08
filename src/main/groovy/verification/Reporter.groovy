@@ -251,7 +251,14 @@ class Reporter {
     }
 
     static String formatLoopEstablishment(String methodName, String invariantText, CheckResult result) {
-        loopFailure("Cannot prove loop invariant holds on entry in ${methodName}",
+        formatLoopEstablishment(methodName, invariantText, result, false)
+    }
+
+    /** Phase 88 — a do-while establishes its invariant *after* the mandatory first iteration, not at
+     *  loop entry, so the diagnostic says so (the invariant may well hold on entry yet fail post-body). */
+    static String formatLoopEstablishment(String methodName, String invariantText, CheckResult result, boolean doWhile) {
+        String where = doWhile ? "holds after the do-while's first iteration" : "holds on entry"
+        loopFailure("Cannot prove loop invariant ${where} in ${methodName}",
             "invariant", invariantText,
             "Could not decide loop-invariant establishment in ${methodName}", result)
     }

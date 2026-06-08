@@ -365,6 +365,7 @@ class ContractExpansionTransform implements ASTTransformation {
         spec.init = initStmts
         spec.forInVar = forInVarName
         spec.forInBind = forInBindStmt
+        spec.isDoWhile = loop instanceof DoWhileStatement   // Phase 88 — body runs once before the first guard
         return spec
     }
 
