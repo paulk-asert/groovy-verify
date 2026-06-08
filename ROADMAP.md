@@ -3655,11 +3655,15 @@ case *loud*.
 
 ---
 
-## Phase 55 — Fibonacci generation: the `Fib.of(i)` helper  *(shipped)*
+## Phase 55 — Fibonacci generation: the `Fib.of(i)` helper (HumanEval 055 `fib`)  *(shipped)*
 
-The two-term-recurrence sibling of the Phase-51/52 `sum`/`prod` aggregations, prompted by HumanEval 39
-(`prime_fib`). A `Fib.of(i)` spec helper (runtime-executable, like `Sets.boundedCount` / `Forall.range`)
-is recognised and lowered to an uninterpreted `fib$ : Int → Int` with mint-once defining axioms:
+This **is** HumanEval task **055** (`fib`, the n-th Fibonacci number) with the functional spec the Verus
+corpus omits — our `Fib.of` indexing matches HumanEval's (`Fib.of(10) == 55`, `Fib.of(8) == 21`). (It was
+originally filed here under its motivation — task 039's `prime_fib`, below — but the standalone
+`result == Fib.of(n)` proof is task 055 in its own right; the Phase-number/task-number match is a
+coincidence.) The two-term-recurrence sibling of the Phase-51/52 `sum`/`prod` aggregations: a `Fib.of(i)`
+spec helper (runtime-executable, like `Sets.boundedCount` / `Forall.range`) recognised and lowered to an
+uninterpreted `fib$ : Int → Int` with mint-once defining axioms:
 
 - base `fib(0) == 0`, `fib(1) == 1`
 - step `∀k. k >= 2 ⟹ fib(k) == fib(k-1) + fib(k-2)` (triggered on `fib(k)`)
@@ -3677,6 +3681,26 @@ same wart `Forall` carries).
 there are infinitely many Fibonacci primes is an **open problem in number theory**, so no `@Decreases`
 can exist for symbolic `n` (even Verus' HumanEval port leaves task 039 a `TODO`). The Fibonacci
 generation it rests on verifies; the search does not, and saying so cleanly is the honest boundary.
+
+---
+
+## Phase 63 — Tribonacci generation: the `Trib.of(i)` helper (HumanEval 063 `fibfib`)  *(shipped)*
+
+The three-term sibling of Phase 55, and HumanEval task **063** (`fibfib`): the recurrence
+`fibfib(n) = fibfib(n-1) + fibfib(n-2) + fibfib(n-3)` with base `0, 0, 1`. It shows the recurrence
+machinery extends mechanically — a `Trib.of(i)` helper (runtime-executable; `Trib.of(5) == 4`,
+`Trib.of(8) == 24`, matching HumanEval) lowered to an uninterpreted `trib$ : Int → Int` with mint-once
+axioms, mirroring `fib$`:
+
+- base `trib(0) == 0`, `trib(1) == 0`, `trib(2) == 1`
+- step `∀k. k >= 3 ⟹ trib(k) == trib(k-1) + trib(k-2) + trib(k-3)` (triggered on `trib(k)`)
+
+The iterative-equals-recursive proof (`result == Trib.of(n)`) carries a **three-wide** recurrence window
+in its invariant — `a == trib(i) ∧ b == trib(i+1) ∧ c == trib(i+2)` — re-established across the body's
+`c = a + b + c` by the step axiom e-matching `trib(i+3) == trib(i+2) + trib(i+1) + trib(i)` (a congruence,
+not a fresh nonlinearity). New backend primitive `trib(k)` + encoder `tribOf` + the `verification.Trib`
+helper; recognised from the `Trib.of(i)` shape exactly as `Fib.of(i)`. Same honest boundary as Phase 55:
+refuting a *false* `trib` claim is the quantified-axiom weak direction (UNKNOWN, not a counterexample).
 
 ---
 
@@ -4100,6 +4124,15 @@ only models a double-precision argument, since Java widens a `float` argument to
 FP, so it's the expensive end and subject to the per-VC timeout, but small straight-line snippets are
 fast. **Still out of fragment:** FP *loops* (accumulated rounding error), the other transcendentals
 (`sin`/`cos`/`exp`/`log`/… — no Z3 FP primitive), and tight relative-error bounds.
+
+**Follow-on — FP division + HumanEval 045 (`triangle_area`).** Completing FP `/`: `isDecimalExpr` no longer
+claims a `/` whose operands are `double`/`float` (Groovy's int/BigDecimal `/` is exact-Real division, but
+FP `/` must reach the FP branch as `fp.div`), and an FP-valued divide carries **no** divisor obligation
+(IEEE `x/0.0` is `±Inf`/NaN, not a thrown `ArithmeticException` — `dischargeObligationUnder` skips it
+silently). With that, `triangle_area(a,h) = a*h/2` ports: the doctest `area(5,3) == 7.5` is exact; positive
+sides prove `result >= 0` (real FP sign reasoning — `a*h/2` is positive-or-`+0`, never NaN); but **not**
+`result > 0` (tiny positive sides underflow `a*h` to `+0.0` — a true IEEE fact, false in exact arithmetic);
+and the formula `result == a*h/2` needs a finiteness `@Requires` (else a NaN input makes even `x == x` false).
 
 ---
 

@@ -1841,6 +1841,9 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (site instanceof DivideSite) {
             DivideSite dv = (DivideSite) site
+            // IEEE-754 division never throws (x / 0.0 == ±Inf/NaN), so an FP-valued divide carries no
+            // divide-by-zero obligation — skip silently (the integer/decimal `b != 0` check doesn't apply).
+            if (dv.node instanceof Expression && enc.isFpValued((Expression) dv.node)) return
             Object divisor = enc.translate(dv.divisor)
             if (divisor == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("division",

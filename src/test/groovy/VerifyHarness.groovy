@@ -42,6 +42,7 @@ class VerifyHarness {
         import verification.Forall
         import verification.Sets
         import verification.Fib
+        import verification.Trib
         import verification.CheckOverflow
     '''.stripIndent()
 
@@ -2955,7 +2956,10 @@ class VerifyHarness {
                         static int f(int n) { Integer.parseInt(Integer.toString(n)) }
                     }''')],
 
-        // ---------- Phase 55: Fibonacci generation via the Fib.of(i) helper ----------
+        // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
+        // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
+        // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also
+        // underpins task 039's prime_fib (whose *outer* search is the deliberate non-target).
         // A literal index unfolds through the step axiom to a concrete value (0,1,1,2,3,5).
         [group: 'P55 fib', name: 'Fib.of(5) == 5', ok: true,
          src: tc('''class C {
@@ -2995,6 +2999,65 @@ class VerifyHarness {
                             return a
                         }
                     }''')],
+
+        // ---------- HumanEval 063 (fibfib): tribonacci via the Trib.of(i) helper ----------
+        // The three-term sibling of 055. `Trib.of` indexing matches HumanEval's fibfib (Trib.of(5)==4,
+        // Trib.of(8)==24); a literal index unfolds through the step axiom (0,0,1,1,2,4,7,13,24).
+        [group: 'P63 fibfib', name: 'Trib.of(8) == 24', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Trib.of(8) == 24 })
+                        static void f() { }
+                    }''')],
+        // Step law at a literal index (positive non-vacuousness anchor; refuting a false claim is the weak direction).
+        [group: 'P63 fibfib', name: 'Trib step law at 7 holds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Trib.of(7) == Trib.of(6) + Trib.of(5) + Trib.of(4) })
+                        static void f() { }
+                    }''')],
+        // The textbook proof: an iterative fibfib provably equals the recursive definition. A 3-wide
+        // rolling window (a==trib(i), b==trib(i+1), c==trib(i+2)); the step axiom re-establishes it across
+        // `c = a + b + c` (e-matching trib(i+3) == trib(i+2)+trib(i+1)+trib(i)). Terminates (`n - i`).
+        [group: 'P63 fibfib', name: 'iterative fibfib equals Trib.of(n)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == Trib.of(n) })
+                        static int fibfib(int n) {
+                            int a = 0
+                            int b = 0
+                            int c = 1
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n &&
+                                         a == verification.Trib.of(i) &&
+                                         b == verification.Trib.of(i + 1) &&
+                                         c == verification.Trib.of(i + 2) })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int t = a + b + c
+                                a = b
+                                b = c
+                                c = t
+                                i = i + 1
+                            }
+                            return a
+                        }
+                    }''')],
+
+        // ---------- HumanEval 045 (triangle_area): scalar IEEE-754 FP (Phase 73) ----------
+        // triangle_area(a, h) = a * h / 2. With `double` inputs this is the FP fragment: the formula
+        // proves, the doctest value 7.5 is exact, and `result >= 0` for positive sides is real FP sign
+        // reasoning (a*h/2 is positive-or-+0, never NaN) — not just the formula restated.
+        [group: 'HE045 triangle_area', name: 'doctest: area(5,3) == 7.5 (exact in FP)', ok: true,
+         src: tc('class C { @Ensures({ result == 7.5d }) static double area() { 5.0d * 3.0d / 2.0d } }')],
+        // The formula `result == a*h/2` is NOT trivially true in IEEE-754: if an input is NaN/∞ the result
+        // is NaN, and NaN != NaN — so even `x == x` fails. With a finiteness guard it holds and proves.
+        [group: 'HE045 triangle_area', name: 'formula: finite sides ⇒ result == a * h / 2', ok: true,
+         src: tc('class C { @Requires({ Double.isFinite(a) && Double.isFinite(h) }) @Ensures({ result == a * h / 2.0d }) static double area(double a, double h) { a * h / 2.0d } }')],
+        [group: 'HE045 triangle_area', name: 'positive sides ⇒ area >= 0 (FP sign reasoning)', ok: true,
+         src: tc('class C { @Requires({ a > 0.0d && h > 0.0d }) @Ensures({ result >= 0.0d }) static double area(double a, double h) { a * h / 2.0d } }')],
+        // Honest FP subtlety: area is NOT provably *strictly* positive — tiny positive sides underflow
+        // a*h to +0.0, so `result > 0` refutes. A real IEEE-754 fact, false in exact arithmetic.
+        [group: 'HE045 triangle_area', name: 'positive sides do NOT guarantee area > 0 (FP underflow)', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Requires({ a > 0.0d && h > 0.0d }) @Ensures({ result > 0.0d }) static double area(double a, double h) { a * h / 2.0d } }')],
 
         // ---------- HumanEval 35 (max_element): the witnessed extremum ----------
         // The spec is BOTH universal and existential: the result is >= every element AND is *equal to*

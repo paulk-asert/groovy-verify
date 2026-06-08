@@ -202,6 +202,14 @@ interface SmtSession extends AutoCloseable {
     Object fib(Object k)
 
     /**
+     * The tribonacci-style function {@code trib(k)} — an uninterpreted {@code Int -> Int} (HumanEval 063
+     * {@code fibfib}). Meaning from base ({@code trib(0)==0}, {@code trib(1)==0}, {@code trib(2)==1}) and
+     * step ({@code ∀k. k>=3 ⟹ trib(k)==trib(k-1)+trib(k-2)+trib(k-3)}) axioms the caller asserts
+     * (mint-once, globally). Recognised from the {@code Trib.of(i)} helper — the three-term sibling of {@code fib}.
+     */
+    Object trib(Object k)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store

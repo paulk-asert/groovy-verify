@@ -2168,6 +2168,34 @@ class Encoder {
         session.fib(kH)
     }
 
+    /** Whether trib's defining axioms have been asserted (mint-once — trib is one global function). */
+    private boolean tribConstrained = false
+
+    /**
+     * The tribonacci function {@code trib(k)} (HumanEval 063 {@code fibfib}), asserting its defining axioms
+     * the first time it is seen: base {@code trib(0)==0} / {@code trib(1)==0} / {@code trib(2)==1}, step
+     * {@code ∀k. k>=3 ⟹ trib(k)==trib(k-1)+trib(k-2)+trib(k-3)}. The three-term sibling of {@link #fibOf}:
+     * the step (triggered on {@code trib(k)}) preserves a generation invariant {@code c == Trib.of(i+2)}
+     * across {@code c = a + b + c} by e-matching to {@code trib(i+3) == trib(i+2)+trib(i+1)+trib(i)}.
+     */
+    Object tribOf(Object kH) {
+        if (!tribConstrained) {
+            tribConstrained = true
+            Object zero = session.intLit(0L), one = session.intLit(1L)
+            Object two = session.intLit(2L), three = session.intLit(3L)
+            session.assertExpr(session.eq(session.trib(zero), zero))
+            session.assertExpr(session.eq(session.trib(one), zero))
+            session.assertExpr(session.eq(session.trib(two), one))
+            Object k = session.boundIntVar('trib$k' + (quantCounter++))
+            Object term = session.trib(k)
+            Object rhs = session.plus(session.plus(session.trib(session.minus(k, one)),
+                                                   session.trib(session.minus(k, two))),
+                                      session.trib(session.minus(k, three)))
+            session.assertExpr(session.forall([k], session.implies(session.ge(k, three), session.eq(term, rhs)), [term]))
+        }
+        session.trib(kH)
+    }
+
     /**
      * For a two-parameter fold closure {@code { a, x -> a OP x }} whose operands are exactly the two
      * parameters (either order), return the operator text when {@code OP} is {@code *} (product) or
@@ -2654,11 +2682,15 @@ class Encoder {
         }
         if (e instanceof UnaryMinusExpression) return isDecimalExpr(((UnaryMinusExpression) e).expression)
         if (e instanceof BinaryExpression) {
-            String t = ((BinaryExpression) e).operation.text
-            if (t == '/') return true   // Groovy: `/` on integers is BigDecimal division
+            BinaryExpression be = (BinaryExpression) e
+            String t = be.operation.text
+            if (t == '/') {
+                // Groovy `/` on int/BigDecimal operands is BigDecimal (Real) division. But `double`/`float`
+                // operands make it IEEE-754 FP division — defer to the FP branch, not the Real path.
+                return !(isFpValued(be.leftExpression) || isFpValued(be.rightExpression))
+            }
             if (t == '+' || t == '-' || t == '*') {
-                return isDecimalExpr(((BinaryExpression) e).leftExpression) ||
-                       isDecimalExpr(((BinaryExpression) e).rightExpression)
+                return isDecimalExpr(be.leftExpression) || isDecimalExpr(be.rightExpression)
             }
         }
         false
@@ -3157,6 +3189,15 @@ class Encoder {
         if (m == 'of' && isFib && args.size() == 1) {
             Object k = translate(args.get(0))
             return k == null ? null : fibOf(k)
+        }
+
+        // Trib.of(i) — the tribonacci spec helper (HumanEval 063 fibfib), lowered to the trib$ primitive.
+        boolean isTrib = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Trib') ||
+                         (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Trib') ||
+                         (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Trib')
+        if (m == 'of' && isTrib && args.size() == 1) {
+            Object k = translate(args.get(0))
+            return k == null ? null : tribOf(k)
         }
 
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
