@@ -68,17 +68,23 @@ rather than a separate build tool. The cross-language picture: Dafny (new langua
 (Ada subset), Verus/Prusti (Rust), Frama-C/ACSL (C), OpenJML/KeY (Java), groovy-verify
 (Groovy/JVM).
 
-**Loudly partial, not silently sound.** Verification is sound *within* a deliberately small
-**fragment** — the subset of Groovy it can model — and **loudly unsound outside it**: anything the
-encoder can't model emits a "skipped: outside fragment" diagnostic, never passes silently. Specific gaps are named per
-capability (the "deferred"/"residual" notes in the [capability table](#whats-demonstrated) and the
-[ROADMAP](ROADMAP.md)); 32-bit integer overflow is covered opt-in via `@CheckOverflow` (Verus
-parity); heap aliasing has a **deliberately drawn boundary** — *flat object fields* are modelled (two
-references' fields are identity-keyed, so a write through one is seen through another exactly when they are
-the same object, `a === b`), while the *shape* of object graphs — reachability, linked structures, separation
-logic — stays an explicit [non-goal](ROADMAP.md). The failure mode the verifier family fears most is a silent *vacuous*
-pass — a "proof" that succeeds only because its assumptions can never all hold, so it proves nothing.
-Saying *loudly partial* directly is the credible position, and it's the one this tool holds.
+**Loudly partial, not silently sound.** Verification is sound *within* a deliberately **modest
+fragment** — the subset of Groovy it models, grown not by size but by *alignment with the proofs people
+actually write* — and **loudly unsound outside it**: anything the encoder can't model emits a "skipped:
+outside fragment" diagnostic, never passes silently. The failure
+mode the verifier family fears most is a silent *vacuous* pass — a "proof" that succeeds only because its
+assumptions can never all hold, so it proves nothing. Saying *loudly partial* directly is the credible
+position, and it's the one this tool holds.
+
+**Known limitations — named, not hidden.** Consistent with that, every gap is called out: per capability
+in the "deferred"/"residual" notes of the [capability table](#whats-demonstrated), and as the
+[ROADMAP](ROADMAP.md)'s non-goals. Three boundaries are worth stating up front. **32-bit overflow** is
+**opt-in** via `@CheckOverflow` (Verus parity) — by default integers are unbounded mathematical values.
+**Floating point** is a *straight-line* IEEE-754 sub-fragment (bit-exact NaN / ±∞ / rounding, plus
+`Math.sqrt`/`abs`), but FP loops and the transcendentals stay out. **Heap aliasing** has a deliberately
+drawn line — *flat object fields* are modelled (two references' fields are identity-keyed, so a write
+through one is seen through another exactly when they are the same object, `a === b`), while the *shape* of
+object graphs — reachability, linked structures, separation logic — stays an explicit non-goal.
 
 **Depth that vouches for the architecture.** A fully verified in-place insertion sort
 (*sorted ∧ permutation*) under sound `@Modifies` framing, and a DFS over a functional graph
@@ -1286,9 +1292,12 @@ the artifact carries Z3 (via z3-turnkey, native libs bundled) on the compile cla
 
 ## The fragment
 
-Verification is sound *within* a deliberately small fragment and **loudly
+Verification is sound *within* a deliberately **modest** fragment and **loudly
 unsound outside it**: anything the encoder cannot model emits a "skipped"
-warning rather than passing silently. In expressions the fragment is:
+warning rather than passing silently. It is modest by *intent*, not by size — the
+bullets below were each chosen because they line up with proofs people actually
+write (bounds, aggregation, sortedness, state machines, recurrences), not to chase
+a coverage metric. In expressions the fragment is:
 
 - integer `+`, `-`, `*` (variable products dispatch to Z3's NIA solver under a per-VC timeout, with
   closed subterms folded first; Phase 48), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
