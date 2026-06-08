@@ -92,6 +92,16 @@ class Encoder {
     final SmtSession session
     /** Variable name in source scope -> SMT handle. */
     private final Map<String, Object> env = [:]
+    /**
+     * Phase 75 — stream-{@code every} call nodes (by identity) sitting in <em>positive</em> polarity of
+     * the proof goal currently being translated (set by {@link #translateGoal}). The unbounded-stream
+     * induction encoding ({@code base ∧ step}) is only <em>sound</em> when proven, not when assumed, so
+     * it fires only for nodes in this set; elsewhere an unbounded stream {@code every} skips loudly.
+     */
+    private final Set<Expression> goalPositiveEvery =
+        java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Expression, Boolean>())
+    /** Max element count for the bounded-unroll path; a larger / symbolic limit takes the induction path. */
+    private static final int STREAM_UNROLL_CAP = 256
     /** Cache of size-oracle constants, keyed by their SMT name. */
     private final Map<String, Object> sizeEnv = [:]
     /** Cache of nullity-oracle booleans, keyed by reference name. */
@@ -3190,6 +3200,11 @@ class Encoder {
         // range/indices/collection shapes become quantifiers; any other `every` returns
         // null and falls through to a loud "outside fragment" skip.
         if ((m == 'every' || m == 'any') && args.size() == 1 && args.get(0) instanceof ClosureExpression) {
+            // Phase 75 — `iterate(seed, f).limit(n).every{ P }` over an infinite stream/iterator: a
+            // property you cannot test (a true `every` over an unbounded source never returns), proved
+            // by unrolling (literal limit) or by induction (unbounded). Tried before the collection forms.
+            Object streamQ = translateStreamEvery(mce, recv, (ClosureExpression) args.get(0), m == 'any')
+            if (streamQ != null) return streamQ
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
         }
@@ -3711,6 +3726,197 @@ class Encoder {
 
     private static List<Expression> ctorArgList(ConstructorCallExpression cce) {
         Expression a = cce.arguments
+        if (a instanceof ArgumentListExpression) return ((ArgumentListExpression) a).expressions
+        if (a instanceof TupleExpression) return ((TupleExpression) a).expressions
+        return Collections.<Expression> emptyList()
+    }
+
+    /**
+     * Translate a postcondition as a <em>proof goal</em> (as opposed to an assumption). Walks the goal to
+     * mark the positive-polarity stream-{@code every} nodes, so the unbounded-stream induction encoding —
+     * which is stronger than the {@code every} it stands for, hence sound only when proven, not assumed —
+     * may fire for exactly those. Cleared afterwards so ordinary (assumption) translations never see it.
+     */
+    Object translateGoal(Expression e) {
+        goalPositiveEvery.clear()
+        markPositiveEvery(e, true)
+        try {
+            return translate(e)
+        } finally {
+            goalPositiveEvery.clear()
+        }
+    }
+
+    /**
+     * Polarity walk: record the stream-{@code every} call nodes reachable in <em>positive</em> polarity.
+     * Positive polarity is preserved through {@code &&}/{@code ||} and the consequent of {@code ==>};
+     * flipped by {@code !} and the antecedent of {@code ==>}. Any other construct (comparisons, ternary
+     * condition, method arguments, …) is treated as polarity-indeterminate and stops the walk — so the
+     * stronger induction encoding is only ever used where it is genuinely sound.
+     */
+    private void markPositiveEvery(Expression e, boolean positive) {
+        if (e == null) return
+        if (positive && isStreamEveryCall(e)) goalPositiveEvery.add(e)
+        if (e instanceof NotExpression) {
+            markPositiveEvery(((NotExpression) e).expression, !positive)
+        } else if (e instanceof BooleanExpression) {
+            markPositiveEvery(((BooleanExpression) e).expression, positive)
+        } else if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            int op = be.operation.type
+            if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
+                markPositiveEvery(be.leftExpression, positive)
+                markPositiveEvery(be.rightExpression, positive)
+            } else if (be.operation.text == '==>') {
+                markPositiveEvery(be.leftExpression, !positive)   // antecedent flips
+                markPositiveEvery(be.rightExpression, positive)
+            }
+            // other binary ops (comparisons, etc.) are not boolean-goal positions — stop here.
+        } else if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            markPositiveEvery(te.trueExpression, positive)
+            markPositiveEvery(te.falseExpression, positive)
+        }
+    }
+
+    /** True if {@code e} is {@code <iterate-source>[.limit/.take(n)].every|any{ … }} — an infinite-stream quantifier. */
+    private boolean isStreamEveryCall(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mc = (MethodCallExpression) e
+        String m = mc.methodAsString
+        if (m != 'every' && m != 'any') return false
+        List<Expression> a = argList(mc)
+        if (a.size() != 1 || !(a.get(0) instanceof ClosureExpression)) return false
+        return parseStreamSource(unwrapImmutableWrap(mc.objectExpression)) != null
+    }
+
+    /**
+     * Recognise an {@code iterate(seed, f)[.limit(n)|.take(n)]} chain — the generator shape behind an
+     * infinite {@code Stream}/iterator. Returns {@code [seed, fClosure, limitExpr-or-null]}, or null.
+     * The holder of {@code iterate} is not pinned (works for {@code Stream}/{@code IntStream}/a GDK
+     * iterator); we key on the method shape: {@code iterate(seed, oneArgClosure)}.
+     */
+    private Expression[] parseStreamSource(Expression recv) {
+        if (recv == null) return null
+        Expression inner = recv
+        Expression limit = null
+        if (recv instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) recv
+            String m = mc.methodAsString
+            if (m == 'limit' || m == 'take') {
+                List<Expression> la = argList(mc)
+                if (la.size() == 1) { limit = la.get(0); inner = unwrapImmutableWrap(mc.objectExpression) }
+            }
+        }
+        String im = null
+        List<Expression> ia = null
+        if (inner instanceof MethodCallExpression) {
+            im = ((MethodCallExpression) inner).methodAsString
+            ia = argList((MethodCallExpression) inner)
+        } else if (inner instanceof StaticMethodCallExpression) {
+            im = ((StaticMethodCallExpression) inner).method
+            ia = exprsOf(((StaticMethodCallExpression) inner).arguments)
+        }
+        if (im != 'iterate' || ia == null || ia.size() != 2 || !(ia.get(1) instanceof ClosureExpression)) return null
+        return [ia.get(0), ia.get(1), limit] as Expression[]
+    }
+
+    /**
+     * Translate {@code iterate(seed, f).limit(n).every|any{ P }} (Phase 75). A {@code .limit(n)}/{@code .take(n)}
+     * is <em>required</em> (see the runtime-termination note in the body); given one, two regimes:
+     * <ul>
+     *   <li><b>bounded unroll</b> — a literal {@code .limit(N)} (N ≤ {@link #STREAM_UNROLL_CAP}) expands to
+     *       {@code ⋀ₖ P(fᵏ(seed))} (or {@code ⋁} for {@code any}); an <em>exact</em> equivalence — it proves
+     *       exactly the bounded contract the runtime checks, and a failing element gives a counterexample.</li>
+     *   <li><b>induction</b> — a <em>symbolic</em> or large limit: {@code every{P}} becomes
+     *       {@code P(seed) ∧ ∀x. (P(x) ⟹ P(f(x)))} — base + preservation, the same induction the loop VCs do.
+     *       This proves P for <em>all</em> elements (hence for the runtime's actual {@code n}, whatever it is) —
+     *       the verifier reaching past the runtime's spot-check depth. It is <em>stronger</em> than the bounded
+     *       {@code every} (sufficient, not necessary), so it is emitted only in positive goal position
+     *       ({@link #goalPositiveEvery}); {@code any} (an existential) is not provable this way and skips.</li>
+     * </ul>
+     * Int-element streams only (a decimal/FP seed skips). Returns null (loud skip / fall-through) otherwise.
+     */
+    private Object translateStreamEvery(MethodCallExpression mce, Expression recv, ClosureExpression pred, boolean existential) {
+        Expression[] src = parseStreamSource(recv)
+        if (src == null) return null
+        Expression seed = src[0]
+        ClosureExpression f = (ClosureExpression) src[1]
+        Expression limit = src[2]
+        if (isDecimalExpr(seed) || isFpValued(seed)) return null   // Int-element streams only, this slice
+
+        // Dual runtime+verify: groovy-contracts compiles this contract into an *eager* runtime assert, so a
+        // terminal `every`/`any` over an unbounded source would loop forever at runtime (a true `every`
+        // never short-circuits). We therefore require a `.limit(n)`/`.take(n)` bound — that is what lets the
+        // contract degrade to a terminating runtime spot-check. Without one, skip loudly (it must not be
+        // blessed as a verified-but-hanging contract). The bound's *value* is the runtime's spot-check
+        // depth; the verifier still proves far beyond it (all elements, by induction below).
+        if (limit == null) return null
+
+        Integer litN = constIntLimit(limit)
+        if (litN != null && litN >= 0 && litN <= STREAM_UNROLL_CAP) {
+            // Bounded unroll — exact.
+            Object cur = translate(seed)
+            if (cur == null) return null
+            List<Object> terms = new ArrayList<Object>()
+            for (int k = 0; k < litN; k++) {
+                Object pk = evalClosure(pred, cur)
+                if (pk == null) return null
+                terms.add(pk)
+                if (k < litN - 1) {
+                    cur = evalClosure(f, cur)
+                    if (cur == null) return null
+                }
+            }
+            if (terms.isEmpty()) {                       // limit(0): empty stream — every⇒true, any⇒false
+                Object tru = session.le(session.intLit(0L), session.intLit(0L))
+                return existential ? session.not(tru) : tru
+            }
+            return existential ? session.or(terms) : session.and(terms)
+        }
+
+        // Induction — symbolic / large limit (runtime checks the actual n; we prove all elements).
+        // Universal only, positive goal only.
+        if (existential) return null
+        if (!goalPositiveEvery.contains(mce)) return null
+        Object seedTerm = translate(seed)
+        if (seedTerm == null) return null
+        Object base = evalClosure(pred, seedTerm)                 // P(seed)
+        if (base == null) return null
+        Object x = session.boundIntVar('gvStream$' + (quantCounter++))
+        Object px = evalClosure(pred, x)                          // P(x)
+        Object fx = evalClosure(f, x)                             // f(x)
+        if (px == null || fx == null) return null
+        Object pfx = evalClosure(pred, fx)                        // P(f(x))
+        if (pfx == null) return null
+        Object step = session.forall([x], session.implies(px, pfx), new ArrayList<Object>())
+        return session.and([base, step])
+    }
+
+    /** Evaluate a one-parameter closure body with its parameter bound to {@code argTerm} (an SMT handle). */
+    private Object evalClosure(ClosureExpression clo, Object argTerm) {
+        String p = closureParamName(clo)
+        Expression body = singleExprOf(clo?.code)
+        if (p == null || body == null || argTerm == null) return null
+        Object prev = env.get(p)
+        env.put(p, argTerm)
+        try {
+            return translate(body)
+        } finally {
+            if (prev == null) env.remove(p) else env.put(p, prev)
+        }
+    }
+
+    /** The literal int value of a {@code .limit(n)} argument, or null for an absent / non-literal (symbolic) bound. */
+    private static Integer constIntLimit(Expression limit) {
+        if (limit == null) return null
+        if (limit instanceof ConstantExpression && ((ConstantExpression) limit).value instanceof Number) {
+            return ((Number) ((ConstantExpression) limit).value).intValue()
+        }
+        null
+    }
+
+    private static List<Expression> exprsOf(Expression a) {
         if (a instanceof ArgumentListExpression) return ((ArgumentListExpression) a).expressions
         if (a instanceof TupleExpression) return ((TupleExpression) a).expressions
         return Collections.<Expression> emptyList()

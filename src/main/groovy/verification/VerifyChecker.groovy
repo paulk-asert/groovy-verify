@@ -2782,7 +2782,7 @@ class VerifyChecker extends TypeCheckingExtension {
             // the message based on which obligations are in play.
             List<Object> conjuncts = new ArrayList<Object>()
             if (postAst != null) {
-                Object post = enc.translate(postAst)
+                Object post = enc.translateGoal(postAst)
                 if (post == null) {
                     throw new UnsupportedConstructException(
                         "postcondition '${postAst.text}' is outside fragment")
@@ -3576,7 +3576,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Object resH = enc.translate(ex.result)
             if (resH != null) enc.bind('result', resH)
             aliasResultToReturnedListLocal(s, enc, ex.result)
-            Object post = enc.translate(postAst)
+            Object post = enc.translateGoal(postAst)
             if (post == null) {
                 addStaticTypeError(Reporter.formatPostconditionSkipped(node.name,
                     "early-exit postcondition is outside fragment"), ex.node)

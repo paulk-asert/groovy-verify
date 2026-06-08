@@ -4144,6 +4144,54 @@ existing list machinery), plus a list-to-list `==` fold; non-constant or charact
 
 ---
 
+## Phase 75 — infinite-stream `every` / `any`: the property you can't test  *(shipped)*
+
+The sharpest motivation for a verifier the project has: a property of an **infinite stream** cannot be
+tested — a true `every` over an unbounded `Stream.iterate(seed, f)` *never returns* (a passing test would be
+a hang). The only way to know every element is even is to **prove** it. And `iterate` is a loop in disguise
+(`s(0)=seed, s(k+1)=f(s(k))`), so `.every{P}` over it is a loop invariant — the proof is induction, the same
+base + preservation the loop VCs already do.
+
+**Dual runtime+verify forces a bound.** These contracts stay dual — the same `@Ensures` is compiled by
+groovy-contracts into an *eager* runtime assert — so a terminal `every`/`any` over an unbounded source would
+loop forever at runtime (a true `every` never short-circuits). So a `.limit(n)`/`.take(n)` is **required**:
+it is what lets the contract degrade to a *terminating* runtime spot-check. An unbounded terminal `every`
+(no bound) is **not** blessed as verified — it skips loudly (the seed of the Phase 76 termination check),
+nudging the developer to add a bound. The bound's *value* is the runtime's spot-check depth; the verifier
+reaches far past it.
+
+`translateMethodCall` recognises `iterate(seed, f).limit(n).every|any{ P }` — the `iterate` holder is not
+pinned (works for `Stream`/`IntStream`/a GDK iterator); the shape `iterate(seed, oneArgClosure)` is the key.
+The closure parameter is bound to an SMT term via the `env` map and the body re-`translate`d (no AST
+substitution). Given the required bound, **two regimes:**
+
+- **Bounded unroll** — a literal `.limit(N)` (`N ≤ 256`) expands to `⋀ₖ P(fᵏ(seed))` (or `⋁` for `any`). An
+  *exact* equivalence — proves exactly the bounded contract the runtime checks; a failing element is a
+  counterexample. `iterate(0){ n+2 }.limit(10).every{ even }` proves; `.any{ it == 6 }` finds the witness.
+- **Induction** — a *symbolic* (or large) `.limit(n)`: `every{P}` becomes `P(seed) ∧ ∀x. (P(x) ⟹ P(f(x)))`
+  — base + preservation. The runtime checks the actual `n`; the verifier proves P for **every** element
+  (hence for any `n`) — reaching past the runtime's depth. So `iterate(0){ k+2 }.limit(n).every{ even }`
+  proves all even, and `iterate(0){ (k+1)%10 }.limit(n).every{ 0 <= it < 10 }` proves the stream is
+  **bounded for all elements** — hence its `+1` never overflows, a fact about element 2³¹ no test can reach.
+  Honest negatives: a monotone `iterate(0){ k+1 }` has no finite bound and is *refused*, and the base case
+  bites (an odd seed refutes "all even" even though `×2` preserves evenness).
+
+**Soundness — the polarity gate.** `base ∧ step` is *stronger* than the `every` it stands for (sufficient,
+not necessary): sound to **prove**, unsound to **assume**. So the induction encoding fires only for
+stream-`every` nodes in **positive goal position** — `translateGoal` (called at the two postcondition-proof
+sites) runs a polarity walk (`markPositiveEvery`: preserved through `&&`/`||` and an `==>` consequent,
+flipped by `!`/`==>` antecedent, stopped elsewhere) and records the positively-placed nodes; everywhere else
+(assumptions, negated positions) the stream-`every` is not strengthened and simply degrades to its runtime
+check rather than risk a wrong verify. The bounded-unroll regime, being exact, needs no gate. `any` under a
+symbolic limit is an existential that induction can't establish, so it skips. Int-element streams only this slice.
+
+**Still out of fragment:** decimal/FP-element streams; stateful `generate(supplier)` (impure); and the
+Phase 76 **termination** overlay — turning the unbounded-`every` skip into a first-class diagnostic
+("infinite source consumed without `.limit`/`.take` — would not terminate; add a bound"), and proving the
+3-arg `iterate(seed, hasNext, next)` *terminates* via a `@Decreases`-style variant.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
