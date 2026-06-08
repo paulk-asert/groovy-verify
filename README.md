@@ -134,7 +134,7 @@ static int countUp(int n) {
     int i = 0
     @Invariant({ 0 <= i && i <= n })
     @Decreases({ n - i })
-    while (i < n) { i = i + 1 }
+    while (i < n) { i++ }
     return i
 }
 ```
@@ -152,7 +152,7 @@ static int total(List<Integer> xs) {
     int i = 1
     @Invariant({ 1 <= i && i <= xs.size() && s == xs[0..<i].sum() })
     @Decreases({ xs.size() - i })
-    while (i < xs.size()) { s = s + xs[i]; i = i + 1 }
+    while (i < xs.size()) { s += xs[i]; i++ }
     return s
 }
 ```
@@ -161,6 +161,50 @@ Under the hood the solver is told just two facts about `sum` — the sum of an e
 extending a range by one element adds that element — which is exactly enough to prove the body's
 `s = s + xs[i]` keeps `s == xs[0..<i].sum()` true on every iteration. (The non-empty guard reflects a
 real Groovy semantic: `[].sum()` is `null`, not `0`.)
+
+**Loops aren't just `while` — `for`/`for-in`, with per-element invariants.** A `for (x in xs)` iterates the
+collection directly, and its `@Invariant` can carry *two kinds* of clause at once: an ordinary **accumulator**
+clause checked at the loop head (`s >= 0`), and a **per-element** clause checked at body-entry with `x` bound
+to the current element (`x >= 0`) — exactly the per-element check groovy-contracts runs at runtime. Here the
+element clause discharges straight from the precondition `xs.every { it >= 0 }`, and together they prove the
+running total never goes negative:
+
+```groovy
+@Requires({ xs.every { it >= 0 } })
+@Ensures({ result >= 0 })
+static int sumAll(List<Integer> xs) {
+    int s = 0
+    @Invariant({ s >= 0 && x >= 0 })
+    for (x in xs) { s += x }
+    s
+}
+```
+
+The per-element clause is correctly **vacuous on an empty collection** — the body never runs, so a clause that
+couldn't be proven of an arbitrary element still verifies when the precondition forces `xs` empty (fixing a
+false positive the old loop-head check hit on the never-iterated case). Classic `for (i = 0; i < n; i++)` and
+the Java-style `for (int x : xs)` lower through the same machinery. (For *index*-arithmetic invariants like the
+prefix-sum `xs[0..<i].sum()` above, reach for `while`/`for(;;)` — the for-in's iteration index is synthesised
+and not in scope; for-in's strength is exactly this **per-element** reasoning.)
+
+**A property you can't even test — proven anyway.** `Stream.iterate(seed, f)` is *infinite*: a true
+`.every { … }` over it never returns, so this is a contract you fundamentally cannot unit-test. Because the
+spec stays **dual** (it also runs at runtime via groovy-contracts), a `.limit(n)` is required so the runtime
+check terminates — but the verifier proves the property for *every* element, by the very base-case +
+preservation step the loops above use (`P(seed)` and `∀x. P(x) ⟹ P(f(x))`):
+
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ Stream.iterate(0, { k -> (k + 1) % 10 }).limit(n).every { int v -> v >= 0 && v < 10 } })
+static void wheel(int n) { }
+```
+
+A literal `.limit(10)` would instead **unroll** to the exact ten-element conjunction the runtime spot-checks;
+a *symbolic* `.limit(n)` like this one proves it for **all** elements — so the `(k + 1)` here is proven to
+*never overflow*, a fact about the two-billionth element that no test could reach. The honesty cuts both ways:
+a monotone `iterate(0){ k + 1 }` counter has *no* finite bound, so a `< 1_000_000` claim is **refused** rather
+than silently accepted, and a terminal `.every` with no `.limit` at all **skips loudly** instead of blessing a
+contract that would hang at runtime.
 
 **Properties over whole arrays — in the idiom you'd already write.** This is how you turn a *latent*
 assumption like "this method only works on a sorted array" into one the compiler enforces — so passing

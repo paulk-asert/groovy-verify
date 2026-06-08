@@ -886,7 +886,7 @@ class VerifyHarness {
                            int i = 0
                            @Invariant({ 0 <= i && i <= n })
                            @Decreases({ n - i })
-                           while (i < n) { i = i + 1 }
+                           while (i < n) { i++ }
                            return i
                        }
                    }''')],
@@ -2794,8 +2794,8 @@ class VerifyHarness {
                             @Invariant({ 1 <= i && i <= xs.size() && s == xs[0..<i].sum() })
                             @Decreases({ xs.size() - i })
                             while (i < xs.size()) {
-                                s = s + xs[i]
-                                i = i + 1
+                                s += xs[i]
+                                i++
                             }
                             return s
                         }
@@ -5687,8 +5687,8 @@ class VerifyHarness {
                        static int total(List<Integer> xs) {
                            int s = 0
                            @Invariant({ s >= 0 && x >= 0 })
-                           for (x in xs) { s = s + x }
-                           return s
+                           for (x in xs) { s += x }
+                           s
                        }
                    }''')],
         // Empty-collection vacuity: a per-element invariant that would be unprovable on an arbitrary
