@@ -926,6 +926,37 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- Phase 89 (slice 1): reference identity + identity-keyed field reads ----------
+        // Two same-class object params are "alias-modelled": their Int fields read through a per-(class,field)
+        // heap map indexed by object identity, so `a.is(b)`/`a === b` (identity equality) makes the fields
+        // provably coincide. Here `a.is(b)` ⇒ a.balance == b.balance ⇒ a.balance + b.balance == 2 * a.balance.
+        [group: 'P89 ref-identity', name: 'a.is(b) ⇒ fields coincide (identity model)', ok: true,
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Requires({ a.is(b) })
+                        @Ensures({ result == 2 * a.balance })
+                        static int twice(Account a, Account b) { a.balance + b.balance }
+                    }''')],
+        // The `===` operator form, as a pure model tautology: equal identities ⇒ equal field reads.
+        [group: 'P89 ref-identity', name: 'a === b ==> a.balance == b.balance', ok: true,
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Ensures({ (a === b) ==> (a.balance == b.balance) })
+                        static void f(Account a, Account b) { }
+                    }''')],
+        // Without the identity assumption the two references may differ — so `result == 2 * a.balance`
+        // is NOT provable (b.balance is unconstrained relative to a.balance). Refutes.
+        [group: 'P89 ref-identity', name: 'no identity ⇒ fields need not coincide (refuted)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class Account { int balance }
+                    @TypeChecked(extensions = 'verification.VerifyChecker')
+                    class C {
+                        @Ensures({ result == 2 * a.balance })
+                        static int twice(Account a, Account b) { a.balance + b.balance }
+                    }''')],
+
         // ---------- Regression: loops ----------
         [group: 'regression loop', name: 'countUp verified', ok: true,
          src: tc('''class C {

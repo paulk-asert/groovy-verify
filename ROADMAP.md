@@ -4519,6 +4519,135 @@ the Euclid bounds invariant `x ≥ 0 ∧ y ≥ 0` on entry, counterexample `a = 
 
 ---
 
+## Phase 88 — `do … while` body-runs-once semantics (a soundness fix)  *(shipped)*
+
+`do B while (G)` is semantically `B; while (G) B` — the body executes once **unconditionally** before the
+first guard test. The loop machinery (Phases 7/59/63) had recognised the do-while *guard* but otherwise ran
+the **plain `while` VCs**: establishment checked the invariant at loop *entry* (before the body). That was
+**silently unsound**. Counterexample (caught by a probe, now a regression test):
+
+```groovy
+@Requires({ n == 0 }) @Ensures({ result == 0 })
+static int f(int n) {
+    int i = 0
+    @Invariant({ i == 0 })          // holds at entry (i==0)…
+    @Decreases({ n - i })
+    do { i++ } while (i < n)        // …but the body runs once → i==1 → result is 1, not 0
+    return i
+}
+```
+
+At `n == 0` the while-model reasons: establishment `i==0` holds at entry ✓; preservation is **vacuous**
+(`i==0 ∧ i<0` is unsatisfiable, so the guard is never true); exit `I ∧ ¬G` pins `i==0` → it **proved**
+`result == 0`, which is false at runtime. Pure silent unsoundness — the worst failure mode for this project.
+
+**The fix** (small and surgical): `LoopSpec.isDoWhile` is set in `ContractExpansionTransform` (the loop is a
+`DoWhileStatement`), and `checkEstablishment` runs the body **once** (`symExecBodyWithExits`, no guard
+assumed) before checking the invariant — so the invariant is required to hold *after* the mandatory first
+iteration. Preservation / progress / use (the residual `while`) are **unchanged** — that's the whole point of
+the `B; while (G) B` decomposition. The establishment diagnostic is now do-while-aware ("Cannot prove loop
+invariant holds **after the do-while's first iteration**"), since for a do-while the invariant may legitimately
+hold on entry yet fail post-body. The fix both **closes the soundness hole** (the `f` above is now rejected at
+establishment) and **enables** correct body-first loops: `@Invariant({ 1 <= i && i <= n })` on a `do { i++ }
+while (i < n)` verifies (the `1 <= i` clause is false at entry but true after the first `i++`), proving
+`result == n` — which the old pre-body establishment would have wrongly rejected.
+
+**Still out:** an early `return` *inside* a do-while body on the first iteration interacts with the early-exit
+machinery (Phase 49) imprecisely (sound — it skips/rejects, never mis-verifies); nested loops are still one
+annotated loop per method.
+
+---
+
+## Phase 89 — Reference identity + identity-keyed field maps  *(slice 1 shipped; writes proposed)*
+
+**Status:** **slice 1 — reference identity (`===` / `!==` / `.is()`) + identity-keyed field *reads* — is
+shipped**; field *writes* / the `transfer` mutator are **slice 2 (proposed)**, below. A **contained** revisit
+of the Heap / aliasing non-goal (below) — the *flat-field* slice of it, with a boundary that can be stated in
+one sentence. This carves out the part of aliasing that pays back (two-object mutators, frame soundness under
+sharing) while explicitly leaving the part that doesn't (object-graph shape, reachability, separation logic).
+
+**Slice 1 (shipped).** An object parameter whose class is shared by *another* object parameter is
+*alias-modelled*: its Int fields read through a per-`(class, field)` map indexed by the object's identity
+(`select(f$, id(a))`), and `a === b` / `a.is(b)` lowers to `id(a) == id(b)`. So `a.is(b) ⟹ a.f == b.f` is
+provable (array congruence) and refuted without it. Single-object-param (and distinct-class) methods keep the
+per-name `b$field` model untouched — **zero regression** — and the bare-field path used to assume a foreign
+class invariant (Phase 45) is identity-keyed for alias-modelled receivers too, so an assumed `count >= 0`
+still constrains the map read. Implementation: `Encoder.isAliasModeled` / `objId` / `fieldMap`; the read
+hooks in `varFor` (bare field under a receiver) and the explicit `recv.field` translation; `===`/`!==` in
+`translateBinary` and `.is()` in `translateMethodCall`. Read-only and Int-field-only by design.
+
+**Slice 2 (proposed) — field writes / `transfer`.** Body assignment `a.f = v` becomes `f$ = store(f$, id(a), v)`
+(SSA on the field-map), `old(a.f)` snapshots the field-map at entry, and `@Modifies` frames which
+`(field-map, identity)` cells may change. That is what lights up the headline `transfer` proof (verifies when
+`!from.is(to)`, refutes under aliasing). It is deferred because it touches `BodyEncoder`/`old`/`@Modifies`,
+whereas slice 1 is a self-contained read-side change.
+
+**The problem it removes.** Today a foreign-receiver field `b.field` translates to a *per-name* SMT entity
+`b$field` (`Encoder.groovy:208`), "sound only under the no-aliasing assumption" (`:209`). Two references of
+the same type therefore become two distinct variables — the verifier *silently* treats them as different
+objects. So a write through `a` can never be observed through `b`, and any multi-object method built on the
+per-name scheme would bake in disjointness: `transfer(x, x)` would mis-verify. That is the same
+looks-fine/is-silently-unsound shape Phase 88 (`do-while`) turned out to have, so the fix is to build
+multi-object support correctly *from the start* rather than patch it later.
+
+**The encoding — the heap is one array per field, keyed by object identity** (reuses the array theory already
+used for collections; no new solver capability):
+
+| construct | encoding |
+|---|---|
+| object reference `a` | an opaque identity `id(a)` — an `Int` (or uninterpreted-sort) constant |
+| field read `a.f` | `select(f$, id(a))`, where `f$ : ObjId → T` is *the* map for field `f` of that class |
+| field write `a.f = v` | `f$' = store(f$, id(a), v)` |
+| `a === b` / `a.is(b)` | `id(a) == id(b)` (and `!=` for `!==`) |
+| `new C()` | a fresh `id` distinct from every live identity (the fresh-set-element trick) |
+| two params `a, b` of the same class | identities **unconstrained** — the solver weighs *both* the aliased and the disjoint case |
+
+Aliasing then falls out for free: `a.f` and `b.f` are `select(f$, id_a)` / `select(f$, id_b)`, equal **iff**
+`id_a == id_b`. A `@Requires({ !from.is(to) })` adds `id_from != id_to` and the disjoint proof closes; without
+it, the aliased model is live and a method that breaks under aliasing is **refuted**.
+
+**VC / framing changes** (all extensions of existing machinery, no new theory):
+- field read/write translation moves from the per-name `b$field` entity to `select`/`store` on `f$`;
+- `old` snapshots the *whole* field-map `f$` (as it already snapshots array contents for collections);
+- `@Modifies({ from.balance, to.balance })` frames *which `(field-map, identity)` cells* may change — the
+  caller havocs `balance$` only at `{id_from, id_to}` and leaves every other field-map and cell intact;
+- `new C()` mints a fresh identity asserted distinct from all in-scope references;
+- method parameters of the same class start with **unconstrained** identities (aliasing is not assumed away).
+
+**Worked example — proves when disjoint, refutes under aliasing** (impossible to express today):
+
+```groovy
+@Requires({ !from.is(to) && from.balance >= amt && amt >= 0 })
+@Modifies({ [from.balance, to.balance] })
+@Ensures({ from.balance == old(from.balance) - amt && to.balance == old(to.balance) + amt })
+void transfer(Account from, Account to, int amt) { from.balance -= amt; to.balance += amt }
+```
+
+With `id_from != id_to` the two `store`s don't interfere → it **verifies**. Drop the `!from.is(to)`
+precondition and the verifier returns the aliasing counterexample (`from === to`: balance ends at
+`old − amt + amt = old`, not `old − amt`) → it **refutes** — a refutation the current per-name model cannot
+produce (it would wrongly verify).
+
+**What it unlocks:** two-object mutators (`transfer`, `swap`, `merge`), `@Modifies` framing that is honest
+under sharing, "mutate via one handle / observe via another", reflexivity facts (`a === b ⟹ a.f == b.f`), and
+"requires distinct inputs" specs — across object *parameters*, `this`, and `new`-minted objects.
+
+**The boundary (one sentence, easy to teach):** *each field is a flat map from object identity to value; two
+references alias exactly when `a === b`; we model field read/write, reference equality, and `new` freshness —
+but not the* shape *of object graphs.* Concretely **out:** object-pointer linked structures (`next`/`left`/
+`right`) and any reachability / "everything reachable from `x`" / separation reasoning (use an index array
+like the Phase 16–26 DFS does); quantifying over *all* objects (`∀ obj. P(obj.f)`) — the moment you need that,
+you are in separation-logic territory, which stays a non-goal. Collections of mutable objects are a follow-on
+(a `List<C>` becomes `ObjId`-valued, composing this with the existing array model).
+
+**Cost / risk.** Touches the field-translation core (the `b$field` path) and makes `@Modifies`/`old`/havoc
+per-`(field, identity)` rather than per-name — a real phase, not an afternoon, though every piece reuses the
+array/`old`/framing machinery already shipped. The discipline that keeps it a *slice* and not a slippery
+slope: only *named* references and `new` get identities; no `∀`-over-objects. Value-to-cost is high precisely
+because it also closes a latent soundness gap, not just adds expressiveness.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -4538,12 +4667,16 @@ Things deliberately not pursued, because they don't pay back:
   `PurityChecker`/`ModifiesChecker` can verify the purity our pure-function evaluation (Phase 8a) and
   `@Modifies` framing (Phase 13) assume.
 - **Concurrency.** No race detection, no dataflow reasoning. A different tool.
-- **Heap / aliasing.** The fragment models collection state as value-semantics — every `@Modifies`
-  havoc is per-name, and `old` snapshots are independent copies. Reasoning about *shared mutable*
-  references (two parameters pointing at the same list, a field aliased into a local) would need
-  a separation logic or a points-to analysis layered above SMT. The payoff is small for the
-  contract-style code groovy-verify is built for, and the engineering would dwarf every shipped
-  phase combined. Sister tools (Viper, Verus' Linear-Permissions story) own this territory.
+- **Heap / aliasing — *partially revisited* (Phase 89, above; slice 1 shipped).**
+  The fragment models collection state as value-semantics — every `@Modifies` havoc is per-name, and `old`
+  snapshots are independent copies. The *general* problem — reachability through object graphs, "everything
+  reachable from `x` is unchanged" — would need a separation logic or a points-to analysis layered above SMT,
+  whose engineering would dwarf every shipped phase combined; that stays a non-goal, owned by sister tools
+  (Viper, Verus' Linear-Permissions story). But the *flat-field* part — two object references that may alias,
+  field read/write, reference equality — is a tractable, easy-to-bound slice (Phase 89): model each field as
+  one array keyed by object identity, so aliasing is just `a === b`. It unlocks two-object mutators and honest
+  framing under sharing, and closes a latent unsoundness in the per-name field model — without touching
+  object-graph *shape*, which is the part that doesn't pay back.
 - **Floating point — *partially revisited* (Phase 73).** A faithful straight-line `double`/`float`
   sub-fragment now ships on Z3's IEEE-754 theory (bit-exact: NaN, ±∞, RNE rounding) — the useful core
   being **no-NaN / finiteness / bounds / exact-comparison** proofs, plus `Math.sqrt`/`Math.abs`. What

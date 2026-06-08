@@ -313,6 +313,57 @@ class Encoder {
         out
     }
 
+    // ── Phase 89 (slice 1) — reference identity + identity-keyed field reads ──────────────────────
+    // An object parameter whose class is shared by *another* object parameter is "alias-modelled":
+    // its Int fields are read through a per-(class, field) heap map indexed by the object's identity,
+    // so `a.f` and `b.f` coincide *exactly* when `a === b` / `a.is(b)` (identity equality). Methods with
+    // a single object param (or distinct classes) keep the per-name `b$field` model untouched — zero
+    // regression. Slice 1 is read-only (Int fields): field *writes* through references are a follow-on.
+    private Set<String> aliasModeledCache = null
+    private Set<String> aliasModeledParams() {
+        if (aliasModeledCache != null) return aliasModeledCache
+        Map<String, Integer> byClass = new LinkedHashMap<String, Integer>()
+        for (ClassNode c : objectParams.values()) {
+            String k = c?.name
+            if (k != null) byClass.put(k, (byClass.containsKey(k) ? byClass.get(k) : 0) + 1)
+        }
+        Set<String> out = new LinkedHashSet<String>()
+        for (Map.Entry<String, ClassNode> e : objectParams.entrySet()) {
+            String k = e.value?.name
+            if (k != null && byClass.get(k) >= 2) out.add(e.key)
+        }
+        aliasModeledCache = out
+        out
+    }
+
+    /** Phase 89 — true if {@code name} is an object param whose class is shared by another object param. */
+    private boolean isAliasModeled(String name) { aliasModeledParams().contains(name) }
+
+    /** Phase 89 — the object identity of an alias-modelled reference: an unconstrained {@code name$id} Int. */
+    private Object objId(String name) { varForRaw(name + '$id') }
+
+    /** Phase 89 — the per-(class, field) heap map for an Int field — an {@code Int → Int} array. */
+    private Object fieldMap(String className, String field) {
+        session.arrayVarOfSort('$fmap$' + className + '$' + field, session.intSort(), session.intSort())
+    }
+
+    /** Phase 89 — declared type of {@code field} on object parameter {@code name}, or null. */
+    private ClassNode fieldTypeOfObjectParam(String name, String field) {
+        ClassNode t = objectParams.get(name)
+        if (t == null || t.fields == null) return null
+        for (org.codehaus.groovy.ast.FieldNode f : t.fields) if (f.name == field) return f.type
+        null
+    }
+
+    /** Phase 89 — {@code id(a) == id(b)} when both sides are object-parameter references; null otherwise. */
+    private Object refIdentityEq(Expression l, Expression r) {
+        if (!(l instanceof VariableExpression) || !(r instanceof VariableExpression)) return null
+        String ln = ((VariableExpression) l).name
+        String rn = ((VariableExpression) r).name
+        if (!objectParams.containsKey(ln) || !objectParams.containsKey(rn)) return null
+        session.eq(objId(ln), objId(rn))
+    }
+
     /**
      * Phase 46a — true if {@code recv} is a String-typed expression: a String parameter / local
      * recorded in {@link #scalarTypes}, or a String literal. {@code translateMethodCall} consults
@@ -867,6 +918,13 @@ class Encoder {
         // of {@code b}'s class invariant becomes {@code b$count}, distinct from this-class's
         // own {@code count}.
         if (receiverPrefix != null && receiverFields.contains(name)) {
+            // Phase 89 — when the receiver is alias-modelled, a bare field reference in its assumed
+            // invariant must read through the SAME identity-keyed map as an explicit `recv.field` read,
+            // or the assumed invariant (`count >= 0`) wouldn't constrain the map read `select(count$, id)`.
+            ClassNode ft = fieldTypeOfObjectParam(receiverPrefix, name)
+            if (isAliasModeled(receiverPrefix) && ft != null && isIntLikeType(ft)) {
+                return session.select(fieldMap(objectParams.get(receiverPrefix).name, name), objId(receiverPrefix))
+            }
             return varForRaw(receiverPrefix + '$' + name)
         }
         // Phase 27 step 9 — a non-Int scalar (String, Enum) parameter/field dispatches to
@@ -2735,6 +2793,12 @@ class Encoder {
                 if (objectParams.containsKey(recvName)) {
                     Set<String> fields = fieldsOfObjectParam(recvName)
                     if (fields.contains(prop)) {
+                        // Phase 89 — an alias-modelled receiver reads its Int field through the
+                        // identity-keyed heap map, so `a.f` / `b.f` coincide iff `id(a) == id(b)`.
+                        ClassNode ft = fieldTypeOfObjectParam(recvName, prop)
+                        if (isAliasModeled(recvName) && ft != null && isIntLikeType(ft)) {
+                            return session.select(fieldMap(objectParams.get(recvName).name, prop), objId(recvName))
+                        }
                         return varForRaw(recvName + '$' + prop)
                     }
                 }
@@ -3119,6 +3183,14 @@ class Encoder {
 
         int op = be.operation.type
 
+        // Phase 89 — reference identity `a === b` / `a !== b` between object references → identity
+        // equality on their object ids (not a value comparison). Falls through if either side isn't
+        // an object parameter (so `===` outside this fragment still skips loudly).
+        if (be.operation.text == '===' || be.operation.text == '!==') {
+            Object idEq = refIdentityEq(be.leftExpression, be.rightExpression)
+            if (idEq != null) return be.operation.text == '===' ? idEq : session.not(idEq)
+        }
+
         // Phase 81 — component-wise tuple/list equality: `t1 == t2` (or `==` a tuple/list literal) folds to
         // the conjunction of pairwise component equalities (same arity); `!=` is its negation. Preempts the
         // scalar paths below, which would skip on a tuple operand. Only fires when both sides are products.
@@ -3411,6 +3483,13 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // Phase 89 — `a.is(b)` reference identity (the method form of `a === b`): identity equality
+        // when both receiver and argument are object-parameter references.
+        if (m == 'is' && args.size() == 1) {
+            Object idEq = refIdentityEq(recv, args.get(0))
+            if (idEq != null) return idEq
+        }
 
         // Phase 80 — t.size() / t.getVN() / t.second() on a tuple parameter. `.size()` → arity (a literal);
         // the slot accessors mint the k-th slot's typed entity. (Constructed/returned tuples fold via the
