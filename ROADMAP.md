@@ -3950,13 +3950,68 @@ equals the exact interest, and the remainder is bounded `[0, den)` — both veri
 remainder exists. This is the round-trip identity (`result*den + p*num % den == p*num`) — salami-slicing
 made impossible.
 
-**The gap — conservation over a *dynamic* collection of money.** `List<BigDecimal>` / `BigDecimal[]`
-aggregation (`.sum()`/`.max()`/`.min()`) is not modelled: the list/array *contents* are an `Array Int
-Int`, and decimal elements need an `Array Int Real` plus a Real-sorted `sum`/extremum primitive — and, for
-"transfer preserves the total over N accounts", a **sum-under-store law** (`sumAll(store(a,i,v)) ==
-sumAll(a) - a[i] + v`, the additive analogue of the Phase 12 `count` law). The same sum-under-store law is
-also missing for *Int* arrays (integer-cents N-account conservation), so it is the keystone for both. This
-is the decimal-element slice, scoped but not yet built.
+**Dynamic-collection conservation — shipped for both Int (Phase 69) and decimal (Phase 70).** The
+keystone for "transfer preserves the total over N accounts" is a **sum-under-store law**: it landed for
+`int[]`/`List<Integer>` in Phase 69 (integer-cents) and for `List<BigDecimal>` in Phase 70 (Real-element
+arrays + a Real-codomain `sumReal`). So both models prove dynamic N-account conservation. Still out of
+fragment: decimal `.max()`/`.min()` over a collection (the Real array exists now, so this is a small
+follow-on — a Real extremum primitive), and `BigDecimal[]` (array, vs `List<BigDecimal>`) element types
+aren't collected. (Integer minor units remain the recommended model regardless.)
+
+---
+
+## Phase 69 — Sum-under-store law: N-account conservation  *(shipped)*
+
+The additive analogue of the Phase 12 `count`-under-store law, and the keystone for conservation over a
+*dynamic* array of money. At each `a[i] = v` store, `checkPath` now asserts the ground instance
+
+```
+0 <= i < N  ⟹  sum(store(a,i,v), 0, N) == sum(a, 0, N) - a[i] + v        (and == sum(a,0,N) otherwise)
+```
+
+— a true theorem of `sum`, gated (like the count law) to arrays whose `.sum()` a contract actually
+references (`sumArrayNames` over the pre- and postcondition), so ordinary stores pay nothing. Two
+compensating stores (`bal[i] -= amt; bal[j] += amt`) then leave `bal.sum()` invariant, so an N-account
+transfer **proves the total is conserved** — stated against the entry total (`bal.sum() == 100`) or, via
+the extended `listAggHandles`, against `old.bal.sum()` (the natural "no money is lost" form). The prefix
+base/step axioms (Phase 51) aren't needed here — the ground store law carries it — so the proof is robust.
+
+**Verify is clean; refutation is the weak direction.** Correct conservation discharges by ground reasoning
+(UNSAT found reliably). A *violation* (a skim, `bal[j] += amt - 1`) makes Z3 search for a model satisfying
+the quantified sum axioms and times out → it fails the build as a loud "could not decide", not a witnessed
+counterexample (and the integer-only PBT fallback can't evaluate the array). Honest — never a silent pass —
+but a counterexample-producing refutation would need either a model-construction improvement or a
+collection-aware PBT pass. The *scalar* BigDecimal syphon (Phase 68) still refutes cleanly, since it uses
+no sum primitive.
+
+Also in this slice: a **display fix** — a decimal name's Int model value is a meaningless shadow (its real
+value lives in the Real sort the Int model-walk doesn't read) and a decimal scalar has no size, so both are
+suppressed from the counterexample rather than printed as `price = 0, price.size() = 0`.
+
+---
+
+## Phase 70 — `List<BigDecimal>.sum()`: Real-element arrays  *(shipped)*
+
+The decimal half of the dynamic-collection slice. A `List<BigDecimal>`'s *contents* are now modelled as an
+`Array Int Real` and `.sum()` as a Real-codomain aggregation — completing the financial story so that
+conservation over a *dynamic* list of money (not just fixed fields) is provable.
+
+Most of the array machinery was already sort-general — `arraySortsFor` routes by `sortFor(elementType)`,
+and `select`/`store` are sort-polymorphic — so the new pieces are surgical: a backend `realSort` /
+`sumReal` (an `(Array Int Real, Int, Int) -> Real` func decl) / `isReal` test; `sortFor(BigDecimal/Double/
+Float) → realSort` (so a decimal list's `arrayFor` mints `arrayVarOfSort(name, Int, Real)`); a decimal
+branch in the `.sum()` handler lowering to **`sumRealOf`** (Real base/step axioms, the analogue of
+`sumOf`); `translateInSort(e, realSort) → asReal(e)` for the store value; and the Phase 69 sum-under-store
+law generalised to pick `sumReal` for Real elements. One `asReal` fix: its fallback no longer wraps an
+*already-Real* handle (a decimal element read `xs[i]`) in `int→real` — it queries `isReal` first. The
+`.sum()` element-type lookup also strips the `old$` prefix so `old.xs.sum()` finds the live element type.
+
+So `xs.sum() == xs[0] + xs[1]` proves for a 2-element decimal list (base/step axioms unfold), and a
+`List<BigDecimal>` transfer proves `bal.sum() == old.bal.sum()` — "no money lost" over dynamic accounts.
+Verify is clean; a skim is the weak refutation direction (sum-axiom model construction → timeout), so it
+fails the build as a loud "could not decide", exactly as the Int case (Phase 69). Out of fragment, as a
+small follow-on: decimal `.max()`/`.min()` (a Real extremum primitive over the same Real array) and
+`BigDecimal[]` array element-type collection (`collectListElementTypes` handles `List`, not arrays).
 
 ---
 

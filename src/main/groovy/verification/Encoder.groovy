@@ -689,6 +689,7 @@ class Encoder {
         if (t == null) return session.intSort()
         String name = t.name
         if (name == 'java.lang.String') return session.declareSort('String')
+        if (isDecimalElementType(t)) return session.realSort()   // Phase 70 — List<BigDecimal> contents
         if (isIntLikeType(t)) return session.intSort()
         if (t.isEnum() || isEnumLikeType(t)) return session.declareSort(enumSortName(t))
         session.intSort()   // default — preserves today's Int-only behaviour for unrecognised types
@@ -898,6 +899,7 @@ class Encoder {
     Object translateInSort(Expression e, Object expectedSort) {
         if (e == null) return null
         if (expectedSort == session.intSort()) return translate(e)
+        if (expectedSort == session.realSort()) return asReal(e)   // Phase 70 — decimal element value
         if (e instanceof ConstantExpression) {
             Object v = ((ConstantExpression) e).value
             if (v instanceof String) return session.litOfSort(expectedSort, (String) v)
@@ -1957,6 +1959,34 @@ class Encoder {
         session.sum(arr, loH, hiH)
     }
 
+    /** Array handles whose Real-sum base/step axioms have been asserted (mint-once, per array). */
+    private final Set<Object> sumRealConstrained = new HashSet<Object>()
+
+    /**
+     * Phase 70 — the Real-element analogue of {@link #sumOf}: the bounded sum over an {@code Array Int
+     * Real} (a {@code List<BigDecimal>}'s contents), with base ({@code h <= l ⟹ sumReal == 0.0}) and
+     * step ({@code l < h ⟹ sumReal(l,h) == sumReal(l,h-1) + arr[h-1]}) axioms over Z3's Real sort.
+     */
+    Object sumRealOf(Object arr, Object loH, Object hiH) {
+        if (sumRealConstrained.add(arr)) {
+            Object zero = session.realLit('0')
+            Object one = session.intLit(1L)
+            Object bl = session.boundIntVar('sumR$bl' + (quantCounter++))
+            Object bh = session.boundIntVar('sumR$bh' + (quantCounter++))
+            Object bterm = session.sumReal(arr, bl, bh)
+            session.assertExpr(session.forall([bl, bh],
+                session.implies(session.le(bh, bl), session.eq(bterm, zero)), [bterm]))
+            Object sl = session.boundIntVar('sumR$sl' + (quantCounter++))
+            Object sh = session.boundIntVar('sumR$sh' + (quantCounter++))
+            Object sterm = session.sumReal(arr, sl, sh)
+            Object hm1 = session.minus(sh, one)
+            Object rhs = session.plus(session.sumReal(arr, sl, hm1), session.select(arr, hm1))
+            session.assertExpr(session.forall([sl, sh],
+                session.implies(session.lt(sl, sh), session.eq(sterm, rhs)), [sterm]))
+        }
+        session.sumReal(arr, loH, hiH)
+    }
+
     /** Array handles whose product base/step axioms have been asserted (mint-once, per array). */
     private final Set<Object> prodConstrained = new HashSet<Object>()
 
@@ -2011,6 +2041,12 @@ class Encoder {
         if (recv instanceof VariableExpression) {
             String xs = ((VariableExpression) recv).name
             return [xs, arrayFor(xs), session.intLit(0L), sizeOf(xs)] as Object[]
+        }
+        // Phase 69 — old.xs.sum(): the entry-snapshot array over the same [0, size) range, so a
+        // postcondition can compare the final total to the entry total (`xs.sum() == old.xs.sum()`).
+        if (recv instanceof PropertyExpression && isOldReceiver(((PropertyExpression) recv).objectExpression)) {
+            String prop = ((PropertyExpression) recv).propertyAsString
+            return ['old$' + prop, arrayFor('old$' + prop), session.intLit(0L), sizeOf(prop)] as Object[]
         }
         null
     }
@@ -2082,6 +2118,14 @@ class Encoder {
 
     /** True if {@code t} is the {@code String} element type. */
     private static boolean isStringElementType(ClassNode t) { t != null && t.name == 'java.lang.String' }
+
+    /** Phase 70 — true if {@code t} is a decimal element type (BigDecimal/Double/Float), modelled as Real. */
+    private static boolean isDecimalElementType(ClassNode t) {
+        if (t == null) return false
+        String n = t.name
+        n == 'java.math.BigDecimal' || n == 'java.lang.Double' || n == 'java.lang.Float' ||
+            n == 'double' || n == 'float'
+    }
 
     /** Whether fib's defining axioms have been asserted (mint-once — fib is one global function). */
     private boolean fibConstrained = false
@@ -2526,9 +2570,12 @@ class Encoder {
                 return session.times(L, R)
             }
         }
-        // Any other Int-valued expression (a named int var, a[i], a method call): coerce to Real.
+        // Any other expression (a named int var, a[i], a method call). Translate it; coerce to Real
+        // only if it isn't already Real — a decimal-element read `xs[i]` (Phase 70) is Real already, and
+        // intToReal would be a sort error.
         Object h = translate(e)
-        return h == null ? null : session.intToReal(h)
+        if (h == null) return null
+        return session.isReal(h) ? h : session.intToReal(h)
     }
 
     /** A BigDecimal/Double/Float as a Z3 rational numeral string ("25/10" for 2.5G). */
@@ -2886,11 +2933,20 @@ class Encoder {
         if (m == 'sum' && (args.isEmpty() || args.size() == 1)) {
             Object[] r = listAggHandles(recv)
             if (r == null) return null
-            ClassNode et = listElementTypes.get((String) r[0])
+            // old.xs.sum() keys the array as old$xs, but the element type lives under the live name xs.
+            String aggName = (String) r[0]
+            String elemKey = aggName.startsWith('old$') ? aggName.substring('old$'.length()) : aggName
+            ClassNode et = listElementTypes.get(elemKey)
             if (et == null) {                          // Int list → numeric sum
                 Object init = args.isEmpty() ? session.intLit(0L) : translate(args.get(0))
                 if (init == null) return null
                 Object base = sumOf(r[1], r[2], r[3])
+                return args.isEmpty() ? base : session.plus(init, base)
+            }
+            if (isDecimalElementType(et)) {             // List<BigDecimal> → Real sum (Phase 70)
+                Object init = args.isEmpty() ? session.realLit('0') : asReal(args.get(0))
+                if (init == null) return null
+                Object base = sumRealOf(r[1], r[2], r[3])
                 return args.isEmpty() ? base : session.plus(init, base)
             }
             if (isStringElementType(et)) {              // String list → concatenation (`['a','b'].sum()`)

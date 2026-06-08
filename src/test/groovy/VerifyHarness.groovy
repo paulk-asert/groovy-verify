@@ -5334,10 +5334,8 @@ class VerifyHarness {
         [group: 'P67 decimal negation', name: 'wrong decimal negation refuted',
          expect: 'Cannot prove postcondition',
          src: tc('class C { @Requires({ a == 2.5 }) @Ensures({ result == 2.5 }) static BigDecimal f(BigDecimal a) { -a } }')],
-        // Boundary: aggregation over a *decimal* list isn't modelled (the contents would need a Real
-        // element sort) — it skips loudly, never silently passes or crashes.
-        [group: 'P67 decimal negation', name: 'decimal-list sum skips loudly', expect: 'outside fragment',
-         src: tc('class C { @Requires({ xs.size() > 0 }) @Ensures({ result == xs.sum() }) static BigDecimal f(List<BigDecimal> xs) { xs.sum() } }')],
+        // (Decimal-list `sum()` is now modelled — Phase 70 — so the former "skips loudly" boundary test
+        // moved to the P70 group below as a verifying example.)
 
         // ---------- Phase 68: financial conservation & no-cents-lost proofs ----------
         // "No money is lost in an account transfer": the total across two BigDecimal balances is
@@ -5392,6 +5390,69 @@ class VerifyHarness {
                        static int interestCents(int principal, int rateNum, int rateDen) {
                            (principal * rateNum).intdiv(rateDen)
                        }
+                   }''')],
+
+        // ---------- Phase 69: sum-under-store law → N-account conservation ----------
+        // "No money is lost across N accounts": a transfer between any two cells of an int[] of
+        // balances (cents) conserves the total. The per-store sum law makes the two compensating
+        // stores cancel, so `bal.sum()` is invariant — stated here against the entry total.
+        [group: 'P69 sum-under-store', name: 'N-account transfer conserves total (precondition)', ok: true,
+         src: tc('''class Bank {
+                       int[] bal
+                       @Requires({ 0 <= i && i < bal.length && 0 <= j && j < bal.length && i != j && bal.sum() == 100 })
+                       @Ensures({ bal.sum() == 100 })
+                       void transfer(int i, int j, int amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt }
+                   }''')],
+        // The natural "no money lost" form: the total after equals the total before, via old.bal.sum().
+        [group: 'P69 sum-under-store', name: 'N-account conservation via old.bal.sum()', ok: true,
+         src: tc('''class Bank {
+                       int[] bal
+                       @Requires({ 0 <= i && i < bal.length && 0 <= j && j < bal.length && i != j })
+                       @Ensures({ bal.sum() == old.bal.sum() })
+                       void transfer(int i, int j, int amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt }
+                   }''')],
+        // Not vacuous: a transfer that skims a cent is caught — the build still fails, though as a loud
+        // "could not decide" rather than a witnessed counterexample. Refuting a sum-aggregated equality is
+        // the weak direction (Z3 must construct a model of the quantified sum axioms → timeout), and the
+        // integer-only PBT fallback can't evaluate the array. So the conservation VERIFIES cleanly while a
+        // violation fails as UNKNOWN — honest (never a silent pass), if without a counterexample.
+        [group: 'P69 sum-under-store', name: 'N-account skim fails the build (could not decide)',
+         expect: 'Could not decide postcondition',
+         src: tc('''class Bank {
+                       int[] bal
+                       @Requires({ 0 <= i && i < bal.length && 0 <= j && j < bal.length && i != j })
+                       @Ensures({ bal.sum() == old.bal.sum() })
+                       void transfer(int i, int j, int amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt - 1 }
+                   }''')],
+
+        // ---------- Phase 70: List<BigDecimal>.sum() via Real-element arrays ----------
+        // A decimal list's contents are now an `Array Int Real` and `.sum()` a Real-codomain aggregation,
+        // so its base/step axioms unfold: the sum of a 2-element list is the sum of its elements.
+        [group: 'P70 decimal sum', name: 'List<BigDecimal> sum of two equals their sum', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.size() == 2 })
+                       @Ensures({ xs.sum() == xs[0] + xs[1] })
+                       static void check(List<BigDecimal> xs) { }
+                   }''')],
+        // The capstone: "no money is lost" over a *dynamic* list of BigDecimal balances — the decimal
+        // analogue of the Phase 69 int-cents proof, via the Real sum-under-store law.
+        [group: 'P70 decimal sum', name: 'List<BigDecimal> transfer conserves total', ok: true,
+         src: tc('''class Fund {
+                       List<BigDecimal> bal
+                       @Requires({ 0 <= i && i < bal.size() && 0 <= j && j < bal.size() && i != j })
+                       @Ensures({ bal.sum() == old.bal.sum() })
+                       void transfer(int i, int j, BigDecimal amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt }
+                   }''')],
+        // Not vacuous: skimming a cent off the credited side breaks conservation. As with the int sum,
+        // refuting a sum-aggregated equality is the weak direction, so it fails the build as a loud
+        // "could not decide" rather than a witnessed counterexample — never a silent pass.
+        [group: 'P70 decimal sum', name: 'List<BigDecimal> skim fails the build (could not decide)',
+         expect: 'Could not decide postcondition',
+         src: tc('''class Fund {
+                       List<BigDecimal> bal
+                       @Requires({ 0 <= i && i < bal.size() && 0 <= j && j < bal.size() && i != j })
+                       @Ensures({ bal.sum() == old.bal.sum() })
+                       void transfer(int i, int j, BigDecimal amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt - 0.01 }
                    }''')],
 
         // ---------- Phase 62: bounded property-based refutation when the solver says UNKNOWN ----------

@@ -417,6 +417,37 @@ obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnabl
 corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
 can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
 
+**Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
+that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
+exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and
+the build fails.
+
+```groovy
+class Bank {
+    BigDecimal alice, bob
+    @Requires({ amt >= 0.0 && amt <= alice })
+    @Ensures({ alice + bob == old.alice + old.bob })          // no money is lost in the transfer
+    void transfer(BigDecimal amt) { alice = alice - amt; bob = bob + amt }
+}
+// Change the body to `bob = bob + amt - 0.01` — a salami slice — and the @Ensures REFUTES.
+```
+
+For *rounding* — "no fractional cents syphoned in an interest or trade calculation" — model money as
+integer minor units (cents), where the framework is strongest: the credited (floored) amount plus the
+retained remainder equals the exact value, so nothing vanishes; and a calc claiming it credits the *exact*
+amount is refuted whenever a remainder exists.
+
+```groovy
+@Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
+@Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })  // every cent accounted for
+static int interestCents(int principal, int rateNum, int rateDen) { (principal * rateNum).intdiv(rateDen) }
+```
+
+The same conservation scales to a *dynamic* `List<BigDecimal>` of balances — a per-store sum law makes the
+two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.sum()` ("the books
+balance") is proven. One honest edge: Z3 Real models exact `BigDecimal` *arithmetic* faithfully but not
+*rounding* (`setScale`) — the other reason integer minor units are the soundest money model.
+
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
 sorting correctness — with no loops; the recursion *is* the proof, and the array is mutated in place under a
@@ -1024,7 +1055,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
 | **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
 | **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (now modelled with Z3's exact Real sort — see below — *not* skipped); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
-| **BigDecimal arithmetic as exact reals** | `/` on integers is `BigDecimal` division in Groovy (`5 / 2 == 2.5`, not `2`) — modelled with Z3's exact **Real** sort: int operands coerced via int→real, `BigDecimal`/`Double`/`Float` literals and params decimal-typed. So `a / 2 == 2.5` proves, `a / 2 == 2` refutes, a `BigDecimal avg(int a, int b)` is provably `(a + b) / 2`, and the full scalar set works — `+ - * /`, unary minus (`-a`), negative literals (`-2.5`), comparisons (Phase 67). Retires the old "`/` skips" caveat; the `b != 0` obligation still fires. *(Out of fragment: `sum`/`max`/`min`/`abs` over decimal-element collections, and decimal `%`, which skip loudly.)* | ✅ Phase 61 / 67 |
+| **BigDecimal arithmetic as exact reals** | `/` on integers is `BigDecimal` division in Groovy (`5 / 2 == 2.5`, not `2`) — modelled with Z3's exact **Real** sort: int operands coerced via int→real, `BigDecimal`/`Double`/`Float` literals and params decimal-typed. So `a / 2 == 2.5` proves, `a / 2 == 2` refutes, a `BigDecimal avg(int a, int b)` is provably `(a + b) / 2`, and the full scalar set works — `+ - * /`, unary minus (`-a`), negative literals (`-2.5`), comparisons (Phase 67). Retires the old "`/` skips" caveat; the `b != 0` obligation still fires. *(Out of fragment: `max`/`min`/`abs` over decimal-element collections, and decimal `%`, which skip loudly.)* | ✅ Phase 61 / 67 |
+| **`List<BigDecimal>.sum()` + conservation** | A decimal list's contents are an `Array Int Real` and `.sum()` a Real-codomain aggregation (base/step axioms over Z3 Real), so `xs.sum()` proves; a per-store **sum-under-store law** (`sum(store(a,i,v)) == sum(a) - a[i] + v`, for Int *and* Real elements) makes the two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.sum()` ("no money lost") is proven over a dynamic list. Verify is clean; refuting a violation is the weak direction (sum-axiom timeout → loud "could not decide", not a counterexample) | ✅ Phase 69 / 70 |
 | **`xs.max()` / `xs.min()` as a witnessed extremum** | An Int list/array's `max()`/`min()` lowers to a fresh `r` carrying the two defining facts — `r` bounds every element (`∀i. a[i] <= r`) and is achieved by one (`∃i. a[i] == r`, guarded by non-emptiness so `[].max()` can't prove vacuously). `result == a.max()` now means exactly the every/any spec a developer would otherwise write by hand | ✅ Phase 60 |
 | **Classic `for (init; cond; update)` loops** | A `for` loop with `@Invariant`/`@Decreases` desugars to the existing while-machinery — init threaded into the prefix, `i++`/`i += k` normalised to a plain assignment and appended to the body — so all four loop VCs (establishment / preservation / use / progress) discharge. `.each` stays outside the fragment and skips loudly | ✅ Phase 59 |
 | **`for (x in xs)` loops** | A for-in over a named Int collection desugars to an *indexed* while: a hidden synthetic index drives iteration, the loop variable keeps its source name (bound to `xs[idx]` each pass) so contracts and counterexamples read in terms of `x`, and an index-bounds invariant + a `size - idx` termination measure are auto-injected (the index isn't user-nameable). Both `for (x in xs)` and `for (T x : xs)` work. For-in over a literal / non-named collection skips | ✅ Phase 63 |

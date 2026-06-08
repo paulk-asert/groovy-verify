@@ -149,6 +149,13 @@ interface SmtSession extends AutoCloseable {
      */
     Object sum(Object arr, Object lo, Object hi)
 
+    // Phase 70 — Real-element aggregation for List<BigDecimal>/decimal arrays: a Real-codomain bounded
+    // sum over an {@code Array Int Real}, plus the Real sort and a sort test (so the encoder can avoid
+    // double-coercing an already-Real handle, e.g. a decimal element read).
+    Object realSort()
+    Object sumReal(Object arr, Object lo, Object hi)   // (Array Int Real, Int, Int) -> Real
+    boolean isReal(Object handle)
+
     /**
      * The bounded product of element values {@code prod(arr, lo, hi) = Π_{lo <= i < hi} arr[i]} — the
      * multiplicative sibling of {@link #sum}. Meaning comes from the base ({@code hi <= lo ⟹ prod == 1},

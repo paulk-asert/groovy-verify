@@ -769,8 +769,13 @@ class VerifyChecker extends TypeCheckingExtension {
             // Phase 63 — the for-in desugar's synthetic index is internal; the loop variable carries
             // the source name, so suppress the index from the displayed counterexample.
             if (k.contains(ContractExpansionTransform.FOR_IN_INDEX)) return
+            // Phase 67 — a decimal (BigDecimal/Double/Float) name's Int model value is a meaningless
+            // shadow (its real value lives in the Real sort, which the Int model walk doesn't read), and
+            // a decimal scalar has no size — so suppress both rather than print `price = 0, price.size() = 0`.
+            if (currentDecimalNames.contains(k)) return
             if (k.endsWith('.size')) {
                 String recv = k.substring(0, k.length() - '.size'.length())
+                if (currentDecimalNames.contains(recv)) return
                 display.put(recv + sizeAccessor(recv), v)
             } else {
                 display.put(k, v)
@@ -961,6 +966,32 @@ class VerifyChecker extends TypeCheckingExtension {
         if (a instanceof ArgumentListExpression) return ((ArgumentListExpression) a).expressions.isEmpty()
         if (a instanceof TupleExpression) return ((TupleExpression) a).expressions.isEmpty()
         true
+    }
+
+    /**
+     * Phase 69 — array/list names whose {@code .sum()} a contract references (incl. {@code old.xs.sum()}).
+     * Each store to such an array maintains its whole-array sum via the per-store sum law, so two
+     * compensating stores (a transfer) leave the total unchanged — "no money is lost".
+     */
+    private static Set<String> sumArrayNames(Expression e) {
+        Set<String> out = new HashSet<String>()
+        if (e == null) return out
+        try {
+            e.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitMethodCallExpression(MethodCallExpression mce) {
+                    if (mce.methodAsString == 'sum') {
+                        Expression recv = mce.objectExpression
+                        if (recv instanceof VariableExpression) out.add(((VariableExpression) recv).name)
+                        else if (recv instanceof PropertyExpression) out.add(((PropertyExpression) recv).propertyAsString)
+                    }
+                    super.visitMethodCallExpression(mce)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        out
     }
 
     /** The single argument of each {@code .count(arg)} call — the values a postcondition counts. */
@@ -2460,6 +2491,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 Object h = enc.translate(vArg)
                 if (h != null) countVals.add(h)
             }
+            // Phase 69 — arrays whose whole-array sum a contract references; each store maintains it.
+            Set<String> sumArrays = sumArrayNames(postAst)
+            sumArrays.addAll(sumArrayNames(reqAst))
             // The `k` bounds of any Sets.boundedCount(_, k) in the postcondition drive the bcount per-add law.
             currentBcountKExprs = bcountKArgs(postAst)
 
@@ -2581,6 +2615,23 @@ class VerifyChecker extends TypeCheckingExtension {
                                     session.assertExpr(session.eq(session.count(newA, v), rhs))
                                 }
                             }
+                        }
+                        // Phase 69/70 — per-store SUM law (the additive analogue of the count law): for
+                        // the array's whole-range sum, 0 <= idx < N ⟹ sum(newA,0,N) == sum(oldA,0,N) -
+                        // oldA[idx] + val (== sum(oldA) otherwise). Int elements use `sum`, decimal (Real)
+                        // elements `sumReal`; both make two compensating stores conserve the total — "no
+                        // money lost". Gated to arrays whose .sum() a contract references, so ordinary
+                        // stores pay nothing.
+                        boolean realElem = (valSort == session.realSort())
+                        if (sumArrays.contains(st.arr) && (valSort == session.intSort() || realElem)) {
+                            Object zeroI = session.intLit(0L)
+                            Object n = enc.sizeOf(st.arr)
+                            Object oldSum = realElem ? session.sumReal(oldA, zeroI, n) : session.sum(oldA, zeroI, n)
+                            Object newSum = realElem ? session.sumReal(newA, zeroI, n) : session.sum(newA, zeroI, n)
+                            Object inRange = session.and([session.le(zeroI, idx), session.lt(idx, n)])
+                            Object updated = session.plus(session.minus(oldSum, session.select(oldA, idx)), val)
+                            session.assertExpr(session.implies(inRange, session.eq(newSum, updated)))
+                            session.assertExpr(session.implies(session.not(inRange), session.eq(newSum, oldSum)))
                         }
                         enc.bindArray(st.arr, newA)
                     }
