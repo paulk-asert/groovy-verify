@@ -3943,10 +3943,10 @@ symptom: a transfer that skims a cent (`bob = bob + amt - 0.01`) could "verify" 
 fresh handle and an `asReal` RHS (mirroring the return-binding), so the SSA equality is sort-matched and
 the skim is correctly refuted.
 
-**Still out of fragment (reported):** *extremum* over a decimal-element collection
-(`List<BigDecimal>.max()` / `.min()`) and `BigDecimal.abs()` — `.sum()` since shipped in Phase 70 (Real
-element arrays), so `.max()`/`.min()` are now a small follow-on (a Real extremum primitive over the same
-array). The divide-by-zero obligation for a *decimal* divisor is also still checked on the int shadow
+**Still out of fragment (reported):** `BigDecimal.abs()`. (*Extremum* over a decimal-element collection —
+`List<BigDecimal>.max()` / `.min()` — was foreshadowed here as a small follow-on of `.sum()` (Phase 70);
+it **shipped in Phase 76** as the Real witnessed extremum.) The divide-by-zero obligation for a *decimal*
+divisor is also still checked on the int shadow
 (sound — it refutes rather than wrongly verifying — but imprecise for a provably non-zero decimal divisor;
 a literal/int divisor like `(a + b) / 2` is unaffected).
 
@@ -3978,10 +3978,11 @@ made impossible.
 **Dynamic-collection conservation — shipped for both Int (Phase 69) and decimal (Phase 70).** The
 keystone for "transfer preserves the total over N accounts" is a **sum-under-store law**: it landed for
 `int[]`/`List<Integer>` in Phase 69 (integer-cents) and for `List<BigDecimal>` in Phase 70 (Real-element
-arrays + a Real-codomain `sumReal`). So both models prove dynamic N-account conservation. Still out of
-fragment: decimal `.max()`/`.min()` over a collection (the Real array exists now, so this is a small
-follow-on — a Real extremum primitive), and `BigDecimal[]` (array, vs `List<BigDecimal>`) element types
-aren't collected. (Integer minor units remain the recommended model regardless.)
+arrays + a Real-codomain `sumReal`). So both models prove dynamic N-account conservation. Out of
+fragment when this phase shipped — both since closed: decimal `.max()`/`.min()` over a collection
+(**shipped in Phase 76**, the Real extremum), and `BigDecimal[]` (array, vs `List<BigDecimal>`) element-type
+collection (generalised to array component types in **Phase 77**). (Integer minor units remain the
+recommended model regardless.)
 
 ---
 
@@ -4034,9 +4035,10 @@ law generalised to pick `sumReal` for Real elements. One `asReal` fix: its fallb
 So `xs.sum() == xs[0] + xs[1]` proves for a 2-element decimal list (base/step axioms unfold), and a
 `List<BigDecimal>` transfer proves `bal.sum() == old.bal.sum()` — "no money lost" over dynamic accounts.
 Verify is clean; a skim is the weak refutation direction (sum-axiom model construction → timeout), so it
-fails the build as a loud "could not decide", exactly as the Int case (Phase 69). Out of fragment, as a
-small follow-on: decimal `.max()`/`.min()` (a Real extremum primitive over the same Real array) and
-`BigDecimal[]` array element-type collection (`collectListElementTypes` handles `List`, not arrays).
+fails the build as a loud "could not decide", exactly as the Int case (Phase 69). Out of fragment when this phase
+shipped (both since closed): decimal `.max()`/`.min()` (a Real extremum primitive over the same Real array)
+— **shipped in Phase 76** — and `BigDecimal[]` array element-type collection — **Phase 77** generalised
+`collectListElementTypes` to array component types.
 
 ---
 
@@ -4171,7 +4173,7 @@ verifier models pure bounds for all range kinds, matching both the fixed runtime
 numeric `v` is exact regardless of endpoint type. A **character/`String`** range (no modelled
 lexicographic order) skips; a numeric pre-guard plus a term-construction `try/catch` (terms aren't asserted
 until `checkPath`, so a throw is a clean skip, not a corrupt session) ensure a non-arithmetic comparison
-never crashes. **Still out of fragment** (Tier 2, the next slice): `contains`/`==`/`.step`/`.toList` over a
+never crashes. **Still out of fragment** (Tier 2): `contains`/`==`/`.step`/`.toList` over a
 range — these need step-aware *enumeration* of a constant range to a list literal (then they ride the
 existing list machinery), plus a list-to-list `==` fold; non-constant or character ranges stay out.
 
@@ -4271,9 +4273,18 @@ may be present the guard is simply false → no constraint, no vacuity; under a 
 the guard discharges and the extremum proves. Verified empirically: `double[].max()` bounds every element
 **under** `(0..<n).every{ !Double.isNaN(xs[it]) }` (and `max >= min` composes), and **refutes** without it.
 
-**Unlocks:** the FP-list HumanEval cluster that needs min/max + scalar FP (`rescale_to_unit`, `maximum`).
+**Scope (an honest correction to the original "unlocks the FP-list HumanEval cluster" claim).** What
+genuinely works is FP min/max via the **axiomatised `.max()`/`.min()` spec helper** (the property tests
+above) plus FP element predicates. The named HumanEval ports do **not** actually port, though: `rescale_to_unit`
+returns a *transformed list* (FP list output — not modelled), and a hand-written `max_element` **witnessed-
+extremum loop** over `double[]` fails *preservation* — Z3 returns a counterexample even bound-only and even
+with `!Double.isNaN(m)` + a full-array no-NaN carried in the invariant. FP comparisons are *bit-blasted*, not
+native linear arithmetic, so the quantifier-instantiation + `<=` transitivity that makes the **Int and
+BigDecimal** witnessed-extremum loops (Phase 60/76) go through don't carry to FP inside a loop invariant. So
+the FP min/max capability is real at the *spec-helper* level, but not as a loop-verified HumanEval port.
 **Still out:** FP `.sum()` (non-associative); `List<Double>` *scalar* element predicates (the `@TypeChecked`
-erasure — `double[]` is the workaround); `has_close_elements` (needs the nested pairwise quantifier too).
+erasure — `double[]` is the workaround); `has_close_elements` (nested pairwise quantifier); FP loops with a
+quantified invariant (the bit-blasting/transitivity gap above).
 
 ---
 
@@ -4475,6 +4486,36 @@ no-overlap-with-contracts property as Phase 85 (predicates never contain `++`).
 
 **Still out:** `++`/`--` in *expression* position (`x = i++`, `a[i++]`) — a side-effecting subexpression that
 both mutates and yields a (pre- vs post-) value, which the straight-line/path model doesn't thread.
+
+---
+
+## Phase 87 — Euclid's gcd via the `Gcd.of(a, b)` helper (HumanEval 013)  *(shipped)*
+
+The two-*argument* sibling of the Phase 55/63 recurrence helpers (`Fib.of`/`Trib.of`). A new `verification.Gcd`
+spec helper (executable Euclid, so the groovy-contracts runtime check still works) is recognised by `Encoder`
+from the `Gcd.of(a, b)` shape and lowered to an uninterpreted `gcd$ : (Int, Int) -> Int`, constrained
+mint-once by Euclid's defining axioms:
+
+- **base** `∀x. gcd(x, 0) == x` (triggered on `gcd(x, 0)`),
+- **step** `∀x, y. y ≠ 0 ⟹ gcd(x, y) == gcd(y, x % y)` (triggered on `gcd(x, y)`).
+
+`gcdOf` mirrors `tribOf` but mints a *two*-bound-variable step quantifier and reuses the existing
+`intRem` primitive for `x % y`. The flagship proof is **iterative-Euclid-equals-`Gcd.of`**: the loop invariant
+`Gcd.of(x, y) == Gcd.of(a, b)` is preserved across `t = x % y; x = y; y = t` by e-matching the step axiom
+(`y ≠ 0` from the guard) to `gcd(x, y) == gcd(y, x % y)`; at exit (`y == 0`) the base axiom collapses
+`gcd(x, 0)` to `x`, so `result == Gcd.of(a, b)`; and it terminates on `@Decreases({ y })` because Z3's
+Euclidean `mkMod` already knows `x % y ∈ [0, y)` for `x ≥ 0, y > 0`. A literal pair also unfolds
+(`Gcd.of(12, 8)` → `gcd(8, 4)` → `gcd(4, 0)` → `4`).
+
+**Prove/refute asymmetry (honest boundary, shared with `fib`/`trib`).** A *true* spec proves fast (UNSAT of
+the negation via e-matching), but refuting a *false value* — e.g. `Gcd.of(12, 8) == 5` — only soft-fails on
+"could not decide / timeout": finding a SAT model under an infinitely-instantiable recurrence axiom defeats
+MBQI. Still **sound** — it is rejected, never a false pass — but it yields no counterexample, so the bad-case
+test instead exercises a crisp, quantifier-free refutation (dropping the non-negativity precondition fails
+the Euclid bounds invariant `x ≥ 0 ∧ y ≥ 0` on entry, counterexample `a = -1`).
+
+**Still out:** `lcm` (would need a `gcd`-in-denominator divisibility lemma); multi-arg / list gcd
+(`[a, b, c].inject{…}` fold over `Gcd.of`); any *refutation* of a recurrence-helper value (the MBQI gap above).
 
 ---
 

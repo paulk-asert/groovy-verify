@@ -212,6 +212,14 @@ interface SmtSession extends AutoCloseable {
     Object trib(Object k)
 
     /**
+     * The greatest-common-divisor function {@code gcd(a, b)} — an uninterpreted {@code (Int, Int) -> Int}
+     * (HumanEval 013 {@code greatest_common_divisor}). Meaning from Euclid's base ({@code ∀x. gcd(x, 0)==x})
+     * and step ({@code ∀x,y. y!=0 ⟹ gcd(x, y)==gcd(y, x % y)}) axioms the caller asserts (mint-once,
+     * globally). Recognised from the {@code Gcd.of(a, b)} helper — the two-argument sibling of {@code fib}.
+     */
+    Object gcd(Object a, Object b)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store

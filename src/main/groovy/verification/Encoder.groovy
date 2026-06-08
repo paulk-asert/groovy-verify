@@ -2457,6 +2457,7 @@ class Encoder {
 
     /** Whether trib's defining axioms have been asserted (mint-once — trib is one global function). */
     private boolean tribConstrained = false
+    private boolean gcdConstrained = false
 
     /**
      * The tribonacci function {@code trib(k)} (HumanEval 063 {@code fibfib}), asserting its defining axioms
@@ -2481,6 +2482,33 @@ class Encoder {
             session.assertExpr(session.forall([k], session.implies(session.ge(k, three), session.eq(term, rhs)), [term]))
         }
         session.trib(kH)
+    }
+
+    /**
+     * The greatest-common-divisor function {@code gcd(a, b)} (HumanEval 013), asserting Euclid's defining
+     * axioms the first time it is seen: base {@code ∀x. gcd(x, 0) == x} and step
+     * {@code ∀x,y. y != 0 ⟹ gcd(x, y) == gcd(y, x % y)}. The two-argument sibling of {@link #fibOf}: the step
+     * (triggered on {@code gcd(x, y)}) preserves a Euclid loop's invariant {@code Gcd.of(x, y) == Gcd.of(a, b)}
+     * across {@code t = x % y; x = y; y = t} by e-matching {@code gcd(x, y) == gcd(y, x % y)}, and at exit
+     * ({@code y == 0}) the base axiom collapses {@code gcd(x, 0)} to {@code x}.
+     */
+    Object gcdOf(Object aH, Object bH) {
+        if (!gcdConstrained) {
+            gcdConstrained = true
+            Object zero = session.intLit(0L)
+            // base: ∀x. gcd(x, 0) == x
+            Object x = session.boundIntVar('gcd$x' + (quantCounter++))
+            Object baseTerm = session.gcd(x, zero)
+            session.assertExpr(session.forall([x], session.eq(baseTerm, x), [baseTerm]))
+            // step: ∀x,y. y != 0 ⟹ gcd(x, y) == gcd(y, x % y)
+            Object sx = session.boundIntVar('gcd$x' + (quantCounter++))
+            Object sy = session.boundIntVar('gcd$y' + (quantCounter++))
+            Object stepTerm = session.gcd(sx, sy)
+            Object rhs = session.gcd(sy, session.intRem(sx, sy))
+            session.assertExpr(session.forall([sx, sy],
+                session.implies(session.ne(sy, zero), session.eq(stepTerm, rhs)), [stepTerm]))
+        }
+        session.gcd(aH, bH)
     }
 
     /**
@@ -3571,6 +3599,16 @@ class Encoder {
         if (m == 'of' && isTrib && args.size() == 1) {
             Object k = translate(args.get(0))
             return k == null ? null : tribOf(k)
+        }
+
+        // Gcd.of(a, b) — the Euclid gcd spec helper (HumanEval 013), lowered to the gcd$ primitive.
+        boolean isGcd = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Gcd') ||
+                        (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Gcd') ||
+                        (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Gcd')
+        if (m == 'of' && isGcd && args.size() == 2) {
+            Object a = translate(args.get(0))
+            Object b = translate(args.get(1))
+            return (a == null || b == null) ? null : gcdOf(a, b)
         }
 
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
