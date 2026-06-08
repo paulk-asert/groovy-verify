@@ -638,8 +638,23 @@ class VerifyChecker extends TypeCheckingExtension {
      * rather than {@code intVar} (which then crashes at {@code eq(intFresh, boolRhs)}). Same
      * clean-body + closure-skip pattern as {@link #collectScalarTypes}.
      */
+    private static boolean isBooleanType(ClassNode t) {
+        t != null && (t.name == 'boolean' || t.name == 'java.lang.Boolean')
+    }
+
+    /**
+     * Boolean names — params, declaring-class fields, the implicit {@code result}, and body locals — so
+     * the SSA-fresh-handle path and {@code varFor} mint a {@code boolVar} rather than an {@code intVar}.
+     * Without the param/field/result cases a boolean *field* write {@code b = !b} crashed Z3 with
+     * {@code eq(intFresh, boolRhs)} / {@code not(intExpr)} (the {@code String}/decimal field fix's
+     * boolean sibling).
+     */
     private static Set<String> collectBooleanLocals(MethodNode node) {
         Set<String> out = new HashSet<String>()
+        for (Parameter p : node.parameters) if (isBooleanType(p.type)) out.add(p.name)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (isBooleanType(f.type)) out.add(f.name)
+        if (isBooleanType(node.returnType)) out.add('result')
         Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
         if (cleanBody == null) cleanBody = node.code
         if (cleanBody == null) return out
@@ -653,7 +668,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (de.leftExpression instanceof VariableExpression) {
                         ClassNode t = ((VariableExpression) de.leftExpression).originType
                         if (t == null) t = de.leftExpression.type
-                        if (t != null && (t.name == 'boolean' || t.name == 'java.lang.Boolean')) {
+                        if (isBooleanType(t)) {
                             out.add(((VariableExpression) de.leftExpression).name)
                         }
                     }
@@ -1233,6 +1248,10 @@ class VerifyChecker extends TypeCheckingExtension {
                 return
             }
 
+            // Phase 71 — flag a self-contradictory @Requires before anything else: under it, every
+            // @Ensures verifies trivially (the silent vacuous pass the project warns about most).
+            checkPreconditionSatisfiable(node)
+
             // Implicit safety obligations (array bounds, division by zero, null
             // dereference) fire on every method, contract or not. For an
             // annotated loop they are discharged *with the invariant in scope*
@@ -1299,6 +1318,33 @@ class VerifyChecker extends TypeCheckingExtension {
      * the clean CONVERSION snapshot so groovy-contracts' injected asserts are not
      * mistaken for user dereferences.
      */
+    /**
+     * Phase 71 — report a contradictory {@code @Requires}. The project's stated worst case is a silent
+     * *vacuous* pass: a "proof" that holds only because its assumptions can never all be true. If the
+     * (soundly encoded) precondition together with any class invariants is UNSAT, every {@code @Ensures}
+     * verifies trivially, so the contract proves nothing. Conservative: fires only when the precondition
+     * fully translates and Z3 returns a definite UNSAT — UNKNOWN/SAT stay silent — and is best-effort, so
+     * it can never break the build by itself.
+     */
+    private void checkPreconditionSatisfiable(MethodNode node) {
+        if (findRequires(node) == null) return
+        Expression reqAst = contractAstFor(node, 'requires')
+        if (reqAst == null) return
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            Object pre = enc.translate(reqAst)
+            if (pre == null) return   // didn't fully translate → can't judge soundly; stay silent
+            s.assertExpr(pre)
+            assumeClassInvariants(s, enc)
+            CheckResult r = s.check()   // VERIFIED == UNSATISFIABLE → the precondition can never hold
+            if (r.status == CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatVacuousPrecondition(node.name, reqAst.text), node)
+            }
+        } catch (Throwable ignored) {
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
     private void verifyImplicitObligations(MethodNode node) {
         Statement body = (Statement) node.getNodeMetaData(
             ContractExpansionTransform.ORIGINAL_BODY_KEY)

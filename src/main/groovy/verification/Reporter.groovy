@@ -88,6 +88,15 @@ class Reporter {
         sb.toString()
     }
 
+    /** Phase 71 — a self-contradictory @Requires: it can never hold, so the contract is never checked. */
+    static String formatVacuousPrecondition(String methodName, String requiresText) {
+        StringBuilder sb = new StringBuilder()
+        sb.append("Vacuous precondition of ").append(methodName)
+          .append(" — its @Requires can never be satisfied, so the method's contract is never actually checked")
+        if (requiresText) sb.append("\n    requires: ").append(requiresText)
+        sb.toString()
+    }
+
     /**
      * Phase 62 — the solver couldn't decide the postcondition, but bounded property-based testing of
      * the executable contract found a concrete input on which it fails. Reported as a genuine

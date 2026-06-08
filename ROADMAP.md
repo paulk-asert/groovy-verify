@@ -4015,6 +4015,44 @@ small follow-on: decimal `.max()`/`.min()` (a Real extremum primitive over the s
 
 ---
 
+## Phase 71 — Soundness hardening (pre-public sweep)  *(shipped)*
+
+An adversarial sweep of "should-refute" cases across sort boundaries and recent features — the kind of
+silent false-verify or crash that would embarrass a public release — turned up two issues, both fixed:
+
+- **Boolean *field* write crashed.** A `boolean` field `b = !b` minted an `intVar` SSA fresh handle (the
+  `collectBooleanLocals` scan only covered body *declarations*, not params/fields/`result`), so the
+  binding hit `eq(intFresh, boolRhs)` / `not(intExpr)` and threw a Z3 `GroovyCastException` — the boolean
+  sibling of the Phase 67 decimal-assignment bug. `collectBooleanLocals` now also collects boolean params,
+  declaring-class fields, and the implicit `result`, so every boolean name gets a `boolVar`. (String, enum,
+  set, map, and decimal field writes were already sound — confirmed by the same sweep.)
+
+- **A contradictory `@Requires` passed vacuously.** Under a precondition that can never hold, every
+  `@Ensures` verifies trivially — the silent *vacuous* pass the project warns about most. Now
+  `checkPreconditionSatisfiable` asserts the encoded precondition (plus class invariants) and, if Z3
+  returns a definite UNSAT, reports a loud **"Vacuous precondition"**. Conservative and sound: it fires
+  only when the precondition fully translates and is provably unsatisfiable (UNKNOWN/SAT stay silent), and
+  is best-effort so it can never break the build by itself. Asserting a *subset* of conjuncts being UNSAT
+  implies the whole is UNSAT, so partial translation can't cause a false positive.
+
+**The broader systematic pass.** After those two fixes, ~45 further adversarial cases were run across the
+full matrix — every scalar/collection sort × {param, field, local, result} × {assignment, `old`-snapshot,
+mutation, size/count/membership law, loop (while/for/for-in), induction, NIA, div/mod, overflow, string
+contents, `@Modifies` frame, `<=>`/`==>`, nested `Map<K,Set<V>>`, quantifier, vacuity} — each constructed
+to *demand a refutation, skip, or vacuity flag*. **No new soundness bug surfaced**: every should-refute
+case refuted, vacuity flagged across String/size/decimal/null, recursion-without-`@Decreases` skipped
+loudly, and a bounded `every` over array contents refuted (the array-quantifier direction, unlike the
+sum-axiom direction, *is* refutable). Two cases verified, both expected-and-sound: `old` of a *parameter*
+soundly tracks the entry value (a reassigning body's false unchanged-claim refutes; arithmetic on it is
+blocked by Groovy's own type checker), and the **heap-aliasing** case (two object params, field writes
+through both) verifies a claim that is false only under aliasing — the documented non-goal. The curated
+strongest anchors are now permanent tests, closing the coverage blind spots that had let the boolean-field
+and decimal-assignment bugs exist. *(One crash was found but is upstream: groovy-contracts'
+`DynamicSetterInjectionVisitor` NPEs on an `@Invariant` on a static nested class, at instruction-selection,
+independent of groovy-verify.)*
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
