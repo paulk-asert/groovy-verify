@@ -267,7 +267,8 @@ method idioms `xs.get(i)` / `xs.first()` / `xs.head()` / `xs.last()` / `xs.set(i
 through the same array-access machinery (with the bounds check synthesised so `xs.first()` on a
 possibly-empty list refutes with `fails on: f([])` exactly as `xs[0]` would). Size-changing
 mutation — `xs.add(v)`, `xs.removeLast()` / `xs.pop()`, `xs.clear()` — threads the size and
-contents oracles SSA-style and pairs with a runtime-faithful `xs.count(v)` (see the
+contents oracles in **static-single-assignment** (SSA) form — each write mints a fresh name, so a
+mutator's pre- and post-states stay distinct — and pairs with a runtime-faithful `xs.count(v)` (see the
 "Lists — mutation" beat below); only the shift-based variants (`xs.add(i, v)`, `xs.remove(i)`)
 still defer. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
 peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`, and the same
@@ -444,7 +445,7 @@ that limits adoption — *math by default, machine precision on demand.*
 First, **`/` on integers is `BigDecimal` division in Groovy** — `5 / 2 == 2.5`, not `2` — so the
 verifier models it that way and won't pretend a spec assuming `5 / 2 == 2` is correct (integer
 division is `a.intdiv(b)` or `(int)(a / b)`). Second, *variable* multiplication (`a * b` where
-neither side is a constant) is now handled by Z3's non-linear integer arithmetic, so sign facts
+neither side is a constant) is now handled by Z3's non-linear integer arithmetic (NIA), so sign facts
 (`i * i >= 0`), divisibility (`n % 2 == 0`), and bounded products verify directly:
 
 ```groovy
@@ -504,7 +505,7 @@ balance") is proven. One honest edge: Z3 Real models exact `BigDecimal` *arithme
 
 **The same sum, two number models — both proven.** `BigDecimal` is exact decimal; `double` is IEEE-754.
 The checker models each *faithfully* — `BigDecimal` on Z3's exact-real arithmetic, `double` on Z3's
-floating-point theory (bit-exact: round-nearest-even, NaN, ±∞) — so it proves the famous discrepancy
+floating-point theory (bit-exact: round-nearest-even — RNE, NaN, ±∞) — so it proves the famous discrepancy
 rather than papering over it:
 
 ```groovy
@@ -516,7 +517,8 @@ For `double`, the high-value proofs are **no-NaN / finiteness** — `Double.isFi
 verifies, and over `Math.sqrt`/`Math.abs` too (Z3's `fp.sqrt`/`fp.abs`): `x >= 0 ⟹ !Double.isNaN(Math.sqrt(x))`
 is proven, while *unguarded* `Math.sqrt(x)` can be NaN (refutes). It's sound where exact reasoning isn't:
 `(a + b) - b == a` *refutes* (FP isn't associative), `x == x` *refutes* (a NaN isn't equal to itself). Z3
-bit-blasts FP, so it's straight-line and timeout-gated — loops, the other transcendentals (`sin`/`exp`/…),
+**bit-blasts** FP (expands each operation to a Boolean circuit over the 64 bits), so it's straight-line and
+timeout-gated — loops, the other transcendentals (`sin`/`exp`/…),
 and tight error bounds stay out of the fragment.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
@@ -528,7 +530,8 @@ assumed unchanged for free).
 
 > **Soundly, under Phase 24.** The recursive call `insert(m-1, a[m], v)` passes the pivot `a[m]` as the new,
 > tight bound — so its precondition needs the *transitive* bound `a[it] <= a[m-1]` for all `it`, which Z3
-> can't get from *adjacent* sortedness by e-matching. A one-line **monotone-bound lemma** (`maxBound`, proved
+> can't get from *adjacent* sortedness by e-matching (the solver instantiates a quantified fact only when a
+> matching term already appears in the formula). A one-line **monotone-bound lemma** (`maxBound`, proved
 > by induction: every element of an adjacent-sorted prefix `[0,k]` is `<= a[k]`) supplies it; called before
 > the swap, its `@Ensures` threads through the swap to the recursive call (Phase 24's intervening-mutation
 > replay). This is the *sound* discharge of a precondition that, before Phase 24, was passing vacuously via a
@@ -1048,7 +1051,8 @@ static int gcd(int a, int b) {
 One honest caveat shared by all three helpers: they are **prove-friendly but refute-hostile**. E-matching
 certifies a *true* spec quickly (UNSAT of the negation), but a *false* one — say `Gcd.of(12, 8) == 5`
 (it's 4) — only soft-fails with "could not decide / timeout": finding a SAT model under an
-infinitely-instantiable recurrence axiom defeats MBQI. The verifier still rejects it (soundness holds — it
+infinitely-instantiable recurrence axiom defeats MBQI (model-based quantifier instantiation — Z3's strategy
+for *building* a model when quantifiers are present). The verifier still rejects it (soundness holds — it
 is never a false *pass*); it just can't hand back a counterexample the way a bounds or null violation can.
 
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
@@ -1182,7 +1186,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`replaceAll` / `lastIndexOf` (uninterpreted with weak axioms)** | Z3 has no native primitive for either. Phase 47f ships them as uninterpreted functions with two universally-quantified axioms each: `replaceAll` knows non-occurrence is a no-op + same-length swaps preserve length; `lastIndexOf` knows the result is `>= -1` and `== -1` when the substring is absent. Sound under-approximation — proofs that need finer reasoning (e.g. "post-replace charAt matches one of two values") gracefully skip. When Z3 ships `mkReplaceAll`, the uninterpreted form swaps out for native in one edit | ✅ Phase 47f |
 | **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
-| **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
+| **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC (per verification-condition) 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
 | **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (now modelled with Z3's exact Real sort — see below — *not* skipped); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |
 | **BigDecimal arithmetic as exact reals** | `/` on integers is `BigDecimal` division in Groovy (`5 / 2 == 2.5`, not `2`) — modelled with Z3's exact **Real** sort: int operands coerced via int→real, `BigDecimal` literals and params decimal-typed (only `BigDecimal` — its `+`/`-`/`*` are exact; `double`/`float` are IEEE-754 and take the separate FP path below, *not* the exact-Real one). So `a / 2 == 2.5` proves, `a / 2 == 2` refutes, a `BigDecimal avg(int a, int b)` is provably `(a + b) / 2`, and the full scalar set works — `+ - * /`, unary minus (`-a`), negative literals (`-2.5`), comparisons (Phase 67). Retires the old "`/` skips" caveat; the `b != 0` obligation still fires. *(Out of fragment: `max`/`min`/`abs` over decimal-element collections, and decimal `%`, which skip loudly.)* | ✅ Phase 61 / 67 / 72 |
 | **IEEE-754 floating point** (`double`/`float`) | Straight-line `double`/`float` modelled with Z3's **FP theory** — bit-exact with the JVM (RNE rounding, NaN, ±∞, signed zero), the opposite of treating them as exact reals. So the same expression proves in *two* number models: `0.1 + 0.2 == 0.3` for `BigDecimal` (exact) **and** `0.1d + 0.2d != 0.3d` for `double` (IEEE-754). Exact FP facts prove (`0.5d * 2.0d == 1.0d`); full FP arithmetic `+ - * /` (`/` is IEEE division — `x/0.0` is `±Inf`/NaN, *not* a thrown `ArithmeticException`, so it carries no divisor obligation, unlike `BigDecimal` `/`); the high-value class — **no-NaN / finiteness** (`Double.isFinite`/`isNaN`/`isInfinite`) — proves, including over `Math.sqrt`/`Math.abs` (Z3 `fp.sqrt`/`fp.abs`: `x >= 0 ⟹ !isNaN(Math.sqrt(x))`, `Math.abs` non-negative); and it's sound (`(a + b) - b == a` refutes — FP non-associativity; `x == x` refutes — NaN ≠ NaN; unguarded `Math.sqrt` can be NaN). HumanEval 045 `triangle_area` (`a*h/2`) ports here: positive sides prove `result >= 0`, but **not** `result > 0` (tiny sides underflow `a*h` to `+0.0`), and the formula `result == a*h/2` needs a finiteness guard (else NaN breaks `x == x`). Z3 bit-blasts FP, so it's timeout-gated. *(Out of fragment: FP loops, the other transcendentals, tight error bounds.)* | ✅ Phase 73 |
@@ -1258,12 +1262,32 @@ warning rather than passing silently. In expressions the fragment is:
 - straight-line `double`/`float` on Z3's IEEE-754 **FP theory** (Phase 73) — bit-exact (NaN, ±∞, RNE),
   with `Math.sqrt`/`Math.abs`; `0.1d + 0.2d != 0.3d` and no-NaN/finiteness prove, FP loops/transcendentals
   skip;
-- `xs.max()` / `xs.min()` over an Int list/array (Phase 60), as the witnessed-extremum spec — `r`
-  bounds every element and is achieved by one of them — so `result == a.max()` means what you'd write
-  by hand;
-- comparisons, the boolean connectives `&&`/`||`/`!`, and the conditional `?:` — all
-  short-circuit-aware, so a guard's left operand protects accesses in its right
-  (`i > 0 && a[i - 1] < a[i]`) and a `?:` branch is checked under its condition;
+- `xs.max()` / `xs.min()` as the witnessed-extremum spec — `r` bounds every element and is achieved by one
+  of them, so `result == a.max()` means what you'd write by hand — over Int (Phase 60), `BigDecimal`/Real
+  (Phase 76) **and** `double` lists/arrays (Phase 77, guarded all-non-NaN since FP isn't totally ordered);
+  `double[]` / `List<Double>` element predicates ride the same FP theory (a hand-written extremum *loop*
+  stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
+- aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold
+  (Phases 51/52) over Int and `String` (concatenation on the `str.++` monoid), and `List<BigDecimal>` decimal
+  sums with N-account *conservation* (`bal.sum() == old.bal.sum()`; Phases 68–70); the recurrence spec helpers
+  `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` lower to axiomatised primitives (Phases 55/63/87);
+- `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
+  `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` / `replace` /
+  regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion and
+  uninterpreted-with-axioms `toUpperCase` / `toLowerCase` / `replaceAll`;
+- structured returns and products: a list-literal return binds `result` for constant-index `result[k]`
+  (Phase 78); `Tuple` / `TupleN` fixed-arity typed products with `.vN` slot access, tuple parameters and
+  component-wise `==` (Phases 79–82); and Groovy's map-as-named-tuple (`return [sum: s, …]`, `result.sum`;
+  Phases 83/84) — slot/element *comparisons* are reliable, but a generic-typed component's *arithmetic* erases
+  to `Object` under `@TypeChecked` (compare in the contract, compute in the body);
+- infinite-stream `every` / `any` over `Stream.iterate(seed, f)` with a required `.limit(n)` / `.take(n)`: a
+  literal limit *unrolls*, a symbolic limit proves the property of *every* element by induction (base +
+  preservation); an unbounded terminal `every` skips loudly (Phase 75);
+- `(a..b).containsWithinBounds(v)` over all four range forms, as a pure bounds check (Phase 74);
+- comparisons (including the spaceship `<=>`, Phase 58), the boolean connectives `&&`/`||`/`!` and logical
+  implication `==>` / `.implies()` (Phase 57), and the conditional `?:` — all short-circuit-aware, so a guard's
+  left operand protects accesses in its right (`i > 0 && a[i - 1] < a[i]`) and a `?:` branch is checked under
+  its condition;
 - the size / nullity / membership oracles from the table above
   (`xs.size()`, `x == null`, `xs.contains(y)`, `x.equals(y)`, `isEmpty()`);
 - array/list contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
@@ -1299,10 +1323,16 @@ warning rather than passing silently. In expressions the fragment is:
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
-tracked in SSA so a mutator's pre/post state differ), and a single annotated loop — `while`, a
-classic `for (init; cond; update)`, or `for (x in xs)` over a named collection, all desugaring to the
-same machinery (Phases 59 & 63; the for-in's index is synthesised and hidden, the loop variable keeps
-its name; `.each` stays outside the fragment and skips loudly). When the solver returns *UNKNOWN* on a
+tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
+`++`/`--` as statements (desugared to plain assignment; Phases 85/86 — *expression*-position `a[i++]` stays
+out and skips loudly), and a single annotated loop — `while`, a classic `for (init; cond; update)`, or
+`for (x in xs)` over a named collection, all desugaring to the same machinery (Phases 59 & 63; the for-in's
+index is synthesised and hidden, the loop variable keeps its name; `.each` stays outside the fragment and
+skips loudly). Across method boundaries: a callee's `@Ensures` is assumed at its call site, a method-level
+`@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a
+`void` lemma proven once then applied by calling it), and `@Modifies` frames what a call may change so the
+caller havocs only those locations while `old.x` snapshots pre-state field and array contents. When the
+solver returns *UNKNOWN* on a
 postcondition (a quantifier/recurrence-axiom timeout), a bounded property-based pass runs the
 executable contract over a small grid of integer inputs and reports any concrete failing input as a
 best-effort `fails on:` repro (Phase 62). See `Encoder` and the roadmap for the exact boundaries.
