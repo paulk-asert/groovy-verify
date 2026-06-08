@@ -19,13 +19,16 @@ import groovy.transform.CompileStatic
 import groovy.transform.TupleConstructor
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -206,6 +209,29 @@ class BodyEncoder {
 
             if (e instanceof DeclarationExpression) {
                 DeclarationExpression de = (DeclarationExpression) e
+                // Phase 79 — multiple assignment `def (a, b) = rhs`: bind a fresh temp to the (tuple/list)
+                // rhs *once*, then each LHS variable to a constant-index slot read `tmp[k]`, which folds
+                // when rhs is a tuple/list factory. The temp Assign records the factory; tmp[k] resolves.
+                if (de.leftExpression instanceof TupleExpression) {
+                    List<Expression> lhs = ((TupleExpression) de.leftExpression).expressions
+                    Expression rhs = de.rightExpression
+                    if (rhs == null || rhs instanceof EmptyExpression) {
+                        throw new UnsupportedConstructException(
+                            "uninitialised multiple assignment (line ${s.lineNumber})")
+                    }
+                    String tmp = '__gvTuple$' + System.identityHashCode(de)
+                    Path np = copy(prefix)
+                    np.steps.add(new Assign(tmp, rhs))
+                    for (int k = 0; k < lhs.size(); k++) {
+                        if (!(lhs.get(k) instanceof VariableExpression)) continue
+                        String vn = ((VariableExpression) lhs.get(k)).name
+                        Expression idx = new BinaryExpression(new VariableExpression(tmp),
+                            Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), new ConstantExpression(k))
+                        np.steps.add(new Assign(vn, idx))
+                    }
+                    if (tail) res.terminated.add(np) else res.live.add(np)
+                    return res
+                }
                 if (!(de.leftExpression instanceof VariableExpression)) {
                     throw new UnsupportedConstructException(
                         "multi-variable declaration unsupported (line ${s.lineNumber})")

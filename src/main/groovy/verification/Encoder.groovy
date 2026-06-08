@@ -208,6 +208,13 @@ class Encoder {
      * the project takes as a non-goal.
      */
     private final Map<String, ClassNode> objectParams
+    /**
+     * Phase 80 — tuple-typed parameters/fields ({@code Tuple2<Integer,String> t}), name → the {@code TupleN}
+     * {@link ClassNode}. Unlike a constructed/returned tuple (a factory container with known slot
+     * expressions), a tuple parameter's slots are the caller's values, so {@code t.vN}/{@code t[k]} mint a
+     * fresh typed entity {@code t$vN} in the slot's sort (the slot type from the generic arguments).
+     */
+    private final Map<String, ClassNode> tupleParams
 
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
@@ -248,7 +255,8 @@ class Encoder {
             Map<String, ClassNode> objectParams = null,
             Set<String> booleanLocals = null,
             Set<String> decimalNames = null,
-            Map<String, Boolean> fpNames = null) {
+            Map<String, Boolean> fpNames = null,
+            Map<String, ClassNode> tupleParams = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -262,6 +270,7 @@ class Encoder {
         this.booleanLocals = booleanLocals != null ? booleanLocals : new HashSet<String>()
         this.decimalNames = decimalNames != null ? decimalNames : new HashSet<String>()
         this.fpNames = fpNames != null ? fpNames : new HashMap<String, Boolean>()
+        this.tupleParams = tupleParams != null ? tupleParams : new LinkedHashMap<String, ClassNode>()
     }
 
     /** Phase 73 — {@code double}/{@code float} names mapped to precision ({@code true} = double/Float64,
@@ -708,6 +717,7 @@ class Encoder {
         String name = t.name
         if (name == 'java.lang.String') return session.declareSort('String')
         if (isDecimalElementType(t)) return session.realSort()   // Phase 70 — List<BigDecimal> contents
+        if (isFpElementType(t)) return session.fpSort(isFpDoubleType(t))   // Phase 77 — double/float contents
         if (isIntLikeType(t)) return session.intSort()
         if (t.isEnum() || isEnumLikeType(t)) return session.declareSort(enumSortName(t))
         session.intSort()   // default — preserves today's Int-only behaviour for unrecognised types
@@ -1501,6 +1511,164 @@ class Encoder {
         int entryCount() { args != null ? args.size() : (keys != null ? keys.size() : 0) }
     }
 
+    /** True if {@code e} is the {@code groovy.lang.Tuple} class (the receiver of {@code Tuple.tuple(...)}). */
+    private static boolean isTupleReceiver(Expression e) {
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name == 'Tuple'
+        if (e instanceof ClassExpression) return ((ClassExpression) e).type?.nameWithoutPackage == 'Tuple'
+        if (e instanceof PropertyExpression) return ((PropertyExpression) e).propertyAsString == 'Tuple'
+        false
+    }
+
+    /**
+     * The 0-based slot index for a tuple accessor name — {@code v1}/{@code getV1}/{@code first} → 0,
+     * {@code v2}/{@code getV2}/{@code second} → 1, … {@code vN}/{@code getVN} → N-1; -1 if not a slot name.
+     */
+    private static int tupleSlotIndex(String name) {
+        if (name == 'first') return 0
+        if (name == 'second') return 1
+        if (name ==~ /v\d+/) return Integer.parseInt(name.substring(1)) - 1
+        if (name ==~ /getV\d+/) return Integer.parseInt(name.substring(4)) - 1
+        -1
+    }
+
+    /** Arity of a {@code TupleN} type (the N), or -1 if not a tuple type. */
+    private static int tupleArity(ClassNode t) {
+        String n = t?.nameWithoutPackage
+        (n != null && (n ==~ /Tuple\d+/)) ? Integer.parseInt(n.substring(5)) : -1
+    }
+
+    /** The declared type of slot {@code i} of a {@code TupleN<...>} (from its generics), or null (→ Int). */
+    private static ClassNode tupleSlotType(ClassNode t, int i) {
+        try {
+            def gens = t?.genericsTypes
+            if (gens != null && i < gens.length && gens[i].type != null) return gens[i].type
+        } catch (Throwable ignored) {}
+        null
+    }
+
+    /**
+     * Slot {@code slotIndex} of a tuple <em>parameter</em> {@code name}: a fresh typed entity {@code name$vN}
+     * minted in the slot's sort (the caller's component value, uninterpreted). Null if {@code name} isn't a
+     * tuple parameter or the index is out of range.
+     */
+    private Object tupleSlotEntity(String name, int slotIndex) {
+        ClassNode t = tupleParams.get(name)
+        if (t == null || slotIndex < 0 || slotIndex >= tupleArity(t)) return null
+        return varForOfSort(name + '$v' + (slotIndex + 1), sortFor(tupleSlotType(t, slotIndex)))
+    }
+
+    /** A constant-slot accessor — {@code X.vN}/{@code X.first}/{@code X.second}/{@code X[k]} — as [innerExpr, slotIndex], else null. */
+    private Object[] slotAccessor(Expression e) {
+        if (e instanceof PropertyExpression) {
+            int si = tupleSlotIndex(((PropertyExpression) e).propertyAsString)
+            if (si >= 0) return [((PropertyExpression) e).objectExpression, si] as Object[]
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type == Types.LEFT_SQUARE_BRACKET &&
+                be.rightExpression instanceof ConstantExpression &&
+                ((ConstantExpression) be.rightExpression).value instanceof Integer) {
+                return [be.leftExpression, (Integer) ((ConstantExpression) be.rightExpression).value] as Object[]
+            }
+        }
+        null
+    }
+
+    /**
+     * Phase 80/82 — resolve a tuple <em>parameter</em> access chain to [flattenedEntityPrefix, TupleN type],
+     * descending through nested tuple slots ({@code t.v1.v2} → {@code [t$v1, Tuple2<...>]}). Null unless the
+     * chain bottoms out at a tuple-typed parameter and every step's slot type is itself a tuple.
+     */
+    private Object[] tupleParamRef(Expression e) {
+        Expression t = unwrapImmutableWrap(e)
+        if (t instanceof VariableExpression) {
+            ClassNode tt = tupleParams.get(((VariableExpression) t).name)
+            if (tt != null) return [((VariableExpression) t).name, tt] as Object[]
+        }
+        Object[] acc = slotAccessor(t)
+        if (acc != null) {
+            Object[] inner = tupleParamRef((Expression) acc[0])
+            if (inner != null) {
+                int k = (int) acc[1]
+                ClassNode type = (ClassNode) inner[1]
+                if (k >= 0 && k < tupleArity(type)) {
+                    ClassNode slotType = tupleSlotType(type, k)
+                    if (tupleArity(slotType) >= 0) {   // slot is itself a tuple → keep descending
+                        return [((String) inner[0]) + '$v' + (k + 1), slotType] as Object[]
+                    }
+                }
+            }
+        }
+        null
+    }
+
+    /** Slot {@code slot} of a (possibly nested) tuple-parameter expression {@code obj} → its typed entity, or null. */
+    private Object tupleParamSlot(Expression obj, int slot) {
+        Object[] ref = tupleParamRef(obj)
+        if (ref == null) return null
+        ClassNode type = (ClassNode) ref[1]
+        if (slot < 0 || slot >= tupleArity(type)) return null
+        return varForOfSort(((String) ref[0]) + '$v' + (slot + 1), sortFor(tupleSlotType(type, slot)))
+    }
+
+    /**
+     * The component-value handles of {@code e} if it is a fixed-arity product — a factory container
+     * (a list literal, {@code Tuple.tuple(...)}, {@code new TupleN(...)}, {@code List.of(...)}) or a tuple
+     * <em>parameter</em> (its slot entities) — else null. Each component translates in its own sort.
+     */
+    private List<Object> tupleComponents(Expression e) {
+        Expression t = unwrapImmutableWrap(e)
+        FactoryContainer f = factoryContainerFor(t)
+        if (f != null && f.kind == 'list' && f.args != null) {
+            List<Object> out = new ArrayList<Object>()
+            for (Expression a : f.args) {
+                Object h = translate(a)
+                if (h == null) return null
+                out.add(h)
+            }
+            return out
+        }
+        if (t instanceof VariableExpression) {
+            ClassNode tt = tupleParams.get(((VariableExpression) t).name)
+            if (tt != null) {
+                int ar = tupleArity(tt)
+                List<Object> out = new ArrayList<Object>()
+                for (int i = 0; i < ar; i++) {
+                    Object h = tupleSlotEntity(((VariableExpression) t).name, i)
+                    if (h == null) return null
+                    out.add(h)
+                }
+                return out
+            }
+        }
+        null
+    }
+
+    /**
+     * Component-wise equality {@code a == b} (or {@code !=}) for two fixed-arity products (Phase 81):
+     * a conjunction of pairwise component equalities, or {@code false} for a length mismatch (Groovy's
+     * list/tuple equality). Each pairwise {@code eq} is in the component's sort; a sort mismatch (comparing
+     * unlike tuple types) is a clean skip. Returns null unless <em>both</em> sides are products.
+     */
+    private Object translateTupleEquality(BinaryExpression be, boolean isEq) {
+        List<Object> lc = tupleComponents(be.leftExpression)
+        if (lc == null) return null
+        List<Object> rc = tupleComponents(be.rightExpression)
+        if (rc == null) return null
+        if (lc.size() != rc.size()) {
+            Object f = session.boolLit(false)
+            return isEq ? f : session.not(f)
+        }
+        try {
+            List<Object> eqs = new ArrayList<Object>()
+            for (int i = 0; i < lc.size(); i++) eqs.add(session.eq(lc.get(i), rc.get(i)))
+            Object conj = eqs.isEmpty() ? session.boolLit(true) : (eqs.size() == 1 ? eqs.get(0) : session.and(eqs))
+            return isEq ? conj : session.not(conj)
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
     /**
      * Phase 38 — recognise a factory call or Groovy literal that yields an immutable container of
      * known size and elements:
@@ -1597,6 +1765,33 @@ class Encoder {
         if (target instanceof VariableExpression) {
             FactoryContainer recorded = localFactories.get(((VariableExpression) target).name)
             if (recorded != null) return recorded
+        }
+        // Phase 79 — Tuple.tuple(a, b, …) and new TupleN(a, b, …) are fixed-arity products; model as a
+        // list-kind factory so the index/size/first/last folds apply and (Phase 78) a returned tuple binds
+        // result. Heterogeneous slots translate independently — each `args[k]` is its own AST expression.
+        if (target instanceof MethodCallExpression) {
+            MethodCallExpression tmce = (MethodCallExpression) target
+            if (tmce.methodAsString == 'tuple' && isTupleReceiver(tmce.objectExpression)) {
+                return new FactoryContainer(kind: 'list', args: argList(tmce))
+            }
+        }
+        if (target instanceof ConstructorCallExpression) {
+            ConstructorCallExpression cce = (ConstructorCallExpression) target
+            String tn = cce.type?.nameWithoutPackage
+            if (tn != null && (tn ==~ /Tuple\d+/)) {
+                return new FactoryContainer(kind: 'list', args: ctorArgList(cce))
+            }
+        }
+        // Phase 82 — nested products: a constant-slot accessor `X.vN` / `X[k]` on a list-kind product whose
+        // slot expression is *itself* a product yields that nested container (so `Tuple.tuple(p, q).v1.v2`
+        // and `result.v1[0]` fold through to the leaf). Recurses on the strictly smaller inner expression.
+        Object[] nestAcc = slotAccessor(target)
+        if (nestAcc != null) {
+            FactoryContainer outer = factoryContainerFor((Expression) nestAcc[0])
+            if (outer != null && outer.kind == 'list' && outer.args != null) {
+                int k = (int) nestAcc[1]
+                if (k >= 0 && k < outer.args.size()) return factoryContainerFor(outer.args.get(k))
+            }
         }
         if (target instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) target
@@ -1726,6 +1921,12 @@ class Encoder {
         }
         if (m == 'last' && args.isEmpty() && (f.kind == 'list' || f.kind == 'set')) {
             return f.args.isEmpty() ? null : translate(f.args.get(f.args.size() - 1))
+        }
+        // Phase 79 — TupleN slot accessor methods: getV1()..getV16() and second() (first/head/last/get
+        // are handled above). The slot value is the k-th constructed element, in its own sort.
+        if (args.isEmpty() && f.kind == 'list' && f.args != null) {
+            int si = tupleSlotIndex(m)
+            if (si >= 0 && si < f.args.size()) return translate(f.args.get(si))
         }
         null
     }
@@ -2073,33 +2274,62 @@ class Encoder {
     private final Map<String, Object> extremumCache = new HashMap<String, Object>()
 
     /**
-     * Model {@code xs.max()} / {@code xs.min()} over the Int contents of {@code arr} on the half-open
-     * range {@code [loH, hiH)} as a fresh constant {@code r} carrying the two facts that define an
-     * extremum (Phase 60): {@code r} bounds every element ({@code ∀i. lo<=i<hi ⟹ a[i] <= r}, or
-     * {@code >=} for min, triggered on {@code a[i]}) and {@code r} is *achieved* by some element
-     * ({@code ∃j. lo<=j<hi ∧ a[j] == r}). The achieved-fact is guarded by non-emptiness
+     * Model {@code xs.max()} / {@code xs.min()} over the {@code elemSort}-typed contents of {@code arr} on
+     * the half-open range {@code [loH, hiH)} as a fresh constant {@code r} carrying the two facts that
+     * define an extremum (Phase 60; sort-generic since Phase 76): {@code r} bounds every element
+     * ({@code ∀i. lo<=i<hi ⟹ a[i] <= r}, or {@code >=} for min, triggered on {@code a[i]}) and {@code r}
+     * is *achieved* by some element ({@code ∃j. lo<=j<hi ∧ a[j] == r}). Only the extremum constant is
+     * sort-specific; the order comparisons ({@code le}/{@code ge}) and {@code eq} are arithmetic-polymorphic
+     * over Int and Real in Z3, so they're unchanged. The achieved-fact is guarded by non-emptiness
      * ({@code lo < hi ⟹ …}) so an empty range — Groovy's {@code [].max()} is undefined — cannot make
      * the context vacuously unsatisfiable and "prove" anything. Mint-once per receiver so repeated
      * {@code xs.max()} occurrences are the same term.
      */
-    Object maxMinOf(String key, Object arr, Object loH, Object hiH, boolean isMax) {
+    Object maxMinOf(String key, Object arr, Object loH, Object hiH, boolean isMax, Object elemSort, boolean fpElem) {
         Object cached = extremumCache.get(key)
         if (cached != null) return cached
-        Object r = session.intVar('extremum$' + (quantCounter++))
+        Object r = varOfSort('extremum$' + (quantCounter++), elemSort)
         extremumCache.put(key, r)
-        // bound: ∀i. lo <= i < hi ⟹ (isMax ? a[i] <= r : a[i] >= r)
         Object iv = session.boundIntVar('ext$b' + (quantCounter++))
         Object seli = session.select(arr, iv)
         Object rangei = session.and([session.le(loH, iv), session.lt(iv, hiH)])
-        Object bound = isMax ? session.le(seli, r) : session.ge(seli, r)
-        session.assertExpr(session.forall([iv], session.implies(rangei, bound), [seli]))
-        // achieved (guarded non-empty): lo < hi ⟹ ∃j. lo <= j < hi ∧ a[j] == r
         Object jv = session.boundIntVar('ext$a' + (quantCounter++))
         Object selj = session.select(arr, jv)
         Object rangej = session.and([session.le(loH, jv), session.lt(jv, hiH)])
+        if (fpElem) {
+            // FP is *not* totally ordered: Groovy's max/min returns NaN when any element is NaN, and NaN is
+            // not fpLeq-comparable nor fpEq to anything. So the bound/achieved facts hold only under
+            // all-non-NaN — asserted conditionally on that guard so an array that *might* contain NaN can't
+            // make the context vacuous (the guard is just false then). A developer proves an FP-extremum
+            // property under a `!Double.isNaN` precondition, which discharges the guard.
+            Object nv = session.boundIntVar('ext$n' + (quantCounter++))
+            Object seln = session.select(arr, nv)
+            Object rangen = session.and([session.le(loH, nv), session.lt(nv, hiH)])
+            Object allNonNaN = session.forall([nv],
+                session.implies(rangen, session.not(session.fpIsNaN(seln))), [seln])
+            Object bound = isMax ? session.fpLeq(seli, r) : session.fpGeq(seli, r)
+            session.assertExpr(session.implies(allNonNaN,
+                session.forall([iv], session.implies(rangei, bound), [seli])))
+            Object ach = session.exists([jv], session.and([rangej, session.fpEq(selj, r)]), [selj])
+            session.assertExpr(session.implies(allNonNaN, session.implies(session.lt(loH, hiH), ach)))
+            return r
+        }
+        // Int / Real — totally ordered, so le/ge/eq (arithmetic-polymorphic in Z3) and no NaN guard.
+        // bound: ∀i. lo <= i < hi ⟹ (isMax ? a[i] <= r : a[i] >= r)
+        Object bound = isMax ? session.le(seli, r) : session.ge(seli, r)
+        session.assertExpr(session.forall([iv], session.implies(rangei, bound), [seli]))
+        // achieved (guarded non-empty): lo < hi ⟹ ∃j. lo <= j < hi ∧ a[j] == r
         Object ach = session.exists([jv], session.and([rangej, session.eq(selj, r)]), [selj])
         session.assertExpr(session.implies(session.lt(loH, hiH), ach))
         return r
+    }
+
+    /** A fresh scalar variable in {@code sort} — Int, Real, or IEEE-754 (double/float). */
+    private Object varOfSort(String name, Object sort) {
+        if (sort == session.realSort()) return session.realVar(name)
+        if (sort == session.fpSort(true)) return session.fpVar(name, true)
+        if (sort == session.fpSort(false)) return session.fpVar(name, false)
+        return session.intVar(name)
     }
 
     /** Array handles whose String-concat base/step axioms have been asserted (mint-once, per array). */
@@ -2142,6 +2372,18 @@ class Encoder {
         if (t == null) return false
         String n = t.name
         n == 'java.math.BigDecimal'   // Phase 72 — only BigDecimal is exact; double/float are IEEE-754
+    }
+
+    /** Whether {@code t} is an IEEE-754 element type — {@code double}/{@code float} (Phase 77 FP arrays). */
+    private static boolean isFpElementType(ClassNode t) {
+        String n = t?.name
+        n == 'double' || n == 'java.lang.Double' || n == 'float' || n == 'java.lang.Float'
+    }
+
+    /** Double precision (Float64) vs single (Float32) for an FP element type. */
+    private static boolean isFpDoubleType(ClassNode t) {
+        String n = t?.name
+        n == 'double' || n == 'java.lang.Double'
     }
 
     /** Whether fib's defining axioms have been asserted (mint-once — fib is one global function). */
@@ -2424,6 +2666,25 @@ class Encoder {
                     }
                 }
             }
+            // Phase 79 — a tuple/list factory's named slot accessor (property form): t.v1 / t.vN /
+            // t.first / t.second fold to the k-th constructed element. Covers `result.v1` on a returned
+            // tuple (result is recorded as a factory by Phase 78) and `Tuple.tuple(a, b).first`.
+            int slot = tupleSlotIndex(prop)
+            if (slot >= 0) {
+                FactoryContainer tf = factoryContainerFor(obj)
+                if (tf != null && tf.kind == 'list' && tf.args != null && slot < tf.args.size()) {
+                    Object h = translate(tf.args.get(slot))
+                    if (h != null) return h   // leaf scalar; a nested-tuple slot is null here, resolved via the chain
+                }
+                // Phase 80/82 — slot of a (possibly nested) tuple *parameter* → typed entity t$vN / t$v1$v2.
+                Object te = tupleParamSlot(obj, slot)
+                if (te != null) return te
+            }
+            // Phase 80 — t.size on a tuple parameter folds to its arity (a literal).
+            if (prop == 'size' && obj instanceof VariableExpression) {
+                int ar = tupleArity(tupleParams.get(((VariableExpression) obj).name))
+                if (ar >= 0) return session.intLit((long) ar)
+            }
             // s.size / m.size (property form) on a known set/map -> cardinality, ahead of the size oracle.
             if (prop == 'size') {
                 String setKey = setKeyFor(obj)
@@ -2572,10 +2833,24 @@ class Encoder {
         if (e instanceof VariableExpression) return fpNames.containsKey(((VariableExpression) e).name)
         if (e instanceof UnaryMinusExpression) return isFpValued(((UnaryMinusExpression) e).expression)
         if (e instanceof BinaryExpression) {
-            String t = ((BinaryExpression) e).operation.text
+            BinaryExpression be = (BinaryExpression) e
+            // Phase 77 — an FP-element list/array read `xs[i]` is FP-valued (the select inherits the
+            // array's element sort), so a comparison/arithmetic on it routes to the FP theory.
+            if (be.operation.type == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression) {
+                return isFpElementType(listElementTypes.get(((VariableExpression) be.leftExpression).name))
+            }
+            String t = be.operation.text
             if (t == '+' || t == '-' || t == '*' || t == '/') {
-                return isFpValued(((BinaryExpression) e).leftExpression) ||
-                       isFpValued(((BinaryExpression) e).rightExpression)
+                return isFpValued(be.leftExpression) || isFpValued(be.rightExpression)
+            }
+        }
+        // Phase 77 — `xs.max()` / `xs.min()` over an FP-element list is FP-valued (the witnessed extremum r).
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            String m = mc.methodAsString
+            if ((m == 'max' || m == 'min') && argList(mc).isEmpty() &&
+                mc.objectExpression instanceof VariableExpression) {
+                return isFpElementType(listElementTypes.get(((VariableExpression) mc.objectExpression).name))
             }
         }
         if (isFpMathCall(e) != null) return true   // Math.sqrt(fp) / Math.abs(fp)
@@ -2651,7 +2926,11 @@ class Encoder {
             if (x == null) return null
             return math[0] == 'sqrt' ? session.fpSqrt(x) : session.fpAbs(x)
         }
-        null
+        // Phase 77 — fallback for any expression that already translates to an FP-sorted term: an
+        // FP-element array read `xs[i]` (the select inherits the element sort), a quantifier element
+        // bound to such a select, or `xs.max()`/`xs.min()` over an FP list. Accept it iff it's FP-sorted.
+        Object h = translate(e)
+        return (h != null && session.isFp(h)) ? h : null
     }
 
     /** True if {@code recv} is the {@code Math} class (for {@code Math.sqrt(x)} / {@code Math.abs(x)}). */
@@ -2758,6 +3037,14 @@ class Encoder {
 
         int op = be.operation.type
 
+        // Phase 81 — component-wise tuple/list equality: `t1 == t2` (or `==` a tuple/list literal) folds to
+        // the conjunction of pairwise component equalities (same arity); `!=` is its negation. Preempts the
+        // scalar paths below, which would skip on a tuple operand. Only fires when both sides are products.
+        if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
+            Object te = translateTupleEquality(be, op == Types.COMPARE_EQUAL)
+            if (te != null) return te
+        }
+
         // Array subscript a[i] -> (select a i). The element value, modelled under
         // Z3's array theory (Phase 6). Recorded as a trigger when inside a quantifier.
         // The base is a named array a, or old.a (the entry-snapshot array, keyed old$a).
@@ -2778,6 +3065,13 @@ class Encoder {
                 } else if (factoryL.kind == 'map') {
                     return foldFactoryMapLookup(factoryL, be.rightExpression)
                 }
+            }
+            // Phase 80/82 — t[k] (constant k) on a (possibly nested) tuple parameter → the slot's typed entity.
+            if (be.rightExpression instanceof ConstantExpression &&
+                ((ConstantExpression) be.rightExpression).value instanceof Integer) {
+                Object te = tupleParamSlot(be.leftExpression,
+                                           (Integer) ((ConstantExpression) be.rightExpression).value)
+                if (te != null) return te
             }
             // m[k] over a map reads its value array (key in map's key sort); a[i] over an array
             // or list reads its contents (index in Int). Phase 27: route map keys through the
@@ -3036,6 +3330,18 @@ class Encoder {
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
 
+        // Phase 80 — t.size() / t.getVN() / t.second() on a tuple parameter. `.size()` → arity (a literal);
+        // the slot accessors mint the k-th slot's typed entity. (Constructed/returned tuples fold via the
+        // factory container instead — that path is checked downstream.)
+        if (recv instanceof VariableExpression && tupleParams.containsKey(((VariableExpression) recv).name)) {
+            String tn = ((VariableExpression) recv).name
+            if (m == 'size' && args.isEmpty()) return session.intLit((long) tupleArity(tupleParams.get(tn)))
+            if (args.isEmpty()) {
+                Object te = tupleSlotEntity(tn, tupleSlotIndex(m))
+                if (te != null) return te
+            }
+        }
+
         // Phase 73 — Double.isNaN(x) / isInfinite(x) / isFinite(x) over an FP argument → IEEE predicates.
         if ((m == 'isNaN' || m == 'isInfinite' || m == 'isFinite') && args.size() == 1 &&
             isFpClassReceiver(recv) && isFpValued(args.get(0))) {
@@ -3173,13 +3479,26 @@ class Encoder {
             }
         }
 
-        // xs.max() / xs.min() over an Int list/array (Phase 60) — the witnessed-extremum spec a
+        // xs.max() / xs.min() over an Int *or* BigDecimal list/array — the witnessed-extremum spec a
         // Groovy developer writes as `result == a.max()` instead of spelling the every/any by hand.
+        // Int contents (Phase 60) and Real contents (`List<BigDecimal>`, Phase 76) share the sort-generic
+        // `maxMinOf`; other element domains (String/enum) skip honestly.
         if ((m == 'max' || m == 'min') && args.isEmpty()) {
             Object[] r = listAggHandles(recv)
             if (r == null) return null
-            if (listElementTypes.get((String) r[0]) != null) return null   // non-Int element domain → skip
-            return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max')
+            String aggName = (String) r[0]
+            String elemKey = aggName.startsWith('old$') ? aggName.substring('old$'.length()) : aggName
+            ClassNode et = listElementTypes.get(elemKey)
+            if (et == null) {                              // Int list → Int extremum
+                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', session.intSort(), false)
+            }
+            if (isDecimalElementType(et)) {                // List<BigDecimal> → Real extremum
+                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', session.realSort(), false)
+            }
+            if (isFpElementType(et)) {                     // double[] / List<Double> → FP extremum (NaN-guarded)
+                return maxMinOf(recv.text + '#' + m, r[1], r[2], r[3], m == 'max', sortFor(et), true)
+            }
+            return null                                    // String / enum element → skip
         }
 
         // Fib.of(i) — the Fibonacci spec helper (Phase 55), lowered to the axiomatised fib$ primitive.

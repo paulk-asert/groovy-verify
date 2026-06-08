@@ -176,6 +176,8 @@ interface SmtSession extends AutoCloseable {
     Object fpIsNaN(Object a)
     Object fpIsInfinite(Object a)
     boolean isFp(Object handle)
+    /** The IEEE-754 sort itself (Float64 / Float32) — for FP-element arrays (`double[]`/`List<Double>`). */
+    Object fpSort(boolean isDouble)
 
     /**
      * The bounded product of element values {@code prod(arr, lo, hi) = Π_{lo <= i < hi} arr[i]} — the

@@ -361,6 +361,7 @@ class Z3Session implements SmtSession {
     private FPRMExpr rneMode
     private FPRMExpr rne() { if (rneMode == null) rneMode = ctx.mkFPRoundNearestTiesToEven(); rneMode }
     private FPSort fp(boolean isDouble) { isDouble ? ctx.mkFPSortDouble() : ctx.mkFPSortSingle() }
+    @Override Object fpSort(boolean isDouble) { fp(isDouble) }
     @Override Object fpLit(double v, boolean isDouble) { ctx.mkFP(v, fp(isDouble)) }
     @Override Object fpVar(String name, boolean isDouble) { ctx.mkConst(name, fp(isDouble)) }
     @Override Object fpAdd(Object a, Object b) { ctx.mkFPAdd(rne(), (FPExpr) a, (FPExpr) b) }

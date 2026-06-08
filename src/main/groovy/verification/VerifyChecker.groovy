@@ -150,6 +150,7 @@ class VerifyChecker extends TypeCheckingExtension {
      * lists, and the primitive wrappers have their own dispatch (collectSetElementTypes etc.).
      */
     private Map<String, ClassNode> currentObjectParams = new LinkedHashMap<String, ClassNode>()
+    private Map<String, ClassNode> currentTupleParams = new LinkedHashMap<String, ClassNode>()
 
     /**
      * Source-level names of {@code java.util.Set}-typed parameters and fields visible to the current
@@ -219,7 +220,7 @@ class VerifyChecker extends TypeCheckingExtension {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames, currentFpNames)
+                    currentBooleanLocals, currentDecimalNames, currentFpNames, currentTupleParams)
     }
 
     /**
@@ -251,6 +252,24 @@ class VerifyChecker extends TypeCheckingExtension {
             if (isCrossClassObjectType(p.type, declaring)) out.put(p.name, p.type)
         }
         out
+    }
+
+    /** Tuple-typed (`TupleN<...>`) parameters and declaring-class fields → the tuple {@link ClassNode}. */
+    private static Map<String, ClassNode> collectTupleParams(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) {
+            if (isTupleType(p.type)) out.put(p.name, p.type)
+        }
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) {
+            if (isTupleType(f.type)) out.put(f.name, f.type)
+        }
+        out
+    }
+
+    private static boolean isTupleType(ClassNode t) {
+        String n = t?.nameWithoutPackage
+        n != null && (n ==~ /Tuple\d+/)
     }
 
     /** True if {@code t} is a non-primitive, non-collection, non-array class distinct from the declaring class. */
@@ -460,6 +479,9 @@ class VerifyChecker extends TypeCheckingExtension {
             if (isListType(p.type)) {
                 ClassNode elem = firstGenericOrInt(p.type)
                 if (!isIntElement(elem)) out.put(p.name, elem)
+            } else if (p.type?.isArray()) {              // Phase 77 — non-Int array component (e.g. double[])
+                ClassNode comp = p.type.componentType
+                if (comp != null && !isIntElement(comp)) out.put(p.name, comp)
             }
         }
         ClassNode dc = node.declaringClass
@@ -467,6 +489,9 @@ class VerifyChecker extends TypeCheckingExtension {
             if (isListType(f.type)) {
                 ClassNode elem = firstGenericOrInt(f.type)
                 if (!isIntElement(elem)) out.put(f.name, elem)
+            } else if (f.type?.isArray()) {
+                ClassNode comp = f.type.componentType
+                if (comp != null && !isIntElement(comp)) out.put(f.name, comp)
             }
         }
         // Phase 46a — typed locals like {@code List<String> result = []} carry their element type
@@ -1239,6 +1264,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentIsConstructor = (node instanceof ConstructorNode)
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
         currentObjectParams = collectObjectParams(node)
+        currentTupleParams = collectTupleParams(node)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -1334,6 +1360,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentIsConstructor = false
             currentOverflowChecking = false
             currentObjectParams = new LinkedHashMap<String, ClassNode>()
+            currentTupleParams = new LinkedHashMap<String, ClassNode>()
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
             currentNestedSetValueTypes = new HashMap<String, ClassNode>()
@@ -2753,31 +2780,40 @@ class VerifyChecker extends TypeCheckingExtension {
 
             // A void method (e.g. a lemma) has no result; its postcondition is over parameters.
             if (p.result != null) {
-                // Phase 61 — a BigDecimal-valued return narrowed into a non-decimal result (e.g.
-                // `int f() { a / b }`, Groovy truncating the quotient) can't be bound as a Real
-                // without a sort mismatch; skip loudly, as the bare-`/` int case always has.
-                if (enc.isDecimalValued(p.result) && !enc.isDecimalName('result')) {
-                    throw new UnsupportedConstructException(
-                        "return expression '${p.result.text}' is BigDecimal but the method's return type is not decimal")
+                // Phase 78 — a list-literal (or List.of/map/set factory) return binds result's CONTENTS:
+                // `result` is recorded as a factory container, so `result.size()` and a *constant-index*
+                // `result[k]` fold to the k-th returned element (size + nullity pinned). This lets a method
+                // return e.g. `[sum, product]` and have `@Ensures({ result[0] == … && result[1] == … })`
+                // resolve, where a bare scalar handle couldn't. No scalar result binding is needed.
+                if (enc.tryRecordFactoryAssign('result', p.result)) {
+                    // result registered as a factory — fall through to the postcondition check.
+                } else {
+                    // Phase 61 — a BigDecimal-valued return narrowed into a non-decimal result (e.g.
+                    // `int f() { a / b }`, Groovy truncating the quotient) can't be bound as a Real
+                    // without a sort mismatch; skip loudly, as the bare-`/` int case always has.
+                    if (enc.isDecimalValued(p.result) && !enc.isDecimalName('result')) {
+                        throw new UnsupportedConstructException(
+                            "return expression '${p.result.text}' is BigDecimal but the method's return type is not decimal")
+                    }
+                    // Phase 67 — a decimal-valued return (a `-2.5` literal, a bare decimal variable) is
+                    // bound through the Real path; `translate` alone leaves a decimal constant unmodelled
+                    // (null) and a decimal variable an int shadow.
+                    // Phase 73 — a double/float return is bound through the FP path (Z3 IEEE-754).
+                    Object resHandle = enc.isFpValued(p.result) ? enc.asFp(p.result)
+                                     : enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
+                                     : enc.translate(p.result)
+                    if (resHandle == null) {
+                        throw new UnsupportedConstructException(
+                            "return expression '${p.result.text}' is outside fragment")
+                    }
+                    enc.bind('result', resHandle)
+                    // Phase 45b — when the return expression is a list-typed local, also alias the
+                    // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures
+                    // resolve to the same threaded state the local carries. Without this, the result
+                    // is a bare Int handle that doesn't connect to the size/contents oracles —
+                    // postconditions about a returned collection couldn't reference its shape.
+                    aliasResultToReturnedListLocal(session, enc, p.result)
                 }
-                // Phase 67 — a decimal-valued return (a `-2.5` literal, a bare decimal variable) is
-                // bound through the Real path; `translate` alone leaves a decimal constant unmodelled
-                // (null) and a decimal variable an int shadow.
-                // Phase 73 — a double/float return is bound through the FP path (Z3 IEEE-754).
-                Object resHandle = enc.isFpValued(p.result) ? enc.asFp(p.result)
-                                 : enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
-                                 : enc.translate(p.result)
-                if (resHandle == null) {
-                    throw new UnsupportedConstructException(
-                        "return expression '${p.result.text}' is outside fragment")
-                }
-                enc.bind('result', resHandle)
-                // Phase 45b — when the return expression is a list-typed local, also alias the
-                // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures
-                // resolve to the same threaded state the local carries. Without this, the result
-                // is a bare Int handle that doesn't connect to the size/contents oracles —
-                // postconditions about a returned collection couldn't reference its shape.
-                aliasResultToReturnedListLocal(session, enc, p.result)
             }
 
             // Exit obligation: postcondition (if any) AND each class invariant. A single
@@ -3770,10 +3806,14 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
             s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
-            enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
-            // Phase 45b — alias result's size/array oracles to the returned list local so
-            // {@code result.size()} in the postcondition resolves to the local's threaded state.
-            aliasResultToReturnedListLocal(s, enc, resultExpr)
+            // Phase 78 — a list-literal return (e.g. `return [s, p]`) binds result's contents as a factory,
+            // so result.size()/result[k] fold; otherwise the scalar-handle binding + size/array alias.
+            if (resultExpr == null || !enc.tryRecordFactoryAssign('result', resultExpr)) {
+                enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
+                // Phase 45b — alias result's size/array oracles to the returned list local so
+                // {@code result.size()} in the postcondition resolves to the local's threaded state.
+                aliasResultToReturnedListLocal(s, enc, resultExpr)
+            }
             s.assertExpr(s.not(LoopEncoder.tr(enc, postAst, "postcondition")))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {

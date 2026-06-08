@@ -4189,7 +4189,7 @@ base + preservation the loop VCs already do.
 groovy-contracts into an *eager* runtime assert — so a terminal `every`/`any` over an unbounded source would
 loop forever at runtime (a true `every` never short-circuits). So a `.limit(n)`/`.take(n)` is **required**:
 it is what lets the contract degrade to a *terminating* runtime spot-check. An unbounded terminal `every`
-(no bound) is **not** blessed as verified — it skips loudly (the seed of the Phase 76 termination check),
+(no bound) is **not** blessed as verified — it skips loudly (the seed of a later termination check),
 nudging the developer to add a bound. The bound's *value* is the runtime's spot-check depth; the verifier
 reaches far past it.
 
@@ -4218,10 +4218,175 @@ flipped by `!`/`==>` antecedent, stopped elsewhere) and records the positively-p
 check rather than risk a wrong verify. The bounded-unroll regime, being exact, needs no gate. `any` under a
 symbolic limit is an existential that induction can't establish, so it skips. Int-element streams only this slice.
 
-**Still out of fragment:** decimal/FP-element streams; stateful `generate(supplier)` (impure); and the
-Phase 76 **termination** overlay — turning the unbounded-`every` skip into a first-class diagnostic
+**Still out of fragment:** decimal/FP-element streams; stateful `generate(supplier)` (impure); and a later
+**termination** overlay — turning the unbounded-`every` skip into a first-class diagnostic
 ("infinite source consumed without `.limit`/`.take` — would not terminate; add a bound"), and proving the
 3-arg `iterate(seed, hasNext, next)` *terminates* via a `@Decreases`-style variant.
+
+---
+
+## Phase 76 — `List<BigDecimal>.max()` / `.min()`: the Real witnessed extremum  *(shipped)*
+
+First slice of element-sort-generic lists: make the Phase-60 witnessed extremum serve **Real** (`BigDecimal`)
+contents, not just Int. `maxMinOf` gained an `elemSort` parameter and mints the extremum constant `r` via a
+new `varOfSort` helper (`realVar` for Real, `intVar` for Int); everything else is **unchanged**, because the
+order comparisons (`le`/`ge`) and `eq` are arithmetic-polymorphic over Int and Real in Z3 — only the constant
+is sort-specific. The `.max()`/`.min()` dispatch now mirrors `.sum()`'s element-type detection (strip
+`old$`, look up `listElementTypes`): `null` → Int extremum, `BigDecimal` → Real extremum, String/enum → skip.
+
+So `List<BigDecimal>.max()`/`.min()` carry the two defining facts — `r` bounds every element
+(`∀i. xs[i] <= r`) and is achieved by one (`∃j. xs[j] == r`, guarded by non-emptiness) — and they **compose**:
+`xs.max() >= xs.min()` proves for any non-empty decimal list (min is achieved at some `j`, and the max-bound
+instantiates there). This completes the `List<BigDecimal>` story alongside the Phase-70 `.sum()`.
+
+**Why this is the right shape.** Pushing `min`/`max` through is what forces a clean element-sort dispatch.
+`min`/`max` are a *witnessed extremum* — an order comparison plus equality — so they generalize to Int, Real,
+**and** FP (a later slice, under a no-NaN guard). `sum` does **not** generalize to FP: IEEE addition is
+non-associative, so a list's sum depends on fold order and the Phase-70 sum-under-store law is false in FP.
+So the element-generic future is: min/max for all element sorts, sum for Int/Real only. (FP-element arrays
+followed in Phase 77.)
+
+---
+
+## Phase 77 — FP-element arrays (`double[]`) + the NaN-guarded FP extremum  *(shipped)*
+
+The second element-sort-generic slice: IEEE-754 element arrays. `sortFor` routes `double → Float64`,
+`float → Float32` — and **closes a latent soundness trap**: a non-Int element type used to fall through to
+the `Int` default (so a `double[]` would have been modelled as `Array Int Int`); now it's an FP-element
+array. The reads come for free — `translate(xs[i])` is a `select` that inherits the array's element sort, so
+it's FP — and `isFpValued`/`asFp` gained the `xs[i]` (FP-element read) and `xs.max()`/`xs.min()` cases plus
+an "already-FP-sorted" fallback, so comparisons and arithmetic on FP elements route to the FP theory. A
+bounded `∀`/`∃` over the elements instantiates: `(0..<xs.length).every { xs[it] >= 0.0d }` as a precondition
+lets `xs[0] >= 0.0d` prove. `VerifyChecker` now records non-Int **array component** types (not just list
+generics) into `listElementTypes`, so a `double[]` param/field routes through `sortFor`. (Contracts use
+`double[]` rather than `List<Double>`: a generic list's element type is *erased* inside the contract closure
+under `@TypeChecked`, so `xs[it] >= 0.0d` fails to compile — arrays keep their component type.)
+
+**FP min/max is sound only under no-NaN.** FP is *not* totally ordered: Groovy's `max`/`min` returns NaN when
+any element is NaN, and NaN is neither `fpLeq`-comparable nor `fpEq` to anything — so a `BigDecimal`-style
+unconditional `∀i. xs[i] <= r` would be (a) **unsound** (it's false when `r` is NaN) and (b) vacuity-prone
+(unsatisfiable if any element is NaN). So the FP branch of `maxMinOf` guards both facts by **all-non-NaN**
+(`∀i. !isNaN(xs[i])`): `allNonNaN ⟹ (∀i. xs[i] <= r)` and `allNonNaN ⟹ (lo<hi ⟹ ∃j. xs[j] == r)`. When NaN
+may be present the guard is simply false → no constraint, no vacuity; under a `!Double.isNaN` precondition
+the guard discharges and the extremum proves. Verified empirically: `double[].max()` bounds every element
+**under** `(0..<n).every{ !Double.isNaN(xs[it]) }` (and `max >= min` composes), and **refutes** without it.
+
+**Unlocks:** the FP-list HumanEval cluster that needs min/max + scalar FP (`rescale_to_unit`, `maximum`).
+**Still out:** FP `.sum()` (non-associative); `List<Double>` *scalar* element predicates (the `@TypeChecked`
+erasure — `double[]` is the workaround); `has_close_elements` (needs the nested pairwise quantifier too).
+
+---
+
+## Phase 78 — list-literal returns + constant-index `result[k]`  *(shipped)*
+
+The first half of the fixed-arity-product story (and step 1 toward `Tuple` support). Returning a list
+*literal* used to be rejected outright — `return [s, p]` gave *"return expression `[1, 2]` is outside
+fragment"* — because the result-binding only knew how to bind `result` to a *scalar* handle (and Phase 45b
+aliased only `result.size()`, never the contents). Now the result-binding tries `tryRecordFactoryAssign`
+first: if the return expression is a list/`List.of`/map/set **factory container**, `result` is recorded as
+that container (size + non-null pinned), so `result.size()` and a **constant-index** `result[k]` fold to the
+k-th returned element via the existing peephole fold. Wired at both the straight-line return site (`checkPath`)
+and the loop return site (`checkUse`); the scalar/decimal/FP binding stays the fallback.
+
+So a method may return `[a, b, …]` and have `@Ensures` reference its elements: the **faithful HumanEval 008
+(`sum_product`)** now ports as `return [sum, product]` with `@Ensures({ result[0] == xs.sum() && result[1]
+== xs.inject(1){a,x->a*x} })` (each element proven against its aggregate; a wrong element claim refutes) —
+where it previously had to collapse to `s + p` for lack of list/tuple returns.
+
+**Still out (the `Tuple` layer, next):** *heterogeneous* fixed products with **named** accessors
+(`.v1`/`.vN`/`.first`/`.second`), `new TupleN(...)` / `Tuple.tuple(...)` construction, and **multiple
+assignment** (`def (a, b) = pair()`). A list literal is the *homogeneous, positional* case; a `TupleN` adds
+per-slot types and names — modelled as a record of typed components on this same constant-index foundation.
+Symbolic-index `result[i]` stays out (heterogeneous → no single element sort).
+
+---
+
+## Phase 79 — `Tuple` / `TupleN`: fixed-arity typed products  *(shipped)*
+
+The named/heterogeneous half, built directly on Phase 78. `factoryContainerFor` now recognises
+`Tuple.tuple(a, b, …)` (a `MethodCallExpression` on the `Tuple` class) and `new TupleN(a, b, …)` (a
+`ConstructorCallExpression` whose type matches `Tuple\d+`) as **list-kind factory containers** — so the
+existing index/size/first/last folds *and* the Phase-78 return-binding apply unchanged, and a returned tuple
+binds `result`. Heterogeneity falls out for nothing: a factory container holds the slot **AST expressions**,
+and each accessor translates its slot independently in its own sort — `new Tuple2(1, "hi")` gives an Int
+`v1` and a String `v2` with no special machinery.
+
+Accessors added: **named slots** — `.v1`/`.vN`, `.first`/`.second` (property form, in `translate(PropertyExpression)`)
+and `.getV1()`/`.getVN()`/`.second()` (method form, in `foldFactoryMethodCall`) — via a single
+`tupleSlotIndex` mapping (`v1`/`getV1`/`first` → 0, `v2`/`getV2`/`second` → 1, …). Constant-index `t[k]` and
+`.size()` come from the Phase-78 list-factory folds. **Multiple assignment** `def (a, b) = rhs` desugars in
+`BodyEncoder` to a fresh temp bound to `rhs` once, then `a = tmp[0]; b = tmp[1]` (a `TupleExpression` LHS —
+which `ArgumentListExpression` extends; each slot read folds through the factory).
+
+So `sum_product` ports as a **typed** `Tuple2<Integer,Integer>(sum, product)` with
+`@Ensures({ result.v1 == xs.sum() && result.v2 == xs.inject(1){a,x->a*x} })`, and a wrong slot claim refutes.
+Tuples are immutable, so there are **no `@Modifies`/havoc concerns** (a real simplification vs. collections).
+
+**Still out:** symbolic-slot `t[i]` (heterogeneous → no single element sort); tuple **parameters** with
+`.vN` access (Phase 80, below); component-wise tuple `==` and nested tuples.
+
+---
+
+## Phase 80 — tuple parameters with `.vN` access  *(shipped)*
+
+Phase 79 bound *constructed/returned* tuples as factory containers (the slot expressions are known). A tuple
+**parameter** is the dual: its slots are the *caller's* values, so there are no slot expressions — only the
+declared `TupleN<...>` type. So a tuple param is modelled exactly like a Phase-45 object param (`b.field →
+b$field`): `VerifyChecker.collectTupleParams` records `name → TupleN ClassNode` (params + fields) into a new
+`tupleParams` map threaded to the `Encoder`, and each slot access mints a fresh **typed entity** `t$vN` in
+the slot's sort (the slot type from the generic arguments, via `sortFor`) — the caller's uninterpreted
+component value, consistent across references.
+
+`tupleSlotEntity(name, k)` backs three access forms: `.v1`/`.vN`/`.first`/`.second` (property, in
+`translate(PropertyExpression)`), `.getVN()`/`.second()` (method), and constant-index `t[k]` (in the
+`LEFT_SQUARE_BRACKET` handler); `t.size()`/`t.size` fold to the arity. Heterogeneity is exact — a
+`Tuple2<Integer,String> t` gives an Int `t$v1` and a String `t$v2`. So `@Ensures({ result == t.v1 })`,
+`@Requires({ t.first >= 0 && t.second >= 0 })`, and `t.size() == 2` all verify, and `t.v1 >= 0 ⇒ result > 0`
+refutes.
+
+**Known limit (Groovy, not the verifier):** slot *arithmetic* inside a *contract closure* — `t.v1 + t.v2` —
+fails `@TypeChecked` because the slot generic erases to `Object` in the re-parsed closure (`Object#plus`),
+the same erasure that bites `List<Double>` element predicates. Comparisons on slots are fine, so contracts
+compare slots (`result == t.v1`, `t.first >= 0`) while the method body does the arithmetic (generics survive
+there). **Still out:** symbolic-slot `t[i]`, nested tuples, and string-slot *methods* in contracts
+(`t.v2.length()` — the slot isn't yet recognised as a string receiver). (Component-wise `==` followed in Phase 81.)
+
+---
+
+## Phase 81 — component-wise tuple / list `==`  *(shipped)*
+
+Equality over **fixed-arity products**. `tupleComponents(e)` extracts a side's component handles when `e` is
+a factory container (a list literal, `Tuple.tuple(...)`, `new TupleN(...)`, `List.of(...)`) *or* a tuple
+parameter (its `t$vN` slot entities). In `translateBinary`, a `COMPARE_EQUAL`/`COMPARE_NOT_EQUAL` whose
+*both* sides yield component lists folds — ahead of the scalar paths, which would skip on a tuple operand —
+to the conjunction of pairwise `eq`s (each in its component's sort), or `false` on a length mismatch
+(Groovy's list/tuple equality); `!=` is the negation, and a sort mismatch between unlike products is a clean
+skip. So two tuple params with equal components prove `a == b`, a tuple param proves `t == Tuple.tuple(5, 7)`
+under `t.v1 == 5 && t.v2 == 7`, `Tuple.tuple(1,2) != Tuple.tuple(1,3)` proves, `Tuple.tuple(1,2) ==
+Tuple.tuple(1,2,3)` refutes (different arity), and — the same fold for free — **list-literal equality**
+`[1,2,3] == [1,2,3]` proves. **Still out:** symbolic-slot `t[i]`, equality against a *symbolic* list variable
+(only fixed-arity products on both sides fold). (Nested tuples followed in Phase 82.)
+
+---
+
+## Phase 82 — nested tuples  *(shipped)*
+
+Tuples whose components are themselves tuples, by making slot resolution **recursive**. For
+constructed/returned tuples, `factoryContainerFor` gained a nested case: a constant-slot accessor
+`X.vN`/`X[k]` on a list-kind product whose slot expression is *itself* a product returns that nested
+container (recursing on the strictly smaller inner expression). Because every constructed-tuple fold
+(property, index, `==`, size) routes through `factoryContainerFor`, they all handle nesting at once — so
+`Tuple.tuple(Tuple.tuple(1,2),3).v1.v2` folds through to the leaf `2`. For tuple **parameters**,
+`tupleParamRef` resolves an access chain to a `[flattenedEntityPrefix, TupleN type]`, descending through
+nested tuple-typed slots, so `t.v1.v2` flattens to a fresh typed entity `t$v1$v2` (consistent across
+references) in the leaf slot's sort. A shared `slotAccessor` helper recognises `.vN`/`.first`/`.second`/`[k]`.
+
+**Known limit (Groovy, not the verifier):** nested access only works in the method **body** — in a *contract
+closure*, `@TypeChecked` erases the nested generic, so `result.v1` is `Object` and `result.v1.v2` fails to
+compile (`No such property: v2 for class Object`), the same erasure that bites slot arithmetic and
+`List<Double>` element predicates. So a body computes the nested value (`Tuple.tuple(Tuple.tuple(1,2),3).v1.v2`
+folds to `2`; `int x = t.v1.v2` binds `t$v1$v2`) while the contract relates `result` to it. **Still out:**
+nested access *in contracts* (the erasure), symbolic-slot `t[i]`.
 
 ---
 

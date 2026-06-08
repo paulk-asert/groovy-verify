@@ -2888,8 +2888,8 @@ class VerifyHarness {
                         static void f(List<Integer> xs) { }
                     }''')],
         // HumanEval 8 (sum_product) shape: compute the sum AND the product in one loop, each proven
-        // against its aggregate. (Returns `s + p` to expose both in one int — groovy-verify doesn't
-        // model tuple/array returns; the two aggregations composing in one method is the point.)
+        // against its aggregate. (This variant returns `s + p` to expose both in one int; the faithful
+        // `return [sum, product]` version is in the P78 group, now that list returns are modelled.)
         [group: 'P53 product', name: 'sum_product: both aggregations in one loop', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() > 0 })
@@ -2909,6 +2909,237 @@ class VerifyHarness {
                             }
                             return s + p
                         }
+                    }''')],
+
+        // ---------- Phase 78: list-literal returns + constant-index result[k] ----------
+        // A method may now return a list literal and have @Ensures reference its elements by constant
+        // index: `result` is bound as a factory container, so result.size()/result[k] fold.
+        [group: 'P78 list return', name: 'return [1,2]: result[0]==1 && result[1]==2', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result[0] == 1 && result[1] == 2 && result.size() == 2 })
+                        static List<Integer> pair() { [1, 2] }
+                    }''')],
+        // The faithful HumanEval 008 (sum_product): return BOTH aggregates as a list, each element proven
+        // against its aggregate — what previously had to collapse to `s + p` for lack of tuple/list returns.
+        [group: 'P78 list return', name: 'sum_product returns [sum, product]', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result[0] == xs.sum() && result[1] == xs.inject(1) { a, x -> a * x } })
+                        static List<Integer> sumProduct(List<Integer> xs) {
+                            int s = xs[0]
+                            int p = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() &&
+                                         s == xs[0..<i].sum() &&
+                                         p == xs[0..<i].inject(1) { a, x -> a * x } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                s = s + xs[i]
+                                p = p * xs[i]
+                                i = i + 1
+                            }
+                            return [s, p]
+                        }
+                    }''')],
+        // A false element claim refutes (result[1] is 2, not 1).
+        [group: 'P78 list return', name: 'return [1,2]: wrong element claim refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result[1] == 1 })
+                        static List<Integer> pair() { [1, 2] }
+                    }''')],
+
+        // ---------- Phase 79: Tuple / TupleN — fixed-arity typed products ----------
+        // A `Tuple.tuple(a, b)` / `new TupleN(a, b)` is modelled as a fixed-arity factory (on the Phase-78
+        // foundation), so a returned tuple binds `result` and its slots fold: `.v1`/`.vN`, `.first`/`.second`,
+        // `.getVN()`, constant-index `[k]`, and `.size()`. Heterogeneous slots translate in their own sort.
+        [group: 'P79 tuples', name: 'return Tuple.tuple(10,20): .v1/.v2', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.v1 == 10 && result.v2 == 20 })
+                        static Tuple2<Integer, Integer> pair() { Tuple.tuple(10, 20) }
+                    }''')],
+        [group: 'P79 tuples', name: 'tuple accessors: [k], first/second, size', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result[0] == 10 && result.first == 10 && result.second == 20 &&
+                                   result.getV2() == 20 && result.size() == 2 })
+                        static Tuple2<Integer, Integer> pair() { Tuple.tuple(10, 20) }
+                    }''')],
+        // new TupleN constructor form, heterogeneous slots (Integer + String) each in their own sort.
+        [group: 'P79 tuples', name: 'new Tuple2(1, "hi"): heterogeneous slots', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.v1 == 1 && result.v2 == "hi" })
+                        static Tuple2<Integer, String> pair() { new Tuple2<Integer, String>(1, "hi") }
+                    }''')],
+        // The faithful HumanEval 008 (sum_product) as a TYPED tuple return.
+        [group: 'P79 tuples', name: 'sum_product returns Tuple2(sum, product)', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result.v1 == xs.sum() && result.v2 == xs.inject(1) { a, x -> a * x } })
+                        static Tuple2<Integer, Integer> sumProduct(List<Integer> xs) {
+                            int s = xs[0]
+                            int p = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.size() &&
+                                         s == xs[0..<i].sum() &&
+                                         p == xs[0..<i].inject(1) { a, x -> a * x } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                s = s + xs[i]
+                                p = p * xs[i]
+                                i = i + 1
+                            }
+                            return Tuple.tuple(s, p)
+                        }
+                    }''')],
+        // A false slot claim refutes (.v1 is 10, not 20).
+        [group: 'P79 tuples', name: 'tuple wrong slot claim refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result.v1 == 20 })
+                        static Tuple2<Integer, Integer> pair() { Tuple.tuple(10, 20) }
+                    }''')],
+        // Multiple assignment `def (a, b) = …` desugars to a temp + constant-index slot reads.
+        [group: 'P79 tuples', name: 'multiple assignment from a tuple', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 30 })
+                        static int m() {
+                            def (a, b) = Tuple.tuple(10, 20)
+                            a + b
+                        }
+                    }''')],
+        [group: 'P79 tuples', name: 'multiple assignment from a list literal', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 3 })
+                        static int m() {
+                            def (a, b) = [1, 2]
+                            a + b
+                        }
+                    }''')],
+        [group: 'P79 tuples', name: 'multiple assignment wrong sum refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 99 })
+                        static int m() {
+                            def (a, b) = [1, 2]
+                            a + b
+                        }
+                    }''')],
+
+        // ---------- Phase 80: tuple PARAMETERS with .vN access ----------
+        // A tuple parameter's slots are the caller's components — each `t.vN`/`t[k]` mints a fresh typed
+        // entity `t$vN` in the slot's sort (like a Phase-45 object field). `.size()` folds to the arity.
+        // Slot access flows to the body's return (arithmetic on slots lives in the body, where generics
+        // survive — in the *contract* closure @TypeChecked erases the slot generic to Object, so contracts
+        // use comparisons on slots, not arithmetic).
+        [group: 'P80 tuple params', name: 'tuple param: result == t.v1', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == t.v1 })
+                        static int firstOf(Tuple2<Integer, Integer> t) { t.v1 }
+                    }''')],
+        [group: 'P80 tuple params', name: 'tuple param: first/second + size', ok: true,
+         src: tc('''class C {
+                        @Requires({ t.first >= 0 && t.second >= 0 })
+                        @Ensures({ result >= 0 && t.size() == 2 })
+                        static int sum(Tuple2<Integer, Integer> t) { t.first + t.second }
+                    }''')],
+        // Heterogeneous tuple parameter: v1 Int, v2 String — each a distinct entity in its own sort.
+        [group: 'P80 tuple params', name: 'tuple param: heterogeneous Int + String', ok: true,
+         src: tc('''class C {
+                        @Requires({ t.v2 == "hi" })
+                        @Ensures({ result == t.v1 })
+                        static int f(Tuple2<Integer, String> t) { t.v1 }
+                    }''')],
+        // Constant-index access on a tuple parameter.
+        [group: 'P80 tuple params', name: 'tuple param: constant index t[0]', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == t[0] })
+                        static int first(Tuple2<Integer, Integer> t) { t.v1 }
+                    }''')],
+        // Refute: v1 >= 0 does not give v1 > 0.
+        [group: 'P80 tuple params', name: 'tuple param: v1>=0 does not prove v1>0', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ t.v1 >= 0 })
+                        @Ensures({ result > 0 })
+                        static int f(Tuple2<Integer, Integer> t) { t.v1 }
+                    }''')],
+
+        // ---------- Phase 81: component-wise tuple / list == ----------
+        // `a == b` over two fixed-arity products folds to the conjunction of pairwise component equalities
+        // (and `!=` its negation); a length mismatch is false (Groovy's list/tuple equality).
+        [group: 'P81 tuple eq', name: 'equal constructed tuples', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Tuple.tuple(1, 2) == Tuple.tuple(1, 2) })
+                        static void m() { }
+                    }''')],
+        [group: 'P81 tuple eq', name: 'unequal tuples refute', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ Tuple.tuple(1, 2) == Tuple.tuple(1, 3) })
+                        static void m() { }
+                    }''')],
+        [group: 'P81 tuple eq', name: 'unequal tuples !=', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Tuple.tuple(1, 2) != Tuple.tuple(1, 3) })
+                        static void m() { }
+                    }''')],
+        // Two tuple parameters: equal components ⇒ equal tuples.
+        [group: 'P81 tuple eq', name: 'two params: equal components ⇒ a == b', ok: true,
+         src: tc('''class C {
+                        @Requires({ a.v1 == b.v1 && a.v2 == b.v2 })
+                        @Ensures({ a == b })
+                        static void check(Tuple2<Integer, Integer> a, Tuple2<Integer, Integer> b) { }
+                    }''')],
+        // Tuple parameter vs a constructed tuple.
+        [group: 'P81 tuple eq', name: 'param == constructed tuple', ok: true,
+         src: tc('''class C {
+                        @Requires({ t.v1 == 5 && t.v2 == 7 })
+                        @Ensures({ t == Tuple.tuple(5, 7) })
+                        static void check(Tuple2<Integer, Integer> t) { }
+                    }''')],
+        // Different arity ⇒ not equal.
+        [group: 'P81 tuple eq', name: 'different arity refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ Tuple.tuple(1, 2) == Tuple.tuple(1, 2, 3) })
+                        static void m() { }
+                    }''')],
+        // Bonus: the same fold gives list-literal equality.
+        [group: 'P81 tuple eq', name: 'list literal equality', ok: true,
+         src: tc('''class C {
+                        @Ensures({ [1, 2, 3] == [1, 2, 3] })
+                        static void m() { }
+                    }''')],
+
+        // ---------- Phase 82: nested tuples ----------
+        // Constructed/returned nested tuple — slot resolution recurses through the factory containers. Nested
+        // access lives in the BODY: a *contract* closure erases the nested generic to Object (`result.v1.v2`
+        // → Object.v2) under @TypeChecked, the same erasure as slot arithmetic / List<Double> elements.
+        [group: 'P82 nested', name: 'constructed nested: .v1.v2 == 2 (body)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int m() { Tuple.tuple(Tuple.tuple(1, 2), 3).v1.v2 }
+                    }''')],
+        [group: 'P82 nested', name: 'constructed nested via local', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 2 })
+                        static int m() {
+                            def t = Tuple.tuple(Tuple.tuple(1, 2), 3)
+                            t.v1.v2
+                        }
+                    }''')],
+        [group: 'P82 nested', name: 'constructed nested: .v1.v1 == 1 (body)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int m() { Tuple.tuple(Tuple.tuple(1, 2), 3).v1.v1 }
+                    }''')],
+        // Nested tuple PARAMETER — t.v1.v2 flattens to a fresh entity t$v1$v2.
+        [group: 'P82 nested', name: 'nested param: body access verifies', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 0 })
+                        static int f(Tuple2<Tuple2<Integer, Integer>, Integer> t) {
+                            int x = t.v1.v2
+                            x - x
+                        }
+                    }''')],
+        [group: 'P82 nested', name: 'nested param: unconstrained slot refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f(Tuple2<Tuple2<Integer, Integer>, Integer> t) { t.v1.v2 }
                     }''')],
 
         // ---------- Phase 54: sign-faithful Integer.toString / parseInt ----------
@@ -5516,6 +5747,90 @@ class VerifyHarness {
                        @Requires({ 0 <= i && i < bal.size() && 0 <= j && j < bal.size() && i != j })
                        @Ensures({ bal.sum() == old.bal.sum() })
                        void transfer(int i, int j, BigDecimal amt) { bal[i] = bal[i] - amt; bal[j] = bal[j] + amt - 0.01 }
+                   }''')],
+
+        // ---------- Phase 76: List<BigDecimal>.max() / .min() — the Real witnessed extremum ----------
+        // The sort-generic maxMinOf now serves Real (BigDecimal) contents, not just Int (Phase 60): a fresh
+        // `r` that bounds every element AND is achieved by one, with the order comparisons reused (le/ge are
+        // arithmetic-polymorphic over Int and Real in Z3). Composes with the Phase-70 decimal `.sum()`.
+        [group: 'P76 decimal max/min', name: 'decimal max bounds every element', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.size() > 0 })
+                       @Ensures({ (0..<xs.size()).every { xs[it] <= xs.max() } })
+                       static void check(List<BigDecimal> xs) { }
+                   }''')],
+        [group: 'P76 decimal max/min', name: 'decimal max is achieved by some element', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.size() > 0 })
+                       @Ensures({ (0..<xs.size()).any { xs[it] == xs.max() } })
+                       static void check(List<BigDecimal> xs) { }
+                   }''')],
+        [group: 'P76 decimal max/min', name: 'decimal min bounds every element (>=)', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.size() > 0 })
+                       @Ensures({ (0..<xs.size()).every { xs[it] >= xs.min() } })
+                       static void check(List<BigDecimal> xs) { }
+                   }''')],
+        // Both extrema compose: max >= min for any non-empty decimal list (min is achieved at some j, and
+        // max bounds that same element).
+        [group: 'P76 decimal max/min', name: 'decimal max >= min (non-empty)', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.size() > 0 })
+                       @Ensures({ xs.max() >= xs.min() })
+                       static void check(List<BigDecimal> xs) { }
+                   }''')],
+        // Concrete shape: over a 2-element list the max bounds both entries.
+        [group: 'P76 decimal max/min', name: 'decimal max of pair bounds both', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.size() == 2 })
+                       @Ensures({ xs.max() >= xs[0] && xs.max() >= xs[1] })
+                       static void check(List<BigDecimal> xs) { }
+                   }''')],
+
+        // ---------- Phase 77: FP-element arrays (double[]) — element reads + predicates ----------
+        // A `double[]`'s contents are now an `Array Int FP` (sortFor double → IEEE sort), so `xs[i]` reads
+        // are FP and comparisons route to the FP theory. A bounded ∀ over the elements instantiates. (We use
+        // `double[]` not `List<Double>` so the contract closures don't hit @TypeChecked generics erasure.)
+        [group: 'P77 fp arrays', name: 'double[]: every >= 0 ⇒ xs[0] >= 0', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.length > 0 && (0..<xs.length).every { xs[it] >= 0.0d } })
+                       @Ensures({ xs[0] >= 0.0d })
+                       static void check(double[] xs) { }
+                   }''')],
+        [group: 'P77 fp arrays', name: 'double[]: every > 0 does not prove >= 1 (FP)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ xs.length > 0 && (0..<xs.length).every { xs[it] > 0.0d } })
+                       @Ensures({ xs[0] >= 1.0d })
+                       static void check(double[] xs) { }
+                   }''')],
+        // FP element comparison composes across two indices (no scalar literal needed).
+        [group: 'P77 fp arrays', name: 'double[]: sorted-adjacent ⇒ xs[0] <= xs[1]', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.length >= 2 && xs[0] <= xs[1] })
+                       @Ensures({ xs[1] >= xs[0] })
+                       static void check(double[] xs) { }
+                   }''')],
+        // FP max/min: the witnessed extremum over double[] — but FP is not totally ordered, so the bound
+        // holds only under a no-NaN guard. Under `!Double.isNaN`, max bounds every element and max >= min.
+        [group: 'P77 fp arrays', name: 'double[] max bounds every element (no-NaN)', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.length > 0 && (0..<xs.length).every { !Double.isNaN(xs[it]) } })
+                       @Ensures({ (0..<xs.length).every { xs[it] <= xs.max() } })
+                       static void check(double[] xs) { }
+                   }''')],
+        [group: 'P77 fp arrays', name: 'double[] max >= min (no-NaN)', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs.length > 0 && (0..<xs.length).every { !Double.isNaN(xs[it]) } })
+                       @Ensures({ xs.max() >= xs.min() })
+                       static void check(double[] xs) { }
+                   }''')],
+        // Soundness: WITHOUT the no-NaN guard, max does NOT bound every element — a NaN element refutes
+        // (NaN <= max is false in IEEE). The verifier refuses it rather than assume well-orderedness.
+        [group: 'P77 fp arrays', name: 'double[] max bound needs no-NaN (else refutes)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ xs.length > 0 })
+                       @Ensures({ (0..<xs.length).every { xs[it] <= xs.max() } })
+                       static void check(double[] xs) { }
                    }''')],
 
         // ---------- Phase 71: soundness hardening (boolean fields, vacuous preconditions) ----------
