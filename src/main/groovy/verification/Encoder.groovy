@@ -19,6 +19,7 @@ import groovy.transform.CompileStatic
 import org.apache.groovy.ast.tools.ExpressionUtils
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
@@ -49,6 +50,7 @@ import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 
 /**
@@ -308,8 +310,8 @@ class Encoder {
         ClassNode t = objectParams.get(name)
         if (t == null) return Collections.<String>emptySet()
         Set<String> out = new LinkedHashSet<String>()
-        List<org.codehaus.groovy.ast.FieldNode> fs = t.fields
-        if (fs != null) for (org.codehaus.groovy.ast.FieldNode f : fs) out.add(f.name)
+        List<FieldNode> fs = t.fields
+        if (fs != null) for (FieldNode f : fs) out.add(f.name)
         out
     }
 
@@ -366,7 +368,7 @@ class Encoder {
     private ClassNode fieldTypeOfObjectParam(String name, String field) {
         ClassNode t = objectParams.get(name)
         if (t == null || t.fields == null) return null
-        for (org.codehaus.groovy.ast.FieldNode f : t.fields) if (f.name == field) return f.type
+        for (FieldNode f : t.fields) if (f.name == field) return f.type
         null
     }
 
@@ -862,7 +864,7 @@ class Encoder {
      */
     private static int countEnumConstants(ClassNode t) {
         int count = 0
-        for (org.codehaus.groovy.ast.FieldNode f : t.fields) {
+        for (FieldNode f : t.fields) {
             if ((f.modifiers & 0x4000) != 0) count++   // 0x4000 = ACC_ENUM
         }
         count
@@ -1342,7 +1344,7 @@ class Encoder {
     /** Phase 29 — enum constant names on a ClassNode (filtered by JVM {@code ACC_ENUM}). */
     private static List<String> enumConstantNames(ClassNode t) {
         List<String> names = new ArrayList<String>()
-        for (org.codehaus.groovy.ast.FieldNode f : t.fields) {
+        for (FieldNode f : t.fields) {
             if ((f.modifiers & 0x4000) != 0) names.add(f.name)
         }
         names
@@ -4266,7 +4268,7 @@ class Encoder {
     /** Translate {@code l < r} (inclusive=false) or {@code l <= r} (inclusive=true), routed through per-sort dispatch. */
     private Object translateCompare(Expression l, Expression r, boolean inclusive) {
         int tok = inclusive ? Types.COMPARE_LESS_THAN_EQUAL : Types.COMPARE_LESS_THAN
-        BinaryExpression be = new BinaryExpression(l, org.codehaus.groovy.syntax.Token.newSymbol(tok, -1, -1), r)
+        BinaryExpression be = new BinaryExpression(l, Token.newSymbol(tok, -1, -1), r)
         return translate(be)
     }
 
