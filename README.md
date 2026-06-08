@@ -229,6 +229,16 @@ a concrete array, with the offending elements reconstructed (here a decreasing a
     fails on: diff([21239, 21238] as int[], 0)
 ```
 
+For a property over the *whole* index range there's an even shorter spelling — `a.indices` **is** `0..<a.length`,
+so "every element is non-negative" reads `a.indices.every { a[it] >= 0 }`, and that precondition is enough to
+prove the in-range access `a[k]` yields a non-negative result:
+
+```groovy
+@Requires({ a.indices.every { a[it] >= 0 } && 0 <= k && k < a.length })
+@Ensures({ result >= 0 })
+static int get(int[] a, int k) { a[k] }
+```
+
 **Lists and boxed types — same reasoning, same syntax.** The encoder never inspects whether a value
 is `int` or `Integer`, or whether a sequence is an `int[]` or a `List` — it models every integer type
 as a mathematical integer and any subscripted, sized receiver as its contents. So `max` above proves
