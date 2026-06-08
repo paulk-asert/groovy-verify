@@ -4048,9 +4048,11 @@ soundly tracks the entry value (a reassigning body's false unchanged-claim refut
 blocked by Groovy's own type checker), and the **heap-aliasing** case (two object params, field writes
 through both) verifies a claim that is false only under aliasing — the documented non-goal. The curated
 strongest anchors are now permanent tests, closing the coverage blind spots that had let the boolean-field
-and decimal-assignment bugs exist. *(One crash was found but is upstream: groovy-contracts'
-`DynamicSetterInjectionVisitor` NPEs on an `@Invariant` on a static nested class, at instruction-selection,
-independent of groovy-verify.)*
+and decimal-assignment bugs exist. *(One crash was found but was upstream: groovy-contracts'
+`DynamicSetterInjectionVisitor` NPE'd on an `@Invariant` on a static nested class, at instruction-selection,
+independent of groovy-verify — fixed in
+[GROOVY-12066](https://issues.apache.org/jira/browse/GROOVY-12066); a nested-static regression test now
+guards it.)*
 
 ---
 
@@ -4098,6 +4100,47 @@ only models a double-precision argument, since Java widens a `float` argument to
 FP, so it's the expensive end and subject to the per-VC timeout, but small straight-line snippets are
 fast. **Still out of fragment:** FP *loops* (accumulated rounding error), the other transcendentals
 (`sin`/`cos`/`exp`/`log`/… — no Z3 FP primitive), and tight relative-error bounds.
+
+---
+
+## Phase 74 — `Range.containsWithinBounds`: bounds-only interval membership, all range forms  *(shipped)*
+
+The first slice of range support (Tier 1 of the range-fragment assessment). Groovy's
+`Range.containsWithinBounds(v)` is a *bounds-only* membership test — it ignores the step, which is exactly
+what distinguishes it from `contains` (`new NumberRange(1,5,2).contains(4)` is **false**, but
+`.containsWithinBounds(4)` is **true**). That makes it lowerable with **no enumeration**.
+
+Covers **every Groovy range form**: closed `a..b`, left-open `a<..b`, right-open `a..<b`, and open
+`a<..<b` (the Groovy 4+ `<..`/`..<` operators). Decoded from `NumberRange.containsWithinBounds` (which sorts
+its endpoints and is `reverse`-aware), each endpoint keeps *its own* inclusivity, and the two order
+orientations are OR'd, giving an order-agnostic predicate exact for forward, reverse **and** equal bounds:
+`(a ≤/< v ∧ v ≤/< b) ∨ (b ≤/< v ∧ v ≤/< a)` — `≤` where the endpoint is inclusive, `<` where exclusive.
+(So e.g. the reverse-open `4<..2` correctly works out to `{2,3}`.)
+
+`translateMethodCall` recognises a range literal (`RangeExpression`, reading `isExclusiveLeft`/
+`isExclusiveRight`) and a `new NumberRange(a,b,step)` / `new IntRange(a,b)` constructor
+(`ConstructorCallExpression`; the boolean-first `IntRange(inclusive,…)` overload is rejected). The
+comparisons are built as *synthetic* `<`/`<=` `BinaryExpression`s and re-`translate`d, so they route through
+the existing per-sort dispatch for free — Int bounds compare in Int, `BigDecimal` bounds in the exact
+**Real** sort (so `(1.5<..<4.5).containsWithinBounds(2)` proves). Exact *and* symbolic, and the exclusivity
+shows up: a param in `(1,4]` is provably within `(1<..4)`, while a non-strict `x >= 1` is **not** enough
+(`x == 1` is excluded by the open left → refutes).
+
+Pure bounds for every range kind — this is the documented `Range` contract: `containsWithinBounds` is
+"between the from and to values", explicitly distinct from `contains` (the interface Javadoc gives
+`containsWithinBounds(2) == true` while `contains(2) == false`). **Upstream bug found and fixed:**
+`IntRange.containsWithinBounds` used to just `return contains(o)` (integer membership), so
+`(2..4).containsWithinBounds(2.5)` returned `false` at runtime while the decimal-typed `(2.0..4.0)`
+`NumberRange` returned `true` for the same interval — a type-dependent inconsistency that violated the
+interface contract, surfaced while building this slice and fixed in
+[GROOVY-12067](https://issues.apache.org/jira/browse/GROOVY-12067) (`IntRange` is now pure-bounds too). The
+verifier models pure bounds for all range kinds, matching both the fixed runtime and the contract, so any
+numeric `v` is exact regardless of endpoint type. A **character/`String`** range (no modelled
+lexicographic order) skips; a numeric pre-guard plus a term-construction `try/catch` (terms aren't asserted
+until `checkPath`, so a throw is a clean skip, not a corrupt session) ensure a non-arithmetic comparison
+never crashes. **Still out of fragment** (Tier 2, the next slice): `contains`/`==`/`.step`/`.toList` over a
+range — these need step-aware *enumeration* of a constant range to a list literal (then they ride the
+existing list machinery), plus a list-to-list `==` fold; non-constant or character ranges stay out.
 
 ---
 

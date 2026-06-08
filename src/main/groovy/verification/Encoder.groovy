@@ -30,6 +30,7 @@ import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
@@ -3015,6 +3016,16 @@ class Encoder {
             return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
         }
 
+        // Phase 74 — Range.containsWithinBounds(v): Groovy's *bounds-only* range membership (it ignores
+        // the step — that is exactly what separates it from `contains`). Lowers to the inclusive interval
+        // predicate min(lo,hi) <= v <= max(lo,hi) in v's sort — exact, symbolic, no enumeration.
+        // Recognises a `lo..hi` literal and a `new NumberRange(lo,hi,step)` / `new IntRange(lo,hi)`
+        // constructor. Numeric bounds only; a character/String range skips loudly.
+        if (m == 'containsWithinBounds' && args.size() == 1) {
+            Object q = translateContainsWithinBounds(recv, args.get(0))
+            if (q != null) return q
+        }
+
         // Sets.boundedBy(s, n) — the cardinality axiom (Phase 19): a set bounded by the domain [0, n).
         // Lowered to card(s) <= n ∧ (card(s) < n ∨ ∀ i ∈ [0,n)· i ∈ s), a faithful boolean definition.
         // `Sets` reaches us three ways: a bare import (VariableExpression) and FQN `verification.Sets`
@@ -3628,6 +3639,81 @@ class Encoder {
         Expression bodyExpr = singleExprOf(clo?.code)
         if (pname == null || bodyExpr == null) return null
         return emitForall(pname, translate(lo), translate(hi), bodyExpr, null)
+    }
+
+    /**
+     * {@code range.containsWithinBounds(v)} for every Groovy range form — fully-closed {@code a..b},
+     * left-open {@code a<..b}, right-open {@code a..<b}, open {@code a<..<b} — plus the
+     * {@code new NumberRange(a,b,step)} / {@code new IntRange(a,b)} constructors (always closed).
+     *
+     * <p>{@code containsWithinBounds} ignores the step, so it lowers to an interval with per-endpoint
+     * strictness. Decoded from {@code NumberRange.containsWithinBounds} (which sorts its endpoints and is
+     * {@code reverse}-aware), each endpoint keeps <em>its own</em> inclusivity in both order-orientations,
+     * giving an order-agnostic predicate exact for forward, reverse, <em>and</em> equal bounds:
+     * {@code (a ≤/< v ∧ v ≤/< b) || (b ≤/< v ∧ v ≤/< a)} — {@code ≤} where the endpoint is inclusive,
+     * {@code <} where exclusive. The comparisons are built as synthetic {@code <}/{@code <=} expressions
+     * and re-translated, so they ride the per-sort dispatch (Int / exact Real) — decimal bounds for free.
+     *
+     * <p>Pure bounds for <em>every</em> range kind — this is the documented {@code Range} contract
+     * ({@code containsWithinBounds} is "between the from and to values", explicitly distinct from
+     * {@code contains}; the interface Javadoc gives {@code containsWithinBounds(2) == true} while
+     * {@code contains(2) == false}). {@code IntRange.containsWithinBounds} used to delegate to
+     * {@code contains} (integer membership), so {@code (2..4).containsWithinBounds(2.5)} returned
+     * {@code false} while {@code NumberRange} returned {@code true} for the same interval — fixed in
+     * GROOVY-12067 ({@code IntRange} is now pure-bounds too). The verifier models pure bounds for all range
+     * kinds, matching both the fixed runtime and the contract, so any numeric {@code v} is exact regardless
+     * of endpoint type. A character/{@code String} range skips (no modelled order). The {@code try} keeps a
+     * non-arithmetic comparison a clean skip — terms aren't asserted until {@code checkPath}, so a throw
+     * can't corrupt the session.
+     */
+    private Object translateContainsWithinBounds(Expression recv, Expression value) {
+        Expression lo, hi
+        boolean loIncl = true, hiIncl = true     // constructors below are always fully-closed
+        if (recv instanceof RangeExpression) {
+            RangeExpression re = (RangeExpression) recv
+            lo = re.from; hi = re.to
+            loIncl = !re.exclusiveLeft
+            hiIncl = !re.exclusiveRight
+        } else if (recv instanceof ConstructorCallExpression) {
+            ConstructorCallExpression cce = (ConstructorCallExpression) recv
+            String tn = cce.type?.nameWithoutPackage
+            List<Expression> cargs = ctorArgList(cce)
+            // NumberRange(from, to[, step]) / IntRange(from, to): endpoints are the first two args (the
+            // step is irrelevant to a bounds test). Reject the boolean-first IntRange(inclusive, …) overload.
+            boolean boolFirst = !cargs.isEmpty() && cargs.get(0) instanceof ConstantExpression &&
+                                ((ConstantExpression) cargs.get(0)).value instanceof Boolean
+            if (!((tn == 'NumberRange' || tn == 'IntRange') && cargs.size() >= 2 && !boolFirst)) return null
+            lo = cargs.get(0); hi = cargs.get(1)
+        } else {
+            return null
+        }
+        // Numeric-only: a character/String range would reach an arithmetic comparison on a String sort.
+        if (isStringReceiver(lo) || isStringReceiver(hi) || isStringReceiver(value)) return null
+        try {
+            // Each endpoint keeps its own inclusivity; OR the two orderings to be min/max-agnostic.
+            Object loV = translateCompare(lo, value, loIncl)     // a ≤/< v
+            Object vHi = translateCompare(value, hi, hiIncl)     // v ≤/< b
+            Object hiV = translateCompare(hi, value, hiIncl)     // b ≤/< v
+            Object vLo = translateCompare(value, lo, loIncl)     // v ≤/< a
+            if (loV == null || vHi == null || hiV == null || vLo == null) return null
+            return session.or([session.and([loV, vHi]), session.and([hiV, vLo])])
+        } catch (Exception ignored) {
+            return null   // non-arithmetic sort or unmodelled bound — loud skip, never a crash
+        }
+    }
+
+    /** Translate {@code l < r} (inclusive=false) or {@code l <= r} (inclusive=true), routed through per-sort dispatch. */
+    private Object translateCompare(Expression l, Expression r, boolean inclusive) {
+        int tok = inclusive ? Types.COMPARE_LESS_THAN_EQUAL : Types.COMPARE_LESS_THAN
+        BinaryExpression be = new BinaryExpression(l, org.codehaus.groovy.syntax.Token.newSymbol(tok, -1, -1), r)
+        return translate(be)
+    }
+
+    private static List<Expression> ctorArgList(ConstructorCallExpression cce) {
+        Expression a = cce.arguments
+        if (a instanceof ArgumentListExpression) return ((ArgumentListExpression) a).expressions
+        if (a instanceof TupleExpression) return ((TupleExpression) a).expressions
+        return Collections.<Expression> emptyList()
     }
 
     /**

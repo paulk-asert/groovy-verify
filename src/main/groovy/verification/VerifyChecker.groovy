@@ -3308,7 +3308,7 @@ class VerifyChecker extends TypeCheckingExtension {
         'lastIndexOf','charAt','substring','keySet','values','entrySet','sum','max','min','count',
         'every','any','find','findAll','collect','intdiv','mod','remainder','abs','compareTo','equals',
         'startsWith','endsWith','toUpperCase','toLowerCase','first','last','head','tail','of','range',
-        'boundedBy','boundedCount','intValue','longValue'] as Set
+        'boundedBy','boundedCount','intValue','longValue','containsWithinBounds'] as Set
 
     /**
      * Phase 65 — for a for-in loop, split the invariant clauses that reference the loop variable out
