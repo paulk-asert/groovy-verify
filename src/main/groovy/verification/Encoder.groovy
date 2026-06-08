@@ -1199,7 +1199,7 @@ class Encoder {
      * Get-or-declare the array-content handle for a source-level name. Shares its
      * key with nothing else — the size oracle ({@link #sizeOf}) bounds the valid
      * index range, this models the element values. Element sort dispatch via
-     * {@link #arrayElementSortFor} (Phase 27): a non-Int element list or a non-Int
+     * {@link #listElementSort} (Phase 27): a non-Int element list or a non-Int
      * value-side map allocates {@code Array Int -> ElemSort}; Int-element arrays keep
      * the existing {@link SmtSession#arrayVar} storage so the counterexample model walk
      * continues to pin contents the way it does today.
@@ -4101,7 +4101,7 @@ class Encoder {
      *       as an unknown-but-fixed integer {@link SmtSession#uninterpretedFunc}. Sound: the result
      *       is constrained only through the levels actually unfolded.</li>
      * </ol>
-     * {@link #unfoldFuel} is a per-encoder (≈ per-VC) total-unfold budget; it only decrements, which
+     * {@link #unfoldDepth} is a per-encoder (≈ per-VC) total-unfold budget; it only decrements, which
      * guarantees termination. A consequence is that two separate applications of the same function in
      * one obligation may unfold to different depths, so proofs that rely on syntactically equating
      * them are not guaranteed — that is the inductive case (Phase 7), not this one.
@@ -4300,12 +4300,10 @@ class Encoder {
      * Phase 85 — purely a statement-level rewrite; contract closures never contain assignments.
      */
     static BinaryExpression desugarCompoundAssign(BinaryExpression be) {
-        org.codehaus.groovy.syntax.Token op = be.operation
-        org.codehaus.groovy.syntax.Token baseTok =
-            org.codehaus.groovy.syntax.Token.newSymbol(compoundBaseOp(op.type), op.startLine, op.startColumn)
+        Token op = be.operation
+        Token baseTok = Token.newSymbol(compoundBaseOp(op.type), op.startLine, op.startColumn)
         Expression combined = new BinaryExpression(be.leftExpression, baseTok, be.rightExpression)
-        org.codehaus.groovy.syntax.Token assignTok =
-            org.codehaus.groovy.syntax.Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
+        Token assignTok = Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
         new BinaryExpression(be.leftExpression, assignTok, combined)
     }
 
@@ -4320,7 +4318,7 @@ class Encoder {
     static boolean isIncDec(Expression e) {
         Object[] p = incDecParts(e)
         if (p == null) return false
-        int t = ((org.codehaus.groovy.syntax.Token) p[0]).type
+        int t = ((Token) p[0]).type
         t == Types.PLUS_PLUS || t == Types.MINUS_MINUS
     }
 
@@ -4332,12 +4330,12 @@ class Encoder {
      */
     static BinaryExpression desugarIncDec(Expression e) {
         Object[] p = incDecParts(e)
-        org.codehaus.groovy.syntax.Token op = (org.codehaus.groovy.syntax.Token) p[0]
+        Token op = (Token) p[0]
         Expression operand = (Expression) p[1]
         int baseType = (op.type == Types.PLUS_PLUS) ? Types.PLUS : Types.MINUS
-        org.codehaus.groovy.syntax.Token baseTok = org.codehaus.groovy.syntax.Token.newSymbol(baseType, op.startLine, op.startColumn)
+        Token baseTok = Token.newSymbol(baseType, op.startLine, op.startColumn)
         Expression combined = new BinaryExpression(operand, baseTok, new ConstantExpression(Integer.valueOf(1)))
-        org.codehaus.groovy.syntax.Token assignTok = org.codehaus.groovy.syntax.Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
+        Token assignTok = Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn)
         new BinaryExpression(operand, assignTok, combined)
     }
 

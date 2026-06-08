@@ -16,6 +16,7 @@
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
 import org.codehaus.groovy.control.messages.ExceptionMessage
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage
+import verification.Z3Backend
 
 /**
  * Standalone self-test for the verification engine: compiles a battery of
@@ -6427,8 +6428,8 @@ class VerifyHarness {
                 if (err instanceof SyntaxErrorMessage) return err.cause.message
                 if (err instanceof ExceptionMessage) {
                     def ex = err.cause
-                    def sw = new java.io.StringWriter()
-                    ex.printStackTrace(new java.io.PrintWriter(sw))
+                    def sw = new StringWriter()
+                    ex.printStackTrace(new PrintWriter(sw))
                     return "${ex.class.simpleName}: ${ex.message}\n${sw}"
                 }
                 err.toString()
@@ -6481,10 +6482,10 @@ class VerifyHarness {
         println "\n${'═' * 64}"
         println "${passed} passed, ${failed} failed, ${CASES.size()} total"
         if (System.getenv('VERIFY_CACHE_STATS') == '1') {
-            long hits   = verification.Z3Backend.vcCacheHits()
-            long misses = verification.Z3Backend.vcCacheMisses()
+            long hits   = Z3Backend.vcCacheHits()
+            long misses = Z3Backend.vcCacheMisses()
             long total  = hits + misses
-            int  size   = verification.Z3Backend.vcCacheSize()
+            int  size   = Z3Backend.vcCacheSize()
             String pct  = total == 0 ? '—' : sprintf('%.1f%%', 100.0d * hits / total)
             println "VC cache: ${hits} hits / ${misses} misses (${pct} hit rate), ${size} entries"
         }
