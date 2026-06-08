@@ -888,8 +888,13 @@ exactly the product — because a `Tuple2` return binds `result` as a fixed-arit
 fold (Phase 79). Three return shapes all verify this way: the typed `Tuple2` above, a positional
 `return [sum, product]` with `result[0]` / `result[1]` (Phase 78), and the most self-documenting — a
 **named-tuple map** `return [sum: s, product: p]` with `@Ensures({ result.sum == xs.sum() && result.product
-== … })`, Groovy's map-as-named-tuple idiom (Phase 83). Before any of these, it collapsed to `return s + p`
-with the weaker `result == sum + product` (which only pins the two aggregates' *sum*, not each). The
+== … })`, Groovy's map-as-named-tuple idiom (Phase 83). All three (and tuple *parameters*, Phase 80/84) share
+one `@TypeChecked` caveat: inside a contract closure the component's generic type erases to `Object`, so
+*arithmetic* on a component fails to compile (`result.sum + result.product`) and so do some *ordering*
+comparisons — only `==` and simple bounds are reliable there. The `sum_product` specs above are all `==`, so
+they read cleanly; the rule of thumb is **compare in the contract, compute in the body**. Before any of these
+shapes, it collapsed to `return s + p` with the weaker `result == sum + product` (which only pins the two
+aggregates' *sum*, not each). The
 duck-typed `sum()` also covers
 concatenation — `['a','b','c'].sum() == 'abc'` over a `List<String>` lowers to the same base/step machinery
 on the `str.++` monoid, so a running concatenation verifies just like the numeric running total.

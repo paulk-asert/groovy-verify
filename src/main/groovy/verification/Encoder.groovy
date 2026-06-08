@@ -1982,9 +1982,18 @@ class Encoder {
         String mlog = mapLogicalFor(obj)
         if (mlog == null) return null
         ClassNode[] pair = mapTypes.get(mlog)
-        Object keyH = translateInSort(new ConstantExpression(prop), sortFor(pair != null ? pair[0] : null))
-        if (keyH == null) return null   // non-String key sort ⇒ `m.prop` isn't a meaningful named access
-        return session.select(mapValsFor(mlog), keyH)
+        // Only an explicitly String-keyed map (`Map<String, V>`) supports `m.prop` as a named-key access.
+        // A raw / non-String-keyed map skips — both because `m.prop` isn't a meaningful string key there and
+        // to avoid a value-array key-domain mismatch (the value array is String-keyed). The try/catch is a
+        // belt-and-suspenders against any residual sort mismatch — a clean skip, never a crash.
+        if (pair == null || pair[0] == null || pair[0].name != 'java.lang.String') return null
+        Object keyH = translateInSort(new ConstantExpression(prop), sortFor(pair[0]))
+        if (keyH == null) return null
+        try {
+            return session.select(mapValsFor(mlog), keyH)
+        } catch (Exception ignored) {
+            return null
+        }
     }
 
     /**

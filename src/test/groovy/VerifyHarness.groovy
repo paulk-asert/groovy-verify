@@ -2981,6 +2981,16 @@ class VerifyHarness {
                         static int f(Map<String, Integer> m) { m.sum }
                     }''')],
 
+        // Regression (Phase 84 fix): a property access on a RAW `Map` (non-String / unknown key sort) must
+        // skip loudly, NOT crash Z3 with a key-domain sort mismatch. (Named-argument maps land here: raw
+        // `Map`, Object values — at odds with @TypeChecked, so not verifiable; the point is it can't crash.)
+        [group: 'P84 map params', name: 'raw Map property skips, no crash', expect: 'outside fragment',
+         src: tc('''class C {
+                        @Requires({ m.foo == 0 })
+                        @Ensures({ result == 0 })
+                        static int f(Map m) { 0 }
+                    }''')],
+
         // ---------- Phase 78: list-literal returns + constant-index result[k] ----------
         // A method may now return a list literal and have @Ensures reference its elements by constant
         // index: `result` is bound as a factory container, so result.size()/result[k] fold.

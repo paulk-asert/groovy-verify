@@ -4419,16 +4419,27 @@ identical to Phase 83 — was the **property form** `m.sum`, which type-checks b
 helper `foldMapParamProperty(obj, prop)` routes `m.<key>` to a `select` of the map's value array at the
 constant string key (`m.sum ≡ m['sum']`), in the value sort, placed *after* the `.size`/cardinality handling
 and skipping a small reserved set (`empty`/`class`/`metaClass`) so map-API properties aren't misread as data
-keys; a non-String key sort yields null (`m.prop` isn't a meaningful named access there). Unlike a tuple
-param's fixed slots, a map param's keys are the caller's, so each `m.key` is a fresh uninterpreted value in
-the value sort — consistent (same key ⇒ same `select`), e.g. `m.sum == 3 ⇒ result == 3`, and a wrong value
-refutes.
+keys. It fires only for an **explicitly `String`-keyed** map and guards the `select` in a `try/catch` — a raw
+`Map` / non-String key sort skips loudly (a robustness fix: it previously crashed Z3 with a key-domain sort
+mismatch). Unlike a tuple param's fixed slots, a map param's keys are the caller's, so each `m.key` is a
+fresh uninterpreted value in the value sort — consistent (same key ⇒ same `select`), e.g.
+`m.sum == 3 ⇒ result == 3`, and a wrong value refutes.
 
 **The erasure pattern is universal** (the honest correction to Phase 83): every generic-typed accessor — a
 `List<Double>` element, a tuple slot, a map value (factory *or* param) — erases to `Object` inside a
-re-parsed contract closure, so *arithmetic* (`m.x + m.y`) fails `@TypeChecked` there while *comparisons*
-(`m.sum == 3`, `m.x >= 5`) work. The consistent idiom across all of them: compare in the contract, compute in
-the body. **Still out:** non-constant keys; map property `m.size` on a literal `size` key (the method wins).
+re-parsed contract closure. So *arithmetic* (`m.x + m.y`) always fails `@TypeChecked` there; `==` is reliably
+lenient; *ordering* comparisons are inconsistent (`m.x >= 5` compiles, but `result >= args.second` does not —
+`Integer#compareTo(Object)`). The safe idiom across all of them: `==` (or simple bounds) in the contract,
+arithmetic/ordering in the body.
+
+**Named-argument maps are not verifiable** (the answer to "can we verify `def add(Map args)`?"). Groovy's
+named-arg call `add(first: 1, second: 2)` collects a `Map` — but the idiom's natural form is a **raw `Map`**
+with `Object` values, so even the *body* `args.first + args.second` is `Object#plus` under `@TypeChecked`
+(which the verifier requires). The call syntax itself adds nothing to verify (it's a caller concern); the
+method is just a map-param method, and a raw map is at odds with static typing. A *typed* `Map<String,V>`
+method body works, but the contract still hits the erasure above. So: no — and the crash it used to provoke
+is now a clean skip. **Still out:** non-constant keys; map property `m.size` on a literal `size` key (the
+method wins).
 
 ---
 
