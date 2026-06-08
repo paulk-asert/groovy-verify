@@ -5500,6 +5500,10 @@ class VerifyHarness {
          src: tc('class C { @Requires({ s == null && s != null }) @Ensures({ result == 1 }) static int f(String s) { 1 } }')],
         [group: 'P71 soundness', name: 'anchor: decimal conservation not vacuous', expect: 'Could not decide postcondition',
          src: tc('class C { List<BigDecimal> b; @Requires({ 0 <= i && i < b.size() }) @Ensures({ b.sum() == old.b.sum() }) void f(int i, BigDecimal amt) { b[i] = b[i] + amt } }')],
+        // double/float are IEEE-754 (the FP non-goal): `(a + b) - b == a` holds in exact Int/Real but
+        // NOT at runtime, so a double is modelled by skipping — never silently "proven" exact.
+        [group: 'P71 soundness', name: 'anchor: double arithmetic skips (not exact)', expect: 'outside fragment',
+         src: tc('class C { @Ensures({ result == a }) static double f(double a, double b) { (a + b) - b } }')],
 
         // ---------- Phase 62: bounded property-based refutation when the solver says UNKNOWN ----------
         // `result == Fib.of(n)` is the weak refutation direction (recurrence-axiom timeout → UNKNOWN);

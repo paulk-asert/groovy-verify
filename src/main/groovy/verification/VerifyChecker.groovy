@@ -191,6 +191,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
     /** Phase 61 — decimal-typed (BigDecimal/Double/Float) param/field/local/result names. */
     private Set<String> currentDecimalNames = new HashSet<String>()
+    /** Phase 72 — double/float names; references skip (IEEE-754 is the FP non-goal). */
+    private Set<String> currentDoubleNames = new HashSet<String>()
     /**
      * Phase 48b — body-local {@code boolean} variable names. Tracked so the SSA-fresh handle
      * in {@code checkPath}'s {@code Assign} step mints a {@code boolVar} rather than an
@@ -217,7 +219,7 @@ class VerifyChecker extends TypeCheckingExtension {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames)
+                    currentBooleanLocals, currentDecimalNames, currentDoubleNames)
     }
 
     /**
@@ -593,8 +595,7 @@ class VerifyChecker extends TypeCheckingExtension {
     private static boolean isDecimalType(ClassNode t) {
         if (t == null) return false
         String n = t.name
-        return n == 'java.math.BigDecimal' || n == 'java.lang.Double' || n == 'java.lang.Float' ||
-               n == 'double' || n == 'float'
+        return n == 'java.math.BigDecimal'   // Phase 72 — only BigDecimal is exact; double/float are IEEE-754
     }
 
     /**
@@ -624,6 +625,45 @@ class VerifyChecker extends TypeCheckingExtension {
                         ClassNode t = ((VariableExpression) de.leftExpression).originType
                         if (t == null) t = de.leftExpression.type
                         if (isDecimalType(t)) out.add(((VariableExpression) de.leftExpression).name)
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
+        out
+    }
+
+    /** True if {@code t} is {@code double}/{@code float} — IEEE-754, the FP non-goal (modelled by skipping). */
+    private static boolean isDoubleType(ClassNode t) {
+        if (t == null) return false
+        String n = t.name
+        n == 'double' || n == 'float' || n == 'java.lang.Double' || n == 'java.lang.Float'
+    }
+
+    /**
+     * Phase 72 — names of {@code double}/{@code float} params/fields/result/locals. A reference to one
+     * is skipped (translate → null), because IEEE-754 floating point is the FP non-goal and modelling a
+     * {@code double} as exact Int or Real would be unsound (`(a + b) - b == a` and `0.1d + 0.2d == 0.3d`
+     * hold exactly but are false at runtime).
+     */
+    private static Set<String> collectDoubleNames(MethodNode node) {
+        Set<String> out = new LinkedHashSet<String>()
+        for (Parameter p : node.parameters) if (isDoubleType(p.type)) out.add(p.name)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (isDoubleType(f.type)) out.add(f.name)
+        if (isDoubleType(node.returnType)) out.add('result')
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitClosureExpression(ClosureExpression ce) {}
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (isDoubleType(t)) out.add(((VariableExpression) de.leftExpression).name)
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1188,6 +1228,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentDecimalNames = collectDecimalNames(node)
+        currentDoubleNames = collectDoubleNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
         currentEnumDomainSizes = collectEnumDomainSizes(node)
         currentIsConstructor = (node instanceof ConstructorNode)
@@ -1296,6 +1337,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentDecimalNames = new HashSet<String>()
+            currentDoubleNames = new HashSet<String>()
             currentBooleanLocals = new HashSet<String>()
             currentEnumDomainSizes = new HashMap<String, Integer>()
         }

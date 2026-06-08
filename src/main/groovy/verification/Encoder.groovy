@@ -236,7 +236,8 @@ class Encoder {
             Set<String> listNames = null,
             Map<String, ClassNode> objectParams = null,
             Set<String> booleanLocals = null,
-            Set<String> decimalNames = null) {
+            Set<String> decimalNames = null,
+            Set<String> doubleNames = null) {
         this.session = session
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
@@ -249,7 +250,12 @@ class Encoder {
         this.objectParams = objectParams != null ? objectParams : new LinkedHashMap<String, ClassNode>()
         this.booleanLocals = booleanLocals != null ? booleanLocals : new HashSet<String>()
         this.decimalNames = decimalNames != null ? decimalNames : new HashSet<String>()
+        this.doubleNames = doubleNames != null ? doubleNames : new HashSet<String>()
     }
+
+    /** Phase 72 — names of {@code double}/{@code float} type. IEEE-754 is the FP non-goal and exact
+     *  Int/Real modelling would be unsound, so any reference to one translates to null (loud skip). */
+    private final Set<String> doubleNames
 
     /**
      * Phase 45 — run a translation under a foreign-receiver context: bare {@code field} references
@@ -2123,8 +2129,7 @@ class Encoder {
     private static boolean isDecimalElementType(ClassNode t) {
         if (t == null) return false
         String n = t.name
-        n == 'java.math.BigDecimal' || n == 'java.lang.Double' || n == 'java.lang.Float' ||
-            n == 'double' || n == 'float'
+        n == 'java.math.BigDecimal'   // Phase 72 — only BigDecimal is exact; double/float are IEEE-754
     }
 
     /** Whether fib's defining axioms have been asserted (mint-once — fib is one global function). */
@@ -2281,6 +2286,7 @@ class Encoder {
             // point post-parse, but defensive:
             if (name == "true")  return session.boolLit(true)
             if (name == "false") return session.boolLit(false)
+            if (doubleNames.contains(name)) return null   // Phase 72 — double/float: IEEE-754, skip loudly
             return varFor(name)
         }
 
@@ -2519,8 +2525,7 @@ class Encoder {
     /** True if {@code e} denotes a decimal (BigDecimal/Double/Float) value in Groovy's semantics. */
     private boolean isDecimalExpr(Expression e) {
         if (e instanceof ConstantExpression) {
-            Object v = ((ConstantExpression) e).value
-            return v instanceof BigDecimal || v instanceof Double || v instanceof Float
+            return ((ConstantExpression) e).value instanceof BigDecimal   // not Double/Float (IEEE-754)
         }
         if (e instanceof VariableExpression) {
             return decimalNames.contains(((VariableExpression) e).name)
@@ -2541,11 +2546,11 @@ class Encoder {
     private Object asReal(Expression e) {
         if (e instanceof ConstantExpression) {
             Object v = ((ConstantExpression) e).value
-            if (v instanceof BigDecimal || v instanceof Double || v instanceof Float) {
-                return session.realLit(rationalOf(v))
+            if (v instanceof BigDecimal) return session.realLit(rationalOf(v))
+            if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) {
+                return session.intToReal(session.intLit(((Number) v).longValue()))
             }
-            if (v instanceof Number) return session.intToReal(session.intLit(((Number) v).longValue()))
-            return null
+            return null   // Double/Float etc. are IEEE-754, not exact Real — skip
         }
         if (e instanceof VariableExpression && decimalNames.contains(((VariableExpression) e).name)) {
             // A threaded binding (e.g. `result` bound to its Real return handle, or a decimal local

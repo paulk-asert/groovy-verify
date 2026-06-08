@@ -4053,6 +4053,21 @@ independent of groovy-verify.)*
 
 ---
 
+## Phase 72 — `double`/`float` are IEEE-754, not exact (skip)  *(shipped)*
+
+A soundness fix found while assessing whether the floating-point non-goal had moved. The BigDecimal work
+(Phase 61) routed `Double`/`Float`/`double`/`float` to the exact **Real** sort alongside `BigDecimal` — but
+only `BigDecimal`'s `+`/`-`/`*` are *exact*; `double`/`float` are IEEE-754, so an exact-Real model is
+**unsound**: `(a + b) - b == a` and `0.1d + 0.2d == 0.3d` hold in Real but are false at runtime, and the
+verifier was silently "proving" them. (Modelling a `double` as exact *Int*, the pre-Phase-61 default, was
+unsound the same way.) The fix narrows the decimal/Real path to `BigDecimal` only (`isDecimalType`,
+`isDecimalElementType`, the decimal-literal checks) and adds a `doubleNames` skip-set: any reference to a
+`double`/`float` name translates to null, so a contract over it **skips loudly** — the correct realisation
+of the floating-point non-goal (exact reasoning over IEEE-754 needs Z3's FP theory, which stays out of
+scope). `BigDecimal` is unaffected and remains a faithful exact-Real model.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
