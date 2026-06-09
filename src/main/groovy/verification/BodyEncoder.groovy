@@ -21,8 +21,10 @@ import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
@@ -221,28 +223,10 @@ class BodyEncoder {
 
             if (e instanceof DeclarationExpression) {
                 DeclarationExpression de = (DeclarationExpression) e
-                // Phase 79 — multiple assignment `def (a, b) = rhs`: bind a fresh temp to the (tuple/list)
-                // rhs *once*, then each LHS variable to a constant-index slot read `tmp[k]`, which folds
-                // when rhs is a tuple/list factory. The temp Assign records the factory; tmp[k] resolves.
+                // Phase 79 — multiple assignment `def (a, b) = rhs`. See {@link #tupleMultiAssign}.
                 if (de.leftExpression instanceof TupleExpression) {
-                    List<Expression> lhs = ((TupleExpression) de.leftExpression).expressions
-                    Expression rhs = de.rightExpression
-                    if (rhs == null || rhs instanceof EmptyExpression) {
-                        throw new UnsupportedConstructException(
-                            "uninitialised multiple assignment (line ${s.lineNumber})")
-                    }
-                    String tmp = '__gvTuple$' + System.identityHashCode(de)
-                    Path np = copy(prefix)
-                    np.steps.add(new Assign(tmp, rhs))
-                    for (int k = 0; k < lhs.size(); k++) {
-                        if (!(lhs.get(k) instanceof VariableExpression)) continue
-                        String vn = ((VariableExpression) lhs.get(k)).name
-                        Expression idx = new BinaryExpression(new VariableExpression(tmp),
-                            Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), new ConstantExpression(k))
-                        np.steps.add(new Assign(vn, idx))
-                    }
-                    if (tail) res.terminated.add(np) else res.live.add(np)
-                    return res
+                    return tupleMultiAssign(((TupleExpression) de.leftExpression).expressions,
+                        de.rightExpression, de, prefix, tail, res, s)
                 }
                 if (!(de.leftExpression instanceof VariableExpression)) {
                     throw new UnsupportedConstructException(
@@ -272,6 +256,12 @@ class BodyEncoder {
             if (e instanceof BinaryExpression &&
                 ((BinaryExpression) e).operation.type == Types.ASSIGN) {
                 BinaryExpression be = (BinaryExpression) e
+                // Phase 90 — bare multiple assignment / swap `(a, b) = rhs` (reassigning existing
+                // locals). Same desugaring as `def (a, b) = rhs`; see {@link #tupleMultiAssign}.
+                if (be.leftExpression instanceof TupleExpression) {
+                    return tupleMultiAssign(((TupleExpression) be.leftExpression).expressions,
+                        be.rightExpression, be, prefix, tail, res, s)
+                }
                 if (be.leftExpression instanceof VariableExpression) {
                     String name = ((VariableExpression) be.leftExpression).name
                     Path np = copy(prefix)
@@ -396,6 +386,75 @@ class BodyEncoder {
         n.steps.addAll(p.steps)
         n.result = p.result
         return n
+    }
+
+    /**
+     * Phase 79 / 90 — multiple assignment, both `def (a, b) = rhs` (declaration) and the bare
+     * reassignment/swap `(a, b) = rhs`.
+     *
+     * <p>When the rhs is a list/tuple factory whose element expressions are extractable, each element is
+     * **snapshotted into a fresh temp first** (in source order), and only then are the targets written:
+     * <pre>  __ma0 = b; __ma1 = a;  a = __ma0; b = __ma1  </pre>
+     * That ordering makes `(a, b) = [b, a]` a correct *parallel* swap — `__ma1` captures the old `a`
+     * before `a = __ma0` overwrites it. (A single temp bound to the factory with lazy `tmp[k]` slot reads
+     * is *not* swap-safe: `tmp[1]` re-reads the expression `a` after it's been reassigned.)
+     *
+     * <p>For a non-factory rhs (opaque list value, not itself a target) the temp + constant-index slot
+     * reads are used — no aliasing risk there. {@code node} just seeds the unique temp names.
+     */
+    private static WalkResult tupleMultiAssign(List<Expression> lhs, Expression rhs, Object node,
+                                               Path prefix, boolean tail, WalkResult res, Statement s) {
+        if (rhs == null || rhs instanceof EmptyExpression) {
+            throw new UnsupportedConstructException(
+                "uninitialised multiple assignment (line ${s.lineNumber})")
+        }
+        // Every target must be a simple variable. A non-variable target (e.g. an array element in
+        // `(a[i], a[j]) = …`) would be silently un-modelled by the loops below — a later read would see
+        // a stale value. Skip the whole statement loudly instead. (Declaration `def (a, b)` targets are
+        // always fresh variables, so this never trips for that form.)
+        for (Expression t : lhs) {
+            if (!(t instanceof VariableExpression)) {
+                throw new UnsupportedConstructException(
+                    "multiple-assignment target is not a simple variable (line ${s.lineNumber})")
+            }
+        }
+        Path np = copy(prefix)
+        List<Expression> elems = tupleElementExprs(rhs)
+        if (elems != null && elems.size() >= lhs.size()) {
+            String base = '__gvMA$' + System.identityHashCode(node) + '$'
+            for (int k = 0; k < lhs.size(); k++) np.steps.add(new Assign(base + k, elems.get(k)))
+            for (int k = 0; k < lhs.size(); k++) {
+                np.steps.add(new Assign(((VariableExpression) lhs.get(k)).name, new VariableExpression(base + k)))
+            }
+        } else {
+            String tmp = '__gvTuple$' + System.identityHashCode(node)
+            np.steps.add(new Assign(tmp, rhs))
+            for (int k = 0; k < lhs.size(); k++) {
+                Expression idx = new BinaryExpression(new VariableExpression(tmp),
+                    Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), new ConstantExpression(k))
+                np.steps.add(new Assign(((VariableExpression) lhs.get(k)).name, idx))
+            }
+        }
+        if (tail) res.terminated.add(np) else res.live.add(np)
+        res
+    }
+
+    /** Element expressions of a list/tuple factory rhs (`[a, b]`, `Tuple.tuple(a, b)`, `List.of(a, b)`,
+     *  `new TupleN(a, b)`), or null if the rhs isn't a factory we can take apart. */
+    private static List<Expression> tupleElementExprs(Expression rhs) {
+        if (rhs instanceof ListExpression) return ((ListExpression) rhs).expressions
+        if (rhs instanceof MethodCallExpression) {
+            String m = ((MethodCallExpression) rhs).methodAsString
+            if (m == 'tuple' || m == 'of') return argExprs(((MethodCallExpression) rhs).arguments)
+        }
+        if (rhs instanceof ConstructorCallExpression) return argExprs(((ConstructorCallExpression) rhs).arguments)
+        null
+    }
+
+    private static List<Expression> argExprs(Expression args) {
+        if (args instanceof ArgumentListExpression) return ((ArgumentListExpression) args).expressions
+        if (args instanceof TupleExpression) return ((TupleExpression) args).expressions
+        Collections.<Expression> emptyList()
     }
 
     private static List<Statement> asList(Statement s) {

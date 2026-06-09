@@ -4884,6 +4884,39 @@ array/`old`/framing machinery already shipped. The discipline that keeps it a *s
 slope: only *named* references and `new` get identities; no `∀`-over-objects. Value-to-cost is high precisely
 because it also closes a latent soundness gap, not just adds expressiveness.
 
+## Phase 90 — bare multiple assignment / swap `(a, b) = rhs`  *(shipped)*
+
+Phase 79 shipped the *declaration* form `def (a, b) = [1, 2]`; this adds the bare **reassignment** form
+`(a, b) = [b, a]` — the infamous swap — on existing locals. AST-wise the difference is small (the swap is a
+`BinaryExpression` ASSIGN with a `TupleExpression` LHS, vs a `DeclarationExpression`), so `BodyEncoder` routes
+both to a shared `tupleMultiAssign`.
+
+**The catch — parallel semantics under aliasing.** The first cut reused Phase 79's desugaring (one temp bound
+to the factory, then `a = tmp[0]; b = tmp[1]` via lazy slot reads) and it **failed the swap**: `tmp[1]`
+re-reads the *expression* `a` at use time, *after* `a = tmp[0]` already overwrote it, so the swap collapsed
+(`a` and `b` both ended up `4`). Phase 79 only ever worked because its examples had *constant* elements.
+
+The fix mirrors how a compiler lowers parallel assignment: **snapshot each rhs element into its own temp
+first, in source order, then write the targets** —
+
+```
+(a, b) = [b, a]   ⟿   __ma0 = b;  __ma1 = a;   a = __ma0;  b = __ma1
+```
+
+`__ma1` captures the old `a` *before* `a = __ma0` runs, so the swap is correct regardless of which targets the
+rhs mentions. Element expressions are extracted for the factory shapes (`[…]`, `Tuple.tuple(…)`, `List.of(…)`,
+`new TupleN(…)`); a non-factory rhs (opaque list value — not itself a target, so no aliasing risk) keeps the
+temp + slot-read path.
+
+**Soundness guard.** A non-variable target (`(a[i], a[j]) = …`) would be *silently un-modelled* by the
+assignment loop — a later read would see a stale value (the Phase-49c silent-skip trap). So any non-`Variable`
+target makes the whole statement skip **loudly** instead. (Declaration targets are always fresh variables, so
+this never trips that form.) Array-element swap targets are a possible future slice (they'd need `ArrayStore`
+steps for the targets).
+
+**Shipped tests**: `(a, b) = [b, a]` verifies the parallel result; a *sequential* value (both → 4) refutes,
+proving we model parallel not sequential; swap via `Tuple.tuple`; 3-way rotation `(a, b, c) = [c, a, b]`.
+
 ---
 
 ## Non-goals

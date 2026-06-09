@@ -3482,6 +3482,64 @@ class VerifyHarness {
                             a + b
                         }
                     }''')],
+        // Phase 90 — bare multiple assignment / swap `(a, b) = [b, a]` on existing locals. The temp
+        // captures the old state, so this is a correct *parallel* swap: a becomes 4, b becomes 3.
+        [group: 'P90 swap', name: 'swap (a,b)=[b,a] reassigns in parallel', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 43 })
+                        static int m() {
+                            int a = 3; int b = 4
+                            (a, b) = [b, a]
+                            a * 10 + b
+                        }
+                    }''')],
+        // Soundness: the parallel semantics matter. A *sequential* swap (`a = b; b = a`) would leave both
+        // at 4 (== 44), so claiming 43 only proves if the RHS is captured before either store. The wrong
+        // value refutes, confirming we model parallel (not sequential) assignment.
+        [group: 'P90 swap', name: 'swap is parallel, not sequential (wrong value refutes)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 44 })
+                        static int m() {
+                            int a = 3; int b = 4
+                            (a, b) = [b, a]
+                            a * 10 + b
+                        }
+                    }''')],
+        // Swap from a tuple factory, and a downstream read uses the swapped values.
+        [group: 'P90 swap', name: 'swap via Tuple.tuple then use', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int m() {
+                            int a = 5; int b = 9
+                            (a, b) = Tuple.tuple(b, a)
+                            a > b ? 1 : 0
+                        }
+                    }''')],
+        // Swap feeding a CONTRACT (map-as-named-tuple result related to the inputs). The natural
+        // spelling `(a, b) = [b, a]` on the *parameters* with `result.a == old.b` doesn't type-check /
+        // isn't executable — `old` only snapshots `this`-class fields, not parameters (Phase 89 sl.2b),
+        // and an untyped `def` return has no `.a` property. Reshaped to the executable form: swap
+        // *locals*, so the params keep their entry values and `result.a == b` needs no `old`.
+        [group: 'P90 swap', name: 'swap locals, map result relates to params', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.a == b && result.b == a })
+                        static Map<String, Integer> swap(int a, int b) {
+                            int x = a; int y = b
+                            (x, y) = [y, x]
+                            [a: x, b: y]
+                        }
+                    }''')],
+
+        // 3-way parallel rotation: every element snapshotted before any write. a,b,c = 1,2,3 -> 3,1,2.
+        [group: 'P90 swap', name: '3-way rotation (a,b,c)=[c,a,b]', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 312 })
+                        static int m() {
+                            int a = 1; int b = 2; int c = 3
+                            (a, b, c) = [c, a, b]
+                            a * 100 + b * 10 + c
+                        }
+                    }''')],
 
         // ---------- Phase 80: tuple PARAMETERS with .vN access ----------
         // A tuple parameter's slots are the caller's components — each `t.vN`/`t[k]` mints a fresh typed
