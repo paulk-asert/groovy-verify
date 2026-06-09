@@ -1275,7 +1275,7 @@ the suite currently rebates ~18 % wall-clock at a 20 % hit rate.
 ## Using it in your own build
 
 It isn't on Maven Central yet, but you don't need to wait for that — there are three
-ways to consume `au.com.asert:groovy-verify:0.1.0-SNAPSHOT`:
+ways to consume `io.github.paulk-asert:groovy-verify:0.1.0-SNAPSHOT`:
 
 - **Local install.** `./gradlew publishToMavenLocal` drops the jar into your `~/.m2`;
   then add `mavenLocal()` and the dependency to any Gradle/Maven project.

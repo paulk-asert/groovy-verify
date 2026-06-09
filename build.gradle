@@ -25,7 +25,7 @@
 //
 // Not on Maven Central yet, but consumable three ways without it (see README):
 //   - composite build:  includeBuild('../groovy-verify')   (the groovy6-functional repo)
-//   - local install:    ./gradlew publishToMavenLocal      (au.com.asert:groovy-verify:…)
+//   - local install:    ./gradlew publishToMavenLocal      (io.github.paulk-asert:groovy-verify:…)
 //   - JitPack:          built from a GitHub tag/commit on demand
 
 plugins {
@@ -34,12 +34,16 @@ plugins {
     id 'groovy'
     id 'java-library'
     id 'maven-publish'
+    // Maven Central publishing (signs + uploads to the Central Portal). Inert until its own tasks
+    // (`jreleaserDeploy` / `jreleaserConfig`) are invoked — does not touch build / verify / check.
+    id 'org.jreleaser' version '1.24.0'
 }
 
-// Coordinate the companion blog repo substitutes via includeBuild (and that a
-// future Maven Central publish would keep). Group + name are what Gradle matches
-// for dependency substitution; the version is a placeholder until first release.
-group = 'au.com.asert'
+// Group + name are what Gradle matches for includeBuild dependency substitution, so the companion
+// blog repo (groovy6-functional) must declare the dependency under THIS coordinate. `io.github.paulk-asert`
+// is the Maven Central namespace, verified via GitHub (a one-off verification repo under the paulk-asert
+// account) rather than DNS. The version is a placeholder until the first release.
+group = 'io.github.paulk-asert'
 version = '0.1.0-SNAPSHOT'
 
 // Apache RAT: don't license-check generated output, IDE metadata, or the wrapper.
@@ -84,17 +88,86 @@ java {
         languageVersion = JavaLanguageVersion.of(25)
     }
     withSourcesJar()
+    withJavadocJar()   // Maven Central requires a javadoc jar; empty for this pure-Groovy project, which satisfies it
 }
 
 // Get a consumable artifact without a Maven Central release:
-//   ./gradlew publishToMavenLocal   ->  au.com.asert:groovy-verify:0.1.0-SNAPSHOT in ~/.m2
+//   ./gradlew publishToMavenLocal   ->  io.github.paulk-asert:groovy-verify:0.1.0-SNAPSHOT in ~/.m2
 // any local Gradle/Maven project can then depend on it. This is also what JitPack
-// runs to build the jar from a GitHub tag/commit on demand (now possible because the
-// build is self-contained — it no longer needs a hand-built Groovy in mavenLocal).
+// runs to build the jar from a GitHub tag/commit on demand (the build is self-contained).
+//
+// For a Maven Central release (after Groovy 6 ships): `publish` stages the artifacts into
+// build/staging-deploy and `jreleaserDeploy` signs + uploads them to the Central Portal. The full
+// POM metadata below is what Central validation requires. `compileOnly` deps (Groovy, groovy-contracts)
+// are not transitive, so they never appear in the published POM — only the `api` dep (z3-turnkey) does.
 publishing {
     publications {
         maven(MavenPublication) {
             from components.java
+            pom {
+                name = 'groovy-verify'
+                description = 'SMT-backed @TypeChecked extension that proves groovy.contracts annotations at compile time'
+                url = 'https://github.com/paulk-asert/groovy-verify'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'paulk'
+                        name = 'Paul King'
+                        email = 'paulk@asert.com.au'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/paulk-asert/groovy-verify.git'
+                    developerConnection = 'scm:git:git@github.com:paulk-asert/groovy-verify.git'
+                    url = 'https://github.com/paulk-asert/groovy-verify'
+                }
+            }
+        }
+    }
+    repositories {
+        // Local staging dir for JReleaser to consume on release. Additive — `publishToMavenLocal`
+        // (and therefore JitPack) keep working unchanged.
+        maven {
+            name = 'staging'
+            url = layout.buildDirectory.dir('staging-deploy')
+        }
+    }
+}
+
+// Maven Central publishing via JReleaser — runs ONLY on its own tasks (`jreleaserDeploy` /
+// `jreleaserConfig`); inert during build / verify / check. Credentials come from env vars (never the
+// repo): JRELEASER_MAVENCENTRAL_USERNAME / _PASSWORD and JRELEASER_GPG_PASSPHRASE / _PUBLIC_KEY /
+// _SECRET_KEY — confirm exact names with `./gradlew jreleaserConfig`. Release day only: bump
+// `groovyVersion` to the released Groovy and `version` to a non-SNAPSHOT before deploying.
+jreleaser {
+    project {
+        description = 'SMT-backed @TypeChecked verification extension for groovy.contracts'
+        authors = ['Paul King']
+        license = 'Apache-2.0'
+        copyright = 'Paul King'
+        links {
+            homepage = 'https://github.com/paulk-asert/groovy-verify'
+        }
+    }
+    signing {
+        active = 'ALWAYS'
+        armored = true
+    }
+    deploy {
+        maven {
+            mavenCentral {
+                sonatype {
+                    active = 'ALWAYS'
+                    url = 'https://central.sonatype.com/api/v1/publisher'
+                    stagingRepository('build/staging-deploy')
+                    applyMavenCentralRules = true   // pre-validates pom / sources / javadoc / signatures
+                }
+            }
         }
     }
 }
