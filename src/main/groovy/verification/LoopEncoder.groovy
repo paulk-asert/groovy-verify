@@ -96,6 +96,8 @@ class LoopEncoder {
 
     /** Execute a straight-line region (prefix or loop body), updating the store. */
     static void symExec(List<Statement> stmts, Encoder enc, SmtSession s) {
+        // Expression-position `++`/`--` (`x = i++`, `a[i++] = v`) → an explicit two-statement sequence.
+        stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
             if (st instanceof BlockStatement) {
                 symExec(((BlockStatement) st).statements, enc, s)

@@ -4582,8 +4582,19 @@ statement discards — so all four (`i++`/`++i`/`i--`/`--i`) collapse to the sam
 may be a variable, array element (`a[i]++` → an array store), or field. A wrong result refutes. Same
 no-overlap-with-contracts property as Phase 85 (predicates never contain `++`).
 
-**Still out:** `++`/`--` in *expression* position (`x = i++`, `a[i++]`) — a side-effecting subexpression that
-both mutates and yields a (pre- vs post-) value, which the straight-line/path model doesn't thread.
+**`++`/`--` in expression position — variable target (shipped).** A side-effecting inc/dec used for its
+value (`x = i++`, `a = i++`, `x = ++i`) is **hoisted** out of the enclosing statement into an explicit
+sequence by `Encoder.expandIncDecStatements` (run at the head of `BodyEncoder.walkStatements` and
+`LoopEncoder.symExec`, so straight-line and loop bodies both get it): a **post**-form becomes
+`[…uses operand…, operand = operand ± 1]` (the old value, then the side effect) and a **pre**-form becomes
+`[operand = operand ± 1, …uses operand…]` (side effect first, new value). `extractFirstIncDec` finds the one
+inc/dec by recursing the `BinaryExpression`/postfix/prefix shapes and replaces it with its operand; a
+statement with more than one inc/dec is left alone (skips loudly rather than risk mis-ordering). So
+`int x = i++` proves `x == old i` and `i` incremented; `x = ++i` proves the new value; a wrong claim refutes;
+and `c = i++` inside a loop body threads correctly through the invariant. **Still out:** `++`/`--` in
+*array-index* position (`a[i++]`) — the index's implicit bounds obligation is collected by a separate
+value-flow/havoc pass that the statement-list hoist doesn't reach, and threading the increment soundly across
+those passes (so a later access sees the bumped index) needs a body-level normalization, deferred.
 
 ---
 

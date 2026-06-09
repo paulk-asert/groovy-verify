@@ -7017,6 +7017,36 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- ++ / -- in expression position (variable target) ----------
+        // `x = i++` / `a = i++` / `x = ++i`: the side-effecting inc/dec is hoisted out of the assignment
+        // into an explicit sequence — post `[x = i, i = i+1]` (old value, then the side effect), pre
+        // `[i = i+1, x = i]` (side effect first, then the new value). Operand may be a var, field, or
+        // array element. (Array-INDEX position `a[i++]` stays out — its index obligation would need the
+        // increment threaded through the obligation passes; it skips loudly.)
+        [group: 'P expr inc/dec', name: 'x = i++ value is old i', ok: true,
+         src: tc('class C { @Ensures({ result == 5 }) static int f() { int i = 5; int x = i++; return x } }')],
+        [group: 'P expr inc/dec', name: 'i++ side effect increments i', ok: true,
+         src: tc('class C { @Ensures({ result == 6 }) static int f() { int i = 5; int x = i++; return i } }')],
+        [group: 'P expr inc/dec', name: 'x = ++i value is new i', ok: true,
+         src: tc('class C { @Ensures({ result == 6 }) static int f() { int i = 5; int x = ++i; return x } }')],
+        [group: 'P expr inc/dec', name: 'x = i-- value is old i', ok: true,
+         src: tc('class C { @Ensures({ result == 5 }) static int f() { int i = 5; int x = i--; return x } }')],
+        [group: 'P expr inc/dec', name: 'x = i++ in a loop body threads correctly', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n })
+                        static int countViaPost(int n) {
+                            int i = 0, c = 0
+                            @Invariant({ 0 <= i && i <= n && c == i })
+                            @Decreases({ n - i })
+                            while (i < n) { c = i++; c = c + 1 }
+                            return c
+                        }
+                    }''')],
+        // Soundness: x = i++ is the OLD value; claiming the new value refutes.
+        [group: 'P expr inc/dec', name: 'x = i++ claims new value refutes', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ result == 6 }) static int f() { int i = 5; int x = i++; return x } }')],
+
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'set merge (union membership)', ok: true,
          src: tc('''class C {

@@ -1637,8 +1637,9 @@ a coverage metric. In expressions the fragment is:
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
-`++`/`--` as statements (desugared to plain assignment; Phases 85/86 — *expression*-position `a[i++]` stays
-out and skips loudly), and a single annotated loop — `while`, `do … while` (Phase 88), a classic
+`++`/`--` both as statements and **in expression position** with a variable target (`x = i++` / `x = ++i` is
+hoisted to its old/new value plus the side effect; Phases 85/86 — only `++`/`--` in *array-index* position
+`a[i++]` stays out and skips loudly), and a single annotated loop — `while`, `do … while` (Phase 88), a classic
 `for (init; cond; update)`, or `for (x in xs)` over a named collection, all desugaring to the same machinery
 (Phases 59 & 63; the for-in's index is synthesised and hidden, the loop variable keeps its name; `.each` stays
 outside the fragment and skips loudly). A `do … while` is `B; while (G) B` — its body runs once

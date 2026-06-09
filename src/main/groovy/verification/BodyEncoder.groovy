@@ -153,6 +153,8 @@ class BodyEncoder {
                                              boolean tailContext) {
         WalkResult res = new WalkResult()
         List<Path> current = new ArrayList<Path>(incoming)
+        // Expression-position `++`/`--` (`x = i++`, `a[i++] = v`) → an explicit two-statement sequence.
+        stmts = Encoder.expandIncDecStatements(stmts)
         if (stmts.isEmpty()) {
             res.live.addAll(current)
             return res

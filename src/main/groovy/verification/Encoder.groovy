@@ -4631,6 +4631,77 @@ class Encoder {
     }
 
     /**
+     * Expand each statement's single <em>expression-position</em> increment/decrement into an explicit
+     * two-statement sequence, so the path/loop processors see only plain assignments. A <b>post</b>-form
+     * (`x = i++`, `a[i++] = v`, `x = a[i++]`) becomes `[…uses i…, i = i + 1]` — the old value is used, then the
+     * side effect — and a <b>pre</b>-form (`x = ++i`) becomes `[i = i + 1, x = i]` — side effect first, then the
+     * new value. A <em>top-level</em> `i++` statement is left alone ({@link #desugarIncDec} handles it), as is a
+     * statement with no inc/dec, or with more than one (sequencing several is ambiguous — skip loudly rather
+     * than risk mis-ordering). Phase: `++`/`--` in expression position.
+     */
+    static List<Statement> expandIncDecStatements(List<Statement> stmts) {
+        List<Statement> out = new ArrayList<Statement>(stmts.size())
+        for (Statement st : stmts) {
+            List<Statement> exp = expandStatementIncDec(st)
+            if (exp != null) out.addAll(exp) else out.add(st)
+        }
+        out
+    }
+
+    private static List<Statement> expandStatementIncDec(Statement st) {
+        if (!(st instanceof ExpressionStatement)) return null
+        Expression e = ((ExpressionStatement) st).expression
+        if (isIncDec(e)) return null                 // top-level `i++` — desugarIncDec handles it
+        if (countIncDec(e) != 1) return null         // none, or several (unsafe to sequence) → leave as-is
+        Object[] x = extractFirstIncDec(e)
+        if (x == null) return null
+        Expression rewritten = (Expression) x[0]
+        Expression operand   = (Expression) x[1]
+        boolean isPre        = (boolean) x[2]
+        Token op             = (Token) x[3]
+        int baseType = (op.type == Types.PLUS_PLUS) ? Types.PLUS : Types.MINUS
+        Token baseTok = Token.newSymbol(baseType, op.startLine, op.startColumn)
+        Expression incExpr = new BinaryExpression(operand,
+            Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn),
+            new BinaryExpression(operand, baseTok, new ConstantExpression(Integer.valueOf(1))))
+        Statement incStmt = new ExpressionStatement(incExpr)
+        Statement mainStmt = new ExpressionStatement(rewritten)
+        mainStmt.setSourcePosition(st)
+        incStmt.setSourcePosition(st)
+        (isPre ? [incStmt, mainStmt] : [mainStmt, incStmt]) as List<Statement>
+    }
+
+    /** Count inc/dec subexpressions in the BinaryExpression / postfix / prefix shapes the expander supports. */
+    private static int countIncDec(Expression e) {
+        if (isIncDec(e)) return 1
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            return countIncDec(be.leftExpression) + countIncDec(be.rightExpression)
+        }
+        0
+    }
+
+    /**
+     * The first inc/dec in {@code e} (recursing into BinaryExpression operands — covers `x = i++`,
+     * `a[i++] = v`, `x = a[i++]`, `x = i++ + 1`, `a[i]++`), returned as
+     * {@code [rewrittenExpr, operand, isPre, opToken]} with that node replaced by its operand. Null if none.
+     */
+    private static Object[] extractFirstIncDec(Expression e) {
+        if (isIncDec(e)) {
+            Object[] p = incDecParts(e)
+            return [(Expression) p[1], (Expression) p[1], (e instanceof PrefixExpression), (Token) p[0]] as Object[]
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            Object[] l = extractFirstIncDec(be.leftExpression)
+            if (l != null) return [new BinaryExpression((Expression) l[0], be.operation, be.rightExpression), l[1], l[2], l[3]] as Object[]
+            Object[] r = extractFirstIncDec(be.rightExpression)
+            if (r != null) return [new BinaryExpression(be.leftExpression, be.operation, (Expression) r[0]), r[1], r[2], r[3]] as Object[]
+        }
+        null
+    }
+
+    /**
      * Translate a postcondition as a <em>proof goal</em> (as opposed to an assumption). Walks the goal to
      * mark the positive-polarity stream-{@code every} nodes, so the unbounded-stream induction encoding —
      * which is stronger than the {@code every} it stands for, hence sound only when proven, not assumed —
