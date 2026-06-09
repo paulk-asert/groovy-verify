@@ -4310,8 +4310,9 @@ an "already-FP-sorted" fallback, so comparisons and arithmetic on FP elements ro
 bounded `∀`/`∃` over the elements instantiates: `(0..<xs.length).every { xs[it] >= 0.0d }` as a precondition
 lets `xs[0] >= 0.0d` prove. `VerifyChecker` now records non-Int **array component** types (not just list
 generics) into `listElementTypes`, so a `double[]` param/field routes through `sortFor`. (Contracts use
-`double[]` rather than `List<Double>`: a generic list's element type is *erased* inside the contract closure
-under `@TypeChecked`, so `xs[it] >= 0.0d` fails to compile — arrays keep their component type.)
+`double[]` rather than `List<Double>` *originally*: a generic list's element type *erased* to `Object` inside
+the contract closure under `@TypeChecked`, so `xs[it] >= 0.0d` wouldn't compile — arrays keep their component
+type. **GROOVY-12071 lifted that**, so `List<Double>` element predicates now compile too; both forms work.)
 
 **FP min/max is sound only under no-NaN.** FP is *not* totally ordered: Groovy's `max`/`min` returns NaN when
 any element is NaN, and NaN is neither `fpLeq`-comparable nor `fpEq` to anything — so a `BigDecimal`-style
@@ -4331,9 +4332,9 @@ with `!Double.isNaN(m)` + a full-array no-NaN carried in the invariant. FP compa
 native linear arithmetic, so the quantifier-instantiation + `<=` transitivity that makes the **Int and
 BigDecimal** witnessed-extremum loops (Phase 60/76) go through don't carry to FP inside a loop invariant. So
 the FP min/max capability is real at the *spec-helper* level, but not as a loop-verified HumanEval port.
-**Still out:** FP `.sum()` (non-associative); `List<Double>` *scalar* element predicates (the `@TypeChecked`
-erasure — `double[]` is the workaround); `has_close_elements` (nested pairwise quantifier); FP loops with a
-quantified invariant (the bit-blasting/transitivity gap above).
+**Still out:** FP `.sum()` (non-associative); `has_close_elements` (nested pairwise quantifier); FP loops with
+a quantified invariant (the bit-blasting/transitivity gap above). (`List<Double>` *scalar* element predicates,
+once an `@TypeChecked` erasure gap that `double[]` worked around, now compile post-GROOVY-12071.)
 
 ---
 
@@ -4420,11 +4421,10 @@ component value, consistent across references.
 `@Requires({ t.first >= 0 && t.second >= 0 })`, and `t.size() == 2` all verify, and `t.v1 >= 0 ⇒ result > 0`
 refutes.
 
-**Known limit (Groovy, not the verifier):** slot *arithmetic* inside a *contract closure* — `t.v1 + t.v2` —
-fails `@TypeChecked` because the slot generic erases to `Object` in the re-parsed closure (`Object#plus`),
-the same erasure that bites `List<Double>` element predicates. Comparisons on slots are fine, so contracts
-compare slots (`result == t.v1`, `t.first >= 0`) while the method body does the arithmetic (generics survive
-there). **Still out:** symbolic-slot `t[i]`, nested tuples, and string-slot *methods* in contracts
+**Was a known limit, now fixed (GROOVY-12071):** slot *arithmetic* inside a *contract closure* — `t.v1 + t.v2`
+— used to fail `@TypeChecked` because the slot generic erased to `Object` in the re-parsed closure
+(`Object#plus`); GROOVY-12071 restored the closure's generics, so slot arithmetic/ordering now type-check
+directly (comparisons like `result == t.v1` / `t.first >= 0` always worked). **Still out:** symbolic-slot `t[i]`, nested tuples, and string-slot *methods* in contracts
 (`t.v2.length()` — the slot isn't yet recognised as a string receiver). (Component-wise `==` followed in Phase 81.)
 
 ---
@@ -4457,12 +4457,12 @@ container (recursing on the strictly smaller inner expression). Because every co
 nested tuple-typed slots, so `t.v1.v2` flattens to a fresh typed entity `t$v1$v2` (consistent across
 references) in the leaf slot's sort. A shared `slotAccessor` helper recognises `.vN`/`.first`/`.second`/`[k]`.
 
-**Known limit (Groovy, not the verifier):** nested access only works in the method **body** — in a *contract
-closure*, `@TypeChecked` erases the nested generic, so `result.v1` is `Object` and `result.v1.v2` fails to
-compile (`No such property: v2 for class Object`), the same erasure that bites slot arithmetic and
-`List<Double>` element predicates. So a body computes the nested value (`Tuple.tuple(Tuple.tuple(1,2),3).v1.v2`
-folds to `2`; `int x = t.v1.v2` binds `t$v1$v2`) while the contract relates `result` to it. **Still out:**
-nested access *in contracts* (the erasure), symbolic-slot `t[i]`.
+**Was a known limit, now fixed (GROOVY-12071):** nested access used to work only in the method **body** — in a
+*contract closure* `@TypeChecked` erased the nested generic, so `result.v1` was `Object` and `result.v1.v2`
+wouldn't compile (`No such property: v2 for class Object`). GROOVY-12071 restored the closure's generics, so
+`result.v1.v2` resolves in contracts too. The body still computes/binds nested values
+(`Tuple.tuple(Tuple.tuple(1,2),3).v1.v2` folds to `2`; `int x = t.v1.v2` binds `t$v1$v2`). **Still out:**
+symbolic-slot `t[i]`.
 
 ---
 
@@ -4480,10 +4480,10 @@ their own handling). Wired into `translate(PropertyExpression)`.
 So `sum_product` now ports as the most self-documenting shape — `return [sum: s, product: p]` with
 `@Ensures({ result.sum == xs.sum() && result.product == xs.inject(1){a,x->a*x} })` — joining the typed
 `Tuple2` and positional `[sum, product]` forms; a wrong value refutes. The named map reads naturally for the
-typical spec shape (each component *compared* to its aggregate). It is **not** exempt from the @TypeChecked
-erasure, though — see Phase 84: *arithmetic* on a map value in a contract closure still erases to
-`Object#plus`, exactly like tuple slots / `List<Double>`; only comparisons survive. **Still out:** non-constant
-keys, and map *parameters* (Phase 84, below).
+typical spec shape (each component *compared* to its aggregate). (Originally *arithmetic* on a map value in a
+contract closure erased to `Object#plus`, like tuple slots / `List<Double>` — comparisons only; **GROOVY-12071
+lifted that**, so `result.sum + result.product` type-checks too. See the Phase 84 update.) **Still out:**
+non-constant keys, and map *parameters* (Phase 84, below).
 
 ---
 
