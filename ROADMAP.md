@@ -4353,14 +4353,21 @@ So a method may return `[a, b, …]` and have `@Ensures` reference its elements:
 == xs.inject(1){a,x->a*x} })` (each element proven against its aggregate; a wrong element claim refutes) —
 where it previously had to collapse to `s + p` for lack of list/tuple returns.
 
-**`int[]`-typed returns ride this unchanged (no code, locked by tests).** A method declared to return `int[]`
-whose body is a list literal `[s, p]` verifies the same way: Groovy implicitly coerces the literal to the
-array, and `tryRecordFactoryAssign` keys off the return *expression* (a `ListExpression`), so `result` binds
-as a list factory regardless of the declared array type — `result[k]` and `result.length` fold identically.
-The `sum_product` flagship therefore also ports with an `int[]` return. (Probed this slice and found it
-already worked; promoted to permanent `P78 int[] return` tests + a crisp size-pin refute. *Genuinely* missing
-array returns are the constructed forms — `new int[]{…}` (`ArrayExpression`, unrecognised) and the sized
-`new int[n]` (fresh symbolic array, zero-filled) — left as the next array slices.)
+**`int[]`-typed returns ride this — two spellings.** (1) A method declared to return `int[]` whose body is a
+*list literal* `[s, p]` needed no code: Groovy implicitly coerces the literal to the array, and
+`tryRecordFactoryAssign` keys off the return *expression* (a `ListExpression`), so `result` binds as a list
+factory regardless of the declared array type. The `sum_product` flagship ports with an `int[]` return this
+way. (2) The *constructed* array literal `new int[]{s, p}` — an `ArrayExpression` with an initializer — is now
+recognised in `factoryContainerFor` as a fixed-arity list-kind factory over its initializer expressions (the
+array dual of a list literal), so it binds `result` identically; a body local `int[] r = new int[]{…}` records
+as a factory too. Both fold `result[k]` / `result.length` / component-wise `==` via the Phase 78/81 machinery.
+Locked by `P78 int[] return` tests (each spelling + crisp size-pin / element refutes).
+
+**Still out (the one remaining array-return form):** the *sized* allocation `new int[n]`
+(`ArrayExpression` with `sizeExpression != null`, no initializer) — a fresh symbolic array of length `n`,
+zero-filled. Not a fixed-arity literal, so it falls through to a loud skip; modelling it needs minting an
+array oracle with `sizeOf = n` + a zero default and threading body stores — array *allocation* in the body, a
+larger slice than these literal-recognition ones.
 
 **Still out (the `Tuple` layer, next):** *heterogeneous* fixed products with **named** accessors
 (`.v1`/`.vN`/`.first`/`.second`), `new TupleN(...)` / `Tuple.tuple(...)` construction, and **multiple

@@ -22,6 +22,7 @@ import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
+import org.codehaus.groovy.ast.expr.ArrayExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.CastExpression
@@ -1900,6 +1901,18 @@ class Encoder {
         }
         if (target instanceof ListExpression) {
             return new FactoryContainer(kind: kindOverride ?: 'list', args: ((ListExpression) target).expressions)
+        }
+        // `new int[]{a, b, …}` — an array literal with an initializer is the array dual of a list literal:
+        // a fixed-arity positional container. Model it as a list-kind factory over its initializer
+        // expressions so a returned/assigned array's `result[k]` / `result.length` / component-wise `==`
+        // fold via the same Phase 78/81 machinery (each slot translates in its own sort). The *sized* form
+        // `new int[n]` (no initializer, `sizeExpression != null`) is a fresh symbolic array, not a literal —
+        // out of this slice, so it falls through to null (honest skip).
+        if (target instanceof ArrayExpression) {
+            ArrayExpression ae = (ArrayExpression) target
+            if (ae.sizeExpression == null) {
+                return new FactoryContainer(kind: kindOverride ?: 'list', args: ae.expressions)
+            }
         }
         if (target instanceof MapExpression) {
             List<Expression> ks = new ArrayList<Expression>()

@@ -981,26 +981,43 @@ static Tuple2<Integer, Integer> sumProduct(List<Integer> xs) {
 }
 ```
 
-The postcondition pins *each* component to its aggregate — `result.v1` is exactly the sum, `result.v2`
+The postcondition pins *each* component to its own aggregate — `result.v1` is exactly the sum, `result.v2`
 exactly the product — because a `Tuple2` return binds `result` as a fixed-arity product whose named slots
-fold (Phase 79). Three return shapes all verify this way: the typed `Tuple2` above, a positional
-`return [sum, product]` with `result[0]` / `result[1]` (Phase 78) — which also covers a declared **`int[]`
-return type**, since Groovy coerces the list literal to the array and the binding keys off the return
-*expression* (so `result.length` / `result[k]` fold identically) — and the most self-documenting — a
-**named-tuple map** `return [sum: s, product: p]` with `@Ensures({ result.sum == xs.sum() && result.product
-== … })`, Groovy's map-as-named-tuple idiom (Phase 83). All three (and tuple *parameters*, Phase 80/84) share
-one `@TypeChecked` caveat: inside a contract closure the component's generic type erases to `Object`, so
-*arithmetic* on a component fails to compile (`result.sum + result.product`) and so do some *ordering*
-comparisons — only `==` and simple bounds are reliable there. The `sum_product` specs above are all `==`, so
-they read cleanly; the rule of thumb is **compare in the contract, compute in the body**. (That caveat is
-specifically about *generic-typed component accessors* in contracts — it has nothing to do with the loop's
-compound assignments `s += xs[i]` / `i += 1` (and `++`/`--`), which are fully modeled (Phase 85/86) because
-they operate on plain `int` locals, not erased accessors.) Before any of these
-shapes, it collapsed to `return s + p` with the weaker `result == sum + product` (which only pins the two
-aggregates' *sum*, not each). The
-duck-typed `sum()` also covers
-concatenation — `['a','b','c'].sum() == 'abc'` over a `List<String>` lowers to the same base/step machinery
-on the `str.++` monoid, so a running concatenation verifies just like the numeric running total.
+fold (Phase 79).
+
+`Tuple2` is one of several **return shapes** that verify the same way. The positional form returns a list
+literal and reads elements by index — and this is exactly where a declared **`int[]`** return type works
+too, since the body's literal coerces to the array (or is written explicitly as `new int[]{…}`) and the
+binding keys off the return *expression*, not the declared type:
+
+```groovy
+@Requires({ xs != null && xs.size() > 0 })
+@Ensures({ result[0] == xs.sum() && result[1] == xs.inject(1) { a, x -> a * x } })
+static int[] sumProduct(List<Integer> xs) {
+    int s = xs[0], p = xs[0], i = 1
+    @Invariant({ 1 <= i && i <= xs.size() &&
+                 s == xs[0..<i].sum() && p == xs[0..<i].inject(1) { a, x -> a * x } })
+    @Decreases({ xs.size() - i })
+    while (i < xs.size()) { s += xs[i]; p *= xs[i]; i += 1 }
+    [s, p]   // also: new int[]{s, p}
+}
+```
+
+`result[0]` / `result[1]` / `result.length` fold just like the tuple slots (Phase 78). The third shape, the
+most self-documenting, is a **named-tuple map** — `return [sum: s, product: p]` read back as
+`@Ensures({ result.sum == xs.sum() && result.product == … })`, Groovy's map-as-named-tuple idiom (Phase 83);
+the **SumMax** example in the [Dafny examples](#dafny-examples) below is a worked instance.
+All three shapes (and tuple *parameters*, Phase 80/84) share one `@TypeChecked` caveat: inside a contract
+closure a component's generic type erases to `Object`, so *arithmetic* on a component won't compile
+(`result.sum + result.product`) and neither do some *ordering* comparisons — only `==` and simple bounds are
+reliable there. The `sum_product` specs are all `==`, so they read cleanly; the rule of thumb is **compare in
+the contract, compute in the body**. (The caveat is only about *generic-typed component accessors* in
+contracts — it has nothing to do with the loop's compound assignments `s += xs[i]` / `i += 1` (and `++`/`--`),
+fully modeled (Phase 85/86) because they operate on plain `int` locals, not erased accessors.)
+
+The duck-typed `sum()` also covers concatenation — `['a','b','c'].sum() == 'abc'` over a `List<String>`
+lowers to the same base/step machinery on the `str.++` monoid, so a running concatenation verifies just like
+the numeric running total.
 
 Task 039's inner `is_prime` — the canonical NIA-plus-control-flow benchmark — ports
 verbatim to the Verus source shape:

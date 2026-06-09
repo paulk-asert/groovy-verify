@@ -3269,6 +3269,27 @@ class VerifyHarness {
                             [s, p]
                         }
                     }''')],
+        // The CONSTRUCTED array-literal form `new int[]{...}` (an ArrayExpression with an initializer) — the
+        // array dual of a list literal. Recognised as a fixed-arity list-kind factory over its initializer
+        // expressions, so result[k] / result.length fold exactly as the coerced `[a,b]` form does.
+        [group: 'P78 int[] return', name: 'new int[]{a,b} return: result[k] + length', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.length == 2 && result[0] == a && result[1] == b })
+                        static int[] pair(int a, int b) { new int[]{a, b} }
+                    }''')],
+        // Crisp refute (int elements, no aggregation axiom): result[0] is a, not b.
+        [group: 'P78 int[] return', name: 'new int[]{a,b} return: wrong element refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result[0] == b })
+                        static int[] pair(int a, int b) { new int[]{a, b} }
+                    }''')],
+        // A body local bound to `new int[]{...}` records as a factory too (tryRecordFactoryAssign on the
+        // local), so the returned local's elements/length fold without any array store.
+        [group: 'P78 int[] return', name: 'new int[]{...} local, returned', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.length == 3 && result[0] == x && result[2] == x })
+                        static int[] triple(int x) { int[] r = new int[]{x, x, x}; r }
+                    }''')],
 
         // ---------- Phase 79: Tuple / TupleN — fixed-arity typed products ----------
         // A `Tuple.tuple(a, b)` / `new TupleN(a, b)` is modelled as a fixed-arity factory (on the Phase-78
