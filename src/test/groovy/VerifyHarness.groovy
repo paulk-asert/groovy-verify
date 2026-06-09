@@ -250,8 +250,8 @@ class VerifyHarness {
                        @Ensures({ result > 0 })
                        static int get(int[] a, int k) { a[k] }
                    }''')],
-        // The native idiom works in @Invariant too — no `verification.Forall.range` FQN, no typed
-        // index param: the same zero-fill proof the Forall helper needed warts for, written plainly.
+        // The native idiom works in @Invariant too — no explicit `Forall.range(...)` helper call and no
+        // typed index param: the same zero-fill proof written plainly with `(0..<i).every { ... }`.
         [group: 'P9 native quantifiers', name: 'range.every in @Invariant (zero-fill)', ok: true,
          src: tc('''class C {
                        @Requires({ 0 <= n && n <= a.length })
@@ -685,7 +685,7 @@ class VerifyHarness {
                        @Ensures({ Forall.range(0, n) { i -> a[i] == 0 } })
                        static int zero(int[] a, int n) {
                            int i = 0
-                           @Invariant({ 0 <= i && i <= n && verification.Forall.range(0, i, { int j -> a[j] == 0 }) })
+                           @Invariant({ 0 <= i && i <= n && Forall.range(0, i, { int j -> a[j] == 0 }) })
                            @Decreases({ n - i })
                            while (i < n) { a[i] = 0; i = i + 1 }
                            return 0
@@ -697,7 +697,7 @@ class VerifyHarness {
                        @Requires({ 0 <= n && n <= a.length })
                        static int fill(int[] a, int n) {
                            int i = 0
-                           @Invariant({ 0 <= i && i <= n && verification.Forall.range(0, i, { int j -> a[j] == 0 }) })
+                           @Invariant({ 0 <= i && i <= n && Forall.range(0, i, { int j -> a[j] == 0 }) })
                            @Decreases({ n - i })
                            while (i < n) { a[i] = 1; i = i + 1 }
                            return 0
@@ -2706,12 +2706,12 @@ class VerifyHarness {
         [group: 'HumanEval port', name: 'get_positive (Verus 030, stronger): every result element is positive', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null })
-                        @Ensures({ verification.Forall.range(0, result.size(), { int k -> result[k] > 0 }) })
+                        @Ensures({ Forall.range(0, result.size(), { int k -> result[k] > 0 }) })
                         static List<Integer> getPositive(List<Integer> xs) {
                             List<Integer> positive = []
                             int i = 0
                             @Invariant({ positive != null && 0 <= i && i <= xs.size() &&
-                                         verification.Forall.range(0, positive.size(), { int k -> positive[k] > 0 }) })
+                                         Forall.range(0, positive.size(), { int k -> positive[k] > 0 }) })
                             @Decreases({ xs.size() - i })
                             while (i < xs.size()) {
                                 int x = xs[i]
@@ -2733,12 +2733,12 @@ class VerifyHarness {
         [group: 'HumanEval port', name: 'filter_by_prefix (Verus 029, stronger): every result starts with prefix', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null && prefix != null })
-                        @Ensures({ verification.Forall.range(0, result.size(), { int k -> result[k].startsWith(prefix) }) })
+                        @Ensures({ Forall.range(0, result.size(), { int k -> result[k].startsWith(prefix) }) })
                         static List<String> filterByPrefix(List<String> xs, String prefix) {
                             List<String> result = []
                             int i = 0
                             @Invariant({ result != null && 0 <= i && i <= xs.size() &&
-                                         verification.Forall.range(0, result.size(), { int k -> result[k].startsWith(prefix) }) })
+                                         Forall.range(0, result.size(), { int k -> result[k].startsWith(prefix) }) })
                             @Decreases({ xs.size() - i })
                             while (i < xs.size()) {
                                 if (xs[i] != null && xs[i].startsWith(prefix)) {
@@ -2960,9 +2960,11 @@ class VerifyHarness {
         // The FULL biconditional spec — result ⟺ some prefix sum is negative — verifies: the early
         // return witnesses the existential (`any`), and the invariant "no prefix negative so far"
         // (`every`) carries the converse to the `return false` path. Uses `sum(0)` (runtime-safe: 0
-        // for the empty prefix, vs `[].sum() == null`) and an `(int)` cast (GDK `sum()` is typed
-        // `Object`, so a `< 0` comparison needs it). Both are surface accommodations; the proof logic
-        // is groovy-verify's sum aggregation + bounded ∀/∃.
+        // for the empty prefix, vs `[].sum() == null`) and an `(int)` cast — but NOT for the
+        // generics-erasure reason the others had: the seeded GDK `sum(Iterable, initialValue)` overload is
+        // declared to return `Object` by signature (unlike the bare `sum()`), so the `< 0` comparison needs
+        // it even with GROOVY-12071's restored closure generics. The proof logic is groovy-verify's sum
+        // aggregation + bounded ∀/∃.
         [group: 'P52 below_zero', name: 'below_zero full biconditional spec', ok: true,
          src: tc('''class C {
                         @Requires({ operations != null })
@@ -3023,7 +3025,7 @@ class VerifyHarness {
         [group: 'P53 product', name: 'sum_product: both aggregations in one loop', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() > 0 })
-                        @Ensures({ result == ((int) xs.sum()) + ((int) xs.inject(1) { a, x -> a * x }) })
+                        @Ensures({ result == xs.sum() + xs.inject(1) { a, x -> a * x } })
                         static int sumPlusProduct(List<Integer> xs) {
                             int s = xs[0]
                             int p = xs[0]
@@ -3128,7 +3130,7 @@ class VerifyHarness {
         [group: 'P85 compound assign', name: 'sumProduct loop body with += *=', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null && xs.size() > 0 })
-                        @Ensures({ result == ((int) xs.sum()) + ((int) xs.inject(1) { a, x -> a * x }) })
+                        @Ensures({ result == xs.sum() + xs.inject(1) { a, x -> a * x } })
                         static int sumProduct(List<Integer> xs) {
                             int s = xs[0]
                             int p = xs[0]
@@ -3547,8 +3549,7 @@ class VerifyHarness {
         // The textbook proof: an iterative Fibonacci provably equals the recursive definition. The
         // invariant carries the two-term recurrence (a == fib(i), b == fib(i+1)); the step axiom
         // re-establishes it across `b = a + b`. Terminates (`n - i`), unlike the outer prime_fib search.
-        // (FQN `verification.Fib` inside @Invariant: groovy-contracts compiles that closure without the
-        // import in scope — the same wart `Forall` carries.)
+        // (Bare `Fib.of` inside @Invariant resolves the import since GROOVY-12072 — no `verification.` FQN.)
         [group: 'P55 fib', name: 'iterative Fibonacci equals Fib.of(n)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 })
@@ -3558,7 +3559,7 @@ class VerifyHarness {
                             int b = 1
                             int i = 0
                             @Invariant({ 0 <= i && i <= n &&
-                                         a == verification.Fib.of(i) && b == verification.Fib.of(i + 1) })
+                                         a == Fib.of(i) && b == Fib.of(i + 1) })
                             @Decreases({ n - i })
                             while (i < n) {
                                 int t = a + b
@@ -3597,9 +3598,9 @@ class VerifyHarness {
                             int c = 1
                             int i = 0
                             @Invariant({ 0 <= i && i <= n &&
-                                         a == verification.Trib.of(i) &&
-                                         b == verification.Trib.of(i + 1) &&
-                                         c == verification.Trib.of(i + 2) })
+                                         a == Trib.of(i) &&
+                                         b == Trib.of(i + 1) &&
+                                         c == Trib.of(i + 2) })
                             @Decreases({ n - i })
                             while (i < n) {
                                 int t = a + b + c
@@ -3638,7 +3639,7 @@ class VerifyHarness {
                             int x = a
                             int y = b
                             @Invariant({ x >= 0 && y >= 0 &&
-                                         verification.Gcd.of(x, y) == verification.Gcd.of(a, b) })
+                                         Gcd.of(x, y) == Gcd.of(a, b) })
                             @Decreases({ y })
                             while (y != 0) {
                                 int t = x % y
@@ -6449,11 +6450,11 @@ class VerifyHarness {
         // returns 2 but Fib.of(2) is 1. UNKNOWN becomes a runnable repro.
         [group: 'P62 pbt', name: 'Fib UNKNOWN refuted by testing (fails on f(2))',
          expect: 'fails on: f(2)',
-         src: tc('class C { @Requires({ n >= 0 }) @Ensures({ result == verification.Fib.of(n) }) static int f(int n) { n } }')],
+         src: tc('class C { @Requires({ n >= 0 }) @Ensures({ result == Fib.of(n) }) static int f(int n) { n } }')],
         // The diagnostic is explicit that the counterexample came from testing, not a proof.
         [group: 'P62 pbt', name: 'Fib off-by-const UNKNOWN refuted by testing',
          expect: 'counterexample found by bounded testing',
-         src: tc('class C { @Requires({ n >= 2 }) @Ensures({ result == verification.Fib.of(n) + 1 }) static int f(int n) { n } }')],
+         src: tc('class C { @Requires({ n >= 2 }) @Ensures({ result == Fib.of(n) + 1 }) static int f(int n) { n } }')],
         // Honest bail: an array-`sum()` postcondition is UNKNOWN (aggregation-axiom timeout), but the
         // concrete tester can't evaluate array contents, so it finds nothing and the diagnostic stays an
         // honest "could not decide" — bounded testing never fabricates a false refutation outside its
@@ -6468,16 +6469,15 @@ class VerifyHarness {
         // `sum <= i * max` (Phase 48). Dafny's `returns (sum, max)` is a NAMED tuple, so the faithful
         // Groovy is the map-as-named-tuple idiom (Phase 83): `return [sum: …, max: …]` with
         // `result.sum` / `result.max` — self-documenting where positional `result.v1` / `result.v2`
-        // aren't. The `(int)` casts are still needed: a map value erases to Object in a contract
-        // closure, so the arithmetic `n * max` and the `<=` won't type-check bare (the universal
-        // generic-erasure caveat — same for tuple slots and List<Double> elements). Different shape
-        // from below_zero (a sum biconditional) and max_element (a witnessed extremum): an INEQUALITY
-        // relating two running aggregates.
+        // aren't. With the return type declared `Map<String, Integer>`, the map values read back as
+        // `Integer` inside the @Ensures closure (GROOVY-12071 restored the closure's generic types), so the
+        // arithmetic `n * max` and the `<=` type-check with NO cast. Different shape from below_zero (a sum
+        // biconditional) and max_element (a witnessed extremum): an INEQUALITY relating two running aggregates.
         [group: 'Dafny port', name: 'SumMax (VSComp10 P1): sum <= n*max', ok: true,
          src: tc('''class C {
                        @Requires({ 0 <= n && a.length == n && (0..<n).every { a[it] >= 0 } })
-                       @Ensures({ (int) result.sum <= n * (int) result.max })
-                       static Map sumMax(int[] a, int n) {
+                       @Ensures({ result.sum <= n * result.max })
+                       static Map<String, Integer> sumMax(int[] a, int n) {
                            int sum = 0, max = 0, i = 0
                            @Invariant({ 0 <= i && i <= n && sum <= i * max })
                            @Decreases({ n - i })
@@ -6493,8 +6493,8 @@ class VerifyHarness {
         [group: 'Dafny port', name: 'SumMax wrong bound refutes', expect: 'fails on: sumMax(new int[0], 0)',
          src: tc('''class C {
                        @Requires({ 0 <= n && a.length == n && (0..<n).every { a[it] >= 0 } })
-                       @Ensures({ (int) result.sum <= (n - 1) * (int) result.max })
-                       static Map sumMax(int[] a, int n) {
+                       @Ensures({ result.sum <= (n - 1) * result.max })
+                       static Map<String, Integer> sumMax(int[] a, int n) {
                            int sum = 0, max = 0, i = 0
                            @Invariant({ 0 <= i && i <= n && sum <= i * max })
                            @Decreases({ n - i })
@@ -6686,13 +6686,13 @@ class VerifyHarness {
                        @Ensures({ a[i] >= a[j] })
                        static int gap(int[] a, int i, int j) { 0 }
                    }''')],
-        // List receiver works the same way (List<Integer> element sort is Int). The `(int)` casts on
-        // xs[i]/xs[j] are the documented generic-erasure-in-contracts idiom (the element type erases to
-        // Object in a contract closure) — nothing to do with the Sorted helper, which type-checks plainly.
+        // List receiver works the same way (List<Integer> element sort is Int). `xs[i]`/`xs[j]` read back
+        // as `Integer` inside the contract closure (GROOVY-12071 restored the closure's generic types), so
+        // the `<=` type-checks with no cast — nothing to do with the Sorted helper, which type-checks plainly.
         [group: 'Sorted helper', name: 'ascending on List<Integer> gives gap fact', ok: true,
          src: tc('''class C {
                        @Requires({ Sorted.ascending(xs) && 0 <= i && i < j && j < xs.size() })
-                       @Ensures({ (int) xs[i] <= (int) xs[j] })
+                       @Ensures({ xs[i] <= xs[j] })
                        static int gap(List<Integer> xs, int i, int j) { 0 }
                    }''')],
 
@@ -6715,17 +6715,18 @@ class VerifyHarness {
                        @Ensures({ a[i] <= a[j] })
                        static int gap(int[] a, int i, int j) { 0 }
                    }''')],
-        // List receiver, native method + property forms (stock GDK isSorted, no extension needed).
+        // List receiver, native method + property forms (stock GDK isSorted, no extension needed). The
+        // element reads `xs[i]`/`xs[j]` need no cast — generics are restored in the closure (GROOVY-12071).
         [group: 'Native isSorted', name: 'List xs.isSorted() gives gap fact', ok: true,
          src: tc('''class C {
                        @Requires({ xs.isSorted() && 0 <= i && i < j && j < xs.size() })
-                       @Ensures({ (int) xs[i] <= (int) xs[j] })
+                       @Ensures({ xs[i] <= xs[j] })
                        static int gap(List<Integer> xs, int i, int j) { 0 }
                    }''')],
         [group: 'Native isSorted', name: 'List xs.sorted (property form) gives gap fact', ok: true,
          src: tc('''class C {
                        @Requires({ xs.sorted && 0 <= i && i < j && j < xs.size() })
-                       @Ensures({ (int) xs[i] <= (int) xs[j] })
+                       @Ensures({ xs[i] <= xs[j] })
                        static int gap(List<Integer> xs, int i, int j) { 0 }
                    }''')],
         // Without sortedness the same claim refutes — the native predicate is doing real work.
@@ -6734,6 +6735,44 @@ class VerifyHarness {
                        @Requires({ 0 <= i && i < j && j < a.length })
                        @Ensures({ a[i] <= a[j] })
                        static int gap(int[] a, int i, int j) { 0 }
+                   }''')],
+
+        // ---------- Generic types restored in @Ensures closures (GROOVY-12071) ----------
+        // Before GROOVY-12071, a generic-typed accessor inside a re-parsed contract closure erased to
+        // `Object`, so *arithmetic* / *ordering* on a tuple slot, map value, or generic-list element
+        // wouldn't type-check — forcing `(int)` casts and the "compare in the contract, compute in the
+        // body" idiom (and `double[]` instead of `List<Double>`). With the fix the closure keeps the
+        // declared generics, so these all type-check bare AND verify. These cases guard that dependency.
+        [group: 'GROOVY-12071', name: 'tuple param slot arithmetic (no cast)', ok: true,
+         src: tc('''class C {
+                       @Requires({ t.v1 == 10 && t.v2 == 20 })
+                       @Ensures({ result == t.v1 + t.v2 })
+                       static int f(Tuple2<Integer, Integer> t) { 30 }
+                   }''')],
+        [group: 'GROOVY-12071', name: 'map param value arithmetic (no cast)', ok: true,
+         src: tc('''class C {
+                       @Requires({ m.x == 3 && m.y == 4 })
+                       @Ensures({ result == m.x + m.y })
+                       static int f(Map<String, Integer> m) { 7 }
+                   }''')],
+        [group: 'GROOVY-12071', name: 'nested tuple access in contract (no cast)', ok: true,
+         src: tc('''class C {
+                       @Requires({ t.v1.v2 == 5 })
+                       @Ensures({ result == t.v1.v2 })
+                       static int f(Tuple2<Tuple2<Integer, Integer>, Integer> t) { 5 }
+                   }''')],
+        [group: 'GROOVY-12071', name: 'List<Double> element predicate (no double[] workaround)', ok: true,
+         src: tc('''class C {
+                       @Requires({ xs != null && xs.size() > 0 && xs[0] >= 0.0d })
+                       @Ensures({ result >= 0.0d })
+                       static double f(List<Double> xs) { xs[0] }
+                   }''')],
+        // A wrong slot-arithmetic claim still refutes — the no-cast spec carries real proof obligations.
+        [group: 'GROOVY-12071', name: 'tuple param slot arithmetic: wrong claim refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                       @Requires({ t.v1 == 10 && t.v2 == 20 })
+                       @Ensures({ result == t.v1 + t.v2 + 1 })
+                       static int f(Tuple2<Integer, Integer> t) { 30 }
                    }''')],
     ]
 

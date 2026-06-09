@@ -960,7 +960,9 @@ Both directions of the `⟺` are machine-checked: the early `return true` *witne
 the Phase-51 `sum` aggregation. Two Groovy-surface accommodations are worth calling out (the *logic*
 needs neither): `sum(0)` rather than `sum()` because Groovy's `[].sum()` is `null`, not `0` (the
 `sum(0)` form returns `0` for an empty prefix, keeping the contract runtime-safe); and an `(int)`
-cast because the GDK `sum()` is typed `Object`, so a `< 0` comparison won't type-check without it.
+cast because the *seeded* GDK `sum(initial)` overload is declared to return `Object` by signature — this is
+*not* an erased generic (those are restored in contract closures by GROOVY-12071), so the cast genuinely
+stays where the unseeded `xs.sum()` and other typed accessors no longer need one.
 
 Task 008 (`sum_product`) — return both the sum and the product of a list — exercises *two*
 aggregations at once. Sum is `xs.sum()`; product has no GDK method, so the idiom is the fold
@@ -1007,13 +1009,13 @@ static int[] sumProduct(List<Integer> xs) {
 most self-documenting, is a **named-tuple map** — `return [sum: s, product: p]` read back as
 `@Ensures({ result.sum == xs.sum() && result.product == … })`, Groovy's map-as-named-tuple idiom (Phase 83);
 the **SumMax** example in the [Dafny examples](#dafny-examples) below is a worked instance.
-All three shapes (and tuple *parameters*, Phase 80/84) share one `@TypeChecked` caveat: inside a contract
-closure a component's generic type erases to `Object`, so *arithmetic* on a component won't compile
-(`result.sum + result.product`) and neither do some *ordering* comparisons — only `==` and simple bounds are
-reliable there. The `sum_product` specs are all `==`, so they read cleanly; the rule of thumb is **compare in
-the contract, compute in the body**. (The caveat is only about *generic-typed component accessors* in
-contracts — it has nothing to do with the loop's compound assignments `s += xs[i]` / `i += 1` (and `++`/`--`),
-fully modeled (Phase 85/86) because they operate on plain `int` locals, not erased accessors.)
+Across all three shapes (and tuple/map *parameters*, Phase 80/84), a component accessor keeps its declared
+generic type inside the contract closure — `result.sum` is an `Integer`, `result.v1` an `Integer`, a
+`List<Double>` element a `Double` — so *arithmetic* and *ordering* on it type-check directly:
+`result.sum <= n * result.max` and `result.v1 + result.v2 == 30` need no `(int)` cast, and nested accessors
+(`result.v1.v2`) resolve too. (This relies on **GROOVY-12071**, which restored the contract closure's generic
+types; it landed in the `6.0.0-SNAPSHOT` this builds against. Earlier snapshots erased the accessor to
+`Object`, forcing casts and a "compare in the contract, compute in the body" idiom — now unnecessary.)
 
 The duck-typed `sum()` also covers concatenation — `['a','b','c'].sum() == 'abc'` over a `List<String>`
 lowers to the same base/step machinery on the `str.++` monoid, so a running concatenation verifies just like
@@ -1058,7 +1060,7 @@ infinitely many Fibonacci primes exist, so no `@Decreases` can exist (even Verus
 @Ensures({ result == Fib.of(n) })
 static int fibIter(int n) {
     int a = 0, b = 1, i = 0
-    @Invariant({ 0 <= i && i <= n && a == verification.Fib.of(i) && b == verification.Fib.of(i + 1) })
+    @Invariant({ 0 <= i && i <= n && a == Fib.of(i) && b == Fib.of(i + 1) })
     @Decreases({ n - i })
     while (i < n) { int t = a + b; a = b; b = t; i = i + 1 }
     return a
@@ -1067,8 +1069,7 @@ static int fibIter(int n) {
 
 `Fib.of(i)` lowers to an uninterpreted `fib$` with base/step axioms; the invariant carries the
 recurrence `a == fib(i) ∧ b == fib(i+1)`, re-established across `b = a + b` by the step axiom — so the
-loop is proven to compute the recursive definition. (The `verification.Fib` FQN inside `@Invariant` is
-the same closure-scope wart `Forall` carries.)
+loop is proven to compute the recursive definition.
 
 Task 063 (`fibfib`) — the **tribonacci** number `fibfib(n) = fibfib(n-1) + fibfib(n-2) + fibfib(n-3)`
 (base `0, 0, 1`) — is the three-term sibling, and shows the recurrence machinery extends mechanically. A
@@ -1081,8 +1082,8 @@ carries a *three*-wide window in its invariant — `a == Trib.of(i) ∧ b == Tri
 @Ensures({ result == Trib.of(n) })
 static int fibfib(int n) {
     int a = 0, b = 0, c = 1, i = 0
-    @Invariant({ 0 <= i && i <= n && a == verification.Trib.of(i) &&
-                 b == verification.Trib.of(i + 1) && c == verification.Trib.of(i + 2) })
+    @Invariant({ 0 <= i && i <= n && a == Trib.of(i) &&
+                 b == Trib.of(i + 1) && c == Trib.of(i + 2) })
     @Decreases({ n - i })
     while (i < n) { int t = a + b + c; a = b; b = c; c = t; i = i + 1 }
     return a
@@ -1101,7 +1102,7 @@ from the loop guard) e-matches `gcd(x, y) == gcd(y, x % y)`; at exit `y == 0` th
 @Ensures({ result == Gcd.of(a, b) })
 static int gcd(int a, int b) {
     int x = a, y = b
-    @Invariant({ x >= 0 && y >= 0 && verification.Gcd.of(x, y) == verification.Gcd.of(a, b) })
+    @Invariant({ x >= 0 && y >= 0 && Gcd.of(x, y) == Gcd.of(a, b) })
     @Decreases({ y })
     while (y != 0) { int t = x % y; x = y; y = t }
     return x
@@ -1209,8 +1210,8 @@ which also mirrors Dafny's named out-parameters (there is no explicit `return` o
 
 ```groovy
 @Requires({ 0 <= n && a.length == n && (0..<n).every { a[it] >= 0 } })
-@Ensures({ (int) result.sum <= n * (int) result.max })
-static Map sumMax(int[] a, int n) {
+@Ensures({ result.sum <= n * result.max })
+static Map<String, Integer> sumMax(int[] a, int n) {
     int sum = 0, max = 0, i = 0
     @Invariant({ 0 <= i && i <= n && sum <= i * max })
     @Decreases({ n - i })
@@ -1232,11 +1233,11 @@ Preservation is genuine NIA (Phase 48): `sum + a[i] ≤ (i + 1) · max′` needs
 (monotone because `i ≥ 0` and `max ≤ max′`) *and* `a[i] ≤ max′`. The bound is a different
 shape from any of our other examples — an *inequality relating two running aggregates*, not an
 equality to one — and a deliberately wrong bound (`≤ (N − 1) · max`) refutes with
-`fails on: sumMax(new int[0], 0)`. The `(int)` casts are the only accommodation: a map value (like a
-tuple slot or a `List<Double>` element) erases to `Object` inside a contract closure, so the arithmetic
-`n * max` and the `<=` don't type-check bare — `==` and simple bounds would, but this postcondition is
-neither. The names still earn their keep: `result.sum` / `result.max` say what they are where positional
-`result.v1` / `result.v2` (the typed-`Tuple2` alternative) wouldn't. (Per Leino's own note, the
+`fails on: sumMax(new int[0], 0)`. With the return type declared `Map<String, Integer>`, the map values read
+back as `Integer` inside the contract closure (GROOVY-12071), so the arithmetic `n * max` and the `<=`
+type-check with no `(int)` cast — the postcondition reads exactly as written. The names still earn their keep:
+`result.sum` / `result.max` say what they are where positional `result.v1` / `result.v2` (the typed-`Tuple2`
+alternative) wouldn't. (Per Leino's own note, the
 `a[k] >= 0` precondition isn't actually needed for the postcondition — it's kept here only to stay
 faithful to the source.)
 
@@ -1443,10 +1444,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Infinite-stream `every` / `any`** (`iterate` + `limit`/`take`) | A property you *cannot test* — a true `every` over an unbounded `Stream.iterate(seed, f)` never returns. Because these contracts stay **dual** (the same `@Ensures` runs at runtime via groovy-contracts), a `.limit(n)`/`.take(n)` is **required** so the runtime check terminates — and the verifier proves *far past* that spot-check depth. A literal `.limit(N)` **unrolls** to `⋀ₖ P(fᵏ(seed))` (exact — proves the bounded contract the runtime checks; `.any` is the dual `⋁`, a failing element is a counterexample). A **symbolic** `.limit(n)` uses **induction** — `P(seed) ∧ ∀x.(P(x) ⟹ P(f(x)))`, the same base + preservation the loop VCs discharge — proving P for *every* element (so for the runtime's actual `n`, whatever it is): `iterate(0){ k+2 }.limit(n).every{ even }` proves all even, and `iterate(0){ (k+1)%10 }.limit(n).every{ 0 <= it < 10 }` proves bounded-in-`[0,10)` so the `+1` **never overflows** — a fact about element 2³¹ no test reaches. Honest: a monotone `k+1` counter has no finite bound and is **refused**; the base case bites (odd seed refutes "all even"); an **unbounded** terminal `every` (no `.limit`) **skips loudly** rather than bless a contract that would hang at runtime; and the stronger induction encoding fires only in positive goal position (a negated/assumed stream-`every` degrades to the runtime check). Int-element streams; the `iterate`/`limit`/`take` shape is matched structurally (holder-agnostic). | ✅ Phase 75 |
 | **`List<BigDecimal>.sum()` + conservation** | A decimal list's contents are an `Array Int Real` and `.sum()` a Real-codomain aggregation (base/step axioms over Z3 Real), so `xs.sum()` proves; a per-store **sum-under-store law** (`sum(store(a,i,v)) == sum(a) - a[i] + v`, for Int *and* Real elements) makes the two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.sum()` ("no money lost") is proven over a dynamic list. Verify is clean; refuting a violation is the weak direction (sum-axiom timeout → loud "could not decide", not a counterexample) | ✅ Phase 69 / 70 |
 | **`xs.max()` / `xs.min()` as a witnessed extremum** (Int, `BigDecimal`, **and** `double`) | A list/array's `max()`/`min()` lowers to a fresh `r` carrying the two defining facts — `r` bounds every element (`∀i. a[i] <= r`) and is achieved by one (`∃i. a[i] == r`, guarded by non-emptiness so `[].max()` can't prove vacuously). `result == a.max()` now means exactly the every/any spec a developer would otherwise write by hand. **Sort-generic** (Phase 76/77): the same `maxMinOf` serves Int, Real (`List<BigDecimal>`), and IEEE-754 (`double[]`) contents, so `.max() >= .min()` proves and composes with the Phase-70 decimal `.sum()`. FP is **not totally ordered**, so the FP extremum's bound/achieved facts are guarded by **all-non-NaN** (Groovy's `max` returns NaN when any element is NaN): a `double[]` `max` bounds every element *under a `!Double.isNaN` precondition*, and **refutes** without it (a NaN element makes `NaN <= max` false). **Scope:** for Int and `BigDecimal` this works both as the `.max()` spec helper *and* as a hand-written witnessed-extremum **loop** verified against it; for **FP it's the `.max()`/`.min()` spec helper only** — a hand-rolled FP max-finding loop fails invariant preservation (FP comparisons are bit-blasted, so the quantifier-instantiation + `<=` transitivity that carries the Int/`BigDecimal` loops doesn't reach an FP loop invariant). *(min/max generalize to every element sort; `sum` stays Int/Real only — IEEE addition is non-associative.)* | ✅ Phase 60 / 76 / 77 |
-| **FP-element arrays** (`double[]` / `List<Double>`) | A `double`/`float`-element array's contents are an `Array Int <IEEE sort>` (`sortFor` routes `double → Float64`, `float → Float32` — and **closes the prior trap** where a non-Int element silently defaulted to `Int`). So `xs[i]` reads are FP and comparisons route to the FP theory, and a bounded `∀`/`∃` over the elements instantiates: `(0..<xs.length).every { xs[it] >= 0.0d }` as a precondition lets `xs[0] >= 0.0d` prove; element-to-element and the no-NaN guard above all compose. (`double[]` rather than `List<Double>` in contracts avoids @TypeChecked generics erasure of the element type inside the contract closure.) | ✅ Phase 77 |
+| **FP-element arrays** (`double[]` / `List<Double>`) | A `double`/`float`-element array's contents are an `Array Int <IEEE sort>` (`sortFor` routes `double → Float64`, `float → Float32` — and **closes the prior trap** where a non-Int element silently defaulted to `Int`). So `xs[i]` reads are FP and comparisons route to the FP theory, and a bounded `∀`/`∃` over the elements instantiates: `(0..<xs.length).every { xs[it] >= 0.0d }` as a precondition lets `xs[0] >= 0.0d` prove; element-to-element and the no-NaN guard above all compose. (`List<Double>` element predicates also type-check in contracts now that GROOVY-12071 restores the closure's generics — `double[]` was previously required to avoid element-type erasure; both work today.) | ✅ Phase 77 |
 | **List-literal returns + constant-index `result[k]`** | A method that returns a list literal binds `result` as a fixed-arity **factory container** (size + non-null pinned), so `@Ensures` can reference its elements by *constant* index: `result.size()`, `result[0]`, `result[1]` all fold to the returned elements. This makes the faithful **HumanEval 008 (`sum_product`)** port verify — `return [sum, product]` with `result[0] == xs.sum() && result[1] == …` — where it previously had to collapse to one int for lack of tuple/list returns; a wrong element claim refutes. (Constant index only — heterogeneous symbolic indexing is the `Tuple` story.) | ✅ Phase 78 |
-| **`Tuple` / `TupleN` — fixed-arity typed products** | `Tuple.tuple(a, b)` and `new TupleN(a, b, …)` are modelled as fixed-arity factory containers on the Phase-78 foundation, so a returned tuple binds `result` and every accessor folds: named slots `.v1`/`.vN`/`.first`/`.second`/`.getVN()`, constant-index `t[k]`, and `.size()`. **Heterogeneous slots are free** — each slot is a separate AST expression translated in its own sort, so `new Tuple2(1, "hi")` proves `result.v1 == 1 && result.v2 == "hi"` (Int *and* String). **Multiple assignment** `def (a, b) = …` desugars to a temp + per-slot reads. So `sum_product` ports as a *typed* `Tuple2<Integer,Integer>(sum, product)`, and a wrong slot claim refutes. **Tuple parameters** are also modelled (Phase 80): a `Tuple2<A,B> t` param's slots are the caller's values, so `t.v1`/`t.first`/`t[0]`/`t.size()` mint a fresh *typed* entity per slot (`t$vN`, like a Phase-45 object field) — `@Ensures({ result == t.v1 })` resolves, and a heterogeneous `Tuple2<Integer,String>` gives an Int `v1` and a String `v2`. (Constant slot index only — immutable, so no `@Modifies` concerns. Slot *arithmetic* in a contract closure hits @TypeChecked generic erasure, so contracts compare slots while the body does the arithmetic.) **Component-wise `==`** (Phase 81): `a == b` over two fixed-arity products folds to the conjunction of pairwise component equalities (`!=` the negation; a length mismatch is `false`) — so two tuple params with equal components prove `a == b`, `Tuple.tuple(1,2) != Tuple.tuple(1,3)` proves, and the same fold gives list-literal equality (`[1,2,3] == [1,2,3]`). **Nested tuples** (Phase 82): slot resolution recurses — a constructed `Tuple.tuple(Tuple.tuple(1,2),3).v1.v2` folds through the nested containers, and a nested *param* `Tuple2<Tuple2<A,B>,C> t` flattens `t.v1.v2` to a typed entity `t$v1$v2`. (Nested access lives in the method *body* — a contract closure erases the nested generic to `Object`, the same @TypeChecked limit as slot arithmetic.) | ✅ Phase 79 / 80 / 81 / 82 |
-| **Maps as named tuples** (`m.key`) | Groovy's string-named product: a returned/constructed map literal `[sum: s, product: p]` binds `result` as a map factory, and a `Map<String,V>` **parameter** is a Z3 value array — so `m.sum` (property) and `m['sum']` (subscript) both read the value at that key (`m.sum ≡ m['sum']`), in the value sort. So `sum_product` ports as `return [sum: s, product: p]` with `@Ensures({ result.sum == xs.sum() && result.product == … })`, and a map param proves `m.sum == 3 ⇒ result == 3`. Constant keys; a fresh consistent value per key for a param. (Same @TypeChecked caveat as tuples/lists: *arithmetic* on a value in a contract erases to `Object` — compare in the contract, compute in the body.) | ✅ Phase 83 / 84 |
+| **`Tuple` / `TupleN` — fixed-arity typed products** | `Tuple.tuple(a, b)` and `new TupleN(a, b, …)` are modelled as fixed-arity factory containers on the Phase-78 foundation, so a returned tuple binds `result` and every accessor folds: named slots `.v1`/`.vN`/`.first`/`.second`/`.getVN()`, constant-index `t[k]`, and `.size()`. **Heterogeneous slots are free** — each slot is a separate AST expression translated in its own sort, so `new Tuple2(1, "hi")` proves `result.v1 == 1 && result.v2 == "hi"` (Int *and* String). **Multiple assignment** `def (a, b) = …` desugars to a temp + per-slot reads. So `sum_product` ports as a *typed* `Tuple2<Integer,Integer>(sum, product)`, and a wrong slot claim refutes. **Tuple parameters** are also modelled (Phase 80): a `Tuple2<A,B> t` param's slots are the caller's values, so `t.v1`/`t.first`/`t[0]`/`t.size()` mint a fresh *typed* entity per slot (`t$vN`, like a Phase-45 object field) — `@Ensures({ result == t.v1 })` resolves, and a heterogeneous `Tuple2<Integer,String>` gives an Int `v1` and a String `v2`. (Constant slot index only — immutable, so no `@Modifies` concerns. Slot *arithmetic* in a contract closure — `t.v1 + t.v2` — type-checks directly now that GROOVY-12071 restores the slot's generic type.) **Component-wise `==`** (Phase 81): `a == b` over two fixed-arity products folds to the conjunction of pairwise component equalities (`!=` the negation; a length mismatch is `false`) — so two tuple params with equal components prove `a == b`, `Tuple.tuple(1,2) != Tuple.tuple(1,3)` proves, and the same fold gives list-literal equality (`[1,2,3] == [1,2,3]`). **Nested tuples** (Phase 82): slot resolution recurses — a constructed `Tuple.tuple(Tuple.tuple(1,2),3).v1.v2` folds through the nested containers, and a nested *param* `Tuple2<Tuple2<A,B>,C> t` flattens `t.v1.v2` to a typed entity `t$v1$v2`. (Nested access `t.v1.v2` resolves in contracts too — the same GROOVY-12071 generics restoration.) | ✅ Phase 79 / 80 / 81 / 82 |
+| **Maps as named tuples** (`m.key`) | Groovy's string-named product: a returned/constructed map literal `[sum: s, product: p]` binds `result` as a map factory, and a `Map<String,V>` **parameter** is a Z3 value array — so `m.sum` (property) and `m['sum']` (subscript) both read the value at that key (`m.sum ≡ m['sum']`), in the value sort. So `sum_product` ports as `return [sum: s, product: p]` with `@Ensures({ result.sum == xs.sum() && result.product == … })`, and a map param proves `m.sum == 3 ⇒ result == 3`. Constant keys; a fresh consistent value per key for a param. (With a `Map<String,Integer>` declared type, a value reads back as `Integer` in a contract, so *arithmetic* like `m.x + m.y` type-checks directly — GROOVY-12071.) | ✅ Phase 83 / 84 |
 | **Classic `for (init; cond; update)` loops** | A `for` loop with `@Invariant`/`@Decreases` desugars to the existing while-machinery — init threaded into the prefix, `i++`/`i += k` normalised to a plain assignment and appended to the body — so all four loop VCs (establishment / preservation / use / progress) discharge. `.each` stays outside the fragment and skips loudly | ✅ Phase 59 |
 | **`do … while` loops** | `do B while (G)` is `B; while (G) B`: the body runs once unconditionally, so the invariant is verified *after* the first iteration (not at entry), while preservation / progress / use are the residual `while` unchanged. This is a **soundness fix** — modelling do-while as a plain while established the invariant pre-body, so a false invariant that was vacuously preserved (guard never true) could "prove" a postcondition the mandatory first iteration violates; the establishment diagnostic is do-while-aware ("…after the do-while's first iteration") | ✅ Phase 88 |
 | **`for (x in xs)` loops** | A for-in over a named Int collection desugars to an *indexed* while: a hidden synthetic index drives iteration, the loop variable keeps its source name (bound to `xs[idx]` each pass) so contracts and counterexamples read in terms of `x`, and an index-bounds invariant + a `size - idx` termination measure are auto-injected (the index isn't user-nameable). Both `for (x in xs)` and `for (T x : xs)` work. For-in over a literal / non-named collection skips | ✅ Phase 63 |
@@ -1531,8 +1532,9 @@ a coverage metric. In expressions the fragment is:
 - structured returns and products: a list-literal return binds `result` for constant-index `result[k]`
   (Phase 78); `Tuple` / `TupleN` fixed-arity typed products with `.vN` slot access, tuple parameters and
   component-wise `==` (Phases 79–82); and Groovy's map-as-named-tuple (`return [sum: s, …]`, `result.sum`;
-  Phases 83/84) — slot/element *comparisons* are reliable, but a generic-typed component's *arithmetic* erases
-  to `Object` under `@TypeChecked` (compare in the contract, compute in the body);
+  Phases 83/84) — generic-typed component accessors keep their declared type in the contract closure
+  (GROOVY-12071), so *arithmetic* and *ordering* on a slot / map value / generic-list element type-check with
+  no cast;
 - infinite-stream `every` / `any` over `Stream.iterate(seed, f)` with a required `.limit(n)` / `.take(n)`: a
   literal limit *unrolls*, a symbolic limit proves the property of *every* element by induction (base +
   preservation); an unbounded terminal `every` skips loudly (Phase 75);

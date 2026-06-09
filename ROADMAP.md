@@ -360,10 +360,10 @@ agree; this retires Phase 1's "array contents not modelled" limit.
 `@Invariant` over the array's contents is preserved across the update — a
 constant-fill (`a[i] = 0` ⇒ `Forall.range(0, n) { a[i] == 0 }`) verifies, and an
 invariant the store breaks is refuted on preservation. Two surface notes the loop
-case forced: inside `@Invariant` the quantifier must be written fully-qualified
+case originally forced: inside `@Invariant` the quantifier had to be written fully-qualified
 (`verification.Forall.range(...)`) and with a typed index (`{ int j -> a[j] ... }`)
-— groovy-contracts compiles the invariant closure for its runtime check, where
-the import isn't in scope and `a[j]` needs an `int`. And loop invariants are now
+— the invariant closure was compiled without the file's imports in scope and `a[j]` needs an `int`.
+(The FQN half is **fixed in GROOVY-12072**: bare `Forall.range(...)` now resolves; the typed index stays.) And loop invariants are now
 captured *as text and re-parsed* (like `@Requires`/`@Ensures`), so the verifier
 sees a clean CONVERSION AST rather than the live node later phases resolve to a
 static call / `getAt`. **Sort, revisited:** the *sortedness* half lands here — a
@@ -3721,9 +3721,9 @@ The headline is the **textbook iterative-equals-recursive proof**: an iterative 
 equals `Fib.of(n)`, the invariant carrying the recurrence `a == fib(i) ∧ b == fib(i+1)`, re-established
 across `b = a + b` by the step axiom at `i+2` (a congruence). `Fib.of(5) == 5` unfolds through the
 axioms; the step law verifies as a positive anchor (refuting a *false* fib claim is the usual
-quantified-axiom weak direction — honest UNKNOWN). Inside an `@Invariant` the helper needs the FQN
-`verification.Fib.of(i)` (groovy-contracts compiles that closure without the import in scope — the
-same wart `Forall` carries).
+quantified-axiom weak direction — honest UNKNOWN). Inside an `@Invariant` the helper used to need the FQN
+`verification.Fib.of(i)` (the loop-invariant closure was compiled without the file's imports in scope — the
+same wart `Forall` carried); **GROOVY-12072 fixed that**, so bare `Fib.of(i)` now resolves.
 
 **The outer `prime_fib` is a deliberate non-target.** Returning the n-th number that is both prime
 *and* Fibonacci is an *unbounded search* (`while true`) with no termination measure — and whether
@@ -4508,13 +4508,23 @@ lenient; *ordering* comparisons are inconsistent (`m.x >= 5` compiles, but `resu
 `Integer#compareTo(Object)`). The safe idiom across all of them: `==` (or simple bounds) in the contract,
 arithmetic/ordering in the body.
 
+**Update — GROOVY-12071 (2026-06-09) lifts this entirely.** The erasure above was a `@TypeChecked` bug: the
+re-parsed contract closure dropped the method's declared generic types. GROOVY-12071 restores them, so every
+generic-typed accessor keeps its type in the contract — `m.x + m.y`, `t.v1 + t.v2`, a `List<Double>` element
+`>= 0.0d`, and nested `t.v1.v2` all type-check *and* verify with no cast and no "compute in the body" idiom.
+The `(int)` casts and the raw-`Map` (`Map` → `Map<String, Integer>`) declarations the earlier examples used
+were removed across the suite; a `GROOVY-12071` test group guards the dependency. The one cast that *stays* is
+unrelated to erasure: the *seeded* GDK `sum(initial)` overload returns `Object` by signature (`below_zero`),
+not an erased generic — so it still needs `(int)`.
+
 **Named-argument maps are not verifiable** (the answer to "can we verify `def add(Map args)`?"). Groovy's
 named-arg call `add(first: 1, second: 2)` collects a `Map` — but the idiom's natural form is a **raw `Map`**
 with `Object` values, so even the *body* `args.first + args.second` is `Object#plus` under `@TypeChecked`
 (which the verifier requires). The call syntax itself adds nothing to verify (it's a caller concern); the
 method is just a map-param method, and a raw map is at odds with static typing. A *typed* `Map<String,V>`
-method body works, but the contract still hits the erasure above. So: no — and the crash it used to provoke
-is now a clean skip. **Still out:** non-constant keys; map property `m.size` on a literal `size` key (the
+method body works, and post-GROOVY-12071 its *contract* does too — but the named-arg idiom's natural form is
+a **raw** `Map`, whose `Object` values have no generics to restore, so even the body `args.first + args.second`
+is `Object#plus`. So: no — and the crash it used to provoke is now a clean skip. **Still out:** non-constant keys; map property `m.size` on a literal `size` key (the
 method wins).
 
 ---

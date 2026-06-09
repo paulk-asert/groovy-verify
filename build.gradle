@@ -54,10 +54,13 @@ tasks.named('rat') {
 // Everything this project needs from Groovy 6.0.0-SNAPSHOT is on the ASF snapshot repo:
 // static @Ensures, method-level @Decreases (GROOVY-12060), nested closures in contract
 // conditions including @Ensures (GROOVY-12059 — enables the `any` / membership existential
-// surface), and the native primitive `int[]` GDK `isSorted()` overload the sortedness idiom
-// leans on (so no `verification.SortedExtensions` backfill). So the build is self-contained:
-// no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can add
-// mavenLocal() above; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
+// surface), the native primitive `int[]` GDK `isSorted()` overload the sortedness idiom
+// leans on (so no `verification.SortedExtensions` backfill), restored generic types in
+// @Ensures closures (GROOVY-12071 — so tuple slots / map values / generic-list elements need
+// no `(int)` cast in contracts), and imports reaching loop-level @Invariant/@Decreases closures
+// (GROOVY-12072 — so helper references inside them need no `verification.` FQN). So the build is
+// self-contained: no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can
+// add mavenLocal() above; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
     maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
