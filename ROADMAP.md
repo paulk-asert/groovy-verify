@@ -417,7 +417,8 @@ combined measure); and cross-module measure *inheritance* (an override of a prec
 
 **Listed here as "still optional" — both since shipped:** full NIA (Phase 48 — variable products
 and `/`/`%` dispatch; hard polynomial/square-root corners may still time out, an honest UNKNOWN) and
-opt-in bounded-integer overflow (Phase 44 — `@CheckOverflow`; bitwise/shift remain out of fragment).
+opt-in bounded-integer overflow (Phase 44 — `@CheckOverflow`). Bitwise/shift operators are now in too —
+see the **bitwise / shift** slice below.
 
 ---
 
@@ -4854,6 +4855,34 @@ Things deliberately not pursued, because they don't pay back:
   "the array such that ¬P holds" gets visually awkward — Z3's array models look
   like `(store (store (as-array k!0) 0 -1) 1 0)`. A pretty-printer for array
   models is small but worth budgeting.
+
+---
+
+## Bitwise / shift operators (`& | ^ << >>`)  *(shipped)*
+
+Closes the integer-bitwise gap left open since Phase 44. A **hybrid** lowering keyed on the operator:
+
+- **Shifts by a non-negative literal** stay in **unbounded Int arithmetic** — `x << k` ⟶ `x * 2^k`,
+  `x >> k` ⟶ `⌊x / 2^k⌋` (Z3's flooring `intDiv`, so the arithmetic right shift is faithful for negative
+  `x` too). This matches how `*` / `intdiv` are modelled (unbounded by default, overflow opt-in via
+  `@CheckOverflow`), keeps the common power-of-two idioms quantifier-free, and lets `(x << 1) == x * 2`
+  prove. The shift count uses the source literal; `k > 31` falls through to the BV path (which masks).
+- **Bitwise `& | ^` and variable shifts** have no arithmetic form, so they lower to **Z3's bit-vector
+  theory at Java's 32-bit width**: `Encoder.translateBitwise` calls new backend `bvAnd`/`bvOr`/`bvXor`/
+  `bvShl`/`bvShr`, each `int → (_ int2bv 32) → BV op → (bv2int … signed)`. Faithful Java two's-complement
+  semantics — wraparound, sign extension, shift-count masked to 5 bits, `bvShr` = arithmetic (sign-filling)
+  `>>`. Because `int2bv` reduces its argument mod 2^32, the op is sound even for an unbounded operand (it
+  sees the same low 32 bits Java's `int` would). Non-Int operands (e.g. a set `a & b` reaching the binary
+  translator) throw on the sort mismatch and skip loudly.
+
+So `6 & 3 == 2`, `5 ^ 3 == 6`, `a ^ a == 0`, `a & a == a`, `a | 0 == a`, and the BV-specific `a & 1 ∈ {0,1}`
+(low bit) all prove; `1 << 4 == 16` and `x >> 1 == x.intdiv(2)` (for `x ≥ 0`) prove via the arithmetic path.
+**Prove-friendly, refute-hostile** (like the recurrence helpers): a wrong *concrete* value refutes crisply
+(Z3 folds the BV to a constant — `6 & 3 == 3` ⟶ "Cannot prove"), but a false *symbolic* claim
+(`a & b == a`) bit-blasts the negation and soft-fails as a loud "could not decide" within the 2s budget —
+sound (rejected, never a false pass), just no counterexample. **Still out:** `~` (bitwise NOT), `>>>`
+(unsigned/logical right shift), and shift-overflow obligations under `@CheckOverflow` (a shift's synthesised
+`*` isn't an AST `MULTIPLY` site, so the overflow collector doesn't see it). Locked by the `bitwise` tests.
 
 ---
 

@@ -3560,6 +3560,8 @@ class Encoder {
             // translateMethodCall; both reuse the backend's existing `implies` primitive.
             return session.implies(L, R)
         }
+        Object bw = translateBitwise(op, be, L, R)
+        if (bw != null) return bw
         switch (op) {
             case Types.PLUS:                return session.plus(L, R)
             case Types.MINUS:               return session.minus(L, R)
@@ -3599,6 +3601,56 @@ class Encoder {
      */
     private Object truncDiv(Object a, Object b) {
         session.intDiv(session.minus(a, session.intRem(a, b)), b)
+    }
+
+    /**
+     * Bitwise / shift operators on Int operands: {@code & | ^ << >>}. Returns the handle, or null if
+     * {@code op} isn't a bitwise op or the operands aren't Int (e.g. a set {@code a & b} reaching here —
+     * the term-build throws on the sort mismatch and we skip loudly).
+     *
+     * <p><b>Shifts by a non-negative literal</b> stay in unbounded Int arithmetic — {@code x << k} is
+     * {@code x * 2^k} and {@code x >> k} is {@code ⌊x / 2^k⌋} (Z3's flooring {@code intDiv}, so an
+     * arithmetic right shift is faithful for negatives too). This matches how {@code *} / {@code intdiv}
+     * are modelled (unbounded Int by default) and keeps the common power-of-two idioms quantifier-free.
+     * <b>Bitwise {@code & | ^} and variable shifts</b> have no such arithmetic form, so they go through
+     * Z3's <b>bit-vector theory at Java's 32-bit width</b> ({@link SmtBackend#bvAnd} et al.) — faithful
+     * two's-complement semantics, bit-blasted (and so timeout-gated like the FP fragment).
+     */
+    private Object translateBitwise(int op, BinaryExpression be, Object L, Object R) {
+        boolean shl = (op == Types.LEFT_SHIFT)
+        boolean shr = (op == Types.RIGHT_SHIFT)
+        if (op != Types.BITWISE_AND && op != Types.BITWISE_OR && op != Types.BITWISE_XOR && !shl && !shr) {
+            return null
+        }
+        try {
+            if (shl || shr) {
+                Long k = nonNegIntLiteral(be.rightExpression)
+                if (k != null && k <= 31) {
+                    Object pow = session.intLit(1L << k)
+                    return shl ? session.times(L, pow) : session.intDiv(L, pow)
+                }
+                return shl ? session.bvShl(L, R) : session.bvShr(L, R)
+            }
+            switch (op) {
+                case Types.BITWISE_AND: return session.bvAnd(L, R)
+                case Types.BITWISE_OR:  return session.bvOr(L, R)
+                case Types.BITWISE_XOR: return session.bvXor(L, R)
+            }
+            return null
+        } catch (Exception ignored) {
+            return null   // non-Int operands → loud skip
+        }
+    }
+
+    /** The value of {@code e} if it is a non-negative integer literal, else null. */
+    private static Long nonNegIntLiteral(Expression e) {
+        if (!(e instanceof ConstantExpression)) return null
+        Object v = ((ConstantExpression) e).value
+        if (v instanceof Integer || v instanceof Long) {
+            long n = ((Number) v).longValue()
+            return n >= 0 ? (Long) n : null
+        }
+        return null
     }
 
     /** True if {@code t} is an integral (int/long/short/byte or their wrappers) cast target. */

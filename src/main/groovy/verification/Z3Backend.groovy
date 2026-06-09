@@ -17,6 +17,7 @@ package verification
 
 import com.microsoft.z3.ArithExpr
 import com.microsoft.z3.ArrayExpr
+import com.microsoft.z3.BitVecExpr
 import com.microsoft.z3.BoolExpr
 import com.microsoft.z3.Context
 import com.microsoft.z3.Expr
@@ -309,6 +310,18 @@ class Z3Session implements SmtSession {
     Object constIntArray(Object value) {
         ctx.mkConstArray(ctx.getIntSort(), (Expr) value)
     }
+
+    // --- Bitwise / shift via 32-bit two's-complement bit-vectors (Java `int` width) ---
+    private BitVecExpr toBV32(Object e) { ctx.mkInt2BV(32, (IntExpr) e) }          // int → 32-bit BV (mod 2^32)
+    private Object fromBV(BitVecExpr b) { ctx.mkBV2Int(b, true) }                  // BV → signed Int
+    private BitVecExpr maskShift(BitVecExpr s) {                                   // Java masks the shift count to 5 bits
+        ctx.mkBVAND(s, (BitVecExpr) ctx.mkNumeral(31, ctx.mkBitVecSort(32)))
+    }
+    @Override Object bvAnd(Object a, Object b) { fromBV(ctx.mkBVAND(toBV32(a), toBV32(b))) }
+    @Override Object bvOr(Object a, Object b)  { fromBV(ctx.mkBVOR(toBV32(a), toBV32(b))) }
+    @Override Object bvXor(Object a, Object b) { fromBV(ctx.mkBVXOR(toBV32(a), toBV32(b))) }
+    @Override Object bvShl(Object a, Object b) { fromBV(ctx.mkBVSHL(toBV32(a), maskShift(toBV32(b)))) }
+    @Override Object bvShr(Object a, Object b) { fromBV(ctx.mkBVASHR(toBV32(a), maskShift(toBV32(b)))) }  // arithmetic >>
 
     @Override Object select(Object arr, Object idx) { ctx.mkSelect((ArrayExpr) arr, (Expr) idx) }
     @Override Object store(Object arr, Object idx, Object val) { ctx.mkStore((ArrayExpr) arr, (Expr) idx, (Expr) val) }
