@@ -4531,7 +4531,7 @@ lenient; *ordering* comparisons are inconsistent (`m.x >= 5` compiles, but `resu
 `Integer#compareTo(Object)`). The safe idiom across all of them: `==` (or simple bounds) in the contract,
 arithmetic/ordering in the body.
 
-**Update — GROOVY-12071 (2026-06-09) lifts this entirely.** The erasure above was a `@TypeChecked` bug: the
+**Update — GROOVY-12071 lifts this entirely.** The erasure above was a `@TypeChecked` bug: the
 re-parsed contract closure dropped the method's declared generic types. GROOVY-12071 restores them, so every
 generic-typed accessor keeps its type in the contract — `m.x + m.y`, `t.v1 + t.v2`, a `List<Double>` element
 `>= 0.0d`, and nested `t.v1.v2` all type-check *and* verify with no cast and no "compute in the body" idiom.
@@ -4662,9 +4662,29 @@ establishment) and **enables** correct body-first loops: `@Invariant({ 1 <= i &&
 while (i < n)` verifies (the `1 <= i` clause is false at entry but true after the first `i++`), proving
 `result == n` — which the old pre-body establishment would have wrongly rejected.
 
-**Still out:** an early `return` *inside* a do-while body on the first iteration interacts with the early-exit
-machinery (Phase 49) imprecisely (sound — it skips/rejects, never mis-verifies); nested loops are still one
-annotated loop per method.
+**Still out:** nested loops are still one annotated loop per method.
+
+## Phase 88b — do-while early return on the first iteration (a soundness fix)  *(shipped)*
+
+The Phase 88 note above guessed an early `return` inside a do-while body was merely *imprecise* ("sound — it
+skips/rejects"). It was not — probing turned up a **latent unsoundness**. A do-while in-body exit is
+partitioned as a Phase-49b `'inBody'` early exit and checked by `checkEarlyExit` assuming
+`(invariant ∧ guard)` at body entry. But a do-while runs its body *once before* the first guard/invariant, so
+the exit can fire on the first iteration from the **entry** state, where the invariant isn't established and
+the guard isn't checked. If the invariant is false at entry, that assumption is contradictory and the exit's
+`@Ensures` is *vacuously* verified — so `do { if (i==5) return i; … } while (i>0)` under `@Invariant({i==0})`
+falsely proved `result == 0` though it returns `5` (establishment passed vacuously too: it asserts ¬(exit
+guard), which `i==5` makes UNSAT).
+
+**The fix:** `checkEarlyExit` now splits into `checkEarlyExitPath(…, doWhileFirstIter)` and, for a do-while
+in-body exit, runs it **twice** — the existing later-iteration check (`invariant ∧ guard`) for iterations ≥ 2,
+**plus** a first-iteration check from the *entry* state (prefix-exit guards false, then the loop prefix; no
+invariant, no guard), exactly the precondition `checkEstablishment` uses. Both must pass. So the false-at-entry
+case now refutes (first-iteration check: `i==5` ⟹ `result==5 ≠ 0`), while valid first-iteration exits verify —
+including the guard-false-at-entry shape (`@Requires({n==0})`, body runs once and returns). Plain `while`
+loops are unaffected (`isDoWhile` false ⟹ only the standard path runs); the P49/P49b/P49c suites are green.
+Locked by the `P88b do-while early-return` tests. **Lesson (again):** a "looks imprecise, surely sound"
+assessment is worth *probing* — this one was silently unsound, the exact shape Phase 88 itself was.
 
 ---
 

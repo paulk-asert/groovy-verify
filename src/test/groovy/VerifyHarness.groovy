@@ -7016,6 +7016,29 @@ class VerifyHarness {
                             return 0
                         }
                     }''')],
+
+        // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
+        [group: 'README examples', name: 'set merge (union membership)', ok: true,
+         src: tc('''class C {
+                        @Requires({ p in granted })
+                        @Ensures({ p in (granted | extra) })
+                        static int merge(Set<Integer> granted, Set<Integer> extra, int p) { 0 }
+                    }''')],
+        [group: 'README examples', name: 'lowBit (bitwise low bit)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 0 || result == 1 })
+                        static int lowBit(int a) { a & 1 }
+                    }''')],
+        [group: 'README examples', name: 'singleton (sized array, symbolic n)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 1 })
+                        @Ensures({ result.length == n && result[0] == x })
+                        static int[] singleton(int n, int x) {
+                            int[] r = new int[n]
+                            r[0] = x
+                            return r
+                        }
+                    }''')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

@@ -430,6 +430,23 @@ every state. No ordinals, no workaround — the direct `Set<State>` spelling com
 literal interning, the `State.values().length` constant-folding, and the enum-domain
 pigeonhole + full-coverage iff into a single proof.
 
+**Set algebra — union, intersection, difference, symmetric difference.** All of Groovy's set operators
+verify, with their bitwise-operator aliases: `a + b` / `a | b` (union), `a.intersect(b)` / `a & b`
+(intersection), `a - b` (difference) and `a ^ b` (symmetric difference, "in exactly one"). Membership
+lowers element-wise, so a policy merge proves what you'd expect — a permission granted by *either* set is
+in the union:
+
+```groovy
+@Requires({ p in granted })
+@Ensures({ p in (granted | extra) })       // granted ∪ extra
+static int merge(Set<Integer> granted, Set<Integer> extra, int p) { 0 }
+```
+
+The element-wise lowering keeps it honest: `p in a` alone does **not** entail `p in (a ^ b)` — `p` might be
+in `b` too, so symmetric difference excludes it — and that claim rightly refutes. The `containsAll` and
+materialised forms (`Set u = a + b`, then `u.containsAll(a)`) work over enum-element sets (finite domain)
+and Int-element sets under a `Sets.boundedBy` bound.
+
 **Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
 can't prove safe fails the build the way the JVM would name it, plus an input that triggers it:
@@ -512,6 +529,37 @@ verifier adds the Groovy-specific obligation that the modulus is `> 0`). The imp
 obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnable repro. Hard NIA
 corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
 can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
+
+**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >>` are modelled faithfully. A shift
+by a literal is power-of-two arithmetic (`x << 1 == x * 2` proves), while `& | ^` go through Z3's
+bit-vector theory, so two's-complement facts hold exactly — here, that the low bit of any `int` is `0` or `1`:
+
+```groovy
+@Ensures({ result == 0 || result == 1 })
+static int lowBit(int a) { a & 1 }
+```
+
+`a ^ a == 0`, `a & a == a`, and `6 & 3 == 2` all prove; a wrong concrete value (`6 & 3 == 3`) refutes. Bit
+reasoning is bit-blasted, so a *false symbolic* claim soft-fails to a loud "could not decide" rather than a
+counterexample — sound, never a false pass.
+
+**Building arrays — literals and sized allocation.** A method may construct and return an array. A
+fixed-arity literal `new int[]{a, b}` (or a list literal `[a, b]` coerced to the `int[]` return) folds its
+elements; a sized `new int[n]` is a fresh, Java-zero-filled array, so an unwritten slot reads `0` and a body
+store bounds-checks against the length:
+
+```groovy
+@Requires({ n >= 1 })
+@Ensures({ result.length == n && result[0] == x })
+static int[] singleton(int n, int x) {
+    int[] r = new int[n]        // length n, all zero
+    r[0] = x
+    return r
+}
+```
+
+`result.length == n` proves from the allocation, `result[0] == x` from the store; a store past the length
+(`r[n] = x`) refutes with an `IndexOutOfBounds` repro.
 
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
@@ -1014,8 +1062,7 @@ generic type inside the contract closure — `result.sum` is an `Integer`, `resu
 `List<Double>` element a `Double` — so *arithmetic* and *ordering* on it type-check directly:
 `result.sum <= n * result.max` and `result.v1 + result.v2 == 30` need no `(int)` cast, and nested accessors
 (`result.v1.v2`) resolve too. (This relies on **GROOVY-12071**, which restored the contract closure's generic
-types; it landed in the `6.0.0-SNAPSHOT` this builds against. Earlier snapshots erased the accessor to
-`Object`, forcing casts and a "compare in the contract, compute in the body" idiom — now unnecessary.)
+types — without it an accessor erases to `Object`, so arithmetic on it won't compile.)
 
 The duck-typed `sum()` also covers concatenation — `['a','b','c'].sum() == 'abc'` over a `List<String>`
 lowers to the same base/step machinery on the `str.++` monoid, so a running concatenation verifies just like
@@ -1288,7 +1335,7 @@ extends `(0..<i)` to `(0..<i + 1)` in a single quantifier instantiation, because
 checked `a[i] != key` — no transitivity required. A spec claiming the found index holds a
 *different* key (`a[result] != key`) correctly refutes.
 
-### BinarySearch — the iconic example, now verifying
+### BinarySearch — the iconic example
 
 Dafny's flagship tutorial proof, with the `sorted` predicate stated as a *two-dimensional*
 quantifier:
@@ -1535,6 +1582,10 @@ a coverage metric. In expressions the fragment is:
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` / `replace` /
   regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion and
   uninterpreted-with-axioms `toUpperCase` / `toLowerCase` / `replaceAll`;
+- array construction: a fixed-arity literal `new int[]{a, b}` (the array dual of a list literal — folds
+  `result[k]` / `.length` / component-wise `==`) and a sized allocation `new int[n]` (a fresh, Java-zero-filled
+  array: `sizeOf == n`, non-null, const-0 contents, so an unwritten element reads `0` and a body store
+  bounds-checks); an `int[]`-typed return accepts a coerced list literal `[a, b]` or `new int[]{a, b}` (Phase 78);
 - structured returns and products: a list-literal return binds `result` for constant-index `result[k]`
   (Phase 78); `Tuple` / `TupleN` fixed-arity typed products with `.vN` slot access, tuple parameters and
   component-wise `==` (Phases 79–82); and Groovy's map-as-named-tuple (`return [sum: s, …]`, `result.sum`;
@@ -1559,10 +1610,11 @@ a coverage metric. In expressions the fragment is:
   characteristic array, and `size()` carries a per-mutation update law (`add` of an absent
   element raises it by one), which drives a set-valued `@Decreases` measure (`n - s.size()`,
   the DFS-shaped termination argument); subset (`s.containsAll(t)`) and equality (`s.equals(t)`)
-  are in for enum-element sets and for Int-element sets under `Sets.boundedBy(t, n)`; union and
-  intersection are in both *inline* (`(a + b).contains(x)`, `a.intersect(b).contains(x)`,
-  `containsAll` on a binop receiver) **and *materialised*** (`Set<X> u = a + b` mints `u` as a
-  first-class set with the membership iff axiom);
+  are in for enum-element sets and for Int-element sets under `Sets.boundedBy(t, n)`; the full
+  **set algebra** — union (`a + b` / `a | b`), intersection (`a.intersect(b)` / `a & b`), difference
+  (`a - b`) and symmetric difference (`a ^ b`) — is in both *inline* (`x in (a op b)`, `containsAll` on a
+  binop receiver) **and *materialised*** (`Set<X> u = a op b` mints `u` as a first-class set with the
+  membership iff axiom), for enum-element sets (finite domain) and Int-element sets (`Sets.boundedBy` bound);
 - finite `Map<Integer,Integer>` — value lookup (`m[k]`, `m.get(k)`), key membership (`k in m`,
   `m.containsKey(k)`), mutation (`m.put(k,v)` / `m[k] = v`) and size (`m.size()`): a map is a
   value array plus a key-set, so a put both stores the value and adds the key (with the same
@@ -1670,10 +1722,12 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
 | `Forall` | the `Forall.range(lo, hi){…}` bounded-quantifier helper (the native GDK `every`/`any` idioms are the preferred surface) |
-| `Sets` / `Fib` / `Trib` / `Gcd` / `Lcm` | runtime-executable spec helpers the encoder recognises, each lowered to an axiomatised primitive — `Sets.boundedBy`/`boundedCount` (cardinality), `Fib.of(i)` (Fibonacci), `Trib.of(i)` (tribonacci/`fibfib`), `Gcd.of(a, b)` (Euclid), `Lcm.of(a, b)` (least common multiple, via the gcd identity) |
+| `Sets` / `Sorted` / `Fib` / `Trib` / `Gcd` / `Lcm` | runtime-executable spec helpers the encoder recognises, each lowered to an axiomatised primitive — `Sets.boundedBy`/`boundedCount` (cardinality), `Sorted.ascending`/etc. (the flat two-variable sortedness axiom, also reached via the native `xs.isSorted()`), `Fib.of(i)` (Fibonacci), `Trib.of(i)` (tribonacci/`fibfib`), `Gcd.of(a, b)` (Euclid), `Lcm.of(a, b)` (least common multiple, via the gcd identity) |
 | `PathFacts` | enclosing-`if` path conditions per expression site |
+| `ContractTester` | the bounded property-based fallback (Phase 62): runs the executable contract over a small integer grid when the solver returns *UNKNOWN*, reporting a `fails on:` repro |
+| `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
 | `ContractExpansionTransform` / `ContractSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`) + clean body snapshots onto the runtime `@ContractSource` carrier the checker re-parses |
-| `SmtBackend` / `Z3Backend` | the solver seam and its z3-turnkey implementation |
+| `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |
 
 `Encoder` is written against the `SmtSession` interface; `Z3Backend` is the only
