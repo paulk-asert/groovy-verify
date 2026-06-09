@@ -2645,6 +2645,7 @@ class Encoder {
     /** Whether trib's defining axioms have been asserted (mint-once — trib is one global function). */
     private boolean tribConstrained = false
     private boolean gcdConstrained = false
+    private boolean lcmConstrained = false
 
     /**
      * The tribonacci function {@code trib(k)} (HumanEval 063 {@code fibfib}), asserting its defining axioms
@@ -2680,22 +2681,67 @@ class Encoder {
      * ({@code y == 0}) the base axiom collapses {@code gcd(x, 0)} to {@code x}.
      */
     Object gcdOf(Object aH, Object bH) {
-        if (!gcdConstrained) {
-            gcdConstrained = true
-            Object zero = session.intLit(0L)
-            // base: ∀x. gcd(x, 0) == x
-            Object x = session.boundIntVar('gcd$x' + (quantCounter++))
-            Object baseTerm = session.gcd(x, zero)
-            session.assertExpr(session.forall([x], session.eq(baseTerm, x), [baseTerm]))
-            // step: ∀x,y. y != 0 ⟹ gcd(x, y) == gcd(y, x % y)
-            Object sx = session.boundIntVar('gcd$x' + (quantCounter++))
-            Object sy = session.boundIntVar('gcd$y' + (quantCounter++))
-            Object stepTerm = session.gcd(sx, sy)
-            Object rhs = session.gcd(sy, session.intRem(sx, sy))
-            session.assertExpr(session.forall([sx, sy],
-                session.implies(session.ne(sy, zero), session.eq(stepTerm, rhs)), [stepTerm]))
-        }
+        ensureGcdAxioms()
         session.gcd(aH, bH)
+    }
+
+    /** Assert Euclid's gcd axioms once (base + step) — shared by {@link #gcdOf} and {@link #lcmOf}. */
+    private void ensureGcdAxioms() {
+        if (gcdConstrained) return
+        gcdConstrained = true
+        Object zero = session.intLit(0L)
+        // base: ∀x. gcd(x, 0) == x
+        Object x = session.boundIntVar('gcd$x' + (quantCounter++))
+        Object baseTerm = session.gcd(x, zero)
+        session.assertExpr(session.forall([x], session.eq(baseTerm, x), [baseTerm]))
+        // step: ∀x,y. y != 0 ⟹ gcd(x, y) == gcd(y, x % y)
+        Object sx = session.boundIntVar('gcd$x' + (quantCounter++))
+        Object sy = session.boundIntVar('gcd$y' + (quantCounter++))
+        Object stepTerm = session.gcd(sx, sy)
+        Object rhs = session.gcd(sy, session.intRem(sx, sy))
+        session.assertExpr(session.forall([sx, sy],
+            session.implies(session.ne(sy, zero), session.eq(stepTerm, rhs)), [stepTerm]))
+        // non-zero: ∀x,y. (x != 0 ∨ y != 0) ⟹ gcd(x, y) != 0. A theorem of the recurrence (Euclid never
+        // returns 0 unless both args are 0) that finite e-matching can't reach for symbolic args; asserted
+        // directly so dividing by a gcd — `a.intdiv(Gcd.of(a, b))`, the lcm idiom — discharges its
+        // divisor-non-zero obligation. Sound: it's a true fact about `Gcd.of`.
+        Object nx = session.boundIntVar('gcd$x' + (quantCounter++))
+        Object ny = session.boundIntVar('gcd$y' + (quantCounter++))
+        Object nzTerm = session.gcd(nx, ny)
+        session.assertExpr(session.forall([nx, ny],
+            session.implies(session.or([session.ne(nx, zero), session.ne(ny, zero)]), session.ne(nzTerm, zero)),
+            [nzTerm]))
+    }
+
+    /**
+     * The least-common-multiple function {@code lcm(a, b)} — the multiplicative sibling of {@link #gcdOf}.
+     * Asserts the gcd axioms plus lcm's base ({@code ∀a. lcm(a,0)==0}, {@code ∀b. lcm(0,b)==0}) and the
+     * <em>fundamental identity</em> {@code ∀a,b. lcm(a,b) * gcd(a,b) == a * b} (triggered on {@code lcm(a, b)}).
+     * So a concrete {@code Lcm.of(4, 6)} unfolds {@code gcd(4,6)==2} via Euclid, then NIA solves
+     * {@code lcm * 2 == 24} ⟹ {@code 12}; and the identity {@code Lcm.of(a,b) * Gcd.of(a,b) == a*b} proves
+     * symbolically (it <em>is</em> the axiom). The identity is sound for the runtime helper, whose
+     * {@code (a / gcd) * b} satisfies it by construction since {@code gcd(a, b)} divides {@code a}.
+     */
+    Object lcmOf(Object aH, Object bH) {
+        ensureGcdAxioms()
+        if (!lcmConstrained) {
+            lcmConstrained = true
+            Object zero = session.intLit(0L)
+            // base: ∀a. lcm(a, 0) == 0 ; ∀b. lcm(0, b) == 0
+            Object la = session.boundIntVar('lcm$a' + (quantCounter++))
+            Object lz = session.lcm(la, zero)
+            session.assertExpr(session.forall([la], session.eq(lz, zero), [lz]))
+            Object lb = session.boundIntVar('lcm$b' + (quantCounter++))
+            Object zl = session.lcm(zero, lb)
+            session.assertExpr(session.forall([lb], session.eq(zl, zero), [zl]))
+            // identity: ∀a,b. lcm(a, b) * gcd(a, b) == a * b
+            Object pa = session.boundIntVar('lcm$a' + (quantCounter++))
+            Object pb = session.boundIntVar('lcm$b' + (quantCounter++))
+            Object lterm = session.lcm(pa, pb)
+            session.assertExpr(session.forall([pa, pb],
+                session.eq(session.times(lterm, session.gcd(pa, pb)), session.times(pa, pb)), [lterm]))
+        }
+        session.lcm(aH, bH)
     }
 
     /**
@@ -3897,6 +3943,16 @@ class Encoder {
             Object a = translate(args.get(0))
             Object b = translate(args.get(1))
             return (a == null || b == null) ? null : gcdOf(a, b)
+        }
+
+        // Lcm.of(a, b) — the least-common-multiple spec helper, lowered to the lcm$ primitive (built on gcd$).
+        boolean isLcm = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Lcm') ||
+                        (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Lcm') ||
+                        (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Lcm')
+        if (m == 'of' && isLcm && args.size() == 2) {
+            Object a = translate(args.get(0))
+            Object b = translate(args.get(1))
+            return (a == null || b == null) ? null : lcmOf(a, b)
         }
 
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||

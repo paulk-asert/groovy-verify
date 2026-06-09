@@ -437,6 +437,15 @@ class Z3Session implements SmtSession {
         ctx.mkApp(gcdFn, (Expr) a, (Expr) b)
     }
 
+    private FuncDecl lcmFn
+    @Override
+    Object lcm(Object a, Object b) {
+        if (lcmFn == null) {
+            lcmFn = ctx.mkFuncDecl('lcm$', [ctx.getIntSort(), ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        }
+        ctx.mkApp(lcmFn, (Expr) a, (Expr) b)
+    }
+
     private FuncDecl strConcatFn
     @Override
     Object strConcatRange(Object arr, Object lo, Object hi) {

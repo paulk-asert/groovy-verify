@@ -4612,8 +4612,20 @@ MBQI. Still **sound** — it is rejected, never a false pass — but it yields n
 test instead exercises a crisp, quantifier-free refutation (dropping the non-negativity precondition fails
 the Euclid bounds invariant `x ≥ 0 ∧ y ≥ 0` on entry, counterexample `a = -1`).
 
-**Still out:** `lcm` (would need a `gcd`-in-denominator divisibility lemma); multi-arg / list gcd
-(`[a, b, c].inject{…}` fold over `Gcd.of`); any *refutation* of a recurrence-helper value (the MBQI gap above).
+**`Lcm.of(a, b)` (shipped) — the multiplicative sibling.** A `verification.Lcm` runtime helper
+(`(a / gcd) * b`, dividing by the gcd first to stay exact and avoid `a * b` overflow) recognised like
+`Gcd.of`, lowered to an uninterpreted `lcm$` built on `gcd$`: base (`∀a. lcm(a,0)==0`, `∀b. lcm(0,b)==0`)
+plus the **fundamental identity** `∀a,b. lcm(a,b) * gcd(a,b) == a * b` (sound — `(a/gcd)*b` satisfies it by
+construction, since the gcd divides `a`). So the identity proves symbolically, `Lcm.of(4,6)==12` unfolds via
+Euclid + NIA, and `lcm(a,0)==0` proves. Co-shipped a sound, broadly-useful **gcd-nonzero** axiom
+(`∀a,b. (a≠0 ∨ b≠0) ⟹ gcd(a,b) ≠ 0`) so the `a.intdiv(Gcd.of(a,b))` divide-by-gcd idiom discharges its
+divisor obligation (without the precondition, `gcd(0,0)==0`, so it's loudly *not* discharged — sound).
+Like the other recurrence helpers, **prove-friendly but refute-hostile**: a false value (`Lcm.of(4,6)==13`)
+soft-fails to a loud "could not decide" rather than a crisp counterexample.
+
+**Still out:** the `(a/gcd)*b == lcm(a,b)` *formula* proof (needs an extra `gcd | a` divisibility lemma);
+multi-arg / list gcd (`[a, b, c].inject{…}` fold over `Gcd.of`); any *refutation* of a recurrence-helper
+value (the MBQI gap above).
 
 ---
 

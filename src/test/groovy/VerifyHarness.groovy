@@ -46,6 +46,7 @@ class VerifyHarness {
         import verification.Fib
         import verification.Trib
         import verification.Gcd
+        import verification.Lcm
         import verification.CheckOverflow
     '''.stripIndent()
 
@@ -6947,6 +6948,29 @@ class VerifyHarness {
         // rejected, never a false pass), rather than a crisp counterexample.
         [group: 'bitwise', name: 'a & b == a: false symbolic claim soft-fails (sound)', expect: 'Could not decide',
          src: tc('class C { @Ensures({ result == a }) static int f(int a, int b) { a & b } }')],
+
+        // ---------- Lcm.of(a, b) — least common multiple (sibling of Gcd.of) ----------
+        // Lowered to an uninterpreted lcm$ built on gcd$: base (lcm(a,0)=lcm(0,b)=0) + the fundamental
+        // identity lcm(a,b)*gcd(a,b) == a*b. The identity proves symbolically; concrete values unfold via
+        // Euclid's gcd then NIA. Like gcd/fib it is prove-friendly but refute-hostile on values.
+        [group: 'P-lcm', name: 'identity: Lcm.of(a,b) * Gcd.of(a,b) == a*b', ok: true,
+         src: tc('class C { @Ensures({ Lcm.of(a, b) * Gcd.of(a, b) == a * b }) static int f(int a, int b) { 0 } }')],
+        [group: 'P-lcm', name: 'Lcm.of(4, 6) == 12', ok: true,
+         src: tc('class C { @Ensures({ result == 12 }) static int f() { Lcm.of(4, 6) } }')],
+        [group: 'P-lcm', name: 'Lcm.of(a, 0) == 0', ok: true,
+         src: tc('class C { @Ensures({ result == 0 }) static int f(int a) { Lcm.of(a, 0) } }')],
+        // Dividing by a gcd discharges its divisor-non-zero obligation (the lcm idiom `a / gcd * b`),
+        // via the gcd-nonzero axiom — `Gcd.of(a,b) != 0` when the args aren't both zero.
+        [group: 'P-lcm', name: 'divide by gcd: divisor obligation discharges', ok: true,
+         src: tc('class C { @Requires({ a != 0 || b != 0 }) static int f(int a, int b) { a.intdiv(Gcd.of(a, b)) } }')],
+        // Soundness: without that precondition gcd(0,0)==0 is possible, so the divisor obligation is NOT
+        // discharged — loudly rejected (could-not-decide on the divisor), never a silent pass.
+        [group: 'P-lcm', name: 'divide by gcd without precondition is not discharged (sound)', expect: 'Could not decide divisor non-zero',
+         src: tc('class C { static int f(int a, int b) { a.intdiv(Gcd.of(a, b)) } }')],
+        // A false VALUE soft-fails to a loud "could not decide" (refute-hostile, like gcd) — sound,
+        // rejected, never a false pass.
+        [group: 'P-lcm', name: 'Lcm.of(4, 6) == 13: false value soft-fails (sound)', expect: 'Could not decide',
+         src: tc('class C { @Ensures({ result == 13 }) static int f() { Lcm.of(4, 6) } }')],
     ]
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

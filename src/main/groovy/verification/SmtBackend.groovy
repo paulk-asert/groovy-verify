@@ -227,6 +227,14 @@ interface SmtSession extends AutoCloseable {
     Object gcd(Object a, Object b)
 
     /**
+     * The least-common-multiple function {@code lcm(a, b)} — an uninterpreted {@code (Int, Int) -> Int}.
+     * Meaning from the caller's base ({@code ∀a. lcm(a,0)==0}, {@code ∀b. lcm(0,b)==0}) and the fundamental
+     * identity {@code ∀a,b. lcm(a,b) * gcd(a,b) == a * b} axioms (so it composes with {@link #gcd}).
+     * Recognised from the {@code Lcm.of(a, b)} helper.
+     */
+    Object lcm(Object a, Object b)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store
