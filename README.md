@@ -1193,15 +1193,18 @@ in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d t
 short-circuit `&&` and any enclosing in-loop `if` as path facts during obligation discharge,
 so the inner deref obligation discharges under the guard the conjunction establishes — just
 like a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks
-port on the `List<Character>` API today; a true `String.reverse()` proof would need its
-own uninterpreted+axioms layer (Z3 has no `str.reverse` primitive).
+port on the `List<Character>` API today; `String.reverse()` itself now verifies at the *literal*
+level — `"abc".reverse() == "cba"`, literal involution and length — via an uninterpreted `reverse$`
+with bidirectional literal pinning (Z3 has no `str.reverse` primitive). *Symbolic* algebra
+(`s.reverse().reverse() == s` for a variable `s`) stays out, blocked by the same seq-universal refute
+hang as case folding.
 
 **The string methods you use every day — now provable, not just asserted.** Because they map to Z3's
 built-in theory of strings (rather than being treated as opaque), a contract over them can be *proven*:
 predicates (`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
 `substring` / `indexOf`), composition (`+` / `concat` / `replace` / regex `matches`), and
 conversion (`Integer.toString` / `parseInt`) all route to Z3 seq-theory primitives;
-`toUpperCase` / `toLowerCase` / `equalsIgnoreCase` / `replaceAll` / `lastIndexOf` are
+`toUpperCase` / `toLowerCase` / `equalsIgnoreCase` / `replaceAll` / `lastIndexOf` / `reverse` are
 shipped as uninterpreted functions with literal pinning and weak axioms where Z3 doesn't
 ship a primitive yet; GString interpolation (`"hello $name"`) folds to chained `str.++`.
 Literals fold to ground constants, out-of-range indices refute with the standard
@@ -1230,9 +1233,26 @@ free facts: a literal-prefixed concat starts with that literal (`prefixof(a, a +
 and the right operand of the concat is its suffix (`suffixof(b, a ++ b)`). The regex
 precondition rides along through whatever shape the body assembles.
 
+The two operations Z3 has *no* primitive for — `reverse` and case folding — are uninterpreted
+functions pinned at the literal level, and they **compose**:
+
+```groovy
+@Ensures({ result == "CBA" })
+static String f() { "abc".reverse().toUpperCase() }
+```
+
+`reverse` pins `"abc" → "cba"` and `toUpperCase` pins `"cba" → "CBA"`; Z3's congruence closure
+chains the two (`reverse("abc") == "cba"`, so `toUpper(reverse("abc")) == toUpper("cba")`). And it's
+**order-independent** — `"abc".toUpperCase().reverse()` proves the same `"CBA"`, because whichever
+function is brought up second retroactively pins every literal the first one minted (here `"ABC"`
+reverse-pins to `"CBA"`). This is *literal* folding — every link is a ground constant. The moment a
+symbolic `s` enters the chain (`s.reverse().toUpperCase()`) it soft-fails cleanly, because the
+algebraic universals that would carry it were dropped for poisoning the refute direction (next
+paragraph).
+
 The remaining honest gaps: `split` (returns an array, structurally invasive) and symbolic
-length-preservation for `toUpperCase` (universal axioms over the seq sort cause Z3 to
-hang) remain deferred. The hard NIA corners (general polynomial identities,
+algebra for `toUpperCase` / `reverse` (universal axioms over the seq sort cause Z3 to
+hang in the refute direction) remain deferred. The hard NIA corners (general polynomial identities,
 square-root / factoring shapes) may time out under Z3's solver — surfaces as "Could not
 decide," never silent. Sister task 023 (`strlen`) ports the same way — with the natural
 spec `result == xs.size()` added.
@@ -1507,6 +1527,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Integer ↔ String conversion (sign-faithful)** | `Integer.toString(n)` / `n.toString()` / `String.valueOf(int)` and `Integer.parseInt(s)`. **Phase 54** threads the sign explicitly (`toString(-7) == "-7"`, not Z3's raw `""`), so the round-trip `parseInt(toString(n)) == n` holds for **all** `n` — closing a silent-unsoundness hole. `parseInt` carries a loud `NumberFormatException` obligation: an unprovably-valid argument refutes rather than silently modelling `-1`. *Residual:* numeral overflow not yet checked | ✅ Phase 47e / 54 |
 | **`replaceAll` / `lastIndexOf` (uninterpreted with weak axioms)** | Z3 has no native primitive for either. Phase 47f ships them as uninterpreted functions with two universally-quantified axioms each: `replaceAll` knows non-occurrence is a no-op + same-length swaps preserve length; `lastIndexOf` knows the result is `>= -1` and `== -1` when the substring is absent. Sound under-approximation — proofs that need finer reasoning (e.g. "post-replace charAt matches one of two values") gracefully skip. When Z3 ships `mkReplaceAll`, the uninterpreted form swaps out for native in one edit | ✅ Phase 47f |
 | **ASCII case folding (`toUpperCase` / `toLowerCase` / `equalsIgnoreCase`)** | Uninterpreted `toUpper$` / `toLower$` with exhaustive per-literal pinning at mint (`Locale.ROOT` — ASCII-faithful). `"Hello".toUpperCase() == "HELLO"` and `"Hello".equalsIgnoreCase("HELLO")` fold; `equalsIgnoreCase` lowers to `toLower(s) == toLower(t)`; reflexive `s.equalsIgnoreCase(s)` verifies by term identity. Symbolic length-preservation and idempotence aren't reachable (universal axioms tried first but caused Z3 timeouts via seq-theory interaction; dropped in favour of pin-only). Non-ASCII / locale-specific behaviour is the documented gap | ✅ Phase 47g |
+| **`String.reverse()` (algebraic, literal pinning)** | The GDK's `reverse()` lowers to an uninterpreted `reverse$ : String → String` with **bidirectional** per-literal pinning at mint (Java `StringBuilder.reverse`) — so `"abc".reverse() == "cba"`, palindrome round-trips, *literal* involution (`"abc".reverse().reverse() == "abc"`) and *literal* length (`"hello".reverse().length() == 5`) all fold as theory consequences, no universals needed. Symbolic algebra (`s.reverse().reverse() == s` / `s.reverse().length() == s.length()` for a variable `s`) is the documented boundary: a probe confirmed the universals that would reach it prove the symbolic cases but poison the refute direction (a false `"abc".reverse() == "abc"` goes from a clean "cannot prove" to a solver timeout), the same seq-`Seq→Seq` stall as case folding | ✅ Phase 47i |
 | **GString interpolation** | `"hello $name"` / `"x=${a + b}"` translate to chained `str.++` via the Phase 47 seq theory. Static parts mint as String literals; interpolated values translate as String (when `isStringReceiver` recognises the expression) or pass through `intToString` for the int default. Length composes structurally — `"hello $name".length() == 6 + name.length()` for symbolic `name`. Chained method calls (`"hi $n".startsWith(...)`) route through the existing string-receiver dispatch. Co-shipped: typed local body-scan for `String name = "world"` declarations (skipping groovy-contracts' injected synthetic `result`), sort-aware `bind`, and SSA-fresh-variable sort matching for non-Int locals | ✅ Phase 47h |
 | **Non-linear integer arithmetic + integer div/mod** | Phase 8a's pure-NIA opt-out is lifted: `a * b` for two non-literal operands now dispatches through Z3's NIA solver. The per-VC (per verification-condition) 2s timeout protects against the NIA-hang case (UNKNOWN surfaces as "Could not decide" — honest, never silent). Unlocks shapes like `i * i >= 0` (sign reasoning), bounded variable products, `n % 2 == 0` divisibility, and the implicit divide-by-zero obligation fires for `b != 0`. Division/modulo follow **Groovy** semantics (Phase 50) | ✅ Phase 48 / 50 |
 | **Groovy-faithful division & modulo** | `/` is `BigDecimal` division (now modelled with Z3's exact Real sort — see below — *not* skipped); `a.intdiv(b)` / `(int)(a / b)` truncate toward zero; `%` / `a.remainder(b)` are sign-of-dividend (`-5 % 2 == -1`); `a.mod(b)` is `BigInteger.mod` (non-negative, with a `b > 0` obligation). Closes the silent Euclidean unsoundness (`@Ensures({ result >= 0 }) a % 3` now refutes) | ✅ Phase 50 |

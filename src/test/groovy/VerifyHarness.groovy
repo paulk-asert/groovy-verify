@@ -2458,6 +2458,20 @@ class VerifyHarness {
                         @Ensures({ result == "abc" })
                         static String f() { "abc".reverse().reverse() }
                     }''')],
+        // Chains with case folding: reverse pins "cba", then toUpperCase's ensure-fn retroactively
+        // case-pins "cba" -> "CBA"; congruence (reverse("abc")=="cba") composes the two.
+        [group: 'P47i reverse', name: 'reverse composes with toUpperCase', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "CBA" })
+                        static String f() { "abc".reverse().toUpperCase() }
+                    }''')],
+        // Order-independent: whichever ensure-fn runs second retroactively pins what the first minted,
+        // so toUpperCase-then-reverse folds to the same "CBA" ("ABC" reverse-pins to "CBA").
+        [group: 'P47i reverse', name: 'toUpperCase composes with reverse (other order)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "CBA" })
+                        static String f() { "abc".toUpperCase().reverse() }
+                    }''')],
         // Literal length-preservation: a theory consequence of the pinned reversed literal.
         [group: 'P47i reverse', name: 'literal reverse preserves length', ok: true,
          src: tc('''class C {
