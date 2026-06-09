@@ -1410,10 +1410,29 @@ class Encoder {
         String rightKey
         Object elemSort
         ClassNode elemType
-        boolean isUnion           // true = union (+); false = intersection (.intersect)
+        String kind               // 'union' (+), 'intersect' (.intersect), 'difference' (-), 'symdiff' (^)
     }
 
-    /** True if {@code e} is a known set union/intersection — see {@link SetBinop}. Null otherwise. */
+    /**
+     * The membership predicate for {@code x ∈ (a <kind> b)} given {@code x∈a} ({@code inA}) and
+     * {@code x∈b} ({@code inB}). The whole set algebra is just this one four-way combine, slotted into
+     * the bounded-universal (Int) / finite-conjunction (enum) lowerings below.
+     */
+    private Object setCombineMembership(String kind, Object inA, Object inB) {
+        switch (kind) {
+            case 'union':      return session.or([inA, inB])
+            case 'intersect':  return session.and([inA, inB])
+            case 'difference': return session.and([inA, session.not(inB)])                  // a \ b
+            case 'symdiff':    return session.or([session.and([inA, session.not(inB)]),
+                                                  session.and([session.not(inA), inB])])     // (a\b) ∪ (b\a)
+            default:           return null
+        }
+    }
+
+    /**
+     * True if {@code e} is a known set union ({@code +}), intersection ({@code .intersect}), difference
+     * ({@code -}) or symmetric difference ({@code ^}) over two same-element-sort sets. Null otherwise.
+     */
     private SetBinop setBinopFor(Expression e) {
         // Unwrap an outer cast — e.g. `a.intersect(b) as Set<Role>` (Groovy's GDK intersect returns
         // Collection, so a Set-typed target needs the explicit cast). The cast doesn't change the
@@ -1421,20 +1440,24 @@ class Encoder {
         if (e instanceof CastExpression) e = ((CastExpression) e).expression
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
-            if (be.operation.type == Types.PLUS) {
-                return tryMakeSetBinop(be.leftExpression, be.rightExpression, true)
+            switch (be.operation.type) {
+                case Types.PLUS:        return tryMakeSetBinop(be.leftExpression, be.rightExpression, 'union')
+                case Types.BITWISE_OR:  return tryMakeSetBinop(be.leftExpression, be.rightExpression, 'union')        // a | b
+                case Types.BITWISE_AND: return tryMakeSetBinop(be.leftExpression, be.rightExpression, 'intersect')   // a & b
+                case Types.MINUS:       return tryMakeSetBinop(be.leftExpression, be.rightExpression, 'difference')
+                case Types.BITWISE_XOR: return tryMakeSetBinop(be.leftExpression, be.rightExpression, 'symdiff')
             }
         }
         if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
             if (mce.methodAsString == 'intersect' && argList(mce).size() == 1) {
-                return tryMakeSetBinop(mce.objectExpression, argList(mce).get(0), false)
+                return tryMakeSetBinop(mce.objectExpression, argList(mce).get(0), 'intersect')
             }
         }
         null
     }
 
-    private SetBinop tryMakeSetBinop(Expression leftExpr, Expression rightExpr, boolean isUnion) {
+    private SetBinop tryMakeSetBinop(Expression leftExpr, Expression rightExpr, String kind) {
         String lKey = setKeyFor(leftExpr)
         String rKey = setKeyFor(rightExpr)
         if (lKey == null || rKey == null) return null
@@ -1446,7 +1469,7 @@ class Encoder {
         b.rightKey = rKey
         b.elemSort = lSort
         b.elemType = elementTypeForSetKey(lKey)
-        b.isUnion = isUnion
+        b.kind = kind
         b
     }
 
@@ -1473,6 +1496,35 @@ class Encoder {
     boolean tryMaterialiseSetBinopAssign(String name, Expression rhs) {
         SetBinop binop = setBinopFor(rhs)
         if (binop == null) return false
+        // Int-element: materialise over the bounded [0, n) domain of a prior {@code Sets.boundedBy} on an
+        // operand (the dual of Phase 31's Int subset). Emit {@code ∀i. 0<=i<n ⟹ (i∈u ⟺ i∈a ∨/∧ i∈b)} — a
+        // *true sub-fact* of the full union/intersection (sound, though it only pins {@code u} within the
+        // bound). {@code u} inherits a bound where provable, so a later {@code u.containsAll}/subset chains.
+        if (binop.elemSort == session.intSort()) {
+            Object nLeft = intSubsetBounds.get(binop.leftKey)
+            Object nRight = intSubsetBounds.get(binop.rightKey)
+            Object nDomain = nLeft != null ? nLeft : nRight
+            if (nDomain == null) return false                          // no bound in scope → loud skip
+            setElementTypes.put(name, binop.elemType)
+            Object uH = setFor(name)
+            Object aH = setFor(binop.leftKey)
+            Object bH = setFor(binop.rightKey)
+            Object iv = session.boundIntVar('setmat$i' + (quantCounter++))
+            Object inRange = session.and([session.le(session.intLit(0L), iv), session.lt(iv, nDomain)])
+            Object combined = setCombineMembership(binop.kind, member(aH, iv), member(bH, iv))
+            Object iff = session.eq(member(uH, iv), combined)
+            session.assertExpr(session.forall([iv], session.implies(inRange, iff), [session.select(uH, iv)]))
+            // u inherits a bound where provable: intersection ⊆ either operand; difference a\b ⊆ a;
+            // union / symdiff ⊆ a∪b (needs both operands bounded by the same n).
+            Object uBound
+            switch (binop.kind) {
+                case 'intersect':  uBound = nDomain; break
+                case 'difference': uBound = nLeft; break
+                default:           uBound = (nLeft != null && nRight != null && nLeft == nRight) ? nLeft : null
+            }
+            if (uBound != null) intSubsetBounds.put(name, uBound)
+            return true
+        }
         ClassNode elemType = binop.elemType
         if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return false
         // Commit: register u's element type *before* setFor mints the handle, so its enum-domain
@@ -1487,7 +1539,7 @@ class Encoder {
             Object inU = member(uH, c)
             Object inA = member(aH, c)
             Object inB = member(bH, c)
-            Object rhsExpr = binop.isUnion ? session.or([inA, inB]) : session.and([inA, inB])
+            Object rhsExpr = setCombineMembership(binop.kind, inA, inB)
             session.assertExpr(session.eq(inU, rhsExpr))
         }
         true
@@ -1497,20 +1549,30 @@ class Encoder {
         String uKey = setKeyFor(uExpr)
         if (uKey == null) return null
         if (setKeySortForKey(uKey) != binop.elemSort) return null
-        // Enum-only for the binop case (Int would need a bound on u — Phase 31's plumbing applied
-        // to a binop receiver; small follow-up but not in this slice).
-        ClassNode elemType = binop.elemType
-        if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return null
         Object sH = setFor(binop.leftKey)
         Object tH = setFor(binop.rightKey)
         Object uH = setFor(uKey)
+        // Int: a bounded universal over [0, n) from a prior {@code Sets.boundedBy} on the *argument* (the
+        // universal's domain) — {@code i∈u ⟹ i∈s ∨/∧ i∈t}, the binop dual of Phase 31's Int subset.
+        if (binop.elemSort == session.intSort()) {
+            Object nH = intSubsetBounds.get(uKey)
+            if (nH == null) return null
+            Object iv = session.boundIntVar('setbinop$i' + (quantCounter++))
+            Object inRange = session.and([session.le(session.intLit(0L), iv), session.lt(iv, nH)])
+            Object combined = setCombineMembership(binop.kind, member(sH, iv), member(tH, iv))
+            Object body = session.implies(member(uH, iv), combined)
+            return session.forall([iv], session.implies(inRange, body), [session.select(uH, iv)])
+        }
+        // Enum case: finite conjunction over the enum's constants.
+        ClassNode elemType = binop.elemType
+        if (elemType == null || !(elemType.isEnum() || isEnumLikeType(elemType))) return null
         Object enumSort = session.declareSort(enumSortName(elemType))
         List<Object> conjuncts = new ArrayList<Object>()
         for (String constName : enumConstantNames(elemType)) {
             Object constLit = session.litOfSort(enumSort, constName)
             Object inS = member(sH, constLit)
             Object inT = member(tH, constLit)
-            Object rhs = binop.isUnion ? session.or([inS, inT]) : session.and([inS, inT])
+            Object rhs = setCombineMembership(binop.kind, inS, inT)
             conjuncts.add(session.implies(member(uH, constLit), rhs))
         }
         conjuncts.isEmpty() ? session.boolLit(true) : session.and(conjuncts)
@@ -3356,7 +3418,7 @@ class Encoder {
                 if (elem == null) return null
                 Object lMem = member(setFor(binop.leftKey), elem)
                 Object rMem = member(setFor(binop.rightKey), elem)
-                Object mem = binop.isUnion ? session.or([lMem, rMem]) : session.and([lMem, rMem])
+                Object mem = setCombineMembership(binop.kind, lMem, rMem)
                 return sym == 'in' ? mem : session.not(mem)
             }
             // Phase 36 — `x in m[k]` over a known Map<K, Set<V>>: lower to membership in the inner
@@ -3954,7 +4016,7 @@ class Encoder {
                 if (e == null) return null
                 Object lMem = member(setFor(binop.leftKey), e)
                 Object rMem = member(setFor(binop.rightKey), e)
-                return binop.isUnion ? session.or([lMem, rMem]) : session.and([lMem, rMem])
+                return setCombineMembership(binop.kind, lMem, rMem)
             }
             if (m == 'containsAll' && args.size() == 1) {
                 Object q = translateContainsAllOnBinop(binop, args.get(0))

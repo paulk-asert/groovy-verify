@@ -879,8 +879,11 @@ class C {
   `Set<Object>` would need an element→Int mapping (Route 2 in the design notes), not done.
 - **Set *algebra* stays out of fragment.** Union / intersection / subset (`s.containsAll(t)`,
   `s + t`, `s <= t`) need an unbounded `∀x. x∈s ⇒ x∈t` — the explicit quantifier non-goal — so they
-  emit a loud "skipped", never a silent pass. *(Since shipped: subset via the bounded-domain lowering —
-  enum-element sets in Phase 30, Int-element in Phase 31; inline union/intersection in Phase 33/35.)*
+  emit a loud "skipped", never a silent pass. *(Since shipped, all via the bounded-domain lowering: subset
+  for enum-element sets in Phase 30 and Int-element in Phase 31; the full four-op algebra — union `+`,
+  intersection `.intersect`, difference `-`, symmetric difference `^` — as pointwise membership, binop
+  `containsAll`, and materialised set locals, enum and Int, in Phase 33/35 + the four-op extension. Only set
+  cardinality of a derived set stays out.)*
 - **Maps** build directly on this phase (a key-*set* that is itself a set) — shipped in Phase 17 below.
 
 **Wired into recursion termination.** The cardinality law now drives a recursive `@Decreases` measure: the
@@ -1686,9 +1689,20 @@ a covering u from either operand, the union claim doesn't hold.
 - **`.size()` on a union/intersection** — out of scope. Needs inclusion-exclusion
   `|s ∪ t| = |s| + |t| − |s ∩ t|` to be useful; the uninterpreted `card` has no axiom relating
   cards of derived sets. Skip honestly.
-- **Int-element `containsAll` on a binop receiver** — would extend Phase 31's
-  `intSubsetBounds` plumbing to recognise a bound on the subset operand of the binop expression;
-  not yet wired. Enum is the only path today for the `containsAll`-on-binop case.
+- **Int-element `containsAll` on a binop receiver** *(now shipped)* — extends Phase 31's
+  `intSubsetBounds` to the binop face: `(a + b).containsAll(u)` and a materialised `Set<Integer> u = a + b`
+  lower to a bounded universal over `[0, n)` from a prior `Sets.boundedBy`, the dual of the enum
+  finite-conjunction. `u` inherits an operand bound where provable, so subsequent subset chains.
+
+**Update — full four-op algebra (shipped).** `setBinopFor` now also recognises **difference** (`a - b`) and
+**symmetric difference** (`a ^ b`, Groovy's `BITWISE_XOR` on sets) beside union (`+`) and intersection
+(`.intersect`), plus Groovy's bitwise-operator aliases **`a | b`** (union, `BITWISE_OR`) and **`a & b`**
+(intersection, `BITWISE_AND`). All four are one membership combine — `setCombineMembership`: `∨` / `∧` / `a∧¬b` / `xor` —
+slotted into every set face: pointwise `x in (a op b)` (any element sort), `(a op b).containsAll(u)`, and a
+materialised `Set u = a op b` (Int over a `Sets.boundedBy` bound, enum over the finite domain). Bound
+inheritance is per-op: intersection ⊆ either operand, difference `a\b` ⊆ a, union/symdiff ⊆ a∪b (needs both
+operands bounded by the same n). Pointwise membership needs no bound (`x∈(a^b) ⟺ x∈a xor x∈b` is per-element).
+Locked by the `set algebra` tests. **Still out:** `.size()` of a derived set (inclusion-exclusion, above).
 
 ## Phase 34 — VC cache  *(shipped)*
 
