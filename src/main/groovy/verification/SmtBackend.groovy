@@ -450,6 +450,25 @@ interface SmtSession extends AutoCloseable {
     Object stringToLower(Object s)
 
     /**
+     * Phase 47i — {@code s.reverse()} (the GDK adds it to {@code String}) as an uninterpreted
+     * {@code (String) -> String}, in the case-folding mould. Z3's seq theory has no native reverse,
+     * and — as Phase 47g found — a universal over a {@code (Seq Char) -> Seq Char} uninterpreted
+     * function defeats Z3's model construction, so this ships <em>literal pinning only</em>:
+     * <ul>
+     *   <li>Every minted String literal pins {@code reverse(lit) == mkString(rev(key))} at the
+     *       backend's {@code litOfSort} site (Java {@code StringBuilder.reverse}). Pinning is
+     *       <em>bidirectional</em> — the reversed literal is itself minted and pinned — so literal
+     *       involution ({@code "abc".reverse().reverse() == "abc"}) and literal length
+     *       ({@code "abc".reverse().length() == 3}) fall out for free as theory consequences.</li>
+     * </ul>
+     * What it doesn't reach: <em>symbolic</em> algebraic identities ({@code s.reverse().reverse() == s}
+     * or {@code s.reverse().length() == s.length()} for a variable {@code s}), which would need the
+     * universals Phase 47g showed Z3 can't model over this sort. Sound under-approximation: the
+     * verifier knows less than the full algebra, but everything it does know is true.
+     */
+    Object stringReverse(Object s)
+
+    /**
      * A fresh integer constant to be universally quantified over by {@link
      * #forall}. Distinct from {@link #intVar}: the caller binds the source-level
      * loop variable to this handle while translating the quantifier body, then

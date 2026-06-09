@@ -439,7 +439,7 @@ class Encoder {
             // {@code s.substring(1, 4).length()} or {@code s.replace("a", "b").length()}
             // resolves correctly through the string-receiver path.
             if ((m == 'substring' || m == 'concat' || m == 'replace' || m == 'replaceAll' ||
-                 m == 'toUpperCase' || m == 'toLowerCase') &&
+                 m == 'toUpperCase' || m == 'toLowerCase' || m == 'reverse') &&
                 isStringReceiver(mc.objectExpression)) {
                 return true
             }
@@ -4269,6 +4269,9 @@ class Encoder {
             // Locale.ROOT) and structural axioms (length, idempotence, cascade).
             if (m == 'toUpperCase' && args.isEmpty()) return session.stringToUpper(sH)
             if (m == 'toLowerCase' && args.isEmpty()) return session.stringToLower(sH)
+            // Phase 47i — {@code s.reverse()} (GDK). Uninterpreted with per-literal pinning; literal
+            // involution and length fall out, symbolic identities are out (no universals — see 47g).
+            if (m == 'reverse' && args.isEmpty()) return session.stringReverse(sH)
             // {@code s.equalsIgnoreCase(t)} ≡ {@code toLower(s) == toLower(t)}. ASCII-faithful,
             // matches the Locale.ROOT contract used at the literal mint.
             if (m == 'equalsIgnoreCase' && args.size() == 1) {

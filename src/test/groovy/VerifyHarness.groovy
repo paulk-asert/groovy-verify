@@ -2433,6 +2433,67 @@ class VerifyHarness {
                         static int f(String s, String t) { s.equalsIgnoreCase(t) ? 1 : 0 }
                     }''')],
 
+        // ---------- Phase 47i: String.reverse() (algebraic, literal-pinning) ----------
+        // Literal pinning at mint: "abc".reverse() folds to "cba".
+        [group: 'P47i reverse', name: 'literal reverse folds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "cba" })
+                        static String f() { "abc".reverse() }
+                    }''')],
+        // Palindrome reverses to itself.
+        [group: 'P47i reverse', name: 'palindrome reverses to itself', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "racecar" })
+                        static String f() { "racecar".reverse() }
+                    }''')],
+        // Wrong reversal refutes.
+        [group: 'P47i reverse', name: 'wrong reversal refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == "abc" })
+                        static String f() { "abc".reverse() }
+                    }''')],
+        // Literal involution: reverse(reverse("abc")) == "abc" — falls out of bidirectional pinning.
+        [group: 'P47i reverse', name: 'literal involution reverse(reverse(x))==x', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "abc" })
+                        static String f() { "abc".reverse().reverse() }
+                    }''')],
+        // Literal length-preservation: a theory consequence of the pinned reversed literal.
+        [group: 'P47i reverse', name: 'literal reverse preserves length', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f() { "hello".reverse().length() }
+                    }''')],
+        // Reflexive: reverse applied to the same symbolic arg is syntactically identical, so equality
+        // holds without any axiom (the two terms are the same Z3 expression).
+        [group: 'P47i reverse', name: 'reverse(s) == reverse(s) reflexive', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == 1 })
+                        static int f(String s) { s.reverse() == s.reverse() ? 1 : 0 }
+                    }''')],
+        // PROBE (symbolic, NOT reachable without universals — documents the boundary): symbolic
+        // involution `s.reverse().reverse() == s` has no per-literal pin to lean on, so it does not
+        // prove — the slice skips/soft-fails rather than asserting the universal Z3 can't model.
+        // BOUNDARY (symbolic, NOT reachable — documents the limit confirmed by probe): symbolic
+        // involution `s.reverse().reverse() == s` has no per-literal pin to lean on. The universal
+        // that would prove it poisons the refute direction (Phase 47g / probe), so it's omitted and
+        // this soft-fails cleanly rather than stalling the solver.
+        [group: 'P47i reverse', name: 'symbolic involution does NOT prove (boundary)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s })
+                        static String f(String s) { s.reverse().reverse() }
+                    }''')],
+        // BOUNDARY (symbolic length): `s.reverse().length() == s.length()` likewise needs the
+        // length-preservation universal, omitted for the same reason — does not prove.
+        [group: 'P47i reverse', name: 'symbolic length-preservation does NOT prove (boundary)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s.length() })
+                        static int f(String s) { s.reverse().length() }
+                    }''')],
+
         // ---------- Phase 47h: GString interpolation ----------
         // Single String interpolation: "hello $name" with literal name folds to the
         // concrete concatenated string.

@@ -216,11 +216,13 @@ class Z3Session implements SmtSession {
             // too — no mint-time pinning required. This replaces the Phase-27 (cascade) +
             // Phase-46b (length pin) + Phase-46e (char pin, capped at 64) machinery in one move.
             Expr lit = ctx.mkString(literalKey)
-            // Phase 47g — track minted literals for case-folding pinning (only when the case
-            // functions are in play). {@link #pinCaseLiteral} computes and asserts the upper /
-            // lower form at mint time so {@code "Hello".toUpperCase() == "HELLO"} folds.
-            if (stringLiteralKeys.add(literalKey) && (toUpperFn != null || toLowerFn != null)) {
-                pinCaseLiteral(literalKey, lit)
+            // Phase 47g/47i — track minted literals for case-folding and reverse pinning (only when
+            // the relevant functions are in play). {@link #pinCaseLiteral} / {@link #pinReverseLiteral}
+            // compute and assert the upper/lower/reversed form at mint time so
+            // {@code "Hello".toUpperCase() == "HELLO"} and {@code "abc".reverse() == "cba"} fold.
+            if (stringLiteralKeys.add(literalKey)) {
+                if (toUpperFn != null || toLowerFn != null) pinCaseLiteral(literalKey, lit)
+                if (reverseFn != null) pinReverseLiteral(literalKey, lit)
             }
             return lit
         }
@@ -876,6 +878,51 @@ class Z3Session implements SmtSession {
     Object stringToLower(Object s) {
         ensureCaseAxioms()
         ctx.mkApp(toLowerFn, (Expr) s)
+    }
+
+    /**
+     * Phase 47i — reverse state. {@code reverse$} is an uninterpreted {@code (String) -> String}
+     * brought up on first use; like case-folding, it relies on per-literal pinning (no universals —
+     * Phase 47g showed those defeat Z3's seq model construction). Pinning is bidirectional, so
+     * literal involution and literal length follow for free.
+     */
+    private FuncDecl reverseFn
+
+    private FuncDecl ensureReverseFn() {
+        if (reverseFn != null) return reverseFn
+        reverseFn = ctx.mkFuncDecl('reverse$', [stringSort()] as Sort[], stringSort())
+        // No universals — confirmed by probe (matching Phase 47g): a triggered length-preservation +
+        // involution universal over reverse$ *does* prove symbolic `s.reverse().reverse() == s` and
+        // `s.reverse().length() == s.length()`, but poisons the refute direction — `"abc".reverse() ==
+        // "abc"` (false) goes from a clean "cannot prove" to a solver timeout. Z3's seq model
+        // construction stalls building a model that satisfies the universal over a Seq→Seq function.
+        // Literal pinning only; symbolic algebraic identities stay out (sound under-approximation).
+        List<String> snapshot = new ArrayList<String>(stringLiteralKeys)
+        for (String key : snapshot) pinReverseLiteral(key, ctx.mkString(key))
+        reverseFn
+    }
+
+    /**
+     * Phase 47i — assert {@code reverse(lit) == mkString(rev(key))}. Recursively pins the reversed
+     * literal too (so {@code reverse(reverse(lit)) == lit} is present); a palindrome key reverses to
+     * itself and the recursion stops. Java {@code StringBuilder.reverse} is the contract.
+     */
+    private void pinReverseLiteral(String key, Expr lit) {
+        if (reverseFn == null) return
+        String revKey = new StringBuilder(key).reverse().toString()
+        Expr revLit = ctx.mkString(revKey)
+        BoolExpr pin = ctx.mkEq(ctx.mkApp(reverseFn, lit), revLit)
+        solver.add(pin)
+        assertedExprs.add(pin)
+        if (stringLiteralKeys.add(revKey)) {
+            pinReverseLiteral(revKey, revLit)
+        }
+    }
+
+    @Override
+    Object stringReverse(Object s) {
+        ensureReverseFn()
+        ctx.mkApp(reverseFn, (Expr) s)
     }
 
     @Override Object boundIntVar(String name) { ctx.mkIntConst(name) }

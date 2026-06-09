@@ -2756,10 +2756,10 @@ sort from the start.
 - **No `length`, no `charAt`.** Specs that talk about string length or character positions
   are still out of fragment — would need either a length oracle with literal pinning
   (cheap follow-on) or Z3's native string theory (major phase).
-- **`String.reverse()`-style proofs aren't reachable here.** A meaningful reverse spec needs
-  character-position reasoning; the char-list reverse shape (`List<Character>`) already works
-  in the supported fragment as a separate demo. A String-typed reverse with character content
-  is deferred behind Z3 string theory adoption.
+- **`String.reverse()`** now ships at the literal level (Phase 47i, below) — `"abc".reverse() ==
+  "cba"`, literal involution and length. *Symbolic* character-content reasoning
+  (`s.reverse().reverse() == s` for a variable `s`) remains out, blocked by the same universal-over-
+  `Seq→Seq` refute hang as case folding.
 - **In-loop `if (xs[i] != null)` doesn't discharge a per-element deref obligation.** The
   loop-encoder's `applyIf` ITE-combines branch bindings but doesn't thread the condition as
   a path fact through obligation discharge. Workaround: a `Forall.range` precondition over
@@ -3351,6 +3351,43 @@ static String f() { int a = 1; int b = 2; "sum=${a + b}" }   // ${expr} block fo
 (mixed types), length composition (literal + symbolic), GString-equals-String
 literal, refute on wrong interpolation, `${expr}` block-form expression, chained
 `.startsWith` through string-receiver dispatch.
+
+## Phase 47i — `String.reverse()` (algebraic, literal pinning)  *(shipped)*
+
+The GDK adds `reverse()` to `String`. Z3's seq theory has no native reverse, so — exactly
+like case folding (47g) — `reverse$ : String → String` is an **uninterpreted function with
+per-literal pinning**. Every minted literal asserts `reverse(lit) == mkString(rev(key))` at
+the `litOfSort` site (Java `StringBuilder.reverse`), and the pinning is **bidirectional** (the
+reversed literal is minted and pinned too). That alone gives, as theory consequences:
+
+```groovy
+@Ensures({ result == "cba" })       static String f() { "abc".reverse() }            // literal
+@Ensures({ result == "racecar" })   static String f() { "racecar".reverse() }        // palindrome
+@Ensures({ result == "abc" })       static String f() { "abc".reverse().reverse() }  // literal involution
+@Ensures({ result == 5 })           static int    f() { "hello".reverse().length() } // literal length
+```
+
+`isStringReceiver` learned that `reverse` returns a String (so chained `.reverse().reverse()`
+/ `.reverse().length()` route through the string path).
+
+**Why no universals — confirmed by probe, not just inherited from 47g.** The algebraic
+identities a reader wants — symbolic involution `s.reverse().reverse() == s` and length
+preservation `s.reverse().length() == s.length()` — need a *universal* over `reverse$`. A
+probe added both as **triggered** universals (the same shape `replaceAll`/`lastIndexOf` ship):
+they **did** make the symbolic cases prove — **but poisoned the refute direction**, exactly as
+47g warned. `"abc".reverse() == "abc"` (false) went from a clean *“cannot prove postcondition”*
+to a **solver timeout** (*“could not decide”*): Z3's seq solver stalls building a model that
+satisfies a universal over a `Seq→Seq` uninterpreted function. A false spec deserves a crisp
+refute, not a confusing stall, so the universals are out. Literal pinning ships; symbolic
+algebra is a documented boundary (two `does NOT prove (boundary)` tests pin the behaviour).
+
+**The genuinely valuable cousin** — proving an in-place `char[]`/`int[]` reversal *loop* — is a
+different feature riding the (decidable) array-element oracle, not the string layer; its cost is
+a two-ended loop invariant (`∀k<i. a[k]==old(a[n-1-k]) ∧ a[n-1-k]==old(a[k])`). Left for later.
+
+**Shipped tests**: literal reverse, palindrome, wrong-reversal refute, literal involution,
+literal length-preservation, reflexive `reverse(s)==reverse(s)`, plus two boundary tests
+asserting the symbolic identities cleanly *don't* prove.
 
 ## Phase 48 — Non-linear integer arithmetic + integer div/mod  *(shipped)*
 
