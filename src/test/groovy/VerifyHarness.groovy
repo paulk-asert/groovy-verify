@@ -7085,30 +7085,25 @@ class VerifyHarness {
         [group: 'P expr inc/dec', name: 'a[i++] store out of bounds refutes', expect: 'IndexOutOfBounds',
          src: tc('class C { @Requires({ a != null }) static void f(int[] a) { int i = a.length; a[i++] = 9 } }')],
 
-        // A statement with two inc/decs (`dst[j++] = src[i++]`) is left alone — sequencing several is
-        // ambiguous, so it skips loudly rather than risk mis-ordering (use one index, or split them out).
-        [group: 'P expr inc/dec', name: 'two inc/decs in one statement skip loudly', expect: 'outside fragment',
-         src: tc('''class C {
-                        @Requires({ src != null && dst != null && src.length <= dst.length })
-                        static void copy(int[] src, int[] dst) {
-                            int i = 0, j = 0
-                            @Invariant({ 0 <= i && i <= src.length && i == j })
-                            @Decreases({ src.length - i })
-                            while (i < src.length) { dst[j++] = src[i++] }
-                        }
-                    }''')],
+        // Multiple inc/decs on DISTINCT variables, each used once, hoist soundly (order-independent) — the
+        // two-cursor copy `dst[j++] = src[i++]` is the README example (in the `README examples` group).
+        // Soundness: when a variable appears TWICE (`i++ + i`), Java advances `i` mid-statement so the 2nd
+        // `i` sees the new value (x == 1). The hoist refuses this case (its var occurs more than once), so
+        // it skips *loudly* — a false `result == 0` is never proven (the old hoist did, unsoundly).
+        [group: 'P expr inc/dec', name: 'i++ + i (var used twice) skips loudly, no false proof', expect: 'outside fragment',
+         src: tc('class C { @Ensures({ result == 0 }) static int f() { int i = 0; int x = i++ + i; return x } }')],
 
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
-        [group: 'README examples', name: 'array copy via dst[i] = src[i++]', ok: true,
+        [group: 'README examples', name: 'two-cursor array copy dst[j++] = src[i++]', ok: true,
          src: tc('''class C {
                         @Requires({ src != null && dst != null && src.length <= dst.length })
                         @Ensures({ (0..<src.length).every { result[it] == src[it] } })
                         static int[] copy(int[] src, int[] dst) {
-                            int i = 0
-                            @Invariant({ 0 <= i && i <= src.length &&
+                            int i = 0, j = 0
+                            @Invariant({ 0 <= i && i <= src.length && i == j &&
                                          (0..<i).every { dst[it] == src[it] } })
                             @Decreases({ src.length - i })
-                            while (i < src.length) { dst[i] = src[i++] }
+                            while (i < src.length) { dst[j++] = src[i++] }
                             return dst
                         }
                     }''')],

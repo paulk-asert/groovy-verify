@@ -562,25 +562,26 @@ static int[] singleton(int n, int x) {
 (`r[n] = x`) refutes with an `IndexOutOfBounds` repro.
 
 **`++`/`--` in expression position — the array-copy idiom.** A side-effecting `i++` used *inside* an
-expression (here `src[i++]` — read element `i`, then advance the cursor) is supported: it's hoisted to its
-value plus the increment, so the loop invariant carries the copied prefix and the whole copy is proven
+expression is supported — the classic two-cursor copy `dst[j++] = src[i++]` verifies. Each inc/dec is hoisted
+to its value plus the increment, so the loop invariant carries the copied prefix and the whole copy is proven
 element-for-element:
 
 ```groovy
 @Requires({ src != null && dst != null && src.length <= dst.length })
 @Ensures({ (0..<src.length).every { result[it] == src[it] } })
 static int[] copy(int[] src, int[] dst) {
-    int i = 0
-    @Invariant({ 0 <= i && i <= src.length && (0..<i).every { dst[it] == src[it] } })
+    int i = 0, j = 0
+    @Invariant({ 0 <= i && i <= src.length && i == j && (0..<i).every { dst[it] == src[it] } })
     @Decreases({ src.length - i })
-    while (i < src.length) { dst[i] = src[i++] }   // dst[i] = src[i]; i++
+    while (i < src.length) { dst[j++] = src[i++] }   // dst[j] = src[i]; i++; j++
     return dst
 }
 ```
 
-The store's bounds discharge from the invariant and `src.length <= dst.length`, and the index increments
-correctly each pass. (One inc/dec per statement: a two-cursor `dst[j++] = src[i++]` is ambiguous to sequence,
-so it skips loudly — use a single index, or split the increments out.)
+The store's bounds discharge from the invariant and `src.length <= dst.length`, and both cursors advance each
+pass. Multiple inc/decs in one statement are sound to hoist precisely when **each variable occurs once** (so
+the order of the hoisted increments can't matter, as with the distinct `i` and `j` here); a variable used
+*twice* — e.g. `x = i++ + i`, where Java advances `i` mid-statement — is refused and skips loudly.
 
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models

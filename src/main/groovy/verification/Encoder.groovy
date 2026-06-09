@@ -4652,53 +4652,89 @@ class Encoder {
         if (!(st instanceof ExpressionStatement)) return null
         Expression e = ((ExpressionStatement) st).expression
         if (isIncDec(e)) return null                 // top-level `i++` — desugarIncDec handles it
-        if (countIncDec(e) != 1) return null         // none, or several (unsafe to sequence) → leave as-is
-        Object[] x = extractFirstIncDec(e)
-        if (x == null) return null
-        Expression rewritten = (Expression) x[0]
-        Expression operand   = (Expression) x[1]
-        boolean isPre        = (boolean) x[2]
-        Token op             = (Token) x[3]
+        List<Object[]> incs = new ArrayList<Object[]>()   // each: [operand, isPre, opToken]
+        collectIncDecs(e, incs)
+        if (incs.isEmpty()) return null
+        // SAFE TO HOIST iff every inc/dec is on a simple variable that occurs *exactly once* in the
+        // statement (only at its own inc/dec site). Then there is no ordering interaction — pre-forms can
+        // all move before the statement and post-forms all after, in any order, and the result is the same.
+        // This both (a) closes the unsound case where a variable is also read elsewhere (`x = i++ + i` —
+        // Java advances `i` mid-statement, so the 2nd `i` sees the new value) and (b) enables the two-cursor
+        // idiom `dst[j++] = src[i++]` (distinct `i`, `j`, each once).
+        Set<String> seen = new HashSet<String>()
+        for (Object[] inc : incs) {
+            Expression operand = (Expression) inc[0]
+            if (!(operand instanceof VariableExpression)) return null    // array-element/field target → skip
+            String name = ((VariableExpression) operand).name
+            if (!seen.add(name)) return null                             // same var incremented twice → order matters
+            if (countVarOccurrences(e, name) != 1) return null           // var read elsewhere in the statement → skip
+        }
+        Expression rewritten = replaceAllIncDec(e)
+        if (anyIncDec(rewritten)) return null                            // an inc/dec the rewriter couldn't reach → skip
+        List<Statement> pre = new ArrayList<Statement>(), post = new ArrayList<Statement>()
+        for (Object[] inc : incs) {
+            (((boolean) inc[1]) ? pre : post).add(incAssignStatement((Expression) inc[0], (Token) inc[2], st))
+        }
+        Statement mainStmt = new ExpressionStatement(rewritten)
+        mainStmt.setSourcePosition(st)
+        List<Statement> out = new ArrayList<Statement>(pre)
+        out.add(mainStmt)
+        out.addAll(post)
+        out
+    }
+
+    /** Collect every inc/dec in the BinaryExpression-reachable shapes as {@code [operand, isPre, opToken]}. */
+    private static void collectIncDecs(Expression e, List<Object[]> out) {
+        if (isIncDec(e)) {
+            Object[] p = incDecParts(e)
+            out.add([(Expression) p[1], (e instanceof PrefixExpression), (Token) p[0]] as Object[])
+            return
+        }
+        if (e instanceof BinaryExpression) {
+            collectIncDecs(((BinaryExpression) e).leftExpression, out)
+            collectIncDecs(((BinaryExpression) e).rightExpression, out)
+        }
+    }
+
+    /** Replace every inc/dec (BinaryExpression-reachable) with its operand, preserving source positions. */
+    private static Expression replaceAllIncDec(Expression e) {
+        if (isIncDec(e)) return (Expression) incDecParts(e)[1]
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            return stampedBinary(replaceAllIncDec(be.leftExpression), be.operation, replaceAllIncDec(be.rightExpression), be)
+        }
+        e
+    }
+
+    /** Total occurrences of the variable {@code name} anywhere in {@code e} (a complete traversal — sound). */
+    private static int countVarOccurrences(Expression e, String name) {
+        int[] c = [0] as int[]
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) { if (ve.name == name) c[0]++ }
+        })
+        c[0]
+    }
+
+    /** True if any inc/dec remains anywhere in {@code e} (a complete traversal). */
+    private static boolean anyIncDec(Expression e) {
+        boolean[] f = [false] as boolean[]
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitPostfixExpression(PostfixExpression pe) { if (isIncDec(pe)) f[0] = true; super.visitPostfixExpression(pe) }
+            @Override void visitPrefixExpression(PrefixExpression pe) { if (isIncDec(pe)) f[0] = true; super.visitPrefixExpression(pe) }
+        })
+        f[0]
+    }
+
+    /** The hoisted increment statement {@code operand = operand ± 1}, carrying {@code src}'s source position. */
+    private static Statement incAssignStatement(Expression operand, Token op, Statement src) {
         int baseType = (op.type == Types.PLUS_PLUS) ? Types.PLUS : Types.MINUS
         Token baseTok = Token.newSymbol(baseType, op.startLine, op.startColumn)
         Expression incExpr = new BinaryExpression(operand,
             Token.newSymbol(Types.ASSIGN, op.startLine, op.startColumn),
             new BinaryExpression(operand, baseTok, new ConstantExpression(Integer.valueOf(1))))
         Statement incStmt = new ExpressionStatement(incExpr)
-        Statement mainStmt = new ExpressionStatement(rewritten)
-        mainStmt.setSourcePosition(st)
-        incStmt.setSourcePosition(st)
-        (isPre ? [incStmt, mainStmt] : [mainStmt, incStmt]) as List<Statement>
-    }
-
-    /** Count inc/dec subexpressions in the BinaryExpression / postfix / prefix shapes the expander supports. */
-    private static int countIncDec(Expression e) {
-        if (isIncDec(e)) return 1
-        if (e instanceof BinaryExpression) {
-            BinaryExpression be = (BinaryExpression) e
-            return countIncDec(be.leftExpression) + countIncDec(be.rightExpression)
-        }
-        0
-    }
-
-    /**
-     * The first inc/dec in {@code e} (recursing into BinaryExpression operands — covers `x = i++`,
-     * `a[i++] = v`, `x = a[i++]`, `x = i++ + 1`, `a[i]++`), returned as
-     * {@code [rewrittenExpr, operand, isPre, opToken]} with that node replaced by its operand. Null if none.
-     */
-    private static Object[] extractFirstIncDec(Expression e) {
-        if (isIncDec(e)) {
-            Object[] p = incDecParts(e)
-            return [(Expression) p[1], (Expression) p[1], (e instanceof PrefixExpression), (Token) p[0]] as Object[]
-        }
-        if (e instanceof BinaryExpression) {
-            BinaryExpression be = (BinaryExpression) e
-            Object[] l = extractFirstIncDec(be.leftExpression)
-            if (l != null) return [stampedBinary((Expression) l[0], be.operation, be.rightExpression, be), l[1], l[2], l[3]] as Object[]
-            Object[] r = extractFirstIncDec(be.rightExpression)
-            if (r != null) return [stampedBinary(be.leftExpression, be.operation, (Expression) r[0], be), r[1], r[2], r[3]] as Object[]
-        }
-        null
+        incStmt.setSourcePosition(src)
+        incStmt
     }
 
     /**

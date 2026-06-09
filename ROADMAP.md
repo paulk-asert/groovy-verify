@@ -4583,12 +4583,23 @@ may be a variable, array element (`a[i]++` → an array store), or field. A wron
 no-overlap-with-contracts property as Phase 85 (predicates never contain `++`).
 
 **`++`/`--` in expression position (shipped) — variable target *and* array index.** A side-effecting inc/dec
-used for its value (`x = i++`, `a[i++] = v`, `x = a[i++]`, `x = ++i`) is **hoisted** out of the enclosing
-statement into an explicit sequence by `Encoder.expandIncDecStatements`: a **post**-form becomes
-`[…uses operand…, operand = operand ± 1]` (the old value, then the side effect) and a **pre**-form becomes
-`[operand = operand ± 1, …uses operand…]` (side effect first, new value). `extractFirstIncDec` finds the one
-inc/dec by recursing the `BinaryExpression`/postfix/prefix shapes and replaces it with its operand; a
-statement with more than one inc/dec is left alone (skips loudly rather than risk mis-ordering).
+used for its value (`x = i++`, `a[i++] = v`, `x = a[i++]`, `x = ++i`, and the two-cursor copy
+`dst[j++] = src[i++]`) is **hoisted** out of the enclosing statement into an explicit sequence by
+`Encoder.expandIncDecStatements`: **post**-forms become `[…uses operand…, …, operand = operand ± 1, …]` (the old
+value, then the side effect) and **pre**-forms `[operand = operand ± 1, …, …uses operand…]` (side effect first,
+new value). All inc/decs are collected and replaced by their operands (`replaceAllIncDec`), pre's hoisted
+before and post's after.
+
+**The safety condition — each inc/dec variable occurs *exactly once* in the statement.** Then the hoist is
+order-independent (the increments are on distinct variables that nothing else reads, so their relative order
+can't matter) and sound. This was *learned the hard way*: the first cut hoisted a single inc/dec
+unconditionally, which was **silently unsound** when the variable was *also read elsewhere* — `x = i++ + i`
+proved `result == 0`, but Java advances `i` mid-statement so the second `i` is `1` and the real value is `1`.
+The once-per-statement check (a complete `countVarOccurrences` traversal) closes that hole *and* — because two
+inc/decs on **distinct** variables each satisfy it — enables `dst[j++] = src[i++]`. A variable used twice
+(`i++ + i`, or the single-index `dst[i] = src[i++]`, where the LHS `i` is a second occurrence) is refused and
+skips loudly; a fully eval-order-aware analysis could admit the latter, but the conservative rule is the safe
+one.
 
 The hoist runs at the head of **every** body walk so all consumers agree: the VC passes
 (`BodyEncoder.walkStatements`, `LoopEncoder.symExec`) and the obligation passes (`collectVfObligations` and
