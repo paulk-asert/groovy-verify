@@ -1935,7 +1935,7 @@ class Encoder {
      */
     boolean tryRecordFactoryAssign(String name, Expression rhs) {
         FactoryContainer f = factoryContainerFor(rhs)
-        if (f == null) return false
+        if (f == null) return tryRecordSizedArrayAssign(name, rhs)
         localFactories.put(name, f)
         // Pin the oracles the surrounding machinery consults independently of the factory fold:
         //  (1) nullity — a factory result is non-null, so the implicit scalar-deref check on
@@ -1950,6 +1950,43 @@ class Encoder {
             session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
         }
         true
+    }
+
+    /**
+     * A *sized* array allocation {@code new int[n]} — an {@link ArrayExpression} with a single
+     * dimension size and no initializer (the dual of the fixed-arity {@code new int[]{…}} literal that
+     * {@link #factoryContainerFor} records). There is no element list, so this is modelled through the
+     * size/array oracles rather than a {@link FactoryContainer}: {@code sizeOf(name) == n}, non-null,
+     * and — for an Int-element array — a const-0 content array (Java zero-fills a fresh array), so an
+     * unwritten {@code name[i]} reads {@code 0} and a later {@code name[i] = v} store threads from there.
+     * Returns true so the caller short-circuits the int-SSA path (the target is an array, not an int).
+     *
+     * <p>Single dimension only; a non-Int element sort keeps havoced contents (sound, just no zero
+     * default). The {@code n < 0} {@code NegativeArraySizeException} is not modelled — a negative size
+     * yields an unsatisfiable index range, so no out-of-bounds is mis-verified.
+     */
+    boolean tryRecordSizedArrayAssign(String name, Expression rhs) {
+        Expression target = rhs
+        if (target instanceof CastExpression) target = ((CastExpression) target).expression
+        if (!(target instanceof ArrayExpression)) return false
+        ArrayExpression ae = (ArrayExpression) target
+        List<Expression> dims = ae.sizeExpression
+        if (dims == null || dims.size() != 1) return false                       // single-dimension `new T[n]` only
+        if (ae.expressions != null && !ae.expressions.isEmpty()) return false     // has an initializer → factory path
+        try {
+            Object sizeH = translate(dims.get(0))
+            if (sizeH == null) return false
+            localFactories.remove(name)                                          // drop any stale factory record
+            bindSize(name, sizeH)
+            session.assertExpr(session.not(nullityOf(name)))
+            Object[] sorts = arraySortsFor(name)
+            if (sorts[1] == session.intSort()) {
+                bindArray(name, session.constIntArray(session.intLit(0L)))
+            }
+            return true
+        } catch (Exception ignored) {
+            return false                                                          // unmodelled size/sort → honest skip
+        }
     }
 
     /**

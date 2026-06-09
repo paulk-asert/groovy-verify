@@ -305,6 +305,11 @@ class Z3Session implements SmtSession {
         v
     }
 
+    @Override
+    Object constIntArray(Object value) {
+        ctx.mkConstArray(ctx.getIntSort(), (Expr) value)
+    }
+
     @Override Object select(Object arr, Object idx) { ctx.mkSelect((ArrayExpr) arr, (Expr) idx) }
     @Override Object store(Object arr, Object idx, Object val) { ctx.mkStore((ArrayExpr) arr, (Expr) idx, (Expr) val) }
 

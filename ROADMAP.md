@@ -4364,11 +4364,19 @@ array dual of a list literal), so it binds `result` identically; a body local `i
 as a factory too. Both fold `result[k]` / `result.length` / component-wise `==` via the Phase 78/81 machinery.
 Locked by `P78 int[] return` tests (each spelling + crisp size-pin / element refutes).
 
-**Still out (the one remaining array-return form):** the *sized* allocation `new int[n]`
-(`ArrayExpression` with `sizeExpression != null`, no initializer) — a fresh symbolic array of length `n`,
-zero-filled. Not a fixed-arity literal, so it falls through to a loud skip; modelling it needs minting an
-array oracle with `sizeOf = n` + a zero default and threading body stores — array *allocation* in the body, a
-larger slice than these literal-recognition ones.
+**Sized allocation `new int[n]` (shipped).** The *fresh* array form — an `ArrayExpression` with
+`sizeExpression != null` and no initializer — is a length-`n` array Java zero-fills. It isn't a fixed-arity
+literal, so instead of a `FactoryContainer` it's modelled through the size/array oracles:
+`Encoder.tryRecordSizedArrayAssign` (the `factoryContainerFor == null` fallback inside
+`tryRecordFactoryAssign`, so every assignment/return call site picks it up) pins `sizeOf(name) == n`,
+non-null, and — for an Int-element array — binds a **const-0 content array** (new backend
+`constIntArray`, Z3 `mkConstArray`). So `new int[n]` as a return proves `result.length == n`, an unwritten
+element reads `0`, a body local `int[] r = new int[n]; r[i] = v` bounds-checks and threads the store, and a
+wrong length refutes. Single dimension; a non-Int element sort keeps havoced contents (sound). The `n < 0`
+`NegativeArraySizeException` is not modelled — a negative size makes the index range unsatisfiable, so no
+out-of-bounds is mis-verified (and a length-`n` postcondition stays sound: if it throws, the method never
+returns). Locked by the `sized int[]` tests. **Still out:** multi-dimensional `new int[m][n]`; non-Int
+zero-fill (`new double[n]` defaulting to `0.0d`).
 
 **Still out (the `Tuple` layer, next):** *heterogeneous* fixed products with **named** accessors
 (`.v1`/`.vN`/`.first`/`.second`), `new TupleN(...)` / `Tuple.tuple(...)` construction, and **multiple

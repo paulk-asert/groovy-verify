@@ -121,6 +121,13 @@ interface SmtSession extends AutoCloseable {
      */
     Object arrayVar(String name)
 
+    /**
+     * A constant {@code Int -> Int} array whose every element equals {@code value} — Z3's
+     * {@code ((as const (Array Int Int)) value)}. Models a freshly-allocated {@code new int[n]},
+     * which Java zero-fills, as the const-0 array (so an unwritten element reads its default).
+     */
+    Object constIntArray(Object value)
+
     /** The element {@code arr[i]} — Z3 {@code (select arr i)}. */
     Object select(Object arr, Object idx)
 

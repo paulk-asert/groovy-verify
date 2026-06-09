@@ -1379,6 +1379,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Existential quantifier (`any`)** | `a.any{ it < 0 }`, `(lo..<hi).any{…}` | ✅ Phase 9 |
 | **Array contents: read (`select`) & update (`store`)** | `a[i]` in contracts / `a[i] = v` | ✅ Phase 6 |
 | **Array update inside a loop (invariant over contents)** | `a[i] = v` in a `@Invariant`-carrying loop | ✅ Phase 6 |
+| **Array construction** — fixed-arity literal `new int[]{a, b}` (a positional factory, `result[k]`/`.length` fold) and *sized* allocation `new int[n]` (fresh, Java-zero-filled: `sizeOf == n`, non-null, const-0 contents, so a length spec proves, an unwritten element reads `0`, and a body `r[i] = v` bounds-checks and threads). A coerced list literal `[a, b]` returned as `int[]` works too | `new int[]{…}` / `new int[n]` / `[a,b] as int[]` | ✅ |
 | **Inter-procedural: assume a callee's `@Ensures`** | `int z = f(args)` | ✅ Phase 7 (slice 1) |
 | **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
 | **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
