@@ -3712,6 +3712,21 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private void checkEarlyExit(MethodNode node, LoopSite site, EarlyExit ex,
                                 Expression reqAst, Expression postAst) {
+        // The standard check: a prefix exit, or an in-body exit on *some* iteration (state = invariant ∧ guard).
+        checkEarlyExitPath(node, site, ex, reqAst, postAst, false)
+        // Phase 88b — a do-while (`do B while (G)` ≡ `B; while (G) B`) runs its body once before the first
+        // guard/invariant, so an in-body exit can fire on the FIRST iteration from the *entry* state, where
+        // the invariant isn't established and the guard isn't checked. The inBody path above assumes
+        // (invariant ∧ guard); on a do-while's first pass that assumption can be false-at-entry and
+        // *vacuously* prove a wrong exit @Ensures (a latent unsoundness). So check the exit again from
+        // @Requires + the loop prefix, assuming NO invariant/guard — iter 1 here, iters ≥ 2 above.
+        if (ex.region == 'inBody' && site.spec.isDoWhile) {
+            checkEarlyExitPath(node, site, ex, reqAst, postAst, true)
+        }
+    }
+
+    private void checkEarlyExitPath(MethodNode node, LoopSite site, EarlyExit ex,
+                                    Expression reqAst, Expression postAst, boolean doWhileFirstIter) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
@@ -3726,13 +3741,24 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
                 LoopEncoder.symExec(ex.priorStmts, enc, s)
             } else if (ex.region == 'inBody') {
-                // Phase 49b — in-body exit. The exit fires inside *some* iteration: not
-                // necessarily the first. The state at body-entry is whatever satisfies the
-                // invariant — NOT the post-prefix state (the invariant is exactly the
-                // abstraction layer that hides "how many iterations ran"). Mirrors the
-                // existing checkPreservation / checkProgress shape.
-                s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
-                s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+                if (doWhileFirstIter) {
+                    // First iteration of a do-while: the body-entry state is the loop-*entry* state
+                    // (prefix-exit guards false, then the prefix), exactly as checkEstablishment sets up.
+                    // The invariant isn't established yet and the guard isn't checked, so assume neither.
+                    for (EarlyExit pe : site.earlyExits) {
+                        if (pe.beforeLoop) {
+                            Object gh = enc.translate(pe.guard)
+                            if (gh != null) s.assertExpr(s.not(gh))
+                        }
+                    }
+                    LoopEncoder.symExec(site.prefix, enc, s)
+                } else {
+                    // Phase 49b — in-body exit on *some* (non-first) iteration. The body-entry state is
+                    // whatever satisfies the invariant — NOT the post-prefix state (the invariant is the
+                    // abstraction that hides "how many iterations ran"). Mirrors checkPreservation/Progress.
+                    s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+                    s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+                }
                 // Walk the body up to ex.node, interleaving ¬each-prior-in-body-guard with
                 // sym-exec of non-exit body statements:
                 for (Statement st : site.spec.body) {
