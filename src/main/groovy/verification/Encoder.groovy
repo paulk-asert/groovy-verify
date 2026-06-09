@@ -33,6 +33,7 @@ import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
+import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
@@ -4655,20 +4656,13 @@ class Encoder {
         List<Object[]> incs = new ArrayList<Object[]>()   // each: [operand, isPre, opToken]
         collectIncDecs(e, incs)
         if (incs.isEmpty()) return null
-        // SAFE TO HOIST iff every inc/dec is on a simple variable that occurs *exactly once* in the
-        // statement (only at its own inc/dec site). Then there is no ordering interaction — pre-forms can
-        // all move before the statement and post-forms all after, in any order, and the result is the same.
-        // This both (a) closes the unsound case where a variable is also read elsewhere (`x = i++ + i` —
-        // Java advances `i` mid-statement, so the 2nd `i` sees the new value) and (b) enables the two-cursor
-        // idiom `dst[j++] = src[i++]` (distinct `i`, `j`, each once).
-        Set<String> seen = new HashSet<String>()
         for (Object[] inc : incs) {
-            Expression operand = (Expression) inc[0]
-            if (!(operand instanceof VariableExpression)) return null    // array-element/field target → skip
-            String name = ((VariableExpression) operand).name
-            if (!seen.add(name)) return null                             // same var incremented twice → order matters
-            if (countVarOccurrences(e, name) != 1) return null           // var read elsewhere in the statement → skip
+            if (!(inc[0] instanceof VariableExpression)) return null     // array-element/field target → skip
         }
+        // Two sound routes to hoist. Either closes the unsound case where a variable is read again *after*
+        // its own inc/dec — `x = i++ + i`, where Java advances `i` mid-statement so the 2nd `i` is the new
+        // value — which must NOT be hoisted (it would silently mis-model).
+        if (!(appearsOnceSafe(e, incs) || evalOrderAssignSafe(e, incs))) return null
         Expression rewritten = replaceAllIncDec(e)
         if (anyIncDec(rewritten)) return null                            // an inc/dec the rewriter couldn't reach → skip
         List<Statement> pre = new ArrayList<Statement>(), post = new ArrayList<Statement>()
@@ -4681,6 +4675,92 @@ class Encoder {
         out.add(mainStmt)
         out.addAll(post)
         out
+    }
+
+    /**
+     * Route 1 — every inc/dec is on a variable that occurs *exactly once* in the statement (only at its own
+     * inc/dec site). There is then no ordering interaction at all: pre-forms move before, post-forms after, in
+     * any order, same result. Shape-agnostic (it just counts), so it covers method-call args etc. too. Enables
+     * the two-cursor `dst[j++] = src[i++]` (distinct `i`, `j`, each once).
+     */
+    private static boolean appearsOnceSafe(Expression e, List<Object[]> incs) {
+        Set<String> seen = new HashSet<String>()
+        for (Object[] inc : incs) {
+            String name = ((VariableExpression) inc[0]).name
+            if (!seen.add(name)) return false                    // same var incremented twice → order matters
+            if (countVarOccurrences(e, name) != 1) return false  // var read elsewhere → can't move blindly
+        }
+        true
+    }
+
+    /**
+     * Route 2 — evaluation-order analysis for the common idiom `dst[i] = src[i++]`, where a variable appears
+     * more than once but the hoist is still sound. Restricted to a slice we can reason about exactly:
+     * an assignment {@code LHS = RHS} with (a) only sub-expressions whose evaluation order is plain
+     * left-to-right (variables, constants, arithmetic/subscript {@code BinaryExpression}s, inc/decs — no
+     * method calls, properties or ternaries), (b) no inc/dec in the LHS, and (c) every inc/dec a *post*-form on
+     * a simple variable that is not the assignment target. Java evaluates the LHS index, then the RHS, then
+     * stores — so an LHS occurrence of {@code i} reads the *old* value, exactly like the hoisted-after `i++`.
+     * The check is then: in evaluation order each post-inc is the *last* occurrence of its variable, so every
+     * other read sees the old value and hoisting the increment to the end preserves it.
+     */
+    private static boolean evalOrderAssignSafe(Expression e, List<Object[]> incs) {
+        Expression lhs, rhs
+        if (e instanceof DeclarationExpression) {
+            lhs = ((DeclarationExpression) e).leftExpression; rhs = ((DeclarationExpression) e).rightExpression
+        } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+            lhs = ((BinaryExpression) e).leftExpression; rhs = ((BinaryExpression) e).rightExpression
+        } else {
+            return false                                          // not a plain assignment → out of this slice
+        }
+        if (!onlySafeShapes(lhs) || !onlySafeShapes(rhs)) return false   // unknown eval order → bail
+        if (anyIncDec(lhs)) return false                          // the slice: inc/decs live in the RHS only
+        // The assignment target variable (if a simple var): excluded from reads, and never itself inc/dec'd
+        // here — `i = i++` would clobber (Java's store wins; a hoisted `i = i+1` after would not).
+        String target = (lhs instanceof VariableExpression) ? ((VariableExpression) lhs).name : null
+        for (Object[] inc : incs) {
+            if ((boolean) inc[1]) return false                    // pre-form in an assignment RHS → not this slice
+            if (((VariableExpression) inc[0]).name == target) return false
+        }
+        // Evaluation-order occurrences (reads + inc/dec operands), skipping the simple-var write target.
+        List<Object[]> ev = new ArrayList<Object[]>()             // each: [varName, isIncDecOperand]
+        if (!(lhs instanceof VariableExpression)) evalOrderOccurrences(lhs, ev)  // array LHS: its index reads count
+        evalOrderOccurrences(rhs, ev)
+        for (int p = 0; p < ev.size(); p++) {
+            if (!((boolean) ev[p][1])) continue
+            String v = (String) ev[p][0]
+            for (int q = p + 1; q < ev.size(); q++) {
+                if (ev[q][0] == v) return false                   // a later read would see the NEW value → unsafe
+            }
+        }
+        true
+    }
+
+    /** True iff {@code e} is built only from shapes whose evaluation order is plain left-to-right. */
+    private static boolean onlySafeShapes(Expression e) {
+        if (e instanceof VariableExpression || e instanceof ConstantExpression) return true
+        if (isIncDec(e)) return onlySafeShapes((Expression) incDecParts(e)[1])
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            return onlySafeShapes(be.leftExpression) && onlySafeShapes(be.rightExpression)
+        }
+        false
+    }
+
+    /** Append {@code [varName, isIncDecOperand]} for each variable occurrence in {@code e}, in evaluation order. */
+    private static void evalOrderOccurrences(Expression e, List<Object[]> ev) {
+        if (e instanceof VariableExpression) { ev.add([((VariableExpression) e).name, false] as Object[]); return }
+        if (e instanceof ConstantExpression) return
+        if (isIncDec(e)) {
+            Expression op = (Expression) incDecParts(e)[1]
+            if (op instanceof VariableExpression) ev.add([((VariableExpression) op).name, true] as Object[])
+            else evalOrderOccurrences(op, ev)
+            return
+        }
+        if (e instanceof BinaryExpression) {
+            evalOrderOccurrences(((BinaryExpression) e).leftExpression, ev)
+            evalOrderOccurrences(((BinaryExpression) e).rightExpression, ev)
+        }
     }
 
     /** Collect every inc/dec in the BinaryExpression-reachable shapes as {@code [operand, isPre, opToken]}. */

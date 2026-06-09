@@ -579,9 +579,11 @@ static int[] copy(int[] src, int[] dst) {
 ```
 
 The store's bounds discharge from the invariant and `src.length <= dst.length`, and both cursors advance each
-pass. Multiple inc/decs in one statement are sound to hoist precisely when **each variable occurs once** (so
-the order of the hoisted increments can't matter, as with the distinct `i` and `j` here); a variable used
-*twice* — e.g. `x = i++ + i`, where Java advances `i` mid-statement — is refused and skips loudly.
+pass. The single-index form `dst[i] = src[i++]` verifies too: `i` appears twice, but the verifier checks
+**evaluation order** — Java evaluates the LHS index before the right-hand side, so the `i` in `dst[i]` reads
+the *old* value just as the hoisted-after `i++` does. What it refuses is a variable read *after* its own
+increment — `x = i++ + i`, where Java advances `i` mid-statement so the second `i` is the new value — which
+skips loudly rather than risk mis-modeling.
 
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models

@@ -7088,10 +7088,32 @@ class VerifyHarness {
         // Multiple inc/decs on DISTINCT variables, each used once, hoist soundly (order-independent) — the
         // two-cursor copy `dst[j++] = src[i++]` is the README example (in the `README examples` group).
         // Soundness: when a variable appears TWICE (`i++ + i`), Java advances `i` mid-statement so the 2nd
-        // `i` sees the new value (x == 1). The hoist refuses this case (its var occurs more than once), so
+        // `i` sees the new value (x == 1). The hoist refuses this case (the read comes *after* the inc), so
         // it skips *loudly* — a false `result == 0` is never proven (the old hoist did, unsoundly).
-        [group: 'P expr inc/dec', name: 'i++ + i (var used twice) skips loudly, no false proof', expect: 'outside fragment',
+        [group: 'P expr inc/dec', name: 'i++ + i (read after inc) skips loudly, no false proof', expect: 'outside fragment',
          src: tc('class C { @Ensures({ result == 0 }) static int f() { int i = 0; int x = i++ + i; return x } }')],
+        // Eval-order route: `dst[i] = src[i++]` — `i` appears twice, but the LHS-index read is evaluated
+        // *before* the `i++`, so both read the old `i`. The single-index copy now verifies.
+        [group: 'P expr inc/dec', name: 'single-index copy dst[i]=src[i++] verifies (eval-order)', ok: true,
+         src: tc('''class C {
+                        @Requires({ src != null && dst != null && src.length <= dst.length })
+                        @Ensures({ (0..<src.length).every { result[it] == src[it] } })
+                        static int[] copy(int[] src, int[] dst) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= src.length && (0..<i).every { dst[it] == src[it] } })
+                            @Decreases({ src.length - i })
+                            while (i < src.length) { dst[i] = src[i++] }
+                            return dst
+                        }
+                    }''')],
+        // `a[i] = i++` — `i` in the LHS index (read, old) and the RHS post-inc (last occurrence): verifies.
+        [group: 'P expr inc/dec', name: 'a[i] = i++ stores old value at old index', ok: true,
+         src: tc('''class C { @Ensures({ result == 5 }) static int f() {
+                        int[] a = new int[10]; int i = 5; a[i] = i++; return a[5] } }''')],
+        // Clobber soundness: `i = i++` — Java's store wins, so `i` stays 0. The inc target equals the write
+        // target, so the hoist refuses it (a hoisted `i = i+1` after would wrongly make it 1): skips loudly.
+        [group: 'P expr inc/dec', name: 'i = i++ (self-assign clobber) skips loudly', expect: 'outside fragment',
+         src: tc('class C { @Ensures({ result == 0 }) static int f() { int i = 0; i = i++; return i } }')],
 
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'two-cursor array copy dst[j++] = src[i++]', ok: true,

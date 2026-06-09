@@ -4590,16 +4590,26 @@ value, then the side effect) and **pre**-forms `[operand = operand ± 1, …, �
 new value). All inc/decs are collected and replaced by their operands (`replaceAllIncDec`), pre's hoisted
 before and post's after.
 
-**The safety condition — each inc/dec variable occurs *exactly once* in the statement.** Then the hoist is
-order-independent (the increments are on distinct variables that nothing else reads, so their relative order
-can't matter) and sound. This was *learned the hard way*: the first cut hoisted a single inc/dec
-unconditionally, which was **silently unsound** when the variable was *also read elsewhere* — `x = i++ + i`
-proved `result == 0`, but Java advances `i` mid-statement so the second `i` is `1` and the real value is `1`.
-The once-per-statement check (a complete `countVarOccurrences` traversal) closes that hole *and* — because two
-inc/decs on **distinct** variables each satisfy it — enables `dst[j++] = src[i++]`. A variable used twice
-(`i++ + i`, or the single-index `dst[i] = src[i++]`, where the LHS `i` is a second occurrence) is refused and
-skips loudly; a fully eval-order-aware analysis could admit the latter, but the conservative rule is the safe
-one.
+**The safety condition — two sound routes (`appearsOnceSafe || evalOrderAssignSafe`).** A hoist is sound when
+every other read of an inc/dec'd variable sees the value the hoist gives it. This was *learned the hard way*:
+the first cut hoisted a single inc/dec unconditionally, which was **silently unsound** when the variable was
+*also read after its own increment* — `x = i++ + i` proved `result == 0`, but Java advances `i` mid-statement
+so the second `i` is `1` and the real value is `1`.
+
+- **Route 1 — occurs exactly once** (`appearsOnceSafe`, a complete `countVarOccurrences` traversal). If each
+  inc/dec variable appears only at its own site there is no interaction at all: pre's move before, post's
+  after, in any order. Shape-agnostic. Closes the `i++ + i` hole *and* — distinct variables each satisfy it —
+  enables the two-cursor `dst[j++] = src[i++]`.
+- **Route 2 — evaluation order** (`evalOrderAssignSafe`). Admits the very common single-index `dst[i] =
+  src[i++]`, where `i` appears twice but the hoist is still sound. Restricted to a slice we can order exactly:
+  an assignment `LHS = RHS` built only from left-to-right shapes (vars, constants, arithmetic/subscript
+  `BinaryExpression`s, inc/decs — no calls/properties/ternaries), no inc/dec in the LHS, every inc/dec a
+  *post*-form on a simple var that is not the write target. Java evaluates the LHS index, then the RHS, then
+  stores — so it's safe exactly when, in evaluation order, each post-inc is the **last** occurrence of its
+  variable (every other read is earlier → reads the old value). `i = i++` is excluded (inc var == write
+  target — Java's store clobbers the increment); `i++ + i` fails (the read is *after* the inc).
+
+A pre-form in an assignment RHS, or anything outside both routes, still skips loudly.
 
 The hoist runs at the head of **every** body walk so all consumers agree: the VC passes
 (`BodyEncoder.walkStatements`, `LoopEncoder.symExec`) and the obligation passes (`collectVfObligations` and
