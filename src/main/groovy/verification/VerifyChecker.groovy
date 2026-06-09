@@ -1442,7 +1442,15 @@ class VerifyChecker extends TypeCheckingExtension {
                 new HashSet<String>(), sites)
             for (VfObligation v : sites) dischargeVfObligation(node, v, reqAst)
         } catch (UnsupportedConstructException ignored) {
-            dischargeObligationsHavoc(node, body, reqAst)
+            // Value-flow bailed (a re-assignment — including the `i = i + 1` an expression-position `a[i++]`
+            // expands to — or an unsupported shape). Re-discharge through dischargeRegion, which threads the
+            // preceding straight-line statements (SSA), so an `a[i]` bounds check sees the reaching binding /
+            // bumped index. Falls back to the value-flow-blind pass only if that itself throws.
+            try {
+                dischargeRegion(topStatements(body), reqAst, Collections.<Expression> emptyList(), null)
+            } catch (Throwable t) {
+                dischargeObligationsHavoc(node, body, reqAst)
+            }
         }
     }
 
@@ -1519,6 +1527,10 @@ class VerifyChecker extends TypeCheckingExtension {
     private void collectVfObligations(List<Statement> stmts,
                                       List<Object> steps,
                                       Set<String> assigned, List<VfObligation> out) {
+        // Hoist expression-position `++`/`--` so obligations are scanned on the rewritten access (`a[i]`);
+        // the resulting `i = i+1` re-assignment throws this single-assignment pass out to the havoc pass
+        // (which threads it via `preceding`), exactly as a plain `i = i + 1` already does.
+        stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
             if (st instanceof BlockStatement) {
                 collectVfObligations(((BlockStatement) st).statements, steps, assigned, out)
@@ -2089,6 +2101,10 @@ class VerifyChecker extends TypeCheckingExtension {
                                  List<Expression> assumePos, Expression assumeNeg,
                                  List<Statement> outerPreceding = Collections.<Statement>emptyList()) {
         if (stmts == null) return
+        // Expression-position `++`/`--` (`a[i++]`) → an explicit `[…uses i…, i = i+1]` sequence, so the
+        // index's implicit bounds obligation is collected on `a[i]` and a later access sees the bumped `i`
+        // through `preceding` (the increment statement is now part of it). Matches the VC-side hoist.
+        stmts = Encoder.expandIncDecStatements(stmts)
         for (int i = 0; i < stmts.size(); i++) {
             Statement st = stmts.get(i)
             // The state at this site is everything that ran before it: the statements preceding it in

@@ -561,6 +561,27 @@ static int[] singleton(int n, int x) {
 `result.length == n` proves from the allocation, `result[0] == x` from the store; a store past the length
 (`r[n] = x`) refutes with an `IndexOutOfBounds` repro.
 
+**`++`/`--` in expression position — the array-copy idiom.** A side-effecting `i++` used *inside* an
+expression (here `src[i++]` — read element `i`, then advance the cursor) is supported: it's hoisted to its
+value plus the increment, so the loop invariant carries the copied prefix and the whole copy is proven
+element-for-element:
+
+```groovy
+@Requires({ src != null && dst != null && src.length <= dst.length })
+@Ensures({ (0..<src.length).every { result[it] == src[it] } })
+static int[] copy(int[] src, int[] dst) {
+    int i = 0
+    @Invariant({ 0 <= i && i <= src.length && (0..<i).every { dst[it] == src[it] } })
+    @Decreases({ src.length - i })
+    while (i < src.length) { dst[i] = src[i++] }   // dst[i] = src[i]; i++
+    return dst
+}
+```
+
+The store's bounds discharge from the invariant and `src.length <= dst.length`, and the index increments
+correctly each pass. (One inc/dec per statement: a two-cursor `dst[j++] = src[i++]` is ambiguous to sequence,
+so it skips loudly — use a single index, or split the increments out.)
+
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
 exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and
@@ -1637,9 +1658,10 @@ a coverage metric. In expressions the fragment is:
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
-`++`/`--` both as statements and **in expression position** with a variable target (`x = i++` / `x = ++i` is
-hoisted to its old/new value plus the side effect; Phases 85/86 — only `++`/`--` in *array-index* position
-`a[i++]` stays out and skips loudly), and a single annotated loop — `while`, `do … while` (Phase 88), a classic
+`++`/`--` both as statements and **in expression position** (`x = i++` / `x = ++i` / `a[i++] = v` /
+`x = a[i++]` — the side-effecting inc/dec is hoisted to its old/new value plus the increment, so the array-fill
+loop `while (i < n) a[i++] = 0` verifies and an out-of-bounds `a[i++]` refutes; Phases 85/86), and a single
+annotated loop — `while`, `do … while` (Phase 88), a classic
 `for (init; cond; update)`, or `for (x in xs)` over a named collection, all desugaring to the same machinery
 (Phases 59 & 63; the for-in's index is synthesised and hidden, the loop variable keeps its name; `.each` stays
 outside the fragment and skips loudly). A `do … while` is `B; while (G) B` — its body runs once

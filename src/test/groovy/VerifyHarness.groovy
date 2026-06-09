@@ -7047,7 +7047,71 @@ class VerifyHarness {
         [group: 'P expr inc/dec', name: 'x = i++ claims new value refutes', expect: 'Cannot prove postcondition',
          src: tc('class C { @Ensures({ result == 6 }) static int f() { int i = 5; int x = i++; return x } }')],
 
+        // ---------- ++ / -- in array-index position (a[i++]) ----------
+        // The index's bounds obligation is collected on the rewritten `a[i]`, and a later access sees the
+        // bumped index through the havoc pass's `preceding` thread.
+        [group: 'P expr inc/dec', name: 'a[i++] = v stores at old index', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length >= 1 })
+                        @Ensures({ a[0] == 9 })
+                        static void f(int[] a) { int i = 0; a[i++] = 9 }
+                    }''')],
+        [group: 'P expr inc/dec', name: 'x = a[i++] reads old index', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length >= 1 && a[0] == 7 })
+                        @Ensures({ result == 7 })
+                        static int f(int[] a) { int i = 0; int x = a[i++]; return x }
+                    }''')],
+        [group: 'P expr inc/dec', name: 'a[i++] sequence threads the index', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length >= 2 })
+                        @Ensures({ a[0] == 8 && a[1] == 9 })
+                        static void f(int[] a) { int i = 0; a[i++] = 8; a[i++] = 9 }
+                    }''')],
+        // The array-fill idiom `while (i < n) a[i++] = 0` verifies — the store's bounds discharge from the
+        // invariant + guard, and the index increments correctly each iteration.
+        [group: 'P expr inc/dec', name: 'a[i++] loop array-fill verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && n >= 0 && a.length >= n })
+                        static void f(int[] a, int n) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) { a[i++] = 0 }
+                        }
+                    }''')],
+        // Soundness: an a[i++] store past the length refutes — the bounds obligation sees the real index
+        // (and its diagnostic is anchored to the rewritten `a[i]`'s source position, so it isn't dropped).
+        [group: 'P expr inc/dec', name: 'a[i++] store out of bounds refutes', expect: 'IndexOutOfBounds',
+         src: tc('class C { @Requires({ a != null }) static void f(int[] a) { int i = a.length; a[i++] = 9 } }')],
+
+        // A statement with two inc/decs (`dst[j++] = src[i++]`) is left alone — sequencing several is
+        // ambiguous, so it skips loudly rather than risk mis-ordering (use one index, or split them out).
+        [group: 'P expr inc/dec', name: 'two inc/decs in one statement skip loudly', expect: 'outside fragment',
+         src: tc('''class C {
+                        @Requires({ src != null && dst != null && src.length <= dst.length })
+                        static void copy(int[] src, int[] dst) {
+                            int i = 0, j = 0
+                            @Invariant({ 0 <= i && i <= src.length && i == j })
+                            @Decreases({ src.length - i })
+                            while (i < src.length) { dst[j++] = src[i++] }
+                        }
+                    }''')],
+
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
+        [group: 'README examples', name: 'array copy via dst[i] = src[i++]', ok: true,
+         src: tc('''class C {
+                        @Requires({ src != null && dst != null && src.length <= dst.length })
+                        @Ensures({ (0..<src.length).every { result[it] == src[it] } })
+                        static int[] copy(int[] src, int[] dst) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= src.length &&
+                                         (0..<i).every { dst[it] == src[it] } })
+                            @Decreases({ src.length - i })
+                            while (i < src.length) { dst[i] = src[i++] }
+                            return dst
+                        }
+                    }''')],
         [group: 'README examples', name: 'set merge (union membership)', ok: true,
          src: tc('''class C {
                         @Requires({ p in granted })

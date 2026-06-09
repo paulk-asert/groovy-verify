@@ -4694,11 +4694,22 @@ class Encoder {
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             Object[] l = extractFirstIncDec(be.leftExpression)
-            if (l != null) return [new BinaryExpression((Expression) l[0], be.operation, be.rightExpression), l[1], l[2], l[3]] as Object[]
+            if (l != null) return [stampedBinary((Expression) l[0], be.operation, be.rightExpression, be), l[1], l[2], l[3]] as Object[]
             Object[] r = extractFirstIncDec(be.rightExpression)
-            if (r != null) return [new BinaryExpression(be.leftExpression, be.operation, (Expression) r[0]), r[1], r[2], r[3]] as Object[]
+            if (r != null) return [stampedBinary(be.leftExpression, be.operation, (Expression) r[0], be), r[1], r[2], r[3]] as Object[]
         }
         null
+    }
+
+    /**
+     * A reconstructed BinaryExpression carrying the source position of the node it replaces. Without the
+     * position, an implicit obligation anchored to the synthetic node (e.g. the bounds check on a rewritten
+     * {@code a[i]} from {@code a[i++]}) has its diagnostic *silently dropped* — the Phase-49c trap.
+     */
+    private static BinaryExpression stampedBinary(Expression l, Token op, Expression r, Expression src) {
+        BinaryExpression b = new BinaryExpression(l, op, r)
+        b.setSourcePosition(src)
+        b
     }
 
     /**

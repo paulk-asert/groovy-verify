@@ -4582,19 +4582,25 @@ statement discards — so all four (`i++`/`++i`/`i--`/`--i`) collapse to the sam
 may be a variable, array element (`a[i]++` → an array store), or field. A wrong result refutes. Same
 no-overlap-with-contracts property as Phase 85 (predicates never contain `++`).
 
-**`++`/`--` in expression position — variable target (shipped).** A side-effecting inc/dec used for its
-value (`x = i++`, `a = i++`, `x = ++i`) is **hoisted** out of the enclosing statement into an explicit
-sequence by `Encoder.expandIncDecStatements` (run at the head of `BodyEncoder.walkStatements` and
-`LoopEncoder.symExec`, so straight-line and loop bodies both get it): a **post**-form becomes
+**`++`/`--` in expression position (shipped) — variable target *and* array index.** A side-effecting inc/dec
+used for its value (`x = i++`, `a[i++] = v`, `x = a[i++]`, `x = ++i`) is **hoisted** out of the enclosing
+statement into an explicit sequence by `Encoder.expandIncDecStatements`: a **post**-form becomes
 `[…uses operand…, operand = operand ± 1]` (the old value, then the side effect) and a **pre**-form becomes
 `[operand = operand ± 1, …uses operand…]` (side effect first, new value). `extractFirstIncDec` finds the one
 inc/dec by recursing the `BinaryExpression`/postfix/prefix shapes and replaces it with its operand; a
-statement with more than one inc/dec is left alone (skips loudly rather than risk mis-ordering). So
-`int x = i++` proves `x == old i` and `i` incremented; `x = ++i` proves the new value; a wrong claim refutes;
-and `c = i++` inside a loop body threads correctly through the invariant. **Still out:** `++`/`--` in
-*array-index* position (`a[i++]`) — the index's implicit bounds obligation is collected by a separate
-value-flow/havoc pass that the statement-list hoist doesn't reach, and threading the increment soundly across
-those passes (so a later access sees the bumped index) needs a body-level normalization, deferred.
+statement with more than one inc/dec is left alone (skips loudly rather than risk mis-ordering).
+
+The hoist runs at the head of **every** body walk so all consumers agree: the VC passes
+(`BodyEncoder.walkStatements`, `LoopEncoder.symExec`) and the obligation passes (`collectVfObligations` and
+`dischargeRegion`). The `i = i + 1` re-assignment the hoist introduces throws the single-assignment value-flow
+pass out — so the straight-line fallback was re-pointed from the value-flow-*blind* `dischargeObligationsHavoc`
+to `dischargeRegion`, which threads the preceding statements (SSA), so an `a[i]` bounds check sees the reaching
+`i` and a *later* access sees the bumped index. **Two lessons (both re-learned):** (1) the synthetic rewritten
+`a[i]` must carry a **source position** (`stampedBinary`), or its bounds diagnostic is *silently dropped* — the
+exact Phase-49c trap, and it read as a clean compile (looked sound, was silently unsound) until probed with an
+out-of-bounds case; (2) routing through `dischargeRegion` is strictly more precise than the blind fallback, with
+no regressions. So `a[i++] = v` / `x = a[i++]` store/read at the old index, the `a[i++]` array-fill loop
+verifies, a sequence threads the index, and an out-of-bounds `a[i++]` refutes. Locked by `P expr inc/dec`.
 
 ---
 
