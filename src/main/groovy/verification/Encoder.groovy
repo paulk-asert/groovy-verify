@@ -2820,6 +2820,15 @@ class Encoder {
                     }
                 }
             }
+            // Native idiom: `a.sorted` — the boolean-getter property form of `a.isSorted()` (Groovy 6
+            // GDK on List/object-arrays and the native int[]/long[] overloads). Ascending with ties,
+            // the same axiom as `Sorted.ascending(a)`. Only fires for a recognised array/list receiver
+            // (translateSorted returns null otherwise), so a genuine field/property named `sorted` is
+            // unaffected; placed after the field/object-param handling so those keep precedence.
+            if (prop == 'sorted' && obj instanceof VariableExpression) {
+                Object q = translateSorted('ascending', obj)
+                if (q != null) return q
+            }
             // Phase 79 — a tuple/list factory's named slot accessor (property form): t.v1 / t.vN /
             // t.first / t.second fold to the k-th constructed element. Covers `result.v1` on a returned
             // tuple (result is recorded as a factory by Phase 78) and `Tuple.tuple(a, b).first`.
@@ -3542,6 +3551,25 @@ class Encoder {
             return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
         }
 
+        // Sorted.ascending(a) / descending / strictlyAscending / strictlyDescending — the canonical
+        // sortedness precondition, emitted as a FLAT 2-D axiom ∀ j,k. 0<=j<k<n ⟹ a[j] R a[k] with an
+        // explicit multi-pattern trigger {a[j], a[k]} (see Sorted / forallMultiPattern). Reaches us the
+        // three usual ways (bare import, FQN in a re-parsed @Invariant, resolved ClassExpression in a body).
+        boolean isSortedClass = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sorted') ||
+                                (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sorted') ||
+                                (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Sorted')
+        if (isSortedClass && args.size() == 1) {
+            Object q = translateSorted(m, args.get(0))
+            if (q != null) return q
+        }
+        // Native idiom: `a.isSorted()` (Groovy 6 GDK on List/object-arrays plus the native int[]/long[]
+        // overloads) — the receiver IS the array, ascending with ties (GDK semantics). The
+        // property form `a.sorted` (the boolean getter) is handled in translate(PropertyExpression).
+        if (m == 'isSorted' && args.isEmpty()) {
+            Object q = translateSorted('ascending', recv)
+            if (q != null) return q
+        }
+
         // Phase 74 — Range.containsWithinBounds(v): Groovy's *bounds-only* range membership (it ignores
         // the step — that is exactly what separates it from `contains`). Lowers to the inclusive interval
         // predicate min(lo,hi) <= v <= max(lo,hi) in v's sort — exact, symbolic, no enumeration.
@@ -4202,6 +4230,49 @@ class Encoder {
         Expression bodyExpr = singleExprOf(clo?.code)
         if (pname == null || bodyExpr == null) return null
         return emitForall(pname, translate(lo), translate(hi), bodyExpr, null)
+    }
+
+    /**
+     * {@code Sorted.ascending(a)} (and {@code descending} / {@code strictlyAscending} /
+     * {@code strictlyDescending}) over a bare array/list variable — the canonical sortedness
+     * precondition, emitted as the flat two-variable axiom
+     * {@code ∀ j,k. 0 <= j < k < n ⇒ a[j] R a[k]} with the multi-pattern trigger {@code {a[j], a[k]}}
+     * (via {@link SmtBackend#forallMultiPattern}). This pins the instantiation the hand-nested
+     * {@code every} leaves to Z3's auto-pattern, so the random-access "gap" fact ({@code a[i] R a[mid]})
+     * fires in one deterministic step. Pure sugar over the asserted fact — no new assumption.
+     *
+     * <p>The element comparison ({@code <=} / {@code <}) rides Z3's numeric order, so an Int or exact-Real
+     * element sort verifies and any other (e.g. String) cleanly skips via the {@code try} — the term is
+     * only built here, never asserted, so a sort-mismatch throw can't corrupt the session.
+     */
+    private Object translateSorted(String m, Expression arg) {
+        if (!(arg instanceof VariableExpression)) return null
+        boolean strict, ascending
+        switch (m) {
+            case 'ascending':          ascending = true;  strict = false; break
+            case 'descending':         ascending = false; strict = false; break
+            case 'strictlyAscending':  ascending = true;  strict = true;  break
+            case 'strictlyDescending': ascending = false; strict = true;  break
+            default: return null
+        }
+        String name = ((VariableExpression) arg).name
+        try {
+            Object arr = arrayFor(name)
+            Object hi = sizeOf(name)
+            if (arr == null || hi == null) return null
+            Object jv = session.boundIntVar('sortJ$q' + (quantCounter++))
+            Object kv = session.boundIntVar('sortK$q' + (quantCounter++))
+            Object aj = session.select(arr, jv)
+            Object ak = session.select(arr, kv)
+            if (aj == null || ak == null) return null
+            Object range = session.and([session.le(session.intLit(0L), jv), session.lt(jv, kv), session.lt(kv, hi)])
+            Object rel = ascending ? (strict ? session.lt(aj, ak) : session.le(aj, ak))
+                                   : (strict ? session.lt(ak, aj) : session.le(ak, aj))
+            Object body = session.implies(range, rel)
+            return session.forallMultiPattern([jv, kv], body, [aj, ak])
+        } catch (Exception ignored) {
+            return null   // unmodelled element sort / no size oracle → honest skip
+        }
     }
 
     /**

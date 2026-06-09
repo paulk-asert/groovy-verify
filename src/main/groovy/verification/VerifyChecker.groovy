@@ -58,6 +58,7 @@ import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.ThrowStatement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.SourceUnit
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor
 import org.codehaus.groovy.transform.stc.TypeCheckingExtension
@@ -2085,11 +2086,17 @@ class VerifyChecker extends TypeCheckingExtension {
      * </ul>
      */
     private void dischargeRegion(List<Statement> stmts, Expression reqAst,
-                                 List<Expression> assumePos, Expression assumeNeg) {
+                                 List<Expression> assumePos, Expression assumeNeg,
+                                 List<Statement> outerPreceding = Collections.<Statement>emptyList()) {
         if (stmts == null) return
         for (int i = 0; i < stmts.size(); i++) {
             Statement st = stmts.get(i)
-            List<Statement> preceding = stmts.subList(0, i)
+            // The state at this site is everything that ran before it: the statements preceding it in
+            // any ENCLOSING region (e.g. an `int mid = …` before the `if`) plus those preceding it here.
+            // Without the enclosing prefix, an obligation nested in an `else if` branch would lose the
+            // `mid` binding (havoc → spurious IndexOutOfBounds — the binary-search false positive).
+            List<Statement> preceding = new ArrayList<Statement>(outerPreceding)
+            preceding.addAll(stmts.subList(0, i))
             if (st instanceof IfStatement) {
                 IfStatement ifs = (IfStatement) st
                 // Obligations in the if-condition itself: discharge with short-circuit awareness —
@@ -2097,12 +2104,12 @@ class VerifyChecker extends TypeCheckingExtension {
                 dischargeExpression(ifs.booleanExpression, reqAst, assumePos, assumeNeg, preceding)
                 List<Expression> thenAssume = new ArrayList<Expression>(assumePos)
                 thenAssume.add(ifs.booleanExpression)
-                dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg)
+                dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg, preceding)
                 Statement elseBlk = ifs.elseBlock
                 if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
                     List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
                     elseAssume.add(new NotExpression(ifs.booleanExpression))
-                    dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg)
+                    dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg, preceding)
                 }
                 continue
             }
@@ -3230,6 +3237,10 @@ class VerifyChecker extends TypeCheckingExtension {
         // {@code 'inBody'}. The body's preservation/progress walks then interleave
         // {@code ¬guard} for each exit (handled by {@link #symExecBodyWithExits}).
         if (site.spec.body != null) {
+            // Phase 49c — first lift any `return` nested in a tail-position if/else chain into the
+            // top-level `if (pathCond) return e` shape, so the binary-search idiom (`else return mid`)
+            // is handled by the same Slice B machinery below.
+            site.spec.body = desugarTailReturns(site.spec.body)
             partitionEarlyExits(site.spec.body, 'inBody', site.earlyExits)
         }
         return site
@@ -3291,6 +3302,123 @@ class VerifyChecker extends TypeCheckingExtension {
             return ((ReturnStatement) then).expression
         }
         null
+    }
+
+    /**
+     * Phase 49c — lift a `return` nested in an if/else(-if) chain in TAIL position of the loop body
+     * into the top-level {@code if (pathCond) return e} shape Phase 49b ({@link #partitionEarlyExits})
+     * already handles. The textbook binary search ends its body with
+     * <pre>
+     *   if (a[mid] &lt; value) low = mid + 1
+     *   else if (value &lt; a[mid]) high = mid
+     *   else return mid
+     * </pre>
+     * whose return is the deepest {@code else} — invisible to the simple {@code if (g) return e}
+     * partition, so the whole loop was skipped loudly. We rewrite the final if-chain into a lifted
+     * {@code if (pathCond) return e} per returning leaf ({@code pathCond} = the conjunction of branch
+     * guards reaching it) followed by the same chain with each returning leaf replaced by an empty
+     * statement (the residual the no-exit walks execute). Sound: the lifted exit fires under exactly the
+     * leaf's path condition, and on that path the method has returned, so the residual's empty leaf
+     * never runs. Conservative: only a tail-position chain whose returning leaves are <em>bare</em>
+     * {@code return e} (no preceding statements in the leaf) is rewritten; any other shape is left
+     * untouched so {@link LoopEncoder} still rejects it as an honest skip.
+     */
+    private static List<Statement> desugarTailReturns(List<Statement> body) {
+        if (body == null || body.isEmpty()) return body
+        Statement last = body.get(body.size() - 1)
+        if (!(last instanceof IfStatement) || !statementContainsReturn(last)) return body
+        List<Object[]> leaves = new ArrayList<Object[]>()   // [Expression pathCond, Expression retExpr|null]
+        if (!enumerateChainLeaves((IfStatement) last, new ArrayList<Expression>(), leaves)) return body
+        List<Statement> lifted = new ArrayList<Statement>()
+        for (Object[] leaf : leaves) {
+            Expression ret = (Expression) leaf[1]
+            if (ret == null) continue   // a continuing leaf — stays only in the residual
+            IfStatement liftedIf = new IfStatement(new BooleanExpression((Expression) leaf[0]),
+                new ReturnStatement(ret), EmptyStatement.INSTANCE)
+            // Stamp a real source position (the tail chain's) — a diagnostic anchored to a synthetic
+            // node with no line info is silently dropped by the static type checker.
+            liftedIf.setSourcePosition(ret instanceof ASTNode ? (ASTNode) ret : last)
+            lifted.add(liftedIf)
+        }
+        if (lifted.isEmpty()) return body
+        List<Statement> out = new ArrayList<Statement>(body.subList(0, body.size() - 1))
+        out.addAll(lifted)
+        out.add(stripReturns(last))
+        out
+    }
+
+    /**
+     * Walk an if/else chain collecting each leaf's path condition (conjoined) and, for a leaf that is a
+     * <em>bare</em> {@code return e}, its return expression (else null for a continuing leaf). Returns
+     * false — caller bails, leaving the body untouched — if any leaf that contains a return isn't a bare
+     * return (statements precede it, or it's nested in a non-if block), which is outside this slice.
+     */
+    private static boolean enumerateChainLeaves(Statement stmt, List<Expression> accConds, List<Object[]> out) {
+        if (stmt instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) stmt
+            List<Expression> thenConds = new ArrayList<Expression>(accConds); thenConds.add(ifs.booleanExpression)
+            if (!enumerateChainLeaves(ifs.ifBlock, thenConds, out)) return false
+            List<Expression> elseConds = new ArrayList<Expression>(accConds)
+            elseConds.add(new NotExpression(ifs.booleanExpression))
+            Statement elseBlk = ifs.elseBlock
+            if (elseBlk == null || elseBlk instanceof EmptyStatement) {
+                out.add([conjoin(elseConds), null] as Object[])      // implicit empty else → continuing leaf
+                return true
+            }
+            return enumerateChainLeaves(elseBlk, elseConds, out)
+        }
+        Statement leaf = stmt
+        if (leaf instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) leaf).statements
+            if (ss.size() == 1) leaf = ss.get(0)              // unwrap `{ return e }` / `{ x = … }`
+            else if (ss.any { statementContainsReturn(it) }) return false   // multi-stmt leaf with a return
+        }
+        if (leaf instanceof ReturnStatement) {
+            out.add([conjoin(accConds), ((ReturnStatement) leaf).expression] as Object[])
+            return true
+        }
+        if (statementContainsReturn(leaf)) return false       // a return buried somewhere unexpected
+        out.add([conjoin(accConds), null] as Object[])         // ordinary continuing leaf
+        true
+    }
+
+    /** Conjoin guards into {@code c1 && c2 && …} (left-folded); a single guard is returned as-is. */
+    private static Expression conjoin(List<Expression> conds) {
+        Expression acc = null
+        for (Expression c : conds) {
+            acc = (acc == null) ? c : new BinaryExpression(acc, Token.newSymbol(Types.LOGICAL_AND, -1, -1), c)
+        }
+        acc
+    }
+
+    /** Copy of an if/else chain with every bare-{@code return} leaf replaced by an empty statement. */
+    private static Statement stripReturns(Statement stmt) {
+        if (stmt instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) stmt
+            Statement nElse = ifs.elseBlock == null ? null : stripReturns(ifs.elseBlock)
+            return new IfStatement(ifs.booleanExpression, stripReturns(ifs.ifBlock),
+                nElse == null ? EmptyStatement.INSTANCE : nElse)
+        }
+        if (stmt instanceof ReturnStatement) return EmptyStatement.INSTANCE
+        if (stmt instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) stmt).statements
+            if (ss.size() == 1 && ss.get(0) instanceof ReturnStatement) return EmptyStatement.INSTANCE
+        }
+        stmt
+    }
+
+    /** True if {@code st} contains a {@code return} anywhere in its if/block structure. */
+    private static boolean statementContainsReturn(Statement st) {
+        if (st == null) return false
+        if (st instanceof ReturnStatement) return true
+        if (st instanceof IfStatement) {
+            return statementContainsReturn(((IfStatement) st).ifBlock) ||
+                   statementContainsReturn(((IfStatement) st).elseBlock)
+        }
+        if (st instanceof BlockStatement) {
+            return ((BlockStatement) st).statements.any { statementContainsReturn(it) }
+        }
+        false
     }
 
     private static List<Statement> topStatements(Statement body) {
@@ -3488,6 +3616,10 @@ class VerifyChecker extends TypeCheckingExtension {
                    (ifs.elseBlock == null || collectWritesStmt(ifs.elseBlock, ws))
         }
         if (st instanceof ExpressionStatement) return collectWritesExpr(((ExpressionStatement) st).expression, ws)
+        // A `return e` exits the loop — it writes nothing for the next iteration beyond whatever `e`
+        // evaluates (pure in-fragment). Recognising it keeps the write-set finite for bodies with
+        // early returns (e.g. the desugared binary search), so loop-stable @Requires aren't dropped.
+        if (st instanceof ReturnStatement) return collectWritesExpr(((ReturnStatement) st).expression, ws)
         false   // unknown statement → bail
     }
 

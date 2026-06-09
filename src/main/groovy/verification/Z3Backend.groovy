@@ -861,6 +861,23 @@ class Z3Session implements SmtSession {
     }
 
     @Override
+    Object forallMultiPattern(List<Object> bound, Object body, List<Object> patternTerms) {
+        Expr[] b = bound.collect { (Expr) it } as Expr[]
+        Pattern[] pats = null
+        if (patternTerms != null && !patternTerms.isEmpty()) {
+            List<Expr> terms = new ArrayList<Expr>()
+            for (Object t : patternTerms) {
+                Expr e = (Expr) t
+                if (containsForbiddenPattern(e)) { terms = null; break }   // can't form a valid pattern → auto
+                terms.add(e)
+            }
+            // One multi-pattern covering all bound vars at once (the whole point — see SmtBackend doc).
+            if (terms != null && !terms.isEmpty()) pats = [ctx.mkPattern(terms as Expr[])] as Pattern[]
+        }
+        ctx.mkForall(b, (Expr) body, 1, pats, (Expr[]) null, (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null)
+    }
+
+    @Override
     Object exists(List<Object> bound, Object body, List<Object> triggers) {
         Expr[] b = bound.collect { (Expr) it } as Expr[]
         ctx.mkExists(b, (Expr) body, 1, patternsFor(triggers, b), (Expr[]) null, (com.microsoft.z3.Symbol) null, (com.microsoft.z3.Symbol) null)

@@ -3515,6 +3515,55 @@ stacked in-body returns.
 returns nested inside other if-branches or for-loops. The nested form would need the
 partition logic to recurse, which adds complexity for a relatively rare shape.
 
+## Phase 49c (Slice C) — Tail-position nested early-return; binary search verbatim  *(shipped)*
+
+Dafny's flagship tutorial proof, **binary search**, now ports structure-for-structure (`else return mid`
+inside the loop, `return -1` after) and verifies — both postcondition directions, the excluded-region
+universal preserved across the narrowing, every `a[mid]` bound, and termination. (This is the development
+diary behind the README's binary-search example; the README itself keeps only the comparison-relevant
+result and the one authoring subtlety.) Getting there took three fixes, and two of the things that
+*looked* like blockers weren't:
+
+1. **Sortedness transitivity — the recognised `Sorted` predicate.** The *natural* one-dimensional port of
+   `sorted` (adjacent form `(1..<a.length).every { a[it - 1] <= a[it] }`) **times out** in preservation:
+   narrowing `low := mid + 1` needs `a[i] ≤ a[mid] < value` for *all* `i ≤ mid`, which is range
+   transitivity — induction, not one instantiation (the same wall the insertion-sort proof crosses only
+   via the explicit recursive ghost lemma `maxBound`, Phase 14). The fix is a recognised sortedness
+   predicate emitting the *two-dimensional* axiom `∀ j,k. 0 ≤ j < k < n ⟹ a[j] ≤ a[k]` with an explicit
+   multi-pattern trigger `{a[j], a[k]}`, so the gap fact `a[i] ≤ a[mid]` fires in a single deterministic
+   instantiation the moment both selects are ground. Written natively as `a.isSorted()` (Groovy 6 GDK,
+   native `int[]`/`long[]` overloads; `a.sorted` property too) or explicitly as `Sorted.ascending(a)` /
+   `.descending` / `.strictlyAscending` (`verification.Sorted`, a sibling of `Forall`/`Sets`). Without it,
+   preservation refutes on a concrete unsorted counterexample (`[7719, 7718]`).
+
+2. **A precision bug in obligation discharge — the real culprit.** The `a[mid]` bounds obligation inside
+   the `else if (value < a[mid])` branch was checked with `mid` **havoced**, producing a spurious
+   `IndexOutOfBounds` with the tell-tale `mid = -1`. Cause: when the loop-body obligation walker recursed
+   into an `else if`, it restarted its "preceding statements" list empty, dropping the `int mid = …`
+   declaration that ran before the `if`. Threading the enclosing prefix through the recursion fixes it —
+   and the fix is general (any obligation nested in an `else if` now sees the bindings that precede the
+   chain), not binary-search-specific.
+
+3. **The midpoint `intdiv` — a *non*-issue.** An earlier reading fingered integer division in the loop
+   region as the blocker; that was wrong. `mid = low + (high - low).intdiv(2)` models fine inside a loop —
+   the `mid = -1` counterexample that *looked* like a havoced division was the else-if-discharge bug
+   above. Worth recording as a caution: a havoced-variable counterexample points at *where the binding was
+   lost*, which isn't always the operation it's attached to.
+
+The real new capability was **lifting the nested `return`.** Phase 49b recognised only a `return` at the
+*top* of the loop body (`if (g) return e`); binary search's `else return mid` is the deepest leaf of an
+`if`/`else if` chain, which used to skip the whole loop loudly. Phase 49c desugars a tail-position chain by
+lifting each returning leaf into the top-level shape — `if (pathCond) return e`, where `pathCond` is the
+conjunction of branch guards reaching it (`!(a[mid] < value) && !(value < a[mid])` here) — followed by the
+same chain with the return replaced by an empty statement. The existing machinery then checks the lifted
+exit's `@Ensures` on its own path and excludes it from preservation, unchanged.
+
+**Caution (design diary):** the lifted node is synthetic, and a diagnostic anchored to a node with no
+source position is *silently dropped* — so a wrong exit spec falsely "verified" until the node was stamped
+with a real position. The `else return mid` claiming `a[result] != value` now refutes, as it must. A
+`return` nested in a *non*-tail position is still out of fragment — it skips loudly, never silently. So
+Dafny's verbatim binary search verifies, structure-for-structure.
+
 ## Phase 50 — Groovy-faithful division / modulo  *(shipped)*
 
 Phase 48 mapped the `/` and `%` *operators* to integer `mkDiv` / `mkMod` (Euclidean) — a *Java*
@@ -4303,6 +4352,15 @@ So a method may return `[a, b, …]` and have `@Ensures` reference its elements:
 (`sum_product`)** now ports as `return [sum, product]` with `@Ensures({ result[0] == xs.sum() && result[1]
 == xs.inject(1){a,x->a*x} })` (each element proven against its aggregate; a wrong element claim refutes) —
 where it previously had to collapse to `s + p` for lack of list/tuple returns.
+
+**`int[]`-typed returns ride this unchanged (no code, locked by tests).** A method declared to return `int[]`
+whose body is a list literal `[s, p]` verifies the same way: Groovy implicitly coerces the literal to the
+array, and `tryRecordFactoryAssign` keys off the return *expression* (a `ListExpression`), so `result` binds
+as a list factory regardless of the declared array type — `result[k]` and `result.length` fold identically.
+The `sum_product` flagship therefore also ports with an `int[]` return. (Probed this slice and found it
+already worked; promoted to permanent `P78 int[] return` tests + a crisp size-pin refute. *Genuinely* missing
+array returns are the constructed forms — `new int[]{…}` (`ArrayExpression`, unrecognised) and the sized
+`new int[n]` (fresh symbolic array, zero-filled) — left as the next array slices.)
 
 **Still out (the `Tuple` layer, next):** *heterogeneous* fixed products with **named** accessors
 (`.v1`/`.vN`/`.first`/`.second`), `new TupleN(...)` / `Tuple.tuple(...)` construction, and **multiple

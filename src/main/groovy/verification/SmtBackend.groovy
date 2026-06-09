@@ -452,6 +452,17 @@ interface SmtSession extends AutoCloseable {
     Object forall(List<Object> bound, Object body, List<Object> triggers)
 
     /**
+     * Universally quantify {@code body} over {@code bound} using ONE multi-pattern built from all of
+     * {@code patternTerms} together — every term must match simultaneously for an instantiation. This
+     * is the shape a multi-variable axiom needs: sortedness {@code ∀ j,k. a[j] <= a[k]} must trigger on
+     * the pair {@code {a[j], a[k]}}, because a per-term pattern (the {@link #forall} default) covers only
+     * one of {j, k} and Z3 rejects a pattern that leaves a bound variable uncovered — forcing the outer
+     * variable onto auto-pattern/MBQI. Pinning both terms makes the random-access "gap" instantiation
+     * (e.g. {@code a[i] <= a[mid]}) fire deterministically the moment both selects are ground.
+     */
+    Object forallMultiPattern(List<Object> bound, Object body, List<Object> patternTerms)
+
+    /**
      * Existentially quantify {@code body} over {@code bound} — the mirror of {@link #forall},
      * for the bounded-existential shape {@code ∃ i. lo <= i < hi ∧ matrix} (e.g. {@code a.any { … }},
      * and precise {@code xs.contains(y)}). {@code triggers} are the instantiation patterns.
