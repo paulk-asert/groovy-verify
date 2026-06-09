@@ -4603,13 +4603,15 @@ so the second `i` is `1` and the real value is `1`.
 - **Route 2 — evaluation order** (`evalOrderAssignSafe`). Admits the very common single-index `dst[i] =
   src[i++]`, where `i` appears twice but the hoist is still sound. Restricted to a slice we can order exactly:
   an assignment `LHS = RHS` built only from left-to-right shapes (vars, constants, arithmetic/subscript
-  `BinaryExpression`s, inc/decs — no calls/properties/ternaries), no inc/dec in the LHS, every inc/dec a
-  *post*-form on a simple var that is not the write target. Java evaluates the LHS index, then the RHS, then
-  stores — so it's safe exactly when, in evaluation order, each post-inc is the **last** occurrence of its
-  variable (every other read is earlier → reads the old value). `i = i++` is excluded (inc var == write
-  target — Java's store clobbers the increment); `i++ + i` fails (the read is *after* the inc).
+  `BinaryExpression`s, inc/decs — no calls/properties/ternaries), no inc/dec in the LHS, every inc/dec on a
+  simple var that is not the write target. Java evaluates the LHS index, then the RHS, then stores, so the
+  check is per inc/dec in evaluation order: a **post** (`i++`, hoists *after*, all reads see the old value)
+  must be the **last** occurrence of its variable — `dst[i] = src[i++]` ✓ (LHS `i` is earlier), `x = i++ + i`
+  ✗ (a later read wants the new value); a **pre** (`++i`, hoists *before*, all reads see the new value) must
+  be the **first** occurrence — `x = ++i + i` ✓, `dst[i] = src[++i]` ✗ (the LHS index, evaluated first, must
+  read the old value). `i = i++` / `i = ++i` are excluded (inc var == write target — Java's store clobbers).
 
-A pre-form in an assignment RHS, or anything outside both routes, still skips loudly.
+Anything outside both routes still skips loudly.
 
 The hoist runs at the head of **every** body walk so all consumers agree: the VC passes
 (`BodyEncoder.walkStatements`, `LoopEncoder.symExec`) and the obligation passes (`collectVfObligations` and

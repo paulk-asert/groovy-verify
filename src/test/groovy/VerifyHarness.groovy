@@ -7114,6 +7114,17 @@ class VerifyHarness {
         // target, so the hoist refuses it (a hoisted `i = i+1` after would wrongly make it 1): skips loudly.
         [group: 'P expr inc/dec', name: 'i = i++ (self-assign clobber) skips loudly', expect: 'outside fragment',
          src: tc('class C { @Ensures({ result == 0 }) static int f() { int i = 0; i = i++; return i } }')],
+        // Pre-increment in the RHS: `++i` hoists *before*, so every read sees the new value. `x = ++i + i`
+        // (i: 5 -> 6, then 6 + 6) is sound because `++i` is the FIRST occurrence: verifies result == 12.
+        [group: 'P expr inc/dec', name: 'x = ++i + i (pre, first occurrence) verifies', ok: true,
+         src: tc('class C { @Ensures({ result == 12 }) static int f() { int i = 5; int x = ++i + i; return x } }')],
+        // Pre-increment guard: `dst[i] = src[++i]` — Java evaluates the LHS index `i` (old) BEFORE the RHS
+        // `++i`. Hoisting `++i` before would make the LHS index read the new value (wrong target), so the
+        // pre-inc is NOT the first occurrence and the hoist refuses it: skips loudly.
+        [group: 'P expr inc/dec', name: 'dst[i] = src[++i] (read before pre) skips loudly', expect: 'outside fragment',
+         src: tc('''class C { @Ensures({ result == 99 }) static int f() {
+                        int[] dst = new int[10]; int[] src = new int[10]; src[4] = 99; int i = 3
+                        dst[i] = src[++i]; return dst[3] } }''')],
 
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'two-cursor array copy dst[j++] = src[i++]', ok: true,

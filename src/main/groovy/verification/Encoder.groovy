@@ -4694,15 +4694,21 @@ class Encoder {
     }
 
     /**
-     * Route 2 — evaluation-order analysis for the common idiom `dst[i] = src[i++]`, where a variable appears
-     * more than once but the hoist is still sound. Restricted to a slice we can reason about exactly:
-     * an assignment {@code LHS = RHS} with (a) only sub-expressions whose evaluation order is plain
-     * left-to-right (variables, constants, arithmetic/subscript {@code BinaryExpression}s, inc/decs — no
-     * method calls, properties or ternaries), (b) no inc/dec in the LHS, and (c) every inc/dec a *post*-form on
-     * a simple variable that is not the assignment target. Java evaluates the LHS index, then the RHS, then
-     * stores — so an LHS occurrence of {@code i} reads the *old* value, exactly like the hoisted-after `i++`.
-     * The check is then: in evaluation order each post-inc is the *last* occurrence of its variable, so every
-     * other read sees the old value and hoisting the increment to the end preserves it.
+     * Route 2 — evaluation-order analysis for idioms like `dst[i] = src[i++]`, where a variable appears more
+     * than once but the hoist is still sound. Restricted to a slice we can reason about exactly: an assignment
+     * {@code LHS = RHS} with (a) only sub-expressions whose evaluation order is plain left-to-right (variables,
+     * constants, arithmetic/subscript {@code BinaryExpression}s, inc/decs — no method calls, properties or
+     * ternaries), (b) no inc/dec in the LHS, and (c) every inc/dec on a simple variable that is not the
+     * assignment target. Java evaluates the LHS index, then the RHS, then stores. The check, per inc/dec, in
+     * evaluation order:
+     * <ul>
+     *   <li><b>post</b> ({@code i++}) hoists to *after* the statement (every read sees the old value), so it
+     *       must be the <em>last</em> occurrence of its variable — e.g. {@code dst[i] = src[i++]} (the LHS `i`
+     *       is earlier, reads old), but not {@code x = i++ + i} (a later read would want the new value).</li>
+     *   <li><b>pre</b> ({@code ++i}) hoists to *before* the statement (every read sees the new value), so it
+     *       must be the <em>first</em> occurrence — e.g. {@code x = ++i + i}, but not {@code dst[i] = src[++i]}
+     *       (the LHS index `i`, evaluated first, must read the old value).</li>
+     * </ul>
      */
     private static boolean evalOrderAssignSafe(Expression e, List<Object[]> incs) {
         Expression lhs, rhs
@@ -4716,21 +4722,23 @@ class Encoder {
         if (!onlySafeShapes(lhs) || !onlySafeShapes(rhs)) return false   // unknown eval order → bail
         if (anyIncDec(lhs)) return false                          // the slice: inc/decs live in the RHS only
         // The assignment target variable (if a simple var): excluded from reads, and never itself inc/dec'd
-        // here — `i = i++` would clobber (Java's store wins; a hoisted `i = i+1` after would not).
+        // here — `i = i++` / `i = ++i` would clobber (Java's store wins; the hoisted increment would not).
         String target = (lhs instanceof VariableExpression) ? ((VariableExpression) lhs).name : null
         for (Object[] inc : incs) {
-            if ((boolean) inc[1]) return false                    // pre-form in an assignment RHS → not this slice
             if (((VariableExpression) inc[0]).name == target) return false
         }
         // Evaluation-order occurrences (reads + inc/dec operands), skipping the simple-var write target.
-        List<Object[]> ev = new ArrayList<Object[]>()             // each: [varName, isIncDecOperand]
+        List<Object[]> ev = new ArrayList<Object[]>()             // each: [varName, kind] (0 read, 1 post, 2 pre)
         if (!(lhs instanceof VariableExpression)) evalOrderOccurrences(lhs, ev)  // array LHS: its index reads count
         evalOrderOccurrences(rhs, ev)
         for (int p = 0; p < ev.size(); p++) {
-            if (!((boolean) ev[p][1])) continue
+            int kind = (int) ev[p][1]
+            if (kind == 0) continue
             String v = (String) ev[p][0]
-            for (int q = p + 1; q < ev.size(); q++) {
-                if (ev[q][0] == v) return false                   // a later read would see the NEW value → unsafe
+            if (kind == 1) {                                      // post-inc hoists *after* — must be the LAST read
+                for (int q = p + 1; q < ev.size(); q++) if (ev[q][0] == v) return false
+            } else {                                              // pre-inc hoists *before* — must be the FIRST read
+                for (int q = 0; q < p; q++) if (ev[q][0] == v) return false
             }
         }
         true
@@ -4747,13 +4755,13 @@ class Encoder {
         false
     }
 
-    /** Append {@code [varName, isIncDecOperand]} for each variable occurrence in {@code e}, in evaluation order. */
+    /** Append {@code [varName, kind]} (0 read, 1 post-inc, 2 pre-inc) for each occurrence in evaluation order. */
     private static void evalOrderOccurrences(Expression e, List<Object[]> ev) {
-        if (e instanceof VariableExpression) { ev.add([((VariableExpression) e).name, false] as Object[]); return }
+        if (e instanceof VariableExpression) { ev.add([((VariableExpression) e).name, 0] as Object[]); return }
         if (e instanceof ConstantExpression) return
         if (isIncDec(e)) {
             Expression op = (Expression) incDecParts(e)[1]
-            if (op instanceof VariableExpression) ev.add([((VariableExpression) op).name, true] as Object[])
+            if (op instanceof VariableExpression) ev.add([((VariableExpression) op).name, (e instanceof PrefixExpression) ? 2 : 1] as Object[])
             else evalOrderOccurrences(op, ev)
             return
         }
