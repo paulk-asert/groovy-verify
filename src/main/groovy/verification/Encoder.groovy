@@ -3555,6 +3555,16 @@ class Encoder {
             if (lH != null && rH != null) return session.stringConcat(lH, rH)
         }
 
+        // Phase 47j — Groovy's match operator `s ==~ regex` is a whole-string match, semantically exactly
+        // `s.matches(regex)`. Route it to the same `str.in_re` lowering: a String left and a regex literal
+        // the inline parser handles. (`=~`, the *find* operator, returns a Matcher and stays out.)
+        if (op == Types.MATCH_REGEX) {
+            Object strSort = session.declareSort('String')
+            Object lH = translateInSort(be.leftExpression, strSort)
+            Object re = parseRegexLiteral(be.rightExpression)
+            return (lH != null && re != null) ? session.stringInRegex(lH, re) : null
+        }
+
         // Phase 61 — BigDecimal arithmetic & comparison via Z3's exact Real sort. Fires when an
         // operand is a decimal (literal or BigDecimal-typed name) or the operator is `/` (Groovy's
         // `/` on integers is BigDecimal division: 5 / 2 == 2.5). Int operands are coerced via
@@ -3652,6 +3662,12 @@ class Encoder {
                 // decide" — honest, never silent), and the suite-wide tryFoldConstant in
                 // Phase 8a still folds closed numeric subexpressions before reaching here.
                 return session.times(L, R)
+            case Types.POWER:
+                // Phase 93 — `base ** exp` exponentiation. Z3 has no variable-exponent power, so this is
+                // an uninterpreted `pow$(base, exp)` (no value axioms): `result == base ** exp` proves by
+                // congruence, value properties stay "could not decide". Groovy's `**` returns Number, so
+                // the int surface is `(base ** exp).intValue()` (translateMethodCall's intValue handler).
+                return session.pow(L, R)
             case Types.COMPARE_EQUAL:       return session.eq(L, R)
             case Types.COMPARE_NOT_EQUAL:   return session.ne(L, R)
             case Types.COMPARE_LESS_THAN:           return session.lt(L, R)
@@ -3752,6 +3768,14 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // Phase 93 — `.intValue()` / `.longValue()` on an integral value is identity in the math-int model.
+        // The motivating case is exponentiation: Groovy's `**` returns Number, so `(base ** exp).intValue()`
+        // is how a power reaches an int context; translating the receiver yields the `pow$` term directly.
+        if ((m == 'intValue' || m == 'longValue') && args.isEmpty()) {
+            Object r = translate(recv)
+            if (r != null) return r
+        }
 
         // Phase 89 — `a.is(b)` reference identity (the method form of `a === b`): identity equality
         // when both receiver and argument are object-parameter references.

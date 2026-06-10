@@ -207,7 +207,7 @@ class Reporter {
      * had a runtime overflow check (e.g. via {@code Math.addExact}/{@code multiplyExact}). The
      * obligation echoes the {@code INT_MIN..INT_MAX} range the result must satisfy.
      */
-    static String formatOverflow(String exprText, String op, CheckResult result) {
+    static String formatOverflow(String exprText, String op, int width, CheckResult result) {
         String kindWord =
             (op == '+')   ? "addition" :
             (op == '-')   ? "subtraction" :
@@ -215,14 +215,16 @@ class Reporter {
             (op == 'neg') ? "negation" :
             (op == 'div') ? "division" :
                             "arithmetic"
-        // Division's failure case is the specific pair Integer.MIN_VALUE / -1, not a general
-        // result-out-of-range — phrase the obligation accordingly so the diagnostic reads true.
+        // Phase 44c — the bound follows the operation's promoted width (32-bit int, 64-bit long).
+        String typeName = width == 64 ? 'Long' : 'Integer'
+        // Division's failure case is the specific pair MIN_VALUE / -1, not a general result-out-of-range —
+        // phrase the obligation accordingly so the diagnostic reads true.
         String obligation = (op == 'div') ?
-            "!((${exprText}) is Integer.MIN_VALUE / -1)" :
-            "Integer.MIN_VALUE <= (${exprText}) && (${exprText}) <= Integer.MAX_VALUE"
-        implicit("Possible ArithmeticException: ${kindWord} overflows 32-bit signed range",
+            "!((${exprText}) is ${typeName}.MIN_VALUE / -1)" :
+            "${typeName}.MIN_VALUE <= (${exprText}) && (${exprText}) <= ${typeName}.MAX_VALUE"
+        implicit("Possible ArithmeticException: ${kindWord} overflows ${width}-bit signed range",
             obligation,
-            "Could not decide ${kindWord} stays in 32-bit range", result)
+            "Could not decide ${kindWord} stays in ${width}-bit range", result)
     }
 
     static String formatImplicitSkipped(String kind, String reason) {

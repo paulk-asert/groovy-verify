@@ -4314,6 +4314,57 @@ class VerifyHarness {
                         @Ensures({ result.matches("[A-Z]+") })
                         static String echo(String s) { s }
                     }''')],
+        [group: 'P47j ==~', name: '==~ result reflects the match', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == (s ==~ /[a-z]+/) })
+                        static boolean f(String s) { s ==~ /[a-z]+/ }
+                    }''')],
+        [group: 'P47j ==~', name: '==~ provably equivalent to .matches', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ (s ==~ /[a-z]+/) == s.matches("[a-z]+") })
+                        static void f(String s) { }
+                    }''')],
+        [group: 'P47j ==~', name: '==~ false claim refutes', ok: false, expect: 'Cannot prove',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ s ==~ /[a-z]+/ })
+                        static void f(String s) { }
+                    }''')],
+        [group: 'P93 power', name: 'result == (2**n).intValue() proves by congruence', ok: true,
+         src: tc(''' class C {
+                        @Ensures({ result == (2 ** n).intValue() })
+                        static int f(int n) { (2 ** n).intValue() }
+                    }''')],
+        [group: 'P93 power', name: 'unprovable power value refutes (no axioms)', ok: false, expect: 'Cannot prove',
+         src: tc(''' class C {
+                        @Ensures({ result == 5 })
+                        static int f(int n) { (2 ** n).intValue() }
+                    }''')],
+        // Phase 44c — width-aware @CheckOverflow: the bound follows the operation's promoted width.
+        [group: 'P44c width overflow', name: 'long n+1 verifies under a 64-bit bound (was a spurious 32-bit refute)', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ n < Long.MAX_VALUE })
+                        static long f(long n) { n + 1 }
+                    }''')],
+        [group: 'P44c width overflow', name: 'long n+1 refutes at the 64-bit boundary', ok: false, expect: '64-bit',
+         src: tc('''class C {
+                        @CheckOverflow
+                        static long f(long n) { n + 1 }
+                    }''')],
+        [group: 'P44c width overflow', name: 'int n+1 still refutes at 32-bit (unchanged)', ok: false, expect: '32-bit',
+         src: tc('''class C {
+                        @CheckOverflow
+                        static int f(int n) { n + 1 }
+                    }''')],
+        [group: 'P44c width overflow', name: 'long a*b refutes at the 64-bit boundary', ok: false, expect: '64-bit',
+         src: tc('''class C {
+                        @CheckOverflow
+                        static long f(long a, long b) { a * b }
+                    }''')],
+
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also

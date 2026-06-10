@@ -24,6 +24,7 @@ import org.codehaus.groovy.ast.ConstructorNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.transform.stc.StaticTypesMarker
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
@@ -1779,28 +1780,38 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private void assumeIntJvmBounds(SmtSession s, Encoder enc) {
         if (currentMethod == null) return
-        Object intMin = s.intLit(-2147483648L)
-        Object intMax = s.intLit(2147483647L)
         for (Parameter p : currentMethod.parameters) {
-            if (isJvmInt(p.type)) {
-                Object v = enc.varFor(p.name)
-                s.assertExpr(s.and([s.le(intMin, v), s.le(v, intMax)]))
-            }
+            assumeJvmIntegralBound(s, enc, p.type, p.name)
         }
         ClassNode dc = currentMethod.declaringClass
         if (dc != null) {
             for (FieldNode f : dc.fields) {
-                if (isJvmInt(f.type)) {
-                    Object v = enc.varFor(f.name)
-                    s.assertExpr(s.and([s.le(intMin, v), s.le(v, intMax)]))
-                }
+                assumeJvmIntegralBound(s, enc, f.type, f.name)
             }
         }
+    }
+
+    /** Phase 44c — assert the integral type's JVM range for a parameter/field: {@code int}/{@code Integer}
+     *  to {@code [INT_MIN, INT_MAX]}, {@code long}/{@code Long} to {@code [LONG_MIN, LONG_MAX]}. Without the
+     *  long case, a {@code long} param is an unbounded math integer, so the 64-bit overflow check picks a
+     *  counterexample *below* {@code Long.MIN_VALUE} ({@code n + 1 < LONG_MIN}) that the runtime can't exhibit. */
+    private void assumeJvmIntegralBound(SmtSession s, Encoder enc, ClassNode t, String name) {
+        long lo, hi
+        if (isJvmInt(t))       { lo = (long) Integer.MIN_VALUE; hi = (long) Integer.MAX_VALUE }
+        else if (isJvmLong(t)) { lo = Long.MIN_VALUE;           hi = Long.MAX_VALUE }
+        else return
+        Object v = enc.varFor(name)
+        s.assertExpr(s.and([s.le(s.intLit(lo), v), s.le(v, s.intLit(hi))]))
     }
 
     private static boolean isJvmInt(ClassNode t) {
         String n = t?.name
         n == 'int' || n == 'java.lang.Integer'
+    }
+
+    private static boolean isJvmLong(ClassNode t) {
+        String n = t?.name
+        n == 'long' || n == 'java.lang.Long'
     }
 
     private void dischargeIndex(IndexSite site, PathFacts pf, Expression reqAst) {
@@ -1856,6 +1867,24 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally {
             try { s.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /** Phase 44c — the static type's simple name, preferring STC's inferred type (so a nested
+     *  {@code (a + b)} operand reports its promoted result type, not the raw node type). */
+    private static String overflowTypeName(Expression e) {
+        if (e == null) return null
+        ClassNode inf = (ClassNode) e.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE)
+        ClassNode t = inf != null ? inf : e.getType()
+        return t?.nameWithoutPackage
+    }
+    /** True if the expression is {@code long}/{@code Long} — promotes its arithmetic to 64-bit. */
+    private static boolean isLongTyped(Expression e) {
+        String n = overflowTypeName(e)
+        return n == 'long' || n == 'Long'
+    }
+    /** True if the expression is {@code BigInteger} — unbounded, so no overflow obligation applies. */
+    private static boolean isBigIntegerTyped(Expression e) {
+        return overflowTypeName(e) == 'BigInteger'
     }
 
     /**
@@ -2035,13 +2064,22 @@ class VerifyChecker extends TypeCheckingExtension {
             // case where {@code /} overflows is {@code Integer.MIN_VALUE / -1}. Asserting that exact
             // pair (and checking SAT) is equivalent to asserting the result's range violation but
             // doesn't require an integer-{@code div} SMT operator.
+            // Phase 44c — width-aware bound. BigInteger arithmetic is unbounded (cannot overflow), so it
+            // carries no obligation. Otherwise the operation's width follows Java binary numeric promotion
+            // of the OPERANDS: 64-bit when either operand is long/Long, else 32-bit — int, and also
+            // byte/short/char, which promote to int in arithmetic (their narrow widths matter only at a
+            // narrowing cast/assignment, a separate slice). Operands, not the result type: `long x = a + b`
+            // with int a/b overflows at *int* width — the addition is computed before the widen-to-long.
+            if (isBigIntegerTyped(ov.left) || isBigIntegerTyped(ov.right)) return
+            int width = (isLongTyped(ov.left) || isLongTyped(ov.right)) ? 64 : 32
+            Object loLit = s.intLit(width == 64 ? Long.MIN_VALUE : (long) Integer.MIN_VALUE)
+            Object hiLit = s.intLit(width == 64 ? Long.MAX_VALUE : (long) Integer.MAX_VALUE)
             if (ov.op == 'div') {
-                Object intMinLit = s.intLit(-2147483648L)
-                Object negOneLit = s.intLit(-1L)
-                s.assertExpr(s.and([s.eq(L, intMinLit), s.eq(R, negOneLit)]))
+                // The only arithmetic `/` overflow is MIN_VALUE / -1 (math result one past MAX_VALUE).
+                s.assertExpr(s.and([s.eq(L, loLit), s.eq(R, s.intLit(-1L))]))
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, r), ov.node)
+                    addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, width, r), ov.node)
                 }
                 return
             }
@@ -2051,13 +2089,11 @@ class VerifyChecker extends TypeCheckingExtension {
                             (ov.op == 'neg') ? s.neg(L) :
                                                null
             if (result == null) return    // unrecognised op shouldn't happen, but be defensive
-            Object intMin = s.intLit(-2147483648L)
-            Object intMax = s.intLit(2147483647L)
-            // ¬(INT_MIN ≤ result ∧ result ≤ INT_MAX)  ≡  result < INT_MIN ∨ result > INT_MAX
-            s.assertExpr(s.or([s.lt(result, intMin), s.gt(result, intMax)]))
+            // ¬(MIN ≤ result ∧ result ≤ MAX)  ≡  result < MIN ∨ result > MAX
+            s.assertExpr(s.or([s.lt(result, loLit), s.gt(result, hiLit)]))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, r), ov.node)
+                addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, width, r), ov.node)
             }
         }
     }

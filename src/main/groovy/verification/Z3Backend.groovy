@@ -27,6 +27,7 @@ import com.microsoft.z3.FPSort
 import com.microsoft.z3.FuncDecl
 import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
+import java.math.BigInteger
 import com.microsoft.z3.Model
 import com.microsoft.z3.SeqExpr
 import com.microsoft.z3.Params
@@ -446,6 +447,15 @@ class Z3Session implements SmtSession {
             lcmFn = ctx.mkFuncDecl('lcm$', [ctx.getIntSort(), ctx.getIntSort()] as Sort[], ctx.getIntSort())
         }
         ctx.mkApp(lcmFn, (Expr) a, (Expr) b)
+    }
+
+    private FuncDecl powFn
+    @Override
+    Object pow(Object base, Object exp) {
+        if (powFn == null) {
+            powFn = ctx.mkFuncDecl('pow$', [ctx.getIntSort(), ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        }
+        ctx.mkApp(powFn, (Expr) base, (Expr) exp)
     }
 
     private FuncDecl strConcatFn
@@ -1069,6 +1079,19 @@ class Z3Session implements SmtSession {
         assertedExprs.add(be)
     }
 
+    // SMT {@code Int} is the unbounded mathematical integer, so a model can pin a counterexample
+    // variable to a value outside {@code long} range — e.g. a 64-bit-overflow witness where Z3 picks
+    // an operand past {@code Long.MAX_VALUE}. {@code IntNum.getInt64()} throws "Numeral is not an
+    // int64" on those, which (uncaught) would silently drop the whole refute back to a clean compile.
+    // The counterexample map is display-only, so saturate to the {@code long} boundary: the rendered
+    // witness sits at the edge of the representable range, and the refute itself is preserved.
+    private static long clampInt64(IntNum n) {
+        BigInteger b = n.getBigInteger()
+        if (b.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0) return Long.MAX_VALUE
+        if (b.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) < 0) return Long.MIN_VALUE
+        return b.longValue()
+    }
+
     /**
      * Phase 34 — canonical fingerprint of the asserted set. Sorted S-expression strings make the
      * key insensitive to assertion order (the solver result already is), and the timeout prefix
@@ -1120,7 +1143,7 @@ class Z3Session implements SmtSession {
         vars.each { name, var ->
             Expr v = m.evaluate(var, false)
             if (v instanceof IntNum) {
-                ce[name] = ((IntNum) v).getInt64()
+                ce[name] = clampInt64((IntNum) v)
             }
         }
         // Boolean vars (e.g. the `recv?null` nullity flags) — recorded as 0/1 when the model
@@ -1140,7 +1163,7 @@ class Z3Session implements SmtSession {
             if (sz <= 0L || sz > 16L) return          // cap enumeration; huge/zero sizes stay size-filled
             for (int k = 0; k < sz; k++) {
                 Expr ev = m.evaluate((Expr) select(arr, ctx.mkInt(k)), false)
-                if (ev instanceof IntNum) ce[name + '[' + k + ']'] = ((IntNum) ev).getInt64()
+                if (ev instanceof IntNum) ce[name + '[' + k + ']'] = clampInt64((IntNum) ev)
             }
         }
         // Phase 27 step 9 — non-Int parameter / variable values from the model. A String parameter

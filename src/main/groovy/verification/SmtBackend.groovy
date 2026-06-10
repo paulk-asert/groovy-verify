@@ -235,6 +235,15 @@ interface SmtSession extends AutoCloseable {
     Object lcm(Object a, Object b)
 
     /**
+     * Integer exponentiation {@code base ** exp} — an uninterpreted {@code (Int, Int) -> Int}. Z3 has no
+     * variable-exponent power in its arithmetic theory, so this carries no value axioms: two applications
+     * with the same {@code (base, exp)} share the term (congruence), so {@code result == base ** exp}
+     * proves, while value properties (e.g. {@code 2 ** n >= 1}) honestly stay "could not decide". First
+     * slice of {@code **} (Groovy's power returns {@code Number}, so the surface is {@code (b ** e).intValue()}).
+     */
+    Object pow(Object base, Object exp)
+
+    /**
      * The occurrence count {@code #{ i : arr[i] == v }} — an uninterpreted {@code (Array, Int) -> Int}
      * modelling Groovy's GDK {@code arr.count(v)} (roadmap Phase 12, permutation). Two applications
      * with the same {@code (arr, v)} share the term. The count's *meaning* comes from the per-store

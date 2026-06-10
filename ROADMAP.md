@@ -2546,8 +2546,11 @@ or not {@code @CheckOverflow} is set:
    (was just {@code ≥ 0}). Sound by Java's collection contract.
 2. {@code assumeIntJvmBounds(s, enc)} runs at the start of every verification pass
    (body-replay {@code checkPath}, value-flow {@code dischargeVfObligation}, implicit-obligation
-   {@code assumeContext}, loop {@code dischargeRegion}) and asserts
-   {@code INT_MIN ≤ p ≤ INT_MAX} for every Int-typed parameter and declaring-class field.
+   {@code assumeContext}, loop {@code dischargeRegion}) and asserts the integral type's JVM range
+   per parameter and declaring-class field: {@code INT_MIN ≤ p ≤ INT_MAX} for {@code int}/{@code Integer},
+   {@code LONG_MIN ≤ p ≤ LONG_MAX} for {@code long}/{@code Long} (Phase 44c-width). Without the long
+   case a {@code long} param is an unbounded math integer, so the 64-bit overflow check picks a
+   counterexample *below* {@code Long.MIN_VALUE} ({@code n + 1 < LONG_MIN}) the runtime can't exhibit.
 
 Locals are transitively bounded via their assignment RHS (an SSA-fresh local is constrained by
 {@code local == rhs}, and rhs operates on bounded values). The combined effect: under
@@ -2584,9 +2587,18 @@ scoping (only on selected methods, regardless of class).
 
 **Known limits.**
 
-- **`long`, `short`, `byte`, `char`** still use the math-int model. A {@code @CheckOverflow long n; n + 1}
-  is currently 32-bit-checked (sound but tighter than necessary). Type-driven dispatch to 64-bit
-  / 16-bit / 8-bit ranges is the natural follow-on.
+- **Width-aware overflow (Phase 44c-width, *shipped*).** The overflow obligation's bound now follows
+  Java binary numeric promotion of the *operands*: 64-bit ({@code [LONG_MIN, LONG_MAX]}) when either
+  operand is {@code long}/{@code Long}, else 32-bit. So {@code @CheckOverflow long f(long n) { n + 1 }}
+  refutes only at the genuine 64-bit boundary ({@code n == Long.MAX_VALUE}) and verifies under a guard
+  like {@code n < Long.MAX_VALUE} — no longer a spurious 32-bit refute. {@code BigInteger} operands carry
+  no obligation (unbounded, cannot overflow). Two soundness pieces ride along: {@code long}/{@code Long}
+  params and fields are bounded to {@code [LONG_MIN, LONG_MAX]} (above), and counterexample extraction
+  saturates math-int model values that exceed {@code long} range ({@code clampInt64}) instead of throwing
+  — a 64-bit overflow witness can pin an operand past {@code Long.MAX_VALUE}, and the un-caught
+  {@code "Numeral is not an int64"} would otherwise drop the whole refute back to a silent clean compile.
+- **`short`, `byte`, `char`** still promote to int (32-bit) in arithmetic — correct for the arithmetic
+  itself; their narrow widths matter only at a narrowing cast/assignment, a separate slice (below).
 - All arithmetic-overflow edge cases now ship: addition, subtraction, multiplication
   ({@code 'neg'} for unary minus on INT_MIN, {@code 'div'} for INT_MIN/-1). {@code %} is
   specifically *not* flagged — Java guarantees {@code Integer.MIN_VALUE % -1 == 0}.
@@ -3402,6 +3414,19 @@ a two-ended loop invariant (`∀k<i. a[k]==old(a[n-1-k]) ∧ a[n-1-k]==old(a[k])
 **Shipped tests**: literal reverse, palindrome, wrong-reversal refute, literal involution,
 literal length-preservation, reflexive `reverse(s)==reverse(s)`, plus two boundary tests
 asserting the symbolic identities cleanly *don't* prove.
+
+## Phase 47j — the `==~` match operator  *(shipped)*
+
+Groovy's match operator `s ==~ regex` is a whole-string regex match — semantically identical to
+`s.matches(regex)` (Phase 47c). It's a `BinaryExpression` carrying the `MATCH_REGEX` token, so it's routed
+*before* the integer-operand path: the left is translated in the String sort, the right is parsed by the
+inline regex parser, and both lower to the same `str.in_re`. Everything Phase 47c–d proves about `.matches`
+carries over verbatim, and the equivalence `(s ==~ /[a-z]+/) == s.matches("[a-z]+")` proves (both are
+`str.in_re` of the same pattern). The *find* operator `=~` (returning a stateful `Matcher`, not a boolean)
+stays out.
+
+**Shipped tests**: `result == (s ==~ /…/)` reflects the match; `==~` provably equivalent to `.matches`; a
+false `==~` claim refutes.
 
 ## Phase 48 — Non-linear integer arithmetic + integer div/mod  *(shipped)*
 
@@ -5064,6 +5089,24 @@ collection-returning recursive tail calls still skip — the sort mismatch makes
 — so no regression, just not newly covered. Closes gap #2 of the `@TailRecursive` interaction; the other two
 (transform ordering so the verifier sees the *pre*-transform recursive body, and exact-value NIA bounds)
 remain open.
+
+---
+
+## Phase 93 — the `**` power operator (first slice: typing + congruence)  *(shipped)*
+
+Z3's arithmetic has no variable-exponent power, so `base ** exp` lowers to an **uninterpreted**
+`pow$ : (Int, Int) -> Int` carrying no value axioms. Two applications with the same `(base, exp)` share the
+term (congruence), so `result == base ** exp` proves, while value properties — `2 ** n >= 1`, or even the
+literal `2 ** 3 == 8` — honestly stay "could not decide". The point of this slice is *typing*: Groovy's `**`
+returns `Number`, so the int surface is `(base ** exp).intValue()` — `.intValue()` / `.longValue()` translate
+the receiver and are identity on the integral `pow$` term, landing the expression in an `int` context.
+
+**Not yet (deliberate):** value axioms (`pow(b,0)==1`, `pow(b,e)==b·pow(b,e-1)`) would let bounds and literal
+folds prove by induction / e-matching, but they're NIA-heavy and refute-hostile (the `Fib`/`Gcd` trade-off),
+so the first slice carries none. Bare `2 ** n` (no `.intValue()` / cast) is a Groovy `Number`→`int` type
+error before the verifier sees it.
+
+**Shipped tests**: `result == (2 ** n).intValue()` proves by congruence; an unprovable concrete value refutes.
 
 ---
 
