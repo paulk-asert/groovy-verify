@@ -2777,6 +2777,40 @@ class Encoder {
         session.lcm(aH, bH)
     }
 
+    /** Whether pow's defining axioms have been asserted (mint-once — {@code pow$} is one global function). */
+    private boolean powConstrained = false
+
+    /**
+     * The exponentiation function {@code pow(b, k)} backing {@code **}, asserting its defining axioms the
+     * first time it is seen: base {@code ∀b. pow(b, 0) == 1}, step {@code ∀b,k. k >= 1 ⟹ pow(b, k) == b *
+     * pow(b, k-1)}. The step (triggered on {@code pow(b, k)}) unfolds a literal exponent to a value
+     * ({@code 2 ** 3} e-matches down to {@code 2*2*2*1 == 8}) and proves the doubling recurrence
+     * {@code 2 ** (n + 1) == 2 * (2 ** n)} by e-matching on {@code pow(2, n+1)} — exactly the {@code << }
+     * idiom's essence, expressed in {@code **}. The two-argument sibling of {@link #fibOf}: symbolic-exponent
+     * <em>value</em> facts (e.g. {@code 2 ** n >= 1}) need induction the finite e-matching can't reach, so
+     * they stay "could not decide" — honest. Negative exponents are left unconstrained (the axioms guard
+     * {@code k >= 0}); a fractional {@code b ** -k} isn't an int anyway. For a symbolic base the step's
+     * {@code b * pow(...)} is nonlinear (NIA, timeout-gated); for the common literal base it stays linear.
+     */
+    Object powOf(Object baseH, Object expH) {
+        if (!powConstrained) {
+            powConstrained = true
+            Object zero = session.intLit(0L), one = session.intLit(1L)
+            // base: ∀b. pow(b, 0) == 1
+            Object b0 = session.boundIntVar('pow$b' + (quantCounter++))
+            Object baseTerm = session.pow(b0, zero)
+            session.assertExpr(session.forall([b0], session.eq(baseTerm, one), [baseTerm]))
+            // step: ∀b,k. k >= 1 ⟹ pow(b, k) == b * pow(b, k-1)
+            Object sb = session.boundIntVar('pow$b' + (quantCounter++))
+            Object sk = session.boundIntVar('pow$k' + (quantCounter++))
+            Object stepTerm = session.pow(sb, sk)
+            Object rhs = session.times(sb, session.pow(sb, session.minus(sk, one)))
+            session.assertExpr(session.forall([sb, sk],
+                session.implies(session.ge(sk, one), session.eq(stepTerm, rhs)), [stepTerm]))
+        }
+        session.pow(baseH, expH)
+    }
+
     /**
      * For a two-parameter fold closure {@code { a, x -> a OP x }} whose operands are exactly the two
      * parameters (either order), return the operator text when {@code OP} is {@code *} (product) or
@@ -3663,11 +3697,14 @@ class Encoder {
                 // Phase 8a still folds closed numeric subexpressions before reaching here.
                 return session.times(L, R)
             case Types.POWER:
-                // Phase 93 — `base ** exp` exponentiation. Z3 has no variable-exponent power, so this is
-                // an uninterpreted `pow$(base, exp)` (no value axioms): `result == base ** exp` proves by
-                // congruence, value properties stay "could not decide". Groovy's `**` returns Number, so
-                // the int surface is `(base ** exp).intValue()` (translateMethodCall's intValue handler).
-                return session.pow(L, R)
+                // Phase 93 — `base ** exp` exponentiation, backed by the `pow$(base, exp)` function. Z3 has
+                // no variable-exponent power primitive, so the value comes from pow's defining axioms (base
+                // `pow(b,0)==1`, step `pow(b,k)==b*pow(b,k-1)` for k>=1; Phase 93b, minted once by `powOf`).
+                // Those unfold a literal exponent to a value (`2 ** 3` → 8) and prove the doubling recurrence
+                // `2 ** (n+1) == 2 * (2 ** n)`; symbolic-exponent value facts stay "could not decide" — they
+                // need induction the finite e-matching can't reach. Groovy's `**` returns Number, so the int
+                // surface is `(base ** exp).intValue()` (translateMethodCall's intValue handler).
+                return powOf(L, R)
             case Types.COMPARE_EQUAL:       return session.eq(L, R)
             case Types.COMPARE_NOT_EQUAL:   return session.ne(L, R)
             case Types.COMPARE_LESS_THAN:           return session.lt(L, R)

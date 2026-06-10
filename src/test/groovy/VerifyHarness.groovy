@@ -4337,10 +4337,45 @@ class VerifyHarness {
                         @Ensures({ result == (2 ** n).intValue() })
                         static int f(int n) { (2 ** n).intValue() }
                     }''')],
-        [group: 'P93 power', name: 'unprovable power value refutes (no axioms)', ok: false, expect: 'Cannot prove',
+        // A false *symbolic*-exponent value claim soft-fails to "could not decide" rather than a crisp
+        // counterexample: the recurrence step axiom (Phase 93b) makes `pow$` refute-hostile on symbolic
+        // arguments — e-matching unfolds `pow(2, n) -> pow(2, n-1) -> ...` and exhausts the per-VC timeout
+        // before a model is found. Honest (never a false proof), and the same trade the bit-blasted
+        // bitwise/FP fragments make. The literal and recurrence cases below are what the axioms buy.
+        [group: 'P93 power', name: 'false symbolic power value soft-fails to could-not-decide (refute-hostile)', ok: false, expect: 'Could not decide',
          src: tc(''' class C {
                         @Ensures({ result == 5 })
                         static int f(int n) { (2 ** n).intValue() }
+                    }''')],
+        // Phase 93b — `pow$` now carries base+step defining axioms (minted by powOf), mirroring fib/gcd.
+        // Tier 1: a *literal* exponent unfolds to a concrete value (`2 ** 3` e-matches to 2*2*2*1 == 8).
+        [group: 'P93b power axioms', name: 'literal 2 ** 3 unfolds to 8', ok: true,
+         src: tc(''' class C {
+                        @Ensures({ result == 8 })
+                        static int f() { (2 ** 3).intValue() }
+                    }''')],
+        [group: 'P93b power axioms', name: 'literal 2 ** 3 is not 9 (refutes with the unfolded value)', ok: false, expect: 'Cannot prove',
+         src: tc(''' class C {
+                        @Ensures({ result == 9 })
+                        static int f() { (2 ** 3).intValue() }
+                    }''')],
+        [group: 'P93b power axioms', name: 'base case 2 ** 0 == 1', ok: true,
+         src: tc(''' class C {
+                        @Ensures({ result == 1 })
+                        static int f() { (2 ** 0).intValue() }
+                    }''')],
+        [group: 'P93b power axioms', name: 'literal 3 ** 2 unfolds to 9 (non-base-2)', ok: true,
+         src: tc(''' class C {
+                        @Ensures({ result == 9 })
+                        static int f() { (3 ** 2).intValue() }
+                    }''')],
+        // Tier 2: the doubling recurrence proves for *symbolic* n from the step axiom — the `1 << n` essence,
+        // expressed in `**`. This is strictly stronger than the runtime `(0..10).each { assert 1<<n == 2**n }`.
+        [group: 'P93b power axioms', name: 'doubling recurrence 2 ** (n+1) == 2 * (2 ** n) proves symbolically', ok: true,
+         src: tc(''' class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == 2 * (2 ** n).intValue() })
+                        static int f(int n) { (2 ** (n + 1)).intValue() }
                     }''')],
         // Phase 44c — width-aware @CheckOverflow: the bound follows the operation's promoted width.
         [group: 'P44c width overflow', name: 'long n+1 verifies under a 64-bit bound (was a spurious 32-bit refute)', ok: true,
@@ -4365,6 +4400,54 @@ class VerifyHarness {
                         static long f(long a, long b) { a * b }
                     }''')],
 
+        // ===== Void-method (lemma) postcondition enforcement =====
+        // Soundness: a void method's @Ensures is now enforced (was a silent vacuous pass). A void lemma's
+        // @Ensures is over params/fields; the refutation anchors on the @Ensures expression (a MethodNode
+        // anchor is silently dropped by Groovy's StaticTypeCheckingVisitor on this path).
+        [group: 'Pvoid lemma', name: 'false void @Ensures refutes (was vacuous)', ok: false, expect: 'Cannot prove',
+         src: tc('class C { @Ensures({ 1 == 2 }) static void bad() {} }')],
+        [group: 'Pvoid lemma', name: 'false void post-state @Ensures refutes', ok: false, expect: 'Cannot prove',
+         src: tc('class C { int x;  @Ensures({ x == 99 }) void set5() { x = 5 } }')],
+        [group: 'Pvoid lemma', name: 'false void @Ensures over param refutes', ok: false, expect: 'Cannot prove',
+         src: tc('class C { @Requires({ n >= 0 }) @Ensures({ n < 0 }) static void bad(int n) {} }')],
+        [group: 'Pvoid lemma', name: 'true void @Ensures over param verifies', ok: true,
+         src: tc('class C { @Requires({ n >= 5 }) @Ensures({ n > 0 }) static void ok(int n) {} }')],
+        // The pure void-lemma form of the doubling recurrence (Phase 93b) — now a GENUINE proof, not vacuous.
+        [group: 'Pvoid lemma', name: 'doublesEachStep void lemma proves (genuine)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ 2 ** (n + 1) == 2 * (2 ** n) })
+                        static void doublesEachStep(int n) {}
+                    }''')],
+        // A FALSE symbolic-exponent claim soft-fails to "could not decide" (the pow$ step axiom is
+        // refute-hostile on symbolic args — the same trade as `2 ** n == 5`), not a clean pass. Honest:
+        // it does NOT verify, so the void lemma's @Ensures is still held to account.
+        [group: 'Pvoid lemma', name: 'false doubling variant soft-fails (refute-hostile, not a clean pass)', ok: false, expect: 'Could not decide',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ 2 ** (n + 1) == 3 * (2 ** n) })
+                        static void wrongDoubling(int n) {}
+                    }''')],
+
+        // ===== Genuine inductive `**` facts, unlocked by void-lemma enforcement =====
+        // A self-induction void lemma (@Decreases recursion supplies the IH; the pow$ step axiom does the
+        // arithmetic) now PROVES a symbolic-exponent value fact — and the negative control is held to
+        // account at the base case (no longer a vacuous pass). This is the rung above the one-step
+        // doubling recurrence.
+        [group: 'Pvoid induction', name: '2 ** n >= 1 proves by self-induction (genuine)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ (2 ** n).intValue() >= 1 })
+                        @Decreases({ n })
+                        static void pow2pos(int n) { if (n > 0) pow2pos(n - 1) }
+                    }''')],
+        [group: 'Pvoid induction', name: '2 ** n >= 2 is held to account (fails at base case n=0)', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ (2 ** n).intValue() >= 2 })
+                        @Decreases({ n })
+                        static void bad(int n) { if (n > 0) bad(n - 1) }
+                    }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also

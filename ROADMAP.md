@@ -5097,16 +5097,87 @@ remain open.
 Z3's arithmetic has no variable-exponent power, so `base ** exp` lowers to an **uninterpreted**
 `pow$ : (Int, Int) -> Int` carrying no value axioms. Two applications with the same `(base, exp)` share the
 term (congruence), so `result == base ** exp` proves, while value properties — `2 ** n >= 1`, or even the
-literal `2 ** 3 == 8` — honestly stay "could not decide". The point of this slice is *typing*: Groovy's `**`
+literal `2 ** 3 == 8` — honestly stayed "could not decide" (Phase 93b below lifts the literal and recurrence
+cases with defining axioms). The point of this first slice is *typing*: Groovy's `**`
 returns `Number`, so the int surface is `(base ** exp).intValue()` — `.intValue()` / `.longValue()` translate
 the receiver and are identity on the integral `pow$` term, landing the expression in an `int` context.
 
-**Not yet (deliberate):** value axioms (`pow(b,0)==1`, `pow(b,e)==b·pow(b,e-1)`) would let bounds and literal
-folds prove by induction / e-matching, but they're NIA-heavy and refute-hostile (the `Fib`/`Gcd` trade-off),
-so the first slice carries none. Bare `2 ** n` (no `.intValue()` / cast) is a Groovy `Number`→`int` type
-error before the verifier sees it.
+Bare `2 ** n` (no `.intValue()` / cast) is a Groovy `Number`→`int` type error before the verifier sees it.
 
-**Shipped tests**: `result == (2 ** n).intValue()` proves by congruence; an unprovable concrete value refutes.
+**Shipped tests**: `result == (2 ** n).intValue()` proves by congruence.
+
+### Phase 93b — `pow$` defining axioms  *(shipped)*
+
+The deferred value axioms now ship, minted once by `powOf` exactly like `fibOf`/`gcdOf`: base `∀b. pow(b,0)==1`
+and step `∀b,k. k≥1 ⟹ pow(b,k) == b·pow(b,k-1)`, triggered on `pow(b,k)`. Two tiers of proof open up:
+
+- **Tier 1 — literal exponent unfolds to a value.** `2 ** 3` e-matches down `pow(2,3) → 2·pow(2,2) → … →
+  2·2·2·1`, so `(2 ** 3).intValue() == 8` proves and `== 9` refutes. (Was "could not decide" in Phase 93.)
+- **Tier 2 — the doubling recurrence proves for *symbolic* n.** `2 ** (n+1) == 2 * (2 ** n)` e-matches the
+  step on `pow(2, n+1)`. This is the verification analog of the runtime `(0..10).each { assert 1<<n == 2**n }`
+  — and strictly stronger, since it holds for *all* `n ≥ 0`, not just the sampled range.
+
+**The trade — symbolic value claims are now refute-hostile.** A false symbolic-exponent claim like
+`2 ** n == 5` no longer yields a crisp counterexample; the step's e-matching unfolds `pow(2,n) → pow(2,n-1) →
+…` and exhausts the per-VC timeout, so it soft-fails to "could not decide". Honest (never a false proof), and
+the same trade the bit-blasted bitwise/FP fragments and the `Fib`/`Gcd` recurrences already make. Deeper
+symbolic *value* facts (`2 ** n ≥ 1`) still need induction the finite e-matching can't reach — also "could
+not decide". For a symbolic base the step's `b·pow(…)` is NIA (timeout-gated); for the common literal base it
+stays linear.
+
+**Bridge to `<<` (not yet).** A *symbolic* `1 << n` is a 32-bit bit-vector while `2 ** n` is `pow$` over Int,
+so `1 << n == 2 ** n` for symbolic `n` is still a sort-mismatched loud skip. The literal rows (`1 << 3` is the
+arithmetic `1·2^3`) now line up with `2 ** 3 == 8`. Recognising a power-of-two `<<` base as `pow(2, ·)` is a
+separate slice. Note the machine identity is *false* past the width boundary anyway — Java masks the shift
+count (`1 << 32 == 1`) while `2 ** 32` is `4294967296` — so any `int`-level `<<`/`**` equivalence belongs
+behind a range guard / `@CheckOverflow`.
+
+**Shipped tests (Phase 93b)**: literal `2 ** 3 == 8` / `!= 9` / base `2 ** 0 == 1`; the symbolic doubling
+recurrence `2 ** (n+1) == 2 * (2 ** n)`; and the refute-hostile `2 ** n == 5` soft-failing to could-not-decide.
+
+---
+
+## Phase 94 — `void`-method (lemma) postcondition enforcement  *(shipped — a soundness fix)*
+
+A `void` method's `@Ensures` was **silently not enforced**: `@Ensures({ 1 == 2 }) void bad() {}` compiled
+clean, as did a false post-state claim (`@Ensures({ x == 99 }) void set5() { x = 5 }`). At runtime
+groovy-contracts *does* evaluate and throw, so "verified" while the runtime fails was a silent unsoundness —
+the failure mode the whole project is built to avoid.
+
+**Root cause.** A value-returning method anchors its postcondition refutation on the *return expression*
+(`p.result`, a positioned body node). A void method has none, so the code fell back to anchoring on the
+{@code MethodNode} — and Groovy's `StaticTypeCheckingVisitor` **silently drops** an error anchored on a
+`MethodNode` reached via the extension's `afterVisitMethod` path (the error never enters the collector). The
+verification itself was running and *refuting* correctly; only the diagnostic was being swallowed. The fix
+(in `checkPath`) anchors a void method's postcondition/invariant error on the **`@Ensures` expression**
+(`postAst`, a positioned `BinaryExpression`) instead. One-line cause, but it took a negative control to find
+— a false `@Ensures` "passing" looks identical to a real proof until you assert it *must* fail.
+
+**What it unlocks — the lemma idiom, and with it genuine inductive `**` reasoning.** A lemma is canonically a
+`void` method whose `@Ensures` *is* the claim. With enforcement:
+
+- The pure void-lemma form of the doubling recurrence — `@Ensures({ 2 ** (n+1) == 2 * (2 ** n) })` — is now a
+  **genuine** proof (was vacuous), off the Phase 93b step axiom.
+- A **self-induction** void lemma (`@Decreases` recursion supplies the IH; the `pow$` step axiom does the
+  arithmetic) proves a *symbolic-exponent* value fact: `@Ensures({ (2 ** n).intValue() >= 1 })` for
+  `pow2pos(int n) { if (n > 0) pow2pos(n-1) }`. The base case (`2 ** 0 == 1 ≥ 1`) and the inductive step both
+  bite — the negative control `2 ** n >= 2` is correctly *held to account* at `n = 0` rather than passing
+  vacuously. This is the rung above the one-step recurrence on the path toward a `1 << n == 2 ** n` bridge.
+
+The whole 905-test suite stays green under enforcement — i.e. no existing void-method test was silently
+relying on the vacuous pass (a real risk the full-suite run had to rule out).
+
+**Diagnostic position.** Captured `@Ensures` ASTs lose their source positions (they report line 1), so
+anchoring on the contract AST would surface the error at the wrong line. Instead the void path mints a
+positioned proxy `ConstantExpression` that copies the method's *real* declaration position — an `Expression`
+(so STC surfaces it, unlike a `MethodNode`) carrying the true source line. So a void lemma's refutation now
+points at its method declaration, like any other diagnostic. The class-invariant-only void path keeps the
+`MethodNode` fallback (a void method with only an invariant isn't the lemma case); enforcing *that* the same
+way is a follow-on.
+
+**Shipped tests (Phase 94)**: false void `@Ensures` (const / post-state / over-param) all refute; a true void
+`@Ensures` verifies; the genuine `doublesEachStep` void lemma; a false doubling variant soft-failing
+(refute-hostile); and the self-induction `2 ** n >= 1` with its `2 ** n >= 2` negative control.
 
 ---
 

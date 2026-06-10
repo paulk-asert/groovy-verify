@@ -3115,8 +3115,25 @@ class VerifyChecker extends TypeCheckingExtension {
             CheckResult r = shown(session.check())
             if (r.status == CheckResult.Status.VERIFIED) return
 
-            ASTNode anchor = (p.result != null && p.result.lineNumber > 0) ?
-                (ASTNode) p.result : (ASTNode) node
+            // Anchor the diagnostic on a positioned *expression* node. A value-returning method uses its
+            // return expression. A void method (a lemma — its @Ensures is over parameters/fields, e.g.
+            // `@Ensures({ 2 ** (n+1) == 2 * (2 ** n) })`) has no return expression. Anchoring it on the
+            // {@link MethodNode} is silently DROPPED by Groovy's StaticTypeCheckingVisitor on this path —
+            // which would make a false void @Ensures pass cleanly (a silent unsoundness) — and anchoring on
+            // the captured @Ensures AST surfaces it but at that AST's synthetic line-1 position. So mint a
+            // positioned proxy Expression carrying the method's real declaration position: an Expression (so
+            // STC surfaces it) at the true source line. (The class-invariant-only path keeps the {@code node}
+            // fallback; a void method with only an invariant is not the lemma case.)
+            ASTNode anchor
+            if (p.result != null && p.result.lineNumber > 0) {
+                anchor = (ASTNode) p.result
+            } else if (postAst != null) {
+                ConstantExpression proxy = new ConstantExpression(node.name)
+                proxy.setSourcePosition((ASTNode) node)
+                anchor = (ASTNode) proxy
+            } else {
+                anchor = (ASTNode) node
+            }
             // Phase 62 — when the solver could not *decide* a postcondition (a quantifier/recurrence
             // timeout, the weak refutation direction), fall back to bounded property-based testing of
             // the executable contract: a concrete failing input turns an honest UNKNOWN into a repro.
