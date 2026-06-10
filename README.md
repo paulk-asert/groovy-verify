@@ -175,8 +175,7 @@ is assumed at the recursive call (the induction hypothesis), proven to grow at l
 @Decreases({ n })
 static int fact(int n) {
     if (n <= 1) return 1
-    int rest = fact(n - 1)         // the method's own @Ensures is the hypothesis here
-    return n * rest
+    return n * fact(n - 1)         // the recursive call's @Ensures is the induction hypothesis
 }
 ```
 

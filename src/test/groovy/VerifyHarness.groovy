@@ -4107,6 +4107,57 @@ class VerifyHarness {
                             return n * rest
                         }
                     }''')],
+        // A self/contracted call inside a return expression is hoisted to an implicit single-assignment
+        // local (bound by the callee's @Ensures), so the recursive call no longer needs hand-hoisting.
+        // (1) compound return `n * fact(n-1)` — the form that previously needed two lines.
+        [group: 'P-induction', name: 'compound return n * fact(n-1) (call hoisted)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 1 })
+                        @Ensures({ result >= n })
+                        @Decreases({ n })
+                        static int fact(int n) {
+                            if (n <= 1) return 1
+                            return n * fact(n - 1)
+                        }
+                    }''')],
+        // (2) bare tail return `return helper(n-1, next)` — the @TailRecursive accumulator shape.
+        [group: 'P-induction', name: 'bare tail return: accumulator helper (call hoisted)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 && acc >= 1 })
+                        @Ensures({ result >= acc })
+                        @Decreases({ n })
+                        static long factHelper(long n, long acc) {
+                            if (n <= 1) return acc
+                            long next = n * acc
+                            return factHelper(n - 1, next)
+                        }
+                    }''')],
+        // Soundness: hoisting the call must NOT suppress the base-case check. A false @Ensures still
+        // refutes — f(0) returns 0, not >= 1 — despite the recursive return path being modelled.
+        [group: 'P-induction', name: 'hoisted bare return: false postcondition still refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 1 })
+                        @Decreases({ n })
+                        static int f(int n) {
+                            if (n <= 0) return 0
+                            return f(n - 1)
+                        }
+                    }''')],
+        // Soundness: the callee's @Requires is still discharged at the call site. f(n-2) breaks
+        // @Requires({ n >= 0 }) when n == 1 (f(-1)), so the method must refute on the precondition.
+        [group: 'P-induction', name: 'hoisted bare return: callee precondition still enforced',
+         expect: 'precondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result >= 0 })
+                        @Decreases({ n })
+                        static int f(int n) {
+                            if (n <= 0) return 0
+                            return f(n - 2)
+                        }
+                    }''')],
 
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus

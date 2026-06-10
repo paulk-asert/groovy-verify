@@ -46,6 +46,7 @@ import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
@@ -3010,6 +3011,35 @@ class VerifyChecker extends TypeCheckingExtension {
                     Object resHandle = enc.isFpValued(p.result) ? enc.asFp(p.result)
                                      : enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
                                      : enc.translate(p.result)
+                    if (resHandle == null && !enc.isFpValued(p.result) && !enc.isDecimalValued(p.result)) {
+                        // A contracted/self call sitting in the return expression — `return f(args)` or
+                        // `return n * f(args)` — isn't itself a fragment expression, so translate() bailed.
+                        // Hoist each such call into an implicit single-assignment local bound by the
+                        // callee's @Ensures (the inductive hypothesis, for a self-call with @Decreases),
+                        // exactly as the `T t = f(args); return … t …` path does, then retry. This is purely
+                        // additive: it fires only where we would otherwise skip. assumeCalleeEnsures returns
+                        // false (no hoist) if the callee has no usable/sort-matching @Ensures, so a return
+                        // whose call can't be faithfully modelled still skips loudly rather than mis-binds.
+                        // The callee's @Requires is still discharged by the obligation pass over the original
+                        // return expression, so soundness of the precondition check is unaffected.
+                        boolean[] hoistedAny = [false]
+                        ExpressionTransformer tr = null
+                        tr = { Expression e ->
+                            if (isCallExpr(e)) {
+                                Object fresh = session.intVar('ret$call$' + (++ssaVersion))
+                                if (assumeCalleeEnsures(session, enc, e, node, fresh, hasDecreases(node))) {
+                                    String nm = 'ret$call$local$' + ssaVersion
+                                    enc.bind(nm, fresh)
+                                    hoistedAny[0] = true
+                                    return new VariableExpression(nm)
+                                }
+                                return e
+                            }
+                            return e.transformExpression(tr)
+                        } as ExpressionTransformer
+                        Expression rewritten = tr.transform(p.result)
+                        if (hoistedAny[0]) resHandle = enc.translate(rewritten)
+                    }
                     if (resHandle == null) {
                         throw new UnsupportedConstructException(
                             "return expression '${p.result.text}' is outside fragment")

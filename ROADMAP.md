@@ -5032,6 +5032,41 @@ weak-inner-invariant soundness anchor; an out-of-bounds inner store is caught; a
 
 ---
 
+## Phase 92 — recursive/contracted call in a return expression, auto-hoisted  *(shipped)*
+
+The verifier already modelled a recursive call as a single-assignment local RHS — `int rest = f(n-1);
+return n * rest` — binding the local to the callee's `@Ensures` (the inductive hypothesis, for a self-call
+with `@Decreases`). But the *same* call sitting directly in a return expression — `return n * f(n-1)`
+(compound) or `return f(n-1, acc)` (bare tail call) — skipped, because a method call isn't a fragment
+expression and `translate()` bailed. So the inductive factorial needed hand-hoisting into two lines, and a
+`@TailRecursive`-shaped accumulator (`return helper(n-1, next)`) couldn't be reached at all.
+
+This closes the gap by hoisting automatically: at the one point where the return-expression translation
+returns null, each contracted/self call in the return is rewritten (via an `ExpressionTransformer`) to a
+fresh implicit local bound by `assumeCalleeEnsures` — the exact machinery the local-RHS path uses — then the
+rewritten expression is re-translated. So `return n * f(n-1)` and `return f(n-1, acc)` now verify with no
+source change.
+
+**Additive and sound.** The hoist fires *only* where the verifier would otherwise skip (`resHandle ==
+null`), so every previously-passing path is byte-for-byte unchanged. `assumeCalleeEnsures` declines (→ clean
+skip, no mis-bind) when the callee has no usable or sort-matching `@Ensures` — so a non-int return, an
+un-contracted call, or a sort mismatch still skips loudly rather than binding a garbage handle. The callee's
+`@Requires` is discharged by the separate obligation pass over the *original* return expression, so the
+precondition check is unaffected.
+
+**Shipped tests**: the compound `return n * fact(n-1)` and the bare tail `return factHelper(n-1, next)`
+(accumulator) both verify; a false `@Ensures` on a bare-return method still refutes at the base case; a
+recursive call that breaks its callee's `@Requires` (`f(n-2)` reaching `f(-1)`) still refutes on the
+precondition.
+
+**Scope / boundaries:** int/long-returning methods (the fresh handle is an `intVar`). Boolean predicates and
+collection-returning recursive tail calls still skip — the sort mismatch makes `assumeCalleeEnsures` decline
+— so no regression, just not newly covered. Closes gap #2 of the `@TailRecursive` interaction; the other two
+(transform ordering so the verifier sees the *pre*-transform recursive body, and exact-value NIA bounds)
+remain open.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
