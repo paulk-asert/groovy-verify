@@ -4739,8 +4739,6 @@ establishment) and **enables** correct body-first loops: `@Invariant({ 1 <= i &&
 while (i < n)` verifies (the `1 <= i` clause is false at entry but true after the first `i++`), proving
 `result == n` — which the old pre-body establishment would have wrongly rejected.
 
-**Still out:** nested loops are still one annotated loop per method.
-
 ## Phase 88b — do-while early return on the first iteration (a soundness fix)  *(shipped)*
 
 The Phase 88 note above guessed an early `return` inside a do-while body was merely *imprecise* ("sound — it
@@ -5055,10 +5053,9 @@ Things deliberately not pursued, because they don't pay back:
 ## Cross-cutting risks worth noting up front
 
 - **Compilation slowdown.** Z3 calls take 10–100 ms each. A large module with
-  hundreds of annotated call sites and implicit-check sites could add noticeable
   seconds to a compile. The in-process VC cache is shipped (see
-  [Phase 34](#phase-34--vc-cache--shipped)) and currently rebates ~18 % at suite
-  scale; a `-PverifyEnabled=true`-style "verify only" configuration and a
+  [Phase 34](#phase-34--vc-cache--shipped)) and rebated ~18 % when measured (at the
+  Phase-34 suite size); a `-PverifyEnabled=true`-style "verify only" configuration and a
   persistent disk cache keyed on class-file digests remain as further levers.
 - **`@CompileStatic` incompatibility.** The checker is a type-checking
   extension; code authored under `@CompileStatic` needs the checker to either
