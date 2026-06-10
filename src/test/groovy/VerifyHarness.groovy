@@ -3484,6 +3484,58 @@ class VerifyHarness {
                     }''')],
         // Phase 90 — bare multiple assignment / swap `(a, b) = [b, a]` on existing locals. The temp
         // captures the old state, so this is a correct *parallel* swap: a becomes 4, b becomes 3.
+        // PROBE: user's int[] swap example (return a swapped array; @Ensures refs param elements).
+        [group: 'P90 swap', name: 'array swap: return [from[1], from[0]] (with Requires)', ok: true,
+         src: tc('''class C {
+                        @Requires({ from != null && from.length >= 2 })
+                        @Ensures({ result[0] == from[1] && result[1] == from[0] })
+                        static int[] swap(int[] from) { [from[1], from[0]] }
+                    }''')],
+        [group: 'P90 swap', name: 'array swap without bounds Requires flags OOB', expect: 'out of bounds',
+         src: tc('''class C {
+                        @Ensures({ result[0] == from[1] && result[1] == from[0] })
+                        static int[] swap(int[] from) { [from[1], from[0]] }
+                    }''')],
+        // PROBE: the user's second example — swap the params, relate result to old.b/old.a (property form
+        // of `old` over PARAMETERS, unblocked at runtime by GROOVY-12078).
+        [group: 'P90 swap', name: 'swap params: result.a == old.b (GROOVY-12078)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.a == old.b && result.b == old.a })
+                        static Map<String, Integer> swap(int a, int b) {
+                            (a, b) = [b, a]
+                            [a: a, b: b]
+                        }
+                    }''')],
+        // SOUNDNESS: a wrong old.param relation (claims result.a == old.a, but it's old.b) must refute.
+        [group: 'P90 swap', name: 'wrong old.param relation refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result.a == old.a && result.b == old.b })
+                        static Map<String, Integer> swap(int a, int b) {
+                            (a, b) = [b, a]
+                            [a: a, b: b]
+                        }
+                    }''')],
+        // README form 1 — 'final' params force the copy-into-locals (params stay immutable, so no 'old').
+        [group: 'P90 swap', name: 'final params swap-locals (README form)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.a == b && result.b == a })
+                        static Map<String, Integer> swap(final int a, final int b) {
+                            int x = a; int y = b
+                            (x, y) = [y, x]
+                            [a: x, b: y]
+                        }
+                    }''')],
+        // Dropping types works too — untyped params are fine; only the RETURN must be `Map` (not `def`),
+        // so `result.a` resolves as a map-as-named-tuple read under @TypeChecked.
+        [group: 'P90 swap', name: 'untyped params + raw Map return (result.a == old.b)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.a == old.b && result.b == old.a })
+                        static Map swap(a, b) {
+                            (a, b) = [b, a]
+                            [a: a, b: b]
+                        }
+                    }''')],
+
         [group: 'P90 swap', name: 'swap (a,b)=[b,a] reassigns in parallel', ok: true,
          src: tc('''class C {
                         @Ensures({ result == 43 })

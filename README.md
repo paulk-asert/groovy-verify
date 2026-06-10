@@ -585,6 +585,45 @@ the *old* value just as the hoisted-after `i++` does. What it refuses is a varia
 increment — `x = i++ + i`, where Java advances `i` mid-statement so the second `i` is the new value — which
 skips loudly rather than risk mis-modeling.
 
+**Swap — and what `old` is for.** The textbook spec for a swap says "the result has the two inputs
+exchanged" — and there are two faithful ways to write it, whose difference is the whole lesson. Mark the
+parameters `final` and swap two **locals** instead: the parameters *can't* be reassigned, so they keep their
+entry values, and the postcondition reads them directly — no `old`:
+
+```groovy
+@Ensures({ result.a == b && result.b == a })
+static Map<String, Integer> swap(final int a, final int b) {
+    int x = a; int y = b
+    (x, y) = [y, x]            // parallel multiple assignment — RHS snapshotted before either write
+    [a: x, b: y]
+}
+```
+
+The `final` isn't decoration: it's what *forces* the copy into `x`/`y` and pins the parameters as immutable
+inputs, so `b` and `a` in the postcondition are unambiguously their entry values.
+
+Some might regard mutating parameters as poor coding style,
+but the verifier ignores such concerns.
+If we swap the **parameters themselves**,
+then by the time the postcondition runs `a` and `b` no longer hold their
+entry values — so you must reach back for them with `old`:
+
+```groovy
+@Ensures({ result.a == old.b && result.b == old.a })
+static Map<String, Integer> swap(int a, int b) {
+    (a, b) = [b, a]
+    [a: a, b: b]
+}
+```
+
+That's the rule in miniature: `old` relates the post-state to the *pre-state of something you mutated*; if
+you don't mutate it, you don't need it. The `(a, b) = [b, a]` is itself a swap — parallel multiple assignment,
+which snapshots the right-hand side before writing any target, so a *sequential* `a = b; b = a` (which would
+lose `a`) is provably different and refutes if you claim its outcome. Referring to `old` of a **parameter** —
+not just a field — became an *executable* contract in GROOVY-12078; the verifier already modelled it through
+its entry-snapshot machinery, so now the proof and the runtime check agree. A wrong relation (`result.a ==
+old.a`) refutes either way.
+
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
 exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and

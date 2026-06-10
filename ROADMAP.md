@@ -4808,6 +4808,19 @@ supported, Phase 13/45) — not object-reference parameters. (Also out, for the 
 per-`(field, identity)` caller framing, and writes under loops/recursion — `PropStore` is handled in the main
 body replay, not the recursion-termination / early-exit replays.)
 
+**Update — GROOVY-12078 lifts the dual-tenet objection for *scalar* parameters.** Groovy now captures *old
+parameter values* in `@Ensures` (incl. static methods). For a primitive param this is a capture *by value* at
+entry, so the verifier's existing `old$<name>` snapshot machinery (Phase 13/45) — which already worked for any
+name, field or param — is now **dual-valid**: `@Ensures({ result.a == old.b && result.b == old.a })` over
+`static Map swap(int a, int b) { (a, b) = [b, a]; [a: a, b: b] }` (params reassigned by the swap) both
+**verifies and runs**, with *no verifier change*. A wrong relation (`result.a == old.a`) refutes. Untyped
+params work too (only the *return* must be typed `Map`, not `def`, so `result.a` resolves as a named-tuple
+read). **Still to confirm — `old` of an array element / object-param field** (`old.a[1]` / `old(from.balance)`):
+the verifier deep-models these as entry *contents*, so it's dual-valid only if GROOVY-12078 deep-snapshots at
+entry; a *shallow* reference capture would read the mutated value at exit, making the in-place-array-swap spec
+verify-only (the verifier proves it, the runtime contract behaves differently). Pending that, only the scalar
+form is shipped as a test.
+
 **The problem it removes.** Today a foreign-receiver field `b.field` translates to a *per-name* SMT entity
 `b$field` (`Encoder.groovy:208`), "sound only under the no-aliasing assumption" (`:209`). Two references of
 the same type therefore become two distinct variables — the verifier *silently* treats them as different
