@@ -4092,6 +4092,22 @@ class VerifyHarness {
                         static int f(int n) { Integer.parseInt(Integer.toString(n)) }
                     }''')],
 
+        // ---------- Inductive proof helper (README Act 1): a recursive method's own @Ensures is the
+        // induction hypothesis at the recursive call. A recursive factorial proves it grows at least
+        // linearly (fact(n) >= n). The exponential bound fact(n) >= 2^(n-1) needs the nonlinear step
+        // n*fact(n-1) >= 2*fact(n-1) and times out under NIA (soft "could not decide", never a false pass).
+        [group: 'P-induction', name: 'recursive factorial grows at least linearly (fact(n) >= n)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 1 })
+                        @Ensures({ result >= n })
+                        @Decreases({ n })
+                        static int fact(int n) {
+                            if (n <= 1) return 1
+                            int rest = fact(n - 1)
+                            return n * rest
+                        }
+                    }''')],
+
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also

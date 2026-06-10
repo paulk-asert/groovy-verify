@@ -166,6 +166,25 @@ static int countUp(int n) {
 }
 ```
 
+The recursion that parenthetical mentions reads the same — a recursive `factorial` whose own `@Ensures`
+is assumed at the recursive call (the induction hypothesis), proven to grow at least linearly:
+
+```groovy
+@Requires({ n >= 1 })
+@Ensures({ result >= n })          // factorial grows at least linearly — proven by induction on n
+@Decreases({ n })
+static int fact(int n) {
+    if (n <= 1) return 1
+    int rest = fact(n - 1)         // the method's own @Ensures is the hypothesis here
+    return n * rest
+}
+```
+
+The base (`fact(1) == 1 >= 1`) closes directly; the step assumes `fact(n - 1) >= n - 1` and the defining
+`fact(n) == n * fact(n - 1)` to reach `fact(n) >= n`. This same **proof-helper** idiom — a method that
+exists to establish a fact by induction — does load-bearing work in Act 5 (the sort's `maxBound`, the
+DFS's `bcount`).
+
 The same machinery handles **aggregation** — and running totals are a classic source of *silently
 wrong* answers (an off-by-one or a forgotten element yields a plausible-but-wrong number, with no
 exception to flag it). Here the loop invariant carries a *prefix sum* `xs[0..<i].sum()` (the idiomatic
@@ -1092,6 +1111,13 @@ returns, conditional list/string mutation, NIA bounds), and porting them is what
 the later phases (49a/b early-returns, 48 NIA, 46d in-loop path facts). Where the algorithms are
 list / map / loop-shaped, the engine matches or exceeds Verus on what it proves.
 
+Read against the five acts above, the corpus re-runs the same machinery on problems we didn't pick —
+and roughly in that arc: **Act 1**'s loop invariants and `@Decreases` carry every example below;
+**Act 2**'s NIA bound and divide-by-zero obligations land in `is_prime`; the recurrence tasks extend
+**Act 1**'s proof-by-induction — `Fib`/`Trib`/`Gcd`/`Lcm` package common recurrences as named helpers
+whose axioms come built in, the same inductive-lemma idiom you can hand-write yourself; and the list
+filters, return shapes, and string methods close on **Act 3** over un-curated input.
+
 Task 030 — filter a list to its positive elements:
 
 ```groovy
@@ -1410,6 +1436,9 @@ and none overlaps the examples above: the existing set has a *witnessed-extremum
 (insertion sort), but nothing that is a search-returning-index, a nonlinear bound between two
 aggregates, or sorted binary search. All three verify — including Dafny's single most iconic
 example, binary search.
+
+In the five-act framing these sit with **Act 5** — full-algorithm depth rather than single-property
+checks — but measured against the proofs the Dafny/Verus community recognises rather than ones we chose.
 
 ### SumMax — `sum ≤ N · max` (VSComp 2010, Problem 1)
 
