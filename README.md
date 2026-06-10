@@ -628,6 +628,69 @@ not just a field — became an *executable* contract in GROOVY-12078; the verifi
 its entry-snapshot machinery, so now the proof and the runtime check agree. A wrong relation (`result.a ==
 old.a`) refutes either way.
 
+**Nested loops — `count = n·n`, scaling to a flat matrix sum.** A loop may sit inside another loop, each
+carrying its own `@Invariant`/`@Decreases`. The textbook case accumulates `n·n` by counting `1` across an
+`n × n` grid:
+
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result == n * n })
+static int squareCount(int n) {
+    int count = 0, i = 0
+    @Invariant({ 0 <= i && i <= n && count == i * n })
+    @Decreases({ n - i })
+    while (i < n) {
+        int j = 0
+        @Invariant({ 0 <= j && j <= n && count == i * n + j })
+        @Decreases({ n - j })
+        while (j < n) {
+            count += 1
+            j += 1
+        }
+        i += 1
+    }
+    count
+}
+```
+
+The proof **composes**. The outer loop treats the inner loop as a *summarised* cut — havoc what it
+writes, then assume `inner_inv ∧ ¬inner_guard`, so on exit `count == i·n + n == (i + 1)·n`, exactly what
+the outer invariant needs after `i += 1`. The inner loop's own establishment / preservation / progress are
+discharged separately. The subtle, load-bearing point: the inner invariant `count == i·n + j` is
+*self-contained* — checked under `inner_inv ∧ inner_guard`, **not** under the outer `count == i·n`, which
+is *false while the inner loop runs* (`count` is mid-increment). And a too-weak inner invariant can't slip
+a wrong result past the outer check: delete the `count == i·n + j` clause and the outer preservation
+fails, because the summary leaves `count` unconstrained (its counterexample shows a free `count$havoc`).
+
+And it scales from scalar accumulators to **arrays**. Summing a flat *n×m* matrix composes three of the
+machinery's pieces at once — two nested loops, the array-range `.sum()` aggregation carried as a loop
+invariant, and the **nonlinear bound** on the flat read index `a[k]` where `k == i·m + j`:
+
+```groovy
+@Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
+@Ensures({ result == a[0..<n * m].sum() })
+static int matrixSum(int n, int m, int[] a) {
+    int sum = 0, i = 0, k = 0
+    @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum() })
+    @Decreases({ n - i })
+    while (i < n) {
+        int j = 0
+        @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j && sum == a[0..<k].sum() })
+        @Decreases({ m - j })
+        while (j < m) { sum += a[k]; k += 1; j += 1 }
+        i += 1
+    }
+    sum
+}
+```
+
+The running `sum == a[0..<k].sum()` extends one element per inner step (the `sum$` base/step axioms), the
+inner loop is summarised as a cut for the outer, and the `a[k]` read needs `k == i·m + j < n·m ≤ a.length` —
+which Z3's nonlinear solver won't derive alone, so the verifier supplies the monotonicity lemma `(i < n ∧ 0 ≤
+m) ⟹ i·m + m ≤ n·m` as a sound ground fact (a flat `a[i*m + j] = 0` matrix *fill* verifies the same way).
+Out of fragment, all skipping loudly: a third level of nesting, an inner loop with no `@Invariant`, or one
+that grows a collection (`xs.add`).
+
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
 exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and
@@ -1374,70 +1437,6 @@ type-check with no `(int)` cast — the postcondition reads exactly as written. 
 alternative) wouldn't. (Per Leino's own note, the
 `a[k] >= 0` precondition isn't actually needed for the postcondition — it's kept here only to stay
 faithful to the source.)
-
-### Nested loops — `count = n·n` via a double loop
-
-A loop may sit inside another loop, each carrying its own `@Invariant`/`@Decreases`. The textbook case
-accumulates `n·n` by counting `1` across an `n × n` grid:
-
-```groovy
-@Requires({ n >= 0 })
-@Ensures({ result == n * n })
-static int squareCount(int n) {
-    int count = 0, i = 0
-    @Invariant({ 0 <= i && i <= n && count == i * n })
-    @Decreases({ n - i })
-    while (i < n) {
-        int j = 0
-        @Invariant({ 0 <= j && j <= n && count == i * n + j })
-        @Decreases({ n - j })
-        while (j < n) {
-            count += 1
-            j += 1
-        }
-        i += 1
-    }
-    count
-}
-```
-
-The proof **composes**. The outer loop treats the inner loop as a *summarised* cut — havoc what it
-writes, then assume `inner_inv ∧ ¬inner_guard`, so on exit `count == i·n + n == (i + 1)·n`, exactly what
-the outer invariant needs after `i += 1`. The inner loop's own establishment / preservation / progress are
-discharged separately. The subtle, load-bearing point: the inner invariant `count == i·n + j` is
-*self-contained* — checked under `inner_inv ∧ inner_guard`, **not** under the outer `count == i·n`, which
-is *false while the inner loop runs* (`count` is mid-increment). And a too-weak inner invariant can't slip
-a wrong result past the outer check: delete the `count == i·n + j` clause and the outer preservation
-fails, because the summary leaves `count` unconstrained (its counterexample shows a free `count$havoc`).
-
-And it scales from scalar accumulators to **arrays**. Summing a flat *n×m* matrix composes three of the
-machinery's pieces at once — two nested loops, the array-range `.sum()` aggregation carried as a loop
-invariant, and the **nonlinear bound** on the flat read index `a[k]` where `k == i·m + j`:
-
-```groovy
-@Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
-@Ensures({ result == a[0..<n * m].sum() })
-static int matrixSum(int n, int m, int[] a) {
-    int sum = 0, i = 0, k = 0
-    @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum() })
-    @Decreases({ n - i })
-    while (i < n) {
-        int j = 0
-        @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j && sum == a[0..<k].sum() })
-        @Decreases({ m - j })
-        while (j < m) { sum += a[k]; k += 1; j += 1 }
-        i += 1
-    }
-    sum
-}
-```
-
-The running `sum == a[0..<k].sum()` extends one element per inner step (the `sum$` base/step axioms), the
-inner loop is summarised as a cut for the outer, and the `a[k]` read needs `k == i·m + j < n·m ≤ a.length` —
-which Z3's nonlinear solver won't derive alone, so the verifier supplies the monotonicity lemma `(i < n ∧ 0 ≤
-m) ⟹ i·m + m ≤ n·m` as a sound ground fact (a flat `a[i*m + j] = 0` matrix *fill* verifies the same way).
-Out of fragment, all skipping loudly: a third level of nesting, an inner loop with no `@Invariant`, or one
-that grows a collection (`xs.add`).
 
 ### Find — linear search, "not present ⟹ ∀ `a[k] ≠ key`"
 
