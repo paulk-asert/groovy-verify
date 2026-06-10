@@ -2403,12 +2403,20 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         [e]
     }
+    /** Quantifier- or aggregation-bearing: an `every`/`any`/closure, or an aggregation call
+     *  (`sum`/`product`/`count`/`min`/`max`/`inject`) — all of which pull a *quantified axiom*
+     *  (the `sum$`/`prod$`/… base+step) into the solver. An array-index bound never depends on a
+     *  collection's contents *or* its aggregate, so such conjuncts are dropped from a bounds discharge
+     *  (Phase 91b), which keeps Z3 out of the quantifier+NIA path it bails on. `size`/`length` are NOT
+     *  here — a bound legitimately uses them. */
+    private static final Set<String> AGG_METHODS =
+        ['every','any','sum','product','count','min','max','inject'] as Set
     private static boolean hasQuantifier(Expression e) {
         boolean[] found = [false] as boolean[]
         e.visit(new CodeVisitorSupport() {
             @Override void visitClosureExpression(ClosureExpression ce) { found[0] = true }
             @Override void visitMethodCallExpression(MethodCallExpression mce) {
-                if (mce.methodAsString == 'every' || mce.methodAsString == 'any') found[0] = true
+                if (AGG_METHODS.contains(mce.methodAsString)) found[0] = true
                 super.visitMethodCallExpression(mce)
             }
         })
@@ -2832,6 +2840,12 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (enc.tryRecordFactoryAssign(a.name, a.rhs)) {
                         continue
                     }
+                    // Phase 35b — `Set u = a & b` / `a | b` / …: record the local as that set binop so a
+                    // later `x in u` folds inline (the materialised quantifier form needs a bound; this
+                    // point-wise form doesn't).
+                    if (enc.tryRecordSetBinopAssign(a.name, a.rhs)) {
+                        continue
+                    }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated
                     // against the current binding (the pre-assignment value), so a mutation like
                     // `count = count + 1` becomes `count#1 == count + 1` (not the false `count == count + 1`)
@@ -2978,8 +2992,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 // `result[k]` fold to the k-th returned element (size + nullity pinned). This lets a method
                 // return e.g. `[sum, product]` and have `@Ensures({ result[0] == … && result[1] == … })`
                 // resolve, where a bare scalar handle couldn't. No scalar result binding is needed.
-                if (enc.tryRecordFactoryAssign('result', p.result)) {
-                    // result registered as a factory — fall through to the postcondition check.
+                if (enc.tryRecordFactoryAssign('result', p.result) ||
+                    enc.tryRecordSetBinopAssign('result', p.result)) {
+                    // result registered as a factory or a set binop — fall through to the check.
                 } else {
                     // Phase 61 — a BigDecimal-valued return narrowed into a non-decimal result (e.g.
                     // `int f() { a / b }`, Groovy truncating the quotient) can't be bound as a Real
@@ -4250,7 +4265,8 @@ class VerifyChecker extends TypeCheckingExtension {
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
             // Phase 78 — a list-literal return (e.g. `return [s, p]`) binds result's contents as a factory,
             // so result.size()/result[k] fold; otherwise the scalar-handle binding + size/array alias.
-            if (resultExpr == null || !enc.tryRecordFactoryAssign('result', resultExpr)) {
+            if (resultExpr == null || (!enc.tryRecordFactoryAssign('result', resultExpr) &&
+                                       !enc.tryRecordSetBinopAssign('result', resultExpr))) {
                 enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
                 // Phase 45b — alias result's size/array oracles to the returned list local so
                 // {@code result.size()} in the postcondition resolves to the local's threaded state.

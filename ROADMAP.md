@@ -1821,6 +1821,20 @@ into either operand), so {@code result == 1} rightly refutes.
   upper bound + full-coverage iff usually suffice for FSM-shape proofs that care about
   *coverage*, not exact size.
 
+### Phase 35b — set-binop *returns* bind `result`  *(shipped)*
+
+A method that **returns** a set binop — `static Set<Integer> common(a, b) { a & b }` — can now spec its
+`result` member-by-member. The materialised form (Phase 35) needs a bound or enum domain for its universal;
+this reuses the cheaper *inline* point-wise membership instead. When binding `result` (the same site that
+records a list/tuple/map factory return, Phase 78), `tryRecordSetBinopAssign` records `result → (a & b)` in
+`setBinopDefs`, and `setBinopFor` resolves a variable through that map — so `x in result` folds exactly like
+the inline `x in (a & b)`, at *any* element. Characterise with a symbolic param: `@Ensures({ (p in result)
+== (p in a && p in b) })` proves for every `p` (it's an unconstrained parameter). Works for a direct binop
+return and a materialised-local return (`Set u = a & b; u`). Co-shipped: `setBinopFor` learned the **method**
+spellings of the operators — `a.and(b)`/`a.or(b)`/`a.xor(b)`/`a.minus(b)` join `a & b`/`a.intersect(b)` (a
+`Set`-typed result wants these or the operators, since the GDK `intersect` returns a `Collection`). Sound —
+a return of `a | b` under an intersection `@Ensures` refutes. Tests: `P35b set return`.
+
 ## Phase 36 — Map&lt;K, Set&lt;V&gt;&gt; nesting (read-only)  *(shipped)*
 
 **The final row-2 deferred item: nested element domains.** A {@code Map<K, Set<V>>} reads as one
@@ -4989,12 +5003,16 @@ a monotonicity step Z3's nonlinear tactic won't take on its own. Two small, soun
    proof direction); built from the original AST so the product terms unify with the goal's; scoped to that
    one solver session.
 2. **Quantifier-strip for bounds** (`dropQuantifierConjuncts`). An array-index bound depends only on the
-   index arithmetic and the size oracle — *never* on array contents. So for an `IndexSite` discharge, drop the
-   content-quantifier conjuncts (`xs.every { … }`) from the assumed facts. Sound (dropping hypotheses only
-   makes a proof harder), and it keeps Z3 out of the quantifier+NIA path that made it bail even *with* the
-   lemma present. **This was the actual unlock** — with the lemma alone the bound still hung; the strip was
-   the difference between "could not decide" and a clean proof. (Found by probe: the quantifier-free version
-   of the same bound verified with the lemma, the quantifier-bearing one didn't.)
+   index arithmetic and the size oracle — *never* on array contents or their aggregate. So for an `IndexSite`
+   discharge, drop the conjuncts that carry a *quantified axiom*: `xs.every { … }`/`any`/closures **and**
+   aggregation calls (`sum`/`product`/`count`/`min`/`max`/`inject`, whose `sum$`/`prod$`/… base+step axioms
+   interfere the same way) — but **not** `size`/`length`, which a bound legitimately uses. Sound (dropping
+   hypotheses only makes a proof harder), and it keeps Z3 out of the quantifier+NIA path that made it bail
+   even *with* the lemma present. **This was the actual unlock** — with the lemma alone the bound still hung;
+   the strip was the difference between "could not decide" and a clean proof. (Found by probe: the
+   quantifier-free version of the same bound verified with the lemma, the quantifier-bearing one didn't. The
+   aggregation case was added when the **flat matrix-sum** example — `sum == a[0..<k].sum()` carried as the
+   invariant — hit the same wall as the `every`-bearing fill.)
 
 Both are sound (the lemma is a true fact; the strip removes assumptions) and the out-of-bounds inner-store
 test still refutes — the lemma relates to `n*m`, so a fill with only `a.length ≥ n` is still caught. Honest

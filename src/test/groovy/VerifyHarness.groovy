@@ -3525,6 +3525,90 @@ class VerifyHarness {
                             [a: x, b: y]
                         }
                     }''')],
+        // Matrix sum — nested loops + array-range `.sum()` aggregation + the NIA monotonicity lemma (the
+        // flat-index `a[k]` read bound `i*m+j < n*m`). README "Examples" carries this one.
+        [group: 'P91 nested', name: 'matrix sum (nested + aggregation)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
+                        @Ensures({ result == a[0..<n * m].sum() })
+                        static int matrixSum(int n, int m, int[] a) {
+                            int sum = 0; int i = 0; int k = 0
+                            @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum() })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j &&
+                                             sum == a[0..<k].sum() })
+                                @Decreases({ m - j })
+                                while (j < m) {
+                                    sum += a[k]
+                                    k += 1
+                                    j += 1
+                                }
+                                i += 1
+                            }
+                            sum
+                        }
+                    }''')],
+
+        // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).
+        [group: 'P33 union/intersect', name: 'inline intersection in  (a & b)', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ result == ((3 in a && 3 in b) ? 1 : 0) })
+                        static int common(Set<Integer> a, Set<Integer> b) { (3 in (a & b)) ? 1 : 0 }
+                    }''')],
+
+        // ===== set-return probes (Phase 35b: result bound to a set binop) =====
+        [group: 'P35b set return', name: 'common via a & b return', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ (3 in result) == (3 in a && 3 in b) })
+                        static Set<Integer> common(Set<Integer> a, Set<Integer> b) { a & b }
+                    }''')],
+        [group: 'P35b set return', name: 'union via a | b return', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ (3 in result) == (3 in a || 3 in b) })
+                        static Set<Integer> merge(Set<Integer> a, Set<Integer> b) { a | b }
+                    }''')],
+        [group: 'P35b set return', name: 'union via a.or(b) return', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ (3 in result) == (3 in a || 3 in b) })
+                        static Set<Integer> merge(Set<Integer> a, Set<Integer> b) { a.or(b) }
+                    }''')],
+        [group: 'P35b set return', name: 'intersect via a.and(b) return', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ (3 in result) == (3 in a && 3 in b) })
+                        static Set<Integer> common(Set<Integer> a, Set<Integer> b) { a.and(b) }
+                    }''')],
+        [group: 'P35b set return', name: 'common via materialised local return', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ (3 in result) == (3 in a && 3 in b) })
+                        static Set<Integer> common(Set<Integer> a, Set<Integer> b) {
+                            Set<Integer> r = a & b
+                            r
+                        }
+                    }''')],
+        // SOUNDNESS: a wrong relation (returns the UNION but claims the INTERSECTION) must refute.
+        [group: 'P35b set return', name: 'wrong set-return relation refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        @Ensures({ (3 in result) == (3 in a && 3 in b) })
+                        static Set<Integer> merge(Set<Integer> a, Set<Integer> b) { a | b }
+                    }''')],
+
+        // README set-return example (verbatim): result IS the union, characterised at an arbitrary element p.
+        [group: 'P35b set return', name: 'README union: result == granted | extra', ok: true,
+         src: tc('''class C {
+                        @Requires({ granted != null && extra != null })
+                        @Ensures({ (p in result) == (p in granted || p in extra) })
+                        static Set<Integer> merge(Set<Integer> granted, Set<Integer> extra, int p) { granted | extra }
+                    }''')],
+
         // Dropping types works too — untyped params are fine; only the RETURN must be `Map` (not `def`),
         // so `result.a` resolves as a map-as-named-tuple read under @TypeChecked.
         [group: 'P90 swap', name: 'untyped params + raw Map return (result.a == old.b)', ok: true,

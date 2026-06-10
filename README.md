@@ -431,21 +431,25 @@ literal interning, the `State.values().length` constant-folding, and the enum-do
 pigeonhole + full-coverage iff into a single proof.
 
 **Set algebra — union, intersection, difference, symmetric difference.** All of Groovy's set operators
-verify, with their bitwise-operator aliases: `a + b` / `a | b` (union), `a.intersect(b)` / `a & b`
-(intersection), `a - b` (difference) and `a ^ b` (symmetric difference, "in exactly one"). Membership
-lowers element-wise, so a policy merge proves what you'd expect — a permission granted by *either* set is
-in the union:
+verify, with both the operator and method spellings: `a + b` / `a | b` / `a.or(b)` (union),
+`a & b` / `a.and(b)` / `a.intersect(b)` (intersection), `a - b` (difference) and `a ^ b` (symmetric
+difference, "in exactly one"). A method that **returns** a set can spec its `result` member-by-member —
+so a policy merge proves it's exactly the union, characterised at an arbitrary element `p`:
 
 ```groovy
-@Requires({ p in granted })
-@Ensures({ p in (granted | extra) })       // granted ∪ extra
-static int merge(Set<Integer> granted, Set<Integer> extra, int p) { 0 }
+@Requires({ granted != null && extra != null })
+@Ensures({ (p in result) == (p in granted || p in extra) })   // result == granted ∪ extra
+static Set<Integer> merge(Set<Integer> granted, Set<Integer> extra, int p) { granted | extra }
 ```
 
-The element-wise lowering keeps it honest: `p in a` alone does **not** entail `p in (a ^ b)` — `p` might be
-in `b` too, so symmetric difference excludes it — and that claim rightly refutes. The `containsAll` and
-materialised forms (`Set u = a + b`, then `u.containsAll(a)`) work over enum-element sets (finite domain)
-and Int-element sets under a `Sets.boundedBy` bound.
+`p in result` folds to the inline union membership `p in granted || p in extra` (the verifier binds a
+set-binop `result` to its definition), and because `p` is an unconstrained parameter, proving the
+equivalence for `p` proves it for *every* element. The element-wise lowering keeps it honest: returning
+`granted & extra` (intersection) under the same `@Ensures` rightly refutes, and `p in a` alone does **not**
+entail `p in (a ^ b)` — `p` might be in `b` too, so symmetric difference excludes it. (One Groovy wrinkle:
+`a.intersect(b)` returns a `Collection`, so a `Set`-typed result wants the operator `a & b` / `a.and(b)`,
+which return a `Set`.) The `containsAll` and materialised forms (`Set u = a + b`, then `u.containsAll(a)`)
+work over enum-element sets (finite domain) and Int-element sets under a `Sets.boundedBy` bound.
 
 **Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
@@ -1406,10 +1410,34 @@ is *false while the inner loop runs* (`count` is mid-increment). And a too-weak 
 a wrong result past the outer check: delete the `count == i·n + j` clause and the outer preservation
 fails, because the summary leaves `count` unconstrained (its counterexample shows a free `count$havoc`).
 
-An inner loop may also **fill an array** — the flat `a[i*m + j] = 0` matrix fill verifies end-to-end, with
-its nonlinear store bound `i*m + j < n*m` discharged by a verifier-supplied monotonicity lemma (Phase 91b;
-see the capability table). Out of fragment, all skipping loudly: a third level of nesting, an inner loop
-with no `@Invariant`, or one that grows a collection (`xs.add`).
+And it scales from scalar accumulators to **arrays**. Summing a flat *n×m* matrix composes three of the
+machinery's pieces at once — two nested loops, the array-range `.sum()` aggregation carried as a loop
+invariant, and the **nonlinear bound** on the flat read index `a[k]` where `k == i·m + j`:
+
+```groovy
+@Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
+@Ensures({ result == a[0..<n * m].sum() })
+static int matrixSum(int n, int m, int[] a) {
+    int sum = 0, i = 0, k = 0
+    @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum() })
+    @Decreases({ n - i })
+    while (i < n) {
+        int j = 0
+        @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j && sum == a[0..<k].sum() })
+        @Decreases({ m - j })
+        while (j < m) { sum += a[k]; k += 1; j += 1 }
+        i += 1
+    }
+    sum
+}
+```
+
+The running `sum == a[0..<k].sum()` extends one element per inner step (the `sum$` base/step axioms), the
+inner loop is summarised as a cut for the outer, and the `a[k]` read needs `k == i·m + j < n·m ≤ a.length` —
+which Z3's nonlinear solver won't derive alone, so the verifier supplies the monotonicity lemma `(i < n ∧ 0 ≤
+m) ⟹ i·m + m ≤ n·m` as a sound ground fact (a flat `a[i*m + j] = 0` matrix *fill* verifies the same way).
+Out of fragment, all skipping loudly: a third level of nesting, an inner loop with no `@Invariant`, or one
+that grows a collection (`xs.add`).
 
 ### Find — linear search, "not present ⟹ ∀ `a[k] ≠ key`"
 
@@ -1584,7 +1612,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Subset reasoning — `s.containsAll(t)` over enum-element sets** | `granted.containsAll(required) && r in required ⟹ r in granted` (authorization shape); reflexivity, transitivity, and empty-subset cases all verify; complemented by the empty iff `card(s) == 0 ⟺ no enum constant ∈ s` | ✅ Phase 30 |
 | **Subset over Int-element sets via `Sets.boundedBy(t, n)`** | Same `containsAll` shape, now for `Set<Integer>` when the subset operand has a registered bound; the bounded universal `∀i. 0<=i<n ⟹ (i ∈ t ⟹ i ∈ s)` closes via Z3 e-matching on `(select t i)` and `(select s i)` | ✅ Phase 31 |
 | **`m.containsValue(v)` for enum-keyed maps + `s.equals(t)` for sets** | `m[State.RUNNING] == 42 ⟹ m.containsValue(42)` (existential over enum keys); `s.equals(t) ≡ s.containsAll(t) ∧ t.containsAll(s)` composes subset both ways | ✅ Phase 32 |
-| **Inline set algebra — union / intersection / difference / symmetric difference** | `(a + b)` or `(a \| b)`, `a.intersect(b)` or `(a & b)`, `(a - b)`, `(a ^ b)` (Groovy overloads the bitwise operators for sets: `\|`=union, `&`=intersection, `^`=symmetric difference). Pointwise membership `x in (a op b)` lowers per-element for any sort (`∨` / `∧` / `a∧¬b` / `xor`); `(a op b).containsAll(u)` lowers over the finite enum domain or — for `Set<Integer>` — a bounded universal on the argument's `Sets.boundedBy(u, n)`. Lazy — no new set handle minted | ✅ Phase 33 |
+| **Inline set algebra — union / intersection / difference / symmetric difference** | `(a + b)` / `(a \| b)` / `a.or(b)` (union), `(a & b)` / `a.and(b)` / `a.intersect(b)` (intersection), `(a - b)` / `a.minus(b)` (difference), `(a ^ b)` / `a.xor(b)` (symmetric difference) — both the bitwise-operator and method spellings. Pointwise membership `x in (a op b)` lowers per-element for any sort (`∨` / `∧` / `a∧¬b` / `xor`); `(a op b).containsAll(u)` lowers over the finite enum domain or — for `Set<Integer>` — a bounded universal on the argument's `Sets.boundedBy(u, n)`. A method that **returns** a set binop binds `result` to that binop (Phase 35b), so `x in result` folds inline and a set-returning `merge`/`common` can be specified member-by-member. Lazy — no new set handle minted | ✅ Phase 33 / 35b |
 | **Materialised set ops** | `Set<X> u = a op b` (any of `+` / `.intersect` / `-` / `^`; `as Set<X>` where the GDK returns `Collection`) mints `u` as a first-class set via the membership iff relating it to its operands — enum over the finite domain, `Set<Integer>` over a `Sets.boundedBy` bound that `u` inherits (intersection ⊆ either operand, difference ⊆ a, union/symdiff ⊆ a∪b). Subsequent `u.contains` / `u.containsAll` / `u.size()` and the enum pigeonhole/coverage axioms light up automatically | ✅ Phase 35 |
 | **`Map<K, Set<V>>` nesting (read)** | `m[k].contains(x)` / `x in m[k]` / `m[k].containsAll(s)` over `Map<Role, Set<V>>` — the map's value sort is the inner set's characteristic-array sort `Array<V, Int>`, so `m[k]` reads as a transient SMT array (no named handle minted). Inner-set mutation and `m[k].size()` are deferred | ✅ Phase 36 |
 | **List element nullability** | `xs[i].method()` and `xs.get(i).method()` are now implicit-NPE-checked against a per-element nullity oracle; `@Requires({ xs[i] != null })` and `if (xs[i] != null) …` guards discharge it. Counterexamples render as `f([null])` / `f([null, null])`. Annotation matching (`@NonNull` / `@NotNull` / `@Nonnull` / `@MonotonicNonNull` simple-name set, à la NullChecker) is plumbed but Groovy's AST doesn't always preserve type-use annotations on generics; use the contract form | ✅ Phase 37 |

@@ -1434,11 +1434,34 @@ class Encoder {
      * True if {@code e} is a known set union ({@code +}), intersection ({@code .intersect}), difference
      * ({@code -}) or symmetric difference ({@code ^}) over two same-element-sort sets. Null otherwise.
      */
+    /** Phase 35b — a name recorded as a set binop (e.g. `result` returned as `a & b`, or a local
+     *  `Set u = a | b`), so membership / `contains` on the *name* folds to the inline binop. */
+    private final Map<String, Expression> setBinopDefs = [:]
+
+    /** Record {@code name = rhs} when rhs is (or aliases) a set binop, so later `x in name` folds inline.
+     *  Used for a set-binop *return* (binding `result`) and for set-binop locals. */
+    boolean tryRecordSetBinopAssign(String name, Expression rhs) {
+        if (rhs instanceof VariableExpression) {
+            Expression recorded = setBinopDefs.get(((VariableExpression) rhs).name)   // returning a set-binop local
+            if (recorded != null) { setBinopDefs.put(name, recorded); return true }
+            return false
+        }
+        if (setBinopFor(rhs) == null) return false
+        setBinopDefs.put(name, rhs)
+        true
+    }
+
     private SetBinop setBinopFor(Expression e) {
         // Unwrap an outer cast — e.g. `a.intersect(b) as Set<Role>` (Groovy's GDK intersect returns
         // Collection, so a Set-typed target needs the explicit cast). The cast doesn't change the
         // set semantics; the wrapped expression is the one we recognise.
         if (e instanceof CastExpression) e = ((CastExpression) e).expression
+        // A name recorded as a set binop (Phase 35b) resolves to that binop — so `x in result` where
+        // `result` was returned as `a & b` folds exactly like the inline `x in (a & b)`.
+        if (e instanceof VariableExpression) {
+            Expression recorded = setBinopDefs.get(((VariableExpression) e).name)
+            if (recorded != null) e = recorded
+        }
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             switch (be.operation.type) {
@@ -1451,8 +1474,17 @@ class Encoder {
         }
         if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
-            if (mce.methodAsString == 'intersect' && argList(mce).size() == 1) {
-                return tryMakeSetBinop(mce.objectExpression, argList(mce).get(0), 'intersect')
+            if (argList(mce).size() == 1) {
+                // The method forms of the operators: `a & b` is `a.and(b)`, `a | b` is `a.or(b)`,
+                // `a ^ b` is `a.xor(b)`, `a - b` is `a.minus(b)`; plus the GDK `a.intersect(b)`.
+                String k = null
+                switch (mce.methodAsString) {
+                    case 'intersect': case 'and': k = 'intersect'; break
+                    case 'or':                    k = 'union';     break
+                    case 'xor':                   k = 'symdiff';   break
+                    case 'minus':                 k = 'difference'; break
+                }
+                if (k != null) return tryMakeSetBinop(mce.objectExpression, argList(mce).get(0), k)
             }
         }
         null
