@@ -34,6 +34,7 @@ import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
@@ -46,6 +47,7 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
+import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.WhileStatement
 import org.codehaus.groovy.syntax.Types
@@ -241,13 +243,98 @@ class ContractExpansionTransform implements ASTTransformation {
         // contract is a @Requires (which groovy-contracts also instruments).
         if (mn.code instanceof BlockStatement) {
             BlockStatement orig = (BlockStatement) mn.code
-            BlockStatement snapshot = new BlockStatement(
-                new ArrayList<Statement>(orig.statements),
-                orig.variableScope ?: new VariableScope())
+            List<Statement> stmts
+            if (hasTailRecursive(mn)) {
+                // @TailRecursive is a SEMANTIC_ANALYSIS local transform that renames the body's
+                // variable accesses (`n` -> `_n_`) IN PLACE — mutating the very nodes a *shallow*
+                // snapshot shares — so the captured body would desync from the parameters and the
+                // contract closures (which still spell `n`/`acc`/`result`). Deep-clone so the
+                // snapshot is immune; the verifier then analyses the author's recursive body and the
+                // tail call is hoisted by the return-call machinery (VerifyChecker, Phase 92). Gated
+                // on @TailRecursive so every other method keeps the cheaper shallow snapshot.
+                stmts = new ArrayList<Statement>(orig.statements.size())
+                for (Statement st : orig.statements) stmts.add(deepCloneBody(st))
+            } else {
+                // A shallow copy of the statement list suffices for groovy-contracts, which mutates
+                // the original block's list, not the statement nodes we keep references to.
+                stmts = new ArrayList<Statement>(orig.statements)
+            }
+            BlockStatement snapshot = new BlockStatement(stmts, orig.variableScope ?: new VariableScope())
             snapshot.setSourcePosition(orig)
             mn.setNodeMetaData(ORIGINAL_BODY_KEY, snapshot)
         }
     }
+
+    /** True if the method carries {@code @groovy.transform.TailRecursive} (matched by FQN, so no hard
+     *  dependency on the annotation type). Such a method is rewritten in place at SEMANTIC_ANALYSIS. */
+    private static boolean hasTailRecursive(MethodNode mn) {
+        for (AnnotationNode a : mn.annotations) {
+            ClassNode cn = a.classNode
+            if (cn != null && cn.name == 'groovy.transform.TailRecursive') return true
+        }
+        return false
+    }
+
+    /** Deep-clone a body statement so its variable nodes are independent of the live method body (see
+     *  the {@code @TailRecursive} note at the capture site). Expressions are rebuilt with a fresh
+     *  {@link VariableExpression} per access — names are what the body analysis resolves on — and
+     *  {@link Expression#transformExpression} copies every composite type. Only the statement shapes a
+     *  tail-recursive body uses are cloned; anything else is shared (no worse than the shallow snapshot). */
+    private static Statement deepCloneBody(Statement s) {
+        if (s == null) return null
+        if (s instanceof BlockStatement) {
+            BlockStatement src = (BlockStatement) s
+            List<Statement> out = new ArrayList<Statement>(src.statements.size())
+            for (Statement st : src.statements) out.add(deepCloneBody(st))
+            BlockStatement b = new BlockStatement(out, src.variableScope)
+            b.setSourcePosition(s)
+            return b
+        }
+        if (s instanceof ReturnStatement) {
+            ReturnStatement r = new ReturnStatement(freshenVars(((ReturnStatement) s).expression))
+            r.setSourcePosition(s)
+            return r
+        }
+        if (s instanceof ExpressionStatement) {
+            ExpressionStatement e = new ExpressionStatement(freshenVars(((ExpressionStatement) s).expression))
+            e.setSourcePosition(s)
+            return e
+        }
+        if (s instanceof IfStatement) {
+            IfStatement i = (IfStatement) s
+            IfStatement c = new IfStatement(
+                (BooleanExpression) freshenVars(i.booleanExpression),
+                deepCloneBody(i.ifBlock), deepCloneBody(i.elseBlock))
+            c.setSourcePosition(s)
+            return c
+        }
+        return s
+    }
+
+    /** Rebuild an expression tree with a fresh {@link VariableExpression} for each variable access
+     *  (name/type/source preserved); {@code transformExpression} copies every other node type. */
+    static Expression freshenVars(Expression e) {
+        if (e == null) return null
+        if (e instanceof VariableExpression) {
+            VariableExpression v = (VariableExpression) e
+            VariableExpression copy = new VariableExpression(v.name, v.type)
+            // At CONVERSION the original's accessedVariable isn't resolved yet, and the resolver later
+            // visits the live body, not this detached clone — leaving it null would make the receiver-null
+            // deref check (which gates on accessedVariable being a real variable) silently skip. Point it
+            // at the copy itself, the convention for an unresolved local, so `var.method()` obligations
+            // still fire. Class-name receivers are ClassExpressions (not VariableExpressions), so unaffected.
+            copy.setAccessedVariable(copy)
+            copy.setSourcePosition(v)
+            return copy
+        }
+        return e.transformExpression(VAR_FRESHENER)
+    }
+
+    /** Delegates {@code transformExpression}'s per-child callback back to {@link #freshenVars}. */
+    private static final class VarFreshener implements ExpressionTransformer {
+        Expression transform(Expression expr) { return ContractExpansionTransform.freshenVars(expr) }
+    }
+    private static final VarFreshener VAR_FRESHENER = new VarFreshener()
 
     /**
      * Capture {@code @Invariant}/{@code @Decreases} on top-level loop statements

@@ -4158,7 +4158,91 @@ class VerifyHarness {
                             return f(n - 2)
                         }
                     }''')],
+        // @TailRecursive interaction: the transform rewrites the body to a loop and renames variables
+        // in place at SEMANTIC_ANALYSIS. ContractExpansionTransform deep-clones the CONVERSION snapshot
+        // for @TailRecursive methods so the author's recursive body survives, and the bare tail call is
+        // hoisted (Phase 92) — so the inductive accumulator contract verifies on the recursive form,
+        // while @TailRecursive independently makes it stack-safe at runtime.
+        [group: 'P-induction', name: '@TailRecursive accumulator verifies on the recursive form', ok: true,
+         src: tc('''class C {
+                        @groovy.transform.TailRecursive
+                        @Requires({ n >= 0 && acc >= 1 })
+                        @Ensures({ result >= acc })
+                        @Decreases({ n })
+                        static long factHelper(long n, long acc) {
+                            if (n <= 1) return acc
+                            long next = n * acc
+                            return factHelper(n - 1, next)
+                        }
+                    }''')],
+        // Soundness: the deep-cloned snapshot must not let a false @Ensures slip through — base case
+        // returns acc, not acc+1, so it still refutes.
+        [group: 'P-induction', name: '@TailRecursive false postcondition still refutes',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @groovy.transform.TailRecursive
+                        @Requires({ n >= 0 && acc >= 1 })
+                        @Ensures({ result >= acc + 1 })
+                        @Decreases({ n })
+                        static long factHelper(long n, long acc) {
+                            if (n <= 1) return acc
+                            long next = n * acc
+                            return factHelper(n - 1, next)
+                        }
+                    }''')],
 
+        // Soundness of the deep-cloned snapshot's implicit safety obligations: a @TailRecursive method
+        // that dereferences an unguarded receiver / indexes an unchecked array must still refute (the
+        // clone's variable nodes carry a self-accessedVariable so the deref-site fires; bounds are
+        // structural). Without these the clone would silently verify code that NPEs / overruns.
+        [group: 'P-induction', name: '@TailRecursive unguarded receiver deref still refutes', ok: false, expect: 'NullPointer',
+         src: tc('''class C {
+                        @groovy.transform.TailRecursive
+                        @Requires({ n >= 0 })
+                        @Decreases({ n })
+                        static int f(int n, String s) {
+                            if (n <= 0) return s.length()
+                            return f(n - 1, s)
+                        }
+                    }''')],
+        [group: 'P-induction', name: '@TailRecursive unguarded array access still refutes', ok: false, expect: 'IndexOutOfBounds',
+         src: tc('''class C {
+                        @groovy.transform.TailRecursive
+                        @Requires({ n >= 0 })
+                        @Decreases({ n })
+                        static int f(int n, int[] a) {
+                            if (n <= 0) return a[0]
+                            return f(n - 1, a)
+                        }
+                    }''')],
+        [group: 'P-induction', name: '@TailRecursive divide-by-zero still refutes', ok: false, expect: 'Division by zero',
+         src: tc('''class C {
+                        @groovy.transform.TailRecursive
+                        @Requires({ n >= 0 })
+                        @Decreases({ n })
+                        static int f(int n, int d) {
+                            if (n <= 0) return 100.intdiv(d)
+                            return f(n - 1, d)
+                        }
+                    }''')],
+        // The braced base-case return (`if (n<=1) { return acc }`) is the user-level workaround that
+        // makes groovy-contracts' @Ensures fire at RUNTIME under @TailRecursive (its per-return wrap finds
+        // the block-wrapped return); it also verifies at COMPILE time here (the cloner recurses into the
+        // block) — so braces + the deep-clone give both halves of the dual-tenet.
+        [group: 'P-induction', name: '@TailRecursive braced base-case return verifies', ok: true,
+         src: tc('''class C {
+                        @groovy.transform.TailRecursive
+                        @Requires({ n >= 0 && acc >= 1 })
+                        @Ensures({ result >= acc })
+                        @Decreases({ n })
+                        static long factHelper(long n, long acc) {
+                            if (n <= 1) {
+                                return acc
+                            }
+                            long next = n * acc
+                            return factHelper(n - 1, next)
+                        }
+                    }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also
