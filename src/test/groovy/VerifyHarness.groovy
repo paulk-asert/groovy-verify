@@ -7506,6 +7506,27 @@ class VerifyHarness {
                         dst[i] = src[++i]; return dst[3] } }''')],
 
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
+        [group: 'README examples', name: 'nested loop: count = n*n', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n * n })
+                        static int squareCount(int n) {
+                            int count = 0, i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n && count == i * n + j })
+                                @Decreases({ n - j })
+                                while (j < n) {
+                                    count += 1
+                                    j += 1
+                                }
+                                i += 1
+                            }
+                            count
+                        }
+                    }''')],
         [group: 'README examples', name: 'two-cursor array copy dst[j++] = src[i++]', ok: true,
          src: tc('''class C {
                         @Requires({ src != null && dst != null && src.length <= dst.length })

@@ -1332,6 +1332,46 @@ alternative) wouldn't. (Per Leino's own note, the
 `a[k] >= 0` precondition isn't actually needed for the postcondition — it's kept here only to stay
 faithful to the source.)
 
+### Nested loops — `count = n·n` via a double loop
+
+A loop may sit inside another loop, each carrying its own `@Invariant`/`@Decreases`. The textbook case
+accumulates `n·n` by counting `1` across an `n × n` grid:
+
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result == n * n })
+static int squareCount(int n) {
+    int count = 0, i = 0
+    @Invariant({ 0 <= i && i <= n && count == i * n })
+    @Decreases({ n - i })
+    while (i < n) {
+        int j = 0
+        @Invariant({ 0 <= j && j <= n && count == i * n + j })
+        @Decreases({ n - j })
+        while (j < n) {
+            count += 1
+            j += 1
+        }
+        i += 1
+    }
+    count
+}
+```
+
+The proof **composes**. The outer loop treats the inner loop as a *summarised* cut — havoc what it
+writes, then assume `inner_inv ∧ ¬inner_guard`, so on exit `count == i·n + n == (i + 1)·n`, exactly what
+the outer invariant needs after `i += 1`. The inner loop's own establishment / preservation / progress are
+discharged separately. The subtle, load-bearing point: the inner invariant `count == i·n + j` is
+*self-contained* — checked under `inner_inv ∧ inner_guard`, **not** under the outer `count == i·n`, which
+is *false while the inner loop runs* (`count` is mid-increment). And a too-weak inner invariant can't slip
+a wrong result past the outer check: delete the `count == i·n + j` clause and the outer preservation
+fails, because the summary leaves `count` unconstrained (its counterexample shows a free `count$havoc`).
+
+An inner loop may also **fill an array** — the flat `a[i*m + j] = 0` matrix fill verifies end-to-end, with
+its nonlinear store bound `i*m + j < n*m` discharged by a verifier-supplied monotonicity lemma (Phase 91b;
+see the capability table). Out of fragment, all skipping loudly: a third level of nesting, an inner loop
+with no `@Invariant`, or one that grows a collection (`xs.add`).
+
 ### Find — linear search, "not present ⟹ ∀ `a[k] ≠ key`"
 
 The Dafny tutorial's linear search returns an index, or `−1` with a *universal* witness that the
