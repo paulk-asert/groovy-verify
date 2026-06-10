@@ -83,6 +83,12 @@ dependencies {
     testImplementation "org.apache.groovy:groovy:$groovyVersion"
     testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
 
+    // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
+    // PurityChecker / ModifiesChecker). Test-only: a consumer supplies these themselves when they
+    // combine checkers — groovy-verify neither compiles nor runs against them — so they never reach
+    // the published POM (test scope is not transitive). Here, to exercise multi-extension composition.
+    testImplementation "org.apache.groovy:groovy-typecheckers:$groovyVersion"
+
     // JUnit 5 — drives the VerifyHarness `@TestFactory` (one dynamic test per CASES entry), so the
     // suite is individually runnable from the IDE / `./gradlew test`. The compact `CASES` data and the
     // `./gradlew verify` console runner (VerifyHarness.main) are unchanged; both share `evaluate()`.
