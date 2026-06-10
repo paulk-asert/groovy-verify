@@ -4963,10 +4963,32 @@ fails** (its counterexample literally shows `count$havoc$… = 8` unconstrained)
 **Inner loops may fill arrays.** `a[k] = v` in the inner body is supported (the scalar-only restriction of the
 first cut is lifted): the summary havocs `a`'s contents and re-constrains them from `inner_inv`, and the
 inner bounds are checked in the inner context. A buffer-clear `while (j < m) a[j] = 0` with
-`(0..<j).every { a[it] == 0 }` verifies. The honest limit is **Z3's nonlinear arithmetic**: a flat *n×m*
-matrix fill (`a[i*m + j] = 0`) needs `i*m + j < n*m` for the store bound, which is irreducibly nonlinear —
-Z3 returns *"could not decide array index bounds"* (sound — never a false pass; just no proof). Linear-index
-fills go through.
+`(0..<j).every { a[it] == 0 }` verifies — and so does the **flat *n×m* matrix fill** `a[i*m + j] = 0`, whose
+store bound `i*m + j < n*m` is nonlinear (Phase 91b, below).
+
+### Phase 91b — a verifier-supplied NIA monotonicity lemma
+
+The flat matrix fill's store bound needs `i*m + j < n*m`, which reduces to multiplying `i < n` by `m ≥ 0` —
+a monotonicity step Z3's nonlinear tactic won't take on its own. Two small, sound additions close it:
+
+1. **Guarded ground lemmas** (`emitMonotonicityLemmas`, in the `IndexSite` discharge). For products in the
+   obligation that share a factor, assert `(0 ≤ p ∧ 0 ≤ r) ⟹ 0 ≤ p*r` (sign — for the *lower* bound
+   `0 ≤ i*m + j`) and `(p < q ∧ 0 ≤ r) ⟹ p*r + r ≤ q*r` (monotonicity — for the *upper* bound), both
+   orderings. Each is universally true, so asserting it is **sound by construction** (it can only help the
+   proof direction); built from the original AST so the product terms unify with the goal's; scoped to that
+   one solver session.
+2. **Quantifier-strip for bounds** (`dropQuantifierConjuncts`). An array-index bound depends only on the
+   index arithmetic and the size oracle — *never* on array contents. So for an `IndexSite` discharge, drop the
+   content-quantifier conjuncts (`xs.every { … }`) from the assumed facts. Sound (dropping hypotheses only
+   makes a proof harder), and it keeps Z3 out of the quantifier+NIA path that made it bail even *with* the
+   lemma present. **This was the actual unlock** — with the lemma alone the bound still hung; the strip was
+   the difference between "could not decide" and a clean proof. (Found by probe: the quantifier-free version
+   of the same bound verified with the lemma, the quantifier-bearing one didn't.)
+
+Both are sound (the lemma is a true fact; the strip removes assumptions) and the out-of-bounds inner-store
+test still refutes — the lemma relates to `n*m`, so a fill with only `a.length ≥ n` is still caught. Honest
+limit: still a *heuristic* — self-products (`i*i`), three-way products, and bounds not reducible to
+"multiply an inequality by a non-negative factor" remain "could not decide".
 
 **Boundaries (all skip loudly, sound):** an *un-annotated* inner loop (no invariant to summarise with); an
 inner loop that mutates a **collection's size** (`xs.add` — would need size havoc, deferred); three-deep
@@ -4974,9 +4996,9 @@ nesting; more than one inner loop in a body; an inner loop nested under an `if` 
 statement). The single-loop path is byte-for-byte unchanged (zero regressions across the suite).
 
 **Shipped tests**: `count = n*n` and the rectangular `count = n*m` double loops verify end-to-end; the
-buffer-clear array fill verifies; false outer postcondition refutes; false (off-by-one) inner invariant is
-caught at the inner loop's *entry*; the weak-inner-invariant soundness anchor; an out-of-bounds inner store is
-caught; the quadratic flat-index bound surfaces as the NIA boundary; and the loud-skip boundaries
+buffer-clear array fill verifies; the **flat n×m matrix fill verifies** (via the Phase-91b lemma); false outer
+postcondition refutes; false (off-by-one) inner invariant is caught at the inner loop's *entry*; the
+weak-inner-invariant soundness anchor; an out-of-bounds inner store is caught; and the loud-skip boundaries
 (un-annotated, collection-mutator, 3-level).
 
 ---

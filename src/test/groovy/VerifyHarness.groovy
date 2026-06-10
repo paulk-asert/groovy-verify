@@ -3718,8 +3718,10 @@ class VerifyHarness {
                             a
                         }
                     }''')],
-        // PROBE: the quadratic flat-index bound i*m+j < n*m is beyond Z3's NIA → "could not decide" (sound).
-        [group: 'P91 nested', name: '2D fill quadratic bound is NIA boundary', expect: 'Could not decide array index bounds',
+        // The flat n×m matrix fill verifies end-to-end: the store bound i*m+j < n*m is closed by the
+        // verifier-supplied monotonicity lemma (Phase 91b), and the content quantifier is stripped from the
+        // bounds discharge so Z3 stays out of its quantifier+NIA dead end.
+        [group: 'P91 nested', name: '2D matrix fill verifies (monotonicity lemma)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
                         @Ensures({ (0..<n * m).every { result[it] == 0 } })

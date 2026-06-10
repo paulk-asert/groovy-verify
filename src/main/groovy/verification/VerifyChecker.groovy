@@ -27,6 +27,7 @@ import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
+import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
@@ -2245,8 +2246,13 @@ class VerifyChecker extends TypeCheckingExtension {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
+            // Phase 91b — an array-index bound (`0 ≤ idx < size`) depends only on the index arithmetic and
+            // the size oracle, never on array *contents*. So for an IndexSite, drop content-quantifier
+            // conjuncts (`xs.every { … }`) from the assumed facts: it's sound (fewer hypotheses), and it
+            // keeps Z3 out of the quantifier+NIA path that makes it bail on the flat-index monotonicity.
+            boolean stripQ = (site instanceof IndexSite)
             if (reqAst != null) {
-                Object p = enc.translate(reqAst)
+                Object p = enc.translate(stripQ ? dropQuantifierConjuncts(reqAst) : reqAst)
                 if (p != null) s.assertExpr(p)
             }
             // Phase 15a — class invariants are method-entry facts, in scope across the loop's
@@ -2255,7 +2261,7 @@ class VerifyChecker extends TypeCheckingExtension {
             assumeClassInvariants(s, enc)
             if (assumePos != null) {
                 for (Expression e : assumePos) {
-                    Object h = enc.translate(e)
+                    Object h = enc.translate(stripQ ? dropQuantifierConjuncts(e) : e)
                     if (h != null) s.assertExpr(h)
                 }
             }
@@ -2268,10 +2274,145 @@ class VerifyChecker extends TypeCheckingExtension {
             } catch (UnsupportedConstructException ignored) {
                 // Can't model the preceding statements → leave those vars havoc (sound).
             }
+            // Phase 91b — NIA monotonicity hint for array-index bounds (e.g. a flat `a[i*m + j]` fill,
+            // where the bound `i*m + j < a.length` needs `i*m + m <= n*m` from `i < n ∧ m >= 0`, which Z3's
+            // nonlinear tactic won't derive). Emit guarded ground lemmas for products that share a factor.
+            if (site instanceof IndexSite) {
+                List<Expression> ctx = new ArrayList<Expression>()
+                if (reqAst != null) ctx.add(reqAst)
+                if (assumePos != null) ctx.addAll(assumePos)
+                ctx.add(((IndexSite) site).index)
+                emitMonotonicityLemmas(s, enc, ctx)
+            }
             dischargeObligationUnder(s, enc, site)
         } finally {
             try { s.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /**
+     * Phase 91b — give Z3 the one nonlinear stepping stone it can't find on its own: multiplying an
+     * inequality by a non-negative factor. For every pair of product terms in the obligation's context
+     * that share a factor `r` (`p*r` and `q*r`), assert the guarded ground facts
+     * {@code (p ≤ q ∧ 0 ≤ r) ⟹ p*r ≤ q*r} and {@code (p < q ∧ 0 ≤ r) ⟹ p*r + r ≤ q*r} (both orderings).
+     * Each is universally true, so asserting it is *sound* — it can only help the UNSAT (proof) direction.
+     * Built from the original AST so the product terms unify (by Z3 hash-consing) with those in the goal.
+     * Scoped to this obligation's solver session, and only when ≥ 2 products actually share a factor, so
+     * it doesn't perturb the rest of the suite.
+     */
+    private void emitMonotonicityLemmas(SmtSession s, Encoder enc, List<Expression> exprs) {
+        List<BinaryExpression> prods = new ArrayList<BinaryExpression>()
+        for (Expression e : exprs) collectProducts(e, prods)
+        if (prods.isEmpty()) return
+        Set<String> emitted = new HashSet<String>()
+        // Sign: `(0 ≤ p ∧ 0 ≤ r) ⟹ 0 ≤ p*r` — needed for the *lower* bound `0 ≤ i*m + j`.
+        for (BinaryExpression pr : prods) {
+            if (emitted.add('sign|' + pr.text)) assertSign(s, enc, pr.leftExpression, pr.rightExpression)
+        }
+        // Monotonicity across products sharing a factor — for the *upper* bound.
+        for (int a = 0; a < prods.size(); a++) {
+            for (int b = a + 1; b < prods.size(); b++) {
+                Expression[] pqr = sharedFactor(prods.get(a), prods.get(b))
+                if (pqr == null) continue
+                Expression p = pqr[0], q = pqr[1], r = pqr[2]
+                if (p.text == q.text) continue                       // same product → trivial
+                String key = 'mono|' + ([p.text, q.text].sort() as List).join('|') + '|' + r.text
+                if (!emitted.add(key)) continue
+                assertMonotone(s, enc, p, q, r, true);  assertMonotone(s, enc, q, p, r, true)
+                assertMonotone(s, enc, p, q, r, false); assertMonotone(s, enc, q, p, r, false)
+            }
+        }
+    }
+
+    /** Assert {@code (0 ≤ p ∧ 0 ≤ r) ⟹ 0 ≤ p*r} (a product of non-negatives is non-negative). */
+    private void assertSign(SmtSession s, Encoder enc, Expression p, Expression r) {
+        Expression zero = new ConstantExpression(Integer.valueOf(0))
+        Expression body = bin(zero, Types.COMPARE_LESS_THAN_EQUAL, bin(p, Types.MULTIPLY, r))
+        Expression guard = bin(bin(zero, Types.COMPARE_LESS_THAN_EQUAL, p), Types.LOGICAL_AND,
+            bin(zero, Types.COMPARE_LESS_THAN_EQUAL, r))
+        assertTrueFact(s, enc, bin(new NotExpression(guard), Types.LOGICAL_OR, body))
+    }
+
+    /** Collect MULTIPLY sub-expressions (not into quantifier closures — those products are out of scope). */
+    private static void collectProducts(Expression e, List<BinaryExpression> out) {
+        if (e == null) return
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type == Types.MULTIPLY) out.add(be)
+            collectProducts(be.leftExpression, out)
+            collectProducts(be.rightExpression, out)
+        } else if (e instanceof BooleanExpression) {
+            collectProducts(((BooleanExpression) e).expression, out)
+        } else if (e instanceof NotExpression) {
+            collectProducts(((NotExpression) e).expression, out)
+        }
+    }
+
+    /** If two products share a factor, return {@code [otherFactorOf1, otherFactorOf2, sharedFactor]}. */
+    private static Expression[] sharedFactor(BinaryExpression p1, BinaryExpression p2) {
+        Expression a1 = p1.leftExpression, b1 = p1.rightExpression
+        Expression a2 = p2.leftExpression, b2 = p2.rightExpression
+        if (b1.text == b2.text) return [a1, a2, b1] as Expression[]
+        if (a1.text == a2.text) return [b1, b2, a1] as Expression[]
+        if (a1.text == b2.text) return [b1, a2, a1] as Expression[]
+        if (b1.text == a2.text) return [a1, b2, b1] as Expression[]
+        null
+    }
+
+    /** Assert {@code (p <op> q ∧ 0 ≤ r) ⟹ (p*r [+ r if strict] ≤ q*r)} as {@code ¬guard ∨ body} (true). */
+    private void assertMonotone(SmtSession s, Encoder enc, Expression p, Expression q, Expression r, boolean strict) {
+        Expression pr = bin(p, Types.MULTIPLY, r)
+        Expression qr = bin(q, Types.MULTIPLY, r)
+        Expression lhs = strict ? bin(pr, Types.PLUS, r) : pr
+        Expression body = bin(lhs, Types.COMPARE_LESS_THAN_EQUAL, qr)
+        Expression cmp = bin(p, strict ? Types.COMPARE_LESS_THAN : Types.COMPARE_LESS_THAN_EQUAL, q)
+        Expression guard = bin(cmp, Types.LOGICAL_AND,
+            bin(new ConstantExpression(Integer.valueOf(0)), Types.COMPARE_LESS_THAN_EQUAL, r))
+        assertTrueFact(s, enc, bin(new NotExpression(guard), Types.LOGICAL_OR, body))
+    }
+
+    private void assertTrueFact(SmtSession s, Encoder enc, Expression lemma) {
+        try {
+            Object h = enc.translate(lemma)
+            if (h != null) s.assertExpr(h)
+        } catch (Throwable ignored) {}
+    }
+
+    private static BinaryExpression bin(Expression l, int type, Expression r) {
+        new BinaryExpression(l, Token.newSymbol(type, -1, -1), r)
+    }
+
+    /** Drop the top-level `&&` conjuncts of {@code e} that contain a quantifier (`every`/`any`/closure);
+     *  the rest are re-AND'd (or {@code true} if all were quantified). Used to keep array-bounds discharges
+     *  quantifier-free — their truth never depends on array contents. */
+    private static Expression dropQuantifierConjuncts(Expression e) {
+        List<Expression> kept = new ArrayList<Expression>()
+        for (Expression c : splitConjuncts(e)) if (!hasQuantifier(c)) kept.add(c)
+        if (kept.isEmpty()) return new ConstantExpression(Boolean.TRUE)
+        Expression r = kept.get(0)
+        for (int i = 1; i < kept.size(); i++) r = bin(r, Types.LOGICAL_AND, kept.get(i))
+        r
+    }
+    private static List<Expression> splitConjuncts(Expression e) {
+        if (e instanceof BooleanExpression) return splitConjuncts(((BooleanExpression) e).expression)
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
+            BinaryExpression be = (BinaryExpression) e
+            List<Expression> out = new ArrayList<Expression>(splitConjuncts(be.leftExpression))
+            out.addAll(splitConjuncts(be.rightExpression))
+            return out
+        }
+        [e]
+    }
+    private static boolean hasQuantifier(Expression e) {
+        boolean[] found = [false] as boolean[]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { found[0] = true }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                if (mce.methodAsString == 'every' || mce.methodAsString == 'any') found[0] = true
+                super.visitMethodCallExpression(mce)
+            }
+        })
+        found[0]
     }
 
     private List<Object> sitesInStatement(Statement st) {
