@@ -3673,12 +3673,81 @@ class VerifyHarness {
                             0
                         }
                     }''')],
-        // BOUNDARY E — an inner loop writing an array (non-scalar frame) skips loudly.
-        [group: 'P91 nested', name: 'inner loop writing array skips loudly', expect: 'non-scalar',
+        // PROBE: linear-bound array-fill — inner loop clears a buffer a[0..<m] each pass (index j, linear).
+        [group: 'P91 nested', name: 'array-fill: clear buffer each pass (linear bound)', ok: true,
          src: tc('''class C {
-                        @Requires({ n >= 0 && a != null && a.length >= n })
-                        @Ensures({ result == n })
-                        static int f(int n, int[] a) {
+                        @Requires({ n >= 1 && m >= 0 && a != null && a.length >= m })
+                        @Ensures({ (0..<m).every { result[it] == 0 } })
+                        static int[] clear(int n, int m, int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && (i >= 1 ==> (0..<m).every { a[it] == 0 }) })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= m && (0..<j).every { a[it] == 0 } })
+                                @Decreases({ m - j })
+                                while (j < m) {
+                                    a[j] = 0
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            a
+                        }
+                    }''')],
+        // PROBE: out-of-bounds inner store is caught (a.length only >= n, but the flat index k reaches ~n*m).
+        [group: 'P91 nested', name: 'array-fill out-of-bounds store refutes', expect: 'out of bounds',
+         src: tc('''class C {
+                        @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n })
+                        static int[] zero(int n, int m, int[] a) {
+                            int i = 0
+                            int k = 0
+                            @Invariant({ 0 <= i && i <= n && k == i * m })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j })
+                                @Decreases({ m - j })
+                                while (j < m) {
+                                    a[k] = 0
+                                    k = k + 1
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            a
+                        }
+                    }''')],
+        // PROBE: the quadratic flat-index bound i*m+j < n*m is beyond Z3's NIA → "could not decide" (sound).
+        [group: 'P91 nested', name: '2D fill quadratic bound is NIA boundary', expect: 'Could not decide array index bounds',
+         src: tc('''class C {
+                        @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
+                        @Ensures({ (0..<n * m).every { result[it] == 0 } })
+                        static int[] zero(int n, int m, int[] a) {
+                            int i = 0
+                            int k = 0
+                            @Invariant({ 0 <= i && i <= n && k == i * m && (0..<k).every { a[it] == 0 } })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j &&
+                                             (0..<k).every { a[it] == 0 } })
+                                @Decreases({ m - j })
+                                while (j < m) {
+                                    a[k] = 0
+                                    k = k + 1
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            a
+                        }
+                    }''')],
+        // BOUNDARY E — an inner loop with a COLLECTION MUTATOR (size-changing) still skips loudly.
+        [group: 'P91 nested', name: 'inner loop list mutator skips loudly', expect: 'field/collection',
+         src: tc('''class C {
+                        @Requires({ n >= 0 && xs != null })
+                        static void f(int n, List<Integer> xs) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= n })
                             @Decreases({ n - i })
@@ -3686,10 +3755,9 @@ class VerifyHarness {
                                 int j = 0
                                 @Invariant({ 0 <= j && j <= n })
                                 @Decreases({ n - j })
-                                while (j < n) { a[j] = 0; j = j + 1 }
+                                while (j < n) { xs.add(0); j = j + 1 }
                                 i = i + 1
                             }
-                            n
                         }
                     }''')],
 

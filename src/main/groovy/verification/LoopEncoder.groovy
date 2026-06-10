@@ -21,11 +21,14 @@ import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
+import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
@@ -99,17 +102,91 @@ class LoopEncoder {
         // Expression-position `++`/`--` (`x = i++`, `a[i++] = v`) → an explicit two-statement sequence.
         stmts = Encoder.expandIncDecStatements(stmts)
         for (Statement st : stmts) {
+            LoopSpec innerSpec = (st instanceof LoopingStatement) ?
+                (LoopSpec) ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) : null
             if (st instanceof BlockStatement) {
                 symExec(((BlockStatement) st).statements, enc, s)
             } else if (st instanceof ExpressionStatement) {
                 applyAssign((ExpressionStatement) st, enc, s)
             } else if (st instanceof IfStatement) {
                 applyIf((IfStatement) st, enc, s)
+            } else if (innerSpec != null) {
+                summarizeInner(innerSpec, enc, s)
             } else {
                 throw new UnsupportedConstructException(
                     "unsupported statement ${st.class.simpleName} in loop region (line ${st.lineNumber})")
             }
         }
+    }
+
+    /**
+     * Phase 91 — replace a nested annotated loop with its inductive summary: havoc the variables it
+     * writes — scalars (`havoc`) and array contents (`havocArray`) — then assume `inner_inv ∧
+     * ¬inner_guard` (its post-state). Used by *both* the VC body walk and the obligation pass's
+     * `preceding` replay, so the two stay consistent. {@link #innerFrame} returns false (→ loud skip) if
+     * the inner body writes anything it can't soundly account for (a field, a collection mutator, or an
+     * unrecognised construct) — under-havocking would leave the outer state with a value the inner loop
+     * actually changed. Array *size* is deliberately not havoc'd: `a[k] = v` changes contents, not length;
+     * a length-changing inner loop (a collection mutator) is rejected by {@code innerFrame}.
+     */
+    static void summarizeInner(LoopSpec inner, Encoder enc, SmtSession s) {
+        Set<String> scalars = new HashSet<String>()
+        Set<String> arrays = new HashSet<String>()
+        if (!innerFrame(inner.body, scalars, arrays)) {
+            throw new UnsupportedConstructException(
+                "nested loop writes a field/collection or unbounded construct — not yet supported")
+        }
+        for (String nm : scalars) enc.havoc(nm)
+        for (String nm : arrays) enc.havocArray(nm)
+        s.assertExpr(conj(enc, s, inner.invariants))
+        s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
+    }
+
+    /** Partition a nested loop body's writes into scalar names and array names, or false if it writes
+     *  anything that isn't a plain scalar local or an `a[idx] = v` array element (so havocking the two
+     *  sets is a complete account of the inner loop's effect). */
+    static boolean innerFrame(List<Statement> stmts, Set<String> scalars, Set<String> arrays) {
+        if (stmts == null) return true
+        for (Statement st : stmts) if (!innerFrameStmt(st, scalars, arrays)) return false
+        true
+    }
+    private static boolean innerFrameStmt(Statement st, Set<String> scalars, Set<String> arrays) {
+        if (st == null || st instanceof EmptyStatement) return true
+        if (st instanceof BlockStatement) return innerFrame(((BlockStatement) st).statements, scalars, arrays)
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            return innerFrameStmt(ifs.ifBlock, scalars, arrays) &&
+                   (ifs.elseBlock == null || innerFrameStmt(ifs.elseBlock, scalars, arrays))
+        }
+        if (st instanceof ExpressionStatement) return innerFrameExpr(((ExpressionStatement) st).expression, scalars, arrays)
+        return false   // return / nested loop / unknown statement → bail
+    }
+    private static boolean innerFrameExpr(Expression e, Set<String> scalars, Set<String> arrays) {
+        if (e == null) return true
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            if (!(de.leftExpression instanceof VariableExpression)) return false
+            scalars.add(((VariableExpression) de.leftExpression).name)
+            return true
+        }
+        if (e instanceof PostfixExpression) return innerFrameTarget(((PostfixExpression) e).expression, scalars, arrays)
+        if (e instanceof PrefixExpression)  return innerFrameTarget(((PrefixExpression) e).expression, scalars, arrays)
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) return innerFrameTarget(be.leftExpression, scalars, arrays)
+            return true
+        }
+        return false   // method calls (mutators / unknown) → bail
+    }
+    private static boolean innerFrameTarget(Expression t, Set<String> scalars, Set<String> arrays) {
+        if (t instanceof VariableExpression) { scalars.add(((VariableExpression) t).name); return true }
+        if (t instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) t
+            if (be.operation.type == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression) {
+                arrays.add(((VariableExpression) be.leftExpression).name); return true
+            }
+        }
+        return false   // field / property / nested subscript target → bail
     }
 
     /**

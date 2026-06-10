@@ -4932,16 +4932,24 @@ the inner loop is verified separately.
 1. **Capture recurses** (`ContractExpansionTransform.captureLoops`). Nested loops now get their `LoopSpec`
    stashed too. Because the outer body is copied *shallowly* (`loopBodyCopy`), the inner loop node is shared,
    so the metadata set on it is visible through `site.spec.body`.
-2. **Summarise during outer body sym-exec** (`symExecBodyWithExits` → `summarizeInnerLoop`). When the outer
-   preservation/progress VCs reach the inner loop, instead of throwing they **havoc the (scalar) variables
-   the inner body writes, then assume `inner_inv ∧ ¬inner_guard`** — the inner loop's post-state. The frame
-   is computed by a strict `innerScalarFrame`: any non-scalar write (array element, collection mutator) or
-   unrecognised construct returns null → **loud skip**, because under-havocking would let the outer keep a
-   stale value the inner loop changed.
+2. **Summarise during sym-exec** (`LoopEncoder.symExec` → `summarizeInner`). When sym-exec reaches a nested
+   annotated loop — whether on the VC body walk *or* the obligation pass's `preceding` replay (the two share
+   `symExec`, so they can't diverge) — instead of throwing it **havocs the variables the inner body writes
+   (scalars via `havoc`, array contents via `havocArray`), then assumes `inner_inv ∧ ¬inner_guard`** — the
+   inner loop's post-state. The frame is computed by a strict `innerFrame` partitioning writes into scalars
+   and arrays; anything else (a field, a *collection* mutator that changes size, an unrecognised construct)
+   returns false → **loud skip**, since under-havocking would let the outer keep a value the inner loop
+   changed. Array *size* is deliberately not havoc'd (`a[k] = v` changes contents, not length).
 3. **Verify the inner loop's own VCs** (`verifyNestedLoops`). Preservation and progress **reuse the standard
    `checkPreservation`/`checkProgress` verbatim** against an inner `LoopSite` — they're self-contained under
    `inner_inv ∧ inner_guard`. Establishment is custom (`checkNestedEstablishment`): `precondition ∧ class-inv
    ∧ outer_inv ∧ outer_guard ∧ ⟦outer-body stmts before the inner loop⟧ ⇒ inner_inv`.
+4. **Discharge the inner loop's index/bounds obligations in ITS context** (`verifyLoopObligations` step 5). An
+   inner `a[k] = …` must be bounds-checked under `inner_inv ∧ inner_guard`, where `k` is constrained — *not*
+   under the outer invariant (where it isn't). `dischargeRegion` skips the inner loop's own sites and a
+   dedicated pass re-discharges the inner body. **This is load-bearing for soundness**: a probe with
+   `a.length >= n` (too small) for a flat fill that reaches `~n*m` is correctly caught as a possible
+   `IndexOutOfBoundsException` — proving the inner bounds really are enforced, not skipped.
 
 **The subtle point — the inner preservation is NOT under `outer_inv`.** The outer invariant is generally
 *false* mid-inner-loop (e.g. `count == i*n` while the inner loop is incrementing `count`), so assuming it
@@ -4952,15 +4960,24 @@ provable on its own yet doesn't pin the accumulator. It can't sneak a false oute
 summary havocs the accumulator and the weak invariant fails to re-constrain it, so the **outer preservation
 fails** (its counterexample literally shows `count$havoc$… = 8` unconstrained). Verified directly as a test.
 
-**Boundaries (all skip loudly, sound):** an *un-annotated* inner loop (no invariant to summarise with); an
-inner loop whose body writes a **non-scalar** (array/collection — would need content/size havoc, deferred);
-three-deep nesting; more than one inner loop in a body; an inner loop nested under an `if` (not a direct
-body statement). The single-loop path is byte-for-byte unchanged (zero regressions across the suite).
+**Inner loops may fill arrays.** `a[k] = v` in the inner body is supported (the scalar-only restriction of the
+first cut is lifted): the summary havocs `a`'s contents and re-constrains them from `inner_inv`, and the
+inner bounds are checked in the inner context. A buffer-clear `while (j < m) a[j] = 0` with
+`(0..<j).every { a[it] == 0 }` verifies. The honest limit is **Z3's nonlinear arithmetic**: a flat *n×m*
+matrix fill (`a[i*m + j] = 0`) needs `i*m + j < n*m` for the store bound, which is irreducibly nonlinear —
+Z3 returns *"could not decide array index bounds"* (sound — never a false pass; just no proof). Linear-index
+fills go through.
 
-**Shipped tests**: `count = n*n` and the rectangular `count = n*m` double loops verify end-to-end; false
-outer postcondition refutes; false (off-by-one) inner invariant is caught at the inner loop's *entry*; the
-weak-inner-invariant soundness anchor; and the four loud-skip boundaries (un-annotated, array-writing,
-3-level, …).
+**Boundaries (all skip loudly, sound):** an *un-annotated* inner loop (no invariant to summarise with); an
+inner loop that mutates a **collection's size** (`xs.add` — would need size havoc, deferred); three-deep
+nesting; more than one inner loop in a body; an inner loop nested under an `if` (not a direct body
+statement). The single-loop path is byte-for-byte unchanged (zero regressions across the suite).
+
+**Shipped tests**: `count = n*n` and the rectangular `count = n*m` double loops verify end-to-end; the
+buffer-clear array fill verifies; false outer postcondition refutes; false (off-by-one) inner invariant is
+caught at the inner loop's *entry*; the weak-inner-invariant soundness anchor; an out-of-bounds inner store is
+caught; the quadratic flat-index bound surfaces as the NIA boundary; and the loud-skip boundaries
+(un-annotated, collection-mutator, 3-level).
 
 ---
 
