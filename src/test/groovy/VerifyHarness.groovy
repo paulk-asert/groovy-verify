@@ -3530,6 +3530,169 @@ class VerifyHarness {
                         }
                     }''')],
 
+        // ---------- Phase 91: nested loops (compositional cut-points) ----------
+        // Canonical: count = n*n via a double loop. Outer inv `count == i*n`, inner inv `count == i*n + j`.
+        [group: 'P91 nested', name: 'count = n*n double loop', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n * n })
+                        static int f(int n) {
+                            int count = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n && count == i * n + j })
+                                @Decreases({ n - j })
+                                while (j < n) {
+                                    count = count + 1
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            count
+                        }
+                    }''')],
+        // Rectangular variant — distinct bounds n, m: count = n*m.
+        [group: 'P91 nested', name: 'count = n*m distinct bounds', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 && m >= 0 })
+                        @Ensures({ result == n * m })
+                        static int f(int n, int m) {
+                            int count = 0; int i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * m })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= m && count == i * m + j })
+                                @Decreases({ m - j })
+                                while (j < m) { count = count + 1; j = j + 1 }
+                                i = i + 1
+                            }
+                            count
+                        }
+                    }''')],
+
+        // SOUNDNESS PROBE A — false outer postcondition must NOT verify.
+        [group: 'P91 nested', name: 'false outer post refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n * n + 1 })
+                        static int f(int n) {
+                            int count = 0; int i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n && count == i * n + j })
+                                @Decreases({ n - j })
+                                while (j < n) { count = count + 1; j = j + 1 }
+                                i = i + 1
+                            }
+                            count
+                        }
+                    }''')],
+        // SOUNDNESS PROBE B — false inner invariant (off by one) must be CAUGHT (inner establish fails).
+        [group: 'P91 nested', name: 'false inner invariant caught', expect: 'holds on entry',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n * n })
+                        static int f(int n) {
+                            int count = 0; int i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n && count == i * n + j + 1 })
+                                @Decreases({ n - j })
+                                while (j < n) { count = count + 1; j = j + 1 }
+                                i = i + 1
+                            }
+                            count
+                        }
+                    }''')],
+        // SOUNDNESS PROBE C — THE KEY ONE: a too-weak inner invariant (drops the count relation) is itself
+        // provable, but must NOT let the outer silently pass: the outer preservation can't re-establish
+        // `count == (i+1)*n` because the summary leaves count unconstrained.
+        [group: 'P91 nested', name: 'weak inner invariant fails outer preservation', expect: 'preserved by the loop body',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n * n })
+                        static int f(int n) {
+                            int count = 0; int i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n })
+                                @Decreases({ n - j })
+                                while (j < n) { count = count + 1; j = j + 1 }
+                                i = i + 1
+                            }
+                            count
+                        }
+                    }''')],
+        // PROBE D — un-annotated inner loop must skip loudly (can't summarise without an invariant).
+        [group: 'P91 nested', name: 'unannotated inner loop skips loudly', expect: 'unsupported statement WhileStatement',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n * n })
+                        static int f(int n) {
+                            int count = 0; int i = 0
+                            @Invariant({ 0 <= i && i <= n && count == i * n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                while (j < n) { count = count + 1; j = j + 1 }
+                                i = i + 1
+                            }
+                            count
+                        }
+                    }''')],
+        // BOUNDARY — 3-level nesting is out of this slice; skips loudly (the 2nd-level summary's frame
+        // can't be bounded once its body holds a 3rd loop).
+        [group: 'P91 nested', name: '3-level nesting skips loudly', expect: 'Skipped loop verification',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == 0 })
+                        static int f(int n) {
+                            int count = 0; int i = 0
+                            @Invariant({ 0 <= i && i <= n }) @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n }) @Decreases({ n - j })
+                                while (j < n) {
+                                    int k = 0
+                                    @Invariant({ 0 <= k && k <= n }) @Decreases({ n - k })
+                                    while (k < n) { count = count + 1; k = k + 1 }
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            0
+                        }
+                    }''')],
+        // BOUNDARY E — an inner loop writing an array (non-scalar frame) skips loudly.
+        [group: 'P91 nested', name: 'inner loop writing array skips loudly', expect: 'non-scalar',
+         src: tc('''class C {
+                        @Requires({ n >= 0 && a != null && a.length >= n })
+                        @Ensures({ result == n })
+                        static int f(int n, int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n })
+                                @Decreases({ n - j })
+                                while (j < n) { a[j] = 0; j = j + 1 }
+                                i = i + 1
+                            }
+                            n
+                        }
+                    }''')],
+
         // Placeholder / inferred-type local declarations all lower to the same DeclarationExpression
         // (the verifier binds the local to the RHS in its inferred sort), so `def` (dynamic), `var`
         // (Java-style inference) and `val` (final, Groovy 5+) are interchangeable in the fragment.

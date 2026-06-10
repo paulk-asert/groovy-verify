@@ -50,12 +50,15 @@ import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
+import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.ThrowStatement
+import org.codehaus.groovy.ast.stmt.WhileStatement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.syntax.Token
@@ -3468,6 +3471,9 @@ class VerifyChecker extends TypeCheckingExtension {
             checkEstablishment(node, site, reqAst)
             checkPreservation(node, site, stableReqs)
             if (site.spec.variant != null) checkProgress(node, site, stableReqs)
+            // Phase 91 — a nested annotated loop in the outer body: the outer VCs above already summarised
+            // it; now discharge its own establish/preserve/progress (without which the summary is unsound).
+            verifyNestedLoops(node, site, reqAst)
             if (!perElement.isEmpty()) checkForInElement(node, site, perElement, stableReqs)
             if (postAst != null) checkUse(node, site, reqAst, postAst)
             // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
@@ -3636,6 +3642,15 @@ class VerifyChecker extends TypeCheckingExtension {
         // evaluates (pure in-fragment). Recognising it keeps the write-set finite for bodies with
         // early returns (e.g. the desugared binary search), so loop-stable @Requires aren't dropped.
         if (st instanceof ReturnStatement) return collectWritesExpr(((ReturnStatement) st).expression, ws)
+        // Phase 91 — a nested loop writes whatever its guard + body do; recurse so the outer write-set
+        // stays a sound over-approximation (and the inner-loop case below isn't dropped as "unknown").
+        if (st instanceof LoopingStatement) {
+            LoopingStatement ls = (LoopingStatement) st
+            Expression g = (ls instanceof WhileStatement) ? ((WhileStatement) ls).booleanExpression :
+                           (ls instanceof DoWhileStatement) ? ((DoWhileStatement) ls).booleanExpression : null
+            if (g != null && !collectWritesExpr(g, ws)) return false
+            return collectWritesStmt(ls.loopBlock, ws)
+        }
         false   // unknown statement → bail
     }
 
@@ -3957,6 +3972,84 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
+    // ── Phase 91 — nested loops ─────────────────────────────────────────────────────────────────
+    // An annotated loop inside the outer loop's body is verified compositionally. The outer VCs
+    // (preservation/progress) summarise it via {@link #summarizeInnerLoop} — havoc its written vars,
+    // assume `inner_inv ∧ ¬inner_guard`. Here we discharge the inner loop's *own* obligations, which is
+    // what makes that summary sound:
+    //   • establish — `outer_inv ∧ outer_guard ∧ ⟦outer-body stmts before the inner loop⟧ ⇒ inner_inv`
+    //   • preserve  — `inner_inv ∧ inner_guard ⇒ inner_inv'` (self-contained — NOT under outer_inv, which
+    //                  is generally false mid-inner-loop, e.g. `count == i*n` while count is changing)
+    //   • progress  — the inner @Decreases strictly decreases and stays ≥ 0
+    // Preserve/progress reuse the standard checks verbatim against an inner {@link LoopSite}.
+    private void verifyNestedLoops(MethodNode node, LoopSite site, Expression reqAst) {
+        List<Statement> inners = annotatedInnerLoops(site.spec.body)
+        if (inners.isEmpty()) return
+        if (inners.size() > 1) {
+            throw new UnsupportedConstructException(
+                "more than one nested loop in the loop body — not yet supported")
+        }
+        Statement innerLoop = inners.get(0)
+        LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        // ≤ 2 levels for this slice: the inner body must not itself contain a loop we'd have to summarise.
+        if (!annotatedInnerLoops(innerSpec.body).isEmpty()) {
+            throw new UnsupportedConstructException("loops nested 3+ deep — not yet supported")
+        }
+        LoopSite innerSite = new LoopSite()
+        innerSite.loopStmt = innerLoop
+        innerSite.spec = innerSpec
+        innerSite.prefix = Collections.<Statement> emptyList()
+        innerSite.suffix = Collections.<Statement> emptyList()
+        innerSite.originalPrefix = Collections.<Statement> emptyList()
+        innerSite.originalSuffix = Collections.<Statement> emptyList()
+        List<Statement> before = stmtsBefore(site.spec.body, innerLoop)
+        checkNestedEstablishment(node, site, innerSite, before, reqAst)
+        List<Expression> innerStable = loopStableRequires(reqAst, innerSite)
+        checkPreservation(node, innerSite, innerStable)
+        if (innerSpec.variant != null) checkProgress(node, innerSite, innerStable)
+    }
+
+    /** Top-level statements of {@code body} that are loops carrying a captured {@link LoopSpec}. */
+    private static List<Statement> annotatedInnerLoops(List<Statement> body) {
+        List<Statement> out = new ArrayList<Statement>()
+        if (body != null) for (Statement st : body) {
+            if (st instanceof LoopingStatement &&
+                ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
+                out.add(st)
+            }
+        }
+        out
+    }
+
+    /** The statements of {@code body} that precede {@code target} (by identity). */
+    private static List<Statement> stmtsBefore(List<Statement> body, Statement target) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : body) { if (st.is(target)) break; out.add(st) }
+        out
+    }
+
+    /** Inner establishment: `precondition ∧ class invariants ∧ outer_inv ∧ outer_guard ∧ ⟦before⟧ ⇒ inner_inv`,
+     *  where {@code before} are the outer-body statements that run before the inner loop is reached. */
+    private void checkNestedEstablishment(MethodNode node, LoopSite outer, LoopSite innerSite,
+                                          List<Statement> before, Expression reqAst) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            assumeIntJvmBounds(s, enc)
+            assumeClassInvariants(s, enc)
+            s.assertExpr(LoopEncoder.conj(enc, s, outer.spec.invariants))
+            s.assertExpr(LoopEncoder.tr(enc, outer.spec.guard, "guard"))
+            LoopEncoder.symExec(before, enc, s)
+            s.assertExpr(s.not(LoopEncoder.conj(enc, s, innerSite.spec.invariants)))
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(
+                    Reporter.formatLoopEstablishment(node.name, invText(innerSite), r, false), innerSite.loopStmt)
+            }
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
     /**
      * Phase 49b — walk the loop body's top-level statements, sym-executing each non-exit
      * via {@link LoopEncoder#symExec} and asserting {@code ¬guard} for each in-body
@@ -3967,14 +4060,90 @@ class VerifyChecker extends TypeCheckingExtension {
     private void symExecBodyWithExits(LoopSite site, Encoder enc, SmtSession s) {
         for (Statement st : site.spec.body) {
             Expression retExpr = earlyExitReturnFor(st)
+            LoopSpec innerSpec = (st instanceof LoopingStatement) ?
+                (LoopSpec) ((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) : null
             if (retExpr != null) {
                 IfStatement ifs = (IfStatement) st
                 Object g = enc.translate(ifs.booleanExpression)
                 if (g != null) s.assertExpr(s.not(g))
+            } else if (innerSpec != null) {
+                // Phase 91 — summarise a nested annotated loop as a cut point: havoc the variables it
+                // writes, then assume `inner_inv ∧ ¬inner_guard` (its post-state). Sound because the inner
+                // loop's own establish/preserve/progress are discharged separately (verifyNestedLoops).
+                summarizeInnerLoop(innerSpec, enc, s)
             } else {
+                // An *un-annotated* nested loop falls here → LoopEncoder.symExec throws "unsupported
+                // statement" → the whole loop skips loudly. Correct: we can't summarise without an invariant.
                 LoopEncoder.symExec([st] as List<Statement>, enc, s)
             }
         }
+    }
+
+    /**
+     * Phase 91 — replace a nested loop's effect with its inductive summary. Havoc exactly the (scalar)
+     * variables the inner body writes, then assume `inner_inv ∧ ¬inner_guard`. {@link #innerScalarFrame}
+     * returns null (→ loud skip) if the inner body writes anything that isn't a plain scalar local
+     * (an array element / collection mutation / unrecognised construct), since under-havocking those
+     * would be unsound — the outer state would keep a stale value the inner loop actually changed.
+     */
+    private void summarizeInnerLoop(LoopSpec inner, Encoder enc, SmtSession s) {
+        Set<String> frame = innerScalarFrame(inner.body)
+        if (frame == null) {
+            throw new UnsupportedConstructException(
+                "nested loop writes a non-scalar (array/collection) or unbounded construct — not yet supported")
+        }
+        for (String nm : frame) enc.havoc(nm)
+        s.assertExpr(LoopEncoder.conj(enc, s, inner.invariants))
+        s.assertExpr(s.not(LoopEncoder.tr(enc, inner.guard, "inner-loop guard")))
+    }
+
+    /** Scalar variables a nested loop body writes, or null if it writes a non-scalar / unboundable thing.
+     *  Stricter than {@link #collectWritesStmt}: every target must be a simple variable (so havocking the
+     *  returned set is a complete account of the inner loop's effect). */
+    private static Set<String> innerScalarFrame(List<Statement> stmts) {
+        Set<String> ws = new HashSet<String>()
+        return scalarWritesStmts(stmts, ws) ? ws : null
+    }
+    private static boolean scalarWritesStmts(List<Statement> stmts, Set<String> ws) {
+        if (stmts == null) return true
+        for (Statement st : stmts) if (!scalarWritesStmt(st, ws)) return false
+        true
+    }
+    private static boolean scalarWritesStmt(Statement st, Set<String> ws) {
+        if (st == null || st instanceof EmptyStatement) return true
+        if (st instanceof BlockStatement) return scalarWritesStmts(((BlockStatement) st).statements, ws)
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            return scalarWritesStmt(ifs.ifBlock, ws) && (ifs.elseBlock == null || scalarWritesStmt(ifs.elseBlock, ws))
+        }
+        if (st instanceof ExpressionStatement) return scalarWritesExpr(((ExpressionStatement) st).expression, ws)
+        return false   // return / nested loop / unknown statement inside the inner body → bail (loud skip)
+    }
+    private static boolean scalarWritesExpr(Expression e, Set<String> ws) {
+        if (e == null) return true
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            if (!(de.leftExpression instanceof VariableExpression)) return false
+            ws.add(((VariableExpression) de.leftExpression).name)
+            return true
+        }
+        if (e instanceof PostfixExpression) return scalarTarget(((PostfixExpression) e).expression, ws)
+        if (e instanceof PrefixExpression)  return scalarTarget(((PrefixExpression) e).expression, ws)
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) return scalarTarget(be.leftExpression, ws)
+            return true   // a non-assignment expression statement writes nothing
+        }
+        if (e instanceof MethodCallExpression) {
+            // A bare call statement: a pure read writes nothing; a mutator / unknown call could touch
+            // non-scalar state we don't track here → bail.
+            return LOOP_PURE_READS.contains(((MethodCallExpression) e).methodAsString)
+        }
+        return true
+    }
+    private static boolean scalarTarget(Expression t, Set<String> ws) {
+        if (t instanceof VariableExpression) { ws.add(((VariableExpression) t).name); return true }
+        return false   // a[i] / field / property target → not a scalar → bail
     }
 
     /** Use: precondition ∧ class invariants ∧ invariant ∧ ¬guard ∧ suffix ⇒ postcondition. */

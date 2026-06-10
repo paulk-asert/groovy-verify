@@ -44,6 +44,7 @@ import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
+import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.WhileStatement
@@ -255,17 +256,32 @@ class ContractExpansionTransform implements ASTTransformation {
      */
     private static boolean captureLoops(MethodNode mn, SourceUnit source) {
         if (!(mn.code instanceof BlockStatement)) return false
+        return captureLoopsIn(((BlockStatement) mn.code).statements, source)
+    }
+
+    /** Phase 91 — capture loop specs recursively, so a *nested* loop's @Invariant/@Decreases is stashed
+     *  on the inner loop node too (the verifier reads it when summarising the inner loop). Since the outer
+     *  body is copied shallowly ({@link #loopBodyCopy}), the inner node is shared and the metadata is seen. */
+    private static boolean captureLoopsIn(List<Statement> stmts, SourceUnit source) {
         boolean found = false
-        for (Statement st : ((BlockStatement) mn.code).statements) {
-            if (st instanceof LoopingStatement) {
-                LoopSpec spec = buildLoopSpec((LoopingStatement) st, source)
-                if (spec != null) {
-                    st.setNodeMetaData(LOOP_SPEC_KEY, spec)
-                    found = true
-                }
-            }
+        if (stmts != null) for (Statement st : stmts) found |= captureLoopsStmt(st, source)
+        found
+    }
+
+    private static boolean captureLoopsStmt(Statement st, SourceUnit source) {
+        if (st == null) return false
+        boolean found = false
+        if (st instanceof LoopingStatement) {
+            LoopSpec spec = buildLoopSpec((LoopingStatement) st, source)
+            if (spec != null) { st.setNodeMetaData(LOOP_SPEC_KEY, spec); found = true }
+            found |= captureLoopsStmt(((LoopingStatement) st).loopBlock, source)
+        } else if (st instanceof BlockStatement) {
+            found = captureLoopsIn(((BlockStatement) st).statements, source)
+        } else if (st instanceof IfStatement) {
+            found |= captureLoopsStmt(((IfStatement) st).ifBlock, source)
+            found |= captureLoopsStmt(((IfStatement) st).elseBlock, source)
         }
-        return found
+        found
     }
 
     private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source) {

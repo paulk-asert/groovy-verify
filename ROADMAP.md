@@ -4919,6 +4919,51 @@ proving we model parallel not sequential; swap via `Tuple.tuple`; 3-way rotation
 
 ---
 
+## Phase 91 — nested loops (two levels, compositional cut-points)  *(shipped)*
+
+The long-standing "one annotated loop per method" limit is lifted to **two levels**: an annotated loop
+directly inside another annotated loop's body. Each loop is cut by its own `@Invariant`/`@Decreases`; the
+proof composes by the textbook rule — the outer loop treats the inner loop as a *summarised* construct, and
+the inner loop is verified separately.
+
+**The three moving parts** (all required for soundness — skipping the inner verification would mean
+*assuming* an unproven inner invariant):
+
+1. **Capture recurses** (`ContractExpansionTransform.captureLoops`). Nested loops now get their `LoopSpec`
+   stashed too. Because the outer body is copied *shallowly* (`loopBodyCopy`), the inner loop node is shared,
+   so the metadata set on it is visible through `site.spec.body`.
+2. **Summarise during outer body sym-exec** (`symExecBodyWithExits` → `summarizeInnerLoop`). When the outer
+   preservation/progress VCs reach the inner loop, instead of throwing they **havoc the (scalar) variables
+   the inner body writes, then assume `inner_inv ∧ ¬inner_guard`** — the inner loop's post-state. The frame
+   is computed by a strict `innerScalarFrame`: any non-scalar write (array element, collection mutator) or
+   unrecognised construct returns null → **loud skip**, because under-havocking would let the outer keep a
+   stale value the inner loop changed.
+3. **Verify the inner loop's own VCs** (`verifyNestedLoops`). Preservation and progress **reuse the standard
+   `checkPreservation`/`checkProgress` verbatim** against an inner `LoopSite` — they're self-contained under
+   `inner_inv ∧ inner_guard`. Establishment is custom (`checkNestedEstablishment`): `precondition ∧ class-inv
+   ∧ outer_inv ∧ outer_guard ∧ ⟦outer-body stmts before the inner loop⟧ ⇒ inner_inv`.
+
+**The subtle point — the inner preservation is NOT under `outer_inv`.** The outer invariant is generally
+*false* mid-inner-loop (e.g. `count == i*n` while the inner loop is incrementing `count`), so assuming it
+would be unsound. The inner invariant must be self-contained — exactly as a standalone loop's would be.
+
+**Why it's sound — proven by the probe set, not asserted.** The danger is a *too-weak* inner invariant that's
+provable on its own yet doesn't pin the accumulator. It can't sneak a false outer result through: the inner
+summary havocs the accumulator and the weak invariant fails to re-constrain it, so the **outer preservation
+fails** (its counterexample literally shows `count$havoc$… = 8` unconstrained). Verified directly as a test.
+
+**Boundaries (all skip loudly, sound):** an *un-annotated* inner loop (no invariant to summarise with); an
+inner loop whose body writes a **non-scalar** (array/collection — would need content/size havoc, deferred);
+three-deep nesting; more than one inner loop in a body; an inner loop nested under an `if` (not a direct
+body statement). The single-loop path is byte-for-byte unchanged (zero regressions across the suite).
+
+**Shipped tests**: `count = n*n` and the rectangular `count = n*m` double loops verify end-to-end; false
+outer postcondition refutes; false (off-by-one) inner invariant is caught at the inner loop's *entry*; the
+weak-inner-invariant soundness anchor; and the four loud-skip boundaries (un-annotated, array-writing,
+3-level, …).
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
