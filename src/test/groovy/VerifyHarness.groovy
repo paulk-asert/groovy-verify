@@ -4244,19 +4244,27 @@ class VerifyHarness {
                         }
                     }''')],
         // ===== Multi-checker composition (Q2): VerifyChecker runs alongside a sibling groovy-typecheckers
-        // extension in one @TypeChecked(extensions=[...]); each reports its own errors. Here two regex
-        // constructs sit in one method, honestly separate: RegexChecker validates the `==~` literal, while
-        // VerifyChecker's fragment doesn't reach the regex operators / the `assert` (it defers there — its
-        // own regex reasoning, `.matches` via str.in_re, is the `P regex matches` group). So RegexChecker
-        // catches a malformed pattern VerifyChecker never sees.
-        [group: 'P-multichecker', name: 'RegexChecker catches a malformed ==~ in a VerifyChecker-contracted method', ok: false, expect: 'Bad regex',
+        // extension in one @TypeChecked(extensions=[...]); each reports its own errors. Here BOTH engage the
+        // SAME `.matches("[a-z]+")` in the body: RegexChecker validates the pattern's *syntax* (it inspects
+        // String.matches since GROOVY-12081), VerifyChecker proves the *semantics* — `result` equals the
+        // match, via Z3's regex membership (str.in_re). One regex, two checkers, syntax and semantics.
+        [group: 'P-multichecker', name: 'RegexChecker (syntax) + VerifyChecker (semantics) on the same .matches', ok: true,
          src: tcExt(['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'], '''class C {
-                        @Ensures({ result[0].matches("[a-z]+") })
-                        static List changeCase(String one, String two) {
-                            def result = [one.toLowerCase(), two.toUpperCase()]
-                            assert result[1] ==~ "[A-Z+"
-                            result
-                        }
+                        @Requires({ s != null })
+                        @Ensures({ result == s.matches("[a-z]+") })
+                        static boolean isLower(String s) { s.matches("[a-z]+") }
+                    }''')],
+        [group: 'P-multichecker', name: 'RegexChecker fires on a malformed pattern; the proof is unaffected', ok: false, expect: 'Bad regex',
+         src: tcExt(['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'], '''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s.matches("[a-z]+") })
+                        static boolean isLower(String s) { s.matches("[a-z+") }
+                    }''')],
+        [group: 'P-multichecker', name: 'VerifyChecker refutes a false claim about the match; pattern is well-formed', ok: false, expect: 'Cannot prove',
+         src: tcExt(['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'], '''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result })
+                        static boolean isLower(String s) { s.matches("[a-z]+") }
                     }''')],
         // ----- Cooperative synergy: PurityChecker supplies the purity GUARANTEE VerifyChecker relies on.
         // VerifyChecker's pure-evaluation (Phase 8a) proves f() by inlining the contract-free same-class

@@ -1906,8 +1906,9 @@ best-effort `fails on:` repro (Phase 62). See `Encoder` and the roadmap for the 
 ## Relationship to Groovy's other checkers
 
 groovy-verify is one of a family of `@TypeChecked` extensions, and it deliberately owns a narrow,
-deep slice — SMT-backed *functional* verification. Two things place it: how its null story relates
-to Groovy's existing null tooling, and what guards the code its fragment can't yet reach.
+deep slice — SMT-backed *functional* verification. A few relationships place it: how its null story
+relates to Groovy's existing null tooling, how it composes with the sibling regex and purity checkers
+(orthogonally, and cooperatively), and what guards the code its fragment can't yet reach.
 
 ### Null handling — three layers, one of them a sibling
 
@@ -1942,6 +1943,52 @@ verification in a single compile, each doing what it is best at:
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'])
 ```
 
+### Two checkers, one regex — syntax beside semantics
+
+When a `.matches` and a sibling's concern meet on the *same* regex, the division of labour is clean:
+`RegexChecker` validates the pattern's **syntax**, groovy-verify proves its **semantics** — both in one
+compile, each reporting only its own kind of error:
+
+```groovy
+@TypeChecked(extensions = ['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'])
+class C {
+    @Requires({ s != null })
+    @Ensures({ result == s.matches("[a-z]+") })               // groovy-verify: result IS the match (str.in_re)
+    static boolean isLower(String s) { s.matches("[a-z]+") }   // RegexChecker: the pattern is well-formed
+}
+```
+
+A typo (`"[a-z+"`) is a **`Bad regex`** from RegexChecker; a false claim about the result
+(`@Ensures({ result })`, asserting it always matches) is a **`Cannot prove`** from groovy-verify, over a
+pattern RegexChecker has already certified. Neither reaches the other's failure — a malformed regex
+isn't a functional bug, and an unprovable postcondition isn't a syntax error. (One seam: RegexChecker
+walks method **bodies**, not the generated contract closures, so a regex in `@Requires`/`@Ensures` is
+groovy-verify's alone — which is why `isLower` *returns* the match, putting the one pattern where both
+can see it.)
+
+### `PurityChecker` — discharging a premise groovy-verify relies on
+
+Composition isn't always orthogonal. groovy-verify's pure-function evaluation (Phase 8a) proves a method
+by *inlining a contract-free same-class helper as a value* — sound only if that helper is referentially
+transparent, which groovy-verify **assumes but never checks**. `PurityChecker` verifies precisely that,
+turning the unstated premise into a machine-checked one:
+
+```groovy
+@TypeChecked(extensions = ['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
+class C {
+    @groovy.transform.Pure
+    static int triple(int n) { 3 * n }            // PurityChecker: provably side-effect-free
+    @Ensures({ result == 30 })
+    static int f() { triple(10) }                 // groovy-verify: proven by evaluating triple(10)
+}
+```
+
+Both pass — and `f`'s proof now rests on *checked* purity, not trusted purity. Give `triple` a side
+effect (`counter += 1`) and `PurityChecker` names the exact violation (`@Pure violation: field
+assignment to 'counter'`) where groovy-verify — unable to evaluate the impure body — would only shrug a
+vague `Cannot prove`. This is the deepest of the pairings: one checker underwrites a premise the other
+takes on faith.
+
 ### Outside the fragment, the code is still guarded
 
 groovy-verify is *loudly* partial: anything outside its fragment is skipped, never silently passed
@@ -1956,12 +2003,11 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
   (see [*Groovy 6 features for Functional Programmers*](https://groovy.apache.org/blog/groovy6-functional)) — and groovy-verify only sharpens that, since a `@Ensures` it has discharged is *proven*, not merely asserted.
 - **Sibling checkers cover orthogonal properties.** The `groovy-typecheckers` module ships a set of
   `@TypeChecked` extensions, each owning a property groovy-verify doesn't model: `NullChecker`
-  (nullness), `RegexChecker` (invalid regular expressions caught at compile time), `FormatStringChecker`
-  (`printf` / `String.format` argument mismatches), and `PurityChecker` / `ModifiesChecker`
-  (`@Pure` / `@SideEffectFree` / `@Contract` side-effect compliance) — the last directly relevant
-  here, since groovy-verify's pure-function evaluation (Phase 8a) and `@Modifies` framing (Phase 13)
-  *assume* a purity those checkers can actually verify. Others (`CombinerChecker`, `MonadicChecker`, …)
-  cover further ground, and they compose the same way. Together the family checks far more than any one
+  (nullness), `RegexChecker` (malformed regular expressions), `FormatStringChecker`
+  (`printf` / `String.format` argument mismatches), `PurityChecker` / `ModifiesChecker`
+  (`@Pure` / `@Modifies` compliance), and others (`CombinerChecker`, `MonadicChecker`, …). The regex and
+  purity pairings shown above put two of them to work; the rest compose the same way. Together the
+  family checks far more than any one
   extension's fragment.
 
 ## Architecture
