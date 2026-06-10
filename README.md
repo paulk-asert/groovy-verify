@@ -112,6 +112,24 @@ so the proofs run at **compile time**. The contracts are stock `groovy.contracts
 annotations, so the same `@Requires`/`@Ensures`/`@Invariant` still execute as ordinary
 runtime checks when verification is off.
 
+Because the checker is a `@TypeChecked` *extension*, verification is opt-in per class or method:
+prove the high-value parts, leave the rest as ordinary Groovy. The explicit annotation is optional
+too — a compile-time customiser or config script can apply the extension across a whole source set,
+removing the per-class `@TypeChecked`. And the economics fall where they should: for a verified
+**library**, only the library's *own* compile bears the proof burden — its consumers run no Z3 and
+write no specs, yet inherit the guarantees. Because each obligation the verifier can't discharge stays
+an ordinary `groovy.contracts` assertion, a fragment limitation costs a *runtime* check rather than the
+guarantee; and because groovy-contracts lets those runtime assertions be switched off (in a production
+build, say), a consumer needn't pay even that. The proof is discharged once, at the library's compile
+time — what survives a verifier limitation is a runtime contract, and what survives into production can
+be nothing at all.
+
+The examples build from the shape of a single proof to a fully verified algorithm — five acts, covering every kind of data Groovy code touches (arrays, lists, sets, maps, `BigDecimal`, IEEE-754 floats, objects, and graphs) in the idiom you'd already write.
+
+### Act 1 — What a proof looks like
+
+*The core machinery: a postcondition, a loop invariant with a termination measure, and the loop forms — closing on a property no test could ever check.*
+
 **Postconditions — the contract is the spec.** Z3 proves the body satisfies `@Ensures`:
 
 ```groovy
@@ -215,6 +233,66 @@ a monotone `iterate(0){ k + 1 }` counter has *no* finite bound, so a `< 1_000_00
 than silently accepted, and a terminal `.every` with no `.limit` at all **skips loudly** instead of blessing a
 contract that would hang at runtime.
 
+### Act 2 — Bugs the compiler now catches
+
+*Bounds, null, and divide-by-zero are implicit obligations — no annotation needed, each refuted with a counterexample and a runnable repro; 32-bit overflow is one annotation away.*
+
+**Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
+safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
+can't prove safe fails the build the way the JVM would name it, plus an input that triggers it:
+
+```groovy
+static int g(int[] a, int i) { a[i] }   // index never checked
+```
+```
+[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
+    obligation: 0 <= i && i < a.size()
+    counterexample: a.size() = 0, i = -1
+    fails on: g(new int[0], -1)
+```
+
+The headline mirrors the exception a developer would actually hit
+(`ArithmeticException: Division by zero`, `NullPointerException: Cannot invoke method
+size() on null object`, …); the `fails on:` line reconstructs a runnable input — scalars
+and a null receiver exact, solver-constrained array elements pinned as literals
+(`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
+(`new int[3]`).
+
+**32-bit integer overflow — Verus-style precision when you want it.** Anything in the fragment is
+encoded as Z3's mathematical (unbounded) Int by default — the experience that makes most existing
+proofs work. Methods (or classes) that annotate `@CheckOverflow` opt into a stronger guarantee:
+every `+`, `-`, `*` becomes an implicit obligation that the math result stays in
+`[Integer.MIN_VALUE, Integer.MAX_VALUE]`, refuted otherwise with a runnable repro:
+
+```groovy
+class C {
+    @CheckOverflow
+    static int incr(int n) { n + 1 }                  // refutes
+}
+```
+
+```
+Possible ArithmeticException: addition overflows 32-bit signed range
+    obligation: Integer.MIN_VALUE <= (n + 1) && (n + 1) <= Integer.MAX_VALUE
+    counterexample: n = 2147483647
+    fails on: incr(2147483647)
+```
+
+Add `@Requires({ n < Integer.MAX_VALUE })` and it verifies. Sub-expression aware: `(a + 1) * (a + 1)`
+generates an obligation for the inner add and one for the outer multiply, so an unguarded
+square-of-successor refutes at the multiplication step with a sqrt(INT_MAX)-territory
+counterexample.
+
+Method-level math-int reasoning (no annotation) is preserved verbatim — the entire existing test
+suite continues to verify unchanged, and the permutation-sort showcase still uses the unbounded
+`int[].count(v)`. `@CheckOverflow` is **additive**: it puts groovy-verify in the same
+machine-integer-precision territory as Verus or Dafny without forcing the typed-narrow ergonomic
+that limits adoption — *math by default, machine precision on demand.*
+
+### Act 3 — Whatever your data is
+
+*One idiom across arrays, lists, sets, and maps — and three number models (math `int`, exact `BigDecimal`, IEEE-754 `double`) — proving the property in the spelling you'd already write.*
+
 **Properties over whole arrays — in the idiom you'd already write.** This is how you turn a *latent*
 assumption like "this method only works on a sorted array" into one the compiler enforces — so passing
 unsorted input is a build error, not a surprise at runtime. The contract is a plain `.every { … }`
@@ -247,6 +325,48 @@ prove the in-range access `a[k]` yields a non-negative result:
 @Ensures({ result >= 0 })
 static int get(int[] a, int k) { a[k] }
 ```
+
+**Building arrays — literals and sized allocation.** A method may construct and return an array. A
+fixed-arity literal `new int[]{a, b}` (or a list literal `[a, b]` coerced to the `int[]` return) folds its
+elements; a sized `new int[n]` is a fresh, Java-zero-filled array, so an unwritten slot reads `0` and a body
+store bounds-checks against the length:
+
+```groovy
+@Requires({ n >= 1 })
+@Ensures({ result.length == n && result[0] == x })
+static int[] singleton(int n, int x) {
+    int[] r = new int[n]        // length n, all zero
+    r[0] = x
+    return r
+}
+```
+
+`result.length == n` proves from the allocation, `result[0] == x` from the store; a store past the length
+(`r[n] = x`) refutes with an `IndexOutOfBounds` repro.
+
+**`++`/`--` in expression position — the array-copy idiom.** A side-effecting `i++` used *inside* an
+expression is supported — the classic two-cursor copy `dst[j++] = src[i++]` verifies. Each inc/dec is hoisted
+to its value plus the increment, so the loop invariant carries the copied prefix and the whole copy is proven
+element-for-element:
+
+```groovy
+@Requires({ src != null && dst != null && src.length <= dst.length })
+@Ensures({ (0..<src.length).every { result[it] == src[it] } })
+static int[] copy(int[] src, int[] dst) {
+    int i = 0, j = 0
+    @Invariant({ 0 <= i && i <= src.length && i == j && (0..<i).every { dst[it] == src[it] } })
+    @Decreases({ src.length - i })
+    while (i < src.length) { dst[j++] = src[i++] }   // dst[j] = src[i]; i++; j++
+    return dst
+}
+```
+
+The store's bounds discharge from the invariant and `src.length <= dst.length`, and both cursors advance each
+pass. The single-index form `dst[i] = src[i++]` verifies too: `i` appears twice, but the verifier checks
+**evaluation order** — Java evaluates the LHS index before the right-hand side, so the `i` in `dst[i]` reads
+the *old* value just as the hoisted-after `i++` does. What it refuses is a variable read *after* its own
+increment — `x = i++ + i`, where Java advances `i` mid-statement so the second `i` is the new value — which
+skips loudly rather than risk mis-modeling.
 
 **Lists and boxed types — same reasoning, same syntax.** The encoder never inspects whether a value
 is `int` or `Integer`, or whether a sequence is an `int[]` or a `List` — it models every integer type
@@ -282,6 +402,196 @@ mutator's pre- and post-states stay distinct — and pairs with a runtime-faithf
 still defer. Immutable-container factories (`List.of(...)`, `[a, b, c]`, `Map.of`, …) **are** in,
 peephole-folding to ground SMT terms on `.size()`, `.contains`, `.get(literal_i)`, and the same
 folds lift across a local: `xs = List.of(1, 2, 3); xs[1]` proves `result == 2`.
+
+**String-keyed sets and maps, with the same machinery.** Sets and maps work over `Set<Integer>` /
+`Map<Integer,Integer>` and likewise over `Set<String>` / `Map<String,Integer>` (and the enum
+variants), the only change being the element sort the encoder uses — every contract idiom
+(`x in s`, `s.size()`, `m["k"]`) reads the same. The cardinality law carries across: a fresh-element
+add raises the size by one, refuted if the add isn't fresh:
+
+```groovy
+class Acl {
+    Set<String> admins
+    @Requires({ !("root" in admins) })
+    @Modifies({ this.admins })
+    @Ensures({ "root" in admins && admins.size() == old.admins.size() + 1 })
+    void grantRoot() { admins.add("root") }
+}
+```
+
+Drop the `!("root" in admins)` precondition and the `+ 1` refutes — adding a key that's already
+present is a no-op, and the verifier names exactly the postcondition that fails:
+
+```
+[Static type checking] - Cannot prove postcondition of grantRoot holds on this return path
+    ensured: ((root in admins) && (admins.size() == (old.admins.size() + 1)))
+```
+
+Same machinery, real-world types. For a method with a String or Enum parameter, the verifier
+additionally renders a `fails on: grant("…")` / `fails on: paint(Color.RED)` line — pinning the
+refuting parameter from the model as a Groovy literal — just as it does for the int-parameter
+examples above.
+
+**Permissions — `Map<Role, Set<Perm>>` nested element domains.** Sets compose with maps the way a
+typical RBAC table is written: each role maps to a set of granted permissions, looked up by `m[k]`.
+The map's *value sort* is the inner set's characteristic-array sort `Array<Perm, Int>`, so `m[k]`
+reads as a transient set; `m[k].contains(p)` is membership, and `m[k].containsAll(required)`
+finite-conjuncts over the inner enum's constants. So a covering-implies-granted claim is a one-liner:
+
+```groovy
+class Acl {
+    enum Role { ADMIN, USER, GUEST }
+    enum Perm { READ, WRITE, DELETE }
+    @Requires({ grants[Role.ADMIN].containsAll(required) })            // ADMIN covers required …
+    @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })   // … so WRITE, when requested, is held
+    static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
+}
+```
+
+The verifier closes the gap between "ADMIN covers `required`" and "WRITE is in `grants[ADMIN]` whenever
+`WRITE ∈ required`" via the per-constant conjunction over `Perm`. Drop the `containsAll` precondition
+and the postcondition rightly refutes: without coverage, the requested permission isn't pinned in
+the admin's grant set. Inner-set mutation (`grants[k].add(p)`) and `grants[k].size()` are out of the
+read-only nesting fragment today.
+
+**Set algebra — union, intersection, difference, symmetric difference.** All of Groovy's set operators
+verify, with both the operator and method spellings: `a + b` / `a | b` / `a.or(b)` (union),
+`a & b` / `a.and(b)` / `a.intersect(b)` (intersection), `a - b` (difference) and `a ^ b` (symmetric
+difference, "in exactly one"). A method that **returns** a set can spec its `result` member-by-member —
+so a policy merge proves it's exactly the union, characterised at an arbitrary element `p`:
+
+```groovy
+@Requires({ granted != null && extra != null })
+@Ensures({ (p in result) == (p in granted || p in extra) })   // result == granted ∪ extra
+static Set<Integer> merge(Set<Integer> granted, Set<Integer> extra, int p) { granted | extra }
+```
+
+`p in result` folds to the inline union membership `p in granted || p in extra` (the verifier binds a
+set-binop `result` to its definition), and because `p` is an unconstrained parameter, proving the
+equivalence for `p` proves it for *every* element. The element-wise lowering keeps it honest: returning
+`granted & extra` (intersection) under the same `@Ensures` rightly refutes, and `p in a` alone does **not**
+entail `p in (a ^ b)` — `p` might be in `b` too, so symmetric difference excludes it. (One Groovy wrinkle:
+`a.intersect(b)` returns a `Collection`, so a `Set`-typed result wants the operator `a & b` / `a.and(b)`,
+which return a `Set`.) The `containsAll` and materialised forms (`Set u = a + b`, then `u.containsAll(a)`)
+work over enum-element sets (finite domain) and Int-element sets under a `Sets.boundedBy` bound.
+
+**State machines — every state handled, machine-checked.** A `Set<State>` over an `enum` has a
+finite domain the verifier exploits: the pigeonhole `handled.size() <= 3` is automatic for any
+`Set<State>` (a 3-state enum), and the iff `Sets.boundedCount(handled, N) == N ⟺ every enum constant ∈
+handled` is asserted on the set's first use. So an FSM-completeness claim becomes a one-line
+contract:
+
+```groovy
+class FSM {
+    enum State { IDLE, RUNNING, DONE }
+    Set<State> handled
+    @Requires({ Sets.boundedCount(handled, State.values().length) == State.values().length })
+    @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
+    boolean allHandled() { true }
+}
+```
+
+Drop the `@Requires` and the postcondition rightly refutes — partial coverage can't entail
+every state. No ordinals, no workaround — the direct `Set<State>` spelling composes the enum
+literal interning, the `State.values().length` constant-folding, and the enum-domain
+pigeonhole + full-coverage iff into a single proof.
+
+**Arithmetic that matches Groovy — including the surprises.** Two things here trip up real code.
+First, **`/` on integers is `BigDecimal` division in Groovy** — `5 / 2 == 2.5`, not `2` — so the
+verifier models it that way and won't pretend a spec assuming `5 / 2 == 2` is correct (integer
+division is `a.intdiv(b)` or `(int)(a / b)`). Second, *variable* multiplication (`a * b` where
+neither side is a constant) is now handled by Z3's non-linear integer arithmetic (NIA), so sign facts
+(`i * i >= 0`), divisibility (`n % 2 == 0`), and bounded products verify directly:
+
+```groovy
+// Bounded squaring — the prime-testing bound check that previously hit the opt-out.
+@Requires({ 0 <= i && i <= 100 })
+@Ensures({ result <= 10000 })
+static int squareInBounds(int i) { i * i }
+
+// Integer division/modulo, modelled on Groovy's *actual* semantics: intdiv truncates toward
+// zero, % is the sign-of-dividend remainder. The round-trip identity holds for every non-zero b.
+@Requires({ b != 0 })
+@Ensures({ result == a })
+static int divModRoundTrip(int a, int b) { a.intdiv(b) * b + (a % b) }
+```
+
+The division/modulo handling follows **Groovy**, not Java (they differ): `/` on integers is
+*`BigDecimal`* division (`5 / 2 == 2.5G`), now modelled with Z3's exact-real arithmetic so a spec
+over it is *proven* — `a / 2 == 2.5` verifies and `a / 2 == 2` refutes, and a `BigDecimal` average is
+provably `(a + b) / 2` (genuine integer division is `a.intdiv(b)` or `(int)(a / b)`, truncating toward
+zero, modelled distinctly). `%` and `.remainder(b)` are the
+sign-of-dividend remainder (`-5 % 2 == -1`); `.mod(b)` is `BigInteger.mod` (non-negative, and the
+verifier adds the Groovy-specific obligation that the modulus is `> 0`). The implicit `b != 0`
+obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnable repro. Hard NIA
+corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
+can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
+
+**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >>` are modelled faithfully. A shift
+by a literal is power-of-two arithmetic (`x << 1 == x * 2` proves), while `& | ^` go through Z3's
+bit-vector theory, so two's-complement facts hold exactly — here, that the low bit of any `int` is `0` or `1`:
+
+```groovy
+@Ensures({ result == 0 || result == 1 })
+static int lowBit(int a) { a & 1 }
+```
+
+`a ^ a == 0`, `a & a == a`, and `6 & 3 == 2` all prove; a wrong concrete value (`6 & 3 == 3`) refutes. Bit
+reasoning is bit-blasted, so a *false symbolic* claim soft-fails to a loud "could not decide" rather than a
+counterexample — sound, never a false pass.
+
+**Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
+that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
+exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and
+the build fails.
+
+```groovy
+class Bank {
+    BigDecimal alice, bob
+    @Requires({ amt >= 0.0 && amt <= alice })
+    @Ensures({ alice + bob == old.alice + old.bob })          // no money is lost in the transfer
+    void transfer(BigDecimal amt) { alice = alice - amt; bob = bob + amt }
+}
+// Change the body to `bob = bob + amt - 0.01` — a salami slice — and the @Ensures REFUTES.
+```
+
+For *rounding* — "no fractional cents syphoned in an interest or trade calculation" — model money as
+integer minor units (cents), where the framework is strongest: the credited (floored) amount plus the
+retained remainder equals the exact value, so nothing vanishes; and a calc claiming it credits the *exact*
+amount is refuted whenever a remainder exists.
+
+```groovy
+@Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
+@Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })  // every cent accounted for
+static int interestCents(int principal, int rateNum, int rateDen) { (principal * rateNum).intdiv(rateDen) }
+```
+
+The same conservation scales to a *dynamic* `List<BigDecimal>` of balances — a per-store sum law makes the
+two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.sum()` ("the books
+balance") is proven. One honest edge: Z3 Real models exact `BigDecimal` *arithmetic* faithfully but not
+*rounding* (`setScale`) — the other reason integer minor units are the soundest money model.
+
+**The same sum, two number models — both proven.** `BigDecimal` is exact decimal; `double` is IEEE-754.
+The checker models each *faithfully* — `BigDecimal` on Z3's exact-real arithmetic, `double` on Z3's
+floating-point theory (bit-exact: round-nearest-even — RNE, NaN, ±∞) — so it proves the famous discrepancy
+rather than papering over it:
+
+```groovy
+@Ensures({ result == 0.3 })   static BigDecimal exact() { 0.1 + 0.2 }    // verified — 0.1 + 0.2 IS 0.3
+@Ensures({ result != 0.3d })  static double    ieee()  { 0.1d + 0.2d }  // verified — 0.1d + 0.2d is NOT 0.3d
+```
+
+For `double`, the high-value proofs are **no-NaN / finiteness** — `Double.isFinite(x) ⟹ !Double.isNaN(x + x)`
+verifies, and over `Math.sqrt`/`Math.abs` too (Z3's `fp.sqrt`/`fp.abs`): `x >= 0 ⟹ !Double.isNaN(Math.sqrt(x))`
+is proven, while *unguarded* `Math.sqrt(x)` can be NaN (refutes). It's sound where exact reasoning isn't:
+`(a + b) - b == a` *refutes* (FP isn't associative), `x == x` *refutes* (a NaN isn't equal to itself). Z3
+**bit-blasts** FP (expands each operation to a Boolean circuit over the 64 bits), so it's straight-line and
+timeout-gated — loops, the other transcendentals (`sin`/`exp`/…),
+and tight error bounds stay out of the fragment.
+
+### Act 4 — Change, tracked soundly
+
+*Mutation under a sound frame: object fields valid by construction, the aliasing bug value-semantics tools miss, what `old` is for, and count-preserving collection updates.*
 
 **Object state — instance fields, valid by construction.** Not just static functions: a method may
 read and update its receiver's fields, and the checker threads field state across the write (so
@@ -358,237 +668,6 @@ when they alias. *(Straight-line `int` fields today; the natural `transfer` with
 old(from.balance) - amt` is deliberately out — groovy-contracts' `old` snapshots only `this`'s own fields, not
 a parameter's, so that contract couldn't **also run** at runtime, and an executable spec is the whole point.)*
 
-**String-keyed sets and maps, with the same machinery.** Sets and maps work over `Set<Integer>` /
-`Map<Integer,Integer>` and likewise over `Set<String>` / `Map<String,Integer>` (and the enum
-variants), the only change being the element sort the encoder uses — every contract idiom
-(`x in s`, `s.size()`, `m["k"]`) reads the same. The cardinality law carries across: a fresh-element
-add raises the size by one, refuted if the add isn't fresh:
-
-```groovy
-class Acl {
-    Set<String> admins
-    @Requires({ !("root" in admins) })
-    @Modifies({ this.admins })
-    @Ensures({ "root" in admins && admins.size() == old.admins.size() + 1 })
-    void grantRoot() { admins.add("root") }
-}
-```
-
-Drop the `!("root" in admins)` precondition and the `+ 1` refutes — adding a key that's already
-present is a no-op, and the verifier names exactly the postcondition that fails:
-
-```
-[Static type checking] - Cannot prove postcondition of grantRoot holds on this return path
-    ensured: ((root in admins) && (admins.size() == (old.admins.size() + 1)))
-```
-
-Same machinery, real-world types. For a method with a String or Enum parameter, the verifier
-additionally renders a `fails on: grant("…")` / `fails on: paint(Color.RED)` line — pinning the
-refuting parameter from the model as a Groovy literal — just as it does for the int-parameter
-examples above.
-
-**Permissions — `Map<Role, Set<Perm>>` nested element domains.** Sets compose with maps the way a
-typical RBAC table is written: each role maps to a set of granted permissions, looked up by `m[k]`.
-The map's *value sort* is the inner set's characteristic-array sort `Array<Perm, Int>`, so `m[k]`
-reads as a transient set; `m[k].contains(p)` is membership, and `m[k].containsAll(required)`
-finite-conjuncts over the inner enum's constants. So a covering-implies-granted claim is a one-liner:
-
-```groovy
-class Acl {
-    enum Role { ADMIN, USER, GUEST }
-    enum Perm { READ, WRITE, DELETE }
-    @Requires({ grants[Role.ADMIN].containsAll(required) })            // ADMIN covers required …
-    @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })   // … so WRITE, when requested, is held
-    static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
-}
-```
-
-The verifier closes the gap between "ADMIN covers `required`" and "WRITE is in `grants[ADMIN]` whenever
-`WRITE ∈ required`" via the per-constant conjunction over `Perm`. Drop the `containsAll` precondition
-and the postcondition rightly refutes: without coverage, the requested permission isn't pinned in
-the admin's grant set. Inner-set mutation (`grants[k].add(p)`) and `grants[k].size()` are out of the
-read-only nesting fragment today.
-
-**State machines — every state handled, machine-checked.** A `Set<State>` over an `enum` has a
-finite domain the verifier exploits: the pigeonhole `handled.size() <= 3` is automatic for any
-`Set<State>` (a 3-state enum), and the iff `Sets.boundedCount(handled, N) == N ⟺ every enum constant ∈
-handled` is asserted on the set's first use. So an FSM-completeness claim becomes a one-line
-contract:
-
-```groovy
-class FSM {
-    enum State { IDLE, RUNNING, DONE }
-    Set<State> handled
-    @Requires({ Sets.boundedCount(handled, State.values().length) == State.values().length })
-    @Ensures({ State.IDLE in handled && State.RUNNING in handled && State.DONE in handled })
-    boolean allHandled() { true }
-}
-```
-
-Drop the `@Requires` and the postcondition rightly refutes — partial coverage can't entail
-every state. No ordinals, no workaround — the direct `Set<State>` spelling composes the enum
-literal interning, the `State.values().length` constant-folding, and the enum-domain
-pigeonhole + full-coverage iff into a single proof.
-
-**Set algebra — union, intersection, difference, symmetric difference.** All of Groovy's set operators
-verify, with both the operator and method spellings: `a + b` / `a | b` / `a.or(b)` (union),
-`a & b` / `a.and(b)` / `a.intersect(b)` (intersection), `a - b` (difference) and `a ^ b` (symmetric
-difference, "in exactly one"). A method that **returns** a set can spec its `result` member-by-member —
-so a policy merge proves it's exactly the union, characterised at an arbitrary element `p`:
-
-```groovy
-@Requires({ granted != null && extra != null })
-@Ensures({ (p in result) == (p in granted || p in extra) })   // result == granted ∪ extra
-static Set<Integer> merge(Set<Integer> granted, Set<Integer> extra, int p) { granted | extra }
-```
-
-`p in result` folds to the inline union membership `p in granted || p in extra` (the verifier binds a
-set-binop `result` to its definition), and because `p` is an unconstrained parameter, proving the
-equivalence for `p` proves it for *every* element. The element-wise lowering keeps it honest: returning
-`granted & extra` (intersection) under the same `@Ensures` rightly refutes, and `p in a` alone does **not**
-entail `p in (a ^ b)` — `p` might be in `b` too, so symmetric difference excludes it. (One Groovy wrinkle:
-`a.intersect(b)` returns a `Collection`, so a `Set`-typed result wants the operator `a & b` / `a.and(b)`,
-which return a `Set`.) The `containsAll` and materialised forms (`Set u = a + b`, then `u.containsAll(a)`)
-work over enum-element sets (finite domain) and Int-element sets under a `Sets.boundedBy` bound.
-
-**Bugs caught at compile time — with a counterexample and a runnable repro.** The implicit
-safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
-can't prove safe fails the build the way the JVM would name it, plus an input that triggers it:
-
-```groovy
-static int g(int[] a, int i) { a[i] }   // index never checked
-```
-```
-[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
-    obligation: 0 <= i && i < a.size()
-    counterexample: a.size() = 0, i = -1
-    fails on: g(new int[0], -1)
-```
-
-The headline mirrors the exception a developer would actually hit
-(`ArithmeticException: Division by zero`, `NullPointerException: Cannot invoke method
-size() on null object`, …); the `fails on:` line reconstructs a runnable input — scalars
-and a null receiver exact, solver-constrained array elements pinned as literals
-(`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
-(`new int[3]`).
-
-**32-bit integer overflow — Verus-style precision when you want it.** Anything in the fragment is
-encoded as Z3's mathematical (unbounded) Int by default — the experience that makes most existing
-proofs work. Methods (or classes) that annotate `@CheckOverflow` opt into a stronger guarantee:
-every `+`, `-`, `*` becomes an implicit obligation that the math result stays in
-`[Integer.MIN_VALUE, Integer.MAX_VALUE]`, refuted otherwise with a runnable repro:
-
-```groovy
-class C {
-    @CheckOverflow
-    static int incr(int n) { n + 1 }                  // refutes
-}
-```
-
-```
-Possible ArithmeticException: addition overflows 32-bit signed range
-    obligation: Integer.MIN_VALUE <= (n + 1) && (n + 1) <= Integer.MAX_VALUE
-    counterexample: n = 2147483647
-    fails on: incr(2147483647)
-```
-
-Add `@Requires({ n < Integer.MAX_VALUE })` and it verifies. Sub-expression aware: `(a + 1) * (a + 1)`
-generates an obligation for the inner add and one for the outer multiply, so an unguarded
-square-of-successor refutes at the multiplication step with a sqrt(INT_MAX)-territory
-counterexample.
-
-Method-level math-int reasoning (no annotation) is preserved verbatim — the entire existing test
-suite continues to verify unchanged, and the permutation-sort showcase still uses the unbounded
-`int[].count(v)`. `@CheckOverflow` is **additive**: it puts groovy-verify in the same
-machine-integer-precision territory as Verus or Dafny without forcing the typed-narrow ergonomic
-that limits adoption — *math by default, machine precision on demand.*
-
-**Arithmetic that matches Groovy — including the surprises.** Two things here trip up real code.
-First, **`/` on integers is `BigDecimal` division in Groovy** — `5 / 2 == 2.5`, not `2` — so the
-verifier models it that way and won't pretend a spec assuming `5 / 2 == 2` is correct (integer
-division is `a.intdiv(b)` or `(int)(a / b)`). Second, *variable* multiplication (`a * b` where
-neither side is a constant) is now handled by Z3's non-linear integer arithmetic (NIA), so sign facts
-(`i * i >= 0`), divisibility (`n % 2 == 0`), and bounded products verify directly:
-
-```groovy
-// Bounded squaring — the prime-testing bound check that previously hit the opt-out.
-@Requires({ 0 <= i && i <= 100 })
-@Ensures({ result <= 10000 })
-static int squareInBounds(int i) { i * i }
-
-// Integer division/modulo, modelled on Groovy's *actual* semantics: intdiv truncates toward
-// zero, % is the sign-of-dividend remainder. The round-trip identity holds for every non-zero b.
-@Requires({ b != 0 })
-@Ensures({ result == a })
-static int divModRoundTrip(int a, int b) { a.intdiv(b) * b + (a % b) }
-```
-
-The division/modulo handling follows **Groovy**, not Java (they differ): `/` on integers is
-*`BigDecimal`* division (`5 / 2 == 2.5G`), now modelled with Z3's exact-real arithmetic so a spec
-over it is *proven* — `a / 2 == 2.5` verifies and `a / 2 == 2` refutes, and a `BigDecimal` average is
-provably `(a + b) / 2` (genuine integer division is `a.intdiv(b)` or `(int)(a / b)`, truncating toward
-zero, modelled distinctly). `%` and `.remainder(b)` are the
-sign-of-dividend remainder (`-5 % 2 == -1`); `.mod(b)` is `BigInteger.mod` (non-negative, and the
-verifier adds the Groovy-specific obligation that the modulus is `> 0`). The implicit `b != 0`
-obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnable repro. Hard NIA
-corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
-can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
-
-**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >>` are modelled faithfully. A shift
-by a literal is power-of-two arithmetic (`x << 1 == x * 2` proves), while `& | ^` go through Z3's
-bit-vector theory, so two's-complement facts hold exactly — here, that the low bit of any `int` is `0` or `1`:
-
-```groovy
-@Ensures({ result == 0 || result == 1 })
-static int lowBit(int a) { a & 1 }
-```
-
-`a ^ a == 0`, `a & a == a`, and `6 & 3 == 2` all prove; a wrong concrete value (`6 & 3 == 3`) refutes. Bit
-reasoning is bit-blasted, so a *false symbolic* claim soft-fails to a loud "could not decide" rather than a
-counterexample — sound, never a false pass.
-
-**Building arrays — literals and sized allocation.** A method may construct and return an array. A
-fixed-arity literal `new int[]{a, b}` (or a list literal `[a, b]` coerced to the `int[]` return) folds its
-elements; a sized `new int[n]` is a fresh, Java-zero-filled array, so an unwritten slot reads `0` and a body
-store bounds-checks against the length:
-
-```groovy
-@Requires({ n >= 1 })
-@Ensures({ result.length == n && result[0] == x })
-static int[] singleton(int n, int x) {
-    int[] r = new int[n]        // length n, all zero
-    r[0] = x
-    return r
-}
-```
-
-`result.length == n` proves from the allocation, `result[0] == x` from the store; a store past the length
-(`r[n] = x`) refutes with an `IndexOutOfBounds` repro.
-
-**`++`/`--` in expression position — the array-copy idiom.** A side-effecting `i++` used *inside* an
-expression is supported — the classic two-cursor copy `dst[j++] = src[i++]` verifies. Each inc/dec is hoisted
-to its value plus the increment, so the loop invariant carries the copied prefix and the whole copy is proven
-element-for-element:
-
-```groovy
-@Requires({ src != null && dst != null && src.length <= dst.length })
-@Ensures({ (0..<src.length).every { result[it] == src[it] } })
-static int[] copy(int[] src, int[] dst) {
-    int i = 0, j = 0
-    @Invariant({ 0 <= i && i <= src.length && i == j && (0..<i).every { dst[it] == src[it] } })
-    @Decreases({ src.length - i })
-    while (i < src.length) { dst[j++] = src[i++] }   // dst[j] = src[i]; i++; j++
-    return dst
-}
-```
-
-The store's bounds discharge from the invariant and `src.length <= dst.length`, and both cursors advance each
-pass. The single-index form `dst[i] = src[i++]` verifies too: `i` appears twice, but the verifier checks
-**evaluation order** — Java evaluates the LHS index before the right-hand side, so the `i` in `dst[i]` reads
-the *old* value just as the hoisted-after `i++` does. What it refuses is a variable read *after* its own
-increment — `x = i++ + i`, where Java advances `i` mid-statement so the second `i` is the new value — which
-skips loudly rather than risk mis-modeling.
-
 **Swap — and what `old` is for.** The textbook spec for a swap says "the result has the two inputs
 exchanged" — and there are two faithful ways to write it, whose difference is the whole lesson. Mark the
 parameters `final` and swap two **locals** instead: the parameters *can't* be reassigned, so they keep their
@@ -627,6 +706,37 @@ lose `a`) is provably different and refutes if you claim its outcome. Referring 
 not just a field — became an *executable* contract in GROOVY-12078; the verifier already modelled it through
 its entry-snapshot machinery, so now the proof and the runtime check agree. A wrong relation (`result.a ==
 old.a`) refutes either way.
+
+**Lists — mutation under a sound `@Modifies`, with count preservation faithful to Groovy's runtime.**
+A `List<Integer>` is the indexed sibling of the Set: contents under array theory + a size oracle
+that threads through every size-changing call. `xs.add(v)` stores at the new last index and
+grows the size by one; `xs.removeLast()` / `xs.pop()` shrink (refuted on empty via a synth'd
+bounds-check obligation); `xs.clear()` zeros the size and every tracked count. The bounded
+`bcount(arr, v, 0, size)` matches Groovy's GDK `xs.count(v)` faithfully across all three, so a
+stack-shaped push-then-pop *provably* preserves the count:
+
+```groovy
+class Stack {
+    List<Integer> xs
+    @Requires({ xs != null })
+    @Modifies({ this.xs })
+    @Ensures({ xs.count(v) == old.xs.count(v) })       // count preserved across a push-pop round-trip
+    void roundTrip(int v) { xs.add(v); xs.removeLast() }
+}
+```
+
+Drop the `xs.removeLast()` and the postcondition refutes (the add raised the count by one and
+there's no compensating pop). Drop the `@Requires({ xs != null })` and the implicit NPE check
+on the `xs.add(v)` receiver refutes with a concrete `roundTrip(0)` repro. The Java-style method
+idioms `xs.get(i)` / `xs.first()` / `xs.last()` / `xs.set(i, v)` ride the same machinery — the
+bounds check on `xs.first()`/`xs.last()`/`xs.removeLast()` is synthesised so pop-on-empty refutes
+the same way on an instance field as it does on a parameter. Only the shift-based variants
+(`xs.add(i, v)`, `xs.remove(i)`) still defer — their quantified shift modelling stays out of
+fragment.
+
+### Act 5 — All the way to a real algorithm
+
+*The capstones the earlier pieces were building toward — nested loops and a matrix sum, a recursive insertion sort proven sorted ∧ permutation, and a fully verified DFS assembled from sets, cardinality, and induction.*
 
 **Nested loops — `count = n·n`, scaling to a flat matrix sum.** A loop may sit inside another loop, each
 carrying its own `@Invariant`/`@Decreases`. The textbook case accumulates `n·n` by counting `1` across an
@@ -690,55 +800,6 @@ which Z3's nonlinear solver won't derive alone, so the verifier supplies the mon
 m) ⟹ i·m + m ≤ n·m` as a sound ground fact (a flat `a[i*m + j] = 0` matrix *fill* verifies the same way).
 Out of fragment, all skipping loudly: a third level of nesting, an inner loop with no `@Invariant`, or one
 that grows a collection (`xs.add`).
-
-**Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
-that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
-exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and
-the build fails.
-
-```groovy
-class Bank {
-    BigDecimal alice, bob
-    @Requires({ amt >= 0.0 && amt <= alice })
-    @Ensures({ alice + bob == old.alice + old.bob })          // no money is lost in the transfer
-    void transfer(BigDecimal amt) { alice = alice - amt; bob = bob + amt }
-}
-// Change the body to `bob = bob + amt - 0.01` — a salami slice — and the @Ensures REFUTES.
-```
-
-For *rounding* — "no fractional cents syphoned in an interest or trade calculation" — model money as
-integer minor units (cents), where the framework is strongest: the credited (floored) amount plus the
-retained remainder equals the exact value, so nothing vanishes; and a calc claiming it credits the *exact*
-amount is refuted whenever a remainder exists.
-
-```groovy
-@Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
-@Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })  // every cent accounted for
-static int interestCents(int principal, int rateNum, int rateDen) { (principal * rateNum).intdiv(rateDen) }
-```
-
-The same conservation scales to a *dynamic* `List<BigDecimal>` of balances — a per-store sum law makes the
-two compensating sides of a transfer cancel, so `accounts.sum() == old.accounts.sum()` ("the books
-balance") is proven. One honest edge: Z3 Real models exact `BigDecimal` *arithmetic* faithfully but not
-*rounding* (`setScale`) — the other reason integer minor units are the soundest money model.
-
-**The same sum, two number models — both proven.** `BigDecimal` is exact decimal; `double` is IEEE-754.
-The checker models each *faithfully* — `BigDecimal` on Z3's exact-real arithmetic, `double` on Z3's
-floating-point theory (bit-exact: round-nearest-even — RNE, NaN, ±∞) — so it proves the famous discrepancy
-rather than papering over it:
-
-```groovy
-@Ensures({ result == 0.3 })   static BigDecimal exact() { 0.1 + 0.2 }    // verified — 0.1 + 0.2 IS 0.3
-@Ensures({ result != 0.3d })  static double    ieee()  { 0.1d + 0.2d }  // verified — 0.1d + 0.2d is NOT 0.3d
-```
-
-For `double`, the high-value proofs are **no-NaN / finiteness** — `Double.isFinite(x) ⟹ !Double.isNaN(x + x)`
-verifies, and over `Math.sqrt`/`Math.abs` too (Z3's `fp.sqrt`/`fp.abs`): `x >= 0 ⟹ !Double.isNaN(Math.sqrt(x))`
-is proven, while *unguarded* `Math.sqrt(x)` can be NaN (refutes). It's sound where exact reasoning isn't:
-`(a + b) - b == a` *refutes* (FP isn't associative), `x == x` *refutes* (a NaN isn't equal to itself). Z3
-**bit-blasts** FP (expands each operation to a Boolean circuit over the 64 bits), so it's straight-line and
-timeout-gated — loops, the other transcendentals (`sin`/`exp`/…),
-and tight error bounds stay out of the fragment.
 
 **Putting it all together — a fully verified sort.** Everything above composes into one result: a
 recursive in-place insertion sort proven **sorted *and* a permutation of its input** — the two halves of
@@ -825,33 +886,6 @@ assignment (`Set<X> u = a + b` as a fresh first-class set) is **also in**: `u` b
 whose pigeonhole, full-coverage iff, and per-element membership iff relating it to its operands are
 all asserted on mint, so subsequent `u.contains` / `u.containsAll` / `u.size()` reasoning composes
 with every other set lowering.
-
-**Lists — mutation under a sound `@Modifies`, with count preservation faithful to Groovy's runtime.**
-A `List<Integer>` is the indexed sibling of the Set: contents under array theory + a size oracle
-that threads through every size-changing call. `xs.add(v)` stores at the new last index and
-grows the size by one; `xs.removeLast()` / `xs.pop()` shrink (refuted on empty via a synth'd
-bounds-check obligation); `xs.clear()` zeros the size and every tracked count. The bounded
-`bcount(arr, v, 0, size)` matches Groovy's GDK `xs.count(v)` faithfully across all three, so a
-stack-shaped push-then-pop *provably* preserves the count:
-
-```groovy
-class Stack {
-    List<Integer> xs
-    @Requires({ xs != null })
-    @Modifies({ this.xs })
-    @Ensures({ xs.count(v) == old.xs.count(v) })       // count preserved across a push-pop round-trip
-    void roundTrip(int v) { xs.add(v); xs.removeLast() }
-}
-```
-
-Drop the `xs.removeLast()` and the postcondition refutes (the add raised the count by one and
-there's no compensating pop). Drop the `@Requires({ xs != null })` and the implicit NPE check
-on the `xs.add(v)` receiver refutes with a concrete `roundTrip(0)` repro. The Java-style method
-idioms `xs.get(i)` / `xs.first()` / `xs.last()` / `xs.set(i, v)` ride the same machinery — the
-bounds check on `xs.first()`/`xs.last()`/`xs.removeLast()` is synthesised so pop-on-empty refutes
-the same way on an instance field as it does on a parameter. Only the shift-based variants
-(`xs.add(i, v)`, `xs.remove(i)`) still defer — their quantified shift modelling stays out of
-fragment.
 
 **Finite maps — a value array plus a key-set.** A `Map<Integer,Integer>` is modelled as its values
 (`m[k]` / `m.get(k)`, an array) together with its key domain (`m.containsKey(k)` / `k in m`, a *set*).
