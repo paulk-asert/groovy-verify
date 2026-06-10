@@ -4243,6 +4243,69 @@ class VerifyHarness {
                             return factHelper(n - 1, next)
                         }
                     }''')],
+        // ===== Multi-checker composition (Q2): VerifyChecker runs alongside a sibling groovy-typecheckers
+        // extension in one @TypeChecked(extensions=[...]); each reports its own errors. Here two regex
+        // constructs sit in one method, honestly separate: RegexChecker validates the `==~` literal, while
+        // VerifyChecker's fragment doesn't reach the regex operators / the `assert` (it defers there — its
+        // own regex reasoning, `.matches` via str.in_re, is the `P regex matches` group). So RegexChecker
+        // catches a malformed pattern VerifyChecker never sees.
+        [group: 'P-multichecker', name: 'RegexChecker catches a malformed ==~ in a VerifyChecker-contracted method', ok: false, expect: 'Bad regex',
+         src: tcExt(['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'], '''class C {
+                        @Ensures({ result[0].matches("[a-z]+") })
+                        static List changeCase(String one, String two) {
+                            def result = [one.toLowerCase(), two.toUpperCase()]
+                            assert result[1] ==~ "[A-Z+"
+                            result
+                        }
+                    }''')],
+        // ----- Cooperative synergy: PurityChecker supplies the purity GUARANTEE VerifyChecker relies on.
+        // VerifyChecker's pure-evaluation (Phase 8a) proves f() by inlining the contract-free same-class
+        // helper triple() as a value — an evaluation that is only meaningful if triple is referentially
+        // transparent, which VerifyChecker assumes (the "contract-free" heuristic) but never verifies.
+        // PurityChecker proves triple's @Pure affirmatively, so the assumption underpinning VerifyChecker's
+        // proof becomes machine-checked. Both pass here.
+        [group: 'P-multichecker', name: 'PurityChecker + VerifyChecker: @Pure helper, contract proven via pure-eval', ok: true,
+         src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
+                        @groovy.transform.Pure
+                        static int triple(int n) { 3 * n }
+                        @Ensures({ result == 30 })
+                        static int f() { triple(10) }
+                    }''')],
+        // When the assumption is violated, the combination rejects it — PurityChecker pinpoints WHY
+        // (`@Pure violation: field assignment to 'counter'`) where VerifyChecker, unable to evaluate the
+        // impure body, only degrades to a vague "Cannot prove". The precise diagnostic is the synergy.
+        [group: 'P-multichecker', name: 'impure @Pure helper rejected — PurityChecker names the violation', ok: false, expect: '@Pure violation',
+         src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
+                        static int counter = 0
+                        @groovy.transform.Pure
+                        static int triple(int n) { counter = counter + 1; 3 * n }
+                        @Ensures({ result == 30 })
+                        static int f() { triple(10) }
+                    }''')],
+        // And VerifyChecker still checks the contract itself: a false @Ensures over the pure helper refutes.
+        [group: 'P-multichecker', name: 'VerifyChecker refutes a false contract over the pure helper', ok: false, expect: 'Cannot prove',
+         src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
+                        @groovy.transform.Pure
+                        static int triple(int n) { 3 * n }
+                        @Ensures({ result == 31 })
+                        static int f() { triple(10) }
+                    }''')],
+
+        // VerifyChecker reasons about regex matching semantically: `.matches(pattern)` lowers to Z3's
+        // regex membership (str.in_re), so a matches postcondition is *proven* from a matches precondition,
+        // and a wrong character class refutes (sound — [a-z] is not [A-Z]).
+        [group: 'P regex matches', name: 'matches postcondition proven from matches precondition', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.matches("[a-z]+") })
+                        @Ensures({ result.matches("[a-z]+") })
+                        static String echo(String s) { s }
+                    }''')],
+        [group: 'P regex matches', name: 'wrong character-class matches postcondition refutes', ok: false, expect: 'Cannot prove',
+         src: tc('''class C {
+                        @Requires({ s != null && s.matches("[a-z]+") })
+                        @Ensures({ result.matches("[A-Z]+") })
+                        static String echo(String s) { s }
+                    }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also
@@ -7863,6 +7926,13 @@ class VerifyHarness {
     static String tcs(String classText) {
         HDR + 'import java.util.stream.Stream\n' +
             "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
+    }
+
+    /** Like {@link #tc} but with a custom ordered extension list, to exercise composition of VerifyChecker
+     *  with sibling groovy-typecheckers extensions (RegexChecker, NullChecker, …) in one @TypeChecked. */
+    static String tcExt(List<String> extensions, String classText) {
+        String exts = extensions.collect { "'" + it + "'" }.join(', ')
+        HDR + "@TypeChecked(extensions = [" + exts + "])\n" + classText.stripIndent()
     }
 
     static List<String> compile(String name, String src) {
