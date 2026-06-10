@@ -184,6 +184,31 @@ The base (`fact(1) == 1 >= 1`) closes directly; the step assumes `fact(n - 1) >=
 exists to establish a fact by induction — does load-bearing work in Act 5 (the sort's `maxBound`, the
 DFS's `bcount`).
 
+**The accumulator form earns something extra — `@TailRecursive`.** Pass an accumulator and mark the
+helper `@TailRecursive`, and Groovy rewrites the body into an iterative loop — so deep recursion runs in
+constant stack instead of overflowing it. The proof is untouched by that rewrite: it reasons about the
+*recursive* source the loop is derived from, hoisting the tail call to an implicit local bound by the
+callee's `@Ensures` (the induction hypothesis), so the inductive contract still discharges:
+
+```groovy
+import groovy.transform.TailRecursive
+
+@TailRecursive
+@Requires({ n >= 0 && acc >= 1 })
+@Ensures({ result >= acc })
+@Decreases({ n })
+static long factHelper(long n, long acc) {
+    if (n <= 1) return acc
+    long next = n * acc
+    return factHelper(n - 1, next)      // tail call — reasoned about inductively, executed as a loop
+}
+```
+
+Three guarantees from one piece of source: the contract is **proven** at compile time (induction on the
+recursive form), the runtime is a **stack-safe loop** (the `@TailRecursive` rewrite), and the `@Ensures`
+still **runs at runtime** — groovy-contracts inlines its check at the rewritten return, so the
+executable-spec dual-tenet survives even after another AST transform has restructured the body.
+
 The same machinery handles **aggregation** — and running totals are a classic source of *silently
 wrong* answers (an off-by-one or a forgotten element yields a plausible-but-wrong number, with no
 exception to flag it). Here the loop invariant carries a *prefix sum* `xs[0..<i].sum()` (the idiomatic
