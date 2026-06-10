@@ -242,26 +242,21 @@ class ContractExpansionTransform implements ASTTransformation {
         // run on every method in the @TypeChecked scope, including ones whose only
         // contract is a @Requires (which groovy-contracts also instruments).
         if (mn.code instanceof BlockStatement) {
-            BlockStatement orig = (BlockStatement) mn.code
-            List<Statement> stmts
-            if (hasTailRecursive(mn)) {
-                // @TailRecursive is a SEMANTIC_ANALYSIS local transform that renames the body's
-                // variable accesses (`n` -> `_n_`) IN PLACE — mutating the very nodes a *shallow*
-                // snapshot shares — so the captured body would desync from the parameters and the
-                // contract closures (which still spell `n`/`acc`/`result`). Deep-clone so the
-                // snapshot is immune; the verifier then analyses the author's recursive body and the
-                // tail call is hoisted by the return-call machinery (VerifyChecker, Phase 92). Gated
-                // on @TailRecursive so every other method keeps the cheaper shallow snapshot.
-                stmts = new ArrayList<Statement>(orig.statements.size())
-                for (Statement st : orig.statements) stmts.add(deepCloneBody(st))
-            } else {
-                // A shallow copy of the statement list suffices for groovy-contracts, which mutates
-                // the original block's list, not the statement nodes we keep references to.
-                stmts = new ArrayList<Statement>(orig.statements)
-            }
-            BlockStatement snapshot = new BlockStatement(stmts, orig.variableScope ?: new VariableScope())
-            snapshot.setSourcePosition(orig)
-            mn.setNodeMetaData(ORIGINAL_BODY_KEY, snapshot)
+            // Deep-copy the if/return/block spine so later IN-PLACE mutation of the live body cannot
+            // reach the captured snapshot. Two distinct vectors require this:
+            //   (1) groovy-contracts injects its postcondition `try { assert } catch` into a return —
+            //       and since GROOVY-12079 it first wraps a braceless `if`/loop-branch return in a block
+            //       (setIfBlock/setLoopBlock), restructuring a node a *shallow* snapshot shares. The
+            //       injected (synthetic, line -1) TryCatchStatement then leaks into the snapshot and the
+            //       encoder rejects it ("unsupported statement"). Affects every method with an early/
+            //       branch/recursive return under @Ensures/@Invariant — not just @TailRecursive.
+            //   (2) @TailRecursive (SEMANTIC_ANALYSIS) renames the body's variable accesses (`n` -> `_n_`)
+            //       in place, desyncing the snapshot from the parameters and contract closures.
+            // Vector (1) needs only the structural copy (all methods); vector (2) additionally needs the
+            // variable nodes rebuilt, so freshening stays gated on @TailRecursive. Loop *nodes* are shared
+            // (copyBody falls through), so a nested loop's later-captured LoopSpec is still seen by identity;
+            // each loop body is isolated separately by loopBodyCopy.
+            mn.setNodeMetaData(ORIGINAL_BODY_KEY, copyBody((BlockStatement) mn.code, hasTailRecursive(mn)))
         }
     }
 
@@ -275,40 +270,54 @@ class ContractExpansionTransform implements ASTTransformation {
         return false
     }
 
-    /** Deep-clone a body statement so its variable nodes are independent of the live method body (see
-     *  the {@code @TailRecursive} note at the capture site). Expressions are rebuilt with a fresh
-     *  {@link VariableExpression} per access — names are what the body analysis resolves on — and
-     *  {@link Expression#transformExpression} copies every composite type. Only the statement shapes a
-     *  tail-recursive body uses are cloned; anything else is shared (no worse than the shallow snapshot). */
-    private static Statement deepCloneBody(Statement s) {
+    /** Deep-copy the statement *spine* a body uses so the snapshot is independent of later in-place
+     *  mutation of the live body (postcondition try/catch injection — incl. the GROOVY-12079 branch wrap —
+     *  and @TailRecursive's variable rename). Block/return/expression/if nodes are rebuilt; loops and other
+     *  statements are shared (loops keep node identity so a later-captured nested {@link LoopSpec} is seen,
+     *  and their bodies are isolated separately by {@link #loopBodyCopy}). Node metadata and source position
+     *  are preserved. When {@code freshen}, each variable access is rebuilt via {@link #freshenVars} (needed
+     *  only for @TailRecursive, whose rename mutates the shared VariableExpression nodes). */
+    private static Statement copyBody(Statement s, boolean freshen) {
         if (s == null) return null
+        // Only rebuild the *containers* groovy-contracts restructures in place: a BlockStatement (whose
+        // statement LIST it rewrites — replacing a return with `def result=…; try{assert}; return result`)
+        // and an IfStatement (whose branch pointer GROOVY-12079 swaps via setIfBlock when wrapping a
+        // braceless return). Owning these isolates the snapshot. Return/Expression nodes are NOT mutated in
+        // place by contracts, so they are SHARED — which keeps the resolved-type/fragment metadata that STC
+        // stamps on the live nodes after this CONVERSION snapshot visible to the encoder (rebuilding them
+        // detaches that metadata and pushes evaluable returns "outside fragment"). Loops are shared too, so a
+        // nested loop's later-captured LoopSpec is seen by identity; their bodies are isolated by loopBodyCopy.
         if (s instanceof BlockStatement) {
             BlockStatement src = (BlockStatement) s
-            List<Statement> out = new ArrayList<Statement>(src.statements.size())
-            for (Statement st : src.statements) out.add(deepCloneBody(st))
-            BlockStatement b = new BlockStatement(out, src.variableScope)
-            b.setSourcePosition(s)
-            return b
-        }
-        if (s instanceof ReturnStatement) {
-            ReturnStatement r = new ReturnStatement(freshenVars(((ReturnStatement) s).expression))
-            r.setSourcePosition(s)
-            return r
-        }
-        if (s instanceof ExpressionStatement) {
-            ExpressionStatement e = new ExpressionStatement(freshenVars(((ExpressionStatement) s).expression))
-            e.setSourcePosition(s)
-            return e
+            List<Statement> o = new ArrayList<Statement>(src.statements.size())
+            for (Statement st : src.statements) o.add(copyBody(st, freshen))
+            BlockStatement out = new BlockStatement(o, src.variableScope)
+            out.setSourcePosition(s); out.copyNodeMetaData(s)
+            return out
         }
         if (s instanceof IfStatement) {
             IfStatement i = (IfStatement) s
-            IfStatement c = new IfStatement(
-                (BooleanExpression) freshenVars(i.booleanExpression),
-                deepCloneBody(i.ifBlock), deepCloneBody(i.elseBlock))
-            c.setSourcePosition(s)
-            return c
+            IfStatement out = new IfStatement((BooleanExpression) copyExpr(i.booleanExpression, freshen),
+                copyBody(i.ifBlock, freshen), copyBody(i.elseBlock, freshen))
+            out.setSourcePosition(s); out.copyNodeMetaData(s)
+            return out
+        }
+        // @TailRecursive renames variable accesses in place, so under `freshen` the leaf return/expression
+        // nodes must be rebuilt with fresh VariableExpressions; otherwise they are shared (see above).
+        if (freshen && s instanceof ReturnStatement) {
+            Statement out = new ReturnStatement(freshenVars(((ReturnStatement) s).expression))
+            out.setSourcePosition(s); return out
+        }
+        if (freshen && s instanceof ExpressionStatement) {
+            Statement out = new ExpressionStatement(freshenVars(((ExpressionStatement) s).expression))
+            out.setSourcePosition(s); return out
         }
         return s
+    }
+
+    /** Share an expression, or rebuild its variable accesses when {@code freshen} (see {@link #freshenVars}). */
+    private static Expression copyExpr(Expression e, boolean freshen) {
+        freshen ? freshenVars(e) : e
     }
 
     /** Rebuild an expression tree with a fresh {@link VariableExpression} for each variable access
@@ -519,11 +528,17 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     private static List<Statement> loopBodyCopy(LoopingStatement loop) {
+        // Deep-copy the if/return/block spine (not just the list) so the postcondition try/catch that
+        // groovy-contracts injects into a loop-body return at INSTRUCTION_SELECTION cannot leak into the
+        // LoopSpec body captured here at CONVERSION. copyBody shares nested loop nodes, so their own
+        // later-captured LoopSpec is still seen by identity.
         Statement b = loop.loopBlock
         if (b instanceof BlockStatement) {
-            return new ArrayList<Statement>(((BlockStatement) b).statements)
+            List<Statement> o = new ArrayList<Statement>()
+            for (Statement st : ((BlockStatement) b).statements) o.add(copyBody(st, false))
+            return o
         }
-        return b != null ? ([b] as List<Statement>) : Collections.<Statement> emptyList()
+        return b != null ? ([copyBody(b, false)] as List<Statement>) : Collections.<Statement> emptyList()
     }
 
     /** Re-parse a captured contract expression's text into a fresh CONVERSION AST. */
