@@ -1671,14 +1671,20 @@ Built using JDK 25. It builds against `org.apache.groovy:6.0.0-SNAPSHOT` from th
 it relies on some fixes due for release in the next Groovy 6 pre-release.
 
 ```sh
-./gradlew verify                       # compile a battery of good/bad snippets and assert diagnostics
+./gradlew verify                       # compact console runner — one line per case, summary at the end
 VERIFY_VERBOSE=1 ./gradlew verify      # also print the counterexamples for refuted cases
 VERIFY_CACHE_STATS=1 ./gradlew verify  # also print the in-process VC cache hit / miss ratio
+
+./gradlew test                         # the SAME suite as JUnit 5 dynamic tests (per-case IDE/CI reporting)
+./gradlew test -Dverify.only='matrix'  # run just the cases whose "group :: name" contains a substring
 ```
 
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and
-bad ones fail with the expected diagnostic. A process-wide VC cache (Phase 34) keys
+bad ones fail with the expected diagnostic. The cases are a single compact data list (`CASES`); a
+`@TestFactory` turns each into an individually-named, individually-runnable JUnit test (`group :: name`),
+and `main` runs the same list as the compact console summary — both share one judging path, so the data
+lives in exactly one place. A process-wide VC cache (Phase 34) keys
 Z3 results on the canonicalised asserted-set so suite-wide duplicates skip the solver;
 the suite currently rebates ~18 % wall-clock at a 20 % hit rate.
 

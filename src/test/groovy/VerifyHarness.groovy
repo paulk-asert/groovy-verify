@@ -17,6 +17,10 @@ import org.codehaus.groovy.control.MultipleCompilationErrorsException
 import org.codehaus.groovy.control.messages.ExceptionMessage
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage
 import verification.Z3Backend
+import org.junit.jupiter.api.Assertions
+import org.junit.jupiter.api.DynamicTest
+import org.junit.jupiter.api.TestFactory
+import static org.junit.jupiter.api.DynamicTest.dynamicTest
 
 /**
  * Standalone self-test for the verification engine: compiles a battery of
@@ -7731,6 +7735,58 @@ class VerifyHarness {
         }
     }
 
+    /**
+     * Compile one case and judge it against its {@code ok} / {@code expect} / {@code refute} spec.
+     * Returns {@code [ok: boolean, detail: String, errors: List<String>]}. The single source of
+     * truth for "did this case behave?", shared by {@link #main} (compact console runner) and the
+     * {@link #verificationCases} JUnit factory (per-test IDE/CI reporting) — no duplicated judging.
+     */
+    static Map evaluate(Map c, String name) {
+        List<String> errors = compile(name, (String) c.src)
+        boolean wantOk = c.ok == true
+        boolean ok
+        String detail
+        if (wantOk) {
+            ok = (errors == null)
+            detail = ok ? '' : "expected clean compile, got:\n      ${errors?.join('\n      ')}"
+        } else {
+            String all = errors?.join('\n') ?: ''
+            ok = errors != null && all.contains((String) c.expect)
+            detail = ok ? '' : (errors == null
+                ? "expected error containing '${c.expect}', but compiled cleanly"
+                : "expected '${c.expect}', got:\n      ${all.replaceAll('\n', '\n      ')}")
+            // Optional `refute`: assert a substring is ABSENT from the diagnostic (e.g. an
+            // internal/synthetic name that must not leak into a user-facing counterexample).
+            if (ok && c.refute && all.contains((String) c.refute)) {
+                ok = false
+                detail = "diagnostic should NOT contain '${c.refute}', but did:\n      ${all.replaceAll('\n', '\n      ')}"
+            }
+        }
+        [ok: ok, detail: detail, errors: errors]
+    }
+
+    /**
+     * JUnit 5 dynamic-test view of the same {@link #CASES}: one individually-named, individually-runnable
+     * test per case (display name {@code "group :: name"}) — so an IDE / CI sees ~860 tests, not one
+     * pass/fail, and `./gradlew test` / the IDE gutter can run a single case. The data list is untouched.
+     * Filter from the CLI with {@code -Dverify.only=<substring>} (matched against {@code "group :: name"},
+     * case-insensitive), e.g. {@code ./gradlew test -Dverify.only='matrix sum'}.
+     */
+    @TestFactory
+    List<DynamicTest> verificationCases() {
+        String only = (System.getProperty('verify.only') ?: '').trim().toLowerCase()
+        List<DynamicTest> tests = []
+        CASES.eachWithIndex { Map c, int i ->
+            String label = "${c.group} :: ${c.name}"
+            if (only && !label.toLowerCase().contains(only)) return
+            tests << dynamicTest(label) {
+                Map r = evaluate(c, "Case${i}")
+                Assertions.assertTrue((boolean) r.ok, (String) r.detail)
+            }
+        }
+        tests
+    }
+
     static void main(String[] args) {
         int passed = 0, failed = 0
         String currentGroup = null
@@ -7739,36 +7795,17 @@ class VerifyHarness {
                 currentGroup = c.group
                 println "\n── ${currentGroup} ${'─' * (60 - currentGroup.size())}"
             }
-            List<String> errors = compile("Case${i}", (String) c.src)
-            boolean wantOk = c.ok == true
-            boolean ok
-            String detail
-            if (wantOk) {
-                ok = (errors == null)
-                detail = ok ? '' : "expected clean compile, got:\n      ${errors?.join('\n      ')}"
-            } else {
-                String all = errors?.join('\n') ?: ''
-                ok = errors != null && all.contains((String) c.expect)
-                detail = ok ? '' : (errors == null
-                    ? "expected error containing '${c.expect}', but compiled cleanly"
-                    : "expected '${c.expect}', got:\n      ${all.replaceAll('\n', '\n      ')}")
-                // Optional `refute`: assert a substring is ABSENT from the diagnostic (e.g. an
-                // internal/synthetic name that must not leak into a user-facing counterexample).
-                if (ok && c.refute && all.contains((String) c.refute)) {
-                    ok = false
-                    detail = "diagnostic should NOT contain '${c.refute}', but did:\n      ${all.replaceAll('\n', '\n      ')}"
-                }
-            }
-            if (ok) {
+            Map r = evaluate(c, "Case${i}")
+            if (r.ok) {
                 passed++
                 println "  [PASS] ${c.name}"
                 // VERIFY_VERBOSE=1 ./gradlew verify  → show the diagnostic text of refuted cases
-                if (System.getenv('VERIFY_VERBOSE') && !wantOk && errors) {
-                    println "         ${errors.join('\n').replaceAll('\n', '\n         ')}"
+                if (System.getenv('VERIFY_VERBOSE') && c.ok != true && r.errors) {
+                    println "         ${((List) r.errors).join('\n').replaceAll('\n', '\n         ')}"
                 }
             } else {
                 failed++
-                println "  [FAIL] ${c.name}\n      ${detail}"
+                println "  [FAIL] ${c.name}\n      ${r.detail}"
             }
         }
         println "\n${'═' * 64}"

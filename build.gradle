@@ -82,6 +82,13 @@ dependencies {
 
     testImplementation "org.apache.groovy:groovy:$groovyVersion"
     testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
+
+    // JUnit 5 — drives the VerifyHarness `@TestFactory` (one dynamic test per CASES entry), so the
+    // suite is individually runnable from the IDE / `./gradlew test`. The compact `CASES` data and the
+    // `./gradlew verify` console runner (VerifyHarness.main) are unchanged; both share `evaluate()`.
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 tasks.withType(GroovyCompile).configureEach {
@@ -197,6 +204,22 @@ tasks.register('caseAxiomTiming', JavaExec) {
     jvmArgs = ['--enable-native-access=ALL-UNNAMED']
 }
 
+// JUnit 5 dynamic-test view of the same suite (VerifyHarness.@TestFactory): one named test per CASES
+// entry, individually runnable from the IDE / CLI. `check` uses this; `verify` (above) is the compact
+// console runner. Run one case: `./gradlew test -Dverify.only='matrix sum'`.
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    maxHeapSize = '2g'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'   // quiet the JDK25 z3 native-access warning
+    if (System.getProperty('verify.only')) {
+        systemProperty 'verify.only', System.getProperty('verify.only')
+    }
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+    }
+}
+
 tasks.named('check') {
-    dependsOn verifyTask
+    dependsOn 'test'   // JUnit dynamic-test run of the suite (verify remains the console runner)
 }
