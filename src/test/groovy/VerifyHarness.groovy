@@ -4691,6 +4691,32 @@ class VerifyHarness {
                             switch(s) { case 'x' -> 1; case 'y' -> 2 }
                         }
                     }''')],
+        // Phase 103 — a low-bit mask `x & (2^k - 1)` is modelled as the Euclidean mod `x mod 2^k` (its low k
+        // bits, exact for all x), keeping it in LIA so it bridges to %/+/divisibility. Lands the OpenJML
+        // BitVectors tutorial's final proof (round-up to a multiple of 16), where a bit-vector `&` times out
+        // on `result % 16 == 0`. Also makes parity/masking (`x & 1`) arithmetic rather than bit-blasted.
+        [group: 'P103 mask-as-mod', name: 'OpenJML round-up to 16 proves (range + mod16)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n <= 0x7ffffff0 })
+                        @Ensures({ n <= result && result <= n + 15 && result % 16 == 0 })
+                        static int roundUp(int n) { n + ((-n) & 0x0f) }
+                    }''')],
+        [group: 'P103 mask-as-mod', name: 'soundness: result%16==8 refutes (n=INT_MIN)', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ n <= 0x7ffffff0 })
+                        @Ensures({ result % 16 == 8 })
+                        static int roundUp(int n) { n + ((-n) & 0x0f) }
+                    }''')],
+        [group: 'P103 mask-as-mod', name: 'parity x & 1 in {0,1} arithmetic', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 0 || result == 1 })
+                        static int parity(int x) { x & 1 }
+                    }''')],
+        [group: 'P103 mask-as-mod', name: 'low-bit mask x & 7 in [0,7]', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result >= 0 && result <= 7 })
+                        static int low3(int x) { x & 7 }
+                    }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also

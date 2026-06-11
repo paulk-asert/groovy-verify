@@ -592,18 +592,36 @@ obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnabl
 corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
 can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
 
-**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >>` are modelled faithfully. A shift
-by a literal is power-of-two arithmetic (`x << 1 == x * 2` proves), while `& | ^` go through Z3's
-bit-vector theory, so two's-complement facts hold exactly — here, that the low bit of any `int` is `0` or `1`:
+**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >>` are modelled faithfully. A shift by a
+literal is power-of-two arithmetic (`x << 1 == x * 2` proves), and a *low-bit mask* folds to arithmetic too —
+`a & (2^k − 1)` is exactly `a mod 2^k` — so the low bit of any `int` is `0` or `1`:
 
 ```groovy
 @Ensures({ result == 0 || result == 1 })
 static int lowBit(int a) { a & 1 }
 ```
 
-`a ^ a == 0`, `a & a == a`, and `6 & 3 == 2` all prove; a wrong concrete value (`6 & 3 == 3`) refutes. Bit
-reasoning is bit-blasted, so a *false symbolic* claim soft-fails to a loud "could not decide" rather than a
-counterexample — sound, never a false pass.
+A non-mask `& | ^` (`a ^ a == 0`, `a & a == a`) goes through Z3's bit-vector theory, so two's-complement facts
+hold exactly: `6 & 3 == 2` proves, a wrong concrete value (`6 & 3 == 3`) refutes. That reasoning is bit-blasted,
+so a *false symbolic* claim soft-fails to a loud "could not decide" rather than a counterexample — sound, never
+a false pass.
+
+**A bit-twiddling trick proven against an arithmetic spec — the OpenJML benchmark.** The
+[OpenJML BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors) builds to rounding a number up to the
+next multiple of 16 with `n + ((-n) & 0x0f)` — a body that's pure bit manipulation, a spec that's pure
+arithmetic. groovy-verify proves it:
+
+```groovy
+@Requires({ n <= 0x7ffffff0 })
+@Ensures({ n <= result && result <= n + 15 && result % 16 == 0 })
+static int roundUp(int n) { n + ((-n) & 0x0f) }
+```
+
+Because the low-bit mask `(-n) & 0x0f` becomes the arithmetic `(-n) mod 16`, the whole thing stays in linear
+integer arithmetic and bridges to the spec's `+`, `%`, and `≤`: the `result % 16 == 0` divisibility goes through
+where a bit-vector `&` would time out. A wrong spec is still caught — `result % 16 == 8` refutes with
+`n = Integer.MIN_VALUE`. This is the OpenJML insight made concrete: an arithmetic specification, a bit-trick
+body, bridged so the caller never pays the bit-vector cost.
 
 **Shift equals power of two — proven for a whole range, not spot-checked.** Where a test would write
 `(0..10).each { n -> assert (1 << n) == (2 ** n) }`, the verifier proves the identity for *every* `n` in the

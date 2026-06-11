@@ -5398,6 +5398,35 @@ with no precondition; a `String`-subject switch proves.
 
 ---
 
+## Phase 103 — low-bit mask `x & (2^k − 1)` as Euclidean mod  *(shipped — lands the OpenJML BitVectors proof)*
+
+A low-bit mask `x & (2^k − 1)` keeps exactly the low k bits, which **is** the Euclidean mod `x mod 2^k` — for
+*every* x (two's-complement, negative, even unbounded, since `2^k | 2^32`). So when one `&` operand is a literal
+`2^k − 1` (`1, 3, 7, 15, 0xff, 0xffff, …`), the encoder lowers it to `intMod(x, 2^k)` (Z3 `mkMod`, `∈ [0, 2^k)`)
+instead of a bit-vector `bvAnd`. A non-low-bit-mask `&` (e.g. `x & 0x0a`) keeps the faithful bit-vector path.
+
+**Why:** a bit-vector `&` proves *range* facts but doesn't bridge to *arithmetic* `%` — Z3's bit-blasting and LIA
+don't connect, so divisibility times out. Keeping the mask in LIA bridges to `+` / `%` / divisibility. This lands
+the [OpenJML BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)'s culminating proof — round-up to
+the next multiple of 16, where the spec is pure arithmetic but the body is a bit-trick:
+
+```groovy
+@Requires({ n <= 0x7ffffff0 })
+@Ensures({ n <= result && result <= n + 15 && result % 16 == 0 })
+static int roundUp(int n) { n + ((-n) & 0x0f) }       // ✓ proves; before, `result % 16 == 0` timed out
+```
+
+The `range` half (`n ≤ result ≤ n+15`) already proved from the bit-vector's `[0,15]` range; this slice closes the
+divisibility half. It also makes parity / flag-masking (`x & 1`, `flags & 0xff`) *arithmetic* — cheaper than
+bit-blasting and refute-friendly rather than timeout-prone. **Sound** by the exact identity; verified by a
+soundness control (`result % 16 == 8` refutes with `n = INT_MIN`) and no regression in the existing `&`/`|`/`^`
+tests (`6 & 3 == 2` still folds — `3` is a mask, `mod(6,4) == 2`).
+
+**Shipped tests (Phase 103)**: the OpenJML `roundUp` proves range + `% 16 == 0`; `result % 16 == 8` refutes;
+`x & 1 ∈ {0,1}` and `x & 7 ∈ [0,7]` prove arithmetically.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -3830,8 +3830,20 @@ class Encoder {
                 }
                 return shl ? session.bvShl(L, R) : session.bvShr(L, R)
             }
+            if (op == Types.BITWISE_AND) {
+                // Phase 103 — a low-bit mask `x & (2^k - 1)` keeps exactly the low k bits, which *is* the
+                // Euclidean mod `x mod 2^k` for every x (two's-complement, negative, even unbounded — since
+                // 2^k | 2^32). Model it arithmetically rather than as a bit-vector so it stays in LIA and
+                // bridges to `%` / `+` / divisibility: the OpenJML round-up `n + ((-n) & 0x0f)` then proves
+                // `result % 16 == 0` (a bit-vector `&` times out there). The non-mask operand is `x`; a
+                // non-low-bit-mask `&` (e.g. `x & 0x0a`) keeps the faithful bit-vector path.
+                Long maskR = nonNegIntLiteral(be.rightExpression)
+                if (maskR != null && isLowBitMask(maskR)) return session.intMod(L, session.intLit(maskR + 1L))
+                Long maskL = nonNegIntLiteral(be.leftExpression)
+                if (maskL != null && isLowBitMask(maskL)) return session.intMod(R, session.intLit(maskL + 1L))
+                return session.bvAnd(L, R)
+            }
             switch (op) {
-                case Types.BITWISE_AND: return session.bvAnd(L, R)
                 case Types.BITWISE_OR:  return session.bvOr(L, R)
                 case Types.BITWISE_XOR: return session.bvXor(L, R)
             }
@@ -3839,6 +3851,12 @@ class Encoder {
         } catch (Exception ignored) {
             return null   // non-Int operands → loud skip
         }
+    }
+
+    /** Phase 103 — true if {@code m} is a low-bit mask {@code 2^k - 1} ({@code m+1} is a power of two), so
+     *  {@code x & m} keeps the low k bits — exactly {@code x mod (m+1)}. ({@code m == 0} ⇒ {@code mod 1 == 0}.) */
+    private static boolean isLowBitMask(long m) {
+        m >= 0 && (m & (m + 1L)) == 0
     }
 
     /** The value of {@code e} if it is a non-negative integer literal, else null. */
