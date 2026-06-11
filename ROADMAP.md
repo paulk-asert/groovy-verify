@@ -2627,6 +2627,21 @@ scoping (only on selected methods, regardless of class).
   Consequence: `1 << n == 2 ** n` proves genuinely for `n ≤ 30` and is correctly *not* proved for `n ≥ 31` —
   not a gap, but the truth: with `2 ** n` unbounded and `1 << n` the wrapped 32-bit shift, the two genuinely
   differ at `n ≥ 31` (`2**31 = 2147483648 ≠ 1<<31 = −2147483648`), exactly as at runtime.
+- **64-bit shifts + width-aware `.intValue()`/`.longValue()` — implemented end-to-end, then reverted as
+  computationally non-viable.** To raise the `1 << n == 2 ** n` ceiling from `n ≤ 30` to `n ≤ 62`, the shift
+  side needs 64-bit modelling (`1L << n`) and — for soundness — `.intValue()`/`.longValue()` must actually
+  *wrap* (a `long` shift compared against an *un*-wrapped `.intValue()` would falsely prove for `n ≥ 31`).
+  Both were built: width-parameterised bit-vector ops (32/64) and bit-vector truncation for the narrowing.
+  Findings from the full-suite run: (1) the **soundness piece works** — `(1L << n) == (2 ** n).intValue()`
+  correctly does *not* prove, and the old unsound `(2 ** n).intValue() >= 1` stops falsely proving; (2) but
+  the **truncation is bit-blast-heavy** — proving `truncate(pow(2,n)) == pow(2,n)` needs to *bound*
+  `pow(2,n)`, the same symbolic-exponent reasoning that's already hard, so it times out; (3) the **headline
+  `n ≤ 62` times out**, and small ranges (`n ≤ 10`) prove; (4) worse, it **regresses** the previously-working
+  symbolic facts (`2 ** n >= 1` at `n ≤ 30`, the int-surface doubling) from clean proofs to could-not-decide,
+  because the cheap identity model that made them provable is exactly what the (necessary) wrap removes. The
+  cheap-but-unsound identity and the sound-but-bit-blast-heavy truncation are in fundamental tension; neither
+  raises the ceiling. So 64-bit shifts are *not* a small add-on — they inherit the same width-aware-arithmetic
+  prerequisite, and the practical ceiling stays `n ≤ 30`.
 - **Always-on mode.** Some safety-critical projects want overflow checked everywhere, no
   annotation needed. A future {@code @TypeChecked(strict = true)} mode could flip the default
   but isn't in scope here — the math-int default is too useful to drop unilaterally.
