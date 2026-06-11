@@ -5360,6 +5360,44 @@ guard; the `|| s == null` weakening still flags the `NullPointerException`.
 
 ---
 
+## Phase 102 — switch *expressions* (arrow form, simple literal labels)  *(shipped)*
+
+A switch *expression* `switch(i){ case 1 -> 'a'; … }` desugars (by the time the verifier sees `ORIGINAL_BODY`)
+into an IIFE: `{ -> <SwitchStatement> }.call()` — a no-arg closure wrapping a `SwitchStatement` whose cases
+`return` their yielded value. The encoder recognises that exact shape (`soleSwitchOf` / `caseValueExpr`) and
+lowers the switch to an **ite-chain**:
+
+```
+switch(i){ case 1->'a'; case 2->'b'; case 3->'c' }   →   ite(i==1,'a', ite(i==2,'b', ite(i==3,'c', UNMATCHED)))
+```
+
+so it's a single return expression that `checkPath` proves directly — no `BodyEncoder` change. The subject
+compares in its own sort (int `eq` or, for a `String` subject, seq `eq` via `translateInSort`); the branch
+values share a result sort (int or String). **UNMATCHED** is the `default ->` value, or — with no default —
+a *fresh unconstrained* term of the result sort: Groovy yields `null` on no-match (verified — `letter(5) ==
+null`, not an exception), so requiring it to satisfy a non-trivial postcondition is a sound conservative
+refute, while a precondition covering every case makes the branch dead and lets the proof through.
+
+With the range phases (99 / 99b) this closes the original target end-to-end:
+
+```groovy
+@Requires({ i in 1..3 })
+@Ensures({ result in 'a'..'c' })
+static String letter(int i) { switch(i){ case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' } }   // ✓ proves
+```
+
+**Scope / out:** switch *expressions* only (a switch *statement* stays an "unsupported statement" skip);
+single literal `int`/`String` labels (multi-label `case 1, 2 ->`, ranges, type/pattern labels, and complex
+multi-statement case bodies skip loudly); decimal subjects and mixed-sort branches skip. Modelling no-match as
+`null` precisely (rather than a fresh term) — for null-tolerant postconditions over a *reachable* no-match — is
+a possible refinement.
+
+**Shipped tests (Phase 102)**: the `letter` target proves; widening to `i in 1..4` refutes at the unmatched
+`i = 4`; a false `result in 'a'..'b'` refutes (case 3 yields `'c'`); a `default ->` covering all cases proves
+with no precondition; a `String`-subject switch proves.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -1496,6 +1496,28 @@ Z3 — so the chain proves `65 ≤ 65 + i ≤ 90`. Widen the guard to `0..30` an
 (`'A'.next(26) == '['`, just past `'Z'`). A `String` receiver needs no `!= null` guard either: a range can't
 contain null, so `s in 'A'..'Z'` infers `s != null` — the same inference `?.` gets.
 
+**Switch expressions — the same map, spelled out and checked exhaustively.** Where the shift above is
+arithmetic, a `switch` expression writes the mapping case by case — and the verifier checks it the same way,
+lowering the arrow-switch to an `ite`-chain that composes with both range operators:
+
+```groovy
+@Requires({ i in 1..3 })
+@Ensures({ result in 'a'..'c' })
+static String letter(int i) {
+    switch(i) {
+        case 1 -> 'a'
+        case 2 -> 'b'
+        case 3 -> 'c'
+    }
+}
+```
+
+The body becomes `ite(i==1, 'a', ite(i==2, 'b', ite(i==3, 'c', …)))`, and `i in 1..3` / `result in 'a'..'c'`
+ride the same range machinery as before. It's a *genuine* exhaustiveness check, not a happy-path glance: there's
+no `default`, so a no-match yields `null` (Groovy's actual behaviour, modelled as an unconstrained value), and
+widening the guard to `i in 1..4` **refutes** with `i = 4` — the `4` case is uncovered. (Switch *expressions*
+with simple `int`/`String` labels; the statement form stays out of the fragment.)
+
 The remaining honest gaps: `split` (returns an array, structurally invasive) and symbolic
 algebra for `toUpperCase` / `reverse` (universal axioms over the seq sort cause Z3 to
 hang in the refute direction) remain deferred. The hard NIA corners (general polynomial identities,

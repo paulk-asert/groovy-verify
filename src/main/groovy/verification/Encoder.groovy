@@ -50,8 +50,12 @@ import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.CaseStatement
+import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
@@ -3861,9 +3865,90 @@ class Encoder {
         }
     }
 
+    /** Phase 102 — the single {@code SwitchStatement} forming a no-parameter closure's whole body, i.e. the
+     *  switch-expression desugaring {@code { -> switch(...){...} }.call()}; else null. */
+    private static SwitchStatement soleSwitchOf(ClosureExpression cl) {
+        if (cl.parameters != null && cl.parameters.length > 0) return null
+        if (!(cl.code instanceof BlockStatement)) return null
+        List<Statement> stmts = ((BlockStatement) cl.code).statements
+        (stmts.size() == 1 && stmts.get(0) instanceof SwitchStatement) ? (SwitchStatement) stmts.get(0) : null
+    }
+
+    /** The yielded value expression of a switch case/default body — a lone {@code return e} / {@code e}
+     *  (possibly block-wrapped), else null (a multi-statement / complex body is out of fragment). */
+    private static Expression caseValueExpr(Statement code) {
+        Statement st = code
+        if (st instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) st).statements
+            if (ss.size() != 1) return null
+            st = ss.get(0)
+        }
+        if (st instanceof ReturnStatement) return ((ReturnStatement) st).expression
+        if (st instanceof ExpressionStatement) return ((ExpressionStatement) st).expression
+        null
+    }
+
+    /**
+     * Phase 102 — lower a switch EXPRESSION with *simple literal* case labels to an ite-chain
+     * {@code ite(subj==l1, v1, ite(subj==l2, v2, … ite(subj==lN, vN, UNMATCHED)))}. The subject compares in its
+     * own sort (int or String); the branch values share a result sort (int or String). UNMATCHED is the
+     * {@code default ->} value, or — with no default — a fresh unconstrained term of the result sort: Groovy
+     * yields {@code null} on no-match, so requiring it to satisfy a non-trivial postcondition is a sound
+     * conservative refute, while a precondition that covers every case makes the branch dead and lets the proof
+     * through. Skips (null) on a non-literal label, a complex case body, or a sort it can't model.
+     */
+    private Object translateSwitchExpr(SwitchStatement sw) {
+        List<CaseStatement> cases = sw.caseStatements
+        if (cases == null || cases.isEmpty()) return null
+        Object subjH = translate(sw.expression)
+        if (subjH == null) return null
+        boolean stringSubj = isStringReceiver(sw.expression)
+        if (!stringSubj && session.isReal(subjH)) return null     // decimal subject not modelled
+        Object strSort = session.declareSort('String')
+        Expression firstVal = caseValueExpr(cases.get(0).code)
+        if (firstVal == null) return null
+        boolean stringResult = isStringReceiver(firstVal)
+        Expression defExpr = (sw.defaultStatement == null || sw.defaultStatement instanceof EmptyStatement)
+                             ? null : caseValueExpr(sw.defaultStatement)
+        try {
+            Object acc
+            if (defExpr != null) {
+                acc = translate(defExpr); if (acc == null) return null
+            } else {
+                acc = stringResult ? session.varOfSort('switch$def' + (quantCounter++), strSort)
+                                   : session.intVar('switch$def' + (quantCounter++))
+            }
+            for (int k = cases.size() - 1; k >= 0; k--) {
+                CaseStatement c = cases.get(k)
+                if (!(c.expression instanceof ConstantExpression)) return null
+                Expression val = caseValueExpr(c.code)
+                if (val == null) return null
+                Object cond = stringSubj
+                    ? session.eq(translateInSort(sw.expression, strSort), translateInSort(c.expression, strSort))
+                    : session.eq(subjH, translate(c.expression))
+                Object valH = translate(val)
+                if (cond == null || valH == null) return null
+                acc = session.ite(cond, valH, acc)
+            }
+            return acc
+        } catch (Exception ignored) {
+            return null     // sort mismatch among branches, etc. → loud skip
+        }
+    }
+
     private Object translateMethodCall(MethodCallExpression mce) {
         String m = mce.methodAsString
         if (m == null) return null
+        // Phase 102 — a switch EXPRESSION desugars to `{ -> <SwitchStatement> }.call()` (an IIFE closure).
+        // Recognise that shape and lower the switch to an ite-chain, before the closure receiver is otherwise
+        // translated. (Switch expressions only; switch statements stay an unsupported-statement skip.)
+        if (m == 'call' && argList(mce).isEmpty() && mce.objectExpression instanceof ClosureExpression) {
+            SwitchStatement sw = soleSwitchOf((ClosureExpression) mce.objectExpression)
+            if (sw != null) {
+                Object q = translateSwitchExpr(sw)
+                if (q != null) return q
+            }
+        }
         // Phase 38c — strip a transparent immutability wrapper on the receiver so subsequent
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)

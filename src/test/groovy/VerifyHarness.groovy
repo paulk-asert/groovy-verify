@@ -4648,6 +4648,49 @@ class VerifyHarness {
                         @Ensures({ result >= 0 })
                         static int len(String s) { s.length() }
                     }''')],
+        // Phase 102 — switch EXPRESSIONS (arrow form, simple literal labels) lower to an ite-chain. A switch
+        // expr desugars to `{ -> switch }.call()`; the encoder recognises that and builds
+        // ite(subj==l1,v1, ite(subj==l2,v2, ... default-or-fresh)). int and String subjects; no-default/no-match
+        // is a fresh value (Groovy yields null) so an uncovered case refutes conservatively.
+        [group: 'P102 switch expr', name: 'target: switch i->letter proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ i in 1..3 })
+                        @Ensures({ result in 'a'..'c' })
+                        static String letter(int i) {
+                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' }
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'soundness: i in 1..4 unmatched refutes (i=4)', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ i in 1..4 })
+                        @Ensures({ result in 'a'..'c' })
+                        static String letter(int i) {
+                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' }
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'false postcondition refutes (case 3 gives c)', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ i in 1..3 })
+                        @Ensures({ result in 'a'..'b' })
+                        static String letter(int i) {
+                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' }
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'default covers all cases, proves with no precondition', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result in 'a'..'z' })
+                        static String f(int i) {
+                            switch(i) { case 1 -> 'a'; default -> 'z' }
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'string subject switch proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ s in 'x'..'y' })
+                        @Ensures({ result == 1 || result == 2 })
+                        static int code(String s) {
+                            switch(s) { case 'x' -> 1; case 'y' -> 2 }
+                        }
+                    }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also
