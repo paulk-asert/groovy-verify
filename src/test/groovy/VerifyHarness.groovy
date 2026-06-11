@@ -2586,7 +2586,7 @@ class VerifyHarness {
         // length identity.
         [group: 'P47h gstring', name: 'showcase: idLength via startsWith + substring', ok: true,
          src: tc('''class C {
-                        @Requires({ s != null && s.startsWith("user:") })
+                        @Requires({ s?.startsWith("user:") })
                         @Ensures({ result == s.length() - 5 })
                         static int idLength(String s) { s.substring(5).length() }
                     }''')],
@@ -4469,17 +4469,75 @@ class VerifyHarness {
         // makes safe-navigation falsy), so the body's unguarded `recv.bar()` discharges its null-deref check
         // with no explicit `recv != null`. The `||` control confirms soundness: under a disjunction the
         // safe-nav carries no non-null implication, so the NPE obligation is still (correctly) flagged.
-        [group: 'P97 safe-nav non-null', name: 'idLength via safe-nav ?. precondition proves', ok: true,
+        [group: 'P97 safe-nav non-null', name: 'titleLen via safe-nav ?. precondition proves', ok: true,
          src: tc('''class C {
-                        @Requires({ s?.startsWith("user:") })
-                        @Ensures({ result == s.length() - 5 })
-                        static int idLength(String s) { s.substring(5).length() }
+                        @Requires({ name?.startsWith("Dr. ") })
+                        @Ensures({ result >= 4 })
+                        static int titleLen(String name) { name.length() }
                     }''')],
         [group: 'P97 safe-nav non-null', name: 'safe-nav under || does NOT imply non-null (still flags)', ok: false, expect: 'NullPointer',
          src: tc('''class C {
-                        @Requires({ s?.startsWith("user:") || s == null })
-                        @Ensures({ result == s.length() - 5 })
-                        static int idLength(String s) { s.substring(5).length() }
+                        @Requires({ name?.startsWith("Dr. ") || name == null })
+                        @Ensures({ result >= 4 })
+                        static int titleLen(String name) { name.length() }
+                    }''')],
+        // Phase 98 — Elvis `a ?: b` is `groovyTruth(a) ? a : b`, NOT a plain ternary: the condition is Groovy
+        // truth on the first operand. The integral case is modelled soundly (truth is `a != 0`); reference /
+        // String / collection operands skip loudly (their truth also turns on non-emptiness) rather than
+        // crash, as the old plain-ternary path did (an Int term cast to a Bool condition).
+        [group: 'P98 elvis', name: 'int elvis: def x = n ?: 5, n>0 gives n', ok: true,
+         src: tc('''class C {
+                        @Requires({ n > 0 })
+                        @Ensures({ result == n })
+                        static int f(int n) { def x = n ?: 5; x }
+                    }''')],
+        [group: 'P98 elvis', name: 'int elvis: n==0 gives 5', ok: true,
+         src: tc('''class C {
+                        @Requires({ n == 0 })
+                        @Ensures({ result == 5 })
+                        static int f(int n) { n ?: 5 }
+                    }''')],
+        [group: 'P98 elvis', name: 'int elvis false claim refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Ensures({ result >= 5 })
+                        static int f(int n) { n ?: 5 }
+                    }''')],
+        // Phase 98b — reference/String Groovy truth: String non-null ∧ non-empty; a plain object reference
+        // non-null. The empty-string and null cases route to the default (soundness controls C/E refute the
+        // unguarded `result == operand`). Collections/Maps have no single-term SMT value, so they skip loudly.
+        [group: 'P98 elvis', name: 'string non-empty operand gives s', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() > 1 })
+                        @Ensures({ result == s })
+                        static String f(String s) { s ?: "d" }
+                    }''')],
+        [group: 'P98 elvis', name: 'string empty operand gives default', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() == 0 })
+                        @Ensures({ result == "d" })
+                        static String f(String s) { s ?: "d" }
+                    }''')],
+        [group: 'P98 elvis', name: 'string unguarded result==s refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == s })
+                        static String f(String s) { s ?: "d" }
+                    }''')],
+        [group: 'P98 elvis', name: 'object a?:b with a!=null gives a', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result == a })
+                        static Object orB(Object a, Object b) { a ?: b }
+                    }''')],
+        [group: 'P98 elvis', name: 'object unguarded result==a refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == a })
+                        static Object orB(Object a, Object b) { a ?: b }
+                    }''')],
+        [group: 'P98 elvis', name: 'list elvis skips cleanly (no single-term value)', ok: false, expect: 'outside fragment',
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == xs })
+                        static List orEmpty(List xs) { xs ?: [] }
                     }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus

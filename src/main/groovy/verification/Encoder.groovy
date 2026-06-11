@@ -43,6 +43,7 @@ import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
@@ -814,6 +815,48 @@ class Encoder {
         n == 'int' || n == 'long' || n == 'short' || n == 'byte' || n == 'char' ||
             n == 'java.lang.Integer' || n == 'java.lang.Long' || n == 'java.lang.Short' ||
             n == 'java.lang.Byte' || n == 'java.lang.Character'
+    }
+
+    /**
+     * Phase 98b — Groovy truth of the first operand {@code a} of an Elvis {@code a ?: b}, as the {@code ite}
+     * condition. Type-directed and sound per kind: integral {@code a != 0}; {@code String} non-null ∧
+     * non-empty (seq length); a plain object reference non-null. Returns null (caller skips loudly) for
+     * anything whose truth this doesn't model — a non-nameable operand (no nullity oracle), a decimal/boolean,
+     * an array, a class that customises {@code asBoolean()} (its truth is whatever that returns, not non-null),
+     * or a collection/{@code Map} (no single-term SMT value to thread through the {@code ite} — the operand
+     * doesn't translate, so the Elvis skips before reaching here).
+     */
+    private Object groovyTruth(Expression operand, Object aTerm) {
+        ClassNode t = operand.getType()
+        if (isIntLikeType(t)) return session.ne(aTerm, session.intLit(0L))
+        if (!(operand instanceof VariableExpression)) return null      // need a name for the nullity oracle
+        String name = ((VariableExpression) operand).name
+        if (isStringReceiver(operand)) {
+            return session.and([session.not(nullityOf(name)),
+                                session.gt(session.stringLength(aTerm), session.intLit(0L))])
+        }
+        if (isPlainObjectTruth(t)) return session.not(nullityOf(name))
+        null
+    }
+
+    private static boolean isCollectionOrMapType(ClassNode t) {
+        if (t == null) return false
+        ClassNode coll = ClassHelper.make(Collection)
+        ClassNode map = ClassHelper.make(Map)
+        t == coll || t == map || t.implementsInterface(coll) || t.implementsInterface(map) || t.isDerivedFrom(coll)
+    }
+
+    /** Phase 98b — a reference whose Groovy truth is exactly non-null: not a primitive/number/boolean, not a
+     *  String/GString or collection (those add non-emptiness), and not a class overriding {@code asBoolean()}. */
+    private static boolean isPlainObjectTruth(ClassNode t) {
+        if (t == null || t.isArray() || ClassHelper.isPrimitiveType(t)) return false
+        String n = t.name
+        if (n == 'java.lang.String' || n == 'groovy.lang.GString' || n == 'java.lang.Boolean' ||
+            n == 'java.lang.Double' || n == 'java.lang.Float' || n == 'java.lang.Number' ||
+            n == 'java.math.BigDecimal' || n == 'java.math.BigInteger') return false
+        if (isIntLikeType(t) || isCollectionOrMapType(t)) return false
+        try { if (!t.getMethods('asBoolean').isEmpty()) return false } catch (Throwable ignored) {}
+        true
     }
 
     private static boolean isEnumLikeType(ClassNode t) {
@@ -2992,6 +3035,22 @@ class Encoder {
         // String values flow directly, integers go through {@code intToString}, others skip.
         if (expr instanceof GStringExpression) {
             return translateGString((GStringExpression) expr)
+        }
+
+        // Phase 98 — Elvis `a ?: b` is `groovyTruth(a) ? a : b`. Its condition is *Groovy truth on the first
+        // operand* (re-used as the then-branch), NOT a boolean — so it must be handled before the general
+        // TernaryExpression case below, which would feed `a` straight in as the `ite` condition and crash
+        // (an Int term cast to Bool). {@link #groovyTruth} models the truth per operand type; an unmodelled
+        // type returns null → a loud "outside fragment" skip, never a crash.
+        if (expr instanceof ElvisOperatorExpression) {
+            ElvisOperatorExpression el = (ElvisOperatorExpression) expr
+            Expression operand = el.trueExpression        // the `a` in `a ?: b`
+            Object aTerm = translate(operand)
+            Object bTerm = translate(el.falseExpression)
+            if (aTerm == null || bTerm == null) return null
+            Object cond = groovyTruth(operand, aTerm)
+            if (cond == null) return null
+            return session.ite(cond, aTerm, bTerm)
         }
 
         if (expr instanceof TernaryExpression) {

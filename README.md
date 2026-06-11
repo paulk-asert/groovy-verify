@@ -308,14 +308,14 @@ implication, so an unguarded `recv.bar()` in the body discharges its null check 
 `recv != null`:
 
 ```groovy
-@Requires({ s?.startsWith("user:") })                      // ?. ⟹ s != null
-@Ensures({ result == s.length() - 5 })
-static int idLength(String s) { s.substring(5).length() }   // ✓ no NPE obligation left open
+@Requires({ name?.startsWith("Dr. ") })          // ?. ⟹ name != null
+@Ensures({ result >= 4 })
+static int titleLen(String name) { name.length() }   // ✓ no NPE obligation left open
 ```
 
 It stays sound by reading the implication only from a top-level `&&` conjunct: weaken the precondition to
-`s?.startsWith("user:") || s == null` and `s` can still be null, so the `s.substring(5)` correctly fails
-with the `NullPointerException` obligation again.
+`name?.startsWith("Dr. ") || name == null` and `name` can still be null, so the `name.length()` correctly
+fails with the `NullPointerException` obligation again.
 
 **Bounded integer overflow — Verus-style precision when you want it.** Anything in the fragment is
 encoded as Z3's mathematical (unbounded) Int by default — the experience that makes most existing
@@ -1440,7 +1440,7 @@ Literals fold to ground constants, out-of-range indices refute with the standard
 Composing several in one method:
 
 ```groovy
-@Requires({ s != null && s.startsWith("user:") })
+@Requires({ s?.startsWith("user:") })
 @Ensures({ result == s.length() - 5 })
 static int idLength(String s) { s.substring(5).length() }
 ```

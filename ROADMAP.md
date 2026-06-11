@@ -5240,6 +5240,40 @@ guard); the `|| s == null` weakening still flags the `NullPointerException` (the
 
 ---
 
+## Phase 98 — Elvis operator `a ?: b`  *(shipped)*
+
+`a ?: b` is `groovyTruth(a) ? a : b` — its condition is *Groovy truth on the first operand* (which is also the
+then-branch), not a boolean. Elvis's AST node `ElvisOperatorExpression` subclasses `TernaryExpression`, so it
+fell into the general ternary handler, which fed `a` straight in as the `ite` condition — for `n ?: 5` that
+cast an `Int` term to `Bool` and threw `GroovyCastException`, **crashing the whole compile** (worse than a
+loud skip). Fixed: a dedicated `ElvisOperatorExpression` case ahead of the ternary one, with `groovyTruth`
+modelling the condition per operand type.
+
+- **Integral operand** (`int`/`Integer`/…): `ite(a != 0, a, b)` — Groovy's int truth is exactly `!= 0`. So
+  `n ?: 5` is `(n != 0) ? n : 5`: `@Requires({ n > 0 })` proves `result == n`, an `n == 0` guard proves
+  `result == 5`, and an unguarded `result >= 5` correctly refutes (n could be negative).
+- **`String` operand** (Phase 98b): non-null ∧ non-empty — `ite(¬null(s) ∧ stringLength(s) > 0, s, b)`, matching
+  Groovy's String truth (`""` and `null` are both falsy). So `s ?: "d"` proves `result == s` under
+  `s.length() > 1`, proves `result == "d"` when `s` is empty, and the unguarded `result == s` refutes.
+- **Plain object reference** (Phase 98b): non-null — `ite(¬null(o), o, b)`. Sound *because* `isPlainObjectTruth`
+  excludes types whose truth isn't simply non-null: numbers, `Boolean`, `String`/`GString`, collections/`Map`,
+  arrays, and — the subtle one — any class that **overrides `asBoolean()`** (its truth is whatever that
+  returns), detected via `getMethods('asBoolean')`.
+- **Collection / `Map` operand**: skips loudly. A list/map has no single-term SMT value to thread through the
+  `ite` (it's a size+array oracle bundle), so the operand doesn't translate and the Elvis returns null →
+  "outside fragment". Their truth (non-null ∧ non-empty) is moot without a first-class value.
+- **Non-nameable operand** (a method call, `a.b?.c`): skips — the non-null model needs a nullity oracle keyed
+  by a simple name.
+
+`?:` in *contract* closures was already concretely evaluated by `PureEvaluator`/`ContractTester`; this is the
+symbolic-body encoder catching up. Reuses the `nullityOf` oracle from the Phase 97 safe-navigation work.
+
+**Shipped tests (Phase 98)**: int `n ?: 5` proves under `n > 0` / `n == 0` and the unguarded `>= 5` refutes;
+String `s ?: "d"` proves under non-empty / empty guards with the unguarded `result == s` refuting; object
+`a ?: b` proves `result == a` under `a != null` with the unguarded form refuting; a `List ?: []` skips cleanly.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
