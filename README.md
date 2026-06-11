@@ -1734,6 +1734,101 @@ same thing for the orderings without a native spelling. Either way it's all the 
 preservation refutes on a concrete *unsorted* counterexample (`[7719, 7718]`) — the proof genuinely rests
 on sortedness. Dafny's verbatim binary search then verifies, structure-for-structure.
 
+## OpenJML Examples
+
+[OpenJML](https://www.openjml.org/) is the JML verifier for Java — the closest existing tool to
+this one on the JVM, and named as prior art above. Its [examples page](https://www.openjml.org/examples/)
+collects small, self-contained proofs chosen to each show *one* idea. Two of them have been ported here.
+Examples ported from openjml.org are © their authors, used under the page's **CC BY-NC** terms.
+
+The first is already above, in **Act 3**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
+— round a number up to the next multiple of a power of two with `(n + 0xF) & ~0xF`, proven against the
+arithmetic spec it's meant to implement, counterexample at `Integer.MIN_VALUE` and all. The second is here.
+
+### Max by elimination — a disjunctive loop invariant
+
+Find the index of a maximum element, but not by the usual running-best scan. Instead, hold a window
+`[x, y]` over the array and shrink it from whichever end is no larger, until it collapses to a single
+index. The OpenJML original (`MaxByElimination`) is a worked example of an invariant that most first
+attempts get *wrong*:
+
+```java
+//@ requires a.length > 0;
+//@ ensures 0 <= \result && \result < a.length;
+//@ ensures (\forall int i; 0 <= i && i < a.length; a[i] <= a[\result]);
+int max(int[] a) {
+    int x = 0, y = a.length - 1;
+    //@ maintaining 0 <= x && x <= y && y < a.length;
+    //@ maintaining (\forall int i; 0<=i && i<x; a[i] <= a[y]) && (\forall int i; y<i && i<a.length; a[i] <= a[y])
+    //@            || (\forall int i; 0<=i && i<x; a[i] <= a[x]) && (\forall int i; y<i && i<a.length; a[i] <= a[x]);
+    //@ decreasing y - x;
+    while (x != y) { if (a[x] <= a[y]) x++; else y--; }
+    return x;
+}
+```
+
+The Groovy is the same proof, structure for structure:
+
+```groovy
+@Requires({ a != null && a.length > 0 })
+@Ensures({ 0 <= result && result < a.length && Forall.range(0, a.length) { int i -> a[i] <= a[result] } })
+static int max(int[] a) {
+    int x = 0
+    int y = a.length - 1
+    @Invariant({ 0 <= x && x <= y && y < a.length &&
+        ((Forall.range(0, x) { int i -> a[i] <= a[y] } && Forall.range(y + 1, a.length) { int i -> a[i] <= a[y] }) ||
+         (Forall.range(0, x) { int i -> a[i] <= a[x] } && Forall.range(y + 1, a.length) { int i -> a[i] <= a[x] })) })
+    @Decreases({ y - x })
+    while (x != y) { if (a[x] <= a[y]) x = x + 1 else y = y - 1 }
+    return x
+}
+```
+
+The lesson the example exists to teach is the shape of that invariant. It is **disjunctive**: at every
+step the maximum-so-far sits at *one* of the two endpoints — but which one isn't fixed, it flips each time
+the window shrinks from the other side. A single-disjunct invariant (`everything ≤ a[x]`) isn't preserved
+when you advance `x`; you genuinely need the *or*. The engine carries the disjunction through preservation
+and then, at loop exit where `x == y`, collapses both arms onto the same index to discharge the
+postcondition `∀i. a[i] ≤ a[result]`. `@Decreases({ y - x })` proves termination. Flip the postcondition to
+claim `result` indexes a *minimum* and it refutes — the proof rests on the maximum direction of the
+invariant, not on the loop merely running.
+
+### ChangeCase — the same proof, on the array theory
+
+OpenJML's `ChangeCase` upper-cases a buffer character by character. The natural Groovy — build a `String` by
+concatenation in a loop — is the one shape Z3's string theory *can't* carry: a content invariant over `str.++`
+(`∀i. r.charAt(i) == …`) times out, because re-establishing a quantified fact across each concat is a
+quantifier-on-quantifier induction its seq solver won't close (measured: stuck even with a hand-supplied
+`nth`-of-concat lemma and a 30s budget). The *same* content invariant over an **array** discharges at once —
+Z3's array theory is exactly where the engine's quantified-loop machinery already lives (it's how **Act 5**'s
+matrix fill proves `∀. a[it] == 0`). So spell the buffer as a `char[]` (an Int-element array — `char` is
+integral) and ChangeCase falls straight out, with no new engine support beyond folding the char literal:
+
+```groovy
+@Requires({ a != null })
+@Ensures({ result.length == a.length &&
+    (0..<a.length).every { result[it] == ((a[it] >= ('a' as char) && a[it] <= ('z' as char)) ? (char)((int) a[it] - 32) : a[it]) } })
+static char[] upper(char[] a) {
+    char[] r = new char[a.length]
+    int i = 0
+    @Invariant({ 0 <= i && i <= a.length && r.length == a.length &&
+        (0..<i).every { r[it] == ((a[it] >= ('a' as char) && a[it] <= ('z' as char)) ? (char)((int) a[it] - 32) : a[it]) } })
+    @Decreases({ a.length - i })
+    while (i < a.length) {
+        if (a[i] >= ('a' as char) && a[i] <= ('z' as char)) r[i] = (char)((int) a[i] - 32)
+        else r[i] = a[i]
+        i = i + 1
+    }
+    return r
+}
+```
+
+The whole element-wise postcondition proves — `result` *is* the upper-cased copy, not merely "has no lowercase
+left" — and dropping the lowercase guard from the spec refutes. Two Groovy spelling notes: `('a' as char)` is
+the char literal (no primitive char syntax exists, and `char >= String` doesn't type-check), and the
+arithmetic is `(char)((int) a[i] - 32)` because `char[]` subscripts box to `Number`. The seq-vs-array split is
+the real lesson — *the same proof, opposite tractability, decided by which theory you hand Z3.*
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -1806,12 +1901,15 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **32-bit integer overflow (opt-in via `@CheckOverflow`)** | A method or class annotated `@CheckOverflow` gets a Verus-style guarantee: every `+`, `-`, `*` (sub-expressions included) becomes an implicit obligation that the math result stays in `[Integer.MIN_VALUE, Integer.MAX_VALUE]`. Unannotated code keeps the math-int default — the verifier's existing experience. Implicit JVM int bounds (size oracles, int parameters, int fields) are *always-on*, asserted from the JVM contract, so the math view and machine view coincide for the common case of in-bounds index arithmetic | ✅ Phase 44 |
 | **`**` power operator — typing, congruence + defining axioms** | Z3 has no variable-exponent power, so `base ** exp` lowers to `pow$ : (Int,Int) → Int` with base/step axioms minted like `fib$`/`gcd$` (`pow(b,0)==1`, `pow(b,k)==b·pow(b,k-1)` for `k≥1`). A **literal** exponent unfolds to a value (`(2 ** 3).intValue() == 8` proves, `== 9` refutes); the **doubling recurrence** `2 ** (n+1) == 2 * (2 ** n)` proves for *symbolic* `n` — the verification analog of `(0..10).each { assert 1<<n == 2**n }`, and stronger (all `n≥0`). Trade: a false *symbolic*-exponent value claim (`2 ** n == 5`) is now refute-hostile — soft-fails to "could not decide" rather than a crisp counterexample (the `Fib`/`Gcd` recurrence trade); deeper facts like `2 ** n ≥ 1` need induction the e-matching can't reach. Groovy's `**` returns `Number`, so the int surface is `(base ** exp).intValue()` (identity on the integral term). Symbolic `1 << n` (bit-vector) ↔ `2 ** n` (`pow$`) bridge is a separate slice | ✅ Phase 93 / 93b |
 | **Cross-class `@Invariant` assumption** | A class-typed parameter carries its class's invariants into the calling method. `c.count >= 0` is assumed automatically when the receiver `c: Counter` has `@Invariant({ count >= 0 })`. Cross-class calls (`c.incr()`) discharge the callee's `@Requires` under a receiver context, then havoc the receiver's fields and re-assume its invariants on return. Field references are namespaced per receiver (`c$count` distinct from `b$count`); for a *single* receiver this is sound under the no-aliasing assumption (a project [non-goal](ROADMAP.md)), and when *two* parameters of the same class are present the identity model below (Phase 89) engages instead — they may alias | ✅ Phase 45 |
+| **Verified mutable data structure (ring buffer)** | A class `@Invariant` on a mutable object is both *assumed on entry* and *checked preserved on exit* of every method — so a bounded ring-buffer queue (array field `data` + head `m` + tail `n`, type invariant `0 < data.length ∧ 0 ≤ m ≤ n ≤ data.length`) verifies `enqueue`/`dequeue`/`size` as a unit: `enqueue` proves `n == old.n + 1 ∧ data[old.n] == x ∧ ∀i<old.n. data[i] == old.data[i]` (the array-region frame via `old.data[it]`), `dequeue` returns `old.data[old.m]`, and an unguarded mutator that breaks the invariant refutes with "Cannot prove class invariant". Composes object array-fields + `old`-framing (Phase 11/13) with class-invariant preservation (Phase 45) — the Toccata/Leino `ring_buffer`, specified directly over `data[m..n)` since the engine has no ghost/model-field abstraction | ✅ Phase 107 |
 | **Reference identity + identity-keyed object fields (reads + writes)** | Two object parameters of the same class are *alias-modelled*: their `int` fields are a per-`(class, field)` heap map indexed by object identity, and `a === b` / `a.is(b)` lowers to identity equality `id(a) == id(b)`. **Reads** (slice 1): `a.is(b)` makes the fields **provably coincide** (`a.is(b) ⟹ a.balance == b.balance`), **refuted without it** — reasoning the per-name model (distinct names ⇒ distinct objects) structurally cannot do. **Writes** (slice 2): `a.balance = v` stores into the map, so a write through `a` is **observed through `b` exactly when they alias** — `a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, refuted without the alias. Straight-line, `int`-field-only; single-object-param and distinct-class methods keep the per-name model untouched. **Not pursued** (a dual-tenet boundary): the `old(obj.field)`-relative `transfer` — groovy-contracts' `old` is a `Map` of `this`-field snapshots and never captures a *parameter's* field, so such a contract can't run at runtime; modelling it would be verify-only, breaking the executable-specs principle | ✅ Phase 89 (slices 1–2) |
 | **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
 | **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable | ✅ Phase 46b / 46c |
 | **In-loop `if`-condition + `&&` short-circuit as path facts** | `dischargeRegion` (which checks implicit obligations across a loop's prefix / guard / body / suffix) now recurses into in-region `if` statements with `cond` (then-branch) or `NotExpression(cond)` (else-branch) added to the assumption set, and descends through `&&`/`||`/ternary so each operand is discharged under the short-circuit guard. A natural in-loop `if (xs[i] != null) xs[i].method()` or `if (xs[i] != null && xs[i].startsWith(p))` discharges the per-element deref directly — the `Forall.range` workaround used in earlier ports is now optional, not required | ✅ Phase 46d |
 | **`charAt` with per-position literal pinning and bounds** | `s.charAt(i)` on a String-typed receiver routes to an uninterpreted `(String, Int) → Int` oracle returning the codepoint at position `i`. String literals are pinned per-position at mint: `"hello"` asserts `charAt(0)==104, charAt(1)==101, …`, capped at 64 chars to bound mint cost. A new `StringCharAtSite` synthesises the bounds obligation `0 <= i < s.length()` so out-of-range indices refute with the same `IndexBounds` diagnostic list reads produce. `(int) s.charAt(i)` casts route transparently. *Superseded by Phase 47 (native string theory).* | ✅ Phase 46e |
 | **Z3 native string theory** | `declareSort('String')` returns Z3's native `Seq Char` sort, replacing the Phase-27 uninterpreted `String!Sort` and retiring the Phase 46a–c uninterpreted predicates + axioms. `startsWith` / `endsWith` / `contains` / `length` / `charAt` all dispatch to Z3 native primitives (`str.prefixof`, `str.len`, `seq.nth + char.to_int`, etc.); structural cross-string facts like `s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` now verify as free theory consequences. `s + t` (operator) and `s.concat(t)` (method) translate to `str.++`; `s.substring(begin, end)` / `s.substring(begin)` translate to `str.substr` with synthesised bounds obligations. Distinct literals are theory-distinct (no pairwise cascade needed); literal length and per-position content are theory consequences (no mint-time pinning needed). Counterexample rendering uses Z3's native `getString()` | ✅ Phase 47 |
+| **Read-only per-character string loops** | A quantified loop invariant over `s.charAt(i)` — the string analogue of the array "∀ element satisfies P" proofs — is carried by Z3's seq theory (`seq.nth` e-matches under the `Forall.range`). An `allLower`-style loop proves every character is in `['a'..'z']`, and a per-character `∀` precondition instantiates at a constant index; both refute when over-claimed. The char-literal spelling is `('a' as char)`: Groovy has no primitive char literal, and `int`/`char >= String` doesn't even type-check (`Integer/Character#compareTo` rejects a `String`), so the cast is the only type-valid form — Phase 105 folds a char/integral cast of a single-char literal to its code point. *Construction*-content invariants over a Z3 *string* (`str.++`) time out — content-invariant tractability lives in Z3's *array* theory, not its seq theory — so a built buffer goes through `char[]` instead (next row) | ✅ Phase 105 |
+| **Per-character `char[]` transforms (ChangeCase)** | A char buffer modelled as a `char[]` — an Int-element array, since `char` is integral — carries a quantified content invariant on the *array* theory, so a per-character transform proves its full element-wise spec. OpenJML's `ChangeCase` ports as a functional `upper(char[]) → char[]`: `result[i] == (a[i] ∈ ['a'..'z'] ? (char)(a[i]-32) : a[i])` proves outright (dropping the lowercase guard refutes), reusing the array-store + loop-invariant machinery with no new engine code beyond the Phase-105 char-cast fold. Same proof shape as the string construction that *times out* on the seq theory — the theory you hand Z3 decides it. Char idioms: `('X' as char)` literal, `(char)((int) a[i] - 32)` arithmetic (subscripts box to `Number`). Gaps deferred: a *void* loop method, and `old` on a *param* array (use the functional form) | ✅ Phase 106 |
 | **`replace`, `indexOf`, regex `matches` / `==~`** | `s.replace(old, new)` → `str.replace` (first-occurrence; replace-all awaits Z3's `mkReplaceAll` — see the next row for the uninterpreted fallback). `s.indexOf(sub)` and `s.indexOf(sub, fromIndex)` → `str.indexof`. `s.matches(literalRegex)` → `str.in_re` via an inline recursive-descent parser; the `==~` match operator lowers identically, so `(s ==~ /re/) == s.matches("re")` proves. Composes with `groovy-typecheckers`' `RegexChecker` orthogonally — RegexChecker validates syntax, this checker proves contracts over the regex result | ✅ Phase 47b / 47c / 47j |
 | **Regex feature expansion** | The Phase 47c parser grew predefined character classes (`\d`/`\w`/`\s` and their negations `\D`/`\W`/`\S`), negated character classes (`[^abc]`/`[^a-z]` via Z3's `mkComplement` + `mkIntersect`), quantified ranges (`{n}`/`{n,m}`/`{n,}` via `mkLoop`), and anchors `^`/`$` as silent no-ops (matches() is already whole-string anchored). Still deferred: word-boundary `\b`, inline flags `(?i)`, backreferences, lookbehind | ✅ Phase 47d |
 | **Integer ↔ String conversion (sign-faithful)** | `Integer.toString(n)` / `n.toString()` / `String.valueOf(int)` and `Integer.parseInt(s)`. **Phase 54** threads the sign explicitly (`toString(-7) == "-7"`, not Z3's raw `""`), so the round-trip `parseInt(toString(n)) == n` holds for **all** `n` — closing a silent-unsoundness hole. `parseInt` carries a loud `NumberFormatException` obligation: an unprovably-valid argument refutes rather than silently modelling `-1`. *Residual:* numeral overflow not yet checked | ✅ Phase 47e / 54 |

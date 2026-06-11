@@ -5427,6 +5427,125 @@ tests (`6 & 3 == 2` still folds — `3` is a mask, `mod(6,4) == 2`).
 
 ---
 
+## Phase 104 — OpenJML "Max by elimination" (disjunctive loop invariant)  *(shipped — no engine change)*
+
+A second port from [openjml.org/examples](https://www.openjml.org/examples/) (CC BY-NC), after the
+BitVectors `roundUp` of Phase 103. `max(int[])` finds the index of a maximum by shrinking a window
+`[x, y]` from whichever end is no larger until it collapses. The teaching point is the **disjunctive**
+loop invariant: the running maximum sits at *one* endpoint, but which one flips as the window shrinks —
+a single-disjunct invariant isn't preserved. The existing quantifier + `@Decreases` machinery (Phases
+6/9 quantifiers, loop invariants) carries the disjunction through preservation and collapses both arms
+at `x == y` to discharge `∀i. a[i] ≤ a[result]`. **No engine change** — purely a fragment-coverage
+example, the disjunctive-invariant shape just hadn't been exercised before.
+
+**Shipped tests (Phase 104, group `P104 OpenJML`)**: `max` proves `result` indexes a maximum;
+flipping the postcondition to a *minimum* claim refutes. README gains an "OpenJML Examples" section
+(BitVectors round-up + this), crediting the source under CC BY-NC.
+
+**Test-harness note (not a phase):** `VerifyHarness.CASES` outgrew the JVM's 64KB per-method
+bytecode limit — a single static initializer for all ~945 cases overflowed `<clinit>`. Split the
+list literal across `casesPart1()` + `casesPart2()` helper methods (concatenated into `CASES`) so
+each initializer stays under the limit; further cases can split again as needed.
+
+---
+
+## Phase 105 — read-only per-character string proofs (string-sequence, slice 1)  *(shipped)*
+
+The first slice toward string-sequence reasoning (e.g. OpenJML `ChangeCase`). Measured the tractability
+frontier first (six probes, each with a refutation control): Z3's native String/seq theory **does**
+discharge a quantified loop invariant over `seq.nth` — so *read-only* per-character iteration (the string
+analogue of the array "∀ element satisfies P" proofs) works end-to-end. Construction-**content** induction
+(`(r ++ c).charAt(i) == f(s.charAt(i))`) **times out** — content-invariant tractability lives in Z3's
+*array* theory, not its seq theory — so that's deferred to slice 2.
+
+The only engine change is a **char-cast fold**: Groovy has no primitive char literal, so `('a' as char)` /
+`(char)'a'` is the idiomatic way to write a code point, but the cast handler treated casts as transparent
+and translated `'a'` as a one-character Seq term, so `s.charAt(i) >= ('a' as char)` mixed an Int with a Seq
+and threw. Fold a char/integral cast of a single-char String (or `Character`) literal to its int code
+(reusing the Phase-99b `singleCharCode`). Surfaced because `int`/`char >= String` doesn't even type-check
+under `@TypeChecked` (Groovy's `Integer/Character#compareTo` rejects a `String` argument), so the cast is
+the *only* type-valid char-literal spelling. The richer `s[i] in 'a'..'z'` range form needs string-subscript
+bounds + invariant-fragment support and is a follow-on, not this slice.
+
+**Shipped tests (Phase 105, group `P105 string-seq`)**: an `allLower` loop proves every char is in
+`['a'..'z']`; tightening the claim to `['b'..'z']` refutes; a per-char `∀` precondition instantiates at a
+constant index; an unconstrained position refutes.
+
+**Slice 2 spike result (`nth`-of-concat lemma — negative, informs the path).** Before committing slice 2
+(`ChangeCase`-style string *construction*), spiked whether a verifier-supplied `nth`-of-concat lemma
+(prefix `0≤i<len(a) ⟹ nth(a++b,i)==nth(a,i)` + suffix, triggered on `nth(a++b,i)`, Phase-91b shape) lets the
+construction-*content* invariant discharge. It does **not** — the `pad`-content loop still times out on
+preservation *with* the lemma and even at a 30s solver budget, so it's logically stuck, not slow. A
+*non-inductive* concat-at-point fact (`(s++"x").charAt(len(s))=='x'`) proves natively, lemma or not — so Z3's
+seq theory handles flat concat-content fine; what it can't close is the **quantifier-on-quantifier
+induction** (re-establishing `∀i<j+1` content from `∀i<j` across the concat step). That is exactly the shape
+the **array** theory *does* carry (Act 5's matrix fill). **Conclusion: slice 2 should model the built string
+as a char-code `Array Int Int` (build via `store`), not Z3 `str.++`** — routing content invariants onto the
+array theory that already works, at the cost of char handling (literals via the Phase-105 cast fold;
+`(char)(c-32)` narrowing). The native-concat-plus-lemma path is a dead end and was not productionised.
+
+---
+
+## Phase 106 — `ChangeCase` via the array theory (string-sequence, slice 2)  *(shipped — no engine change)*
+
+The slice-1 spike's prescription, realised: model the char buffer as a **`char[]`** — an Int-element array,
+since `char` is `isIntLikeType` — and OpenJML's `ChangeCase` falls out of the existing array-store +
+quantified-loop-invariant machinery (the same that carries Act 5's matrix fill), with **no new engine code**
+beyond Phase 105's char-cast fold. The functional form (read `a`, build a new `r`) needs no `old`, so the
+full element-wise postcondition `result[i] == (a[i] ∈ ['a'..'z'] ? (char)(a[i]-32) : a[i])` proves directly.
+This confirms the spike conclusion empirically: content invariants live in Z3's array theory, not its seq
+theory — same proof shape, opposite tractability.
+
+The developer-facing spelling has two char idioms: the literal `('X' as char)` (Phase 105 folds it to a code
+point), and char arithmetic `(char)((int) a[i] - 32)` — the `(int)` is needed because `char[]` subscript
+arithmetic boxes to `Number`, which `@TypeChecked` won't narrow back to `char` without it. The Encoder
+already translates both transparently (the cast handler folds a single-char-literal cast and is otherwise
+transparent, so `(char)(intExpr)` stays Int — faithful while the value is in range, the documented
+`char`-narrowing caveat for out-of-range arithmetic).
+
+**Shipped tests (Phase 106, group `P106 char-seq`)**: a `fillX` fill proves every element is `'X'` (wrong-char
+claim refutes); the functional `upper` proves the full element-wise ChangeCase spec (dropping the lowercase
+guard from the spec refutes).
+
+**Adjacent gaps surfaced, not in this slice** (each a clean follow-on, none blocking ChangeCase): a **void**
+method carrying a loop skips ("no return value after loop") — return the array instead; **`old` on a param
+array** is undeclared (only `this.`-field arrays snapshot), so in-place + `old`-relative specs need the
+functional form for now.
+
+---
+
+## Phase 107 — ring buffer: a verified mutable data structure (class `@Invariant`)  *(shipped — no engine change)*
+
+A bounded (non-wrapping) queue as a ring buffer — after Leino's Dafny tutorial, the Toccata/Why3
+`ring_buffer` example — chosen to exercise **OO contract verification on mutable object state** rather than a
+standalone algorithm. State: an array field `data` + head `m` + tail `n`. The type invariant
+(`0 < data.length ∧ 0 ≤ m ≤ n ≤ data.length`) is a class `@Invariant`, and the spike confirmed the engine
+both **assumes it on entry** (so `size() == n - m` proves `≥ 0`) and **checks it is preserved on exit** of
+every method (an unguarded `bump()` that breaks `n ≤ data.length` refutes with "Cannot prove class
+invariant"). `enqueue`/`dequeue` are specified directly over the array region with `old`-relative framing —
+`enqueue` ensures `n == old.n + 1 ∧ data[old.n] == x ∧ ∀i<old.n. data[i] == old.data[i]`, and an over-strong
+frame (claiming the *written* slot is unchanged) refutes.
+
+**No new engine code** — it composes existing pieces that hadn't been combined into a data-structure proof:
+object array-field + scalar/array `old` framing (Phase 11/13), and class-`@Invariant` assume-and-preserve
+(Phase 45). Why3's **ghost `seq contents`** abstraction is *dropped* — we have no model fields (the same gap
+as OpenJML `Clock`) — so the queue is specified over the concrete array region instead. This is the engine's
+first verified *mutable data structure*, and it's squarely the shape groovy-contracts users actually write.
+
+**Why the sibling Toccata/OpenJML examples stay out** (assessed, not ported): `TreeMax` needs a recursive
+tree datatype + graph-reachability `mem` + structural-size termination — the object-graph
+[non-goal](#non-goals); `balance` turns on a ghost weighing-*budget* (effectful counter through recursion)
+and a no-cheating encapsulation property — ghost-effects / information-flow, not functional contracts;
+`Clock` is about JML **model fields** themselves, which have no analogue here. `Duplets` (int array + tuples
++ an existential precondition driving a nested-loop witness search) is pure-value and in-kind tractable but a
+genuine stretch — a candidate future slice, not done.
+
+**Shipped tests (Phase 107, group `P107 ring-buffer`)**: `enqueue` (write + frame + invariant) and `dequeue`
+(head + advance) verify; `size() ≥ 0` proves from the assumed invariant; an over-strong frame and an
+invariant-breaking mutator both refute.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

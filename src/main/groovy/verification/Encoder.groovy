@@ -3029,6 +3029,14 @@ class Encoder {
                     return (a == null || b == null) ? null : truncDiv(a, b)
                 }
             }
+            // Phase 105 — Groovy has no primitive char literal, so `('a' as char)` / `(char)'a'` (and the
+            // numeric `(int)'a'`) is the idiomatic way to write a code point. Fold a char/integral cast of a
+            // single-char String (or Character) literal to its int code, so `s.charAt(i) >= ('a' as char)`
+            // compares code points rather than mixing an int term with the Seq term `'a'` translates to.
+            if (isCharCastType(ce.type) || isIntegralCastType(ce.type)) {
+                Integer code = singleCharCode(ce.expression)
+                if (code != null) return session.intLit((long) code.intValue())
+            }
             return translate(ce.expression)
         }
 
@@ -3881,6 +3889,10 @@ class Encoder {
                 return true
             default: return false
         }
+    }
+
+    private static boolean isCharCastType(ClassNode t) {
+        t != null && (t.nameWithoutPackage == 'char' || t.nameWithoutPackage == 'Character')
     }
 
     /** Phase 102 — the single {@code SwitchStatement} forming a no-parameter closure's whole body, i.e. the

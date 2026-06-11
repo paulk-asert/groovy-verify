@@ -78,7 +78,11 @@ class VerifyHarness {
         }
     '''.stripIndent()
 
-    static final List<Map> CASES = [
+    // Split across helper methods so each list-literal initializer stays under the JVM's 64KB
+    // per-method bytecode limit (a single static initializer for all cases overflowed `<clinit>`).
+    static final List<Map> CASES = casesPart1() + casesPart2()
+
+    private static List<Map> casesPart1() { [
 
         // ---------- Phase 1: array bounds ----------
         [group: 'P1 bounds', name: 'unguarded index refuted', expect: 'IndexOutOfBoundsException',
@@ -4107,6 +4111,9 @@ class VerifyHarness {
                             return n * rest
                         }
                     }''')],
+    ] }
+
+    private static List<Map> casesPart2() { [
         // A self/contracted call inside a return expression is hoisted to an implicit single-assignment
         // local (bound by the callee's @Ensures), so the recursive call no longer needs hand-hoisting.
         // (1) compound return `n * fact(n-1)` — the form that previously needed two lines.
@@ -4717,11 +4724,6 @@ class VerifyHarness {
                         @Ensures({ result >= 0 && result <= 7 })
                         static int low3(int x) { x & 7 }
                     }''')],
-        // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
-        // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
-        // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also
-        // underpins task 039's prime_fib (whose *outer* search is the deliberate non-target).
-        // A literal index unfolds through the step axiom to a concrete value (0,1,1,2,3,5).
         [group: 'P55 fib', name: 'Fib.of(5) == 5', ok: true,
          src: tc('''class C {
                         @Ensures({ Fib.of(5) == 5 })
@@ -8326,7 +8328,233 @@ class VerifyHarness {
                             return r
                         }
                     }''')],
-    ]
+        // ---------- P107 ring buffer: a verified mutable data structure (class @Invariant) ----------
+        // A bounded (non-wrapping) queue as a ring buffer, after Leino's Dafny tutorial (Why3's `ring_buffer`).
+        // The state is a `char`/int buffer `data` + head `m` + tail `n`; the type invariant is a class
+        // `@Invariant`, which the engine *assumes* on entry and *checks is preserved* on exit of every method
+        // (so a mutator that breaks it refutes). Why3's ghost `seq contents` abstraction is dropped — we have
+        // no model fields — and the queue is specified directly over the array region `data[m..n)` with
+        // `old`-relative framing. No new engine code: object array-field + `@Modifies`-style framing +
+        // scalar/array `old` + class-invariant preservation all already exist.
+        [group: 'P107 ring-buffer', name: 'enqueue: writes tail, frames the rest, preserves invariant', ok: true,
+         src: tc('''@Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
+                    class Queue {
+                        int[] data
+                        int m
+                        int n
+                        @Requires({ n < data.length })
+                        @Ensures({ n == old.n + 1 && data[old.n] == x && (0..<old.n).every { data[it] == old.data[it] } })
+                        void enqueue(int x) {
+                            data[n] = x
+                            n = n + 1
+                        }
+                    }''')],
+        // Frame control: claiming the *written* slot is also unchanged (range 0..old.n inclusive) must refute.
+        [group: 'P107 ring-buffer', name: 'enqueue over-strong frame refuted', expect: 'Cannot prove postcondition',
+         src: tc('''@Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
+                    class Queue {
+                        int[] data
+                        int m
+                        int n
+                        @Requires({ n < data.length })
+                        @Ensures({ (0..<old.n + 1).every { data[it] == old.data[it] } })
+                        void enqueue(int x) {
+                            data[n] = x
+                            n = n + 1
+                        }
+                    }''')],
+        // dequeue: returns the head element and advances m; invariant preserved.
+        [group: 'P107 ring-buffer', name: 'dequeue: returns head, advances m', ok: true,
+         src: tc('''@Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
+                    class Queue {
+                        int[] data
+                        int m
+                        int n
+                        @Requires({ m < n })
+                        @Ensures({ result == old.data[old.m] && m == old.m + 1 })
+                        int dequeue() {
+                            int r = data[m]
+                            m = m + 1
+                            return r
+                        }
+                    }''')],
+        // Invariant-preservation control: an unguarded bump breaks `n <= data.length`, so it must refute
+        // at method exit — proof that the class invariant is genuinely checked, not just assumed.
+        [group: 'P107 ring-buffer', name: 'invariant-breaking mutator refuted', expect: 'Cannot prove class invariant',
+         src: tc('''@Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
+                    class Queue {
+                        int[] data
+                        int m
+                        int n
+                        void bump() { n = n + 1 }
+                    }''')],
+        // size() >= 0 is provable only because the class invariant (m <= n) is assumed on entry.
+        [group: 'P107 ring-buffer', name: 'size non-negative from the invariant', ok: true,
+         src: tc('''@Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
+                    class Queue {
+                        int[] data
+                        int m
+                        int n
+                        @Ensures({ result >= 0 })
+                        int size() { return n - m }
+                    }''')],
+        // ---------- P106 char-sequence: ChangeCase via the array theory (Slice 2) ----------
+        // The spike showed string *construction*-content invariants time out on Z3's seq theory (`str.++`),
+        // but the same content invariants discharge on the *array* theory. So model the char buffer as a
+        // `char[]` (an Int-element array — `char` is `isIntLikeType`) and ChangeCase falls out of the existing
+        // array-store + quantified-loop-invariant machinery with no new engine code beyond Phase 105's char-cast
+        // fold. `('X' as char)` is the idiomatic char literal; char arithmetic is spelled `(char)((int) a[i] - 32)`
+        // so it type-checks (char[] subscript arithmetic boxes to Number).
+        [group: 'P106 char-seq', name: 'fill char[] with a constant char', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ (0..<a.length).every { a[it] == ('X' as char) } })
+                        static char[] fillX(char[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length && (0..<i).every { a[it] == ('X' as char) } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) { a[i] = ('X' as char); i = i + 1 }
+                            return a
+                        }
+                    }''')],
+        // Refute control: the fill stores 'X', so claiming 'Y' must refute (counterexample any non-empty array).
+        [group: 'P106 char-seq', name: 'fill wrong-char claim refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ (0..<a.length).every { a[it] == ('Y' as char) } })
+                        static char[] fillX(char[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length && (0..<i).every { a[it] == ('X' as char) } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) { a[i] = ('X' as char); i = i + 1 }
+                            return a
+                        }
+                    }''')],
+        // Full functional ChangeCase: read `a`, build a new `r`, prove result is the upper-cased copy
+        // element-by-element (no `old` needed — `a` is read-only). The OpenJML ChangeCase, via char[].
+        [group: 'P106 char-seq', name: 'functional ChangeCase (upper) verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result.length == a.length && (0..<a.length).every { result[it] == ((a[it] >= ('a' as char) && a[it] <= ('z' as char)) ? (char)((int) a[it] - 32) : a[it]) } })
+                        static char[] upper(char[] a) {
+                            char[] r = new char[a.length]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length && r.length == a.length &&
+                                (0..<i).every { r[it] == ((a[it] >= ('a' as char) && a[it] <= ('z' as char)) ? (char)((int) a[it] - 32) : a[it]) } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                if (a[i] >= ('a' as char) && a[i] <= ('z' as char)) r[i] = (char)((int) a[i] - 32)
+                                else r[i] = a[i]
+                                i = i + 1
+                            }
+                            return r
+                        }
+                    }''')],
+        // Refute control: dropping the lowercase guard from the spec (claim *every* element is shifted -32)
+        // must refute — a non-lowercase element (e.g. 'A') is copied unchanged, not shifted.
+        [group: 'P106 char-seq', name: 'unconditional-shift claim refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result.length == a.length && (0..<a.length).every { result[it] == (char)((int) a[it] - 32) } })
+                        static char[] upper(char[] a) {
+                            char[] r = new char[a.length]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length && r.length == a.length &&
+                                (0..<i).every { r[it] == ((a[it] >= ('a' as char) && a[it] <= ('z' as char)) ? (char)((int) a[it] - 32) : a[it]) } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                if (a[i] >= ('a' as char) && a[i] <= ('z' as char)) r[i] = (char)((int) a[i] - 32)
+                                else r[i] = a[i]
+                                i = i + 1
+                            }
+                            return r
+                        }
+                    }''')],
+        // ---------- P105 string-sequence: read-only per-character proofs (Slice 1) ----------
+        // Read-only string iteration under a quantified loop invariant — the string analogue of the array
+        // "every element satisfies P" proofs — is carried by Z3's seq theory (`seq.nth` e-matching under
+        // the forall). The developer-facing spelling is `s.charAt(i)` (an int code point) compared against
+        // `('a' as char)`: Groovy has no primitive char literal, so the cast is the idiomatic char, and
+        // Phase 105 folds it to its code so the comparison is over code points. Each positive has a refute
+        // control proving non-vacuity.
+        [group: 'P105 string-seq', name: 'all-lowercase loop verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ !result || Forall.range(0, s.length()) { int i -> s.charAt(i) >= ('a' as char) && s.charAt(i) <= ('z' as char) } })
+                        static boolean allLower(String s) {
+                            @Invariant({ 0 <= j && j <= s.length() && Forall.range(0, j) { int i -> s.charAt(i) >= ('a' as char) && s.charAt(i) <= ('z' as char) } })
+                            @Decreases({ s.length() - j })
+                            for (int j = 0; j < s.length(); j++) {
+                                if (s.charAt(j) < ('a' as char) || s.charAt(j) > ('z' as char)) return false
+                            }
+                            return true
+                        }
+                    }''')],
+        // Refute control: the loop guarantees only >= 'a', so claiming >= 'b' must refute (counterexample 'a').
+        [group: 'P105 string-seq', name: 'too-strong char bound refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ !result || Forall.range(0, s.length()) { int i -> s.charAt(i) >= ('b' as char) && s.charAt(i) <= ('z' as char) } })
+                        static boolean allLower(String s) {
+                            @Invariant({ 0 <= j && j <= s.length() && Forall.range(0, j) { int i -> s.charAt(i) >= ('a' as char) && s.charAt(i) <= ('z' as char) } })
+                            @Decreases({ s.length() - j })
+                            for (int j = 0; j < s.length(); j++) {
+                                if (s.charAt(j) < ('a' as char) || s.charAt(j) > ('z' as char)) return false
+                            }
+                            return true
+                        }
+                    }''')],
+        // Forall-assumption instantiation at a constant index — the precondition's per-char fact fires at i==3.
+        [group: 'P105 string-seq', name: 'charAt fact from forall precondition', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() > 5 && Forall.range(0, s.length()) { int i -> s.charAt(i) >= ('a' as char) && s.charAt(i) <= ('z' as char) } })
+                        @Ensures({ result >= ('a' as char) && result <= ('z' as char) })
+                        static int third(String s) { return (int) s.charAt(3) }
+                    }''')],
+        // Refute control: the precondition only constrains [0,3), so position 3 is unconstrained — must refute.
+        [group: 'P105 string-seq', name: 'unconstrained position refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null && s.length() > 5 && Forall.range(0, 3) { int i -> s.charAt(i) >= ('a' as char) && s.charAt(i) <= ('z' as char) } })
+                        @Ensures({ result >= ('a' as char) && result <= ('z' as char) })
+                        static int third(String s) { return (int) s.charAt(3) }
+                    }''')],
+        // ---------- P104 OpenJML examples (ported from openjml.org/examples, CC BY-NC) ----------
+        // "Max by elimination" — find the index of a maximum by shrinking the window [x, y] from
+        // both ends, dropping whichever endpoint is no larger. The loop invariant is *disjunctive*:
+        // the running maximum is pinned to whichever of x or y currently holds it.
+        [group: 'P104 OpenJML', name: 'max-by-elimination: result indexes a maximum', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ 0 <= result && result < a.length && Forall.range(0, a.length) { int i -> a[i] <= a[result] } })
+                        static int max(int[] a) {
+                            int x = 0
+                            int y = a.length - 1
+                            @Invariant({ 0 <= x && x <= y && y < a.length &&
+                                ((Forall.range(0, x) { int i -> a[i] <= a[y] } && Forall.range(y + 1, a.length) { int i -> a[i] <= a[y] }) ||
+                                 (Forall.range(0, x) { int i -> a[i] <= a[x] } && Forall.range(y + 1, a.length) { int i -> a[i] <= a[x] })) })
+                            @Decreases({ y - x })
+                            while (x != y) { if (a[x] <= a[y]) x = x + 1 else y = y - 1 }
+                            return x
+                        }
+                    }''')],
+        // Soundness control: same proof, but claim `result` indexes a *minimum*. The invariant
+        // establishes a[i] <= a[result] (a maximum), so the flipped postcondition must not prove.
+        [group: 'P104 OpenJML', name: 'max-by-elimination: false min-claim refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ 0 <= result && result < a.length && Forall.range(0, a.length) { int i -> a[result] <= a[i] } })
+                        static int max(int[] a) {
+                            int x = 0
+                            int y = a.length - 1
+                            @Invariant({ 0 <= x && x <= y && y < a.length &&
+                                ((Forall.range(0, x) { int i -> a[i] <= a[y] } && Forall.range(y + 1, a.length) { int i -> a[i] <= a[y] }) ||
+                                 (Forall.range(0, x) { int i -> a[i] <= a[x] } && Forall.range(y + 1, a.length) { int i -> a[i] <= a[x] })) })
+                            @Decreases({ y - x })
+                            while (x != y) { if (a[x] <= a[y]) x = x + 1 else y = y - 1 }
+                            return x
+                        }
+                    }''')],
+    ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
     static String tc(String classText) {
