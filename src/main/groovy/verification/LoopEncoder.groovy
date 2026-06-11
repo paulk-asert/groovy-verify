@@ -159,7 +159,12 @@ class LoopEncoder {
                    (ifs.elseBlock == null || innerFrameStmt(ifs.elseBlock, scalars, arrays))
         }
         if (st instanceof ExpressionStatement) return innerFrameExpr(((ExpressionStatement) st).expression, scalars, arrays)
-        return false   // return / nested loop / unknown statement → bail
+        // Phase 109 — a `return` inside the inner loop writes nothing to the *outer* state (it transfers
+        // control out of the method). On the fall-through path — the only one where the outer loop continues
+        // past the inner loop — the inner loop completed without returning, so the summary (inner_inv ∧
+        // ¬inner_guard) is unaffected. The return's own @Ensures is discharged separately (verifyNestedLoops).
+        if (st instanceof ReturnStatement) return true
+        return false   // nested loop / unknown statement → bail
     }
     private static boolean innerFrameExpr(Expression e, Set<String> scalars, Set<String> arrays) {
         if (e == null) return true

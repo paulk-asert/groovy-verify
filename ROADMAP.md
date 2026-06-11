@@ -5546,6 +5546,189 @@ invariant-breaking mutator both refute.
 
 ---
 
+## Phase 108 — content-dependent array index bounds inside loops  *(shipped — bounds-discharge fix)*
+
+A *data-dependent* index — `b[a[k]]`, where the index `a[k]` is itself an array read — is bounded not by
+index arithmetic but by a **value-range quantifier** (`∀q. 0 ≤ a[q] < b.length`). The Phase-91b optimization
+*stripped* all quantifier conjuncts from the assumptions when discharging an array-index bound (sound, and it
+keeps Z3 out of the quantifier+NIA path for flat-index `a[i*m+j]` fills) — but that discarded the *one* fact
+that bounds a content-dependent index, so gather/scatter/histogram loops failed in-loop while the identical
+obligation discharged fine *outside* a loop (different code path, no strip). Fix: strip only when the index is
+pure arithmetic — keep the quantifiers when the index AST contains a nested subscript (`indexReadsArrayContent`).
+Surgical: arithmetic indices are unchanged (the flat-index NIA cases still strip), content-dependent indices
+newly keep the value-range. **22-line `VerifyChecker` change.**
+
+**Shipped tests (Phase 108, group `P108 content-index`)**: a gather read `b[a[k]]` and a histogram store
+`count[a[k]] = count[a[k]] + 1` (content-dependent *write* index) verify in a loop; dropping the value-range
+refutes with an out-of-bounds counterexample.
+
+**Provenance — "try Duplets" (FoVeOOS'11 Challenge 3), assessed, *not* landed.** The example (find two
+distinct duplicate pairs) drove this fix but is **not** itself in reach. Its natural nested-loop form is
+blocked by the Phase-91 limit (an inner loop with an early `return`). A single-loop reformulation — track each
+value's first-occurrence index in a `pos` array (values are in `[0,n)`) — got *past* the content-index bound
+(this phase), then hit a **third** gap: an early-exit `return Tuple.tuple(pos[a[k]]-1, k)` reports
+"early-exit postcondition outside fragment" (the in-body return building a tuple from content-indexed values).
+And even past that, the *full* spec needs totality (a pigeonhole argument that a duplet exists) plus the
+two-pass "second duplet has a different value" with the nullable `except` exclusion. So Duplets stays out;
+the durable win is the general content-index capability, which stands on its own (counting sort, histograms,
+permutation-apply, gather/scatter). The two remaining gaps — **nested-loop inner `return`** and
+**early-exit postcondition over a tuple/content-indexed value** — are the clean follow-ons if Duplets is
+revisited.
+
+---
+
+## Phase 109 — nested loop with an inner early `return`  *(shipped)*
+
+Closes the first of the two Duplets follow-on gaps. Phase 91 summarises a nested inner loop for the outer
+loop's VCs — havoc the variables it writes, then assume `inner_inv ∧ ¬inner_guard` — but `innerFrame` (the
+write-set analysis) **bailed** the moment the inner body held a `return`, so the whole loop skipped loudly.
+Two-part fix:
+
+- **Write-set** (`LoopEncoder.innerFrame`): a `return` writes nothing to *outer* state — it transfers control
+  out of the method. The only path on which the outer loop continues past the inner loop is the one where the
+  inner loop completed *without* returning, so the summary is unaffected. Treat `return` as a no-op there.
+- **Inner-exit postcondition** (`verifyNestedLoops`): the inner `return` is a real exit path whose `@Ensures`
+  must be checked, or the fix would be unsound. Collect the inner loop's early exits (`partitionEarlyExits`)
+  and discharge each with the inner loop's body-entry context (`inner_inv ∧ inner_guard`) — the *same*
+  Phase-49b in-body early-exit treatment, applied to the inner site. Sound because `inner_inv` is established
+  and preserved (proved just above), so it holds whenever the inner exit fires.
+
+So a **2D witness search** that returns an index from the inner loop now verifies. The inner loop's own
+preservation/progress already tolerated in-body returns (`symExecBodyWithExits` re-detects them); the gap was
+only the outer summary's write-set bail and the missing exit-`@Ensures` check. **~10-line change** across the
+two files; existing return-free nested loops (matrix fill, `count = n*n`) are untouched.
+
+**Shipped tests (Phase 109, group `P109 nested-return`)**: a `firstDup` nested search returns a witness index
+and verifies; a deliberately-false postcondition on the inner-return path (`result <= 0`, but the return
+yields `j ≥ 1`) refutes — confirming the inner exit's `@Ensures` is genuinely checked, not skipped.
+
+This still leaves the *second* Duplets gap — an **early-exit postcondition over a tuple** (the nested duplet
+returns a `Tuple2` of two indices; `checkEarlyExit` binds a scalar `result`, not the factory slots
+`result.v1`/`.v2`). So the natural nested duplet needs that follow-on too; this phase handles the scalar-return
+witness-search shape, which is the common case.
+
+---
+
+## Phase 110 — tuple return on an early-exit path  *(shipped — lands the natural nested Duplets `duplet`)*
+
+Closes the *second* Duplets follow-on. `checkEarlyExit` bound only a scalar `result` (`enc.bind('result',
+translate(ex.result))`), so an early `return Tuple.tuple(i, j)` couldn't resolve its slot accessors
+`result.v1`/`.v2` in the `@Ensures` — it reported "early-exit postcondition outside fragment". Fix: make the
+early-exit binding **factory-aware**, reusing the exact `tryRecordFactoryAssign` / `tryRecordSetBinopAssign`
+path `checkUse` already runs on the natural after-loop return — so a tuple / list-literal / map-literal return
+on a prefix, in-body, or inner-loop exit records its slots (`result.v1`, `result.size()`, `result[k]` all
+fold). **One-block change** in `checkEarlyExitPath`.
+
+Combined with Phase 109 (nested inner `return`), this **lands the natural nested form of FoVeOOS *Duplets*
+`duplet`** at *partial correctness*: a doubly-nested scan that returns `Tuple.tuple(i, j)` on `a[i] == a[j]`,
+proving `result.v1 == -1 ∨ (0 ≤ result.v1 < result.v2 < a.length ∧ a[result.v1] == a[result.v2])` — the
+witness-search shape the example exists to teach, in the spelling a developer would actually write.
+
+**Shipped tests (Phase 110, group `P110 tuple-exit`)**: the nested `duplet` (tuple, content-indexed spec)
+verifies; a wrong slot-order claim (`v1 > v2`) refutes (proving the slots are genuinely bound, not free); a
+single-loop tuple early-exit verifies too (the fix isn't nested-specific).
+
+**Duplets, end to end.** The four-phase arc (105 cast-fold motivation aside) — Phase 108 content-index bounds,
+Phase 109 nested inner `return`, Phase 110 tuple early-exit — takes the example from *three* fragment gaps to
+**`duplet` partial correctness proven in its natural nested form**. Totality follows in Phase 111.
+
+---
+
+## Phase 111 — Duplets totality (find-given-exists)  *(shipped — no engine change)*
+
+Strengthens the Phase-110 partial-correctness `duplet` to **totality**: a *sentinel-free* postcondition
+(`0 ≤ result.v1 < result.v2 < a.length ∧ a[result.v1] == a[result.v2]`) under an *existential* precondition
+(`∃p,q. 0≤p<q<a.length ∧ a[p]==a[q]`, written `(0..<n).any { p -> (p+1..<n).any { q -> a[p]==a[q] } }`). The
+verifier must now prove the search *returns a real duplet* — i.e. the sentinel fall-through is **infeasible**.
+That rests on:
+
+- nested **∀∀ "no-duplet-found-yet"** loop invariants — outer `∀p<i. ∀q∈(p,n). a[p]≠a[q]`, inner adds the
+  current row `∀q∈(i,j). a[i]≠a[q]`. The outer invariant's preservation needs the inner loop's completion fact
+  (`∀q>i. a[i]≠a[q]`, from the nested-loop summary `inner_inv ∧ ¬inner_guard`) to extend `p<i` to `p<i+1`;
+- at loop exit (`i == a.length`) the outer invariant says **no duplet anywhere**, which contradicts the
+  existential precondition — Z3 instantiates the universal at the existential's Skolem witness, so the use
+  path is UNSAT and the sentinel return is vacuously fine (unreachable).
+
+**No new engine code** — it rides the existing quantifier + nested-loop machinery once Phases 108–110 made the
+duplet expressible; the nested `Forall.range`-in-`Forall.range` invariants and the existential `any`-in-`any`
+precondition both translate and discharge as-is.
+
+**Shipped tests (Phase 111, group `P111 Duplets-totality`)**: the totality `duplet` verifies; a **non-vacuity
+control** that drops the existential precondition **refutes** (the no-duplet fall-through becomes reachable and
+violates the sentinel-free postcondition) — proving the existential is load-bearing, not decoration.
+
+**So `duplet` is now fully verified** — partial correctness *and* totality, in its natural nested form. What
+remains for the *full* two-pair `duplets` is the two-pass "second duplet has a *different value*" — see
+Phase 112.
+
+---
+
+## Phase 112 — Duplets: `dupletExcept` (exclusion-totality), and the inter-procedural-tuple boundary  *(partial — component shipped)*
+
+The two-pass full `duplets` finds *two* duplicate pairs with **different values** by finding one duplet, then
+finding another whose value differs from the first. Splitting it into `duplet(a)` (Phase 111) and
+`dupletExcept(a, except)` sidesteps the nullable-`Integer` `except` (a plain `int` exclusion instead of
+`null`-means-none).
+
+**Shipped:** `dupletExcept` — the **second-pass search engine** — verifies at totality. It's Phase 111 plus an
+`a[i] != except` conjunct threaded through the existential precondition, the nested ∀∀ "no *qualifying* duplet
+found yet" invariant, and the exit guard. No engine change. (`P112 dupletExcept`: the totality search verifies;
+the existential-dropped non-vacuity control refutes.)
+
+**Blocked — the composition `duplets`:** combining the two passes needs **inter-procedural tuple results**, a
+real engine gap pinned to a 3-line repro: `Tuple2<Integer,Integer> r = duplet(a)` is "outside fragment". A
+tuple-typed local is minted with a *scalar* `int` handle (`sortForType(Tuple2)` falls through to `intSort`),
+so `assumeCalleeEnsures` can't bind the callee's slot-shaped `@Ensures` (`result.v1`/`.v2`) and the body can't
+resolve `r.v1` (as an array index `a[r.v1]` or the next call's argument). The slot accessors work in *contracts*
+(Phase 79/80) but not for a **local bound to a tuple-returning call**. Closing it is a multi-part,
+soundness-sensitive feature — mint slot entities for the tuple local (reusing the Phase-80 param-tuple
+minting), bind the callee `@Ensures` slot-wise in `assumeCalleeEnsures`, and resolve `r.vN` in body expressions
+— deliberately **not** half-implemented here. With it, `duplets` composes directly: the only non-trivial proof
+step is discharging the second call's existential precondition (a duplet with value ≠ the first exists) from
+the two-distinct-duplets precondition, which Z3 gets by instantiating the negated goal at the precondition's
+two witnesses (`a[i] ≠ a[k]` ⇒ one differs from the first value). That step was sketched and looks tractable;
+it's the *binding*, not the reasoning, that gates `duplets`.
+
+**Status:** `duplet` (both directions) + `dupletExcept` shipped; full `duplets` lands in Phase 113.
+
+---
+
+## Phase 113 — inter-procedural tuple results (and the full two-pass `duplets`)  *(shipped)*
+
+Closes the Phase-112 blocker, so the **full FoVeOOS Duplets challenge verifies**. The gap: binding a local to a
+tuple-returning call — `Tuple2 r = duplet(a)` — and using its slots (`r.v1`) as an array index, a call
+argument, and the return composition. Four touch points:
+
+- **Type registry** (`collectTupleTypes` → `currentTupleTypes`): tuple-typed locals weren't tracked
+  (`Tuple2` isn't `isNonIntScalar`), so the assignment fell through to the scalar-handle path.
+- **Binding** (`assumeCalleeEnsures` gains `resultTupleName`): instead of binding `result` to a scalar term,
+  register the local as a tuple (reusing the Phase-80 param-tuple machinery — `r.vN` → entity `r$vN`) and
+  rename `result`→`r` in the callee's `@Ensures` (a fresh AST copy via `renameVariable`), so its slot
+  constraints land on the local's slots.
+- **All contexts** (`mkEncoder` merges `currentTupleTypes` into the tuple registry): `r.vN` must *translate*
+  in every verification context — the body VC, an array-bounds check, a call-precondition discharge — each of
+  which builds its own encoder.
+- **Obligation replay** (`dischargeVfObligation`): the value-flow replay of `r = callee(...)` now asserts the
+  callee's `@Ensures` too, so a downstream `a[r.vN]` bound (and the next call's precondition) sees the slot's
+  range — without it `r$vN` was unconstrained and the bound refuted with `r$v1 = -1`.
+
+With these, `duplets` composes `duplet(a)` then `dupletExcept(a, a[r1.v1])` and returns a `Tuple4` of the four
+indices, proving the two pairs have **different values**. The cross-call reasoning Z3 needed — the second
+call's existential precondition (a duplet with value ≠ the first) follows from the two-distinct-duplets
+precondition — discharged as sketched (instantiate the negated goal at the precondition's two witnesses; one
+must differ from the first value). Sound by construction: assuming a callee's `@Ensures` is the existing
+Phase-7 inter-procedural rule (the callee's `@Requires` is discharged separately at the call site); the tuple
+path only changes *how* `result` binds, not *that* the contract is the obligation.
+
+**Broadly useful, not Duplets-specific** — any method returning a `TupleN` with a caller using its slots.
+
+**Shipped tests (Phase 113, group `P113 interproc-tuple`)**: a minimal hoisted tuple slot used in the body
+verifies; a wrong slot-value claim refutes (the slot is genuinely bound to the callee's value); the **full
+two-pass `duplets`** composition verifies. **So the complete Duplets challenge — `duplet` (partial + total),
+`dupletExcept`, and `duplets` — is fully verified.**
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

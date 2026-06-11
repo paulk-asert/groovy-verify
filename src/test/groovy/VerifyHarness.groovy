@@ -8328,6 +8328,367 @@ class VerifyHarness {
                             return r
                         }
                     }''')],
+        // ---------- P113 inter-procedural tuple results ----------
+        // Binding `Tuple2 r = callee(...)` to a local and using its slots (`r.v1`) in the body — array index,
+        // call argument, return composition. A tuple local is registered (Phase-80 param-tuple machinery) and
+        // the callee's @Ensures binds its slots via a `result`→`r` rename; the slot entities are constrained
+        // wherever the assignment is replayed (body VC, bounds check, call-precondition discharge).
+        [group: 'P113 interproc-tuple', name: 'hoisted tuple slot used in body', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result.v1 == 0 && result.v2 == 1 })
+                        static Tuple2<Integer, Integer> mk() { return Tuple.tuple(0, 1) }
+                        @Ensures({ result == 0 })
+                        static int g() {
+                            Tuple2<Integer, Integer> r = mk()
+                            return r.v1
+                        }
+                    }''')],
+        // Binding-correctness control: r.v1 == 0 (from mk's @Ensures), so claiming result == 1 must refute —
+        // the slot is genuinely bound to the callee's value, not left free.
+        [group: 'P113 interproc-tuple', name: 'wrong slot value refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result.v1 == 0 && result.v2 == 1 })
+                        static Tuple2<Integer, Integer> mk() { return Tuple.tuple(0, 1) }
+                        @Ensures({ result == 1 })
+                        static int g() {
+                            Tuple2<Integer, Integer> r = mk()
+                            return r.v1
+                        }
+                    }''')],
+        // The full two-pass FoVeOOS Duplets: find two duplicate pairs with DIFFERENT values, by composing
+        // duplet + dupletExcept(first value) across method calls — the capstone that the inter-procedural
+        // tuple result enables. result is a Tuple4 built from the two tuple-returning calls' slots.
+        [group: 'P113 interproc-tuple', name: 'full two-pass duplets composition', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && (0..<a.length).any { int p -> (p + 1..<a.length).any { int q -> a[p] == a[q] } } })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] })
+                        static Tuple2<Integer, Integer> duplet(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length &&
+                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
+                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                        @Requires({ a != null && (0..<a.length).any { int p -> (p + 1..<a.length).any { int q -> a[p] == a[q] && a[p] != except } } })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] && a[result.v1] != except })
+                        static Tuple2<Integer, Integer> dupletExcept(int[] a, int except) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length &&
+                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } &&
+                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] || a[i] == except } })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j] && a[i] != except) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                        @Requires({ a != null && (0..<a.length).any { int i -> (i + 1..<a.length).any { int j -> (0..<a.length).any { int k -> (k + 1..<a.length).any { int l -> a[i] == a[j] && a[k] == a[l] && a[i] != a[k] } } } } })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] &&
+                                   0 <= result.v3 && result.v3 < result.v4 && result.v4 < a.length && a[result.v3] == a[result.v4] &&
+                                   a[result.v1] != a[result.v3] })
+                        static Tuple4<Integer, Integer, Integer, Integer> duplets(int[] a) {
+                            Tuple2<Integer, Integer> r1 = duplet(a)
+                            Tuple2<Integer, Integer> r2 = dupletExcept(a, a[r1.v1])
+                            return Tuple.tuple(r1.v1, r1.v2, r2.v1, r2.v2)
+                        }
+                    }''')],
+        // ---------- P112 Duplets: dupletExcept (exclusion-totality search) ----------
+        // The second-pass engine of the full two-pair Duplets: find a duplicate pair whose VALUE differs from
+        // an excluded `except`, with totality — P111 plus the `a[i] != except` conjunct threaded through the
+        // existential precondition, the nested ∀∀ "no qualifying duplet found yet" invariant, and the exit
+        // guard. (The full two-pass `duplets` that composes this with `duplet` needs inter-procedural tuple
+        // results — binding a local to a tuple-returning call and using its slots — a separate gap; see
+        // ROADMAP Phase 112.)
+        [group: 'P112 dupletExcept', name: 'dupletExcept totality verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && (0..<a.length).any { int p -> (p + 1..<a.length).any { int q -> a[p] == a[q] && a[p] != except } } })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] && a[result.v1] != except })
+                        static Tuple2<Integer, Integer> dupletExcept(int[] a, int except) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length &&
+                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } &&
+                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] || a[i] == except } })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j] && a[i] != except) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // Non-vacuity control: drop the existential precondition; the sentinel fall-through is then reachable
+        // and violates the sentinel-free postcondition, so it must refute (the existential is load-bearing).
+        [group: 'P112 dupletExcept', name: 'without existential refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] && a[result.v1] != except })
+                        static Tuple2<Integer, Integer> dupletExcept(int[] a, int except) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length &&
+                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } &&
+                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] || a[i] == except } })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j] && a[i] != except) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // ---------- P111 Duplets totality (find-given-exists, no engine change) ----------
+        // Strengthens the Phase-110 partial-correctness duplet to TOTALITY: with a sentinel-free postcondition
+        // and an *existential* precondition (a duplet exists), the verifier must prove the search returns a
+        // real duplet — i.e. the sentinel fall-through is infeasible. That rests on nested ∀∀ "no-duplet-found-
+        // yet" loop invariants (the outer one extended past the inner loop's completion fact each iteration),
+        // and at loop exit the universal "no duplet anywhere" contradicts the existential precondition (Z3
+        // instantiates the universal at the existential's witness). All on the existing quantifier + nested-
+        // loop machinery — no new engine code; the Phase 108–110 fixes already made the duplet expressible.
+        [group: 'P111 Duplets-totality', name: 'duplet totality verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && (0..<a.length).any { int p -> (p + 1..<a.length).any { int q -> a[p] == a[q] } } })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] })
+                        static Tuple2<Integer, Integer> duplet(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length &&
+                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
+                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // Non-vacuity control: DROP the existential precondition. Now the fall-through (empty / no-duplet
+        // array → sentinel) is reachable and violates the sentinel-free postcondition, so it MUST refute.
+        // If this still passed, the totality proof wouldn't really be using the existential.
+        [group: 'P111 Duplets-totality', name: 'totality without existential refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] })
+                        static Tuple2<Integer, Integer> duplet(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length &&
+                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
+                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // ---------- P110 tuple return on an early-exit path ----------
+        // checkEarlyExit bound only a scalar `result`, so an early `return Tuple.tuple(i, j)` couldn't resolve
+        // its slot accessors (`result.v1`/`.v2`) in the @Ensures. Phase 110 makes the early-exit binding
+        // factory-aware (the same `tryRecordFactoryAssign` path checkUse uses on the natural return), so a
+        // tuple/list/map return on a prefix / in-body / inner-loop exit folds its slots. Combined with the
+        // Phase-109 nested inner-return, this lands the natural nested form of FoVeOOS *Duplets* `duplet`
+        // (find a duplicate pair) at *partial correctness* — the witness-search shape the example is about.
+        [group: 'P110 tuple-exit', name: 'nested duplet (tuple) partial correctness', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result.v1 == -1 || (0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2]) })
+                        static Tuple2<Integer, Integer> duplet(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // Refute control — claim v1 > v2 on the found path (false: i < j); must refute, proving the slots are
+        // genuinely bound on the inner-exit path, not left free.
+        [group: 'P110 tuple-exit', name: 'wrong slot order refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result.v1 == -1 || result.v1 > result.v2 })
+                        static Tuple2<Integer, Integer> duplet(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return Tuple.tuple(i, j)
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // Generality: a single-loop early exit returning a tuple folds its slots too (not nested-specific).
+        [group: 'P110 tuple-exit', name: 'single-loop tuple early-exit', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result.v1 == -1 || (0 <= result.v1 && result.v1 < a.length && a[result.v1] == target && result.v2 == target) })
+                        static Tuple2<Integer, Integer> find(int[] a, int target) {
+                            int k = 0
+                            @Invariant({ 0 <= k && k <= a.length })
+                            @Decreases({ a.length - k })
+                            while (k < a.length) {
+                                if (a[k] == target) return Tuple.tuple(k, target)
+                                k = k + 1
+                            }
+                            return Tuple.tuple(-1, -1)
+                        }
+                    }''')],
+        // ---------- P109 nested loop with an inner early return ----------
+        // Phase 91 summarised a nested inner loop by havocking its writes + assuming `inner_inv ∧ ¬inner_guard`,
+        // but bailed if the inner body contained a `return` (the write-set couldn't account for it). Phase 109:
+        // a `return` writes nothing to outer state, so the summary's fall-through path is unaffected — and the
+        // inner exit's @Ensures is discharged separately, with the inner loop's body-entry context
+        // (`inner_inv ∧ inner_guard`), the same Phase-49b treatment applied to the inner site. So a 2D
+        // witness-search returning an index from the inner loop verifies (partial correctness).
+        [group: 'P109 nested-return', name: 'nested inner-return verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result == -1 || (0 <= result && result < a.length) })
+                        static int firstDup(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return j
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return -1
+                        }
+                    }''')],
+        // Soundness control: the inner-return path yields j >= 1 > 0, so `result <= 0` must refute — proof
+        // that the inner exit's @Ensures is genuinely checked, not skipped.
+        [group: 'P109 nested-return', name: 'inner-return postcondition is checked', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a != null })
+                        @Ensures({ result <= 0 })
+                        static int firstDup(int[] a) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= a.length })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length })
+                                @Decreases({ a.length - j })
+                                while (j < a.length) {
+                                    if (a[i] == a[j]) return j
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return -1
+                        }
+                    }''')],
+        // ---------- P108 content-dependent array index bounds inside loops ----------
+        // A data-dependent index `b[a[k]]` (the index is itself an array read) is bounded by the value-range
+        // quantifier `∀q. 0 ≤ a[q] < b.length`, not by index arithmetic. Phase 108 keeps that quantifier in
+        // scope for the loop-body bounds discharge (the Phase-91b strip now applies only to arithmetic
+        // indices), so gather / scatter / histogram loops verify. The same discharge already worked outside a
+        // loop; this closes the in-loop case. (Motivated by the FoVeOOS Duplets example.)
+        [group: 'P108 content-index', name: 'gather read b[a[k]] in a loop', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null && (0..<a.length).every { int q -> 0 <= a[q] && a[q] < b.length } })
+                        static int gather(int[] a, int[] b) {
+                            int s = 0
+                            int k = 0
+                            @Invariant({ 0 <= k && k <= a.length && (0..<a.length).every { int q -> 0 <= a[q] && a[q] < b.length } })
+                            @Decreases({ a.length - k })
+                            while (k < a.length) { s = b[a[k]]; k = k + 1 }
+                            return s
+                        }
+                    }''')],
+        // Scatter / histogram: the *write* index is content-dependent too — `count[a[k]] = count[a[k]] + 1`.
+        [group: 'P108 content-index', name: 'histogram store count[a[k]] in a loop', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && count != null && (0..<a.length).every { int q -> 0 <= a[q] && a[q] < count.length } })
+                        static int[] hist(int[] a, int[] count) {
+                            int k = 0
+                            @Invariant({ 0 <= k && k <= a.length && (0..<a.length).every { int q -> 0 <= a[q] && a[q] < count.length } })
+                            @Decreases({ a.length - k })
+                            while (k < a.length) { count[a[k]] = count[a[k]] + 1; k = k + 1 }
+                            return count
+                        }
+                    }''')],
+        // Refute control: drop the value-range and the data-dependent index bound genuinely can't be proven.
+        [group: 'P108 content-index', name: 'missing value-range refuted', expect: 'IndexOutOfBounds',
+         src: tc('''class C {
+                        @Requires({ a != null && b != null })
+                        static int gather(int[] a, int[] b) {
+                            int s = 0
+                            int k = 0
+                            @Invariant({ 0 <= k && k <= a.length })
+                            @Decreases({ a.length - k })
+                            while (k < a.length) { s = b[a[k]]; k = k + 1 }
+                            return s
+                        }
+                    }''')],
         // ---------- P107 ring buffer: a verified mutable data structure (class @Invariant) ----------
         // A bounded (non-wrapping) queue as a ring buffer, after Leino's Dafny tutorial (Why3's `ring_buffer`).
         // The state is a `char`/int buffer `data` + head `m` + tail `n`; the type invariant is a class

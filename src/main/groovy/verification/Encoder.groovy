@@ -1757,6 +1757,16 @@ class Encoder {
         (n != null && (n ==~ /Tuple\d+/)) ? Integer.parseInt(n.substring(5)) : -1
     }
 
+    /** Phase 113 — is {@code t} a {@code TupleN} type (so its slots `.vN` are addressable)? */
+    boolean isTupleType(ClassNode t) { tupleArity(t) >= 2 }
+
+    /**
+     * Phase 113 — register a tuple-typed <em>local</em> bound to a tuple-returning call, reusing the Phase-80
+     * tuple-parameter machinery: {@code r.vN} then resolves to the per-slot entity {@code r$vN}. The callee's
+     * {@code @Ensures}, with {@code result} renamed to this local, constrains those same entities.
+     */
+    void registerTupleLocal(String name, ClassNode type) { if (isTupleType(type)) tupleParams.put(name, type) }
+
     /** The declared type of slot {@code i} of a {@code TupleN<...>} (from its generics), or null (→ Int). */
     private static ClassNode tupleSlotType(ClassNode t, int i) {
         try {

@@ -198,6 +198,8 @@ class VerifyChecker extends TypeCheckingExtension {
      * the default Int. Without this, `s == "admin"` would mismatch (Int s vs String!Sort literal).
      */
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
+    /** Phase 113 — tuple-typed locals (`Tuple2<…> r = callee(…)`), name → the {@code TupleN} type. */
+    private Map<String, ClassNode> currentTupleTypes = new HashMap<String, ClassNode>()
     /** Phase 61 — decimal-typed (BigDecimal/Double/Float) param/field/local/result names. */
     private Set<String> currentDecimalNames = new HashSet<String>()
     /** Phase 72 — double/float names; references skip (IEEE-754 is the FP non-goal). */
@@ -225,10 +227,16 @@ class VerifyChecker extends TypeCheckingExtension {
 
     /** New Encoder wired with the current class's pure-function evaluator and set/map/list-typed names with element types. */
     private Encoder mkEncoder(SmtSession session) {
+        // Phase 113 — tuple *locals* (bound to a tuple-returning call) join the tuple *params* so `r.vN`
+        // resolves in every verification context (the body VC, a call-precondition discharge, an array-bounds
+        // check), each of which builds its own encoder. The slot entities `r$vN` are constrained wherever the
+        // preceding `r = callee(...)` assignment is replayed (it asserts the callee's @Ensures).
+        Map<String, ClassNode> tuples = new LinkedHashMap<String, ClassNode>(currentTupleParams)
+        tuples.putAll(currentTupleTypes)
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames, currentFpNames, currentTupleParams)
+                    currentBooleanLocals, currentDecimalNames, currentFpNames, tuples)
     }
 
     /**
@@ -793,6 +801,31 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /** True for non-Int scalar types we model under an uninterpreted Z3 sort: String, enums. */
+    /** Phase 113 — tuple-typed locals declared in the (clean) body: name → its {@code TupleN} type. Used to
+     *  recognise `Tuple2 r = callee(...)` so the local's slots can be bound to the callee's @Ensures. */
+    private static Map<String, ClassNode> collectTupleTypes(MethodNode node) {
+        Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitClosureExpression(ClosureExpression ce) { }
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (t != null && t.nameWithoutPackage != null && t.nameWithoutPackage.matches('Tuple\\d+')) {
+                            out.put(((VariableExpression) de.leftExpression).name, t)
+                        }
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
+        out
+    }
+
     private static boolean isNonIntScalar(ClassNode t) {
         if (t == null) return false
         if (t.isArray() || isSetType(t) || isMapType(t) || isListType(t)) return false
@@ -1265,6 +1298,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListNames = collectListNames(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
+        currentTupleTypes = collectTupleTypes(node)
         currentDecimalNames = collectDecimalNames(node)
         currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
@@ -1376,6 +1410,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListNames = new HashSet<String>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
+            currentTupleTypes = new HashMap<String, ClassNode>()
             currentDecimalNames = new HashSet<String>()
             currentFpNames = new HashMap<String, Boolean>()
             currentBooleanLocals = new HashSet<String>()
@@ -1700,6 +1735,13 @@ class VerifyChecker extends TypeCheckingExtension {
                     Assign a = (Assign) step
                     if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
                     if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
+                    // Phase 113 — a tuple-returning call (`r = callee(...)`): constrain r's slots by the
+                    // callee's @Ensures so a downstream `a[r.vN]` / call-arg obligation sees the slot bounds.
+                    // Mirrors checkPath; without it r$vN is unconstrained here and the bound can't discharge.
+                    if (isCallExpr(a.rhs) && currentTupleTypes.get(a.name) != null) {
+                        enc.registerTupleLocal(a.name, currentTupleTypes.get(a.name))
+                        if (assumeCalleeEnsures(s, enc, a.rhs, node, null, hasDecreases(node), a.name)) continue
+                    }
                     Object rhs = enc.translate(a.rhs)
                     if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
                 } else if (step instanceof Guard) {
@@ -2355,7 +2397,11 @@ class VerifyChecker extends TypeCheckingExtension {
             // the size oracle, never on array *contents*. So for an IndexSite, drop content-quantifier
             // conjuncts (`xs.every { … }`) from the assumed facts: it's sound (fewer hypotheses), and it
             // keeps Z3 out of the quantifier+NIA path that makes it bail on the flat-index monotonicity.
-            boolean stripQ = (site instanceof IndexSite)
+            // Phase 108 — but a *content-dependent* index (`b[a[k]]`, where the index `a[k]` itself reads an
+            // array) is bounded only by the value-range quantifier (`∀q. 0 ≤ a[q] < b.length`), so stripping it
+            // would discard the one fact that proves the bound. Keep quantifiers for those (the no-loop path
+            // already does); the arithmetic-index case (`a[i*m+j]`) still strips, avoiding the NIA dead-end.
+            boolean stripQ = (site instanceof IndexSite) && !indexReadsArrayContent(((IndexSite) site).index)
             if (reqAst != null) {
                 Object p = enc.translate(stripQ ? dropQuantifierConjuncts(reqAst) : reqAst)
                 if (p != null) s.assertExpr(p)
@@ -2490,6 +2536,23 @@ class VerifyChecker extends TypeCheckingExtension {
     /** Drop the top-level `&&` conjuncts of {@code e} that contain a quantifier (`every`/`any`/closure);
      *  the rest are re-AND'd (or {@code true} if all were quantified). Used to keep array-bounds discharges
      *  quantifier-free — their truth never depends on array contents. */
+    /**
+     * Phase 108 — does this index expression read array *content* (a nested subscript like `a[k]` in
+     * `b[a[k]]`)? Such an index's bound depends on the value stored, i.e. on a content quantifier, so the
+     * Phase-91b quantifier-strip (sound for pure arithmetic indices) must not apply to it.
+     */
+    private static boolean indexReadsArrayContent(Expression e) {
+        if (e == null) return false
+        boolean[] found = new boolean[1]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.LEFT_SQUARE_BRACKET) found[0] = true
+                super.visitBinaryExpression(be)
+            }
+        })
+        found[0]
+    }
+
     private static Expression dropQuantifierConjuncts(Expression e) {
         List<Expression> kept = new ArrayList<Expression>()
         for (Expression c : splitConjuncts(e)) if (!hasQuantifier(c)) kept.add(c)
@@ -2983,6 +3046,16 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (rhs != null) {
                         session.assertExpr(session.eq(fresh, rhs))
                         enc.bind(a.name, fresh)
+                    } else if (isCallExpr(a.rhs) && currentTupleTypes.get(a.name) != null) {
+                        // Phase 113 — `Tuple2 r = callee(...)`: a tuple-returning call. Register r as a tuple
+                        // local and constrain its slots by the callee's @Ensures (with `result` renamed to r),
+                        // so `r.vN` resolves in the body. Must precede the scalar-call branch below, which
+                        // would mis-model the tuple as a single Int handle (sortForType(TupleN) → Int).
+                        enc.registerTupleLocal(a.name, currentTupleTypes.get(a.name))
+                        if (!assumeCalleeEnsures(session, enc, a.rhs, node, null, hasDecreases(node), a.name)) {
+                            throw new UnsupportedConstructException(
+                                "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
+                        }
                     } else if (isCallExpr(a.rhs) &&
                                assumeCalleeEnsures(session, enc, a.rhs, node, fresh, hasDecreases(node))) {
                         enc.bind(a.name, fresh)
@@ -3797,7 +3870,7 @@ class VerifyChecker extends TypeCheckingExtension {
             if (site.spec.variant != null) checkProgress(node, site, stableReqs)
             // Phase 91 — a nested annotated loop in the outer body: the outer VCs above already summarised
             // it; now discharge its own establish/preserve/progress (without which the summary is unsound).
-            verifyNestedLoops(node, site, reqAst)
+            verifyNestedLoops(node, site, reqAst, postAst)
             if (!perElement.isEmpty()) checkForInElement(node, site, perElement, stableReqs)
             if (postAst != null) checkUse(node, site, reqAst, postAst)
             // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
@@ -4133,10 +4206,17 @@ class VerifyChecker extends TypeCheckingExtension {
             // Assume the exit's own guard (we did take this exit).
             Object guardH = enc.translate(ex.guard)
             if (guardH != null) s.assertExpr(guardH)
-            // Bind result to the return expression, then assert ¬postcondition.
-            Object resH = enc.translate(ex.result)
-            if (resH != null) enc.bind('result', resH)
-            aliasResultToReturnedListLocal(s, enc, ex.result)
+            // Bind result to the return expression (factory-aware, mirroring checkUse): a tuple / list-literal
+            // / map-literal return (`return Tuple.tuple(i, j)`) records result's slots so `result.v1`/`.v2`
+            // (and `result.size()`/`result[k]`) fold in the @Ensures; otherwise the scalar-handle binding +
+            // size/array alias. Phase 110 — the early-exit path previously bound only the scalar handle, so a
+            // tuple-returning in-body/inner exit couldn't resolve its slot accessors.
+            if (ex.result == null || (!enc.tryRecordFactoryAssign('result', ex.result) &&
+                                      !enc.tryRecordSetBinopAssign('result', ex.result))) {
+                Object resH = enc.translate(ex.result)
+                if (resH != null) enc.bind('result', resH)
+                aliasResultToReturnedListLocal(s, enc, ex.result)
+            }
             Object post = enc.translateGoal(postAst)
             if (post == null) {
                 addStaticTypeError(Reporter.formatPostconditionSkipped(node.name,
@@ -4306,7 +4386,7 @@ class VerifyChecker extends TypeCheckingExtension {
     //                  is generally false mid-inner-loop, e.g. `count == i*n` while count is changing)
     //   • progress  — the inner @Decreases strictly decreases and stays ≥ 0
     // Preserve/progress reuse the standard checks verbatim against an inner {@link LoopSite}.
-    private void verifyNestedLoops(MethodNode node, LoopSite site, Expression reqAst) {
+    private void verifyNestedLoops(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
         List<Statement> inners = annotatedInnerLoops(site.spec.body)
         if (inners.isEmpty()) return
         if (inners.size() > 1) {
@@ -4331,6 +4411,16 @@ class VerifyChecker extends TypeCheckingExtension {
         List<Expression> innerStable = loopStableRequires(reqAst, innerSite)
         checkPreservation(node, innerSite, innerStable)
         if (innerSpec.variant != null) checkProgress(node, innerSite, innerStable)
+        // Phase 109 — an inner loop may carry its own early `return` (an in-inner-body exit). Collect those
+        // exits and discharge each one's @Ensures with the inner loop's body-entry context (inner_inv ∧
+        // inner_guard) — the regular Phase-49b in-body treatment, applied to the inner site. Sound because
+        // inner_inv is established + preserved above, so it holds whenever the inner exit fires; the outer
+        // summary already covers the no-return fall-through. Without this, an inner return would slip its
+        // postcondition unchecked.
+        if (postAst != null) {
+            partitionEarlyExits(innerSpec.body, 'inBody', innerSite.earlyExits)
+            for (EarlyExit ex : innerSite.earlyExits) checkEarlyExit(node, innerSite, ex, reqAst, postAst)
+        }
     }
 
     /** Top-level statements of {@code body} that are loops carrying a captured {@link LoopSpec}. */
@@ -5081,8 +5171,25 @@ class VerifyChecker extends TypeCheckingExtension {
         l1 != l2 ? Integer.compare(l1, l2) : Integer.compare(c1, c2)
     }
 
+    /** Phase 113 — a copy of {@code e} with every {@code VariableExpression(from)} renamed to {@code to}
+     *  (aliasing a callee's {@code result} to the caller's tuple local). Returns a new tree — the original
+     *  contract AST is untouched. Closure bodies aren't descended, but a tuple {@code @Ensures} references
+     *  {@code result} at the top level (`result.vN`), so that's sufficient here. */
+    private static Expression renameVariable(Expression e, String from, String to) {
+        if (e == null) return null
+        e.transformExpression(new org.codehaus.groovy.ast.expr.ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                if (expr instanceof VariableExpression && ((VariableExpression) expr).name == from) {
+                    return new VariableExpression(to)
+                }
+                expr.transformExpression(this)
+            }
+        })
+    }
+
     private boolean assumeCalleeEnsures(SmtSession s, Encoder enc, Expression callExpr,
-                                        MethodNode caller, Object resultHandle, boolean allowSelf) {
+                                        MethodNode caller, Object resultHandle, boolean allowSelf,
+                                        String resultTupleName = null) {
         if (!(callExpr instanceof MethodCall)) return false
         String name = ((MethodCall) callExpr).methodAsString
         List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
@@ -5101,7 +5208,9 @@ class VerifyChecker extends TypeCheckingExtension {
             if (h == null) return false   // can't faithfully substitute → don't assume
             bindings.put(formals[i].name, h)
         }
-        if (resultHandle != null) bindings.put('result', resultHandle)
+        // Phase 113 — a tuple result is bound by renaming `result` to the caller's tuple local in the
+        // @Ensures (below), not by a scalar `result` term, so its slot accessors resolve to the local's slots.
+        if (resultTupleName == null && resultHandle != null) bindings.put('result', resultHandle)
 
         // Caller-side framing (Phase 13): for each location the callee @Modifies, snapshot its value
         // *at the call*, pin the callee's `old.X` to that snapshot, then HAVOC the location (fresh
@@ -5148,7 +5257,11 @@ class VerifyChecker extends TypeCheckingExtension {
             }
         }
 
-        Object post = ensuresAst != null ? enc.translateWith(ensuresAst, bindings) : null
+        // Phase 113 — for a tuple result, rename `result` → the caller's tuple local so `result.vN` becomes
+        // `<local>.vN`, which the registered tuple local resolves to its per-slot entities.
+        Expression effEnsures = (resultTupleName != null && ensuresAst != null) ?
+            renameVariable(ensuresAst, 'result', resultTupleName) : ensuresAst
+        Object post = effEnsures != null ? enc.translateWith(effEnsures, bindings) : null
 
         // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
         savedVar.each { String k, Object v -> if (v != null) enc.bind(k, v) }
