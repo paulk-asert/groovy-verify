@@ -8365,13 +8365,13 @@ class VerifyHarness {
                         static Tuple2<Integer, Integer> duplet(int[] a) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length &&
-                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+                                (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
                                 int j = i + 1
                                 @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
-                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+                                    (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } &&
+                                    (i + 1..<j).every { int q -> a[i] != a[q] } })
                                 @Decreases({ a.length - j })
                                 while (j < a.length) {
                                     if (a[i] == a[j]) return Tuple.tuple(i, j)
@@ -8386,13 +8386,13 @@ class VerifyHarness {
                         static Tuple2<Integer, Integer> dupletExcept(int[] a, int except) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length &&
-                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } })
+                                (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] || a[p] == except } } })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
                                 int j = i + 1
                                 @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } &&
-                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] || a[i] == except } })
+                                    (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] || a[p] == except } } &&
+                                    (i + 1..<j).every { int q -> a[i] != a[q] || a[i] == except } })
                                 @Decreases({ a.length - j })
                                 while (j < a.length) {
                                     if (a[i] == a[j] && a[i] != except) return Tuple.tuple(i, j)
@@ -8426,13 +8426,13 @@ class VerifyHarness {
                         static Tuple2<Integer, Integer> dupletExcept(int[] a, int except) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length &&
-                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } })
+                                (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] || a[p] == except } } })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
                                 int j = i + 1
                                 @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } &&
-                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] || a[i] == except } })
+                                    (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] || a[p] == except } } &&
+                                    (i + 1..<j).every { int q -> a[i] != a[q] || a[i] == except } })
                                 @Decreases({ a.length - j })
                                 while (j < a.length) {
                                     if (a[i] == a[j] && a[i] != except) return Tuple.tuple(i, j)
@@ -8452,13 +8452,13 @@ class VerifyHarness {
                         static Tuple2<Integer, Integer> dupletExcept(int[] a, int except) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length &&
-                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } })
+                                (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] || a[p] == except } } })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
                                 int j = i + 1
                                 @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] || a[p] == except } } &&
-                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] || a[i] == except } })
+                                    (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] || a[p] == except } } &&
+                                    (i + 1..<j).every { int q -> a[i] != a[q] || a[i] == except } })
                                 @Decreases({ a.length - j })
                                 while (j < a.length) {
                                     if (a[i] == a[j] && a[i] != except) return Tuple.tuple(i, j)
@@ -8468,6 +8468,39 @@ class VerifyHarness {
                             }
                             return Tuple.tuple(-1, -1)
                         }
+                    }''')],
+        // ---------- P114 records (no engine change — a record is a class with component fields) ----------
+        // A Groovy `record` is modelled by the existing Phase-45 object-field machinery: its components are
+        // final fields, so component reads in contracts and bodies resolve, and a record may carry its own
+        // @Requires/@Ensures. No record-specific support was added — it falls out of the class handling.
+        [group: 'P114 records', name: 'record param: component read', ok: true,
+         src: tc('''class C {
+                        @Requires({ p != null && p.x >= 0 })
+                        @Ensures({ result == p.x })
+                        static int f(Point p) { return p.x }
+                    }
+                    record Point(int x, int y) { }''')],
+        // Refute control: the body returns p.x, so claiming result == p.y must refute.
+        [group: 'P114 records', name: 'record param: wrong component refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ p != null && p.x >= 0 })
+                        @Ensures({ result == p.y })
+                        static int f(Point p) { return p.x }
+                    }
+                    record Point(int x, int y) { }''')],
+        // A record with its own contract method reading its components.
+        [group: 'P114 records', name: 'record with its own contract', ok: true,
+         src: tc('''record Box(int lo, int hi) {
+                        @Requires({ lo <= hi })
+                        @Ensures({ result >= 0 })
+                        int width() { return hi - lo }
+                    }''')],
+        // Refute control: width is 0 when lo == hi, so a strict result > 0 must refute.
+        [group: 'P114 records', name: 'record strict claim refuted', expect: 'Cannot prove postcondition',
+         src: tc('''record Box(int lo, int hi) {
+                        @Requires({ lo <= hi })
+                        @Ensures({ result > 0 })
+                        int width() { return hi - lo }
                     }''')],
         // ---------- P111 Duplets totality (find-given-exists, no engine change) ----------
         // Strengthens the Phase-110 partial-correctness duplet to TOTALITY: with a sentinel-free postcondition
@@ -8484,13 +8517,13 @@ class VerifyHarness {
                         static Tuple2<Integer, Integer> duplet(int[] a) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length &&
-                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+                                (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
                                 int j = i + 1
                                 @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
-                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+                                    (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } &&
+                                    (i + 1..<j).every { int q -> a[i] != a[q] } })
                                 @Decreases({ a.length - j })
                                 while (j < a.length) {
                                     if (a[i] == a[j]) return Tuple.tuple(i, j)
@@ -8511,13 +8544,13 @@ class VerifyHarness {
                         static Tuple2<Integer, Integer> duplet(int[] a) {
                             int i = 0
                             @Invariant({ 0 <= i && i <= a.length &&
-                                Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+                                (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
                                 int j = i + 1
                                 @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-                                    Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
-                                    Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+                                    (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } &&
+                                    (i + 1..<j).every { int q -> a[i] != a[q] } })
                                 @Decreases({ a.length - j })
                                 while (j < a.length) {
                                     if (a[i] == a[j]) return Tuple.tuple(i, j)

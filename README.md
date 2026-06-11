@@ -1890,13 +1890,13 @@ First, `duplet`: scan all pairs, return the first duplicate. The hard part is **
 static Tuple2<Integer, Integer> duplet(int[] a) {
     int i = 0
     @Invariant({ 0 <= i && i <= a.length &&
-        Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+        (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } })
     @Decreases({ a.length - i })
     while (i < a.length) {
         int j = i + 1
         @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
-            Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
-            Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+            (0..<i).every { int p -> (p + 1..<a.length).every { int q -> a[p] != a[q] } } &&
+            (i + 1..<j).every { int q -> a[i] != a[q] } })
         @Decreases({ a.length - j })
         while (j < a.length) {
             if (a[i] == a[j]) return Tuple.tuple(i, j)
@@ -2156,7 +2156,13 @@ a coverage metric. In expressions the fragment is:
 - infinite-stream `every` / `any` over `Stream.iterate(seed, f)` with a required `.limit(n)` / `.take(n)`: a
   literal limit *unrolls*, a symbolic limit proves the property of *every* element by induction (base +
   preservation); an unbounded terminal `every` skips loudly (Phase 75);
-- `(a..b).containsWithinBounds(v)` over all four range forms, as a pure bounds check (Phase 74);
+- range membership — `(a..b).containsWithinBounds(v)` as a pure bounds check over all four range forms
+  (Phase 74), and the `in` operator (and `.contains`) over an **integer** range `i in lo..hi` and a
+  **single-character `String`** range `c in 'a'..'z'` (Phases 99 / 99b), the spelling a `switch`/`case` range
+  label desugars to;
+- `switch` *expressions* — the arrow form `switch (x) { case 1 -> …; default -> … }` with simple `int`/`String`
+  literal (and integer-range) labels folds to an `ite`-chain; the statement form and pattern/guarded cases
+  stay out (Phase 102);
 - comparisons (including the spaceship `<=>`, Phase 58), the boolean connectives `&&`/`||`/`!` and logical
   implication `==>` / `.implies()` (Phase 57), and the conditional `?:` — all short-circuit-aware, so a guard's
   left operand protects accesses in its right (`i > 0 && a[i - 1] < a[i]`) and a `?:` branch is checked under
@@ -2199,6 +2205,15 @@ a coverage metric. In expressions the fragment is:
 - fuel-bounded inlining of contract-free pure functions (a closed call like
   `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.
+
+The unit of verification is a **method** (static or instance) carrying contracts — the enclosing definition is
+*context*, not itself a proof target. The engine models a **class** (instance fields, SSA-tracked across a
+mutator's pre/post state, and a class `@Invariant` assumed-on-entry / checked-preserved-on-exit), an **enum**
+(a finite uninterpreted sort with a known value-count, for membership / pigeonhole / cardinality), and a
+**record** (its components are final fields, so they read like any class field, and a record may carry its own
+contracts) — but it does *not* verify the definition itself: the canonical constructor, deconstruction /
+pattern matching, and generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is
+understood only through the fields and finite domain its methods actually touch.
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post

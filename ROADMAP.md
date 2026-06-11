@@ -5723,6 +5723,21 @@ two-pass `duplets`** composition verifies. **So the complete Duplets challenge �
 
 ---
 
+## Phase 114 — Groovy records  *(shipped — no engine change; capability confirmed + locked in)*
+
+A Groovy `record` is a class with `final` component fields, so the Phase-45 object-field machinery already
+handles it: a record parameter's components read in contracts and bodies (`p.x`), and a record may carry its
+own `@Requires`/`@Ensures` over its components. No record-specific support was ever added — it falls out of the
+class handling — but it was **untested**, so this phase adds a permanent group to confirm it's genuine and
+guard against regression.
+
+**Shipped tests (Phase 114, group `P114 records`)**: a record-param component read proves (wrong-component
+claim refutes); a record with its own contract method (`Box(int lo, int hi).width()`) proves `result >= 0`
+(strict `> 0` refutes, since `lo == hi` gives width 0). Record-specific surface — compact/canonical
+constructors, deconstruction/pattern matching, generated `equals`/`toString` — is not exercised.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
