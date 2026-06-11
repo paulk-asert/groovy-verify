@@ -1829,6 +1829,113 @@ the char literal (no primitive char syntax exists, and `char >= String` doesn't 
 arithmetic is `(char)((int) a[i] - 32)` because `char[]` subscripts box to `Number`. The seq-vs-array split is
 the real lesson — *the same proof, opposite tractability, decided by which theory you hand Z3.*
 
+## Toccata & FoVeOOS Examples
+
+Two more from the verification-competition literature, each a *first* for this engine: a verified mutable data
+structure, and a fully-verified classic challenge. Ported faithfully and credited to their sources.
+
+### Ring buffer — a verified mutable data structure
+
+[Toccata/Why3's `ring_buffer`](https://toccata.gitlabpages.inria.fr/toccata/gallery/ring_buffer.en.html) (after
+Leino's Dafny tutorial) is a bounded queue backed by an array. It's the first example here whose subject is
+**object state that changes**: a class with mutable fields and a *type invariant* every method must preserve.
+
+```groovy
+@Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
+class Queue {
+    int[] data
+    int m
+    int n
+
+    @Requires({ n < data.length })
+    @Ensures({ n == old.n + 1 && data[old.n] == x && (0..<old.n).every { data[it] == old.data[it] } })
+    void enqueue(int x) {
+        data[n] = x
+        n = n + 1
+    }
+
+    @Requires({ m < n })
+    @Ensures({ result == old.data[old.m] && m == old.m + 1 })
+    int dequeue() {
+        int r = data[m]
+        m = m + 1
+        return r
+    }
+
+    @Ensures({ result >= 0 })
+    int size() { return n - m }
+}
+```
+
+The class `@Invariant` *is* the contract: the engine **assumes it on entry** and **checks it preserved on
+exit** of every method. So `size()` proves `>= 0` only because `m <= n` is assumed; `enqueue` proves it wrote
+the tail and left the rest alone (`(0..<old.n).every { data[it] == old.data[it] }`, the array-region frame via
+`old.data[it]`) while keeping `n <= data.length`; and an unguarded mutator that breaks the invariant refutes
+with *"Cannot prove class invariant"*. We drop Why3's ghost `seq contents` — the engine has no model fields —
+and specify directly over the live region `data[m..n)`. This is the non-wrapping bounded version (no modulo),
+matching the source.
+
+### Duplets — two duplicate pairs, fully verified (FoVeOOS'11 Challenge 3)
+
+[The challenge](https://toccata.gitlabpages.inria.fr/toccata/gallery/Duplets.en.html): in an array with at
+least two repeated values, return two *distinct-valued* duplicate pairs. It's the engine's most-composed
+proof — a **witness search proven total**, then **called twice across methods**. Build it in three steps.
+
+First, `duplet`: scan all pairs, return the first duplicate. The hard part is **totality** — given a duplicate
+*exists*, prove a real one is *returned*, not the sentinel:
+
+```groovy
+@Requires({ a != null && (0..<a.length).any { int p -> (p + 1..<a.length).any { int q -> a[p] == a[q] } } })
+@Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] })
+static Tuple2<Integer, Integer> duplet(int[] a) {
+    int i = 0
+    @Invariant({ 0 <= i && i <= a.length &&
+        Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } })
+    @Decreases({ a.length - i })
+    while (i < a.length) {
+        int j = i + 1
+        @Invariant({ 0 <= i && i < a.length && i + 1 <= j && j <= a.length &&
+            Forall.range(0, i) { int p -> Forall.range(p + 1, a.length) { int q -> a[p] != a[q] } } &&
+            Forall.range(i + 1, j) { int q -> a[i] != a[q] } })
+        @Decreases({ a.length - j })
+        while (j < a.length) {
+            if (a[i] == a[j]) return Tuple.tuple(i, j)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return Tuple.tuple(-1, -1)
+}
+```
+
+The load-bearing invariant is the nested **∀∀ "no duplicate found yet"** — `∀p<i. ∀q>p. a[p] ≠ a[q]`. At loop
+exit `i == a.length` it says *no duplicate anywhere*, contradicting the existential precondition (Z3
+instantiates the universal at the existential's witness), so the sentinel path is unreachable. Drop the
+existential and it refutes — the proof genuinely rests on it.
+
+Then `dupletExcept(a, except)` is the same search with one extra conjunct, `a[i] != except` — find a duplicate
+whose *value* differs from `except`. And `duplets` composes the two across method calls:
+
+```groovy
+@Requires({ a != null && (0..<a.length).any { int i -> (i + 1..<a.length).any { int j ->
+    (0..<a.length).any { int k -> (k + 1..<a.length).any { int l ->
+        a[i] == a[j] && a[k] == a[l] && a[i] != a[k] } } } } })
+@Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] &&
+           0 <= result.v3 && result.v3 < result.v4 && result.v4 < a.length && a[result.v3] == a[result.v4] &&
+           a[result.v1] != a[result.v3] })
+static Tuple4<Integer, Integer, Integer, Integer> duplets(int[] a) {
+    Tuple2<Integer, Integer> r1 = duplet(a)
+    Tuple2<Integer, Integer> r2 = dupletExcept(a, a[r1.v1])
+    return Tuple.tuple(r1.v1, r1.v2, r2.v1, r2.v2)
+}
+```
+
+Each call's `@Ensures` constrains the returned tuple's slots; the second call's precondition — *a duplicate
+with value ≠ the first exists* — follows from the two-distinct-duplets precondition (since `a[i] ≠ a[k]`, one
+of the two known duplicates differs from `a[r1.v1]`). The result: two pairs with provably different values.
+Nothing here is a special case — the nested witness search, the tuple returns, and binding a local to a
+tuple-returning call are all general capabilities; Duplets just needs all three at once.
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -1934,10 +2041,10 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`do … while` loops** | `do B while (G)` is `B; while (G) B`: the body runs once unconditionally, so the invariant is verified *after* the first iteration (not at entry), while preservation / progress / use are the residual `while` unchanged. This is a **soundness fix** — modelling do-while as a plain while established the invariant pre-body, so a false invariant that was vacuously preserved (guard never true) could "prove" a postcondition the mandatory first iteration violates; the establishment diagnostic is do-while-aware ("…after the do-while's first iteration"). An **early `return` inside the body** is also handled soundly (Phase 88b): since the first iteration runs from the entry state, an in-body exit's `@Ensures` is checked both from there (no invariant/guard assumed) *and* on later iterations — closing a latent unsoundness where the first-iteration exit assumed the not-yet-established invariant | ✅ Phase 88 / 88b |
 | **Nested loops (two levels)** | An annotated loop directly inside another annotated loop's body verifies **compositionally**, each loop cut by its own `@Invariant`/`@Decreases`. The outer loop's preservation/progress *summarise* the inner loop — havoc the variables it writes (scalars and **array contents**), then assume `inner_inv ∧ ¬inner_guard` — and the inner loop's own establishment / preservation / progress (and array-index **bounds**) are discharged separately in its context (establishment under `outer_inv ∧ outer_guard`; preservation **not** under `outer_inv`, which is generally false mid-inner-loop, e.g. `count == i*n` while count is changing). So `count = n*n` via a double loop proves end-to-end, and an inner loop may **fill an array** — including a flat *n×m* matrix `a[i*m + j] = 0` carrying `(0..<n*m).every { a[it] == 0 }`. The store's nonlinear bound `i*m + j < n*m` is closed by a **verifier-supplied monotonicity lemma** (Phase 91b): guarded ground facts (`(0≤p ∧ 0≤r) ⟹ 0≤p*r` and `(p<q ∧ 0≤r) ⟹ p*r+r ≤ q*r`) hand Z3 the one nonlinear step it won't take, and content quantifiers are stripped from the bounds discharge (a bound never depends on array contents) to keep Z3 out of its quantifier+NIA dead end — both sound (true facts / fewer assumptions). Soundness rests on the summary being honest: a *too-weak* inner invariant can't sneak a false outer result through (outer preservation fails — the summary leaves the accumulator unconstrained), an out-of-bounds inner store is caught, and an **un-annotated** inner loop, a **size-changing collection mutator** inner loop, or three-deep nesting **skip loudly**. The lemma is still a heuristic — self-products and bounds not reducible to "multiply by a non-negative factor" remain "could not decide" | ✅ Phase 91 |
 | **Content-dependent index bounds in loops (gather / scatter / histogram)** | An index that is *itself an array read* — `b[a[k]]`, `count[a[k]] = count[a[k]] + 1` — is bounded by a value-range quantifier (`∀q. 0 ≤ a[q] < b.length`), not by index arithmetic. The Phase-91b quantifier-strip above is therefore refined: it applies only to *arithmetic* indices; when the index AST contains a nested subscript, the value-range `∀` is kept in scope so the bound discharges (it already did outside a loop — this closes the in-loop case). So a gather read and a histogram store both verify under the value-range invariant, and dropping it refutes with an out-of-bounds counterexample. (Motivated by the FoVeOOS *Duplets* example, which needs this plus two further gaps — a nested-loop inner `return`, and an early-exit postcondition over a tuple — to land in full) | ✅ Phase 108 |
-| **Nested loop with an inner early `return`** | A nested inner loop whose body holds an `if (cond) return e` — a 2D witness search — now verifies. Phase 91 summarised the inner loop for the outer VCs but bailed on any inner `return`; Phase 109 treats a `return` as a no-op for the summary's *write-set* (it changes no outer state — the outer loop only continues on the no-return fall-through) and discharges the inner exit's `@Ensures` separately under the inner loop's body-entry context `inner_inv ∧ inner_guard` (the Phase-49b in-body treatment, applied to the inner site). Sound — `inner_inv` is established + preserved, so it holds whenever the inner exit fires; a false postcondition on the inner-return path refutes. Closes one of the two FoVeOOS *Duplets* follow-ons (the other — an early-exit postcondition over a returned *tuple* — is still open) | ✅ Phase 109 |
+| **Nested loop with an inner early `return`** | A nested inner loop whose body holds an `if (cond) return e` — a 2D witness search — now verifies. Phase 91 summarised the inner loop for the outer VCs but bailed on any inner `return`; Phase 109 treats a `return` as a no-op for the summary's *write-set* (it changes no outer state — the outer loop only continues on the no-return fall-through) and discharges the inner exit's `@Ensures` separately under the inner loop's body-entry context `inner_inv ∧ inner_guard` (the Phase-49b in-body treatment, applied to the inner site). Sound — `inner_inv` is established + preserved, so it holds whenever the inner exit fires; a false postcondition on the inner-return path refutes. Closes one of the two FoVeOOS *Duplets* follow-ons; the other (a tuple early-exit postcondition) follows in Phase 110 | ✅ Phase 109 |
 | **Tuple return on an early-exit path** | An early `return Tuple.tuple(i, j)` (on a prefix, in-body, or inner-loop exit) now binds its slots, so `result.v1`/`.v2` (and `result.size()`/`result[k]`) resolve in the `@Ensures` — the early-exit binding is now factory-aware, the same `tryRecordFactoryAssign` path the natural after-loop return already used. With the inner-`return` support above, this lands the natural nested form of the FoVeOOS **Duplets** `duplet` at partial correctness — a doubly-nested scan returning `Tuple.tuple(i, j)` on `a[i] == a[j]`, proving `result.v1 == -1 ∨ (0 ≤ result.v1 < result.v2 < a.length ∧ a[result.v1] == a[result.v2])`; a wrong slot-order claim refutes. (Totality follows in the next row) | ✅ Phase 110 |
 | **Duplets totality — find-given-exists** | The `duplet` above, strengthened from partial correctness to **totality**: a sentinel-free postcondition under an *existential* precondition (`(0..<n).any { p -> (p+1..<n).any { q -> a[p]==a[q] } }`) — so the verifier must prove a real duplet is *returned*, i.e. the sentinel fall-through is infeasible. Carried by nested **∀∀ "no-duplet-found-yet"** invariants (the outer `∀p<i.∀q>p. a[p]≠a[q]` extended each iteration by the inner loop's completion fact), whose universal at loop exit ("no duplet anywhere") contradicts the existential precondition — Z3 instantiates it at the existential's witness, making the use path UNSAT. No new engine code (it rides the existing quantifier + nested-loop machinery); a control that drops the existential **refutes**, proving the proof is non-vacuous. The classic FoVeOOS challenge example, now fully verified — partial correctness *and* totality — in its natural nested form | ✅ Phase 111 |
-| **Duplets `dupletExcept` (exclusion-totality)** | The second-pass engine of the full two-pair `duplets`: find a duplicate pair whose *value* differs from an excluded `except`, with totality — Phase 111 plus an `a[i] != except` conjunct threaded through the existential precondition, the nested ∀∀ "no qualifying duplet found yet" invariant, and the exit guard (no engine change; non-vacuity control refutes). The *full* `duplets` that composes `duplet` + `dupletExcept` is **gated on inter-procedural tuple results** — `Tuple2 r = duplet(a)` is currently outside the fragment (a tuple local gets a scalar handle, so the callee's slot-shaped `@Ensures` can't bind and `r.v1` doesn't resolve in the body); the reasoning step (the second existential follows from two-distinct-duplets) is tractable, it's the binding that's the open slice — closed in Phase 113 below | ✅ Phase 112 |
+| **Duplets `dupletExcept` (exclusion-totality)** | The second-pass engine of the full two-pair `duplets`: find a duplicate pair whose *value* differs from an excluded `except`, with totality — Phase 111 plus an `a[i] != except` conjunct threaded through the existential precondition, the nested ∀∀ "no qualifying duplet found yet" invariant, and the exit guard (no engine change; non-vacuity control refutes). The *full* `duplets` then composes `duplet` + `dupletExcept` across method calls — see the next row (Phase 113, inter-procedural tuple results) | ✅ Phase 112 |
 | **Inter-procedural tuple results — the full `duplets`** | Binding a local to a tuple-returning call and using its slots — `Tuple2 r = duplet(a); … a[r.v1] …` — across the body, array-bounds checks, and the next call's precondition. A tuple local is registered (reusing the Phase-80 param-tuple machinery so `r.vN` → entity `r$vN`), the callee's `@Ensures` binds those slots via a `result`→`r` rename, the tuple registry feeds every encoder (so `r.vN` translates in each verification context), and the value-flow obligation replay asserts the callee's `@Ensures` (so a downstream `a[r.vN]` bound sees the slot's range). With this, the **full two-pass FoVeOOS Duplets** composes `duplet` + `dupletExcept(first value)` into a `Tuple4`, proving two duplicate pairs with *different* values — the complete challenge verified (`duplet` partial+total, `dupletExcept`, `duplets`). Broadly useful: any method returning a `TupleN` with a caller using its slots; a wrong slot-value claim refutes | ✅ Phase 113 |
 | **`for (x in xs)` loops** | A for-in over a named Int collection desugars to an *indexed* while: a hidden synthetic index drives iteration, the loop variable keeps its source name (bound to `xs[idx]` each pass) so contracts and counterexamples read in terms of `x`, and an index-bounds invariant + a `size - idx` termination measure are auto-injected (the index isn't user-nameable). Both `for (x in xs)` and `for (T x : xs)` work. For-in over a literal / non-named collection skips | ✅ Phase 63 |
 | **For-in invariants over the loop variable** | An `@Invariant` clause that references the loop variable is checked at *body-entry* (with `x` bound to the current element), exactly as groovy-contracts does at runtime — a per-element check, not a loop-head invariant. So `@Invariant({ x >= 0 })` discharges from `@Requires({ xs.every { it >= 0 } })` (Phase 64), an accumulator clause and an element clause can be mixed in one `@Invariant`, and the check is correctly *vacuous* on an empty collection — fixing a false positive where the loop-head check failed on the never-iterated empty case | ✅ Phase 65 |
@@ -2029,13 +2136,20 @@ a coverage metric. In expressions the fragment is:
   regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion and
   the uninterpreted (literal-pinned / weak-axiom) ops `toUpperCase` / `toLowerCase` / `replaceAll` /
   `reverse` (Phase 47i — `"abc".reverse() == "cba"` and literal involution fold; symbolic algebra stays out);
+  plus **read-only per-character loops** — a quantified loop invariant over `s.charAt(i)` (the string analogue
+  of the array ∀-element proofs), with the char literal spelled `('a' as char)` (Phase 105). *Building* a
+  string char-by-char times out on the seq theory, so a constructed buffer goes through `char[]` (an
+  Int-element array) instead — e.g. OpenJML `ChangeCase` (Phase 106);
 - array construction: a fixed-arity literal `new int[]{a, b}` (the array dual of a list literal — folds
   `result[k]` / `.length` / component-wise `==`) and a sized allocation `new int[n]` (a fresh, Java-zero-filled
   array: `sizeOf == n`, non-null, const-0 contents, so an unwritten element reads `0` and a body store
   bounds-checks); an `int[]`-typed return accepts a coerced list literal `[a, b]` or `new int[]{a, b}` (Phase 78);
 - structured returns and products: a list-literal return binds `result` for constant-index `result[k]`
   (Phase 78); `Tuple` / `TupleN` fixed-arity typed products with `.vN` slot access, tuple parameters and
-  component-wise `==` (Phases 79–82); and Groovy's map-as-named-tuple (`return [sum: s, …]`, `result.sum`;
+  component-wise `==` (Phases 79–82) — including a tuple returned from an **early-exit** path (`return
+  Tuple.tuple(i, j)` mid-loop; Phase 110) and a tuple-returning call bound to a **local** whose slots are then
+  used in the body, as an index / call argument / return (`Tuple2 r = f(a); … a[r.v1] …`; the
+  **inter-procedural** case, Phase 113); and Groovy's map-as-named-tuple (`return [sum: s, …]`, `result.sum`;
   Phases 83/84) — generic-typed component accessors keep their declared type in the contract closure
   (GROOVY-12071), so *arithmetic* and *ordering* on a slot / map value / generic-list element type-check with
   no cast;
@@ -2050,8 +2164,12 @@ a coverage metric. In expressions the fragment is:
 - the size / nullity / membership oracles from the table above
   (`xs.size()`, `x == null`, `xs.contains(y)`, `x.equals(y)`, `isEmpty()`);
 - array/list contents under Z3's array theory (`a[i]` reads, `a[i] = v` updates) with
-  bounded-universal quantifiers — `Forall.range` or the native GDK idioms
-  `(lo..<hi).every{…}` / `xs.indices.every{…}` / `xs.every{ it… }`;
+  bounded **universal** *and* **existential** quantifiers — `Forall.range` / `(lo..<hi).every{…}` /
+  `xs.indices.every{…}` / `xs.every{ it… }` and the existential `(lo..<hi).any{…}` / `xs.any{ it… }` — which
+  **nest** (a `∀∀` "nothing-found-yet" invariant whose negation at loop exit contradicts an `∃∃` precondition
+  is how a search is proven *total*, Phase 111); a **content-dependent index** `a[b[k]]` (gather / scatter /
+  histogram, where the index is itself an array read) bounds against the value-range invariant inside a loop,
+  not just outside it (Phase 108);
 - finite `Set<Integer>` membership (`x in s`, `s.contains(x)`), mutation (`s.add(x)` /
   `s.remove(x)`, threaded through the body) and cardinality (`s.size()`) — a set is a
   characteristic array, and `size()` carries a per-mutation update law (`add` of an absent
@@ -2093,12 +2211,17 @@ annotated loop — `while`, `do … while` (Phase 88), a classic
 `for (init; cond; update)`, or `for (x in xs)` over a named collection, all desugaring to the same machinery
 (Phases 59 & 63; the for-in's index is synthesised and hidden, the loop variable keeps its name; `.each` stays
 outside the fragment and skips loudly), **optionally with a second loop nested inside it** (Phase 91, two
-levels, scalar accumulators or array-filling inner bodies — see below). A `do … while` is `B; while (G) B` — its body runs once
+levels, scalar accumulators or array-filling inner bodies — and the inner loop may **`return` a witness** on a
+match, so a doubly-nested search verifies, Phase 109 — see below). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
-plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). Across method boundaries: a callee's `@Ensures` is assumed at its call site, a method-level
+plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
+call bound to a local, whose slots then carry the callee's postcondition into the caller's body
+(`Tuple2 r = f(a); … r.v1 …`; Phase 113) — a method-level
 `@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a
 `void` lemma proven once then applied by calling it), and `@Modifies` frames what a call may change so the
-caller havocs only those locations while `old.x` snapshots pre-state field and array contents. When the
+caller havocs only those locations while `old.x` snapshots pre-state field and array contents. A class-level
+`@Invariant` on a mutable object is **assumed on entry and checked preserved on exit** of every method, so a
+data structure verifies as a unit — a mutator that breaks it refutes (Phases 45 / 107, the ring buffer). When the
 solver returns *UNKNOWN* on a
 postcondition (a quantifier/recurrence-axiom timeout), a bounded property-based pass runs the
 executable contract over a small grid of integer inputs and reports any concrete failing input as a
@@ -2224,7 +2347,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `PathFacts` | enclosing-`if` path conditions per expression site |
 | `ContractTester` | the bounded property-based fallback (Phase 62): runs the executable contract over a small integer grid when the solver returns *UNKNOWN*, reporting a `fails on:` repro |
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
-| `ContractExpansionTransform` / `ContractSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`) + clean body snapshots onto the runtime `@ContractSource` carrier the checker re-parses |
+| `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses |
 | `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |
 

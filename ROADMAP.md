@@ -5569,11 +5569,11 @@ value's first-occurrence index in a `pos` array (values are in `[0,n)`) — got 
 (this phase), then hit a **third** gap: an early-exit `return Tuple.tuple(pos[a[k]]-1, k)` reports
 "early-exit postcondition outside fragment" (the in-body return building a tuple from content-indexed values).
 And even past that, the *full* spec needs totality (a pigeonhole argument that a duplet exists) plus the
-two-pass "second duplet has a different value" with the nullable `except` exclusion. So Duplets stays out;
-the durable win is the general content-index capability, which stands on its own (counting sort, histograms,
-permutation-apply, gather/scatter). The two remaining gaps — **nested-loop inner `return`** and
-**early-exit postcondition over a tuple/content-indexed value** — are the clean follow-ons if Duplets is
-revisited.
+two-pass "second duplet has a different value" with the nullable `except` exclusion. The durable win of *this*
+phase is the general content-index capability, which stands on its own (counting sort, histograms,
+permutation-apply, gather/scatter). The two further gaps — **nested-loop inner `return`** and an
+**early-exit postcondition over a tuple** — were closed in Phases 109 and 110, and the full Duplets challenge
+(totality + two-pass) lands across Phases 111–113.
 
 ---
 
@@ -5675,21 +5675,15 @@ finding another whose value differs from the first. Splitting it into `duplet(a)
 found yet" invariant, and the exit guard. No engine change. (`P112 dupletExcept`: the totality search verifies;
 the existential-dropped non-vacuity control refutes.)
 
-**Blocked — the composition `duplets`:** combining the two passes needs **inter-procedural tuple results**, a
-real engine gap pinned to a 3-line repro: `Tuple2<Integer,Integer> r = duplet(a)` is "outside fragment". A
-tuple-typed local is minted with a *scalar* `int` handle (`sortForType(Tuple2)` falls through to `intSort`),
-so `assumeCalleeEnsures` can't bind the callee's slot-shaped `@Ensures` (`result.v1`/`.v2`) and the body can't
-resolve `r.v1` (as an array index `a[r.v1]` or the next call's argument). The slot accessors work in *contracts*
-(Phase 79/80) but not for a **local bound to a tuple-returning call**. Closing it is a multi-part,
-soundness-sensitive feature — mint slot entities for the tuple local (reusing the Phase-80 param-tuple
-minting), bind the callee `@Ensures` slot-wise in `assumeCalleeEnsures`, and resolve `r.vN` in body expressions
-— deliberately **not** half-implemented here. With it, `duplets` composes directly: the only non-trivial proof
-step is discharging the second call's existential precondition (a duplet with value ≠ the first exists) from
-the two-distinct-duplets precondition, which Z3 gets by instantiating the negated goal at the precondition's
-two witnesses (`a[i] ≠ a[k]` ⇒ one differs from the first value). That step was sketched and looks tractable;
-it's the *binding*, not the reasoning, that gates `duplets`.
+**Deferred to Phase 113 — the composition `duplets`:** combining the two passes needs **inter-procedural tuple
+results** (binding a local to a tuple-returning call, then using its slots), out of fragment at this point —
+a tuple-typed local was minted with a *scalar* `int` handle, so the callee's slot-shaped `@Ensures` couldn't
+bind and the body couldn't resolve `r.v1`. Being a multi-part, soundness-sensitive feature, it was taken as
+its own slice (Phase 113) rather than half-implemented here. The one non-trivial *proof* step — discharging
+the second call's existential precondition (a duplet with value ≠ the first exists) from the two-distinct-
+duplets precondition — was sketched and proved tractable; the binding, not the reasoning, was the gate.
 
-**Status:** `duplet` (both directions) + `dupletExcept` shipped; full `duplets` lands in Phase 113.
+**Status:** `duplet` (both directions) + `dupletExcept` shipped here; full `duplets` lands in Phase 113.
 
 ---
 
