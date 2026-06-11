@@ -5274,6 +5274,92 @@ String `s ?: "d"` proves under non-empty / empty guards with the unguarded `resu
 
 ---
 
+## Phase 99 — integer range membership `i in lo..hi` / `(lo..hi).contains(i)`  *(shipped)*
+
+Range membership in a contract was a loud skip (`precondition '(i in (1..3))' is outside fragment`) — the
+first blocker in idioms like `@Requires({ i in 1..3 })`. Now an *integer* range lowers to its bounds, reusing
+the order- and exclusivity-aware predicate already built for `Range.containsWithinBounds` (Phase 74):
+`(lo ≤/< i ∧ i ≤/< hi) ∨ (hi ≤/< i ∧ i ≤/< lo)` — `≤` at an inclusive endpoint, `<` at an exclusive one. So
+`i in 1..3` is `1 ≤ i ≤ 3`, `i in 0..<3` is `0 ≤ i < 3`, both directions and `..`/`..<`/`<..`/`<..<` covered;
+`i !in lo..hi` negates it. The `in` operator (a `BinaryExpression`) and `(lo..hi).contains(i)` (a method call)
+both route through one `translateIntRangeContains` helper.
+
+For an integer range (step 1) the integer-membership `contains` *coincides* with pure bounds — every integer
+in the interval is a member. The two diverge for a step-sensitive / decimal case (`(1..3).contains(2.5)` is
+`false` though 2.5 is within bounds), so the helper is **gated**: integer endpoints, and an **Int-sorted
+value**. The value type can't come from the AST — a contract-closure variable like `i` reports `Object` — so
+it's gated on the *modelled sort* instead (`session.isReal` ⇒ skip).
+
+### Phase 99b — single-char `String` range membership `s in 'A'..'Z'`  *(shipped)*
+
+A single-char `String` range *is* a regex character class: `s in 'A'..'Z'` ⟺ `s.matches("[A-Z]")`. So it
+lowers to `str.in_re(s, re.range('A', 'Z'))` — the identical `reRange`/`stringInRegex` construction the regex
+engine already builds for `[a-z]` (Phase 47d). `re.range` matches *exactly one* character in the code-point
+interval, so a multi-character or empty `s` is a non-member for free — no separate length constraint. Endpoints
+are constant single-char Strings, so direction and `..<`/`<..` exclusivity collapse to constant code-point
+arithmetic on the `[lo, hi]` interval (an empty interval matches nothing). `translateStringRangeContains`
+shares the two dispatch points with the integer helper. Gated: String-typed value (`isStringReceiver`),
+single-char constant endpoints — multi-char endpoints (`'aa'..'zz'`, which Groovy iterates by string-increment,
+not a char range), symbolic endpoints, or a non-String value skip loudly.
+
+Consequence for the `@Ensures({ result in 'A'..'Z' })` example: the int-range precondition `i in 0..25` and the
+char-range postcondition `result in 'A'..'Z'` both translate (the `'A'.next(i)` body lands in Phase 100, below).
+
+**Shipped tests (Phase 99)**: `i in 1..3` and `(1..3).contains(i)` prove their bounds; exclusive `i in 0..<3`
+proves `< 3`; the soundness control `i in 1..3` ⇒ `result <= 2` refutes with `i = 3`; `i !in 1..3` excludes the
+interval. **Phase 99b**: `'M' in 'A'..'Z'` and `'5' in '0'..'9'` prove; `'m' in 'A'..'Z'` refutes; exclusive
+`'B' in 'A'..<'C'` proves; a `String s in 'A'..'Z'` precondition carries through an identity body.
+
+---
+
+## Phase 100 — `String.next(i)` / `String.next()` (char shift)  *(shipped — single-char first slice)*
+
+Groovy 6 has `String.next(int)` (the no-arg `next()` is the `i == 1` case): the last character incremented by
+`i` — `'A'.next(2) == 'C'`, `'A'.next(25) == 'Z'`. (It's genuinely in 6.0; older Groovy throws
+`MissingMethodException` on the `int` overload — so this models a *real* method, verified against the project's
+`6.0.0-SNAPSHOT`.) First slice: **single-character** receivers, ASCII, no wraparound/Unicode.
+
+`s.next(i)` lowers to a **fresh single-char string** `r` whose code point is `charAt(s,0) + i`, asserted
+*conditionally* on `s` being single-char: `len(s) == 1 ⟹ (len(r) == 1 ∧ charAt(r,0) == charAt(s,0) + i)`. So a
+multi-character receiver leaves `r` unconstrained — an honest "could not decide", never a wrong answer. The
+result connects to range membership because `str.in_re` (Phase 99b) bridges to a char's code in Z3 (verified:
+`s in 'A'..'Z'` proves `charAt(s,0) ∈ [65,90]`). So the original example now fully verifies:
+
+```groovy
+@Requires({ i in 0..25 })
+@Ensures({ result in 'A'..'Z' })
+static String letter(int i) { 'A'.next(i) }     // ✓  (widen to 0..30 and it refutes — 'A'.next(26) == '[')
+```
+
+**Receiver nullity** (resolved by Phase 101): a `String` *parameter* receiver `s.next()` no longer needs an
+explicit `s != null` — a `s in 'A'..'Z'` precondition now implies it. Multi-char receivers and the
+carry/wraparound at code boundaries remain out.
+
+**Shipped tests (Phase 100)**: `'A'.next(i)` for `i in 0..25` proves `result in 'A'..'Z'`; widening to `0..30`
+refutes; `s.next()` on `s in 'A'..'Y'` proves `result in 'B'..'Z'`; the soundness control `s in 'A'..'Z'` ⇒
+`result in 'B'..'Z'` refutes at `s == 'Z'`.
+
+---
+
+## Phase 101 — range membership implies non-null  *(shipped)*
+
+A top-level precondition conjunct `v in lo..hi` forces `v != null` — a `Range` never contains `null`, so the
+membership can't hold for a null `v`. So an unguarded `v.foo()` in the body discharges its null-deref
+obligation without a redundant explicit `v != null` (it removed exactly that guard from the Phase 100
+`s.next()` param tests). Generalises the Phase 97 safe-navigation inference: the same
+`assumePreconditionNonNullFacts` walk over top-level `&&` conjuncts now recognises a `Range`-right-operand
+`in` alongside `recv?.foo()`, and asserts `¬null(v)` for the named value.
+
+**Sound only for ranges, and only conjunctively.** List/Set membership is deliberately *excluded* — a
+collection may hold `null`, so `x in [null, a]` doesn't imply `x != null`. And the implication holds only at a
+top-level `&&` conjunct: weaken to `v in lo..hi || v == null` and `v` can still be null, so the walk descends
+through `&&` only (verified by the `||` control, which still flags the NPE).
+
+**Shipped tests (Phase 101)**: a `s in 'A'..'Z'` precondition lets `s.length()` deref with no explicit null
+guard; the `|| s == null` weakening still flags the `NullPointerException`.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -4539,6 +4539,115 @@ class VerifyHarness {
                         @Ensures({ result == xs })
                         static List orEmpty(List xs) { xs ?: [] }
                     }''')],
+        // Phase 99 — integer range membership: `i in lo..hi` and `(lo..hi).contains(i)` lower to the
+        // order-/exclusivity-aware bounds (reusing translateContainsWithinBounds), exact for `..` and `..<`.
+        // Sound: gated to integer ranges + an Int-sorted value (a decimal value, or a char/String range,
+        // skips loudly — `'A'..'Z'` below). The user's switch/`.next()` examples still skip on the *body*,
+        // but the precondition now translates (it was the first blocker before).
+        [group: 'P99 range membership', name: 'i in 1..3 gives bounds', ok: true,
+         src: tc('''class C {
+                        @Requires({ i in 1..3 })
+                        @Ensures({ result >= 1 && result <= 3 })
+                        static int f(int i) { i }
+                    }''')],
+        [group: 'P99 range membership', name: '(1..3).contains(i) precondition', ok: true,
+         src: tc('''class C {
+                        @Requires({ (1..3).contains(i) })
+                        @Ensures({ result >= 1 && result <= 3 })
+                        static int f(int i) { i }
+                    }''')],
+        [group: 'P99 range membership', name: 'exclusive i in 0..<3 gives < 3', ok: true,
+         src: tc('''class C {
+                        @Requires({ i in 0..<3 })
+                        @Ensures({ result <= 2 })
+                        static int f(int i) { i }
+                    }''')],
+        [group: 'P99 range membership', name: 'soundness: i in 1..3 then result<=2 refutes (i=3)', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ i in 1..3 })
+                        @Ensures({ result <= 2 })
+                        static int f(int i) { i }
+                    }''')],
+        [group: 'P99 range membership', name: 'i !in 1..3 means outside the bounds', ok: true,
+         src: tc('''class C {
+                        @Requires({ i !in 1..3 && i >= 0 })
+                        @Ensures({ result == 0 || result >= 4 })
+                        static int f(int i) { i }
+                    }''')],
+        // Phase 99b — single-char String range membership: `s in 'A'..'Z'` IS the regex class [A-Z], so it
+        // lowers to str.in_re(s, re.range('A','Z')) — reusing the Phase 47 regex engine. re.range matches
+        // exactly one char in the code-point interval, so multi-char/empty s is a non-member for free;
+        // direction and ..</<.. exclusivity are constant code-point arithmetic. Char/decimal value or
+        // multi-char endpoints skip loudly.
+        [group: 'P99 range membership', name: 'string range: literal M in A..Z proves', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result in 'A'..'Z' })
+                        static String f() { 'M' }
+                    }''')],
+        [group: 'P99 range membership', name: 'string range soundness: lowercase m not in A..Z refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Ensures({ result in 'A'..'Z' })
+                        static String f() { 'm' }
+                    }''')],
+        [group: 'P99 range membership', name: 'string range precond+postcond identity proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ s in 'A'..'Z' })
+                        @Ensures({ result in 'A'..'Z' })
+                        static String f(String s) { s }
+                    }''')],
+        [group: 'P99 range membership', name: 'string range exclusive A..<C includes B', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result in 'A'..<'C' })
+                        static String f() { 'B' }
+                    }''')],
+        [group: 'P99 range membership', name: 'string range digit 5 in 0..9 proves', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result in '0'..'9' })
+                        static String f() { '5' }
+                    }''')],
+        // Phase 100 — `s.next(i)` / `s.next()` (Groovy 6: last char incremented by i, default 1). First slice:
+        // single-char receivers, ASCII, no wraparound. Modelled as a fresh single-char string with code
+        // charAt(s,0)+i (conditioned on s single-char); range membership bridges to that code in Z3. So the
+        // user's `'A'.next(i)` for `i in 0..25` proves `result in 'A'..'Z'`; widening to 0..30 escapes and
+        // refutes. (Param receivers need an explicit `s != null` — range membership doesn't yet imply non-null.)
+        [group: 'P100 string next', name: 'user example: A.next(i) for i in 0..25 in A..Z', ok: true,
+         src: tc('''class C {
+                        @Requires({ i in 0..25 })
+                        @Ensures({ result in 'A'..'Z' })
+                        static String letter(int i) { 'A'.next(i) }
+                    }''')],
+        [group: 'P100 string next', name: 'soundness: i in 0..30 escapes A..Z refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ i in 0..30 })
+                        @Ensures({ result in 'A'..'Z' })
+                        static String letter(int i) { 'A'.next(i) }
+                    }''')],
+        [group: 'P100 string next', name: 'next() no-arg on param A..Y gives B..Z', ok: true,
+         src: tc('''class C {
+                        @Requires({ s in 'A'..'Y' })
+                        @Ensures({ result in 'B'..'Z' })
+                        static String f(String s) { s.next() }
+                    }''')],
+        [group: 'P100 string next', name: 'soundness: A..Z .next() escapes B..Z at Z refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ s in 'A'..'Z' })
+                        @Ensures({ result in 'B'..'Z' })
+                        static String f(String s) { s.next() }
+                    }''')],
+        // Phase 101 — a top-level `v in lo..hi` precondition implies `v != null` (a range never contains null),
+        // so an unguarded deref in the body discharges its null check. The `||` control confirms soundness.
+        [group: 'P101 range non-null', name: 'range membership implies non-null (deref ok, no guard)', ok: true,
+         src: tc('''class C {
+                        @Requires({ s in 'A'..'Z' })
+                        @Ensures({ result >= 0 })
+                        static int len(String s) { s.length() }
+                    }''')],
+        [group: 'P101 range non-null', name: 'range under || does NOT imply non-null (still flags NPE)', ok: false, expect: 'NullPointer',
+         src: tc('''class C {
+                        @Requires({ s in 'A'..'Z' || s == null })
+                        @Ensures({ result >= 0 })
+                        static int len(String s) { s.length() }
+                    }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus
         // corpus omits — our `Fib.of` indexing matches HumanEval's (Fib.of(10)==55, Fib.of(8)==21). It also

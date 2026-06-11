@@ -1479,6 +1479,23 @@ symbolic `s` enters the chain (`s.reverse().toUpperCase()`) it soft-fails cleanl
 algebraic universals that would carry it were dropped for poisoning the refute direction (next
 paragraph).
 
+**Ranges and character arithmetic — index to letter, end to end.** Groovy ranges and `String.next(i)` (Groovy
+6 — the last character shifted by `i`) compose with the range-membership operators, so a small index-to-letter
+map verifies completely: the precondition's *integer* range, the body's char shift, and the postcondition's
+*character* range are all checked.
+
+```groovy
+@Requires({ i in 0..25 })
+@Ensures({ result in 'A'..'Z' })
+static String letter(int i) { 'A'.next(i) }
+```
+
+`i in 0..25` lowers to the bounds `0 ≤ i ≤ 25`; `'A'.next(i)` is modelled as a single-char string whose code
+point is `'A' + i`; and `result in 'A'..'Z'` is the regex class `[A-Z]`, which bridges to that code point in
+Z3 — so the chain proves `65 ≤ 65 + i ≤ 90`. Widen the guard to `0..30` and it **refutes** with `i = 26`
+(`'A'.next(26) == '['`, just past `'Z'`). A `String` receiver needs no `!= null` guard either: a range can't
+contain null, so `s in 'A'..'Z'` infers `s != null` — the same inference `?.` gets.
+
 The remaining honest gaps: `split` (returns an array, structurally invasive) and symbolic
 algebra for `toUpperCase` / `reverse` (universal axioms over the seq sort cause Z3 to
 hang in the refute direction) remain deferred. The hard NIA corners (general polynomial identities,

@@ -42,6 +42,7 @@ import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
@@ -1682,7 +1683,7 @@ class VerifyChecker extends TypeCheckingExtension {
             if (reqAst != null) {
                 Object pre = enc.translate(reqAst)
                 if (pre != null) s.assertExpr(pre)
-                assumeSafeNavReceiversNonNull(s, enc, reqAst)
+                assumePreconditionNonNullFacts(s, enc, reqAst)
             }
             // Phase 15a — class invariants are method-entry facts, assumed before any
             // reaching step is replayed.
@@ -1726,7 +1727,7 @@ class VerifyChecker extends TypeCheckingExtension {
         if (reqAst != null) {
             Object pre = enc.translate(reqAst)
             if (pre != null) s.assertExpr(pre)
-            assumeSafeNavReceiversNonNull(s, enc, reqAst)
+            assumePreconditionNonNullFacts(s, enc, reqAst)
         }
         // Phase 44c — every Int-typed parameter and field is JVM-bounded to
         // {@code [Integer.MIN_VALUE, Integer.MAX_VALUE]}. Always asserted (not opt-in): the JVM
@@ -1781,22 +1782,42 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /**
-     * Phase 97 — a precondition conjunct of the form {@code recv?.foo()} / {@code recv?.prop} can only be
-     * truthy when {@code recv} is non-null: a null receiver makes Groovy's safe navigation short-circuit to
-     * {@code null}, which is falsy. So when such a conjunct is *assumed* at the top level of a precondition,
-     * the receiver is non-null — assert it, so a later unguarded {@code recv.bar()} in the body discharges
-     * its null-deref obligation without a redundant explicit {@code recv != null}. Sound only for top-level
-     * {@code &&} conjuncts: under an {@code ||} branch or a negation the safe-nav carries no such implication,
-     * so the walk descends through {@code &&} only.
+     * Phase 97 / 101 — derive {@code != null} for a reference named in a top-level precondition conjunct whose
+     * truth *requires* it to be non-null, so a later unguarded {@code recv.bar()} discharges its null-deref
+     * obligation without a redundant explicit {@code recv != null}:
+     * <ul>
+     *   <li>safe navigation {@code recv?.foo()} / {@code recv?.prop} (Phase 97) — a null receiver makes
+     *       {@code ?.} evaluate to {@code null}, which is falsy.</li>
+     *   <li>range membership {@code v in lo..hi} (Phase 101) — a range never contains {@code null}, so the
+     *       membership forces {@code v != null}. (List/Set membership does NOT — the collection may hold
+     *       {@code null} — so only {@code Range} right-operands qualify.)</li>
+     * </ul>
+     * Sound only for top-level {@code &&} conjuncts: under an {@code ||} branch or a negation the implication
+     * doesn't hold, so the walk descends through {@code &&} only.
      */
-    private void assumeSafeNavReceiversNonNull(SmtSession s, Encoder enc, Expression reqAst) {
+    private void assumePreconditionNonNullFacts(SmtSession s, Encoder enc, Expression reqAst) {
         if (reqAst == null) return
         List<Expression> conjuncts = new ArrayList<Expression>()
         collectAndConjuncts(reqAst, conjuncts)
         for (Expression c : conjuncts) {
             String recv = safeNavReceiverName(c)
+            if (recv == null) recv = rangeMembershipValueName(c)
             if (recv != null) s.assertExpr(s.not(enc.nullityOf(recv)))
         }
+    }
+
+    /** The value name of a *range*-membership conjunct {@code v in lo..hi} whose value is a simple variable,
+     *  else null. A range can't contain {@code null}, so the membership implies {@code v != null}; list/set
+     *  membership (which may hold {@code null}) is deliberately excluded. */
+    private static String rangeMembershipValueName(Expression e) {
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.text == 'in' && be.rightExpression instanceof RangeExpression &&
+                be.leftExpression instanceof VariableExpression) {
+                return ((VariableExpression) be.leftExpression).name
+            }
+        }
+        null
     }
 
     private static void collectAndConjuncts(Expression e, List<Expression> out) {

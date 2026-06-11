@@ -3614,6 +3614,10 @@ class Encoder {
                 if (disj == null) return null
                 return sym == 'in' ? disj : session.not(disj)
             }
+            // Phase 99 — `i in lo..hi` (integer range → bounds) / `s in 'A'..'Z'` (char range → regex class).
+            Object rangeMem = translateIntRangeContains(inRecv, be.leftExpression)
+            if (rangeMem == null) rangeMem = translateStringRangeContains(inRecv, be.leftExpression)
+            if (rangeMem != null) return sym == 'in' ? rangeMem : session.not(rangeMem)
         }
 
         // Nullity: x == null / x != null, before we try to translate `null`.
@@ -3945,6 +3949,14 @@ class Encoder {
         // constructor. Numeric bounds only; a character/String range skips loudly.
         if (m == 'containsWithinBounds' && args.size() == 1) {
             Object q = translateContainsWithinBounds(recv, args.get(0))
+            if (q != null) return q
+        }
+
+        // Phase 99 — `(lo..hi).contains(i)` for an integer range: step-1 integer membership is exactly the
+        // bounds (the `i in lo..hi` operator lowers identically, in translateBinary).
+        if (m == 'contains' && args.size() == 1) {
+            Object q = translateIntRangeContains(recv, args.get(0))
+            if (q == null) q = translateStringRangeContains(recv, args.get(0))
             if (q != null) return q
         }
 
@@ -4429,6 +4441,25 @@ class Encoder {
             // Phase 47i — {@code s.reverse()} (GDK). Uninterpreted with per-literal pinning; literal
             // involution and length fall out, symbolic identities are out (no universals — see 47g).
             if (m == 'reverse' && args.isEmpty()) return session.stringReverse(sH)
+            // Phase 100 — `s.next(i)` / `s.next()` (Groovy 6: the last character incremented by `i`, default 1
+            // — `'A'.next(2) == 'C'`, `'A'.next(25) == 'Z'`). First slice: *single-character* receivers, ASCII,
+            // no wraparound. Modelled as a fresh single-char string whose code point is `charAt(s,0) + i`,
+            // *conditioned* on `s` being single-char — so a multi-character receiver leaves the result
+            // unconstrained (honest "could not decide"), never a wrong answer. Range membership (`in 'A'..'Z'`,
+            // Phase 99b) bridges to the result's char code in Z3, so `'A'.next(i)` for `i in 0..25` proves
+            // `result in 'A'..'Z'`.
+            if (m == 'next' && args.size() <= 1) {
+                Object iH = args.isEmpty() ? session.intLit(1L) : translate(args.get(0))
+                if (iH == null) return null
+                Object zero = session.intLit(0L), one = session.intLit(1L)
+                Object r = session.varOfSort('next$' + (quantCounter++), strSort)
+                Object sSingle = session.eq(session.stringLength(sH), one)
+                session.assertExpr(session.implies(sSingle, session.and([
+                    session.eq(session.stringLength(r), one),
+                    session.eq(session.stringCharAt(r, zero),
+                               session.plus(session.stringCharAt(sH, zero), iH))])))
+                return r
+            }
             // {@code s.equalsIgnoreCase(t)} ≡ {@code toLower(s) == toLower(t)}. ASCII-faithful,
             // matches the Locale.ROOT contract used at the literal mint.
             if (m == 'equalsIgnoreCase' && args.size() == 1) {
@@ -4654,6 +4685,68 @@ class Encoder {
         } catch (Exception ignored) {
             return null   // unmodelled element sort / no size oracle → honest skip
         }
+    }
+
+    /**
+     * Phase 99 — `i in lo..hi` and `(lo..hi).contains(i)` for an *integer* range and integer value. The
+     * default `..`/`..<` range has step 1, so every integer in the (order-agnostic) interval is a member —
+     * i.e. {@code contains} coincides exactly with {@link #translateContainsWithinBounds} there. Guarded to
+     * integral endpoints AND an integral value: for a decimal range or value the two diverge (a
+     * step-sensitive `(1..3).contains(2.5)` is {@code false} while 2.5 is *within bounds*), so those skip.
+     */
+    private Object translateIntRangeContains(Expression rangeRecv, Expression value) {
+        if (!(rangeRecv instanceof RangeExpression)) return null
+        RangeExpression re = (RangeExpression) rangeRecv
+        // Integer range (step 1, integer endpoints) — so contains is integer membership = bounds. The endpoint
+        // literals carry a reliable type; the queried value is a free closure variable (AST type Object), so
+        // gate it by its *modelled sort* instead: an Int term is fine, a decimal/Real one is skipped because
+        // step-sensitive contains diverges from pure bounds there (a non-Int term makes the bounds comparison
+        // throw inside translateContainsWithinBounds → a clean null skip anyway).
+        if (!isIntLikeType(re.from?.getType()) || !isIntLikeType(re.to?.getType())) return null
+        Object vH = translate(value)
+        if (vH == null || session.isReal(vH)) return null
+        return translateContainsWithinBounds(rangeRecv, value)
+    }
+
+    /**
+     * Phase 99b — `s in 'A'..'Z'` / `('A'..'Z').contains(s)` for a single-character {@code String} range.
+     * Such a range *is* the regex character class {@code [A-Z]}, so it lowers to {@code str.in_re(s,
+     * re.range('A','Z'))} — the identical construction the regex engine uses for {@code [a-z]} (Phase 47d).
+     * That gives the semantics for free: {@code re.range} matches exactly one character in the code-point
+     * interval, so a multi-character or empty {@code s} is (correctly) a non-member, no length constraint
+     * needed. Endpoints are constant single-char Strings, so direction and {@code ..<}/{@code <..} exclusivity
+     * collapse to constant code-point arithmetic on the {@code [lo, hi]} interval; an empty interval matches
+     * nothing. The value must be String-typed (multi-char / symbolic endpoints, or a non-String value, skip).
+     */
+    private Object translateStringRangeContains(Expression rangeRecv, Expression value) {
+        if (!(rangeRecv instanceof RangeExpression) || !isStringReceiver(value)) return null
+        RangeExpression re = (RangeExpression) rangeRecv
+        Integer fromCode = singleCharCode(re.from)
+        Integer toCode = singleCharCode(re.to)
+        if (fromCode == null || toCode == null) return null
+        int lo, hi
+        if (fromCode <= toCode) {                 // ascending: exclusiveLeft drops `from`, exclusiveRight `to`
+            lo = fromCode + (re.exclusiveLeft ? 1 : 0); hi = toCode - (re.exclusiveRight ? 1 : 0)
+        } else {                                  // descending: the `to` endpoint is the minimum
+            lo = toCode + (re.exclusiveRight ? 1 : 0); hi = fromCode - (re.exclusiveLeft ? 1 : 0)
+        }
+        Object strSort = session.declareSort('String')
+        Object vH = translateInSort(value, strSort)
+        if (vH == null) return null
+        if (lo > hi) return session.boolLit(false)   // empty range — nothing is a member
+        Object regex = session.reRange(session.litOfSort(strSort, String.valueOf((char) lo)),
+                                       session.litOfSort(strSort, String.valueOf((char) hi)))
+        return session.stringInRegex(vH, regex)
+    }
+
+    /** The code point of a single-character {@code String}/{@code Character} constant, else null. */
+    private static Integer singleCharCode(Expression e) {
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof String && ((String) v).length() == 1) return (int) ((String) v).charAt(0)
+            if (v instanceof Character) return (int) ((Character) v).charValue()
+        }
+        null
     }
 
     /**
