@@ -2609,6 +2609,24 @@ scoping (only on selected methods, regardless of class).
   {@link VariableExpression}), so fully qualified and unqualified spellings both fold.
 - **Cast/conversion overflow.** {@code (byte) intVal}, {@code (int) longVal} need explicit
   truncation modelling — not in the fragment regardless of {@code @CheckOverflow}.
+- **`.intValue()` / `.longValue()` truncation — attempted and rejected at the leaf.** A tempting small slice
+  is to model the narrowing wrap at the `.intValue()` call (so `(2 ** 31).intValue() == Integer.MIN_VALUE`,
+  which would let `1 << n == 2 ** n` prove through the 32-bit boundary). It does *not* work at the leaf:
+  truncating only the `.intValue()` result while the surrounding int arithmetic stays unbounded math-int is
+  internally inconsistent. `result == 2 * (2 ** n).intValue()` is runtime-true for all n (the `2 *` overflows
+  too, so both sides wrap together), but a leaf-only model wraps the `.intValue()` and *not* the `2 *`, so it
+  reads `−2³¹ == +2³¹` at n=30 and the equality breaks. The hybrid matches neither the math-int idealization
+  nor the 32-bit runtime, and the inconsistency cuts both ways (false negatives *and* possible false
+  positives). Faithful narrowing requires a **fully width-aware arithmetic model** — every int op wraps, not
+  just the cast leaf — which is a large, separate slice (and a natural home for a `@CheckOverflow`-scoped
+  32-bit mode). Until then `.intValue()`/`.longValue()` stay identity (Phase 93), consistent with the
+  documented "unbounded by default" stance — and that identity is *faithful* for `**`, because Groovy's power
+  never wraps: `2 ** 31` is the BigInteger `2147483648`, not a truncated int (verified). So the right way to
+  surface `**` is at the unbounded/Number level, where the model is exact; the narrowing concern is a
+  separate `@CheckOverflow` obligation ("does `2 ** n` fit in int?"), not a wrap to compute here.
+  Consequence: `1 << n == 2 ** n` proves genuinely for `n ≤ 30` and is correctly *not* proved for `n ≥ 31` —
+  not a gap, but the truth: with `2 ** n` unbounded and `1 << n` the wrapped 32-bit shift, the two genuinely
+  differ at `n ≥ 31` (`2**31 = 2147483648 ≠ 1<<31 = −2147483648`), exactly as at runtime.
 - **Always-on mode.** Some safety-critical projects want overflow checked everywhere, no
   annotation needed. A future {@code @TypeChecked(strict = true)} mode could flip the default
   but isn't in scope here — the math-int default is too useful to drop unilaterally.

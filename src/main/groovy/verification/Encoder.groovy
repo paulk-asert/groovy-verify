@@ -3809,6 +3809,11 @@ class Encoder {
         // Phase 93 — `.intValue()` / `.longValue()` on an integral value is identity in the math-int model.
         // The motivating case is exponentiation: Groovy's `**` returns Number, so `(base ** exp).intValue()`
         // is how a power reaches an int context; translating the receiver yields the `pow$` term directly.
+        // (Phase 95 attempt: modelling the 32-bit *wrap* here — `(2**31).intValue() == Integer.MIN_VALUE` —
+        // is unsound to do at the leaf alone. The surrounding int arithmetic stays math-int, so a wrapped
+        // leaf inside `2 * (2 ** n).intValue()` is inconsistent: the runtime wraps the `2 *` too, but the
+        // model doesn't, breaking a runtime-true equality. Faithful narrowing needs a fully width-aware
+        // arithmetic model, not a leaf truncation — tracked as a non-goal of this slice.)
         if ((m == 'intValue' || m == 'longValue') && args.isEmpty()) {
             Object r = translate(recv)
             if (r != null) return r
