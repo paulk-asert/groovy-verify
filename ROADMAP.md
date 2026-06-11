@@ -5214,6 +5214,32 @@ way is a follow-on.
 
 ---
 
+## Phase 97 — safe-navigation precondition carries the non-null fact  *(shipped)*
+
+A precondition conjunct `recv?.foo()` can only be truthy when `recv` is non-null — Groovy's `?.` short-circuits
+a null receiver to `null`, which is falsy. So when such a conjunct is *assumed* at a method's entry, the
+receiver is non-null, and a later unguarded `recv.bar()` in the body discharges its null-dereference obligation
+without a redundant explicit `recv != null`. Previously `@Requires({ s?.startsWith("user:") })` left `s` nullable
+in the model, so `s.substring(5)` spuriously failed with `Possible NullPointerException`.
+
+`assumeSafeNavReceiversNonNull` walks the precondition's **top-level `&&` conjuncts** (`collectAndConjuncts`)
+and, for each that is a safe-navigation call/property `recv?.x` with a simple-variable receiver, asserts
+`not(nullityOf(recv))`. Wired into both precondition-assumption paths — `assumeContext` (implicit-obligation
+discharge) and `dischargeVfObligation` (value-flow); the deref check routes through the latter, which is why
+both are needed. **Soundness rests on the conjunctive position**: the walk descends through `&&` only, so a
+safe-nav under an `||` branch or a negation carries no non-null implication — `@Requires({ s?.startsWith("user:")
+|| s == null })` still flags the NPE, and `s` really can be null there.
+
+Scope: receiver must be a simple variable (a parameter/field name with a nullity oracle); `a.b?.c()` and
+safe-nav in *value* position (`s?.length()` as a nullable int) are out — value-position `?.` would need a
+nullable-int model. Pairs with the null-safe operators already handled (`==~`, GString) where the body never
+dereferences the value, so no guard is needed at all.
+
+**Shipped tests (Phase 97)**: `idLength` with a `s?.startsWith("user:")` precondition proves (no explicit null
+guard); the `|| s == null` weakening still flags the `NullPointerException` (the soundness control).
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

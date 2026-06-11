@@ -1682,6 +1682,7 @@ class VerifyChecker extends TypeCheckingExtension {
             if (reqAst != null) {
                 Object pre = enc.translate(reqAst)
                 if (pre != null) s.assertExpr(pre)
+                assumeSafeNavReceiversNonNull(s, enc, reqAst)
             }
             // Phase 15a — class invariants are method-entry facts, assumed before any
             // reaching step is replayed.
@@ -1725,6 +1726,7 @@ class VerifyChecker extends TypeCheckingExtension {
         if (reqAst != null) {
             Object pre = enc.translate(reqAst)
             if (pre != null) s.assertExpr(pre)
+            assumeSafeNavReceiversNonNull(s, enc, reqAst)
         }
         // Phase 44c — every Int-typed parameter and field is JVM-bounded to
         // {@code [Integer.MIN_VALUE, Integer.MAX_VALUE]}. Always asserted (not opt-in): the JVM
@@ -1776,6 +1778,51 @@ class VerifyChecker extends TypeCheckingExtension {
             // (Phase 41) the same way the local would.
             currentListNames.add('result')
         }
+    }
+
+    /**
+     * Phase 97 — a precondition conjunct of the form {@code recv?.foo()} / {@code recv?.prop} can only be
+     * truthy when {@code recv} is non-null: a null receiver makes Groovy's safe navigation short-circuit to
+     * {@code null}, which is falsy. So when such a conjunct is *assumed* at the top level of a precondition,
+     * the receiver is non-null — assert it, so a later unguarded {@code recv.bar()} in the body discharges
+     * its null-deref obligation without a redundant explicit {@code recv != null}. Sound only for top-level
+     * {@code &&} conjuncts: under an {@code ||} branch or a negation the safe-nav carries no such implication,
+     * so the walk descends through {@code &&} only.
+     */
+    private void assumeSafeNavReceiversNonNull(SmtSession s, Encoder enc, Expression reqAst) {
+        if (reqAst == null) return
+        List<Expression> conjuncts = new ArrayList<Expression>()
+        collectAndConjuncts(reqAst, conjuncts)
+        for (Expression c : conjuncts) {
+            String recv = safeNavReceiverName(c)
+            if (recv != null) s.assertExpr(s.not(enc.nullityOf(recv)))
+        }
+    }
+
+    private static void collectAndConjuncts(Expression e, List<Expression> out) {
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
+            collectAndConjuncts(((BinaryExpression) e).leftExpression, out)
+            collectAndConjuncts(((BinaryExpression) e).rightExpression, out)
+        } else {
+            out.add(e)
+        }
+    }
+
+    /** The receiver name of a safe-navigation call/property {@code recv?.x} whose receiver is a simple
+     *  variable, else null. */
+    private static String safeNavReceiverName(Expression e) {
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) e
+            if (m.safe && m.objectExpression instanceof VariableExpression) {
+                return ((VariableExpression) m.objectExpression).name
+            }
+        } else if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            if (pe.safe && pe.objectExpression instanceof VariableExpression) {
+                return ((VariableExpression) pe.objectExpression).name
+            }
+        }
+        null
     }
 
     private void assumeIntJvmBounds(SmtSession s, Encoder enc) {

@@ -2594,9 +2594,9 @@ class VerifyHarness {
         // theory consequences in one method: regex membership preserved through the
         // precondition, GString folds to chained str.++, prefix-of-concat with the literal
         // first operand, suffix-of-concat with the second operand.
-        [group: 'P47h gstring', name: 'showcase: greet via gstring + regex + concat facts', ok: true,
+        [group: 'P47h gstring', name: 'showcase: greet via gstring + ==~ regex + concat facts', ok: true,
          src: tc('''class C {
-                        @Requires({ name != null && name.matches("[a-zA-Z]+") })
+                        @Requires({ name ==~ /[a-zA-Z]+/ })
                         @Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
                         static String greet(String name) { "Hi, $name" }
                     }''')],
@@ -4447,6 +4447,39 @@ class VerifyHarness {
                         @Ensures({ (2 ** n).intValue() >= 2 })
                         @Decreases({ n })
                         static void bad(int n) { if (n > 0) bad(n - 1) }
+                    }''')],
+        // `1 << n == 2 ** n` proved for the whole range 0..30 at once — the verification analog of the
+        // runtime `(0..10).each { assert 1 << n == 2 ** n }`, and stronger (every n, not sampled points).
+        // n <= 30 is the genuinely-true range: at n >= 31 the 32-bit `1 << n` wraps negative while `2 ** n`
+        // (an unbounded BigInteger) does not, so they really differ (see ROADMAP). The off-by-one control
+        // confirms the proof is not vacuous.
+        [group: 'P-shift-power', name: 'shift equals power of two: 1 << n == 2 ** n for n in 0..30', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 && n <= 30 })
+                        @Ensures({ (1 << n) == (2 ** n).intValue() })
+                        static void shiftIsPowerOfTwo(int n) {}
+                    }''')],
+        [group: 'P-shift-power', name: 'shift/power off-by-one is held to account', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 && n <= 30 })
+                        @Ensures({ (1 << n) == (2 ** n).intValue() + 1 })
+                        static void bad(int n) {}
+                    }''')],
+        // Phase 97 — a top-level `recv?.foo()` precondition conjunct implies `recv != null` (a null receiver
+        // makes safe-navigation falsy), so the body's unguarded `recv.bar()` discharges its null-deref check
+        // with no explicit `recv != null`. The `||` control confirms soundness: under a disjunction the
+        // safe-nav carries no non-null implication, so the NPE obligation is still (correctly) flagged.
+        [group: 'P97 safe-nav non-null', name: 'idLength via safe-nav ?. precondition proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ s?.startsWith("user:") })
+                        @Ensures({ result == s.length() - 5 })
+                        static int idLength(String s) { s.substring(5).length() }
+                    }''')],
+        [group: 'P97 safe-nav non-null', name: 'safe-nav under || does NOT imply non-null (still flags)', ok: false, expect: 'NullPointer',
+         src: tc('''class C {
+                        @Requires({ s?.startsWith("user:") || s == null })
+                        @Ensures({ result == s.length() - 5 })
+                        static int idLength(String s) { s.substring(5).length() }
                     }''')],
         // ---------- HumanEval 055 (fib): Fibonacci generation via the Fib.of(i) helper (Phase 55) ----------
         // `fibIter` below IS HumanEval task 055 (`fib`, the n-th Fibonacci number) with the spec the Verus

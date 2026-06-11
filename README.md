@@ -302,6 +302,21 @@ and a null receiver exact, solver-constrained array elements pinned as literals
 (`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
 (`new int[3]`).
 
+**Safe navigation carries the non-null fact.** A precondition `recv?.foo()` can only be truthy when `recv`
+is non-null — Groovy's `?.` evaluates to `null` (falsy) on a null receiver — and the verifier reads that
+implication, so an unguarded `recv.bar()` in the body discharges its null check with no redundant
+`recv != null`:
+
+```groovy
+@Requires({ s?.startsWith("user:") })                      // ?. ⟹ s != null
+@Ensures({ result == s.length() - 5 })
+static int idLength(String s) { s.substring(5).length() }   // ✓ no NPE obligation left open
+```
+
+It stays sound by reading the implication only from a top-level `&&` conjunct: weaken the precondition to
+`s?.startsWith("user:") || s == null` and `s` can still be null, so the `s.substring(5)` correctly fails
+with the `NullPointerException` obligation again.
+
 **Bounded integer overflow — Verus-style precision when you want it.** Anything in the fragment is
 encoded as Z3's mathematical (unbounded) Int by default — the experience that makes most existing
 proofs work. Methods (or classes) that annotate `@CheckOverflow` opt into a stronger guarantee:
@@ -589,6 +604,21 @@ static int lowBit(int a) { a & 1 }
 `a ^ a == 0`, `a & a == a`, and `6 & 3 == 2` all prove; a wrong concrete value (`6 & 3 == 3`) refutes. Bit
 reasoning is bit-blasted, so a *false symbolic* claim soft-fails to a loud "could not decide" rather than a
 counterexample — sound, never a false pass.
+
+**Shift equals power of two — proven for a whole range, not spot-checked.** Where a test would write
+`(0..10).each { n -> assert (1 << n) == (2 ** n) }`, the verifier proves the identity for *every* `n` in the
+range at once — the `**` recurrence axioms meet the bit-vector shift:
+
+```groovy
+@Requires({ n >= 0 && n <= 30 })
+@Ensures({ (1 << n) == (2 ** n).intValue() })
+static void shiftIsPowerOfTwo(int n) {}            // ✓ holds for all 31 values
+```
+
+`n <= 30` is the *genuinely-true* range, not a solver limit: at `n >= 31` the 32-bit `1 << n` wraps negative
+(`1 << 31 == -2147483648`) while `2 ** n` is an unbounded `BigInteger` (`2 ** 31 == 2147483648`), so they
+really differ — and the verifier correctly declines to prove it there. Drop the guard, or change the equality
+to an off-by-one, and it no longer verifies.
 
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models
@@ -1420,12 +1450,14 @@ gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identi
 showcase blending regex, GString interpolation, and the structural concat facts:
 
 ```groovy
-@Requires({ name != null && name.matches("[a-zA-Z]+") })
+@Requires({ name ==~ /[a-zA-Z]+/ })
 @Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
 static String greet(String name) { "Hi, $name" }
 ```
 
-The body folds to `mkConcat(mkString("Hi, "), name)`. Z3's seq theory then knows two
+No separate `name != null` guard is needed: Groovy's `==~` is null-safe — `null ==~ /…/` is `false`, not an
+NPE — so the precondition already excludes null, and the verifier carries that through. The body folds to
+`mkConcat(mkString("Hi, "), name)`. Z3's seq theory then knows two
 free facts: a literal-prefixed concat starts with that literal (`prefixof(a, a ++ b)`),
 and the right operand of the concat is its suffix (`suffixof(b, a ++ b)`). The regex
 precondition rides along through whatever shape the body assembles.
