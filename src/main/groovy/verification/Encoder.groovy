@@ -226,6 +226,13 @@ class Encoder {
      * fresh typed entity {@code t$vN} in the slot's sort (the slot type from the generic arguments).
      */
     private final Map<String, ClassNode> tupleParams
+    /**
+     * Phase 116 — equational *combiner* registry: a same-unit method `f(a, b)` with no `@Requires` and an
+     * `@Ensures({ result == E(a, b) })` (a monoid/semigroup combiner). Keyed `name/arity` → `[formalNames, E]`.
+     * A call `f(x, y)` is translated as `E[a:=x, b:=y]`, so a reduction `acc = f(acc, x)` matches the inline
+     * sum/product/extremum patterns. Sound: `f`'s `@Ensures` is verified when `f` is checked, no `@Requires`.
+     */
+    private final Map<String, Object[]> combiners
 
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
@@ -267,8 +274,10 @@ class Encoder {
             Set<String> booleanLocals = null,
             Set<String> decimalNames = null,
             Map<String, Boolean> fpNames = null,
-            Map<String, ClassNode> tupleParams = null) {
+            Map<String, ClassNode> tupleParams = null,
+            Map<String, Object[]> combiners = null) {
         this.session = session
+        this.combiners = combiners != null ? combiners : new LinkedHashMap<String, Object[]>()
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
         this.mapTypes = mapTypes != null ? mapTypes : new HashMap<String, ClassNode[]>()
@@ -3976,6 +3985,22 @@ class Encoder {
         }
     }
 
+    /** Phase 116 — if {@code name(args)} is a registered equational combiner, translate {@code E[formals:=args]}
+     *  (the {@code @Ensures} right-hand side with formals bound to the actual argument terms); else null. */
+    private Object inlineCombiner(String name, List<Expression> args) {
+        Object[] c = combiners.get(name + '/' + args.size())
+        if (c == null) return null
+        List<String> formals = (List<String>) c[0]
+        Expression ensuresExpr = (Expression) c[1]
+        Map<String, Object> bindings = new LinkedHashMap<String, Object>()
+        for (int i = 0; i < formals.size(); i++) {
+            Object h = translate(args.get(i))
+            if (h == null) return null
+            bindings.put(formals.get(i), h)
+        }
+        translateWith(ensuresExpr, bindings)
+    }
+
     private Object translateMethodCall(MethodCallExpression mce) {
         String m = mce.methodAsString
         if (m == null) return null
@@ -3993,6 +4018,12 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // Phase 116 — equational combiner inlining: a call to a registered combiner `f(args)` (no `@Requires`,
+        // `@Ensures({ result == E })`) is translated as `E[formals := args]`, so a reduction `acc = f(acc, x)`
+        // matches the inline aggregation/extremum patterns instead of havocking `acc`. Sound — see {@link #combiners}.
+        Object combined = inlineCombiner(m, args)
+        if (combined != null) return combined
 
         // Phase 93 — `.intValue()` / `.longValue()` on an integral value is identity in the math-int model.
         // The motivating case is exponentiation: Groovy's `**` returns Number, so `(base ** exp).intValue()`

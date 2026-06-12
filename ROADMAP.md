@@ -5760,10 +5760,44 @@ proves `count >= 0`; dropping the `amount <= balance` guard from `withdraw` refu
 invariant` — the critical section that breaks the lock invariant is caught); a wrong `@Ensures` refutes through
 the lock (non-vacuity — the body is modelled).
 
-**Upstream bug found (filed separately):** a `@Synchronized` method carrying `@Ensures`/`@Invariant` but no
-`@Requires` crashes groovy-contracts (`SynchronizedStatement cannot be cast to BlockStatement` — the
-contract-injection rewrite assumes a `BlockStatement` body; the `@Requires` path block-wraps first, which is
-why it only bites without one). Worked around in the examples by giving synchronized methods a precondition.
+**Upstream bug found and fixed (GROOVY-12084):** a `@Synchronized` method carrying `@Ensures`/`@Invariant` but
+no `@Requires` crashed groovy-contracts (`SynchronizedStatement cannot be cast to BlockStatement` — the
+contract-injection rewrite assumed a `BlockStatement` body; the `@Requires` path block-wraps first, which is
+why it only bit without one). Fixed upstream and confirmed against refreshed deps; `P115` now includes a
+regression guard (a `@Synchronized` mutator with no `@Requires` verifies), and the earlier precondition
+work-around is no longer needed.
+
+---
+
+## Phase 116 — monoids/semigroups: checked *and* proven (equational combiner inlining)
+
+Composes with Groovy 6's `groovy.typecheckers.CombinerChecker` (which checks a combiner's *shape* — associative
++ identity) on one `@TypeChecked`: CombinerChecker checks the shape, groovy-verify proves the **semantics** —
+the combiner's defining equation, the monoid laws, and that a reduction *gives the right answer*. Most of this
+already worked (a combiner's `@Ensures` proves; the associativity/identity laws prove; a *non*-associative
+combiner like subtraction **refutes** its associativity law — the exact bug CombinerChecker forbids). The one
+gap was the reduction *calling the combiner method*: `acc = Sum.add(acc, xs[i])` translated to nothing (a
+cross-method call isn't a value), so `acc` was havoced and the `sum`/extremum aggregation pattern couldn't
+fire — the loop timed out (sum) or lost its existential witness (max).
+
+**Engine change — equational combiner inlining.** A same-unit method `f(a, b)` with **no `@Requires`** and an
+`@Ensures({ result == E(a, b) })` is registered as a combiner; a call `f(x, y)` is then translated as
+`E[a:=x, b:=y]` (the `@Ensures` right-hand side with formals bound to the actual argument terms). So
+`acc = Sum.add(acc, xs[i])` becomes `acc + xs[i]`, `acc = Largest.max(acc, a[i])` becomes the ternary — and
+the existing inline aggregation/extremum recognition fires. **Sound:** the combiner's `@Ensures` is verified
+when the combiner is checked, and there's no `@Requires` to discharge. Restricted to a pure `E` (only the
+formals, no calls / `old` / `result` / captured fields). ~90 lines (`Encoder` registry + `inlineCombiner`,
+`VerifyChecker.collectCombiners`).
+
+The honest boundary: the *parallel* recombination equalling the sequential fold is `injectParallel`'s own
+contract (it requires an associative combiner — checked by CombinerChecker, proven here); we verify the
+combiner is a correct monoid and the sequential reduction is right, which is what makes the parallel answer
+right — the same "prove the local obligation, rely on the library's structural guarantee" shape as the
+monitor invariant (Phase 115).
+
+**Shipped tests (Phase 116, group `P116 monoid`)**: a full `Sum` monoid (add's equation + identity +
+associativity + `reduce == xs.sum()` *via the combiner*) and a `Largest` semigroup (max + associativity +
+`reduce == a.max()` via the combiner) verify; `Minus.sub`'s associativity law refutes.
 
 ---
 

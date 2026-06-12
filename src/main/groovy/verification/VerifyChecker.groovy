@@ -200,6 +200,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
     /** Phase 113 — tuple-typed locals (`Tuple2<…> r = callee(…)`), name → the {@code TupleN} type. */
     private Map<String, ClassNode> currentTupleTypes = new HashMap<String, ClassNode>()
+    /** Phase 116 — equational combiners in scope: `name/arity` → `[formalNames, ensuresRhs]` (see Encoder). */
+    private Map<String, Object[]> currentCombiners = new HashMap<String, Object[]>()
     /** Phase 61 — decimal-typed (BigDecimal/Double/Float) param/field/local/result names. */
     private Set<String> currentDecimalNames = new HashSet<String>()
     /** Phase 72 — double/float names; references skip (IEEE-754 is the FP non-goal). */
@@ -236,7 +238,61 @@ class VerifyChecker extends TypeCheckingExtension {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames, currentFpNames, tuples)
+                    currentBooleanLocals, currentDecimalNames, currentFpNames, tuples, currentCombiners)
+    }
+
+    /**
+     * Phase 116 — equational combiners visible to {@code node} (its declaring class's methods): a method
+     * `f(formals)` with no `@Requires` and an `@Ensures({ result == E })` where {@code E} is pure over the
+     * formals (no calls, no `old`/`result`, no captured fields). Keyed {@code name/arity} → {@code [formalNames, E]}.
+     * Such a call `f(x, y)` is inlined as {@code E[formals:=args]} (Encoder), so a reduction `acc = f(acc, x)`
+     * matches the inline sum/extremum patterns. Sound: the combiner's `@Ensures` is verified when it is checked,
+     * and there is no `@Requires` to discharge.
+     */
+    private static Map<String, Object[]> collectCombiners(MethodNode node) {
+        Map<String, Object[]> out = new LinkedHashMap<String, Object[]>()
+        ClassNode dc = node.declaringClass
+        if (dc == null) return out
+        for (MethodNode mn : dc.methods) {
+            if (findRequires(mn) != null) continue
+            Expression ens = contractAstFor(mn, 'ensures')
+            if (ens instanceof BooleanExpression) ens = ((BooleanExpression) ens).expression
+            Expression e = equationalEnsuresRhs(ens)
+            if (e == null) continue
+            List<String> formals = new ArrayList<String>()
+            for (Parameter p : mn.parameters) formals.add(p.name)
+            if (!isPureOver(e, formals)) continue
+            out.put(mn.name + '/' + mn.parameters.length, [formals, e] as Object[])
+        }
+        out
+    }
+
+    /** {@code E} from an `@Ensures` of the shape `result == E` (either order), else null. */
+    private static Expression equationalEnsuresRhs(Expression ens) {
+        if (!(ens instanceof BinaryExpression)) return null
+        BinaryExpression be = (BinaryExpression) ens
+        if (be.operation.type != Types.COMPARE_EQUAL) return null
+        if (isResultVar(be.leftExpression)) return be.rightExpression
+        if (isResultVar(be.rightExpression)) return be.leftExpression
+        null
+    }
+
+    private static boolean isResultVar(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == 'result'
+    }
+
+    /** True if {@code e} references only the given formal names (plus literals/operators) and no method calls —
+     *  so inlining it for any actuals is a faithful, side-effect-free substitution. */
+    private static boolean isPureOver(Expression e, List<String> formals) {
+        boolean[] ok = [true] as boolean[]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) { ok[0] = false }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) { ok[0] = false }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (!formals.contains(ve.name)) ok[0] = false
+            }
+        })
+        ok[0]
     }
 
     /**
@@ -1299,6 +1355,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentTupleTypes = collectTupleTypes(node)
+        currentCombiners = collectCombiners(node)
         currentDecimalNames = collectDecimalNames(node)
         currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
@@ -1411,6 +1468,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentTupleTypes = new HashMap<String, ClassNode>()
+            currentCombiners = new HashMap<String, Object[]>()
             currentDecimalNames = new HashSet<String>()
             currentFpNames = new HashMap<String, Boolean>()
             currentBooleanLocals = new HashSet<String>()

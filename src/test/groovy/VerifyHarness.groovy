@@ -8469,6 +8469,83 @@ class VerifyHarness {
                             return Tuple.tuple(-1, -1)
                         }
                     }''')],
+        // ---------- P116 monoids/semigroups: checked AND proven ----------
+        // Sibling to `groovy.typecheckers.CombinerChecker`, which checks a combiner's *shape* (associative,
+        // has an identity). groovy-verify proves the *semantics*: the combiner's defining equation, the monoid
+        // laws (associativity / identity), and — via Phase-116 combiner inlining (a no-@Requires method with an
+        // `@Ensures({ result == E })` is inlined as E at its call sites) — that a reduction calling the combiner
+        // gives the right aggregate. A full Sum monoid:
+        [group: 'P116 monoid', name: 'Sum monoid: add + identity + associativity + reduce == sum', ok: true,
+         src: tc('''class Sum {
+                        @Ensures({ result == a + b })
+                        static int add(int a, int b) { a + b }
+                        @Ensures({ result })
+                        static boolean identity(int a) {
+                            int l = Sum.add(a, 0)
+                            int r = Sum.add(0, a)
+                            return l == a && r == a
+                        }
+                        @Ensures({ result })
+                        static boolean associative(int a, int b, int c) {
+                            int ab = Sum.add(a, b)
+                            int left = Sum.add(ab, c)
+                            int bc = Sum.add(b, c)
+                            int right = Sum.add(a, bc)
+                            return left == right
+                        }
+                        @Requires({ xs != null && xs.length > 0 })
+                        @Ensures({ result == xs.sum() })
+                        static int reduce(int[] xs) {
+                            int acc = xs[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= xs.length && acc == xs[0..<i].sum() })
+                            @Decreases({ xs.length - i })
+                            while (i < xs.length) { acc = Sum.add(acc, xs[i]); i = i + 1 }
+                            return acc
+                        }
+                    }''')],
+        // A Largest semigroup (associative, no identity) — the witnessed-extremum reduction gives the max.
+        [group: 'P116 monoid', name: 'Largest semigroup: max + associativity + reduce == max', ok: true,
+         src: tc('''class Largest {
+                        @Ensures({ result == (a >= b ? a : b) })
+                        static int max(int a, int b) { a >= b ? a : b }
+                        @Ensures({ result })
+                        static boolean associative(int a, int b, int c) {
+                            int ab = Largest.max(a, b)
+                            int left = Largest.max(ab, c)
+                            int bc = Largest.max(b, c)
+                            int right = Largest.max(a, bc)
+                            return left == right
+                        }
+                        @Requires({ a != null && a.length > 0 })
+                        @Ensures({ result == a.max() })
+                        static int reduce(int[] a) {
+                            int acc = a[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= a.length &&
+                                Forall.range(0, i) { int k -> a[k] <= acc } &&
+                                (0..<i).any { int k -> a[k] == acc } })
+                            @Decreases({ a.length - i })
+                            while (i < a.length) { acc = Largest.max(acc, a[i]); i = i + 1 }
+                            return acc
+                        }
+                    }''')],
+        // Refute: subtraction is NOT associative, so its associativity law fails — groovy-verify proves the
+        // exact semantic error CombinerChecker forbids (a non-associative combiner gives non-deterministic
+        // parallel results).
+        [group: 'P116 monoid', name: 'subtraction is not associative (refuted)', expect: 'Cannot prove postcondition',
+         src: tc('''class Minus {
+                        @Ensures({ result == a - b })
+                        static int sub(int a, int b) { a - b }
+                        @Ensures({ result })
+                        static boolean associative(int a, int b, int c) {
+                            int ab = Minus.sub(a, b)
+                            int left = Minus.sub(ab, c)
+                            int bc = Minus.sub(b, c)
+                            int right = Minus.sub(a, bc)
+                            return left == right
+                        }
+                    }''')],
         // ---------- P115 lock transforms: the monitor invariant ----------
         // Groovy's lock AST transforms (@WithReadLock/@WithWriteLock/@Synchronized) are transparent to the
         // verifier — the clean body is captured at CONVERSION, before the lock wraps it at CANONICALIZATION.
@@ -8492,7 +8569,7 @@ class VerifyHarness {
                         @groovy.transform.WithReadLock
                         int currentBalance() { return balance }
                     }''')],
-        // @Synchronized works too (with a @Requires, side-stepping the groovy-contracts SynchronizedStatement bug).
+        // @Synchronized works too.
         [group: 'P115 monitor-invariant', name: 'synchronized release preserves count >= 0', ok: true,
          src: tc('''@Invariant({ count >= 0 })
                     class Latch {
@@ -8501,6 +8578,16 @@ class VerifyHarness {
                         @Ensures({ count == old.count - 1 })
                         @groovy.transform.Synchronized
                         void release() { count = count - 1 }
+                    }''')],
+        // A @Synchronized method with no @Requires also verifies (regression guard for GROOVY-12084: the
+        // groovy-contracts SynchronizedStatement→BlockStatement crash that used to bite this exact shape).
+        [group: 'P115 monitor-invariant', name: 'synchronized mutator without @Requires verifies', ok: true,
+         src: tc('''@Invariant({ count >= 0 })
+                    class Latch {
+                        int count
+                        @Ensures({ count == old.count + 1 })
+                        @groovy.transform.Synchronized
+                        void tick() { count = count + 1 }
                     }''')],
         // Refute: an unguarded withdraw (missing amount <= balance) lets a critical section break the lock
         // invariant — the verifier catches it, so the monitor invariant is genuinely checked through the lock.
