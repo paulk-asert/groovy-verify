@@ -949,6 +949,9 @@ class VerifyChecker extends TypeCheckingExtension {
             // internal keys: nullity flag, array element, SSA version — surfaced via failingCall / the
             // base (entry) variable, not shown raw.
             if (k.endsWith('?null') || k.endsWith(']') || k.contains('#')) return
+            // Phase 121 — a trait property is woven onto the implementing class as a `<Trait>__<field>` backing
+            // field alongside the source-named property; show only the latter (the name the developer wrote).
+            if (k.contains('__')) return
             // Phase 63 — the for-in desugar's synthetic index is internal; the loop variable carries
             // the source name, so suppress the index from the displayed counterexample.
             if (k.contains(ContractExpansionTransform.FOR_IN_INDEX)) return
@@ -1407,6 +1410,15 @@ class VerifyChecker extends TypeCheckingExtension {
 
     @Override
     void afterVisitMethod(MethodNode node) {
+        // Phase 121 — trait machinery: a trait's default method is woven into a static helper method on a
+        // `…$Trait$Helper` class (a synthetic `$self` receiver as first parameter) and a delegating bridge on
+        // each implementing class, both generated *after* the CONVERSION snapshot — so the verifier would see
+        // a post-weave `try/catch` body (a spurious "skipped" error) and a phantom `$self != null` obligation.
+        // Skip these synthetic methods quietly: trait code then compiles cleanly, and the trait's contribution
+        // we *do* verify — its class `@Invariant`, enforced on each implementer's own methods — flows through
+        // the interface walk in walkClassInvariants. (Verifying trait default-method *contracts* through the
+        // weaving is a separate, larger slice.)
+        if (isTraitMachineryMethod(node)) return
         try {
             Statement body = (Statement) node.getNodeMetaData(
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
@@ -1473,6 +1485,15 @@ class VerifyChecker extends TypeCheckingExtension {
             // Phase 13 (frame): a method with @Modifies must write only what it declares. Best-effort.
             try {
                 frameCheck(node)
+            } catch (Throwable ignored) {
+            }
+
+            // Phase 120 (behavioral subtyping / Liskov): if this method overrides a contracted parent method
+            // and redeclares its own contract, prove the override is substitutable — its @Requires is weaker
+            // (pre_parent ⟹ pre_child) and its @Ensures is stronger ((pre_parent ∧ post_child) ⟹ post_parent).
+            // Pure contract-implication checks, independent of the body. Best-effort.
+            try {
+                verifyBehavioralSubtyping(node)
             } catch (Throwable ignored) {
             }
         } finally {
@@ -3255,6 +3276,118 @@ class VerifyChecker extends TypeCheckingExtension {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
         }
+    }
+
+    // ---- Phase 121: trait machinery recognition ----
+
+    /** True for a synthetic trait-weaving method the verifier should leave alone: a static helper on a
+     *  `…$Trait$Helper` class (carrying a `$self` receiver), or an implementing class's generated bridge that
+     *  just delegates to one. These are produced after the clean-body snapshot, so they only yield noise. */
+    private static boolean isTraitMachineryMethod(MethodNode node) {
+        if (node == null) return false
+        ClassNode dc = node.declaringClass
+        if (dc != null && dc.name != null && dc.name.contains('$Trait$Helper')) return true
+        Parameter[] ps = node.parameters
+        if (ps != null && ps.length > 0 && ps[0].name == '$self') return true
+        // An implementing class's trait bridge is synthetic and its source is a trait, not the class itself.
+        if (node.isSynthetic() && dc != null && dc.interfaces != null) {
+            for (ClassNode itf : dc.interfaces) {
+                if (org.codehaus.groovy.transform.trait.Traits.isTrait(itf) &&
+                    itf.getDeclaredMethod(node.name, node.parameters) != null) return true
+            }
+        }
+        false
+    }
+
+    // ---- Phase 120: behavioral subtyping (Liskov substitution) ----
+
+    /** The contracted method this one overrides, walking the superclass chain by name + parameter types. */
+    private static MethodNode overriddenSuperMethod(MethodNode node) {
+        if (node == null || node.isStatic() || node instanceof ConstructorNode) return null
+        ClassNode dc = node.declaringClass
+        if (dc == null) return null
+        ClassNode sc = dc.superClass
+        while (sc != null && sc != ClassHelper.OBJECT_TYPE) {
+            MethodNode m = sc.getDeclaredMethod(node.name, node.parameters)
+            if (m != null) return m
+            sc = sc.superClass
+        }
+        null
+    }
+
+    /** Rename a parent contract's formal-parameter references to the child's names, by position (so both
+     *  contracts read over one shared namespace). Returns null if the arities differ. */
+    private static Expression alignParentParams(Expression parentContract, MethodNode parent, MethodNode child) {
+        if (parentContract == null) return null
+        Parameter[] pp = parent.parameters, cp = child.parameters
+        if (pp.length != cp.length) return null
+        Expression e = parentContract
+        for (int i = 0; i < pp.length; i++) {
+            if (pp[i].name != cp[i].name) e = renameVariable(e, pp[i].name, cp[i].name)
+        }
+        e
+    }
+
+    /**
+     * Phase 120 — prove an override is a behavioral subtype of the method it overrides. Fires only when the
+     * child *redeclares* a contract (an omitted clause is inherited verbatim, so it's trivially compatible).
+     * Two SMT implication checks over the shared parameter/result namespace, independent of either body:
+     *   - precondition weakening: pre_parent ⟹ pre_child   (the child must accept every call the parent did)
+     *   - postcondition strengthening: (pre_parent ∧ post_child) ⟹ post_parent   (the child must promise ≥)
+     * A satisfiable negation is a concrete substitutability counterexample.
+     */
+    private void verifyBehavioralSubtyping(MethodNode node) {
+        MethodNode parent = overriddenSuperMethod(node)
+        if (parent == null) return
+
+        if (!node.getAnnotations(REQUIRES_TYPE).isEmpty()) {
+            Expression childReq = contractAstFor(node, 'requires')
+            // parent's effective precondition (null ⇒ `true`, i.e. accepts everything)
+            Expression parentReq = parent.getAnnotations(REQUIRES_TYPE).isEmpty() ? null :
+                alignParentParams(contractAstFor(parent, 'requires'), parent, node)
+            if (childReq != null) {
+                checkLspImplication(node, parentReq == null ? Collections.<Expression>emptyList() : [parentReq],
+                    childReq, 'precondition', '@Requires must be weakened (or kept), never strengthened, in an override')
+            }
+        }
+
+        if (!node.getAnnotations(ENSURES_TYPE).isEmpty() && !parent.getAnnotations(ENSURES_TYPE).isEmpty()) {
+            Expression childEns = contractAstFor(node, 'ensures')
+            Expression parentEns = alignParentParams(contractAstFor(parent, 'ensures'), parent, node)
+            Expression parentReq = parent.getAnnotations(REQUIRES_TYPE).isEmpty() ? null :
+                alignParentParams(contractAstFor(parent, 'requires'), parent, node)
+            if (childEns != null && parentEns != null) {
+                List<Expression> assume = new ArrayList<Expression>()
+                if (parentReq != null) assume.add(parentReq)
+                assume.add(childEns)
+                checkLspImplication(node, assume, parentEns, 'postcondition',
+                    '@Ensures must be strengthened (or kept), never weakened, in an override')
+            }
+        }
+    }
+
+    /** Assert the assumptions and the negated goal in a fresh session; a model (REFUTED) is an LSP violation. */
+    private void checkLspImplication(MethodNode node, List<Expression> assume, Expression goal,
+                                     String kind, String detail) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            for (Expression a : assume) {
+                Object h = enc.translate(a)
+                if (h == null) return            // outside fragment → can't judge soundly; stay silent
+                s.assertExpr(h)
+            }
+            Object g = enc.translate(goal)
+            if (g == null) return
+            s.assertExpr(s.not(g))
+            CheckResult r = shown(s.check())
+            if (r.status == CheckResult.Status.REFUTED) {
+                ConstantExpression proxy = new ConstantExpression(node.name)
+                proxy.setSourcePosition((ASTNode) node)
+                addStaticTypeError(Reporter.formatLspViolation(node.name, kind, detail, r), (ASTNode) proxy)
+            }
+        } catch (Throwable ignored) {
+        } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
     /**
@@ -5712,13 +5845,22 @@ class VerifyChecker extends TypeCheckingExtension {
     static List<Expression> classInvariantTexts(ClassNode cn) {
         List<Expression> out = new ArrayList<Expression>()
         walkClassInvariants(cn, out)
-        out
+        // Phase 121 — a class may reach the same invariant by two paths (e.g. two traits extending a common
+        // one, or a superclass that also implements the trait); dedupe by source text so it isn't proved twice.
+        Set<String> seen = new HashSet<String>()
+        List<Expression> deduped = new ArrayList<Expression>()
+        for (Expression e : out) { if (seen.add(e.text)) deduped.add(e) }
+        deduped
     }
 
-    /** Recursive helper: walk superclass first, then add this class's invariants (super-first order). */
+    /** Recursive helper: walk superclass and implemented interfaces/traits first, then add this class's own
+     *  invariants (ancestors-first order). Phase 121 — walking {@code interfaces} lets a **trait**'s class
+     *  {@code @Invariant} be enforced on the methods of every implementing class. */
     private static void walkClassInvariants(ClassNode cn, List<Expression> out) {
         if (cn == null || cn == ClassHelper.OBJECT_TYPE) return
         walkClassInvariants(cn.superClass, out)
+        ClassNode[] itfs = cn.interfaces
+        if (itfs != null) for (ClassNode itf : itfs) walkClassInvariants(itf, out)
         List<AnnotationNode> sources = cn.getAnnotations(CLASS_INVARIANT_SOURCE_TYPE)
         if (sources == null || sources.isEmpty()) return
         Expression member = sources[0].getMember('invariants')

@@ -5888,6 +5888,55 @@ only the *assumed* structural half changes.
 
 ---
 
+## Phase 120 — behavioral subtyping (Liskov substitution)  *(shipped — a new *kind* of proof)*
+
+The first check that relates *two contracts* rather than verifying one against a body. When a method overrides a
+contracted parent method and **redeclares** its own contract, the engine proves the override is substitutable:
+the precondition must be **weakened** (`pre_parent ⟹ pre_child` — the child accepts every call the parent did)
+and the postcondition **strengthened** (`(pre_parent ∧ post_child) ⟹ post_parent` — the child promises at least
+as much). Both are pure SMT implication checks over a shared parameter/result namespace (the parent's contract
+is re-aligned to the child's formal names by position), run in `afterVisitMethod` with no body involved; a
+satisfiable negation is a concrete substitutability counterexample.
+
+~110 lines (`verifyBehavioralSubtyping` / `overriddenSuperMethod` / `alignParentParams` / `checkLspImplication`
+in `VerifyChecker`, `Reporter.formatLspViolation`). Fires only when the child *redeclares* a clause — an omitted
+one is inherited verbatim, hence trivially compatible. Skips silently if either contract falls outside the
+encoder fragment (can't judge soundly). **Shipped tests (group `P-lsp`)**: a strengthened precondition (`x >= 10`
+over `x >= 0`) refutes with witness `f(0)`; a precondition *added* over an unconstrained parent refutes; a
+weakened postcondition (`result >= 0` over `result >= 5`) refutes; weakening the precondition and strengthening
+the postcondition both verify clean.
+
+The remaining override slice (not pursued here): an **uncontracted** override is still not re-verified against
+the inherited contract — groovy-verify checks a method only against the clause it declares.
+
+---
+
+## Phase 121 — traits  *(shipped — interface-walk + machinery skip)*
+
+Traits work along the `implements` axis, mirroring inheritance one axis over. Two changes:
+
+1. **Trait class `@Invariant` enforced on implementers.** `walkClassInvariants` now walks `interfaces` (a trait
+   is an interface), so a trait's `@Invariant` is conjoined into every implementing class's effective invariant
+   and proved at each of its own methods' exits. A trait property is woven onto the implementer as a field, so
+   an implementing method that breaks the trait invariant refutes — and a method gets full functional
+   verification over the woven trait field. (Dedupe by source text guards the diamond case; the internal
+   `<Trait>__<field>` backing name is suppressed from counterexamples in favour of the source-named property.)
+
+2. **Trait machinery skipped quietly.** A trait's *default* method is woven — after the CONVERSION clean-body
+   snapshot — into a synthetic static helper on a `…$Trait$Helper` class (a `$self` receiver) plus a delegating
+   bridge on each implementer. Before this slice those leaked a phantom `$self != null` obligation and a
+   `try/catch`-body "skipped" *error*, so **any** contracted trait failed to compile under the extension.
+   `isTraitMachineryMethod` now recognises and skips them (`$Trait$Helper` owner, `$self` first param, or a
+   synthetic bridge whose source is a trait), so trait code compiles cleanly.
+
+**Shipped tests (group `P-trait`)**: a trait `@Invariant` broken by an implementing `dec()` refutes; a guarded
+`dec()` preserves it; an implementing method proves a functional `@Ensures` over the trait field; a trait with a
+concrete contracted default method compiles clean. The honest boundary: a trait default method's *own* contract
+isn't verified through the weaving (its post-weave body is a `try/catch`); enforced at runtime by
+groovy-contracts, it would need snapshotting the pre-weave trait body + `$self`↦`this` mapping — a larger slice.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -5910,6 +5959,15 @@ Things deliberately not pursued, because they don't pay back:
   examples (Phases 115–119) prove a *sequential* local obligation and **assume** the structural guarantee
   (mutual exclusion / serialization / single-assignment / FIFO delivery); they don't verify that guarantee.
   Proving thread safety itself is a different tool.
+- **Inheritance & traits — *supported* (Phases 15a, 120, 121); one override slice remains.** A subclass is
+  verified along the `extends` axis (conjoined class `@Invariant`s up the superclass chain; `super.m(…)` assumes
+  the parent's `@Ensures` / discharges its `@Requires`; group `P-inheritance`), an override that redeclares its
+  contract is proved a **behavioral subtype** (Phase 120, LSP), and **traits** work along the `implements` axis
+  (Phase 121: trait `@Invariant` enforced on implementers, machinery skipped so trait code compiles cleanly).
+  The one open slice: an **uncontracted** override (or trait default method) is not re-verified against the
+  inherited/trait contract — the verifier checks a method only against the clause it declares; groovy-contracts
+  still enforces the inherited one at runtime. Verifying a trait default method's *own* contract through the
+  weaving (snapshot the pre-weave trait body + map `$self`↦`this`) is the larger remaining piece.
 - **Heap / aliasing — *partially revisited* (Phase 89, above; slices 1–2 shipped — reference identity + identity-keyed field reads & writes; the `old`-relative `transfer` is a dual-tenet boundary, not pursued).**
   The fragment models collection state as value-semantics — every `@Modifies` havoc is per-name, and `old`
   snapshots are independent copies. The *general* problem — reachability through object graphs, "everything

@@ -1141,14 +1141,69 @@ class VerifyHarness {
         // Without the parent clause inherited, the verifier would have no way to know count stays
         // non-negative after the increment — so this case is the end-to-end proof that the super-
         // walk wired in step 2 flows through to the discharge sites.
+        // NB: both classes carry @TypeChecked — the extension is not inherited by subclasses, so annotating
+        // only the parent (the bare tc() form) would leave the child's methods unverified (a vacuous pass).
         [group: 'P15a class-invariant', name: 'parent invariant inherited', ok: true,
-         src: tc('''@groovy.contracts.Invariant({ count >= 0 })
-                    class P { int count }
-                    @groovy.contracts.Invariant({ count <= max })
-                    class C extends P { int max
-                        @Requires({ count < max })
-                        void inc() { count = count + 1 }
-                    }''')],
+         src: HDR + """
+@groovy.contracts.Invariant({ count >= 0 })
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class P { int count }
+@groovy.contracts.Invariant({ count <= max })
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C extends P {
+    int max
+    @Requires({ count < max })
+    void inc() { count = count + 1 }
+}
+"""],
+        // The non-vacuity proof: a child mutator that respects ONLY its own concerns breaks the *inherited*
+        // `count >= 0`, and the conjoined invariant refutes (counterexample count=0).
+        [group: 'P15a class-invariant', name: 'child breaking inherited invariant refutes', ok: false, expect: 'Cannot prove class invariant',
+         src: HDR + """
+@groovy.contracts.Invariant({ count >= 0 })
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class P { int count }
+@groovy.contracts.Invariant({ count <= max })
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C extends P {
+    int max
+    void dec() { count = count - 1 }
+}
+"""],
+        // ---------- Inheritance: cross-method reasoning along the `extends` axis ----------
+        // A `super.f(x)` call is treated like any contracted call: the parent's @Ensures is *assumed* for the
+        // result and the parent's @Requires is *discharged* at the call site. So a child can build on the
+        // parent's proven postcondition to establish a strengthened one of its own.
+        [group: 'P-inheritance', name: 'super call assumes parent postcondition', ok: true,
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base {
+    @Requires({ x >= 0 })
+    @Ensures({ result == x * 2 })
+    int f(int x) { x + x }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Derived extends Base {
+    @Requires({ x >= 0 })
+    @Ensures({ result == x * 2 + 1 })
+    int g(int x) { super.f(x) + 1 }
+}
+"""],
+        // The parent's precondition is a real obligation at the `super` call: a child that calls `super.f(x)`
+        // without establishing `x >= 0` is refuted with a counterexample.
+        [group: 'P-inheritance', name: 'super call must satisfy parent precondition', ok: false, expect: 'Cannot prove precondition',
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base {
+    @Requires({ x >= 0 })
+    @Ensures({ result == x * 2 })
+    int f(int x) { x + x }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Derived extends Base {
+    int g(int x) { super.f(x) + 1 }
+}
+"""],
         // Step 7 — a static method on an @Invariant class is not subject to the invariant
         // (no `this`). The method verifies even though its body would violate the invariant if
         // applied as an exit obligation — confirming the isStatic() skip in beforeVisitMethod.
@@ -4273,6 +4328,102 @@ class VerifyHarness {
                         @Ensures({ result })
                         static boolean isLower(String s) { s.matches("[a-z]+") }
                     }''')],
+        // ---------- Phase 120: behavioral subtyping (Liskov substitution) ----------
+        // When an override *redeclares* its own contract, groovy-verify proves it is substitutable for the
+        // overridden method: the precondition must be WEAKENED (pre_parent ⟹ pre_child) and the postcondition
+        // STRENGTHENED ((pre_parent ∧ post_child) ⟹ post_parent). These are pure SMT implication checks over
+        // the shared parameter/result namespace — no body involved — and a violation comes with a witness.
+        // A child that strengthens its precondition rejects calls the parent accepted — the classic LSP break:
+        [group: 'P-lsp', name: 'strengthened precondition refutes (witness)', ok: false, expect: 'precondition is not behaviourally compatible',
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base { @Requires({ x >= 0 }) @Ensures({ result == x }) int f(int x) { x } }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Sub extends Base { @Requires({ x >= 10 }) @Ensures({ result == x }) int f(int x) { x } }
+"""],
+        // Weakening the precondition (accepting more) is fine — substitutable.
+        [group: 'P-lsp', name: 'weakened precondition is allowed', ok: true,
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base { @Requires({ x >= 0 }) @Ensures({ result == x }) int f(int x) { x } }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Sub extends Base { @Requires({ x >= -5 }) @Ensures({ result == x }) int f(int x) { x } }
+"""],
+        // Parent has no @Requires (accepts everything); a child that adds one strengthens it — a violation.
+        [group: 'P-lsp', name: 'adding a precondition over an unconstrained parent refutes', ok: false, expect: 'precondition is not behaviourally compatible',
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base { @Ensures({ result == x }) int f(int x) { x } }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Sub extends Base { @Requires({ x >= 0 }) @Ensures({ result == x }) int f(int x) { x } }
+"""],
+        // A child that weakens its postcondition promises less than the parent — a violation.
+        [group: 'P-lsp', name: 'weakened postcondition refutes', ok: false, expect: 'postcondition is not behaviourally compatible',
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base { @Requires({ x >= 0 }) @Ensures({ result >= 5 }) int f(int x) { x + 5 } }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Sub extends Base { @Requires({ x >= 0 }) @Ensures({ result >= 0 }) int f(int x) { x + 5 } }
+"""],
+        // Strengthening the postcondition (promising more) is fine — substitutable.
+        [group: 'P-lsp', name: 'strengthened postcondition is allowed', ok: true,
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Base { @Requires({ x >= 0 }) @Ensures({ result >= 5 }) int f(int x) { x + 10 } }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Sub extends Base { @Requires({ x >= 0 }) @Ensures({ result >= 10 }) int f(int x) { x + 10 } }
+"""],
+        // ---------- Phase 121: traits ----------
+        // A trait's class @Invariant is collected along the `implements` axis (walkClassInvariants walks
+        // interfaces) and enforced on every implementing class's own methods — the same monitor-invariant proof
+        // as inheritance, one axis over. A trait property (`count`) is woven onto the implementer as a field, so
+        // an implementing method that breaks the trait invariant refutes:
+        [group: 'P-trait', name: 'trait @Invariant enforced on implementing method (refutes)', ok: false, expect: 'Cannot prove class invariant',
+         src: HDR + """
+@groovy.contracts.Invariant({ count >= 0 })
+trait Counting { int count }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C implements Counting {
+    void dec() { count = count - 1 }
+}
+"""],
+        // With a guard the implementing method preserves the trait invariant.
+        [group: 'P-trait', name: 'trait @Invariant preserved by guarded implementing method', ok: true,
+         src: HDR + """
+@groovy.contracts.Invariant({ count >= 0 })
+trait Counting { int count }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C implements Counting {
+    @Requires({ count > 0 })
+    void dec() { count = count - 1 }
+}
+"""],
+        // An implementing method gets full functional verification over the woven trait field, with the trait
+        // invariant in force.
+        [group: 'P-trait', name: 'implementing method functional proof over trait field', ok: true,
+         src: HDR + """
+@groovy.contracts.Invariant({ count >= 0 })
+trait Counting { int count }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C implements Counting {
+    @Requires({ count >= 0 })
+    @Ensures({ result == count + 1 })
+    int next() { count + 1 }
+}
+"""],
+        // A trait carrying a *concrete* contracted default method must compile cleanly under the extension: its
+        // body is woven into a synthetic `\$Trait\$Helper` (post-snapshot), which the verifier skips quietly
+        // rather than mis-reporting. (Verifying the default method's contract through the weaving is future work.)
+        [group: 'P-trait', name: 'concrete contracted trait default method compiles clean', ok: true,
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+trait Clamp {
+    @Ensures({ result >= 0 })
+    int nonNeg(int x) { x < 0 ? 0 : x }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C implements Clamp { }
+"""],
         // ----- Cooperative synergy: PurityChecker supplies the purity GUARANTEE VerifyChecker relies on.
         // VerifyChecker's pure-evaluation (Phase 8a) proves f() by inlining the contract-free same-class
         // helper triple() as a value — an evaluation that is only meaningful if triple is referentially

@@ -2364,6 +2364,33 @@ contracts) — but it does *not* verify the definition itself: the canonical con
 pattern matching, and generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is
 understood only through the fields and finite domain its methods actually touch.
 
+**Inheritance** is modelled along the `extends` axis. A subclass method is verified against the *conjunction* of
+its own and every ancestor's class `@Invariant` (walked up the superclass chain), and a `super.m(…)` call is
+treated like any contracted call — the parent's `@Ensures` is assumed for the result, its `@Requires` discharged
+at the call site — so a child can prove a strengthened postcondition built on the parent's:
+
+```groovy
+@TypeChecked(extensions = 'verification.VerifyChecker')   // each class needs its own — the extension isn't inherited
+class Base    { @Requires({ x >= 0 }) @Ensures({ result == x * 2 })     int f(int x) { x + x } }
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Derived extends Base { @Ensures({ result == x * 2 + 1 }) int g(int x) { super.f(x) + 1 } }  // proven
+```
+
+And when an override **redeclares** its own contract, the engine proves it is a **behavioral subtype** (Liskov
+substitution): the precondition must be *weakened* (`pre_parent ⟹ pre_child`) and the postcondition
+*strengthened* (`(pre_parent ∧ post_child) ⟹ post_parent`). These are pure SMT implication checks over the
+shared parameter/result namespace — no body involved — so a child that, say, strengthens its `@Requires` (`x >=
+10` over a parent's `x >= 0`) is flagged as non-substitutable with a concrete witness (`f(0)`).
+
+**Traits** work along the `implements` axis: a trait's class `@Invariant` is collected (the interface walk) and
+enforced on every implementing class's own methods — the same monitor-invariant proof as inheritance — and an
+implementing method gets full functional verification over the woven trait fields. A trait carrying a *concrete*
+contracted default method compiles cleanly (its body is woven into a synthetic helper after the clean-body
+snapshot, so the verifier skips that machinery quietly). One honest boundary on each axis: a method is verified
+only against the contract it *declares* — an inherited/trait `@Ensures` isn't re-checked against an
+*uncontracted* override or the woven default method (groovy-contracts still enforces both at runtime); and each
+class needs its own `@TypeChecked` (it isn't inherited).
+
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
 `++`/`--` both as statements and **in expression position** (`x = i++` / `x = ++i` / `a[i++] = v` /

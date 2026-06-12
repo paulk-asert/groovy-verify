@@ -145,6 +145,17 @@ class Reporter {
         "still apply."
     }
 
+    /** Phase 120 — a behavioral-subtyping (Liskov) violation: an override's contract is not substitutable for
+     *  the method it overrides (a strengthened precondition or a weakened postcondition). */
+    static String formatLspViolation(String methodName, String kind, String detail, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        sb.append("Liskov substitution violation in override '").append(methodName)
+          .append("': its ").append(kind).append(" is not behaviourally compatible with the overridden method")
+        if (detail) sb.append("\n    rule: ").append(detail)
+        appendModel(sb, result)
+        sb.toString()
+    }
+
     static String formatModifiesViolation(String methodName, String location, Collection<String> declared) {
         "Method '${methodName}' writes '${location}', which is not in its @Modifies clause ${new TreeSet<>(declared)}. " +
         "A method may modify only the locations it declares (an empty @Modifies({}) means none)."
