@@ -1936,6 +1936,52 @@ of the two known duplicates differs from `a[r1.v1]`). The result: two pairs with
 Nothing here is a special case — the nested witness search, the tuple returns, and binding a local to a
 tuple-returning call are all general capabilities; Duplets just needs all three at once.
 
+## Locks — the monitor invariant
+
+Like `@TailRecursive`, Groovy's **lock AST transforms** (`@WithReadLock` / `@WithWriteLock` / `@Synchronized`)
+compose with the verifier — and not just trivially. They're *transparent*: the clean body is captured at the
+`CONVERSION` phase, before the lock wrapper is woven in at `CANONICALIZATION`, so the verifier proves the
+method's contract through the lock as if it weren't there. That lets the **class `@Invariant` stand in as the
+lock's monitor invariant**. The classic example — a lock-guarded account that must never overdraw:
+
+```groovy
+@Invariant({ balance >= 0 })                       // the monitor invariant the lock protects
+class Account {
+    int balance
+
+    @Requires({ amount >= 0 })
+    @Ensures({ balance == old.balance + amount })
+    @WithWriteLock
+    void deposit(int amount) { balance = balance + amount }
+
+    @Requires({ 0 <= amount && amount <= balance }) // the guard that keeps the invariant
+    @Ensures({ balance == old.balance - amount })
+    @WithWriteLock
+    void withdraw(int amount) { balance = balance - amount }
+
+    @Ensures({ result == balance })
+    @WithReadLock
+    int currentBalance() { return balance }
+}
+```
+
+Every critical section is verified to **preserve `balance >= 0`** — and drop the `amount <= balance` guard from
+`withdraw` and it refutes (the overdraw is caught). This is exactly the lock-with-resource-invariant
+methodology of Chalice/Viper, where *"acquiring a monitor is replaced by an inhale of the corresponding monitor
+invariant, releasing by an exhale"* — here, the class `@Invariant` is assumed on method entry and checked
+restored on exit. It's the standard reduction of a concurrent safety property to a **per-critical-section
+sequential proof**.
+
+**What this is, and isn't.** We verify the sequential half — each critical section maintains the lock
+invariant — which, *given* the lock provides mutual exclusion and all access goes through it, is what makes the
+invariant a global safety property. We do **not** verify that mutual exclusion (no race on unlocked access,
+no deadlock, no lock-ordering); that needs concurrent separation logic with fractional permissions — the
+Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker. So this is an
+honest *monitor-invariant* proof, not a from-scratch proof of thread safety. (One Groovy caveat: a
+`@Synchronized` method with `@Ensures`/`@Invariant` but no `@Requires` currently hits a
+[groovy-contracts](https://groovy-lang.org) AST bug — `SynchronizedStatement cannot be cast to BlockStatement`
+— so give synchronized methods a precondition, or use `@WithWriteLock`.)
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -2009,6 +2055,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **`**` power operator — typing, congruence + defining axioms** | Z3 has no variable-exponent power, so `base ** exp` lowers to `pow$ : (Int,Int) → Int` with base/step axioms minted like `fib$`/`gcd$` (`pow(b,0)==1`, `pow(b,k)==b·pow(b,k-1)` for `k≥1`). A **literal** exponent unfolds to a value (`(2 ** 3).intValue() == 8` proves, `== 9` refutes); the **doubling recurrence** `2 ** (n+1) == 2 * (2 ** n)` proves for *symbolic* `n` — the verification analog of `(0..10).each { assert 1<<n == 2**n }`, and stronger (all `n≥0`). Trade: a false *symbolic*-exponent value claim (`2 ** n == 5`) is now refute-hostile — soft-fails to "could not decide" rather than a crisp counterexample (the `Fib`/`Gcd` recurrence trade); deeper facts like `2 ** n ≥ 1` need induction the e-matching can't reach. Groovy's `**` returns `Number`, so the int surface is `(base ** exp).intValue()` (identity on the integral term). Symbolic `1 << n` (bit-vector) ↔ `2 ** n` (`pow$`) bridge is a separate slice | ✅ Phase 93 / 93b |
 | **Cross-class `@Invariant` assumption** | A class-typed parameter carries its class's invariants into the calling method. `c.count >= 0` is assumed automatically when the receiver `c: Counter` has `@Invariant({ count >= 0 })`. Cross-class calls (`c.incr()`) discharge the callee's `@Requires` under a receiver context, then havoc the receiver's fields and re-assume its invariants on return. Field references are namespaced per receiver (`c$count` distinct from `b$count`); for a *single* receiver this is sound under the no-aliasing assumption (a project [non-goal](ROADMAP.md)), and when *two* parameters of the same class are present the identity model below (Phase 89) engages instead — they may alias | ✅ Phase 45 |
 | **Verified mutable data structure (ring buffer)** | A class `@Invariant` on a mutable object is both *assumed on entry* and *checked preserved on exit* of every method — so a bounded ring-buffer queue (array field `data` + head `m` + tail `n`, type invariant `0 < data.length ∧ 0 ≤ m ≤ n ≤ data.length`) verifies `enqueue`/`dequeue`/`size` as a unit: `enqueue` proves `n == old.n + 1 ∧ data[old.n] == x ∧ ∀i<old.n. data[i] == old.data[i]` (the array-region frame via `old.data[it]`), `dequeue` returns `old.data[old.m]`, and an unguarded mutator that breaks the invariant refutes with "Cannot prove class invariant". Composes object array-fields + `old`-framing (Phase 11/13) with class-invariant preservation (Phase 45) — the Toccata/Leino `ring_buffer`, specified directly over `data[m..n)` since the engine has no ghost/model-field abstraction | ✅ Phase 107 |
+| **Lock transforms & the monitor invariant** | Groovy's `@WithReadLock` / `@WithWriteLock` / `@Synchronized` AST transforms are *transparent* — the clean body is snapshotted at `CONVERSION` before the lock wrapper is woven in, so a contract verifies through the lock as if it weren't there. The class `@Invariant` then serves as the **monitor invariant**: each critical section is checked to preserve it (Chalice/Viper's "acquire inhales the invariant, release exhales it", sequentially). A lock-guarded `Account` proves it never overdraws (`balance >= 0`); dropping the `amount <= balance` guard refutes. *Honest boundary:* this is the per-critical-section sequential half — mutual exclusion / race / deadlock freedom are **not** proven (those need concurrent separation logic + permissions, à la Verus/Viper). No engine change. (Caveat: `@Synchronized` + `@Ensures`/`@Invariant` without a `@Requires` hits a groovy-contracts AST bug — give synchronized methods a precondition) | ✅ Phase 115 |
 | **Reference identity + identity-keyed object fields (reads + writes)** | Two object parameters of the same class are *alias-modelled*: their `int` fields are a per-`(class, field)` heap map indexed by object identity, and `a === b` / `a.is(b)` lowers to identity equality `id(a) == id(b)`. **Reads** (slice 1): `a.is(b)` makes the fields **provably coincide** (`a.is(b) ⟹ a.balance == b.balance`), **refuted without it** — reasoning the per-name model (distinct names ⇒ distinct objects) structurally cannot do. **Writes** (slice 2): `a.balance = v` stores into the map, so a write through `a` is **observed through `b` exactly when they alias** — `a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, refuted without the alias. Straight-line, `int`-field-only; single-object-param and distinct-class methods keep the per-name model untouched. **Not pursued** (a dual-tenet boundary): the `old(obj.field)`-relative `transfer` — groovy-contracts' `old` is a `Map` of `this`-field snapshots and never captures a *parameter's* field, so such a contract can't run at runtime; modelling it would be verify-only, breaking the executable-specs principle | ✅ Phase 89 (slices 1–2) |
 | **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
 | **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable | ✅ Phase 46b / 46c |

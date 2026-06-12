@@ -5738,6 +5738,35 @@ constructors, deconstruction/pattern matching, generated `equals`/`toString` —
 
 ---
 
+## Phase 115 — lock AST transforms & the monitor invariant  *(shipped — no engine change)*
+
+The first concurrency-adjacent slice. Groovy's lock AST transforms — `@WithReadLock` / `@WithWriteLock` /
+`@Synchronized` — turn out to be **transparent** to the verifier: `ContractExpansionTransform` snapshots the
+clean body at `CONVERSION` (before the locks weave their wrapper in at `CANONICALIZATION`), so the method's
+contract verifies through the lock as if it weren't there (confirmed: `@WithWriteLock`/`@Synchronized` mutators
+verify their `@Ensures` + the class `@Invariant`; a wrong `@Ensures` still refutes, so the body is genuinely
+modelled, not skipped). No engine change needed — the slice is the framing + tests.
+
+That makes the class `@Invariant` a **lock/monitor invariant**: each critical section is verified to preserve
+it — exactly Chalice/Viper's "acquire inhales the invariant, release exhales it", but sequential. **Honest
+boundary:** we prove the per-critical-section obligation (the sequential half of a monitor proof); mutual
+exclusion, race-freedom, deadlock-freedom are **not** proven — those need concurrent separation logic with
+fractional permissions (Verus / Viper / VerCors), out of scope for an SMT sequential checker. So it's a
+monitor-invariant proof, not a from-scratch thread-safety proof.
+
+**Shipped tests (Phase 115, group `P115 monitor-invariant`)**: a lock-guarded `Account` (`@WithWriteLock`
+deposit/withdraw, `@WithReadLock` read) proves it never overdraws (`balance >= 0`); a `@Synchronized` latch
+proves `count >= 0`; dropping the `amount <= balance` guard from `withdraw` refutes (`Cannot prove class
+invariant` — the critical section that breaks the lock invariant is caught); a wrong `@Ensures` refutes through
+the lock (non-vacuity — the body is modelled).
+
+**Upstream bug found (filed separately):** a `@Synchronized` method carrying `@Ensures`/`@Invariant` but no
+`@Requires` crashes groovy-contracts (`SynchronizedStatement cannot be cast to BlockStatement` — the
+contract-injection rewrite assumes a `BlockStatement` body; the `@Requires` path block-wraps first, which is
+why it only bites without one). Worked around in the examples by giving synchronized methods a precondition.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
