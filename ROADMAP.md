@@ -5930,10 +5930,34 @@ Traits work along the `implements` axis, mirroring inheritance one axis over. Tw
    synthetic bridge whose source is a trait), so trait code compiles cleanly.
 
 **Shipped tests (group `P-trait`)**: a trait `@Invariant` broken by an implementing `dec()` refutes; a guarded
-`dec()` preserves it; an implementing method proves a functional `@Ensures` over the trait field; a trait with a
-concrete contracted default method compiles clean. The honest boundary: a trait default method's *own* contract
-isn't verified through the weaving (its post-weave body is a `try/catch`); enforced at runtime by
-groovy-contracts, it would need snapshotting the pre-weave trait body + `$self`↦`this` mapping — a larger slice.
+`dec()` preserves it; an implementing method proves a functional `@Ensures` over the trait field.
+
+---
+
+## Phase 122 — trait default-method verification  *(shipped — pre-weave-body recovery)*
+
+Closes the Phase-121 boundary: a trait's *concrete default method* is now verified, not just skipped. The blocker
+was that the implementing class's woven method delegates to a synthetic helper, and the trait method itself is
+abstract by type-check time — but a probe found the CONVERSION snapshot (`ORIGINAL_BODY_KEY`) is still attached
+to the trait method node, already in field-accessor form:
+`((Counter$Trait$FieldHelper) $self).Counter__count$set( (… $get() == 9) ? 0 : (… $get() + 1) )`.
+
+So in `afterVisitClass(C)`, for each trait `C` implements, each default method with a snapshot is recovered and
+**desugared** (`desugarTraitBody`): the woven accessors `((FieldHelper) $self).Trait__field$get()` / `$set(v)`
+rewrite back to plain `field` reads / `field = v` writes (dropping the receiver casts and the `Trait__` backing
+prefix), yielding exactly the body the same logic would have as a class method. That body is verified through a
+synthetic `MethodNode` rooted on `C` — so it sees `C`'s fields and `C`'s effective invariant (which already
+includes the trait's, via Phase 121). Two wrinkles found by probe, both fixed: the woven argument list is a bare
+`TupleExpression` (not the `ArgumentListExpression` the matchers first assumed), and the synthetic node needs a
+source position or its class-invariant refutation is silently swallowed by STC (the Phase-94 dropped-anchor
+issue). `~120` lines, no new SMT.
+
+**Shipped tests (group `P-trait`)**: a trait default method's `@Ensures` proves (`nonNeg` ⟹ `result >= 0`) and a
+false one refutes; the **wrap-around counter** — a trait owning `count`, a wrapping `inc`, `getCount`, and the
+`0..9` invariant, with an implementing class adding a wrapping `dec` — proves both `inc` and `dec` keep the
+counter in range; a non-wrapping trait `inc` (`count = count + 1`) refutes at `count == 9` (previously it passed
+silently — a real soundness gap closed). The remaining override slice is unchanged: an *uncontracted* override
+isn't re-verified against the inherited contract.
 
 ---
 
@@ -5959,15 +5983,16 @@ Things deliberately not pursued, because they don't pay back:
   examples (Phases 115–119) prove a *sequential* local obligation and **assume** the structural guarantee
   (mutual exclusion / serialization / single-assignment / FIFO delivery); they don't verify that guarantee.
   Proving thread safety itself is a different tool.
-- **Inheritance & traits — *supported* (Phases 15a, 120, 121); one override slice remains.** A subclass is
+- **Inheritance & traits — *supported* (Phases 15a, 120, 121, 122); one override slice remains.** A subclass is
   verified along the `extends` axis (conjoined class `@Invariant`s up the superclass chain; `super.m(…)` assumes
   the parent's `@Ensures` / discharges its `@Requires`; group `P-inheritance`), an override that redeclares its
-  contract is proved a **behavioral subtype** (Phase 120, LSP), and **traits** work along the `implements` axis
-  (Phase 121: trait `@Invariant` enforced on implementers, machinery skipped so trait code compiles cleanly).
-  The one open slice: an **uncontracted** override (or trait default method) is not re-verified against the
-  inherited/trait contract — the verifier checks a method only against the clause it declares; groovy-contracts
-  still enforces the inherited one at runtime. Verifying a trait default method's *own* contract through the
-  weaving (snapshot the pre-weave trait body + map `$self`↦`this`) is the larger remaining piece.
+  contract is proved a **behavioral subtype** (Phase 120, LSP), and **traits** work along the `implements` axis:
+  a trait `@Invariant` is enforced on implementers (Phase 121) and a trait's contracted *default methods* are
+  verified by recovering their pre-weave snapshot and rewriting the woven field accessors (Phase 122). The one
+  open slice: an **uncontracted** override is not re-verified against the inherited contract — the verifier
+  checks a method only against the clause it declares; groovy-contracts still enforces the inherited one at
+  runtime. (A behavioral-subtyping check across the *trait*/`implements` axis, not just `extends`, is the natural
+  extension of Phase 120 if it's ever wanted.)
 - **Heap / aliasing — *partially revisited* (Phase 89, above; slices 1–2 shipped — reference identity + identity-keyed field reads & writes; the `old`-relative `transfer` is a dual-tenet boundary, not pursued).**
   The fragment models collection state as value-semantics — every `@Modifies` havoc is per-name, and `old`
   snapshots are independent copies. The *general* problem — reachability through object graphs, "everything

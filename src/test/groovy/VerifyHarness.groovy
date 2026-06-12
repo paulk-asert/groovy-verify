@@ -4373,6 +4373,40 @@ class Base { @Requires({ x >= 0 }) @Ensures({ result >= 5 }) int f(int x) { x + 
 @TypeChecked(extensions = 'verification.VerifyChecker')
 class Sub extends Base { @Requires({ x >= 0 }) @Ensures({ result >= 10 }) int f(int x) { x + 10 } }
 """],
+        // The README account example (instance-field contracts): GoldAccount weakens `debit`'s precondition
+        // (overdraft) → substitutable; RestrictedAccount strengthens it (min balance) → refuted with a witness.
+        [group: 'P-lsp', name: 'README: GoldAccount weakens debit precondition (substitutable)', ok: true,
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Account {
+    int balance
+    @Requires({ 0 <= amount && amount <= balance })
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class GoldAccount extends Account {
+    @Requires({ 0 <= amount && amount <= balance + 1000 })
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }
+}
+"""],
+        [group: 'P-lsp', name: 'README: RestrictedAccount strengthens debit precondition (refutes)', ok: false, expect: 'precondition is not behaviourally compatible',
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Account {
+    int balance
+    @Requires({ 0 <= amount && amount <= balance })
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class RestrictedAccount extends Account {
+    @Requires({ 0 <= amount && amount <= balance - 100 })
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }
+}
+"""],
         // ---------- Phase 121: traits ----------
         // A trait's class @Invariant is collected along the `implements` axis (walkClassInvariants walks
         // interfaces) and enforced on every implementing class's own methods — the same monitor-invariant proof
@@ -4411,10 +4445,11 @@ class C implements Counting {
     int next() { count + 1 }
 }
 """],
-        // A trait carrying a *concrete* contracted default method must compile cleanly under the extension: its
-        // body is woven into a synthetic `\$Trait\$Helper` (post-snapshot), which the verifier skips quietly
-        // rather than mis-reporting. (Verifying the default method's contract through the weaving is future work.)
-        [group: 'P-trait', name: 'concrete contracted trait default method compiles clean', ok: true,
+        // Phase 122 — a trait's *concrete default method* is now verified too: its CONVERSION-snapshot body is
+        // recovered, the woven `((FieldHelper) $self).Trait__f$get()/$set(v)` accessors are rewritten back to
+        // plain field reads/writes, and the result is checked in the implementing class's context. So a trait
+        // default method's @Ensures proves...
+        [group: 'P-trait', name: 'trait default-method @Ensures is verified (proven)', ok: true,
          src: HDR + """
 @TypeChecked(extensions = 'verification.VerifyChecker')
 trait Clamp {
@@ -4423,6 +4458,44 @@ trait Clamp {
 }
 @TypeChecked(extensions = 'verification.VerifyChecker')
 class C implements Clamp { }
+"""],
+        // ...and a FALSE @Ensures on a trait default method refutes (caught via the implementer).
+        [group: 'P-trait', name: 'false @Ensures on a trait default method refutes', ok: false, expect: 'Cannot prove postcondition',
+         src: HDR + """
+@TypeChecked(extensions = 'verification.VerifyChecker')
+trait Clamp {
+    @Ensures({ result >= 1 })
+    int nonNeg(int x) { x < 0 ? 0 : x }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class C implements Clamp { }
+"""],
+        // The full wrap-around counter: the trait owns the state, a wrapping `inc` (9 -> 0), a `getCount`, and
+        // the invariant `count in 0..9`; the implementing class adds a wrapping `dec` (0 -> 9). BOTH the trait's
+        // `inc` and the class's `dec` are proven to preserve the inherited invariant.
+        [group: 'P-trait', name: 'wrap-around counter: trait inc + class dec both preserve invariant', ok: true,
+         src: HDR + """
+@groovy.contracts.Invariant({ 0 <= count && count <= 9 })
+trait Counter {
+    int count
+    int getCount() { count }
+    void inc() { count = (count == 9 ? 0 : count + 1) }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class WrapCounter implements Counter {
+    void dec() { count = (count == 0 ? 9 : count - 1) }
+}
+"""],
+        // A trait `inc` that forgets to wrap breaks the invariant at count == 9 — now caught (not skipped).
+        [group: 'P-trait', name: 'non-wrapping trait inc breaks the invariant (refutes)', ok: false, expect: 'Cannot prove class invariant',
+         src: HDR + """
+@groovy.contracts.Invariant({ 0 <= count && count <= 9 })
+trait Counter {
+    int count
+    void inc() { count = count + 1 }
+}
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class WrapCounter implements Counter { }
 """],
         // ----- Cooperative synergy: PurityChecker supplies the purity GUARANTEE VerifyChecker relies on.
         // VerifyChecker's pure-evaluation (Phase 8a) proves f() by inlining the contract-free same-class

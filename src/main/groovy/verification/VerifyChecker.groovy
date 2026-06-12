@@ -47,6 +47,8 @@ import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.expr.CastExpression
+import groovyjarjarasm.asm.Opcodes
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
@@ -1398,6 +1400,7 @@ class VerifyChecker extends TypeCheckingExtension {
     @Override
     void afterVisitClass(ClassNode classNode) {
         if (classNode == null) return
+        verifyTraitDefaultMethods(classNode)
         for (ConstructorNode ctor : classNode.declaredConstructors) {
             try {
                 beforeVisitMethod(ctor)
@@ -3276,6 +3279,148 @@ class VerifyChecker extends TypeCheckingExtension {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
         }
+    }
+
+    // ---- Phase 122: verify a trait's concrete default methods against the implementing class ----
+
+    /**
+     * A trait's *default* method is woven into a synthetic helper, never type-checked when only the
+     * implementing class carries {@code @TypeChecked} — so its contract / invariant preservation went
+     * unverified (a broken default method passed silently). Here, when visiting an implementing class, we
+     * recover each trait default method's body from the CONVERSION snapshot stored on the trait method, rewrite
+     * the woven field accessors (`((FieldHelper) $self).Trait__field$get()/$set(v)`) back to plain field
+     * reads/writes, and verify the result *in the implementing class's context* — its fields and its effective
+     * class invariant (which already includes the trait's, via the Phase-121 interface walk). The rewritten
+     * body is exactly what the same logic written as a class method would be, so it rides the normal machinery.
+     */
+    private void verifyTraitDefaultMethods(ClassNode classNode) {
+        if (classNode == null || classNode.isInterface() || classNode.interfaces == null) return
+        for (ClassNode itf : classNode.interfaces) {
+            if (!org.codehaus.groovy.transform.trait.Traits.isTrait(itf)) continue
+            for (MethodNode m : itf.methods) {
+                if (m.isStatic()) continue
+                Statement snap = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+                if (snap == null) continue                 // generated accessors / abstract methods: no snapshot
+                Statement clean
+                try {
+                    clean = desugarTraitBody(snap)
+                } catch (Throwable ignored) { continue }   // unsupported weaving shape → leave it alone
+                if (clean == null) continue
+                MethodNode synth = new MethodNode(m.name,
+                    m.modifiers & ~Opcodes.ACC_ABSTRACT,
+                    m.returnType, m.parameters, m.exceptions, clean)
+                synth.declaringClass = classNode           // verify in the implementer's context
+                synth.addAnnotations(m.getAnnotations())   // carry @ContractSource / @Requires / @Ensures
+                synth.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, clean)
+                // A diagnostic anchored on a position-less MethodNode is silently dropped by STC; anchor the
+                // synthetic node at the implementing class so a refutation actually surfaces.
+                synth.setSourcePosition(classNode)
+                try {
+                    beforeVisitMethod(synth)
+                    afterVisitMethod(synth)
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /** Rewrite a woven trait-method body (`((FieldHelper) $self).Trait__f$get()` / `…$set(v)`) into plain
+     *  `this`-relative field reads/writes the verifier already understands. */
+    private static Statement desugarTraitBody(Statement body) {
+        if (body instanceof BlockStatement) {
+            List<Statement> out = new ArrayList<Statement>()
+            for (Statement st : ((BlockStatement) body).statements) {
+                Statement r = rewriteTraitStmt(st)
+                if (r == null) return null
+                out.add(r)
+            }
+            return new BlockStatement(out, ((BlockStatement) body).variableScope)
+        }
+        rewriteTraitStmt(body)
+    }
+
+    private static Statement rewriteTraitStmt(Statement st) {
+        if (st instanceof BlockStatement) return desugarTraitBody(st)
+        if (st instanceof ReturnStatement) {
+            Expression r = ((ReturnStatement) st).expression
+            return new ReturnStatement(r == null ? r : rewriteTraitGets(r))
+        }
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            Expression cond = rewriteTraitGets(ifs.booleanExpression instanceof BooleanExpression ?
+                ((BooleanExpression) ifs.booleanExpression).expression : ifs.booleanExpression)
+            return new IfStatement(new BooleanExpression(cond),
+                rewriteTraitStmt(ifs.ifBlock),
+                ifs.elseBlock == null || ifs.elseBlock instanceof EmptyStatement ? ifs.elseBlock : rewriteTraitStmt(ifs.elseBlock))
+        }
+        if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            Expression u = unwrapCast(e)
+            String[] setF = traitSetField(u)              // [fieldName] if a `…$set(v)` on $self
+            if (setF != null) {
+                Expression arg = traitSetArg(u)
+                return new ExpressionStatement(bin(new VariableExpression(setF[0]), Types.ASSIGN, rewriteTraitGets(arg)))
+            }
+            return new ExpressionStatement(rewriteTraitGets(e))
+        }
+        st
+    }
+
+    /** Rewrite every `…$get()` field-accessor call on `$self` (possibly cast) to a bare field read. */
+    private static Expression rewriteTraitGets(Expression e) {
+        if (e == null) return e
+        ExpressionTransformer t = new ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                String f = traitGetField(unwrapCast(expr))
+                if (f != null) return new VariableExpression(f)
+                expr.transformExpression(this)
+            }
+        }
+        t.transform(e)
+    }
+
+    private static Expression unwrapCast(Expression e) {
+        Expression x = e
+        while (x instanceof CastExpression) x = ((CastExpression) x).expression
+        x
+    }
+
+    /** True receiver of a trait field accessor: `$self`, possibly behind a cast. */
+    private static boolean isSelfReceiver(Expression objExpr) {
+        Expression o = unwrapCast(objExpr)
+        o instanceof VariableExpression && ((VariableExpression) o).name == '$self'
+    }
+
+    /** The source field name for a `Trait__field$get`/`$set` accessor method name (drops the `Trait__` prefix). */
+    private static String accessorField(String method, String suffix) {
+        if (!method.endsWith(suffix)) return null
+        String base = method.substring(0, method.length() - suffix.length())   // e.g. Counter__count
+        int us = base.lastIndexOf('__')
+        us >= 0 ? base.substring(us + 2) : base
+    }
+
+    /** If {@code e} is `$self.Trait__f$get()` (no args), the source field name {@code f}; else null. The woven
+     *  accessor call carries a plain {@link TupleExpression} argument list (not an {@code ArgumentListExpression}). */
+    private static String traitGetField(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression m = (MethodCallExpression) e
+        if (!isSelfReceiver(m.objectExpression)) return null
+        if (!(m.arguments instanceof TupleExpression) || !((TupleExpression) m.arguments).expressions.isEmpty()) return null
+        accessorField(m.methodAsString, '$get')
+    }
+
+    /** If {@code e} is `$self.Trait__f$set(v)`, the source field name (wrapped so callers can null-test); else null. */
+    private static String[] traitSetField(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression m = (MethodCallExpression) e
+        if (!isSelfReceiver(m.objectExpression)) return null
+        if (!(m.arguments instanceof TupleExpression) || ((TupleExpression) m.arguments).expressions.size() != 1) return null
+        String f = accessorField(m.methodAsString, '$set')
+        f != null ? ([f] as String[]) : null
+    }
+
+    private static Expression traitSetArg(Expression e) {
+        ((TupleExpression) ((MethodCallExpression) e).arguments).expressions.get(0)
     }
 
     // ---- Phase 121: trait machinery recognition ----

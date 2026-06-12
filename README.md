@@ -1974,9 +1974,10 @@ becomes*, not that the channel delivers or terminates.
 
 ## Other Examples
 
-A couple more that don't belong to one of the per-source sections above — each a *first* for this engine: a
-verified mutable data structure, and a fully-verified classic challenge from the verification-competition
-literature (ported faithfully and credited to its source).
+A few more that don't belong to one of the per-source sections above: a verified mutable data structure, a
+fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
+its source), and a tour of verification across a Groovy type hierarchy — inheritance, behavioral subtyping, and
+traits.
 
 ### Ring buffer — a verified mutable data structure
 
@@ -2079,6 +2080,91 @@ with value ≠ the first exists* — follows from the two-distinct-duplets preco
 of the two known duplicates differs from `a[r1.v1]`). The result: two pairs with provably different values.
 Nothing here is a special case — the nested witness search, the tuple returns, and binding a local to a
 tuple-returning call are all general capabilities; Duplets just needs all three at once.
+
+### Inheritance, traits & behavioral subtyping
+
+Verification follows the type hierarchy, not just single classes. Three capabilities, each grounded in a tested
+example. (Note: every class needs its own `@TypeChecked` — the extension isn't inherited.)
+
+**Inherited invariants and `super` calls.** A subclass method is proved against the *conjunction* of its own and
+every ancestor's class `@Invariant`, and a `super.m(…)` call is treated like any contracted call — the parent's
+`@Ensures` is assumed for the result, its `@Requires` discharged at the site — so a child can prove a
+strengthened postcondition built on the parent's:
+
+```groovy
+class Base    { @Requires({ x >= 0 }) @Ensures({ result == x * 2 })     int f(int x) { x + x } }
+class Derived extends Base { @Ensures({ result == x * 2 + 1 }) int g(int x) { super.f(x) + 1 } }  // proven
+```
+
+**Behavioral subtyping (the Liskov substitution principle).** This is the engine's one check that relates *two
+contracts* rather than a contract to a body. When an override **redeclares** its contract, groovy-verify proves
+it stays substitutable for the method it overrides: the precondition must be **weakened**
+(`pre_parent ⟹ pre_child` — accept every call the parent did) and the postcondition **strengthened**
+(`(pre_parent ∧ post_child) ⟹ post_parent` — promise at least as much). Pure SMT implication checks over the
+shared parameter/field/result namespace, with a concrete witness on failure. Take a bank account whose `debit`
+may draw down to zero:
+
+```groovy
+class Account {
+    int balance
+    @Requires({ 0 <= amount && amount <= balance })   // may withdraw up to the whole balance
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }
+}
+
+class GoldAccount extends Account {                    // overdraft: accepts MORE — precondition weakened ✓
+    @Requires({ 0 <= amount && amount <= balance + 1000 })
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }         // proven substitutable
+}
+
+class RestrictedAccount extends Account {              // min-balance: accepts LESS — precondition strengthened ✗
+    @Requires({ 0 <= amount && amount <= balance - 100 })
+    @Ensures({ result == balance - amount })
+    int debit(int amount) { balance - amount }
+}
+```
+
+`GoldAccount` verifies — it honours every call `Account` would. `RestrictedAccount` is **refuted**: a caller
+holding an `Account` may legitimately `debit` its whole balance, but if the object is really a
+`RestrictedAccount` that call is rejected — so it is not a true subtype. The diagnostic names the rule and gives
+a witness:
+
+```
+Liskov substitution violation in override 'debit': its precondition is not behaviourally compatible with the overridden method
+    rule: @Requires must be weakened (or kept), never strengthened, in an override
+    counterexample: amount = 0, balance = 0
+    fails on: debit(0)
+```
+
+(The postcondition direction is symmetric: a child that *weakens* its `@Ensures` — promising less than the
+parent — refutes the same way.)
+
+**Traits.** A trait's class `@Invariant` is enforced across the `implements` axis (the same monitor-invariant
+proof, one axis over) — on the trait's *own* default methods **and** every implementing class's methods, which
+all reason over the woven trait state. A wrap-around counter — the trait owns the state, a wrapping `inc`, and
+the `0..9` invariant; an implementing class adds a wrapping `dec` — proves both methods keep the counter in
+range:
+
+```groovy
+@Invariant({ 0 <= count && count <= 9 })
+trait Counter {
+    int count
+    int getCount() { count }
+    void inc() { count = (count == 9 ? 0 : count + 1) }   // trait's own method — proven to wrap, not overflow
+}
+
+class WrapCounter implements Counter {
+    void dec() { count = (count == 0 ? 9 : count - 1) }   // implementer's method — proven to wrap, not underflow
+}
+```
+
+Drop the wrap from either `inc` (`count = count + 1`) or `dec` and the invariant refutes at the boundary
+(`count == 9` / `count == 0`). The trait's default method is verified by recovering its pre-weave body and
+rewriting the woven field accessors back to plain field access, so it rides the same machinery as an ordinary
+method. One honest boundary remains on both axes: a method is verified only against the contract it *declares* —
+an inherited `@Ensures` isn't re-checked against an *uncontracted* override (groovy-contracts still enforces it
+at runtime).
 
 ## What's demonstrated
 
@@ -2364,32 +2450,14 @@ contracts) — but it does *not* verify the definition itself: the canonical con
 pattern matching, and generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is
 understood only through the fields and finite domain its methods actually touch.
 
-**Inheritance** is modelled along the `extends` axis. A subclass method is verified against the *conjunction* of
-its own and every ancestor's class `@Invariant` (walked up the superclass chain), and a `super.m(…)` call is
-treated like any contracted call — the parent's `@Ensures` is assumed for the result, its `@Requires` discharged
-at the call site — so a child can prove a strengthened postcondition built on the parent's:
-
-```groovy
-@TypeChecked(extensions = 'verification.VerifyChecker')   // each class needs its own — the extension isn't inherited
-class Base    { @Requires({ x >= 0 }) @Ensures({ result == x * 2 })     int f(int x) { x + x } }
-@TypeChecked(extensions = 'verification.VerifyChecker')
-class Derived extends Base { @Ensures({ result == x * 2 + 1 }) int g(int x) { super.f(x) + 1 } }  // proven
-```
-
-And when an override **redeclares** its own contract, the engine proves it is a **behavioral subtype** (Liskov
-substitution): the precondition must be *weakened* (`pre_parent ⟹ pre_child`) and the postcondition
-*strengthened* (`(pre_parent ∧ post_child) ⟹ post_parent`). These are pure SMT implication checks over the
-shared parameter/result namespace — no body involved — so a child that, say, strengthens its `@Requires` (`x >=
-10` over a parent's `x >= 0`) is flagged as non-substitutable with a concrete witness (`f(0)`).
-
-**Traits** work along the `implements` axis: a trait's class `@Invariant` is collected (the interface walk) and
-enforced on every implementing class's own methods — the same monitor-invariant proof as inheritance — and an
-implementing method gets full functional verification over the woven trait fields. A trait carrying a *concrete*
-contracted default method compiles cleanly (its body is woven into a synthetic helper after the clean-body
-snapshot, so the verifier skips that machinery quietly). One honest boundary on each axis: a method is verified
-only against the contract it *declares* — an inherited/trait `@Ensures` isn't re-checked against an
-*uncontracted* override or the woven default method (groovy-contracts still enforces both at runtime); and each
-class needs its own `@TypeChecked` (it isn't inherited).
+Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
+class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its
+contract is checked for **behavioral subtyping** (Liskov — precondition weakened, postcondition strengthened),
+and a **trait**'s `@Invariant` and contracted *default methods* are verified on every implementer — worked
+through in [Inheritance, traits & behavioral subtyping](#inheritance-traits--behavioral-subtyping). Two honest
+boundaries: each class needs its own `@TypeChecked` (it isn't inherited), and a method is verified only against
+the contract it *declares* — an inherited `@Ensures` isn't re-checked against an *uncontracted* override
+(groovy-contracts still enforces it at runtime).
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
