@@ -1978,10 +1978,8 @@ sequential proof**.
 invariant — which, *given* the lock provides mutual exclusion and all access goes through it, is what makes the
 invariant a global safety property. We do **not** verify that mutual exclusion (no race on unlocked access,
 no deadlock, no lock-ordering); that needs concurrent separation logic with fractional permissions — the
-Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker. So this is an
-honest *monitor-invariant* proof, not a from-scratch proof of thread safety. (This exercise also surfaced a
-groovy-contracts AST bug — a `@Synchronized` method carrying `@Ensures`/`@Invariant` but no `@Requires` threw
-`SynchronizedStatement cannot be cast to BlockStatement` — since fixed upstream as **GROOVY-12084**.)
+Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker.
+So this is an honest *monitor-invariant* proof, not a from-scratch proof of thread safety.
 
 ## What's demonstrated
 
