@@ -2425,11 +2425,26 @@ makes every named-receiver dereference *and* every indexed-element dereference (
 is exactly what its annotations express.
 
 Because both are just extensions, they **compose** — nullness-by-annotation and SMT functional
-verification in a single compile, each doing what it is best at:
+verification in a single compile, each doing what it is best at. And there's a clean seam where
+groovy-verify proves a condition NullChecker can only *assume*. Even in flow-sensitive `strict` mode,
+NullChecker tracks the nullness of **variables** (and annotations); it has no per-**element** nullity model,
+so it silently assumes an array element `xs[0]` is non-null. groovy-verify makes that dereference an
+obligation `xs[0] != null` against its per-element oracle (Phase 37) — so on the same code it **proves** what
+NullChecker assumes, or **refutes** it with a witness:
 
 ```groovy
-@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'])
+@TypeChecked(extensions = ['groovy.typecheckers.NullChecker(strict: true)', 'verification.VerifyChecker'])
+class C {
+    @Requires({ xs != null && xs.length > 0 && xs[0] != null })
+    static int firstLen(String[] xs) { xs[0].length() }   // proven safe; strict NullChecker is satisfied too
+}
 ```
+
+Drop the `xs[0] != null` premise and groovy-verify **disproves** the assumption — `Possible
+NullPointerException`, counterexample `firstLen([null])` — while strict NullChecker stays silent, its flow
+model having no handle on the element. The annotation-driven direction is NullChecker's: a `@NonNull` return
+that yields a `@Nullable`, or `null` passed to a `@NonNull` parameter, is *its* error to raise, over source
+positions groovy-verify doesn't model. Same extension SPI, opposite ends of the same question.
 
 ### Two checkers, one regex — syntax beside semantics
 

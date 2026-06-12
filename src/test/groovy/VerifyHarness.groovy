@@ -4305,6 +4305,25 @@ class VerifyHarness {
                         @Ensures({ result == 31 })
                         static int f() { triple(10) }
                     }''')],
+        // ----- NullChecker: groovy-verify proves/disproves the per-element non-nullness its model can't see.
+        // NullChecker (even in flow-sensitive `strict` mode) tracks the nullness of *variables* and annotations;
+        // it has no per-*element* nullity model, so it silently ASSUMES an array element `xs[0]` is non-null.
+        // groovy-verify makes `xs[0].method()` an obligation `xs[0] != null` against its per-element oracle
+        // (Phase 37). So on the SAME deref, groovy-verify discharges the condition NullChecker merely assumes —
+        // here from a @Requires — and strict NullChecker is independently satisfied. Both pass:
+        [group: 'P-multichecker', name: 'NullChecker(strict) + VerifyChecker: per-element non-null proven from @Requires', ok: true,
+         src: tcExt(["groovy.typecheckers.NullChecker(strict: true)", 'verification.VerifyChecker'], '''class C {
+                        @Requires({ xs != null && xs.length > 0 && xs[0] != null })
+                        static int firstLen(String[] xs) { xs[0].length() }
+                    }''')],
+        // Drop the `xs[0] != null` premise and groovy-verify *disproves* the assumption with a concrete witness
+        // (`firstLen` on a length-1 array holding null) — while strict NullChecker stays silent, its flow model
+        // having no handle on the element. The condition NullChecker assumes, groovy-verify refutes.
+        [group: 'P-multichecker', name: 'VerifyChecker disproves a per-element null NullChecker assumes away', ok: false, expect: 'Possible NullPointerException',
+         src: tcExt(["groovy.typecheckers.NullChecker(strict: true)", 'verification.VerifyChecker'], '''class C {
+                        @Requires({ xs != null && xs.length > 0 })
+                        static int firstLen(String[] xs) { xs[0].length() }
+                    }''')],
 
         // VerifyChecker reasons about regex matching semantically: `.matches(pattern)` lowers to Z3's
         // regex membership (str.in_re), so a matches postcondition is *proven* from a matches precondition,
