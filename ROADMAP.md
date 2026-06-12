@@ -5769,7 +5769,7 @@ work-around is no longer needed.
 
 ---
 
-## Phase 116 — monoids/semigroups: checked *and* proven (equational combiner inlining)
+## Phase 116 — monoids/semigroups: checked *and* proven (equational combiner inlining)  *(shipped — engine change)*
 
 Composes with Groovy 6's `groovy.typecheckers.CombinerChecker` (which checks a combiner's *shape* — associative
 + identity) on one `@TypeChecked`: CombinerChecker checks the shape, groovy-verify proves the **semantics** —
@@ -5801,6 +5801,84 @@ associativity + `reduce == xs.sum()` *via the combiner*) and a `Largest` semigro
 
 ---
 
+## Phase 117 — agents/actors: the monitor invariant via serialization  *(shipped — no engine change)*
+
+Generalises the Phase-115 lock insight across concurrency *paradigms*. The lock trick is really "prove the
+local obligation, assume the structural guarantee" — and an `Agent`/`Actor` is a monitor whose mutual exclusion
+comes from processing **one message at a time** rather than from a lock. So the class `@Invariant` is again the
+monitor invariant, each handler verified to preserve it, with **no lock annotation** — only the *assumed*
+structural guarantee changes (mutual exclusion → serialization). No engine change: it's the existing
+class-invariant machinery (Phase 45/107/115) plus the framing.
+
+**Shipped tests (Phase 117, group `P117 agent-invariant`)**: a bounded `Buffer` (`@Invariant({ 0 ≤ count ≤
+capacity })`, contracted `add`/`remove`, no lock) verifies its occupancy invariant; an unguarded `add`
+refutes; and the Agent update-function model (`agent.send { inc(it) }`, a pure `state → state` update) proves
+its update preserves the invariant. The honest boundary mirrors locks: we prove each handler maintains the
+invariant; we *assume* the runtime serializes them (we don't verify the serialization itself).
+
+This is the safety-invariant flavor under message passing. The other concurrency flavors followed in
+Phases 118–119: **dataflow** (single-assignment ⟹ a determinacy/value proof, light modeling of
+`DataflowVariable`/`<<`/`await`/`async`) and **channels** (FIFO delivery ⟹ a per-element transform proof, the
+combiner trick).
+
+---
+
+## Phase 118 — dataflow: the determinacy half via single-assignment  *(shipped — light AST desugaring)*
+
+The third concurrency flavor, and a different *assumed* guarantee. Locks assume mutual exclusion, agents/actors
+assume serialization; a **dataflow** network assumes **single-assignment** — every `DataflowVariable` is bound
+exactly once and a read blocks until that bind, so the network's *value* is independent of the schedule. We
+prove the functional value (the determinacy half) and assume the single-assignment structure (we do **not**
+prove deadlock-freedom or termination).
+
+Engine change is a small source-level desugaring (`desugarDataflow` in `VerifyChecker`, applied in
+`afterVisitMethod` and stashed via `putNodeMetaData(ORIGINAL_BODY_KEY, …)`): the network collapses into
+straight-line **SSA**. `new DataflowVariable()` drops to a scalar decl, `x << v` becomes the single binding
+`x = v`, `x.get()`/`await(x)` become `x`, and `async {}` blocks flatten inline — sound *because*
+single-assignment makes ordering irrelevant. The SSA body then proves on the existing sequential machinery.
+
+The one subtlety that cost a debugging pass: `rewriteDfExpr` must apply its `ExpressionTransformer` to the
+**root** expression (`t.transform(e)`), not via `e.transformExpression(t)` — the latter only transforms the
+*children*, so a top-level `return z.get()` slips through unrewritten while a nested `x.get()` inside a larger
+expression gets caught. (`.val` is dropped: it's a dynamic-only property that stock STC rejects, so it's never
+a valid typed program to model.)
+
+**Shipped tests (Phase 118, group `P118 dataflow`)**: a three-variable network proving `result == a + b`, a
+wrong claim (`result == a`) refuted with a counterexample, and a two-variable product.
+
+---
+
+## Phase 119 — channels: the per-element transform via FIFO  *(shipped — light AST desugaring)*
+
+The fourth and final concurrency flavor, and the combiner trick (Phase 116) carried into streaming pipelines.
+An `AsyncChannel`'s structural guarantee is **FIFO delivery**: the i-th value received is the i-th sent, run
+through the pipeline's pure stages — so for a representative element the whole pipeline collapses to *function
+composition*. We prove that per-element transform and assume FIFO ordering (we do **not** prove delivery or
+termination).
+
+Engine change is a second source-level desugaring (`desugarChannels` in `VerifyChecker`, applied in
+`afterVisitMethod` alongside Phase 118's dataflow pass): `def src = AsyncChannel.create(n)` drops to a scalar,
+`src.send(x)` is the single binding `src = x`, each `map { f }` stage **β-reduces** `f` over its upstream value,
+`first()` is a read, and `close()` drops. The key wrinkle versus dataflow: a pipeline is *declared* before its
+producer runs (`def out = src.map {…}; async { src.send(x) }`), so pipeline-derived vars are resolved **lazily**
+— `def out = …` records the pipeline rather than reducing it eagerly, and the composition is expanded at the
+`first()` receive site, by which point the flattened `src = x` has executed. (`map` closures are β-reduced via
+an `ExpressionTransformer` substituting the closure parameter — explicit or implicit `it` — with the upstream
+value; chained `.map` reduces inside-out because the object-expression is reduced first.) `filter` is out of
+slice: modeling it as identity would be unsound, so channel examples stay `map`-only.
+
+**Shipped tests (Phase 119, group `P119 channels`)**: a two-stage `map` pipeline proving `result == (x+1)*2`
+(producer in a trailing `async {}`, exercising the lazy resolution), a wrong claim (`result == x+1`) refuted
+with a counterexample, and a single-stage producer-first variant proving `result == x*3`. README "Channels"
+subsection added — and the four concurrency examples (locks, agents/actors, dataflow, channels) are now grouped
+under a new **Concurrency "lite" Examples** section, framed by a structural-guarantee/local-obligation table.
+
+This completes the concurrency arc: locks → mutual exclusion, agents/actors → serialization, dataflow →
+single-assignment, channels → FIFO delivery. In every case the *local* obligation is sequential and provable;
+only the *assumed* structural half changes.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
@@ -5819,7 +5897,10 @@ Things deliberately not pursued, because they don't pay back:
   oracle is a by-product (see the README's "Relationship to Groovy's other checkers"), and
   `PurityChecker`/`ModifiesChecker` can verify the purity our pure-function evaluation (Phase 8a) and
   `@Modifies` framing (Phase 13) assume.
-- **Concurrency.** No race detection, no dataflow reasoning. A different tool.
+- **Concurrency soundness.** No race detection, no interleaving or deadlock reasoning. The concurrency
+  examples (Phases 115–119) prove a *sequential* local obligation and **assume** the structural guarantee
+  (mutual exclusion / serialization / single-assignment / FIFO delivery); they don't verify that guarantee.
+  Proving thread safety itself is a different tool.
 - **Heap / aliasing — *partially revisited* (Phase 89, above; slices 1–2 shipped — reference identity + identity-keyed field reads & writes; the `old`-relative `transfer` is a dual-tenet boundary, not pursued).**
   The fragment models collection state as value-semantics — every `@Modifies` havoc is per-name, and `old`
   snapshots are independent copies. The *general* problem — reachability through object graphs, "everything

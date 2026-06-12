@@ -8469,6 +8469,135 @@ class VerifyHarness {
                             return Tuple.tuple(-1, -1)
                         }
                     }''')],
+        // ---------- P118 dataflow: the determinacy half via single-assignment ----------
+        // A dataflow network's defining structural guarantee is single-assignment: every DataflowVariable
+        // is bound exactly once, and a read blocks until the bind happens. That makes the network's *value*
+        // independent of the order the async tasks actually run — the determinacy half of the concurrency
+        // trick. We assume that scheduling guarantee (we do NOT prove deadlock-freedom or termination) and
+        // desugar the network into straight-line SSA: `new DataflowVariable()` drops out, `x << v` is the
+        // single binding `x = v`, and `x.get()`/`await(x)`/`x.val` are just `x`. The functional value then
+        // proves sequentially. async{} blocks flatten inline — sound precisely because single-assignment
+        // makes the result order-independent.
+        [group: 'P118 dataflow', name: 'dataflow network computes a + b', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == a + b })
+                        static int dataflowSum(int a, int b) {
+                            groovy.concurrent.DataflowVariable<Integer> x = new groovy.concurrent.DataflowVariable<Integer>()
+                            groovy.concurrent.DataflowVariable<Integer> y = new groovy.concurrent.DataflowVariable<Integer>()
+                            groovy.concurrent.DataflowVariable<Integer> z = new groovy.concurrent.DataflowVariable<Integer>()
+                            async { x << a }
+                            async { y << b }
+                            async { z << x.get() + y.get() }
+                            return z.get()
+                        }
+                    }""")],
+        // A wrong functional claim about the same network is still refuted with a counterexample — the
+        // determinacy assumption buys structure, not a free pass on the arithmetic.
+        [group: 'P118 dataflow', name: 'wrong dataflow value is refuted', ok: false, expect: 'result',
+         src: tc("""class C {
+                        @Ensures({ result == a })
+                        static int dataflowSum(int a, int b) {
+                            groovy.concurrent.DataflowVariable<Integer> x = new groovy.concurrent.DataflowVariable<Integer>()
+                            groovy.concurrent.DataflowVariable<Integer> y = new groovy.concurrent.DataflowVariable<Integer>()
+                            groovy.concurrent.DataflowVariable<Integer> z = new groovy.concurrent.DataflowVariable<Integer>()
+                            async { x << a }
+                            async { y << b }
+                            async { z << x.get() + y.get() }
+                            return z.get()
+                        }
+                    }""")],
+        // A two-variable network with a different operator: the binds are still single-assignment, so the
+        // product proves under the same SSA desugaring.
+        [group: 'P118 dataflow', name: 'two-variable dataflow product', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == a * b })
+                        static int dataflowProd(int a, int b) {
+                            groovy.concurrent.DataflowVariable<Integer> x = new groovy.concurrent.DataflowVariable<Integer>()
+                            groovy.concurrent.DataflowVariable<Integer> y = new groovy.concurrent.DataflowVariable<Integer>()
+                            async { x << a }
+                            async { y << b }
+                            return x.get() * y.get()
+                        }
+                    }""")],
+        // ---------- P119 channels: the per-element transform via FIFO ----------
+        // A channel's structural guarantee is FIFO delivery: the i-th value received is the i-th value sent,
+        // run through the pipeline's pure stages. So for a representative element the network collapses to
+        // function composition (the combiner trick): `src.send(x)` is `src = x`, each `map { f }` stage is `f`
+        // applied to the upstream value, and receiving one element (`first()`) is a read. We prove that
+        // per-element transform; FIFO ordering is the half we assume (we don't prove delivery or termination).
+        // A two-stage `map` pipeline (note the producer in a trailing async — resolved lazily at the receive):
+        [group: 'P119 channels', name: 'channel map pipeline composes', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == (x + 1) * 2 })
+                        static int pipe(int x) {
+                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }.map { it * 2 }
+                            async { src.send(x); src.close() }
+                            return out.first()
+                        }
+                    }""")],
+        // A wrong functional claim about the same pipeline is still refuted with a counterexample — FIFO buys
+        // the order, not the arithmetic.
+        [group: 'P119 channels', name: 'wrong channel transform is refuted', ok: false, expect: 'result',
+         src: tc("""class C {
+                        @Ensures({ result == x + 1 })
+                        static int pipe(int x) {
+                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }.map { it * 2 }
+                            async { src.send(x); src.close() }
+                            return out.first()
+                        }
+                    }""")],
+        // Producer-first ordering (send before the pipeline is built) proves the same way — a single `map` stage.
+        [group: 'P119 channels', name: 'single-stage channel transform (producer first)', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == x * 3 })
+                        static int triple(int x) {
+                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            src.send(x)
+                            src.close()
+                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it * 3 }
+                            return out.first()
+                        }
+                    }""")],
+        // ---------- P117 agents/actors: the monitor invariant via serialization ----------
+        // The lock trick spans paradigms. An Agent/Actor is a monitor whose mutual exclusion comes from
+        // processing one message at a time, not from a lock — so the class @Invariant is again the monitor
+        // invariant, and each handler is verified to preserve it, with NO lock annotation. The structural
+        // half we assume is the runtime's serialization (not mutual exclusion). A bounded buffer whose
+        // occupancy invariant an Agent maintains under concurrent producers/consumers:
+        [group: 'P117 agent-invariant', name: 'bounded buffer occupancy invariant (no lock)', ok: true,
+         src: tc('''@Invariant({ 0 <= count && count <= capacity })
+                    class Buffer {
+                        int count
+                        int capacity
+                        @Requires({ count < capacity })
+                        @Ensures({ count == old.count + 1 })
+                        void add() { count = count + 1 }
+                        @Requires({ count > 0 })
+                        @Ensures({ count == old.count - 1 })
+                        void remove() { count = count - 1 }
+                    }''')],
+        // Refute: an unguarded add lets a handler break the occupancy invariant — caught.
+        [group: 'P117 agent-invariant', name: 'unguarded add breaks occupancy invariant', expect: 'Cannot prove class invariant',
+         src: tc('''@Invariant({ 0 <= count && count <= capacity })
+                    class Buffer {
+                        int count
+                        int capacity
+                        @groovy.transform.Synchronized
+                        void add() { count = count + 1 }
+                    }''')],
+        // The Agent update-function model: `agent.send { inc(it) }` applies a pure update atomically; the
+        // update is proven to preserve the agent's invariant (here, non-negativity).
+        [group: 'P117 agent-invariant', name: 'agent update function preserves the invariant', ok: true,
+         src: tc('''class Counter {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == n + 1 && result >= 0 })
+                        static int inc(int n) { n + 1 }
+                        @Requires({ n > 0 })
+                        @Ensures({ result == n - 1 && result >= 0 })
+                        static int dec(int n) { n - 1 }
+                    }''')],
         // ---------- P116 monoids/semigroups: checked AND proven ----------
         // Sibling to `groovy.typecheckers.CombinerChecker`, which checks a combiner's *shape* (associative,
         // has an identity). groovy-verify proves the *semantics*: the combiner's defining equation, the monoid

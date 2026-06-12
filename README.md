@@ -1829,12 +1829,154 @@ the char literal (no primitive char syntax exists, and `char >= String` doesn't 
 arithmetic is `(char)((int) a[i] - 32)` because `char[]` subscripts box to `Number`. The seq-vs-array split is
 the real lesson — *the same proof, opposite tractability, decided by which theory you hand Z3.*
 
+## Concurrency "lite" Examples
+
+groovy-verify is a *sequential* SMT-backed checker — it reasons about no thread interleavings, races, or
+deadlock. Yet a surprising amount of concurrent code's correctness factors into two halves: a **local,
+sequential obligation** the developer must get right, and a **structural guarantee** the runtime provides.
+*Assume* the structural half and the local half is an ordinary sequential proof — and that half is usually the
+one carrying the interesting bug. These examples prove the local half across four of Groovy's concurrency
+features, each assuming a different structural guarantee:
+
+| Feature | Structural guarantee (assumed) | Local obligation (proven) |
+| --- | --- | --- |
+| Locks (`@WithWriteLock` / `@Synchronized`) | mutual exclusion | each critical section preserves the monitor invariant |
+| Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
+| Dataflow | single-assignment | the network computes the right value |
+| Channels | FIFO delivery | each element gets the right per-element transform |
+
+What we *never* prove is the structural half itself — no mutual exclusion, no deadlock-freedom, no delivery or
+termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
+"prove half the property" results: the half SMT can discharge, which is usually the functional one.
+
+### Locks — the monitor invariant
+
+Like `@TailRecursive`, Groovy's **lock AST transforms** (`@WithReadLock` / `@WithWriteLock` / `@Synchronized`)
+compose with the verifier — and not just trivially. They're *transparent*: the clean body is captured at the
+`CONVERSION` phase, before the lock wrapper is woven in at `CANONICALIZATION`, so the verifier proves the
+method's contract through the lock as if it weren't there. That lets the **class `@Invariant` stand in as the
+lock's monitor invariant**. The classic example — a lock-guarded account that must never overdraw:
+
+```groovy
+@Invariant({ balance >= 0 })                       // the monitor invariant the lock protects
+class Account {
+    int balance
+
+    @Requires({ amount >= 0 })
+    @Ensures({ balance == old.balance + amount })
+    @WithWriteLock
+    void deposit(int amount) { balance = balance + amount }
+
+    @Requires({ 0 <= amount && amount <= balance }) // the guard that keeps the invariant
+    @Ensures({ balance == old.balance - amount })
+    @WithWriteLock
+    void withdraw(int amount) { balance = balance - amount }
+
+    @Ensures({ result == balance })
+    @WithReadLock
+    int currentBalance() { return balance }
+}
+```
+
+Every critical section is verified to **preserve `balance >= 0`** — and drop the `amount <= balance` guard from
+`withdraw` and it refutes (the overdraw is caught). This is exactly the lock-with-resource-invariant
+methodology of Chalice/Viper, where *"acquiring a monitor is replaced by an inhale of the corresponding monitor
+invariant, releasing by an exhale"* — here, the class `@Invariant` is assumed on method entry and checked
+restored on exit. It's the standard reduction of a concurrent safety property to a **per-critical-section
+sequential proof**.
+
+**What this is, and isn't.** We verify the sequential half — each critical section maintains the lock
+invariant — which, *given* the lock provides mutual exclusion and all access goes through it, is what makes the
+invariant a global safety property. We do **not** verify that mutual exclusion (no race on unlocked access,
+no deadlock, no lock-ordering); that needs concurrent separation logic with fractional permissions — the
+Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker.
+So this is an honest *monitor-invariant* proof, not a from-scratch proof of thread safety.
+
+### Agents & actors — the same invariant, a different paradigm
+
+The lock trick isn't really about locks; it's "prove the local obligation, assume the structural guarantee."
+An **Agent** or **Actor** is a monitor whose mutual exclusion comes not from a lock but from processing **one
+message at a time** — so the class `@Invariant` is again the monitor invariant, and each handler is verified to
+preserve it, with **no lock annotation at all**:
+
+```groovy
+@Invariant({ 0 <= count && count <= capacity })   // the invariant the Agent maintains
+class Buffer {
+    int count, capacity
+    @Requires({ count < capacity })
+    @Ensures({ count == old.count + 1 })
+    void add()    { count = count + 1 }
+    @Requires({ count > 0 })
+    @Ensures({ count == old.count - 1 })
+    void remove() { count = count - 1 }
+}
+```
+
+Wrap it in an `Agent` and send it method calls — or update closures, `agent.send { inc(it) }`, where the update
+function is likewise proven to preserve the invariant — and the runtime serializes them, so
+`0 <= count <= capacity` holds under concurrent producers and consumers **without `@Synchronized` or any
+lock**. The proof is identical to the lock-guarded `Account` above; only the *assumed* structural guarantee
+changes — mutual exclusion → serialization. That's the point: the same local invariant proof carries across
+**shared-memory locking *and* message-passing actors**. Drop the `count < capacity` guard and it refutes, lock
+or no lock. (We still don't prove the runtime *is* serial — that's the agent's contract, the half we rely on.)
+
+### Dataflow — the determinacy half via single-assignment
+
+Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something
+different: **single-assignment**. Every `DataflowVariable` is bound exactly once, and a read blocks until that
+bind happens — so the network's *value* is independent of the order the concurrent tasks actually run. That's
+the structural half we assume; the functional half — *what* value comes out — we prove:
+
+```groovy
+@Ensures({ result == a + b })
+static int dataflowSum(int a, int b) {
+    def x = new DataflowVariable<Integer>()
+    def y = new DataflowVariable<Integer>()
+    def z = new DataflowVariable<Integer>()
+    async { x << a }                    // each variable bound once...
+    async { y << b }
+    async { z << x.get() + y.get() }    // ...reads block until the bind, so order can't change the value
+    return z.get()
+}
+```
+
+Because single-assignment makes the result order-independent, the verifier desugars the whole network into
+straight-line **SSA**: `new DataflowVariable()` drops out, `x << v` is the single binding `x = v`, and
+`x.get()` (or `await(x)`) is just `x`. The `async {}` blocks flatten inline — sound *precisely because*
+single-assignment makes the schedule irrelevant. The functional value `a + b` then proves sequentially, and a
+wrong claim (`result == a`) still refutes with a counterexample. As with locks and actors, we assume the
+structural guarantee (here, that each variable really is bound once) and never prove deadlock-freedom or
+termination — only the value the network computes, given that it computes one.
+
+### Channels — the per-element transform via FIFO
+
+Go-style **channels** (`AsyncChannel`) carry the same trick into streaming pipelines. A channel's structural
+guarantee is **FIFO delivery**: the i-th value received is the i-th value sent, run through the pipeline's pure
+stages. So for a representative element the whole pipeline collapses to *function composition* — exactly the
+combiner trick — and we prove the per-element transform:
+
+```groovy
+@Ensures({ result == (x + 1) * 2 })
+static int pipe(int x) {
+    def src = AsyncChannel.<Integer>create(1)
+    def out = src.map { it + 1 }.map { it * 2 }   // each map stage is a pure transform...
+    async { src.send(x); src.close() }            // ...FIFO: out's i-th element is the transform of src's i-th
+    return out.first()
+}
+```
+
+The verifier desugars the pipeline to that composition: `src.send(x)` is the single binding `src = x`, each
+`map { f }` is `f` applied to the upstream value, and receiving one element (`first()`) is a read. (Pipeline
+stages resolve lazily at the receive site, so a producer in a trailing `async {}` still binds the post-send
+value.) The functional transform `(x + 1) * 2` proves; claim `result == x + 1` instead and it refutes with a
+counterexample. As everywhere in this section, FIFO delivery is the assumed half — we prove *what each element
+becomes*, not that the channel delivers or terminates.
+
 ## Other Examples
 
-A few more that don't belong to one of the per-source sections above — each a *first* for this engine: a
-verified mutable data structure and a fully-verified classic challenge from the verification-competition
-literature (ported faithfully and credited to their sources), and a concurrency example built on Groovy's lock
-AST transforms.
+A couple more that don't belong to one of the per-source sections above — each a *first* for this engine: a
+verified mutable data structure, and a fully-verified classic challenge from the verification-competition
+literature (ported faithfully and credited to its source).
 
 ### Ring buffer — a verified mutable data structure
 
@@ -1938,49 +2080,6 @@ of the two known duplicates differs from `a[r1.v1]`). The result: two pairs with
 Nothing here is a special case — the nested witness search, the tuple returns, and binding a local to a
 tuple-returning call are all general capabilities; Duplets just needs all three at once.
 
-### Locks — the monitor invariant
-
-Like `@TailRecursive`, Groovy's **lock AST transforms** (`@WithReadLock` / `@WithWriteLock` / `@Synchronized`)
-compose with the verifier — and not just trivially. They're *transparent*: the clean body is captured at the
-`CONVERSION` phase, before the lock wrapper is woven in at `CANONICALIZATION`, so the verifier proves the
-method's contract through the lock as if it weren't there. That lets the **class `@Invariant` stand in as the
-lock's monitor invariant**. The classic example — a lock-guarded account that must never overdraw:
-
-```groovy
-@Invariant({ balance >= 0 })                       // the monitor invariant the lock protects
-class Account {
-    int balance
-
-    @Requires({ amount >= 0 })
-    @Ensures({ balance == old.balance + amount })
-    @WithWriteLock
-    void deposit(int amount) { balance = balance + amount }
-
-    @Requires({ 0 <= amount && amount <= balance }) // the guard that keeps the invariant
-    @Ensures({ balance == old.balance - amount })
-    @WithWriteLock
-    void withdraw(int amount) { balance = balance - amount }
-
-    @Ensures({ result == balance })
-    @WithReadLock
-    int currentBalance() { return balance }
-}
-```
-
-Every critical section is verified to **preserve `balance >= 0`** — and drop the `amount <= balance` guard from
-`withdraw` and it refutes (the overdraw is caught). This is exactly the lock-with-resource-invariant
-methodology of Chalice/Viper, where *"acquiring a monitor is replaced by an inhale of the corresponding monitor
-invariant, releasing by an exhale"* — here, the class `@Invariant` is assumed on method entry and checked
-restored on exit. It's the standard reduction of a concurrent safety property to a **per-critical-section
-sequential proof**.
-
-**What this is, and isn't.** We verify the sequential half — each critical section maintains the lock
-invariant — which, *given* the lock provides mutual exclusion and all access goes through it, is what makes the
-invariant a global safety property. We do **not** verify that mutual exclusion (no race on unlocked access,
-no deadlock, no lock-ordering); that needs concurrent separation logic with fractional permissions — the
-Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker.
-So this is an honest *monitor-invariant* proof, not a from-scratch proof of thread safety.
-
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -2056,6 +2155,9 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Verified mutable data structure (ring buffer)** | A class `@Invariant` on a mutable object is both *assumed on entry* and *checked preserved on exit* of every method — so a bounded ring-buffer queue (array field `data` + head `m` + tail `n`, type invariant `0 < data.length ∧ 0 ≤ m ≤ n ≤ data.length`) verifies `enqueue`/`dequeue`/`size` as a unit: `enqueue` proves `n == old.n + 1 ∧ data[old.n] == x ∧ ∀i<old.n. data[i] == old.data[i]` (the array-region frame via `old.data[it]`), `dequeue` returns `old.data[old.m]`, and an unguarded mutator that breaks the invariant refutes with "Cannot prove class invariant". Composes object array-fields + `old`-framing (Phase 11/13) with class-invariant preservation (Phase 45) — the Toccata/Leino `ring_buffer`, specified directly over `data[m..n)` since the engine has no ghost/model-field abstraction | ✅ Phase 107 |
 | **Lock transforms & the monitor invariant** | Groovy's `@WithReadLock` / `@WithWriteLock` / `@Synchronized` AST transforms are *transparent* — the clean body is snapshotted at `CONVERSION` before the lock wrapper is woven in, so a contract verifies through the lock as if it weren't there. The class `@Invariant` then serves as the **monitor invariant**: each critical section is checked to preserve it (Chalice/Viper's "acquire inhales the invariant, release exhales it", sequentially). A lock-guarded `Account` proves it never overdraws (`balance >= 0`); dropping the `amount <= balance` guard refutes. *Honest boundary:* this is the per-critical-section sequential half — mutual exclusion / race / deadlock freedom are **not** proven (those need concurrent separation logic + permissions, à la Verus/Viper). No engine change. (Surfaced and got fixed a groovy-contracts AST bug — `@Synchronized` + `@Ensures`/`@Invariant` without a `@Requires`, GROOVY-12084) | ✅ Phase 115 |
 | **Monoids/semigroups — checked *and* proven** | Composes with `groovy.typecheckers.CombinerChecker` (which checks a combiner's *shape*) on one `@TypeChecked`: groovy-verify proves the *semantics*. A combiner `f(a,b)` with `@Ensures({ result == E })` proves its defining equation; the monoid laws (associativity, identity) prove; a non-associative combiner like `Minus.sub` **refutes** its associativity law (the exact error CombinerChecker forbids). **Equational combiner inlining**: a no-`@Requires` method with `@Ensures({ result == E })` is translated as `E` at its call sites (sound — its `@Ensures` is verified when the combiner is checked), so a reduction that *calls* the combiner — `acc = Sum.add(acc, xs[i])` → `acc + xs[i]` — matches the inline `sum`/extremum patterns and proves `reduce == xs.sum()` / `a.max()`. The parallel recombination = sequential fold is `injectParallel`'s own (associativity-requiring) contract, which CombinerChecker checks and we prove | ✅ Phase 116 |
+| **Agents/actors — monitor invariant via serialization** | The lock trick (Phase 115) across paradigms: an `Agent`/`Actor` is a monitor whose mutual exclusion comes from processing one message at a time, not from a lock — so the class `@Invariant` is the monitor invariant, each handler verified to preserve it with **no lock annotation**. A bounded `Buffer` (`0 ≤ count ≤ capacity`) and an Agent update function (`send { inc(it) }`) prove they maintain the invariant; an unguarded handler refutes. Same local proof as locks, different *assumed* structural guarantee (mutual exclusion → serialization) — the trick spans shared-memory locking and message-passing actors. No engine change | ✅ Phase 117 |
+| **Dataflow — determinacy via single-assignment** | A third concurrency paradigm, a different *assumed* guarantee: a `DataflowVariable` is bound exactly once and a read blocks until the bind, so the network's value is schedule-independent. A light source-level desugar collapses the network to straight-line SSA — `new DataflowVariable()` → a scalar, `x << v` → `x = v`, `x.get()`/`await(x)` → `x`, and `async {}` blocks flatten inline (sound *because* single-assignment makes order irrelevant) — and the functional value proves sequentially. `dataflowSum(a,b)` proves `result == a + b`; a wrong claim refutes. *Honest boundary:* we prove the value, assume single-assignment, and prove no deadlock-freedom or termination | ✅ Phase 118 |
+| **Channels — per-element transform via FIFO** | The streaming-pipeline flavor, and the combiner trick again: an `AsyncChannel`'s FIFO delivery means the i-th value received is the i-th sent, through the pipeline's pure stages — so a representative element collapses to function composition. The desugar resolves `src.send(x)` → `src = x`, each `map { f }` → `f` applied to the upstream value (β-reduced), and `first()` → a read; pipeline-derived vars resolve lazily at the receive site, so a producer in a trailing `async {}` still binds the post-send value. A two-stage `map` pipeline proves `result == (x+1)*2`; a wrong claim refutes. *Honest boundary:* we prove the per-element transform, assume FIFO, and prove no delivery or termination | ✅ Phase 119 |
 | **Reference identity + identity-keyed object fields (reads + writes)** | Two object parameters of the same class are *alias-modelled*: their `int` fields are a per-`(class, field)` heap map indexed by object identity, and `a === b` / `a.is(b)` lowers to identity equality `id(a) == id(b)`. **Reads** (slice 1): `a.is(b)` makes the fields **provably coincide** (`a.is(b) ⟹ a.balance == b.balance`), **refuted without it** — reasoning the per-name model (distinct names ⇒ distinct objects) structurally cannot do. **Writes** (slice 2): `a.balance = v` stores into the map, so a write through `a` is **observed through `b` exactly when they alias** — `a.is(b) ⟹ (a.balance = 100 ⟹ b.balance == 100)`, refuted without the alias. Straight-line, `int`-field-only; single-object-param and distinct-class methods keep the per-name model untouched. **Not pursued** (a dual-tenet boundary): the `old(obj.field)`-relative `transfer` — groovy-contracts' `old` is a `Map` of `this`-field snapshots and never captures a *parameter's* field, so such a contract can't run at runtime; modelling it would be verify-only, breaking the executable-specs principle | ✅ Phase 89 (slices 1–2) |
 | **String predicates** | `s.startsWith(p)` / `s.endsWith(q)` / `s.contains(sub)` / `s.isEmpty()` on String-typed receivers translate as uninterpreted Bool functions over the existing `String!Sort`. Two applications with the same arguments share the SMT term, so the predicate composes by syntactic identity across contracts and bodies — adequate for "every filter survivor matched the predicate"-shape reasoning (HumanEval task 029, `filter_by_prefix`). Typed-local non-Int lists (`List<String> r = []`) are co-shipped: the empty factory now mints with the right element sort | ✅ Phase 46a |
 | **String length oracle + light axioms** | `s.length()` (and the GDK alias `s.size()`) on a String-typed receiver routes to an uninterpreted `(String) → Int` oracle. String literals are pinned at mint: `"hello"`'s length is asserted as 5, so `"hello".length() == 5` folds. Three universally-quantified axioms ship alongside: `length(s) >= 0` for any String, `startsWith(s, p) ⟹ length(p) <= length(s)`, and the same for `endsWith`. Together they let the verifier prove that a 4-char string *cannot* start with `"hello"`, outright — not just "can't prove either way". `s.isEmpty()` lowers to `length(s) == 0` so the two expressions are interchangeable | ✅ Phase 46b / 46c |

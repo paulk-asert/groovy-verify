@@ -36,6 +36,7 @@ import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MethodCall
@@ -1411,6 +1412,30 @@ class VerifyChecker extends TypeCheckingExtension {
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
 
+            // Phase 118 — desugar Groovy's dataflow constructs into plain single-assignment code: a
+            // `DataflowVariable` is a write-once local, so `x << v` is `x = v`, `await(x)`/`x.get()`/`x.val`
+            // is a read of `x`, and `async { … }` is transparent (sound — single-assignment makes the result
+            // order-independent, so running the binds in source order gives the deterministic value). The
+            // rewrite makes the network ordinary SSA; the determinacy guarantee is the half we rely on.
+            // No-op (returns the same body) unless the method actually uses these constructs.
+            Statement desugared = desugarDataflow(body)
+            if (!desugared.is(body)) {
+                node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, desugared)
+                body = desugared
+            }
+
+            // Phase 119 — desugar an async-channel pipeline into the composed per-element transform. FIFO
+            // delivery means the i-th value received is the i-th value sent, run through the pipeline's pure
+            // stages — so for a representative element, `src.send(x)` is `src = x`, `ch.map { f }` beta-reduces
+            // to `f(ch)`, and receiving one element (`ch.first()`) is a read of `ch`. The pipeline collapses to
+            // function composition (the combiner trick); FIFO ordering is the structural half we assume.
+            // No-op unless the method actually builds a channel pipeline.
+            Statement deChan = desugarChannels(body)
+            if (!deChan.is(body)) {
+                node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deChan)
+                body = deChan
+            }
+
             LoopSite site
             try {
                 site = findLoopSite(body)
@@ -2589,6 +2614,285 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private static BinaryExpression bin(Expression l, int type, Expression r) {
         new BinaryExpression(l, Token.newSymbol(type, -1, -1), r)
+    }
+
+    // ── Phase 118 — dataflow desugaring ─────────────────────────────────────────────────────────
+    /** Rewrite a body using `DataflowVariable`/`<<`/`await`/`async` into plain single-assignment code; returns
+     *  the same body unchanged if it uses none of them. */
+    private static Statement desugarDataflow(Statement body) {
+        if (!(body instanceof BlockStatement)) return body
+        Set<String> df = new HashSet<String>()
+        collectDataflowVars((BlockStatement) body, df)
+        if (df.isEmpty()) return body
+        List<Statement> out = new ArrayList<Statement>()
+        rewriteDfStatements(((BlockStatement) body).statements, df, out)
+        new BlockStatement(out, ((BlockStatement) body).variableScope)
+    }
+
+    private static void collectDataflowVars(BlockStatement body, Set<String> df) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && isDataflowNew(de.rightExpression)) {
+                    df.add(((VariableExpression) de.leftExpression).name)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    private static boolean isDataflowNew(Expression e) {
+        if (!(e instanceof ConstructorCallExpression)) return false
+        String n = ((ConstructorCallExpression) e).type?.nameWithoutPackage
+        n == 'DataflowVariable' || n == 'Dataflows'
+    }
+
+    private static boolean isDfVarRef(Expression e, Set<String> df) {
+        e instanceof VariableExpression && df.contains(((VariableExpression) e).name)
+    }
+
+    /** The single closure argument of an `async { … }` call (MethodCall or static), else null. */
+    private static ClosureExpression asyncClosure(Expression e) {
+        Expression argsExpr = null
+        if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'async') {
+            argsExpr = ((MethodCallExpression) e).arguments
+        } else if (e instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) e).method == 'async') {
+            argsExpr = ((StaticMethodCallExpression) e).arguments
+        }
+        if (!(argsExpr instanceof ArgumentListExpression)) return null
+        List<Expression> a = ((ArgumentListExpression) argsExpr).expressions
+        (a.size() == 1 && a.get(0) instanceof ClosureExpression) ? (ClosureExpression) a.get(0) : null
+    }
+
+    private static void rewriteDfStatements(List<Statement> stmts, Set<String> df, List<Statement> out) {
+        for (Statement st : stmts) {
+            if (st instanceof BlockStatement) { rewriteDfStatements(((BlockStatement) st).statements, df, out); continue }
+            if (st instanceof ExpressionStatement) {
+                Expression e = ((ExpressionStatement) st).expression
+                ClosureExpression cl = asyncClosure(e)               // async { … } → flatten inline (transparent)
+                if (cl != null) {
+                    if (cl.code instanceof BlockStatement) rewriteDfStatements(((BlockStatement) cl.code).statements, df, out)
+                    continue
+                }
+                if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SHIFT &&
+                    isDfVarRef(((BinaryExpression) e).leftExpression, df)) {           // x << v → x = v
+                    BinaryExpression be = (BinaryExpression) e
+                    out.add(new ExpressionStatement(bin(be.leftExpression, Types.ASSIGN, rewriteDfExpr(be.rightExpression, df))))
+                    continue
+                }
+                if (e instanceof DeclarationExpression && isDataflowNew(((DeclarationExpression) e).rightExpression) &&
+                    ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
+                    // def x = new DataflowVariable() → def x = 0 (a fresh dynamic local; the bind reassigns it)
+                    DeclarationExpression de = (DeclarationExpression) e
+                    VariableExpression lhs = new VariableExpression(((VariableExpression) de.leftExpression).name)
+                    out.add(new ExpressionStatement(new DeclarationExpression(lhs, de.operation, new ConstantExpression(Integer.valueOf(0)))))
+                    continue
+                }
+                out.add(new ExpressionStatement(rewriteDfExpr(e, df)))
+                continue
+            }
+            if (st instanceof ReturnStatement) {
+                Expression r = ((ReturnStatement) st).expression
+                out.add(new ReturnStatement(r == null ? r : rewriteDfExpr(r, df)))
+                continue
+            }
+            out.add(st)
+        }
+    }
+
+    /** Rewrite `await(x)` / `x.get()` / `x.val` (x a dataflow var) to `x`, recursively. */
+    private static Expression rewriteDfExpr(Expression e, Set<String> df) {
+        if (e == null) return e
+        ExpressionTransformer t = new ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                if (expr instanceof MethodCallExpression) {
+                    MethodCallExpression m = (MethodCallExpression) expr
+                    if (m.methodAsString == 'await') {
+                        List<Expression> a = (m.arguments instanceof ArgumentListExpression) ?
+                            ((ArgumentListExpression) m.arguments).expressions : null
+                        if (a != null && a.size() == 1 && isDfVarRef(a.get(0), df)) return a.get(0)
+                    }
+                    if (m.methodAsString == 'get' && isDfVarRef(m.objectExpression, df) &&
+                        (!(m.arguments instanceof ArgumentListExpression) || ((ArgumentListExpression) m.arguments).expressions.isEmpty())) {
+                        return m.objectExpression
+                    }
+                } else if (expr instanceof StaticMethodCallExpression) {
+                    StaticMethodCallExpression m = (StaticMethodCallExpression) expr
+                    if (m.method == 'await' && m.arguments instanceof ArgumentListExpression) {
+                        List<Expression> a = ((ArgumentListExpression) m.arguments).expressions
+                        if (a.size() == 1 && isDfVarRef(a.get(0), df)) return a.get(0)
+                    }
+                } else if (expr instanceof PropertyExpression) {
+                    PropertyExpression pe = (PropertyExpression) expr
+                    if (pe.propertyAsString == 'val' && isDfVarRef(pe.objectExpression, df)) return pe.objectExpression
+                }
+                expr.transformExpression(this)
+            }
+        }
+        t.transform(e)
+    }
+
+    // ── Phase 119 — async-channel pipeline desugaring ───────────────────────────────────────────
+    /** Rewrite an `AsyncChannel` pipeline into the composed per-element transform; returns the body unchanged
+     *  if it builds no channel. A source channel becomes a write-once scalar (`src.send(x)` is `src = x`); a
+     *  `map { f }` stage is the pure transform `f` applied to the upstream value; receiving one element
+     *  (`first()`) is a read. The pipeline collapses to function composition — FIFO ordering (the i-th value
+     *  received is the i-th sent) is the structural half we assume. Pipeline-derived vars are resolved lazily
+     *  at the receive site, so a producer in a trailing `async {}` still binds the right (post-send) value. */
+    private static Statement desugarChannels(Statement body) {
+        if (!(body instanceof BlockStatement)) return body
+        Set<String> ch = new HashSet<String>()
+        collectChannelVars((BlockStatement) body, ch)
+        if (ch.isEmpty()) return body
+        List<Statement> out = new ArrayList<Statement>()
+        Map<String, Expression> defs = new HashMap<String, Expression>()
+        rewriteChStatements(((BlockStatement) body).statements, ch, defs, out)
+        new BlockStatement(out, ((BlockStatement) body).variableScope)
+    }
+
+    /** A var is a channel var if declared from `AsyncChannel.create(...)` or from a pipeline op whose source is
+     *  already a channel var. Single forward pass — declarations are in source order. */
+    private static void collectChannelVars(BlockStatement body, Set<String> ch) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression &&
+                    (isChannelCreate(de.rightExpression) || isChannelExpr(de.rightExpression, ch))) {
+                    ch.add(((VariableExpression) de.leftExpression).name)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    /** `AsyncChannel.create(...)` — interface static factory, either AST shape (post-STC static call, or a
+     *  method call on a class/property reference named {@code AsyncChannel}). */
+    private static boolean isChannelCreate(Expression e) {
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression m = (StaticMethodCallExpression) e
+            return m.method == 'create' && m.ownerType?.nameWithoutPackage == 'AsyncChannel'
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) e
+            return m.methodAsString == 'create' && channelOwnerName(m.objectExpression) == 'AsyncChannel'
+        }
+        false
+    }
+
+    private static String channelOwnerName(Expression obj) {
+        if (obj instanceof ClassExpression) return ((ClassExpression) obj).type?.nameWithoutPackage
+        if (obj instanceof PropertyExpression) return ((PropertyExpression) obj).propertyAsString
+        if (obj instanceof VariableExpression) return ((VariableExpression) obj).name
+        null
+    }
+
+    /** A channel-valued expression: a channel var, or a pipeline op (`map`/`filter`/`tap`) on one. */
+    private static boolean isChannelExpr(Expression e, Set<String> ch) {
+        if (e instanceof VariableExpression) return ch.contains(((VariableExpression) e).name)
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) e
+            return (m.methodAsString in ['map', 'filter', 'tap']) && isChannelExpr(m.objectExpression, ch)
+        }
+        false
+    }
+
+    private static void rewriteChStatements(List<Statement> stmts, Set<String> ch, Map<String, Expression> defs, List<Statement> out) {
+        for (Statement st : stmts) {
+            if (st instanceof BlockStatement) { rewriteChStatements(((BlockStatement) st).statements, ch, defs, out); continue }
+            if (st instanceof ExpressionStatement) {
+                Expression e = ((ExpressionStatement) st).expression
+                ClosureExpression cl = asyncClosure(e)                       // async { … } → flatten inline (transparent)
+                if (cl != null) {
+                    if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, ch, defs, out)
+                    continue
+                }
+                if (e instanceof MethodCallExpression) {
+                    MethodCallExpression m = (MethodCallExpression) e
+                    if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'close') continue   // close → drop
+                    if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'send') {            // send(v) → ch = v
+                        List<Expression> a = (m.arguments instanceof ArgumentListExpression) ?
+                            ((ArgumentListExpression) m.arguments).expressions : Collections.<Expression>emptyList()
+                        if (a.size() == 1) {
+                            out.add(new ExpressionStatement(bin(m.objectExpression, Types.ASSIGN, rewriteChExpr(a.get(0), ch, defs))))
+                            continue
+                        }
+                    }
+                }
+                if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
+                    DeclarationExpression de = (DeclarationExpression) e
+                    String name = ((VariableExpression) de.leftExpression).name
+                    if (isChannelCreate(de.rightExpression)) {              // def src = AsyncChannel.create(n) → def src = 0
+                        VariableExpression lhs = new VariableExpression(name)
+                        out.add(new ExpressionStatement(new DeclarationExpression(lhs, de.operation, new ConstantExpression(Integer.valueOf(0)))))
+                        continue
+                    }
+                    if (isChannelExpr(de.rightExpression, ch)) {           // def out = src.map{..} → record pipeline, defer
+                        defs.put(name, de.rightExpression)
+                        continue
+                    }
+                }
+                out.add(new ExpressionStatement(rewriteChExpr(e, ch, defs)))
+                continue
+            }
+            if (st instanceof ReturnStatement) {
+                Expression r = ((ReturnStatement) st).expression
+                out.add(new ReturnStatement(r == null ? r : rewriteChExpr(r, ch, defs)))
+                continue
+            }
+            out.add(st)
+        }
+    }
+
+    /** Resolve a channel-valued expression to its scalar value: expand a pipeline-derived var to its recorded
+     *  definition, beta-reduce each `map { f }` over its upstream value, and drop `first()`/receive reads. */
+    private static Expression rewriteChExpr(Expression e, Set<String> ch, Map<String, Expression> defs) {
+        if (e == null) return e
+        ExpressionTransformer t = new ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                if (expr instanceof VariableExpression && defs.containsKey(((VariableExpression) expr).name)) {
+                    return transform(defs.get(((VariableExpression) expr).name))         // expand derived var lazily
+                }
+                if (expr instanceof MethodCallExpression) {
+                    MethodCallExpression m = (MethodCallExpression) expr
+                    if (m.methodAsString == 'map' && isChannelExpr(m.objectExpression, ch)) {
+                        ClosureExpression cl = singleClosureArg(m)
+                        if (cl != null) {
+                            Expression reduced = betaReduce(cl, transform(m.objectExpression))
+                            if (reduced != null) return reduced
+                        }
+                    }
+                    if (m.methodAsString == 'first' && isChannelExpr(m.objectExpression, ch) && noArgs(m)) {
+                        return transform(m.objectExpression)                              // receive one element
+                    }
+                }
+                expr.transformExpression(this)
+            }
+        }
+        t.transform(e)
+    }
+
+    private static ClosureExpression singleClosureArg(MethodCallExpression m) {
+        if (!(m.arguments instanceof ArgumentListExpression)) return null
+        List<Expression> a = ((ArgumentListExpression) m.arguments).expressions
+        (a.size() == 1 && a.get(0) instanceof ClosureExpression) ? (ClosureExpression) a.get(0) : null
+    }
+
+    /** β-reduce a single-expression closure `{ p -> body }` over {@code arg}: substitute the closure's parameter
+     *  (or implicit `it`) with {@code arg} in {@code body}. Returns null for an unsupported (multi-statement) shape. */
+    private static Expression betaReduce(ClosureExpression cl, Expression arg) {
+        Expression bodyE = null
+        if (cl.code instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) cl.code).statements
+            if (ss.size() == 1 && ss.get(0) instanceof ExpressionStatement) bodyE = ((ExpressionStatement) ss.get(0)).expression
+            else if (ss.size() == 1 && ss.get(0) instanceof ReturnStatement) bodyE = ((ReturnStatement) ss.get(0)).expression
+        }
+        if (bodyE == null) return null
+        String p = (cl.parameters != null && cl.parameters.length > 0) ? cl.parameters[0].name : 'it'
+        ExpressionTransformer sub = new ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                if (expr instanceof VariableExpression && ((VariableExpression) expr).name == p) return arg
+                expr.transformExpression(this)
+            }
+        }
+        sub.transform(bodyE)
     }
 
     /** Drop the top-level `&&` conjuncts of {@code e} that contain a quantifier (`every`/`any`/closure);
