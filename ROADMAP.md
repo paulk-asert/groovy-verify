@@ -5771,9 +5771,12 @@ work-around is no longer needed.
 
 ## Phase 116 — monoids/semigroups: checked *and* proven (equational combiner inlining)  *(shipped — engine change)*
 
-Composes with Groovy 6's `groovy.typecheckers.CombinerChecker` (which checks a combiner's *shape* — associative
-+ identity) on one `@TypeChecked`: CombinerChecker checks the shape, groovy-verify proves the **semantics** —
-the combiner's defining equation, the monoid laws, and that a reduction *gives the right answer*. Most of this
+Composes with Groovy 6's `groovy.typecheckers.CombinerChecker` (which checks a combiner's *shape* — that the
+operation handed to `injectParallel`/`sumParallel` is associative, trusting the `@Associative`/`@Reducer`
+annotation for a method reference and scanning for a non-associative operator in an inline closure) on **one
+real `@TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])`**:
+CombinerChecker checks the shape at the call site, groovy-verify proves the **semantics** — the combiner's
+defining equation, the monoid laws, and that the sequential reduction *gives the right answer*. Most of this
 already worked (a combiner's `@Ensures` proves; the associativity/identity laws prove; a *non*-associative
 combiner like subtraction **refutes** its associativity law — the exact bug CombinerChecker forbids). The one
 gap was the reduction *calling the combiner method*: `acc = Sum.add(acc, xs[i])` translated to nothing (a
@@ -5795,9 +5798,15 @@ combiner is a correct monoid and the sequential reduction is right, which is wha
 right — the same "prove the local obligation, rely on the library's structural guarantee" shape as the
 monitor invariant (Phase 115).
 
-**Shipped tests (Phase 116, group `P116 monoid`)**: a full `Sum` monoid (add's equation + identity +
-associativity + `reduce == xs.sum()` *via the combiner*) and a `Largest` semigroup (max + associativity +
-`reduce == a.max()` via the combiner) verify; `Minus.sub`'s associativity law refutes.
+**Shipped tests (Phase 116, group `P116 monoid`)** — all under both checkers in one `@TypeChecked`: a full
+`Sum` monoid (`@Reducer(zero='0') add`'s equation + identity + associativity + `reduce == xs.sum()` *via the
+combiner*, with an `injectParallel(0, Sum.&add)` call site CombinerChecker certifies) and a `Largest` semigroup
+(`@Associative max` + associativity + `reduce == a.max()` via the combiner, with a `sumParallel(Largest.&max)`
+site) verify. CombinerChecker's channel is exercised three ways — a non-associative *inline* combiner
+`injectParallel(0) { a, b -> a - b }`, and a seed contradicting the declared identity (`injectParallel(5,
+Sum.&add)` vs `@Reducer(zero='0')`) — while a *falsely* `@Associative` `Minus.sub` is trusted by CombinerChecker
+but groovy-verify **refutes** its associativity law, catching the bad annotation the shape checker cannot.
+(`@Reducer(zero)` validates the seed but doesn't shorten the call — there is no seedless `injectParallel`.)
 
 ---
 

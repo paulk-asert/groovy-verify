@@ -8598,14 +8598,20 @@ class VerifyHarness {
                         @Ensures({ result == n - 1 && result >= 0 })
                         static int dec(int n) { n - 1 }
                     }''')],
-        // ---------- P116 monoids/semigroups: checked AND proven ----------
-        // Sibling to `groovy.typecheckers.CombinerChecker`, which checks a combiner's *shape* (associative,
-        // has an identity). groovy-verify proves the *semantics*: the combiner's defining equation, the monoid
-        // laws (associativity / identity), and — via Phase-116 combiner inlining (a no-@Requires method with an
-        // `@Ensures({ result == E })` is inlined as E at its call sites) — that a reduction calling the combiner
-        // gives the right aggregate. A full Sum monoid:
-        [group: 'P116 monoid', name: 'Sum monoid: add + identity + associativity + reduce == sum', ok: true,
-         src: tc('''class Sum {
+        // ---------- P116 monoids/semigroups: checked AND proven (composition with CombinerChecker) ----------
+        // A genuine two-checker compile under one @TypeChecked(extensions=[...]). `groovy.typecheckers.Combiner-
+        // Checker` checks a combiner's *shape* — that the operation handed to a parallel reduction (`inject-
+        // Parallel`/`sumParallel`) is associative — and for a method reference it TRUSTS the @Associative/@Reducer
+        // annotation. groovy-verify proves the *semantics* on the SAME class: the combiner's defining equation,
+        // the monoid laws (associativity / identity), and — via Phase-116 combiner inlining — that the sequential
+        // reduction calling the combiner gives the right aggregate (which CombinerChecker does not attempt). The
+        // synergy mirrors the PurityChecker case: CombinerChecker relies on @Associative/@Reducer, groovy-verify
+        // proves it warranted. Sum is a *monoid* (identity 0), so it carries @Reducer(zero='0'); the seedless
+        // `sumParallel(Sum::add)` (a `::` method reference) is the simplest call form, and CombinerChecker certifies
+        // it from the @Reducer. (Largest, a semigroup with no identity, stays @Associative.) A full Sum monoid:
+        [group: 'P116 monoid', name: 'Sum monoid: add + identity + associativity + reduce == sum (both checkers)', ok: true,
+         src: tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], '''class Sum {
+                        @groovy.transform.Reducer(zero = '0')
                         @Ensures({ result == a + b })
                         static int add(int a, int b) { a + b }
                         @Ensures({ result })
@@ -8632,10 +8638,27 @@ class VerifyHarness {
                             while (i < xs.length) { acc = Sum.add(acc, xs[i]); i = i + 1 }
                             return acc
                         }
+                        // CombinerChecker certifies this seedless call site (Sum::add is @Reducer); the laws prove it.
+                        static void parallelReduce() {
+                            [1, 2, 3, 4].sumParallel(Sum::add)
+                        }
                     }''')],
-        // A Largest semigroup (associative, no identity) — the witnessed-extremum reduction gives the max.
-        [group: 'P116 monoid', name: 'Largest semigroup: max + associativity + reduce == max', ok: true,
-         src: tc('''class Largest {
+        // The @Reducer(zero='0') buys CombinerChecker a seed check: when you *do* seed (injectParallel), a seed
+        // that contradicts the declared identity is flagged — the seed is still required (no seedless inject).
+        [group: 'P116 monoid', name: 'CombinerChecker rejects an injectParallel seed that contradicts @Reducer(zero)', ok: false, expect: 'does not match',
+         src: tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], '''class Sum {
+                        @groovy.transform.Reducer(zero = '0')
+                        @Ensures({ result == a + b })
+                        static int add(int a, int b) { a + b }
+                        static void parallelReduce() {
+                            [1, 2, 3, 4].injectParallel(5, Sum.&add)
+                        }
+                    }''')],
+        // A Largest semigroup (associative, no identity) — the witnessed-extremum reduction gives the max, and a
+        // sumParallel call site exercises CombinerChecker on the @Associative `max`.
+        [group: 'P116 monoid', name: 'Largest semigroup: max + associativity + reduce == max (both checkers)', ok: true,
+         src: tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], '''class Largest {
+                        @groovy.transform.Associative
                         @Ensures({ result == (a >= b ? a : b) })
                         static int max(int a, int b) { a >= b ? a : b }
                         @Ensures({ result })
@@ -8658,12 +8681,24 @@ class VerifyHarness {
                             while (i < a.length) { acc = Largest.max(acc, a[i]); i = i + 1 }
                             return acc
                         }
+                        static void parallelReduce() {
+                            [1, 2, 3, 4].sumParallel(Largest.&max)
+                        }
                     }''')],
-        // Refute: subtraction is NOT associative, so its associativity law fails — groovy-verify proves the
-        // exact semantic error CombinerChecker forbids (a non-associative combiner gives non-deterministic
-        // parallel results).
-        [group: 'P116 monoid', name: 'subtraction is not associative (refuted)', expect: 'Cannot prove postcondition',
-         src: tc('''class Minus {
+        // CombinerChecker's channel: a non-associative *inline* combiner (`a - b`) passed to injectParallel is
+        // flagged by static shape analysis, in any mode — groovy-verify never sees it (no contract).
+        [group: 'P116 monoid', name: 'CombinerChecker rejects a non-associative inline combiner', ok: false, expect: 'CombinerChecker',
+         src: tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], '''class Bad {
+                        static void parallelReduce() {
+                            [1, 2, 3, 4].injectParallel(0) { int a, int b -> a - b }
+                        }
+                    }''')],
+        // groovy-verify's channel — and the deeper synergy: subtraction is wrongly annotated @Associative, so
+        // CombinerChecker TRUSTS it and stays silent at the `Minus.&sub` call site — but groovy-verify REFUTES
+        // the associativity law `(a-b)-c == a-(b-c)`, catching the false annotation CombinerChecker cannot.
+        [group: 'P116 monoid', name: 'a false @Associative is refuted by groovy-verify (CombinerChecker trusts it)', ok: false, expect: 'Cannot prove postcondition',
+         src: tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], '''class Minus {
+                        @groovy.transform.Associative
                         @Ensures({ result == a - b })
                         static int sub(int a, int b) { a - b }
                         @Ensures({ result })
@@ -8673,6 +8708,9 @@ class VerifyHarness {
                             int bc = Minus.sub(b, c)
                             int right = Minus.sub(a, bc)
                             return left == right
+                        }
+                        static void parallelReduce() {
+                            [1, 2, 3, 4].injectParallel(0, Minus.&sub)
                         }
                     }''')],
         // ---------- P115 lock transforms: the monitor invariant ----------

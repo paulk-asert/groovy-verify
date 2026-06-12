@@ -2154,7 +2154,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Cross-class `@Invariant` assumption** | A class-typed parameter carries its class's invariants into the calling method. `c.count >= 0` is assumed automatically when the receiver `c: Counter` has `@Invariant({ count >= 0 })`. Cross-class calls (`c.incr()`) discharge the callee's `@Requires` under a receiver context, then havoc the receiver's fields and re-assume its invariants on return. Field references are namespaced per receiver (`c$count` distinct from `b$count`); for a *single* receiver this is sound under the no-aliasing assumption (a project [non-goal](ROADMAP.md)), and when *two* parameters of the same class are present the identity model below (Phase 89) engages instead — they may alias | ✅ Phase 45 |
 | **Verified mutable data structure (ring buffer)** | A class `@Invariant` on a mutable object is both *assumed on entry* and *checked preserved on exit* of every method — so a bounded ring-buffer queue (array field `data` + head `m` + tail `n`, type invariant `0 < data.length ∧ 0 ≤ m ≤ n ≤ data.length`) verifies `enqueue`/`dequeue`/`size` as a unit: `enqueue` proves `n == old.n + 1 ∧ data[old.n] == x ∧ ∀i<old.n. data[i] == old.data[i]` (the array-region frame via `old.data[it]`), `dequeue` returns `old.data[old.m]`, and an unguarded mutator that breaks the invariant refutes with "Cannot prove class invariant". Composes object array-fields + `old`-framing (Phase 11/13) with class-invariant preservation (Phase 45) — the Toccata/Leino `ring_buffer`, specified directly over `data[m..n)` since the engine has no ghost/model-field abstraction | ✅ Phase 107 |
 | **Lock transforms & the monitor invariant** | Groovy's `@WithReadLock` / `@WithWriteLock` / `@Synchronized` AST transforms are *transparent* — the clean body is snapshotted at `CONVERSION` before the lock wrapper is woven in, so a contract verifies through the lock as if it weren't there. The class `@Invariant` then serves as the **monitor invariant**: each critical section is checked to preserve it (Chalice/Viper's "acquire inhales the invariant, release exhales it", sequentially). A lock-guarded `Account` proves it never overdraws (`balance >= 0`); dropping the `amount <= balance` guard refutes. *Honest boundary:* this is the per-critical-section sequential half — mutual exclusion / race / deadlock freedom are **not** proven (those need concurrent separation logic + permissions, à la Verus/Viper). No engine change. (Surfaced and got fixed a groovy-contracts AST bug — `@Synchronized` + `@Ensures`/`@Invariant` without a `@Requires`, GROOVY-12084) | ✅ Phase 115 |
-| **Monoids/semigroups — checked *and* proven** | Composes with `groovy.typecheckers.CombinerChecker` (which checks a combiner's *shape*) on one `@TypeChecked`: groovy-verify proves the *semantics*. A combiner `f(a,b)` with `@Ensures({ result == E })` proves its defining equation; the monoid laws (associativity, identity) prove; a non-associative combiner like `Minus.sub` **refutes** its associativity law (the exact error CombinerChecker forbids). **Equational combiner inlining**: a no-`@Requires` method with `@Ensures({ result == E })` is translated as `E` at its call sites (sound — its `@Ensures` is verified when the combiner is checked), so a reduction that *calls* the combiner — `acc = Sum.add(acc, xs[i])` → `acc + xs[i]` — matches the inline `sum`/extremum patterns and proves `reduce == xs.sum()` / `a.max()`. The parallel recombination = sequential fold is `injectParallel`'s own (associativity-requiring) contract, which CombinerChecker checks and we prove | ✅ Phase 116 |
+| **Monoids/semigroups — checked *and* proven** | A genuine two-checker compile — `@TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])` — over a class with a real `injectParallel(0, Sum.&add)` / `sumParallel(Largest.&max)` call site. CombinerChecker checks the combiner's *shape* at that site (trusting the `@Reducer(zero='0')` / `@Associative` annotation on the method ref, and checking the seed against the declared zero); groovy-verify proves the *semantics*: `add`'s defining equation, the monoid laws (associativity, identity), and `reduce == xs.sum()` / `a.max()`. The error channels stay separate **and** the synergy runs both ways: a non-associative *inline* combiner `injectParallel(0){ a,b -> a-b }` (or a seed contradicting `@Reducer(zero)`) is a **CombinerChecker** error; a *falsely* `@Associative Minus.sub` is trusted by CombinerChecker but groovy-verify **refutes** its associativity law — catching the bad annotation the shape checker can't. **Equational combiner inlining** (the engine change): a no-`@Requires` method with `@Ensures({ result == E })` is translated as `E` at its call sites (sound — its `@Ensures` is verified when the combiner is checked), so `acc = Sum.add(acc, xs[i])` → `acc + xs[i]` matches the inline `sum`/extremum patterns | ✅ Phase 116 |
 | **Agents/actors — monitor invariant via serialization** | The lock trick (Phase 115) across paradigms: an `Agent`/`Actor` is a monitor whose mutual exclusion comes from processing one message at a time, not from a lock — so the class `@Invariant` is the monitor invariant, each handler verified to preserve it with **no lock annotation**. A bounded `Buffer` (`0 ≤ count ≤ capacity`) and an Agent update function (`send { inc(it) }`) prove they maintain the invariant; an unguarded handler refutes. Same local proof as locks, different *assumed* structural guarantee (mutual exclusion → serialization) — the trick spans shared-memory locking and message-passing actors. No engine change | ✅ Phase 117 |
 | **Dataflow — determinacy via single-assignment** | A third concurrency paradigm, a different *assumed* guarantee: a `DataflowVariable` is bound exactly once and a read blocks until the bind, so the network's value is schedule-independent. A light source-level desugar collapses the network to straight-line SSA — `new DataflowVariable()` → a scalar, `x << v` → `x = v`, `x.get()`/`await(x)` → `x`, and `async {}` blocks flatten inline (sound *because* single-assignment makes order irrelevant) — and the functional value proves sequentially. `dataflowSum(a,b)` proves `result == a + b`; a wrong claim refutes. *Honest boundary:* we prove the value, assume single-assignment, and prove no deadlock-freedom or termination | ✅ Phase 118 |
 | **Channels — per-element transform via FIFO** | The streaming-pipeline flavor, and the combiner trick again: an `AsyncChannel`'s FIFO delivery means the i-th value received is the i-th sent, through the pipeline's pure stages — so a representative element collapses to function composition. The desugar resolves `src.send(x)` → `src = x`, each `map { f }` → `f` applied to the upstream value (β-reduced), and `first()` → a read; pipeline-derived vars resolve lazily at the receive site, so a producer in a trailing `async {}` still binds the post-send value. A two-stage `map` pipeline proves `result == (x+1)*2`; a wrong claim refutes. *Honest boundary:* we prove the per-element transform, assume FIFO, and prove no delivery or termination | ✅ Phase 119 |
@@ -2457,24 +2457,26 @@ can see it.)
 ### `CombinerChecker` — shape beside semantics
 
 Groovy 6 ships [`CombinerChecker`](https://groovy.apache.org/blog/groovy6-functional), which validates a
-combiner's *algebraic shape* — that `injectParallel` / `sumParallel` are handed an **associative** operation
-with an **identity**, so partition-and-recombine is safe. Same division of labour as the regex case, one level
-up: CombinerChecker checks the shape, groovy-verify proves the **semantics** — the laws hold *and* the reduction
-comes up with the right answer.
+combiner's *algebraic shape* — that `injectParallel` / `sumParallel` are handed an **associative** operation, so
+partition-and-recombine is safe. For a method reference it **trusts the `@Associative` / `@Reducer` annotation**;
+for an inline closure it scans for a non-associative operator (`-`, `/`, `%`, `**`). Same division of labour as
+the regex case, one level up: CombinerChecker checks the shape, groovy-verify proves the **semantics** — the
+laws actually hold *and* the reduction comes up with the right answer:
 
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])
 class Sum {
+    @Reducer(zero = '0')                              // Sum is a monoid; CombinerChecker trusts this & checks the seed
     @Ensures({ result == a + b })                     // the combiner's defining equation
     static int add(int a, int b) { a + b }
 
-    @Ensures({ result })                              // the monoid law, proven
+    @Ensures({ result })                              // the monoid law, *proven* — warranting the @Associative claim
     static boolean associative(int a, int b, int c) {
         Sum.add(Sum.add(a, b), c) == Sum.add(a, Sum.add(b, c))
     }
 
     @Requires({ xs != null && xs.length > 0 })
-    @Ensures({ result == xs.sum() })                  // the reduction *gives the sum*
+    @Ensures({ result == xs.sum() })                  // the sequential reduction *gives the sum*
     static int reduce(int[] xs) {
         int acc = xs[0], i = 1
         @Invariant({ 1 <= i && i <= xs.length && acc == xs[0..<i].sum() })
@@ -2482,18 +2484,35 @@ class Sum {
         while (i < xs.length) { acc = Sum.add(acc, xs[i]); i = i + 1 }
         return acc
     }
+
+    static void parallelReduce() {
+        [1, 2, 3, 4].sumParallel(Sum::add)            // CombinerChecker certifies this seedless site (Sum::add is @Reducer)
+    }
 }
 ```
 
-`add` proves its defining equation; associativity and identity (`a + 0 == a`) prove as laws; and the reduction
-that **calls `Sum.add`** gives exactly `xs.sum()` (`Largest.max` does likewise against `a.max()`). The error
-CombinerChecker forbids, groovy-verify catches semantically — a *non*-associative combiner like `Minus.sub`
-**refutes** its associativity law (`(a-b)-c ≠ a-(b-c)`). The loop *calling* the combiner works via **combiner
-inlining**: a no-`@Requires` method with `@Ensures({ result == E })` is translated as `E` at its call sites
-(sound — its `@Ensures` is verified when the combiner is checked), so `acc = Sum.add(acc, xs[i])` becomes
-`acc + xs[i]` and matches the inline aggregation pattern. The parallel recombination = sequential fold is
-`injectParallel`'s own (associativity-requiring) contract — which CombinerChecker checks and we prove: the same
-"prove the local fact, rely on the library's structural guarantee" shape as the monitor invariant.
+`add` proves its defining equation; associativity and identity (`a + 0 == a`) prove as laws; and the sequential
+reduction that **calls `Sum.add`** gives exactly `xs.sum()` (`Largest.max` does likewise against `a.max()`, with
+a `sumParallel(Largest.&max)` call site). `sumParallel` is the seedless reduction — the simplest call form — and
+both the `::` method reference and Groovy's `.&` method pointer work (`Foo::bar` parses to a
+`MethodReferenceExpression`, a subtype of the `MethodPointerExpression` CombinerChecker recognises). The two
+checkers' error channels stay separate, and the synergy runs *both* ways:
+
+- A **non-associative inline combiner** — `injectParallel(0) { a, b -> a - b }` — is a **`CombinerChecker`**
+  error from static shape analysis (groovy-verify never sees it; it carries no contract).
+- A **seed that contradicts the declared identity** — `injectParallel(5, Sum.&add)` against `@Reducer(zero =
+  '0')` — is a **`CombinerChecker`** error too (the seed still has to be passed: there's no seedless
+  `injectParallel` overload, so `@Reducer` buys a *check*, not a shorter call).
+- A **falsely-`@Associative` method** — annotate `Minus.sub` as `@Associative` and CombinerChecker *trusts* it
+  and stays silent at the `Minus.&sub` call site — but groovy-verify **refutes** the associativity law
+  (`(a-b)-c ≠ a-(b-c)`) with a **`Cannot prove`**, catching the false annotation the shape checker cannot.
+
+The loop *calling* the combiner works via **combiner inlining**: a no-`@Requires` method with
+`@Ensures({ result == E })` is translated as `E` at its call sites (sound — its `@Ensures` is verified when the
+combiner is checked), so `acc = Sum.add(acc, xs[i])` becomes `acc + xs[i]` and matches the inline aggregation
+pattern. The parallel recombination = sequential fold is `injectParallel`'s own (associativity-requiring)
+contract — which CombinerChecker checks and we prove: the same "prove the local fact, rely on the library's
+structural guarantee" shape as the monitor invariant.
 
 ### `PurityChecker` — discharging a premise groovy-verify relies on
 
