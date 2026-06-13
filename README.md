@@ -2085,7 +2085,9 @@ tuple-returning call are all general capabilities; Duplets just needs all three 
 
 A small array-fill in the style Dafny tutorials use to teach element-wise verification — a pure specification
 `spec(n)`, a loop that fills `r[i] = spec(i + 1)`, and a postcondition saying **every** slot matches it.
-The emoji-FizzBuzz flourish is borrowed, with thanks, from Don Raab's
+FizzBuzz conventionally counts from 1 (`1, 2, Fizz, …`), so the 0-based array slot `i` holds the value for
+number `i + 1` — that `+ 1` is the bridge between the array index and the FizzBuzz number, and it's exactly what
+the broken variant below gets wrong. The emoji-FizzBuzz flourish is borrowed, with thanks, from Don Raab's
 [*Ternary, Predicate, and Pattern Matching for FizzBuzz with Java 26*](https://donraab.medium.com/ternary-predicate-and-pattern-matching-for-fizzbuzz-with-java-26-646c812a137b).
 
 ```groovy
