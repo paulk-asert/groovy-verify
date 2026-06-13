@@ -4497,6 +4497,93 @@ trait Counter {
 @TypeChecked(extensions = 'verification.VerifyChecker')
 class WrapCounter implements Counter { }
 """],
+        // ---------- Phases 122/123/124: FizzBuzz array-fill (a Dafny-style element-wise verification) ----------
+        // The classic verified array-fill: a pure `spec(n)` function, an imperative loop that fills `r[i] = spec(i+1)`,
+        // and an element-wise postcondition `forall k. r[k] == spec(k+1)`. groovy-verify proves the length, the
+        // termination (@Decreases), and that EVERY element matches the spec — over a String-valued array (the
+        // local `new String[upTo]` element-store needed the Phase-123 fix). `spec`'s @Ensures inlines equationally
+        // (Phase 116) so body and invariant share one deterministic spec term; emoji literals are captured via
+        // GROOVY-12085. The non-spec/buzz default outputs the NUMBER via `n.toString()` — Phase 124 models
+        // `n.toString()` / `String.valueOf(n)` / `Integer.toString(n)` as Z3's deterministic intToString, and
+        // lets such a conversion live in an equational-combiner `@Ensures` (so the helper still inlines into the
+        // loop invariant). This is the full pretty FizzBuzz, numbers and all, machine-checked element by element:
+        [group: 'P-fizzbuzz', name: 'FizzBuzz array-fill with number default (n.toString)', ok: true,
+         src: tc('''class FizzBuzz {
+                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+                        static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
+                        @Requires({ upTo >= 1 })
+                        @Ensures({ result.length == upTo })
+                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })
+                        static String[] build(int upTo) {
+                            String[] r = new String[upTo]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
+                            @Decreases({ upTo - i })
+                            while (i < upTo) { r[i] = FizzBuzz.spec(i + 1); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // The same proof through String.valueOf(n) and Integer.toString(n) — all three forms route to intToString.
+        [group: 'P-fizzbuzz', name: 'number default via String.valueOf', ok: true,
+         src: tc('''class FizzBuzz {
+                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : String.valueOf(n)))) })
+                        static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : String.valueOf(n))) }
+                        @Requires({ upTo >= 1 })
+                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })
+                        static String[] build(int upTo) {
+                            String[] r = new String[upTo]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
+                            @Decreases({ upTo - i })
+                            while (i < upTo) { r[i] = FizzBuzz.spec(i + 1); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // The off-by-one Dafny warns about: write `spec(i+2)` and the element-wise postcondition refutes.
+        [group: 'P-fizzbuzz', name: 'FizzBuzz off-by-one (i+2) refutes', ok: false, expect: 'Cannot prove',
+         src: tc('''class FizzBuzz {
+                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+                        static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
+                        @Requires({ upTo >= 1 })
+                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })
+                        static String[] build(int upTo) {
+                            String[] r = new String[upTo]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
+                            @Decreases({ upTo - i })
+                            while (i < upTo) { r[i] = FizzBuzz.spec(i + 2); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // The number itself is checked, not just the emoji: a wrong number default ((n+1).toString) refutes.
+        [group: 'P-fizzbuzz', name: 'wrong number default refutes', ok: false, expect: 'Cannot prove',
+         src: tc('''class FizzBuzz {
+                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+                        static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : (n + 1).toString())) }
+                        @Requires({ upTo >= 1 })
+                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })
+                        static String[] build(int upTo) {
+                            String[] r = new String[upTo]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
+                            @Decreases({ upTo - i })
+                            while (i < upTo) { r[i] = FizzBuzz.spec(i + 1); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // Phase 124 — the spurious null-deref on a primitive receiver (`int n`) is suppressed: n.toString() proves.
+        [group: 'P-fizzbuzz', name: 'n.toString on a primitive receiver (no spurious null obligation)', ok: true,
+         src: tc('''class T {
+                        @Ensures({ result == n.toString() })
+                        static String f(int n) { n.toString() }
+                    }''')],
+        // Phase 123 regression — a String store into a locally-`new`'d String[] (defaulted to Int sort before).
+        [group: 'P-fizzbuzz', name: 'String[] local-array element store (Phase 123)', ok: true,
+         src: tc('''class T {
+                        @Requires({ n >= 1 })
+                        @Ensures({ result == 'hi' })
+                        static String make(int n) { String[] a = new String[n]; a[0] = 'hi'; return a[0] }
+                    }''')],
         // ----- Cooperative synergy: PurityChecker supplies the purity GUARANTEE VerifyChecker relies on.
         // VerifyChecker's pure-evaluation (Phase 8a) proves f() by inlining the contract-free same-class
         // helper triple() as a value — an evaluation that is only meaningful if triple is referentially

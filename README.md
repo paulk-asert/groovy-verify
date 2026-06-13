@@ -1976,8 +1976,8 @@ becomes*, not that the channel delivers or terminates.
 
 A few more that don't belong to one of the per-source sections above: a verified mutable data structure, a
 fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
-its source), and a tour of verification across a Groovy type hierarchy — inheritance, behavioral subtyping, and
-traits.
+its source), a Dafny-style element-wise array-fill (FizzBuzz), and a tour of verification across a Groovy type
+hierarchy — inheritance, behavioral subtyping, and traits.
 
 ### Ring buffer — a verified mutable data structure
 
@@ -2080,6 +2080,45 @@ with value ≠ the first exists* — follows from the two-distinct-duplets preco
 of the two known duplicates differs from `a[r1.v1]`). The result: two pairs with provably different values.
 Nothing here is a special case — the nested witness search, the tuple returns, and binding a local to a
 tuple-returning call are all general capabilities; Duplets just needs all three at once.
+
+### FizzBuzz — element-wise array correctness
+
+A small array-fill in the style Dafny tutorials use to teach element-wise verification — a pure specification
+`spec(n)`, a loop that fills `r[i] = spec(i + 1)`, and a postcondition saying **every** slot matches it. (It
+isn't a port of a specific Dafny example; it's the canonical shape that pattern takes.) The emoji-FizzBuzz
+flourish is borrowed, with thanks, from Don Raab's
+[*Ternary, Predicate, and Pattern Matching for FizzBuzz with Java 26*](https://donraab.medium.com/ternary-predicate-and-pattern-matching-for-fizzbuzz-with-java-26-646c812a137b).
+
+```groovy
+class FizzBuzz {
+    @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+    static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
+
+    @Requires({ upTo >= 1 })
+    @Ensures({ result.length == upTo })                                           // exactly the size requested
+    @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } }) // every element provably correct
+    static String[] build(int upTo) {
+        String[] r = new String[upTo]
+        int i = 0
+        @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
+        @Decreases({ upTo - i })
+        while (i < upTo) { r[i] = FizzBuzz.spec(i + 1); i = i + 1 }
+        return r
+    }
+}
+// build(20) == [1, 2, 🥤, 4, 🐝, 🥤, 7, 8, 🥤, 🐝, 11, 🥤, 13, 14, 🥤🐝, 16, 17, 🥤, 19, 🐝]
+```
+
+The array is the right length, the loop terminates, and **no slot can hold the wrong value** — `spec`'s
+`@Ensures` inlines equationally so the body's `spec(i + 1)` and the invariant's `spec(k + 1)` are one
+deterministic term, and the every-quantifier extends by one element per step. Change the body to `spec(i + 2)`
+and the postcondition refutes — the classic off-by-one. ("Correct" here means *faithful to `spec`* — the loop
+provably realizes it at every index, with no gap, overwrite, or off-by-one; it doesn't argue the spec itself is
+the One True FizzBuzz.) Both halves of the prettiness verify *in the spec*: the emoji (astral-plane literals
+captured faithfully via
+[GROOVY-12085](https://issues.apache.org/jira/browse/GROOVY-12085), a surrogate-pair off-by-N this example
+surfaced) **and** the number — `n.toString()` (or `String.valueOf(n)` / `Integer.toString(n)`) lowers to Z3's
+deterministic `int → string`, so the number for each non-fizz/buzz slot is checked element by element too.
 
 ### Inheritance, traits & behavioral subtyping
 

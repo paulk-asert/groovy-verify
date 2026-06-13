@@ -5961,6 +5961,58 @@ isn't re-verified against the inherited contract.
 
 ---
 
+## Phase 123 — typed local arrays carry their component sort  *(shipped — one-line fix, found via FizzBuzz)*
+
+`collectListElementTypes` registered the element sort of non-Int **parameter** and **field** arrays (so a
+`String[]` param's stores/reads use the String sort), but its body scan for typed **locals** only handled `List`
+declarations — not arrays. So `String[] a = new String[n]` defaulted to an Int-element array, and a String store
+`a[0] = "x"` crashed Z3 with *"domain sort String and parameter sort Int do not match"*. The local-declaration
+scan now handles `t.isArray()` the same way params/fields already did. Surfaced building a Dafny-style
+element-wise array-fill (FizzBuzz): an `int[]` version already verified, but the String-valued one hit this.
+
+**Shipped tests (group `P-fizzbuzz`)**: the FizzBuzz array-fill (a pure `spec(n)` function, an imperative loop
+filling `r[i] = spec(i + 1)`, postconditions `result.length == upTo` and `∀k. result[k] == spec(k + 1)`, and a
+`@Decreases`) proves over a `String[]`; the off-by-one `spec(i + 2)` refutes (Dafny's "if you wrote i+2 it
+errors"); a minimal `String[]` local-store regression. The spec uses real **emoji** literals (`🥤`/`🐝`/`🥤🐝`).
+
+**Upstream bug surfaced and fixed — GROOVY-12085.** Astral-plane characters (emoji) in a *contract literal*
+initially broke ContractExpansionTransform's capture: power-assert's `SourceText` slices the source line with
+`String.substring` (UTF-16 indices) using the AST's column numbers, which are **code-point**-based (ANTLR4
+`CodePointCharStream` via `CharStreams.fromReader`; `getCharPositionInLine()` counts code points). A confirmed
+probe — `r = (n ? '🥤🐝' : 'z')` parses to `lastColumnNumber == 21` (20 code points + 1) where the UTF-16 end is
+23, so the slice dropped the trailing `')` and the contract failed to reparse. Not a groovy-verify bug; fixed in
+core Groovy (`SourceText` now maps code-point columns to char offsets) and confirmed by `--refresh-dependencies`.
+
+---
+
+## Phase 124 — `int → String` conversions in the spec (the FizzBuzz *number* default)  *(shipped)*
+
+To output the number for non-spec/buzz slots, the spec's default branch must convert `int → String`. `String.-
+valueOf(int)` and `Integer.toString(int)` (static) already lowered to Z3's `str.from_int` (Phase 47e), but two
+gaps blocked the idiomatic full example, both found by probe:
+
+1. **Combiner inlining rejected the conversion.** `isPureOver` (the gate deciding whether a helper's
+   `@Ensures({ result == E })` registers as an equational combiner) failed on *any* method call — so a `spec`
+   whose `E` contained `String.valueOf(n)` never registered, so `spec(k + 1)` never inlined into the loop
+   invariant (`tr` → null → "invariant outside fragment"). The identical ITE written inline verified, isolating
+   the combiner path. Fix: `isPureOver` now allows the recognised deterministic conversions
+   (`String.valueOf(x)` / `Integer.toString(x)` / `x.toString()`, checking only the converted value is pure).
+2. **`n.toString()` (instance form) wasn't modeled, and spuriously NPE'd.** The encoder only handled the static
+   `Integer.toString(n)`; the idiomatic `n.toString()` (0-arg, int receiver) fell through, and the obligation
+   collector added a `n != null` deref on the autoboxed primitive — a false positive (an `int` can't be null).
+   Fix: the encoder lowers an Int-sorted `x.toString()` via the same `str.from_int` (gated by a new
+   `SmtBackend.isInt`), and the deref collector skips a **primitive-typed** receiver entirely.
+
+The proof needs no digit semantics — the conversion just has to be a deterministic `Int → String` function, so
+body and spec share one `str.from_int(k + 1)` term and the every-quantifier cancels structurally. **Shipped
+tests (group `P-fizzbuzz`)**: the full pretty FizzBuzz with the **number** default (`n.toString()`) proves
+length + element-wise + termination; the same via `String.valueOf`; the off-by-one and a *wrong-number*
+(`(n+1).toString()`) both refute (the number is checked, not just the emoji); and a bare `n.toString()` proves
+with no spurious null obligation. `'' + n` stays out of the fragment (the `+` operator's string/int mixing is a
+separate, larger slice).
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

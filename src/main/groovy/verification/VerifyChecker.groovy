@@ -284,18 +284,37 @@ class VerifyChecker extends TypeCheckingExtension {
         e instanceof VariableExpression && ((VariableExpression) e).name == 'result'
     }
 
-    /** True if {@code e} references only the given formal names (plus literals/operators) and no method calls —
-     *  so inlining it for any actuals is a faithful, side-effect-free substitution. */
+    /** True if {@code e} references only the given formal names (plus literals/operators) and no method calls
+     *  beyond the recognised deterministic int→String conversions (`String.valueOf(x)` / `Integer.toString(x)` /
+     *  `x.toString()`) — so inlining it for any actuals is a faithful, side-effect-free substitution. */
     private static boolean isPureOver(Expression e, List<String> formals) {
         boolean[] ok = [true] as boolean[]
         e.visit(new CodeVisitorSupport() {
-            @Override void visitMethodCallExpression(MethodCallExpression call) { ok[0] = false }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                Expression val = pureConversionValueExpr(call)
+                if (val != null) val.visit(this)   // a recognised conversion: only its value need be pure
+                else ok[0] = false                 // (its class-ref receiver is intentionally not visited)
+            }
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) { ok[0] = false }
             @Override void visitVariableExpression(VariableExpression ve) {
                 if (!formals.contains(ve.name)) ok[0] = false
             }
         })
         ok[0]
+    }
+
+    /** If {@code call} is a recognised deterministic int→String conversion, the value expression being
+     *  converted (so the caller can check it is pure); else null. */
+    private static Expression pureConversionValueExpr(MethodCallExpression call) {
+        String m = call.methodAsString
+        Expression obj = call.objectExpression
+        List<Expression> args = (call.arguments instanceof ArgumentListExpression) ?
+            ((ArgumentListExpression) call.arguments).expressions : Collections.<Expression>emptyList()
+        String owner = channelOwnerName(obj)
+        if (owner == 'String' && m == 'valueOf' && args.size() == 1) return args.get(0)
+        if (owner == 'Integer' && m == 'toString' && args.size() == 1) return args.get(0)
+        if (m == 'toString' && args.isEmpty() && owner != 'String' && owner != 'Integer') return obj
+        null
     }
 
     /**
@@ -591,11 +610,16 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (de.leftExpression instanceof VariableExpression) {
                         ClassNode t = ((VariableExpression) de.leftExpression).originType
                         if (t == null) t = de.leftExpression.type
+                        String lname = ((VariableExpression) de.leftExpression).name
                         if (t != null && isListType(t)) {
                             ClassNode elem = firstGenericOrInt(t)
-                            if (!isIntElement(elem)) {
-                                out.putIfAbsent(((VariableExpression) de.leftExpression).name, elem)
-                            }
+                            if (!isIntElement(elem)) out.putIfAbsent(lname, elem)
+                        } else if (t != null && t.isArray()) {
+                            // Phase 123 — a typed *local* array (`String[] a = new String[n]`) carries its
+                            // component type the same way a String[] parameter does; without this it defaults
+                            // to an Int-element array and a String store crashes Z3 with a sort mismatch.
+                            ClassNode comp = t.componentType
+                            if (comp != null && !isIntElement(comp)) out.putIfAbsent(lname, comp)
                         }
                     }
                     super.visitDeclarationExpression(de)
@@ -3165,7 +3189,11 @@ class VerifyChecker extends TypeCheckingExtension {
                 // Only real value variables (parameters / locals) — never a class
                 // name (static call) or an unresolved dynamic reference.
                 boolean realVar = accessed instanceof Parameter || accessed instanceof VariableExpression
-                if (realVar && v.name != 'this' && v.name != 'super') {
+                // Phase 124 — a primitive-typed receiver (e.g. `int n`) is never null: `n.toString()` autoboxes
+                // but cannot NPE, so it carries no nullity obligation (and no collection index site).
+                ClassNode recvType = accessed != null ? accessed.getType() : null
+                boolean primitiveRecv = recvType != null && ClassHelper.isPrimitiveType(recvType)
+                if (realVar && !primitiveRecv && v.name != 'this' && v.name != 'super') {
                     derefSites.add(new DerefSite(node: mce, receiver: v.name, method: mce.methodAsString))
                     // Phase 39 — synthesize an IndexSite for method-form indexed reads so the
                     // bounds check fires the same way it does for the bracket form. xs.get(i)

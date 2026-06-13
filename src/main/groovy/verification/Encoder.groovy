@@ -4145,6 +4145,14 @@ class Encoder {
             Object n = translate(args.get(0))
             return n == null ? null : session.stringFromInt(n)
         }
+        // Phase 124 — instance form `x.toString()` on an integral value (the idiomatic Groovy default-branch
+        // spelling). Mirrors `String.valueOf` / `Integer.toString`: convert the Int-sorted receiver via the
+        // same Z3 intToString. Gated on the receiver being a String-free Int term so a non-int `.toString()`
+        // stays an honest skip rather than a sort crash.
+        if (m == 'toString' && args.isEmpty() && !isStringReceiver(recv)) {
+            Object h = translate(recv)
+            if (h != null && session.isInt(h)) return session.stringFromInt(h)
+        }
 
         // Groovy's integer-division / modulo *method* forms (the `/` and `%` operators are handled in
         // translateBinary). Receiver and divisor are integer expressions; translate() yields a non-null

@@ -366,6 +366,7 @@ class Z3Session implements SmtSession {
     // Phase 70 — Real-element aggregation (List<BigDecimal>): a Real-codomain sum over Array Int Real.
     @Override Object realSort() { ctx.getRealSort() }
     @Override boolean isReal(Object handle) { ((Expr) handle).getSort().equals(ctx.getRealSort()) }
+    @Override boolean isInt(Object handle) { ((Expr) handle).getSort().equals(ctx.getIntSort()) }
     private FuncDecl sumRealFn
     @Override
     Object sumReal(Object arr, Object lo, Object hi) {

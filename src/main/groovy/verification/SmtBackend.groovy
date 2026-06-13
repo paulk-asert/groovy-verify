@@ -162,6 +162,7 @@ interface SmtSession extends AutoCloseable {
     Object realSort()
     Object sumReal(Object arr, Object lo, Object hi)   // (Array Int Real, Int, Int) -> Real
     boolean isReal(Object handle)
+    boolean isInt(Object handle)                       // true if the term has the Int sort
 
     // Phase 73 — IEEE-754 floating point (Z3's FP theory): faithful double/float, bit-exact with the
     // JVM runtime (round-nearest-even, NaN, ±inf, signed zero). Arithmetic rounds RNE; `fpEq` is IEEE
