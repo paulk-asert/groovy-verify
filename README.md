@@ -1976,8 +1976,9 @@ becomes*, not that the channel delivers or terminates.
 
 A few more that don't belong to one of the per-source sections above: a verified mutable data structure, a
 fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
-its source), a Dafny-style element-wise array-fill (FizzBuzz), and a tour of verification across a Groovy type
-hierarchy — inheritance, behavioral subtyping, and traits.
+its source), a Dafny-style element-wise array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat
+is associative but not commutative), and a tour of verification across a Groovy type hierarchy — inheritance,
+behavioral subtyping, and traits.
 
 ### Ring buffer — a verified mutable data structure
 
@@ -2130,6 +2131,36 @@ invariant isn't preserved; the diagnostic reports the actual element against the
 Slot 0 holds `spec(0) == "🥤🐝"` (0 divides everything, so it's FizzBuzz) where it must hold `spec(1) == "1"`.
 "Correct" here means *faithful to `spec`*: the loop provably realizes it at every index, with no gap, overwrite,
 or off-by-one. It doesn't argue the spec itself is the One True FizzBuzz.
+
+### String concatenation — an algebraic law, proved and disproved
+
+The FizzBuzz example reasons about strings *element by element*; this one reasons about them *algebraically*.
+Groovy's `+` on `String` lowers to the SMT theory of sequences, where concatenation is **associative but not
+commutative** — and the verifier proves the law that holds for every string while refuting the one that doesn't,
+over *arbitrary* strings (not concrete literals):
+
+```groovy
+class StringConcat {
+    @Ensures({ (a + b) + c == a + (b + c) })           // holds for all a, b, c — proved
+    static void associative(String a, String b, String c) { }
+
+    @Ensures({ a + b == b + a })                        // not a law — refuted
+    static void commutative(String a, String b) { }
+}
+```
+
+`associative` verifies. `commutative` cannot — and the diagnostic names a minimal witness rather than just
+failing:
+
+```
+[Static type checking] - Cannot prove postcondition of commutative holds on this return path
+    ensured: ((a + b) == (b + a))
+    fails on: commutative("A", "B")
+```
+
+That is, `"A" + "B"` = `"AB"` ≠ `"BA"` = `"B" + "A"`. The postcondition is written purely over the parameters,
+so the method body can stay empty — the property *is* the specification. (Phrasing it as a `boolean`-returning
+method whose body is the comparison, with `@Ensures({ result == true })`, works identically.)
 
 ### Inheritance, traits & behavioral subtyping
 

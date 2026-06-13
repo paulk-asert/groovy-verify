@@ -8705,6 +8705,27 @@ class WrapCounter implements Counter { }
                         int[] dst = new int[10]; int[] src = new int[10]; src[4] = 99; int i = 3
                         dst[i] = src[++i]; return dst[3] } }''')],
 
+        // String concatenation lowers to Z3's Seq concat: associative, NOT commutative. The verifier proves the
+        // law that holds for all strings and refutes the one that doesn't, naming a minimal counterexample.
+        // The void @Ensures-over-params shapes are the verbatim README "String concatenation" example.
+        [group: 'P-strcat', name: 'concat is associative (void @Ensures over params)', ok: true,
+         src: tc('''class StringConcat {
+                        @Ensures({ (a + b) + c == a + (b + c) })
+                        static void associative(String a, String b, String c) { } }''')],
+        [group: 'P-strcat', name: 'concat is NOT commutative (void) refutes', expect: 'Cannot prove postcondition of commutative',
+         src: tc('''class StringConcat {
+                        @Ensures({ a + b == b + a })
+                        static void commutative(String a, String b) { } }''')],
+        // Same two laws, phrased as a boolean-returning method whose body is the comparison (README notes this works too).
+        [group: 'P-strcat', name: 'concat is associative (boolean result)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == true })
+                        static boolean assoc(String a, String b, String c) { (a + b) + c == a + (b + c) } }''')],
+        [group: 'P-strcat', name: 'concat is NOT commutative (boolean result) refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == true })
+                        static boolean commut(String a, String b) { a + b == b + a } }''')],
+
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'nested loop: count = n*n', ok: true,
          src: tc('''class C {

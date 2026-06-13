@@ -6090,6 +6090,24 @@ reasoning, so it isn't a passing test; the README's FizzBuzz uses a `0`-based lo
 
 ---
 
+## Phase 128 — string concatenation as an algebraic law (associative, not commutative)  *(shipped — example)*
+
+No new engine code — this exercises the existing `Seq` lowering of `String` `+` to show the verifier reasons
+over *arbitrary* strings, not just concrete literals. Two postconditions written purely over parameters (empty
+body — the property *is* the spec):
+
+- `@Ensures({ (a + b) + c == a + (b + c) })` **proves** — associativity holds for all strings.
+- `@Ensures({ a + b == b + a })` **refutes** — concat isn't commutative; the diagnostic names a minimal witness
+  `commutative("A", "B")` (`"AB" ≠ "BA"`).
+
+This is the algebraic counterpart to the FizzBuzz *element-wise* string example: there the obligation is
+per-index over an `every`-quantified array; here it's a closed law over uninterpreted-length sequences. A
+`boolean`-returning phrasing (body is the comparison, `@Ensures({ result == true })`) verifies identically.
+**Shipped tests**: group `P-strcat` (4 cases — both laws × both phrasings); README "String concatenation"
+example is the verbatim void/over-params pair.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
