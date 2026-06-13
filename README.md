@@ -2084,9 +2084,8 @@ tuple-returning call are all general capabilities; Duplets just needs all three 
 ### FizzBuzz — element-wise array correctness
 
 A small array-fill in the style Dafny tutorials use to teach element-wise verification — a pure specification
-`spec(n)`, a loop that fills `r[i] = spec(i + 1)`, and a postcondition saying **every** slot matches it. (It
-isn't a port of a specific Dafny example; it's the canonical shape that pattern takes.) The emoji-FizzBuzz
-flourish is borrowed, with thanks, from Don Raab's
+`spec(n)`, a loop that fills `r[i] = spec(i + 1)`, and a postcondition saying **every** slot matches it.
+The emoji-FizzBuzz flourish is borrowed, with thanks, from Don Raab's
 [*Ternary, Predicate, and Pattern Matching for FizzBuzz with Java 26*](https://donraab.medium.com/ternary-predicate-and-pattern-matching-for-fizzbuzz-with-java-26-646c812a137b).
 
 ```groovy
@@ -2109,16 +2108,26 @@ class FizzBuzz {
 // build(20) == [1, 2, 🥤, 4, 🐝, 🥤, 7, 8, 🥤, 🐝, 11, 🥤, 13, 14, 🥤🐝, 16, 17, 🥤, 19, 🐝]
 ```
 
-The array is the right length, the loop terminates, and **no slot can hold the wrong value** — `spec`'s
-`@Ensures` inlines equationally so the body's `spec(i + 1)` and the invariant's `spec(k + 1)` are one
-deterministic term, and the every-quantifier extends by one element per step. Change the body to `spec(i + 2)`
-and the postcondition refutes — the classic off-by-one. ("Correct" here means *faithful to `spec`* — the loop
-provably realizes it at every index, with no gap, overwrite, or off-by-one; it doesn't argue the spec itself is
-the One True FizzBuzz.) Both halves of the prettiness verify *in the spec*: the emoji (astral-plane literals
-captured faithfully via
-[GROOVY-12085](https://issues.apache.org/jira/browse/GROOVY-12085), a surrogate-pair off-by-N this example
-surfaced) **and** the number — `n.toString()` (or `String.valueOf(n)` / `Integer.toString(n)`) lowers to Z3's
-deterministic `int → string`, so the number for each non-fizz/buzz slot is checked element by element too.
+The proof shows:
+* the array is the right length
+* the loop terminates
+* **no slot can hold the wrong value** — `spec`'s `@Ensures` inlines equationally, so the body's `spec(i + 1)`
+  and the invariant's `spec(k + 1)` are one term and the every-quantifier extends by one element per step
+
+Break it and it refutes, naming the offending slot. Write `r[i] = spec(i)` instead of `spec(i + 1)` and the loop
+invariant isn't preserved; the diagnostic reports the actual element against the spec:
+
+```
+[Static type checking] - Cannot prove loop invariant is preserved by the loop body in build
+    invariant: ((((0 <= i) && (i <= upTo)) && (r.length == upTo)) && (0..<i).every({ int k -> ... }))
+    counterexample: i = 0, r.length = 1, upTo = 1
+    r[0] = "🥤🐝" — the spec requires "1"
+    fails on: build(1)
+```
+
+Slot 0 holds `spec(0) == "🥤🐝"` (0 divides everything, so it's FizzBuzz) where it must hold `spec(1) == "1"`.
+"Correct" here means *faithful to `spec`*: the loop provably realizes it at every index, with no gap, overwrite,
+or off-by-one. It doesn't argue the spec itself is the One True FizzBuzz.
 
 ### Inheritance, traits & behavioral subtyping
 

@@ -4497,6 +4497,92 @@ trait Counter {
 @TypeChecked(extensions = 'verification.VerifyChecker')
 class WrapCounter implements Counter { }
 """],
+        // Phase 125 — an Int-valued *parameter* array's element values are rendered in the counterexample
+        // (`xs[1] = 8` makes plain why `xs[1] == 7` fails). A *local* array's elements stay suppressed: in a
+        // loop-preservation check the model picks an arbitrary entry array, so its element value would mislead.
+        [group: 'P-arrayelem', name: 'parameter int[] element values shown in counterexample', ok: false, expect: 'xs[1] = 8',
+         src: tc('''class T {
+                        @Requires({ xs != null && xs.length >= 2 })
+                        @Ensures({ xs[1] == 7 })
+                        static void check(int[] xs) { }
+                    }''')],
+        // Phase 126 — an element-wise refutation surfaces the offending array slot's post-store value vs the
+        // per-element spec (`a[0] = 1 — the spec requires 0`), evaluated in the model by bounded enumeration.
+        [group: 'P-arrayelem', name: 'element-wise refutation names the offending int[] slot', ok: false, expect: 'a[0] = 1 — the spec requires 0',
+         src: tc('''class T {
+                        @Requires({ n >= 1 })
+                        @Ensures({ (0..<n).every { int k -> result[k] == k } })
+                        static int[] fill(int n) {
+                            int[] a = new int[n]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && a.length == n && (0..<i).every { int k -> a[k] == k } })
+                            @Decreases({ n - i })
+                            while (i < n) { a[i] = i + 1; i = i + 1 }
+                            return a
+                        }
+                    }''')],
+        // The other-direction off-by-one (`spec(i)` not `spec(i+1)`): slot 0 gets spec(0) = FizzBuzz (0 is
+        // divisible by everything), so the surfaced element renders the actual emoji — Z3 mangles a supplementary
+        // char on the string round-trip; the renderer decodes the `\\u{…}` escapes and drops the artifact surrogates.
+        [group: 'P-fizzbuzz', name: 'off-by-one surfaces the emoji element value', ok: false, expect: 'r[0] = "🥤🐝" — the spec requires "1"',
+         src: tc('''class FizzBuzz {
+                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+                        static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
+                        @Requires({ upTo >= 1 })
+                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })
+                        static String[] build(int upTo) {
+                            String[] r = new String[upTo]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
+                            @Decreases({ upTo - i })
+                            while (i < upTo) { r[i] = FizzBuzz.spec(i); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // Phase 127 — a pre-increment in an array-store RHS whose variable also indexes the store (`a[i] = ++i`)
+        // snapshots the index before the increment, so the store lands at the old slot. Verifies the fill where
+        // a[k] == k + 1 (each slot gets the post-increment value, written at the pre-increment index).
+        [group: 'P-incdec', name: 'a[i] = ++i snapshots the index and proves', ok: true,
+         src: tc('''class T {
+                        @Requires({ n >= 1 })
+                        @Ensures({ (0..<n).every { int k -> result[k] == k + 1 } })
+                        static int[] fill(int n) {
+                            int[] a = new int[n]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && a.length == n && (0..<i).every { int k -> a[k] == k + 1 } })
+                            @Decreases({ n - i })
+                            while (i < n) { a[i] = ++i }
+                            return a
+                        }
+                    }''')],
+        // The post-increment form (handled by the existing route, value uses the old i) still proves.
+        [group: 'P-incdec', name: 'a[i] = i++ still proves', ok: true,
+         src: tc('''class T {
+                        @Requires({ n >= 1 })
+                        @Ensures({ (0..<n).every { int k -> result[k] == k } })
+                        static int[] fill(int n) {
+                            int[] a = new int[n]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && a.length == n && (0..<i).every { int k -> a[k] == k } })
+                            @Decreases({ n - i })
+                            while (i < n) { a[i] = i++ }
+                            return a
+                        }
+                    }''')],
+        // Soundness: the snapshot rewrite is faithful, not a free pass — a wrong claim over a[i] = ++i refutes.
+        [group: 'P-incdec', name: 'a[i] = ++i with a wrong claim refutes', ok: false, expect: 'Cannot prove',
+         src: tc('''class T {
+                        @Requires({ n >= 1 })
+                        @Ensures({ (0..<n).every { int k -> result[k] == k } })
+                        static int[] fill(int n) {
+                            int[] a = new int[n]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n && a.length == n && (0..<i).every { int k -> a[k] == k } })
+                            @Decreases({ n - i })
+                            while (i < n) { a[i] = ++i }
+                            return a
+                        }
+                    }''')],
         // ---------- Phases 122/123/124: FizzBuzz array-fill (a Dafny-style element-wise verification) ----------
         // The classic verified array-fill: a pure `spec(n)` function, an imperative loop that fills `r[i] = spec(i+1)`,
         // and an element-wise postcondition `forall k. r[k] == spec(k+1)`. groovy-verify proves the length, the
@@ -4540,7 +4626,7 @@ class WrapCounter implements Counter { }
                         }
                     }''')],
         // The off-by-one Dafny warns about: write `spec(i+2)` and the element-wise postcondition refutes.
-        [group: 'P-fizzbuzz', name: 'FizzBuzz off-by-one (i+2) refutes', ok: false, expect: 'Cannot prove',
+        [group: 'P-fizzbuzz', name: 'FizzBuzz off-by-one (i+2) refutes, naming the wrong slot', ok: false, expect: 'r[0] = "2" — the spec requires "1"',
          src: tc('''class FizzBuzz {
                         @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
                         static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
@@ -4552,6 +4638,23 @@ class WrapCounter implements Counter { }
                             @Invariant({ 0 <= i && i <= upTo && r.length == upTo && (0..<i).every { int k -> r[k] == FizzBuzz.spec(k + 1) } })
                             @Decreases({ upTo - i })
                             while (i < upTo) { r[i] = FizzBuzz.spec(i + 2); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // A loop-BOUND off-by-one (`i <= upTo`) overruns the array — caught as a bounds violation with a
+        // self-explanatory counterexample (`i = 1, r.length = 1`), distinct from the value off-by-one above.
+        [group: 'P-fizzbuzz', name: 'loop-bound off-by-one (i <= upTo) is an out-of-bounds write', ok: false, expect: 'IndexOutOfBoundsException',
+         src: tc('''class FizzBuzz {
+                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+                        static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
+                        @Requires({ upTo >= 1 })
+                        @Ensures({ result.length == upTo })
+                        static String[] build(int upTo) {
+                            String[] r = new String[upTo]
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= upTo && r.length == upTo })
+                            @Decreases({ upTo - i })
+                            while (i <= upTo) { r[i] = FizzBuzz.spec(i + 1); i = i + 1 }
                             return r
                         }
                     }''')],
@@ -8594,10 +8697,10 @@ class WrapCounter implements Counter { }
         // (i: 5 -> 6, then 6 + 6) is sound because `++i` is the FIRST occurrence: verifies result == 12.
         [group: 'P expr inc/dec', name: 'x = ++i + i (pre, first occurrence) verifies', ok: true,
          src: tc('class C { @Ensures({ result == 12 }) static int f() { int i = 5; int x = ++i + i; return x } }')],
-        // Pre-increment guard: `dst[i] = src[++i]` — Java evaluates the LHS index `i` (old) BEFORE the RHS
-        // `++i`. Hoisting `++i` before would make the LHS index read the new value (wrong target), so the
-        // pre-inc is NOT the first occurrence and the hoist refuses it: skips loudly.
-        [group: 'P expr inc/dec', name: 'dst[i] = src[++i] (read before pre) skips loudly', expect: 'outside fragment',
+        // Pre-increment with the LHS index reading first: `dst[i] = src[++i]` — Java evaluates the LHS index
+        // `i` (old) before the RHS `++i`. Phase 127 snapshots the index into a fresh local, so the store lands
+        // at `dst[3]` while the read advances to `src[4]`; `dst[3] == src[4] == 99` verifies.
+        [group: 'P expr inc/dec', name: 'dst[i] = src[++i] (read before pre) snapshots and verifies', ok: true,
          src: tc('''class C { @Ensures({ result == 99 }) static int f() {
                         int[] dst = new int[10]; int[] src = new int[10]; src[4] = 99; int i = 3
                         dst[i] = src[++i]; return dst[3] } }''')],

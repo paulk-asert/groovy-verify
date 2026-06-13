@@ -337,6 +337,10 @@ class Reporter {
         if (result.counterexample) {
             sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
         }
+        // Phase 126 — model-derived element notes (e.g. the offending array slot) on their own lines.
+        if (result.notes) {
+            for (String note : result.notes) sb.append("\n    ").append(note)
+        }
         if (result.failingCall) {
             sb.append("\n    fails on: ").append(result.failingCall)
         }

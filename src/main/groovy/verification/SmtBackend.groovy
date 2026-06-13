@@ -163,6 +163,9 @@ interface SmtSession extends AutoCloseable {
     Object sumReal(Object arr, Object lo, Object hi)   // (Array Int Real, Int, Int) -> Real
     boolean isReal(Object handle)
     boolean isInt(Object handle)                       // true if the term has the Int sort
+    /** Phase 126 — evaluate {@code handle} in the most recent SAT model and render it for display
+     *  (Int → number, String/Seq → quoted text), or null if there's no model / unsupported sort. */
+    String evalDisplay(Object handle)
 
     // Phase 73 — IEEE-754 floating point (Z3's FP theory): faithful double/float, bit-exact with the
     // JVM runtime (round-nearest-even, NaN, ±inf, signed zero). Arithmetic rounds RNE; `fpEq` is IEEE
@@ -616,6 +619,12 @@ class CheckResult {
      * set by the caller, not the solver. Null when no repro could be built.
      */
     String failingCall
+    /**
+     * Phase 126 — extra free-text diagnostic lines the caller computes from the live model and appends to
+     * the rendered counterexample (e.g. {@code r[0] = "🥤" — the spec requires "🐝"}), each shown on its own
+     * line. Empty unless the caller surfaced something the scalar counterexample doesn't carry.
+     */
+    List<String> notes = []
 
     static CheckResult verified() {
         new CheckResult(status: Status.VERIFIED)

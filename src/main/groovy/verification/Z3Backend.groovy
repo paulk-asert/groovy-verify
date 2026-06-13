@@ -95,6 +95,7 @@ class Z3Session implements SmtSession {
 
     private final Context ctx
     private final Solver solver
+    private Model lastModel    // Phase 126 — retained after a SAT check so callers can eval extra terms (array elements)
     private final Map<String, IntExpr> vars = [:]
     private final Map<String, BoolExpr> boolVars = [:]
     private final Map<String, FuncDecl> funcs = [:]
@@ -367,6 +368,44 @@ class Z3Session implements SmtSession {
     @Override Object realSort() { ctx.getRealSort() }
     @Override boolean isReal(Object handle) { ((Expr) handle).getSort().equals(ctx.getRealSort()) }
     @Override boolean isInt(Object handle) { ((Expr) handle).getSort().equals(ctx.getIntSort()) }
+    @Override String evalDisplay(Object handle) {
+        if (lastModel == null || handle == null) return null
+        try {
+            Expr v = lastModel.evaluate((Expr) handle, true)
+            if (v == null) return null
+            if (v.isString()) return '"' + cleanZ3String(v.getString()) + '"'
+            if (v instanceof IntNum) return Long.toString(clampInt64((IntNum) v))
+            return null
+        } catch (Throwable ignored) {
+            return null
+        }
+    }
+
+    /** Z3's {@code getString()} renders non-ASCII as literal {@code \\u{HHHH}} escapes, and {@code mkString}
+     *  round-trips a supplementary character as a {@code [code-point, low-surrogate]} pair — so decode the
+     *  escapes and drop the artifact lone surrogates, recovering the real text (e.g. the actual emoji). */
+    private static String cleanZ3String(String s) {
+        if (s == null || s.indexOf('\\') < 0) return s
+        StringBuilder out = new StringBuilder()
+        int i = 0
+        while (i < s.length()) {
+            if (s.charAt(i) == '\\' && i + 2 < s.length() && s.charAt(i + 1) == 'u' && s.charAt(i + 2) == '{') {
+                int close = s.indexOf('}', i + 3)
+                if (close > i + 3) {
+                    try {
+                        int cp = Integer.parseInt(s.substring(i + 3, close), 16)
+                        if (cp < 0xD800 || cp > 0xDFFF) out.appendCodePoint(cp)   // skip lone surrogate artifacts
+                        i = close + 1
+                        continue
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+            out.append(s.charAt(i))
+            i++
+        }
+        out.toString()
+    }
     private FuncDecl sumRealFn
     @Override
     Object sumReal(Object arr, Object lo, Object hi) {
@@ -1140,6 +1179,7 @@ class Z3Session implements SmtSession {
         }
         // SATISFIABLE: extract counterexample for variables we declared
         Model m = solver.getModel()
+        lastModel = m    // Phase 126 — retain for post-check element evaluation (evalDisplay)
         Map<String, Long> ce = [:]
         vars.each { name, var ->
             Expr v = m.evaluate(var, false)

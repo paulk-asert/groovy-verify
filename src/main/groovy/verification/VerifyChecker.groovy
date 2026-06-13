@@ -970,11 +970,27 @@ class VerifyChecker extends TypeCheckingExtension {
         boolean sortedEmpty = r.sortedCounterexample == null || r.sortedCounterexample.isEmpty()
         if (intEmpty && sortedEmpty) return r
         r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
+        // Phase 125 — array names whose Int-valued *elements* are meaningful to print: a parameter or instance
+        // field reflects the actual input/entry state. A *local* array's model value is its arbitrary pre-state
+        // (e.g. a loop-preservation check picks an unconstrained entry array), which would mislead — so those
+        // element keys stay suppressed (the failing-call repro carries a param array's contents either way).
+        Set<String> elementArrays = new HashSet<String>()
+        if (currentMethod != null) {
+            for (Parameter p : currentMethod.parameters) if (p.type?.isArray()) elementArrays.add(p.name)
+            ClassNode dc = currentMethod.declaringClass
+            if (dc != null) for (FieldNode fld : dc.fields) if (fld.type?.isArray()) elementArrays.add(fld.name)
+        }
         Map<String, Long> display = new LinkedHashMap<String, Long>()
         r.counterexample.each { String k, Long v ->
-            // internal keys: nullity flag, array element, SSA version — surfaced via failingCall / the
-            // base (entry) variable, not shown raw.
-            if (k.endsWith('?null') || k.endsWith(']') || k.contains('#')) return
+            // internal keys: nullity flag, SSA version, synthetic temps (`$snap…` index snapshots, `$self`) —
+            // surfaced via failingCall / the base (entry) variable, not shown raw.
+            if (k.endsWith('?null') || k.contains('#') || k.startsWith('$')) return
+            if (k.endsWith(']')) {
+                int br = k.indexOf('[')
+                String base = br >= 0 ? k.substring(0, br) : k
+                if (elementArrays.contains(base)) display.put(k, v)   // param/field array element: meaningful
+                return                                                // local/loop element: pre-state, suppress
+            }
             // Phase 121 — a trait property is woven onto the implementing class as a `<Trait>__<field>` backing
             // field alongside the source-named property; show only the latter (the name the developer wrote).
             if (k.contains('__')) return
@@ -3921,7 +3937,11 @@ class VerifyChecker extends TypeCheckingExtension {
                 conjuncts.get(0) : session.and(conjuncts)
             session.assertExpr(session.not(goal))
 
-            CheckResult r = shown(session.check())
+            CheckResult r = session.check()
+            if (r.status == CheckResult.Status.REFUTED && postAst != null) {
+                appendOffendingElements(r, enc, session, [postAst])
+            }
+            r = shown(r)
             if (r.status == CheckResult.Status.VERIFIED) return
 
             // Anchor the diagnostic on a positioned *expression* node. A value-returning method uses its
@@ -5013,12 +5033,102 @@ class VerifyChecker extends TypeCheckingExtension {
             symExecBodyWithExits(site, enc, s)
             // Re-translating the invariant reads the post-body bindings → inv'.
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, site.spec.invariants)))
-            CheckResult r = shown(s.check())
+            CheckResult r = s.check()
+            // Phase 126 — surface the offending array element (post-body value vs the per-element spec) before
+            // rendering; `enc` here holds the post-body array bindings.
+            if (r.status == CheckResult.Status.REFUTED) appendOffendingElements(r, enc, s, site.spec.invariants)
+            r = shown(r)
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
                     Reporter.formatLoopPreservation(node.name, invText(site), r), site.loopStmt)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    // ---- Phase 126: surface the offending array element for an element-wise refutation ----
+
+    /**
+     * For each invariant conjunct shaped {@code (range).every { p -> arr[p] == E }}, walk the (small) array in
+     * the live model and append the first {@code arr[k]} whose current value disagrees with the per-element
+     * spec {@code E[p := k]} — e.g. {@code r[0] = "🥤" — the spec requires "🐝"}. Best-effort: any failure
+     * leaves the diagnostic untouched.
+     */
+    private void appendOffendingElements(CheckResult r, Encoder enc, SmtSession s, List<Expression> invariants) {
+        if (r == null || r.status != CheckResult.Status.REFUTED) return
+        try {
+            List<Object[]> clauses = new ArrayList<Object[]>()
+            for (Expression inv : invariants) collectEveryElementClauses(inv, clauses)
+            for (Object[] c : clauses) {
+                String arr = (String) c[0]; String param = (String) c[1]; Expression expected = (Expression) c[2]
+                Long szL = r.counterexample.get(arr + '.size')
+                if (szL == null) continue
+                long sz = Math.min(szL, 16L)
+                Object arrHandle
+                try { arrHandle = enc.arrayFor(arr) } catch (Throwable ignored) { continue }
+                if (arrHandle == null) continue
+                for (long k = 0; k < sz; k++) {
+                    Object idx = s.intLit(k)
+                    String actual = s.evalDisplay(s.select(arrHandle, idx))
+                    Object expH = enc.translateWith(expected, [(param): idx] as Map<String, Object>)
+                    String exp = expH == null ? null : s.evalDisplay(expH)
+                    if (actual != null && exp != null && actual != exp) {
+                        r.notes.add("${arr}[${k}] = ${actual} — the spec requires ${exp}".toString())
+                        break   // first offending element per clause is enough
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Split a contract's top-level {@code &&} conjuncts, collecting each {@code .every}-element clause. */
+    private static void collectEveryElementClauses(Expression e, List<Object[]> out) {
+        if (e instanceof BooleanExpression) { collectEveryElementClauses(((BooleanExpression) e).expression, out); return }
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
+            collectEveryElementClauses(((BinaryExpression) e).leftExpression, out)
+            collectEveryElementClauses(((BinaryExpression) e).rightExpression, out)
+            return
+        }
+        Object[] clause = asEveryElementClause(e)
+        if (clause != null) out.add(clause)
+    }
+
+    /** If {@code e} is {@code (range).every { p -> arr[p] == E }}, returns {@code [arr, p, E]}; else null. */
+    private static Object[] asEveryElementClause(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mc = (MethodCallExpression) e
+        if (mc.methodAsString != 'every' || !(mc.arguments instanceof ArgumentListExpression)) return null
+        List<Expression> args = ((ArgumentListExpression) mc.arguments).expressions
+        if (args.size() != 1 || !(args.get(0) instanceof ClosureExpression)) return null
+        ClosureExpression cl = (ClosureExpression) args.get(0)
+        String param = (cl.parameters != null && cl.parameters.length > 0) ? cl.parameters[0].name : 'it'
+        Expression body = closureSoleExpr(cl)
+        if (body instanceof BooleanExpression) body = ((BooleanExpression) body).expression
+        if (!(body instanceof BinaryExpression) || ((BinaryExpression) body).operation.type != Types.COMPARE_EQUAL) return null
+        BinaryExpression cmp = (BinaryExpression) body
+        String arr = subscriptArrayName(cmp.leftExpression, param)
+        Expression expected = cmp.rightExpression
+        if (arr == null) { arr = subscriptArrayName(cmp.rightExpression, param); expected = cmp.leftExpression }
+        arr == null ? null : ([arr, param, expected] as Object[])
+    }
+
+    /** The array name of an {@code arr[param]} subscript; else null. */
+    private static String subscriptArrayName(Expression e, String param) {
+        if (!(e instanceof BinaryExpression)) return null
+        BinaryExpression be = (BinaryExpression) e
+        if (be.operation.type != Types.LEFT_SQUARE_BRACKET) return null
+        if (!(be.leftExpression instanceof VariableExpression) || !(be.rightExpression instanceof VariableExpression)) return null
+        ((VariableExpression) be.rightExpression).name == param ? ((VariableExpression) be.leftExpression).name : null
+    }
+
+    private static Expression closureSoleExpr(ClosureExpression cl) {
+        if (!(cl.code instanceof BlockStatement)) return null
+        List<Statement> ss = ((BlockStatement) cl.code).statements
+        if (ss.size() != 1) return null
+        Statement st = ss.get(0)
+        if (st instanceof ExpressionStatement) return ((ExpressionStatement) st).expression
+        if (st instanceof ReturnStatement) return ((ReturnStatement) st).expression
+        null
     }
 
     /** Progress: invariant ∧ guard ∧ class invariants ⇒ the variant strictly decreases and stays ≥ 0.
@@ -5182,7 +5292,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 aliasResultToReturnedListLocal(s, enc, resultExpr)
             }
             s.assertExpr(s.not(LoopEncoder.tr(enc, postAst, "postcondition")))
-            CheckResult r = shown(s.check())
+            CheckResult r = s.check()
+            if (r.status == CheckResult.Status.REFUTED) appendOffendingElements(r, enc, s, [postAst])
+            r = shown(r)
             if (r.status != CheckResult.Status.VERIFIED) {
                 ASTNode anchor = (resultExpr != null && resultExpr.lineNumber > 0) ?
                     (ASTNode) resultExpr : (ASTNode) site.loopStmt

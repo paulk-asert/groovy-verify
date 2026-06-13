@@ -5070,6 +5070,11 @@ class Encoder {
         if (!(st instanceof ExpressionStatement)) return null
         Expression e = ((ExpressionStatement) st).expression
         if (isIncDec(e)) return null                 // top-level `i++` — desugarIncDec handles it
+        // Phase 127 — array store `arr[idx] = value` whose value mutates a variable used in idx (e.g.
+        // `a[i] = ++i`, `r[i] = spec(++i)`): snapshot idx into a fresh local first so the index reads the
+        // pre-value, then the value's inc/dec hoists cleanly. Without this the store lands at the wrong slot.
+        List<Statement> snapped = expandArrayStoreSnapshot(st, e)
+        if (snapped != null) return snapped
         List<Object[]> incs = new ArrayList<Object[]>()   // each: [operand, isPre, opToken]
         collectIncDecs(e, incs)
         if (incs.isEmpty()) return null
@@ -5091,6 +5096,48 @@ class Encoder {
         List<Statement> out = new ArrayList<Statement>(pre)
         out.add(mainStmt)
         out.addAll(post)
+        out
+    }
+
+    private static final java.util.concurrent.atomic.AtomicInteger SNAP_COUNTER =
+        new java.util.concurrent.atomic.AtomicInteger()
+
+    /**
+     * Phase 127 — for an array store {@code arr[idx] = value} whose {@code value} increments a variable that
+     * also appears in {@code idx} (so the index must read the *pre*-value, but a naive hoist of the increment
+     * before the statement would make it read the post-value), snapshot {@code idx} into a fresh local and
+     * rewrite to {@code [$snapN = idx, arr[$snapN] = value]}. The rewritten store's index no longer aliases the
+     * incremented variable, so the value's inc/dec then hoists soundly through the normal routes. Returns null
+     * when the shape doesn't apply (the normal expansion handles everything else, including `a[i++] = v`).
+     */
+    private static List<Statement> expandArrayStoreSnapshot(Statement st, Expression e) {
+        if (!(e instanceof BinaryExpression) || ((BinaryExpression) e).operation.type != Types.ASSIGN) return null
+        BinaryExpression be = (BinaryExpression) e
+        if (!(be.leftExpression instanceof BinaryExpression)) return null
+        BinaryExpression sub = (BinaryExpression) be.leftExpression
+        if (sub.operation.type != Types.LEFT_SQUARE_BRACKET || !(sub.leftExpression instanceof VariableExpression)) return null
+        Expression idx = sub.rightExpression
+        Expression value = be.rightExpression
+        if (anyIncDec(idx) || !anyIncDec(value)) return null      // index has its own inc/dec, or nothing to snapshot for
+        List<Object[]> incs = new ArrayList<Object[]>()
+        collectIncDecs(value, incs)
+        boolean aliases = false
+        for (Object[] inc : incs) {
+            if (!(inc[0] instanceof VariableExpression)) return null
+            if (countVarOccurrences(idx, ((VariableExpression) inc[0]).name) > 0) aliases = true
+        }
+        if (!aliases) return null                                 // index doesn't read an incremented var → normal routes suffice
+        String tmp = '$snap' + SNAP_COUNTER.incrementAndGet()
+        Token assignTok = Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber)
+        Statement snapStmt = new ExpressionStatement(new BinaryExpression(new VariableExpression(tmp), assignTok, idx))
+        snapStmt.setSourcePosition(st)
+        BinaryExpression newSub = new BinaryExpression(sub.leftExpression, sub.operation, new VariableExpression(tmp))
+        Statement mainStmt = new ExpressionStatement(new BinaryExpression(newSub, be.operation, value))
+        mainStmt.setSourcePosition(st)
+        List<Statement> expanded = expandStatementIncDec(mainStmt)
+        List<Statement> out = new ArrayList<Statement>()
+        out.add(snapStmt)
+        if (expanded != null) out.addAll(expanded) else out.add(mainStmt)
         out
     }
 

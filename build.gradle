@@ -89,10 +89,10 @@ dependencies {
     // the published POM (test scope is not transitive). Here, to exercise multi-extension composition.
     testImplementation "org.apache.groovy:groovy-typecheckers:$groovyVersion"
 
-    // JUnit 5 — drives the VerifyHarness `@TestFactory` (one dynamic test per CASES entry), so the
+    // JUnit 6 — drives the VerifyHarness `@TestFactory` (one dynamic test per CASES entry), so the
     // suite is individually runnable from the IDE / `./gradlew test`. The compact `CASES` data and the
     // `./gradlew verify` console runner (VerifyHarness.main) are unchanged; both share `evaluate()`.
-    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation platform('org.junit:junit-bom:6.1.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

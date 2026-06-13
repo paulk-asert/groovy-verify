@@ -6013,6 +6013,83 @@ separate, larger slice).
 
 ---
 
+## Phase 125 — render Int array-*element* counterexamples (slice a)  *(shipped — scoped by what's sound)*
+
+A counterexample showed scalars and the failing-call repro but never an array's element value, so an
+element-wise refutation left "which slot, holding what?" to the reader. The model **already** pins Int array
+elements (`name[k]` keys in `Z3Backend`); `shown()` just suppressed every `]`-ending key. Probing the obvious
+"unsuppress everything" found it isn't cleanly valuable — three distinct cases:
+
+- **Parameter / field arrays** — the model value is the actual input/entry state. Rendering it (`xs[1] = 8`
+  next to a failed `xs[1] == 7`) is sound and makes the refutation concrete. *Shipped.*
+- **Local / loop arrays** — a loop-preservation VC lets Z3 pick an arbitrary *entry* array, so its element
+  value is pre-state garbage (`a[0] = 4` for a body that stores `a[0] = 1`). Rendering it would **mislead**, so
+  these stay suppressed (`shown()` now gates `name[k]` on the base being a parameter or field).
+- **Local *return* arrays** — not pinned in the model walk at all, so nothing to show.
+
+So slice (a) lands the sound, non-misleading part: parameter/field Int element values. **Shipped test (group
+`P-arrayelem`)**: a `@Ensures({ xs[1] == 7 })` over an `int[]` param refutes with `xs[0] = 8, xs[1] = 8`.
+
+The case that surfaces the *interesting* value — a local loop array's post-store element at the failing
+quantifier index (the FizzBuzz `spec(i + 2)` case) — is slice (b), shipped next.
+
+---
+
+## Phase 126 — surface the offending array element (slice b)  *(shipped — post-store eval + bounded enumeration)*
+
+For an element-wise refutation, name the slot that's wrong and what the spec wanted there:
+`r[0] = "2" — the spec requires "1"`. Two design choices sidestep what made this look hard in Phase 125:
+
+- **Post-store handle, not a declared array.** The element value that matters is the array *after* the body's
+  stores. Rather than registering a new handle, the surfacing runs *inside* the check method (`checkPreservation`
+  / `checkUse` / `checkPath`) right after `s.check()`, where the encoder `enc` still holds the post-body
+  bindings — so `enc.arrayFor(arr)` is already the post-store array, and the model is freshly available.
+- **Bounded enumeration, not a Skolem witness.** Instead of extracting Z3's internal existential witness `k`,
+  enumerate `k ∈ [0, size)` (the array size is pinned in the counterexample, and counterexamples are minimal),
+  evaluate the post-store `arr[k]` and the per-element spec `E[p := k]` in the live model, and report the first
+  mismatch. No witness extraction needed.
+
+Mechanics: `SmtBackend` retains the SAT model (`lastModel`) and adds `evalDisplay(handle)` (Int → number,
+`Seq`/String → quoted text); `CheckResult` gains a `notes` channel that `Reporter.appendModel` prints on its own
+lines; `appendOffendingElements` parses each `(range).every { p -> arr[p] == E }` invariant conjunct and fills
+the note. Best-effort throughout (any failure leaves the diagnostic unchanged); scoped to the `arr[p] == E`
+shape.
+
+A wrinkle the *emoji* surfaced: Z3's `mkString` round-trips a supplementary character as a
+`[code-point, low-surrogate]` pair, and `getString()` returns it as literal `\u{…}` escapes — so a wrong
+FizzBuzz slot printed `\u{1f964}\u{dd64}…` instead of `🥤🐝`. The verification is sound (the mangling is
+identical on both sides of every comparison); only the *display* was wrong. `evalDisplay` now decodes the
+escapes and drops the artifact lone surrogates, recovering the real text.
+
+**Shipped tests**: the FizzBuzz value off-by-one (`spec(i + 2)`) asserts `r[0] = "2" — the spec requires "1"`,
+and the other-direction `spec(i)` asserts `r[0] = "🥤🐝" — the spec requires "1"` (slot 0 gets `spec(0)`, which
+is FizzBuzz — 0 divides everything — exercising the emoji decode); group `P-fizzbuzz`. An `int[]` fill asserts
+`a[0] = 1 — the spec requires 0` (group `P-arrayelem`).
+
+---
+
+## Phase 127 — snapshot the index when a store's RHS pre-increments the index var  *(shipped — `a[i] = ++i`)*
+
+A subscript-store whose RHS increments the very variable used in the LHS index — `a[i] = ++i`, or the
+`dst[i] = src[++i]` shape — used to skip loudly: the inc/dec hoist refuses to lift `++i` above the statement
+because doing so would make the LHS index `a[i]` read the *new* value (the wrong slot), so `++i` is no longer a
+safe first occurrence. But Java/Groovy evaluate the LHS index *before* the RHS, so the intended store is
+`a[old] = old+1` — perfectly expressible, just not by hoisting.
+
+`expandArrayStoreSnapshot` handles it directly: when the LHS is `arr[idx]`, `idx` itself has no inc/dec, the RHS
+*does* increment a var that `idx` reads, it snapshots the index into a fresh `$snapN` local *before* the
+increment fires, then rewrites to `[$snapN = idx; arr[$snapN] = value]` and recursively expands the (now safe)
+remainder. So `a[i] = ++i` becomes `$snap = i; i = i + 1; a[$snap] = i` — `a[old] = old+1`, matching the
+language's left-to-right evaluation. The `$snap` temps are suppressed from counterexample display (`shown()`).
+
+**Shipped tests** (group `P expr inc/dec`): `a[i] = ++i` and `a[i] = i++` both prove their post-state, a wrong
+claim about `a[i] = ++i` refutes, and `dst[i] = src[++i]` — which previously skipped — now snapshots and verifies
+(`dst[3] == src[4] == 99`). Honest scope note: the *String*-valued analogue `r[i] = spec(++i)` (FizzBuzz with a
+combiner-inlined `String` spec) now encodes correctly but the solver times out on the `Seq`/String element
+reasoning, so it isn't a passing test; the README's FizzBuzz uses a `0`-based loop to sidestep it.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
