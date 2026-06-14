@@ -6352,7 +6352,33 @@ that opt into `@Monadic` for the shape but aren't the Identity wrapper.)
 laws auto-prove (clean compile); a carrier outside the modellable shape compiles clean (left to the annotation).
 The hand-written `P-monadlaw` lemmas keep working alongside the synthesis.
 
-**Still deferred**: associativity (Phase D's general closure), method-reference unit, and non-wrapper carriers.
+**Still deferred**: associativity (Phase D's general closure — **now shipped, Phase 137**), method-reference unit,
+and non-wrapper carriers.
+
+---
+
+## Phase 137 — associativity (Phase D): the full monad law set  *(shipped — completes the `@Monadic` arc)*
+
+The last and hardest law: `m.chain(f).chain(g) == m.chain(x -> f.apply(x).chain(g))`. Two things make it harder
+than the identity laws — the right-hand side is a **closure whose body itself binds** (`f.apply(x).chain(g)`), and
+both sides **nest** bind over non-variable receivers (`m.chain(f).chain(g)`, `f.apply(x).chain(g)`).
+
+The closure was already handled (Phase C's `applyFunction` beta-reduces any single-parameter closure). The only
+missing piece was teaching `carrierTypeOf` to resolve the **nested receivers**: a bind-function application
+`f.apply(x)` (a `Function` declared to return the carrier → returns the carrier) and a chained `recv.bind/map(…)`
+(returns `recv`'s carrier, resolved recursively). With those, both sides reduce — by datatype + UF reasoning — to
+the *same* term `applyG(content(applyF(content(m))))`, so associativity proves; a swapped `m.chain(g).chain(f)`
+refutes (bind order is not commutative).
+
+`verifyMonadicLaws` now synthesises associativity too, so a bare `@Monadic` carrier auto-proves the **complete
+law set** — left/right/functor identity *and* associativity — with no hand-written lemmas. This brings `@Monadic`
+to full parity with `@Reducer`: the annotation proves itself.
+
+**Shipped tests**: `P-monadlaw` adds associativity (proves) and the bind-order control (refutes); `P-monadauto`
+now auto-proves all four laws from the annotation alone.
+
+**Remaining scope boundaries** (unchanged): single-value immutable wrappers only (multi-case Maybe/Either,
+effectful `Stream` out); method-reference unit (`Res::new`) — closure form only.
 
 ---
 

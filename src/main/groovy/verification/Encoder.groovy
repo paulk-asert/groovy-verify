@@ -855,12 +855,29 @@ class Encoder {
         cn != null && wrapperContentField(cn) != null ? cn : null
     }
 
-    /** The carrier ClassNode of a property/method receiver expression (a carrier-typed variable or a freshly
-     *  constructed carrier), or null. */
+    /** The carrier ClassNode of a receiver expression: a carrier-typed variable, a freshly constructed carrier,
+     *  a bind function's application {@code f.apply(x)} (returns the carrier), or a chained {@code recv.bind/map(…)}
+     *  (also returns the carrier). The last two (Phase D) let an associativity nest like
+     *  {@code m.chain(f).chain(g)} / {@code f.apply(x).chain(g)} resolve. */
     private ClassNode carrierTypeOf(Expression obj) {
-        if (obj instanceof VariableExpression) return wrapperContentField(scalarTypes.get(((VariableExpression) obj).name)) != null ? scalarTypes.get(((VariableExpression) obj).name) : null
+        if (obj instanceof VariableExpression) {
+            ClassNode t = scalarTypes.get(((VariableExpression) obj).name)
+            return wrapperContentField(t) != null ? t : null
+        }
         if (obj instanceof ConstructorCallExpression && ((ConstructorCallExpression) obj).type != null)
             return carrierByName(((ConstructorCallExpression) obj).type.nameWithoutPackage)
+        if (obj instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) obj
+            String mm = mc.methodAsString
+            // f.apply(x) where f is a Function declared to return a carrier
+            if (mm == 'apply' && mc.objectExpression instanceof VariableExpression) {
+                ClassNode rt = functionReturnTypes.get(((VariableExpression) mc.objectExpression).name)
+                if (rt != null && wrapperContentField(rt) != null) return rt
+            }
+            // recv.bind(…) / recv.map(…) returns recv's carrier type
+            ClassNode rct = carrierTypeOf(mc.objectExpression)
+            if (rct != null && (mm == bindMethodName(rct) || mm == mapMethodName(rct))) return rct
+        }
         null
     }
 

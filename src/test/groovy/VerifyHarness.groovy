@@ -8896,9 +8896,9 @@ class WrapCounter implements Counter { }
                         @Ensures({ f.apply(a) == f.apply(c) })
                         static void control(java.util.function.Function f, Object a, Object b, Object c) { } }''')],
 
-        // Phase 136 (auto-synthesis) — @Monadic alone now carries the proof: the three identity laws are derived
-        // from the annotation and discharged, with NO hand-written lemma methods (à la @Reducer).
-        [group: 'P-monadauto', name: '@Monadic carrier: identity laws auto-prove (no lemmas)', ok: true,
+        // Phase 136/137 (auto-synthesis) — @Monadic alone now carries the proof: all four laws (the three identity
+        // laws plus associativity) are derived from the annotation and discharged, with NO hand-written lemmas.
+        [group: 'P-monadauto', name: '@Monadic carrier: all laws auto-prove (no lemmas)', ok: true,
          src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
                     class Res {
                         final Object v
@@ -8964,6 +8964,26 @@ class WrapCounter implements Counter { }
                         @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
                         @Ensures({ m.transform({ x -> x }) == n })
                         static void bogus2(Res m, Res n) { } }''')],
+        // Phase D — associativity `m.chain(f).chain(g) == m.chain(x -> f(x).chain(g))`: the constructed closure's
+        // body itself binds; the nested receivers (`m.chain(f)`, `f.apply(x)`) resolve to the carrier.
+        [group: 'P-monadlaw', name: 'associativity proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ m.chain(f).chain(g) == m.chain({ x -> f.apply(x).chain(g) }) })
+                        static void associativity(Res m, java.util.function.Function<Object, Res> f, java.util.function.Function<Object, Res> g) { } }''')],
+        [group: 'P-monadlaw', name: 'CONTROL bind order is not commutative refutes', expect: 'Cannot prove postcondition',
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ m.chain(f).chain(g) == m.chain(g).chain(f) })
+                        static void bogus3(Res m, java.util.function.Function<Object, Res> f, java.util.function.Function<Object, Res> g) { } }''')],
 
         // Phase B (carrier model) — a single-field @Monadic wrapper carrier is modelled as a one-constructor
         // datatype; the unit/content round-trips hold by datatype theory (`unit(content(m))==m`, `content(unit(x))==x`).

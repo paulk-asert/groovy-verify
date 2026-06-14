@@ -478,6 +478,9 @@ class VerifyChecker extends TypeCheckingExtension {
             "m.${bind}({ x -> new ${cn}(x) }) == m")
         runMonadicLaw(carrier, 'functor identity', [new Parameter(carrier, 'm')] as Parameter[],
             "m.${map}({ x -> x }) == m")
+        runMonadicLaw(carrier, 'associativity',
+            [new Parameter(carrier, 'm'), new Parameter(fnType, 'f'), new Parameter(fnType, 'g')] as Parameter[],
+            "m.${bind}(f).${bind}(g) == m.${bind}({ x -> f.apply(x).${bind}(g) })")
     }
 
     /** {@code @Monadic}'s named bind/map member, or the structural default. */
