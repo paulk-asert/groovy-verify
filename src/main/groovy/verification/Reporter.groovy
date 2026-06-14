@@ -112,6 +112,29 @@ class Reporter {
         sb.toString()
     }
 
+    /**
+     * Phase 136 — a monad/functor law a {@code @Monadic} carrier *asserts* but that groovy-verify could not
+     * prove, derived automatically from the annotation. Names the law and the carrier.
+     */
+    static String formatMonadicLawFailure(String carrierName, String law, String lawText, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append("Cannot prove @Monadic ").append(law).append(" for carrier ").append(carrierName)
+                if (lawText) sb.append("\n    law: ").append(lawText)
+                appendModel(sb, result)
+                break
+            case CheckResult.Status.UNKNOWN:
+                sb.append("Could not decide @Monadic ").append(law).append(" for carrier ").append(carrierName)
+                  .append(" (solver: ").append(result.reason).append(")")
+                if (lawText) sb.append("\n    law: ").append(lawText)
+                break
+            default:
+                sb.append("@Monadic ").append(law).append(" verified — no error to report")
+        }
+        sb.toString()
+    }
+
     /** Phase 71 — a self-contradictory @Requires: it can never hold, so the contract is never checked. */
     static String formatVacuousPrecondition(String methodName, String requiresText) {
         StringBuilder sb = new StringBuilder()

@@ -23,6 +23,7 @@ import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ConstructorNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.ClassHelper
+import org.codehaus.groovy.ast.GenericsType
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.transform.stc.StaticTypesMarker
 import org.codehaus.groovy.ast.FieldNode
@@ -115,6 +116,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private static final ClassNode CLASS_INVARIANT_SOURCE_TYPE = ClassHelper.make(ClassInvariantSource)
     /** Phase 130 — metadata on a synthesized @Reducer/@Associative law lemma: {@code [combinerName, lawName]}. */
     private static final String REDUCER_LAW_KEY = 'verification.reducerLaw'
+    /** Phase 136 — metadata on a synthesized @Monadic law lemma: {@code [carrierName, lawName]}. */
+    private static final String MONADIC_LAW_KEY = 'verification.monadicLaw'
 
     private SmtBackend backend
     private PathFacts currentFacts
@@ -207,6 +210,10 @@ class VerifyChecker extends TypeCheckingExtension {
     private Map<String, ClassNode> currentTupleTypes = new HashMap<String, ClassNode>()
     /** Phase 116 — equational combiners in scope: `name/arity` → `[formalNames, ensuresRhs]` (see Encoder). */
     private Map<String, Object[]> currentCombiners = new HashMap<String, Object[]>()
+    /** Phase B — wrapper-carrier types in scope: simple name → resolved ClassNode (see {@link Encoder#wrapperContentField}). */
+    private Map<String, ClassNode> currentCarrierTypes = new HashMap<String, ClassNode>()
+    /** Phase C — {@code Function}-typed params, name → declared return type (its 2nd generic), for f.apply's range. */
+    private Map<String, ClassNode> currentFunctionReturnTypes = new HashMap<String, ClassNode>()
     /** Phase 61 — decimal-typed (BigDecimal/Double/Float) param/field/local/result names. */
     private Set<String> currentDecimalNames = new HashSet<String>()
     /** Phase 72 — double/float names; references skip (IEEE-754 is the FP non-goal). */
@@ -243,7 +250,8 @@ class VerifyChecker extends TypeCheckingExtension {
         new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames, currentFpNames, tuples, currentCombiners)
+                    currentBooleanLocals, currentDecimalNames, currentFpNames, tuples, currentCombiners,
+                    currentCarrierTypes, currentFunctionReturnTypes)
     }
 
     /**
@@ -268,6 +276,36 @@ class VerifyChecker extends TypeCheckingExtension {
             for (Parameter p : mn.parameters) formals.add(p.name)
             if (!isPureOver(e, formals)) continue
             out.put(mn.name + '/' + mn.parameters.length, [formals, e] as Object[])
+        }
+        out
+    }
+
+    /** Phase B — wrapper-carrier types visible to {@code node} (its declaring class and the types of its
+     *  parameters / return), keyed by simple name. A re-parsed contract's {@code new Res(a)} is unresolved, so
+     *  the encoder recovers the resolved carrier ClassNode from this map. */
+    private static Map<String, ClassNode> collectCarrierTypes(MethodNode node) {
+        Map<String, ClassNode> out = new HashMap<String, ClassNode>()
+        ClassNode dc = node.declaringClass
+        if (dc != null && Encoder.wrapperContentField(dc) != null) out.put(dc.nameWithoutPackage, dc)
+        for (Parameter p : node.parameters) {
+            ClassNode t = p.type
+            if (t != null && Encoder.wrapperContentField(t) != null) out.put(t.nameWithoutPackage, t)
+        }
+        ClassNode rt = node.returnType
+        if (rt != null && Encoder.wrapperContentField(rt) != null) out.put(rt.nameWithoutPackage, rt)
+        out
+    }
+
+    /** Phase C — {@code Function}-typed parameters → their declared return type (the 2nd generic of
+     *  {@code Function<A, R>}), so the encoder can sort {@code f.apply(x)}'s result (a bind function returns
+     *  the carrier). Raw {@code Function} (no generics) is omitted → default value sort. */
+    private static Map<String, ClassNode> collectFunctionReturnTypes(MethodNode node) {
+        Map<String, ClassNode> out = new HashMap<String, ClassNode>()
+        for (Parameter p : node.parameters) {
+            ClassNode t = p.type
+            if (t == null || t.name != 'java.util.function.Function') continue
+            org.codehaus.groovy.ast.GenericsType[] g = t.genericsTypes
+            if (g != null && g.length == 2 && g[1]?.type != null) out.put(p.name, g[1].type)
         }
         out
     }
@@ -396,6 +434,74 @@ class VerifyChecker extends TypeCheckingExtension {
             if (cn != null && (cn == name || cn.endsWith('.' + name))) return a
         }
         null
+    }
+
+    // ---- Phase 136: discharge the identity laws a @Monadic carrier asserts (auto-synthesis, à la @Reducer) ----
+
+    /**
+     * A {@code @Monadic} carrier *asserts* the monad/functor laws but the annotation checks nothing (its javadoc:
+     * "asserts that the carrier is lawful"). When {@code carrier} is the modellable shape (a single-field immutable
+     * wrapper whose bind/map are Identity-shaped — see {@link Encoder#wrapperContentField}), synthesise and discharge
+     * the **Tier-1 identity laws** it claims, reading the bind/map (and the constructor as unit) off the annotation:
+     * <ul>
+     *   <li><b>left identity</b>: {@code new C(a).bind(f) == f.apply(a)}
+     *   <li><b>right identity</b>: {@code m.bind(x -> new C(x)) == m}
+     *   <li><b>functor identity</b>: {@code m.map(x -> x) == m}
+     * </ul>
+     * Each is a synthetic void lemma whose {@code @Ensures} the normal machinery discharges (Phases A–C). Carriers
+     * outside the modellable shape are left alone (their laws simply skip loudly when referenced).
+     */
+    private void verifyMonadicLaws(ClassNode carrier) {
+        if (carrier == null) return
+        AnnotationNode monadic = null
+        List<AnnotationNode> anns = carrier.annotations
+        if (anns != null) for (AnnotationNode a : anns) {
+            String cn = a.classNode?.name
+            if (cn != null && (cn == 'Monadic' || cn.endsWith('.Monadic'))) { monadic = a; break }
+        }
+        if (monadic == null) return
+        // Only the modellable shape (single-value wrapper with Identity-shaped bind/map) is synthesised; other
+        // @Monadic carriers (multi-case Maybe/Either, effectful Stream, or any non-Identity bind/map) are out of
+        // scope — left to the annotation's own assertion, no synthesis, no noise.
+        if (!Encoder.isIdentityWrapperCarrier(carrier)) return
+        String bind = monadicMember(monadic, 'bind', 'flatMap')
+        String map = monadicMember(monadic, 'map', 'map')
+        String cn = carrier.nameWithoutPackage
+        // A `Function<Object, C>` type for the bind-function parameter, so f.apply ranges over the carrier.
+        ClassNode fnType = ClassHelper.make(java.util.function.Function).getPlainNodeReference()
+        fnType.setGenericsTypes([new GenericsType(ClassHelper.OBJECT_TYPE.getPlainNodeReference()),
+                                 new GenericsType(carrier.getPlainNodeReference())] as GenericsType[])
+        runMonadicLaw(carrier, 'left identity',
+            [new Parameter(ClassHelper.OBJECT_TYPE, 'a'), new Parameter(fnType, 'f')] as Parameter[],
+            "new ${cn}(a).${bind}(f) == f.apply(a)")
+        runMonadicLaw(carrier, 'right identity', [new Parameter(carrier, 'm')] as Parameter[],
+            "m.${bind}({ x -> new ${cn}(x) }) == m")
+        runMonadicLaw(carrier, 'functor identity', [new Parameter(carrier, 'm')] as Parameter[],
+            "m.${map}({ x -> x }) == m")
+    }
+
+    /** {@code @Monadic}'s named bind/map member, or the structural default. */
+    private static String monadicMember(AnnotationNode monadic, String member, String dflt) {
+        Expression e = monadic.getMember(member)
+        (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof String &&
+            !((String) ((ConstantExpression) e).value).isEmpty()) ? (String) ((ConstantExpression) e).value : dflt
+    }
+
+    /** Synthesise a void lemma whose {@code @Ensures} is {@code lawText} over {@code params}, and run it through
+     *  the normal per-method verification (the same trick as {@link #runReducerLaw}). */
+    private void runMonadicLaw(ClassNode carrier, String law, Parameter[] params, String lawText) {
+        MethodNode m = new MethodNode(carrier.nameWithoutPackage + '$' + law.replace(' ', '_'),
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, ClassHelper.VOID_TYPE,
+            params, ClassNode.EMPTY_ARRAY, new BlockStatement())
+        m.declaringClass = carrier
+        m.addAnnotation(new AnnotationNode(ENSURES_TYPE))
+        AnnotationNode cs = new AnnotationNode(CONTRACT_SOURCE_TYPE)
+        cs.addMember('ensures', new ConstantExpression(lawText))
+        m.addAnnotation(cs)
+        m.setSourcePosition(carrier)
+        m.putNodeMetaData(MONADIC_LAW_KEY, [carrier.nameWithoutPackage, law] as String[])
+        beforeVisitMethod(m)
+        afterVisitMethod(m)
     }
 
     /** If {@code call} is a recognised deterministic int→String conversion, the value expression being
@@ -774,12 +880,12 @@ class VerifyChecker extends TypeCheckingExtension {
         Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
         for (Parameter p : node.parameters) {
             ClassNode t = p.type
-            if (isNonIntScalar(t)) out.put(p.name, t)
+            if (isNonIntScalar(t) || Encoder.wrapperContentField(t) != null) out.put(p.name, t)   // Phase B — carrier params
         }
         ClassNode dc = node.declaringClass
         if (dc != null) for (FieldNode f : dc.fields) {
             ClassNode t = f.type
-            if (isNonIntScalar(t)) out.put(f.name, t)
+            if (isNonIntScalar(t) || Encoder.wrapperContentField(t) != null) out.put(f.name, t)
         }
         // Phase 47h — the implicit {@code result} variable in {@code @Ensures} takes the
         // method's return type. Without this entry, a {@code @Ensures({ result.startsWith(…) })}
@@ -1507,6 +1613,8 @@ class VerifyChecker extends TypeCheckingExtension {
         currentScalarTypes = collectScalarTypes(node)
         currentTupleTypes = collectTupleTypes(node)
         currentCombiners = collectCombiners(node)
+        currentCarrierTypes = collectCarrierTypes(node)
+        currentFunctionReturnTypes = collectFunctionReturnTypes(node)
         currentDecimalNames = collectDecimalNames(node)
         currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
@@ -1546,6 +1654,9 @@ class VerifyChecker extends TypeCheckingExtension {
     void afterVisitClass(ClassNode classNode) {
         if (classNode == null) return
         verifyTraitDefaultMethods(classNode)
+        // Phase 136 — a @Monadic carrier asserts the monad/functor laws; discharge the Tier-1 identity laws it
+        // claims, derived from the annotation (à la @Reducer). Best-effort.
+        try { verifyMonadicLaws(classNode) } catch (Throwable ignored) { }
         for (ConstructorNode ctor : classNode.declaredConstructors) {
             try {
                 beforeVisitMethod(ctor)
@@ -1672,6 +1783,8 @@ class VerifyChecker extends TypeCheckingExtension {
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentTupleTypes = new HashMap<String, ClassNode>()
             currentCombiners = new HashMap<String, Object[]>()
+            currentCarrierTypes = new HashMap<String, ClassNode>()
+            currentFunctionReturnTypes = new HashMap<String, ClassNode>()
             currentDecimalNames = new HashSet<String>()
             currentFpNames = new HashMap<String, Boolean>()
             currentBooleanLocals = new HashSet<String>()
@@ -4114,6 +4227,11 @@ class VerifyChecker extends TypeCheckingExtension {
             String[] redLaw = (String[]) node.getNodeMetaData(REDUCER_LAW_KEY)
             if (redLaw != null) {
                 addStaticTypeError(Reporter.formatReducerLawFailure(redLaw[0], redLaw[1], postAst?.text, r), anchor)
+                return
+            }
+            String[] monLaw = (String[]) node.getNodeMetaData(MONADIC_LAW_KEY)
+            if (monLaw != null) {
+                addStaticTypeError(Reporter.formatMonadicLawFailure(monLaw[0], monLaw[1], postAst?.text, r), anchor)
                 return
             }
             if (r.status == CheckResult.Status.UNKNOWN && postAst != null) {

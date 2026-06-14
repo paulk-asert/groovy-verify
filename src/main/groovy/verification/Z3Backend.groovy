@@ -25,6 +25,8 @@ import com.microsoft.z3.FPExpr
 import com.microsoft.z3.FPRMExpr
 import com.microsoft.z3.FPSort
 import com.microsoft.z3.FuncDecl
+import com.microsoft.z3.DatatypeSort
+import com.microsoft.z3.Constructor
 import com.microsoft.z3.IntExpr
 import com.microsoft.z3.IntNum
 import java.math.BigInteger
@@ -293,6 +295,53 @@ class Z3Session implements SmtSession {
             funcs.put(key, fd)
         }
         Expr[] a = intArgs.collect { (Expr) it } as Expr[]
+        ctx.mkApp(fd, a)
+    }
+
+    // Phase B (carrier model) — a single-field immutable wrapper carrier modelled as a one-constructor Z3
+    // datatype. The selector/constructor round-trips (`content(mk(x)) == x`, `mk(content(c)) == c`) are
+    // datatype theorems Z3 derives for free — no manual axioms, no quantifier triggers.
+    private final Map<String, DatatypeSort> wrapperSorts = [:]
+    private final Map<String, FuncDecl> wrapperCtor = [:]
+    private final Map<String, FuncDecl> wrapperSel = [:]
+
+    @Override
+    Object wrapperSort(String typeName, Object contentSort) {
+        DatatypeSort cached = wrapperSorts.get(typeName)
+        if (cached != null) return cached
+        Constructor ctor = ctx.mkConstructor('mk$' + typeName, 'is$' + typeName,
+            ['content$' + typeName] as String[], [(Sort) contentSort] as Sort[], [0] as int[])
+        DatatypeSort dt = ctx.mkDatatypeSort(typeName, [ctor] as Constructor[])
+        wrapperSorts.put(typeName, dt)
+        wrapperCtor.put(typeName, dt.getConstructors()[0])
+        wrapperSel.put(typeName, dt.getAccessors()[0][0])
+        dt
+    }
+
+    @Override
+    Object wrapperUnit(String typeName, Object contentSort, Object value) {
+        wrapperSort(typeName, contentSort)
+        ctx.mkApp(wrapperCtor.get(typeName), (Expr) value)
+    }
+
+    @Override
+    Object wrapperContent(String typeName, Object contentSort, Object carrier) {
+        wrapperSort(typeName, contentSort)
+        ctx.mkApp(wrapperSel.get(typeName), (Expr) carrier)
+    }
+
+    @Override
+    Object applyUF(String name, List<Object> args, Object rangeSort) {
+        Expr[] a = args.collect { (Expr) it } as Expr[]
+        Sort[] domain = a.collect { it.getSort() } as Sort[]
+        Sort range = (Sort) rangeSort
+        // Key by the full signature so a re-declaration always matches the cached decl's sorts.
+        String key = name + '/' + domain.collect { it.toString() }.join(',') + '->' + range.toString()
+        FuncDecl fd = funcs.get(key)
+        if (fd == null) {
+            fd = ctx.mkFuncDecl(name, domain, range)
+            funcs.put(key, fd)
+        }
         ctx.mkApp(fd, a)
     }
 

@@ -20,6 +20,8 @@ import org.apache.groovy.ast.tools.ExpressionUtils
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.FieldNode
+import org.codehaus.groovy.ast.AnnotationNode
+import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.ArrayExpression
@@ -234,6 +236,14 @@ class Encoder {
      */
     private final Map<String, Object[]> combiners
 
+    /** Phase B — wrapper-carrier types in scope: simple name → resolved {@link ClassNode}. A single-field
+     *  immutable {@code @Monadic} carrier is modelled as a one-constructor datatype (see {@link #wrapperContentField}). */
+    private final Map<String, ClassNode> carrierTypes
+
+    /** Phase C — declared return type of a {@code Function}-typed parameter (its second generic), so {@code
+     *  f.apply(x)} can range over the right sort (e.g. a bind function returns the carrier). */
+    private final Map<String, ClassNode> functionReturnTypes
+
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
     /**
@@ -275,9 +285,13 @@ class Encoder {
             Set<String> decimalNames = null,
             Map<String, Boolean> fpNames = null,
             Map<String, ClassNode> tupleParams = null,
-            Map<String, Object[]> combiners = null) {
+            Map<String, Object[]> combiners = null,
+            Map<String, ClassNode> carrierTypes = null,
+            Map<String, ClassNode> functionReturnTypes = null) {
         this.session = session
         this.combiners = combiners != null ? combiners : new LinkedHashMap<String, Object[]>()
+        this.carrierTypes = carrierTypes != null ? carrierTypes : new HashMap<String, ClassNode>()
+        this.functionReturnTypes = functionReturnTypes != null ? functionReturnTypes : new HashMap<String, ClassNode>()
         this.pureEvaluator = pureEvaluator
         this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
         this.mapTypes = mapTypes != null ? mapTypes : new HashMap<String, ClassNode[]>()
@@ -806,7 +820,160 @@ class Encoder {
         if (isFpElementType(t)) return session.fpSort(isFpDoubleType(t))   // Phase 77 — double/float contents
         if (isIntLikeType(t)) return session.intSort()
         if (t.isEnum() || isEnumLikeType(t)) return session.declareSort(enumSortName(t))
+        FieldNode cf = wrapperContentField(t)   // Phase B — a wrapper carrier is a one-constructor datatype
+        if (cf != null) return session.wrapperSort(t.nameWithoutPackage, contentSortFor(cf))
         session.intSort()   // default — preserves today's Int-only behaviour for unrecognised types
+    }
+
+    /** Phase C — the SMT sort of a wrapper carrier's content. An {@code Object} content field shares the
+     *  {@code f.apply} value sort ({@code declareSort('Object')}) so the bind/map laws (carrier ∘ apply) compose;
+     *  a concretely-typed field keeps its natural sort. */
+    private Object contentSortFor(FieldNode cf) {
+        (cf?.type != null && cf.type.name == 'java.lang.Object') ? session.declareSort('Object') : sortFor(cf.type)
+    }
+
+    /** Phase B — the single content field of a recognised wrapper carrier (a {@code @Monadic}-annotated class
+     *  with exactly one non-static, final field), or null. Such a carrier is modelled as a one-constructor Z3
+     *  datatype so the unit/content round-trips hold by datatype theory. Static: reads only the ClassNode. */
+    static FieldNode wrapperContentField(ClassNode cn) {
+        if (cn == null) return null
+        List<AnnotationNode> anns = cn.annotations
+        boolean monadic = anns != null && anns.any { it?.classNode?.name?.endsWith('Monadic') }
+        if (!monadic) return null
+        List<FieldNode> inst = new ArrayList<FieldNode>()
+        List<FieldNode> fs = cn.fields
+        if (fs != null) for (FieldNode f : fs) if (!f.isStatic()) inst.add(f)
+        if (inst.size() != 1) return null
+        FieldNode f = inst.get(0)
+        f.isFinal() ? f : null
+    }
+
+    /** The resolved wrapper-carrier ClassNode for a simple name in scope (from {@link #carrierTypes}), or null —
+     *  used to recover a re-parsed contract's unresolved {@code new Res(a)} type. */
+    private ClassNode carrierByName(String simpleName) {
+        ClassNode cn = carrierTypes.get(simpleName)
+        cn != null && wrapperContentField(cn) != null ? cn : null
+    }
+
+    /** The carrier ClassNode of a property/method receiver expression (a carrier-typed variable or a freshly
+     *  constructed carrier), or null. */
+    private ClassNode carrierTypeOf(Expression obj) {
+        if (obj instanceof VariableExpression) return wrapperContentField(scalarTypes.get(((VariableExpression) obj).name)) != null ? scalarTypes.get(((VariableExpression) obj).name) : null
+        if (obj instanceof ConstructorCallExpression && ((ConstructorCallExpression) obj).type != null)
+            return carrierByName(((ConstructorCallExpression) obj).type.nameWithoutPackage)
+        null
+    }
+
+    /** True if {@code pe} reads a wrapper carrier's content field (`m.v`). */
+    private boolean isCarrierContentRead(PropertyExpression pe) {
+        ClassNode ct = carrierTypeOf(pe.objectExpression)
+        FieldNode cf = ct != null ? wrapperContentField(ct) : null
+        cf != null && cf.name == pe.propertyAsString
+    }
+
+    // ---- Phase C: the bind/map method names a carrier declares, and whether their bodies are Identity-shaped ----
+
+    private static AnnotationNode monadicAnn(ClassNode ct) {
+        ct?.annotations?.find { it?.classNode?.name?.endsWith('Monadic') }
+    }
+    private static String monadicMember(ClassNode ct, String member, String dflt) {
+        Expression e = monadicAnn(ct)?.getMember(member)
+        (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof String &&
+            !((String) ((ConstantExpression) e).value).isEmpty()) ? (String) ((ConstantExpression) e).value : dflt
+    }
+    private static String bindMethodName(ClassNode ct) { monadicMember(ct, 'bind', 'flatMap') }
+    private static String mapMethodName(ClassNode ct)  { monadicMember(ct, 'map', 'map') }
+
+    /** Phase 136 — true if {@code cn} is a wrapper carrier whose bind AND map are the verified Identity shapes,
+     *  i.e. the carrier groovy-verify can model. The auto-synthesis gates on this (others are out of scope). */
+    static boolean isIdentityWrapperCarrier(ClassNode cn) {
+        FieldNode cf = wrapperContentField(cn)
+        cf != null && isIdentityBind(cn, bindMethodName(cn), cf) && isIdentityMap(cn, mapMethodName(cn), cf)
+    }
+
+    /** The single-argument method named {@code name} on {@code ct}, or null. */
+    private static MethodNode singleArgMethod(ClassNode ct, String name) {
+        if (ct == null) return null
+        for (MethodNode mn : (ct.methods ?: [])) if (mn.name == name && mn.parameters.length == 1) return mn
+        null
+    }
+    /** The (implicit-return) value expression of a single-statement method body, or null. Reads the clean
+     *  pre-contract snapshot when groovy-contracts has rewritten the body (e.g. a `@Requires` guard). */
+    private static Expression soleReturnExpr(MethodNode mn) {
+        if (mn == null) return null
+        Statement code = (Statement) mn.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (code == null) code = mn.code
+        if (code instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) code).statements
+            if (ss.size() != 1) return null
+            code = ss.get(0)
+        }
+        if (code instanceof ReturnStatement) return ((ReturnStatement) code).expression
+        if (code instanceof ExpressionStatement) return ((ExpressionStatement) code).expression
+        null
+    }
+    /** True if {@code e} is {@code <paramName>.apply(<fieldName>)}. */
+    private static boolean isApplyOnParamToField(Expression e, String paramName, String fieldName) {
+        if (e instanceof CastExpression) e = ((CastExpression) e).expression
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression mc = (MethodCallExpression) e
+        if (mc.methodAsString != 'apply' || !(mc.objectExpression instanceof VariableExpression) ||
+            ((VariableExpression) mc.objectExpression).name != paramName) return false
+        List<Expression> as = argList(mc)
+        as.size() == 1 && as.get(0) instanceof VariableExpression && ((VariableExpression) as.get(0)).name == fieldName
+    }
+    /** The single value expression of a closure literal's body, or null. */
+    private static Expression soleClosureExpr(ClosureExpression cl) {
+        Statement code = cl?.code
+        if (code instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) code).statements
+            if (ss.size() != 1) return null
+            code = ss.get(0)
+        }
+        if (code instanceof ReturnStatement) return ((ReturnStatement) code).expression
+        if (code instanceof ExpressionStatement) return ((ExpressionStatement) code).expression
+        null
+    }
+
+    /** Phase C — apply a function-valued argument to {@code arg}: an uninterpreted-function symbol for a named
+     *  function (the bind/map of left identity), or beta-reduction for a single-parameter closure literal — which
+     *  is how the {@code unit} ({@code x -> new C(x)}) and {@code identity} ({@code x -> x}) functions of the
+     *  right-/functor-identity laws reach a carrier. Returns null for forms not yet modelled (e.g. method refs). */
+    private Object applyFunction(Expression fexpr, Object arg, Object defaultRange) {
+        if (fexpr instanceof VariableExpression) {
+            String fn = ((VariableExpression) fexpr).name
+            ClassNode rt = functionReturnTypes.get(fn)
+            return session.applyUF('apply$' + fn, [arg], rt != null ? sortFor(rt) : defaultRange)
+        }
+        if (fexpr instanceof ClosureExpression) {
+            ClosureExpression cl = (ClosureExpression) fexpr
+            Parameter[] ps = cl.parameters
+            Expression body = soleClosureExpr(cl)
+            if (ps != null && ps.length == 1 && body != null) {
+                Map<String, Object> b = new LinkedHashMap<String, Object>()
+                b.put(ps[0].name, arg)
+                return translateWith(body, b)
+            }
+        }
+        null
+    }
+
+    /** Phase C — verify (not assume) a carrier's bind is the Identity shape `(C) f.apply(field)`. */
+    private static boolean isIdentityBind(ClassNode ct, String name, FieldNode cf) {
+        MethodNode mn = singleArgMethod(ct, name)
+        mn != null && isApplyOnParamToField(soleReturnExpr(mn), mn.parameters[0].name, cf.name)
+    }
+    /** Phase C — verify a carrier's map is the Identity shape `new C(p.apply(field))`. */
+    private static boolean isIdentityMap(ClassNode ct, String name, FieldNode cf) {
+        MethodNode mn = singleArgMethod(ct, name)
+        if (mn == null) return false
+        Expression body = soleReturnExpr(mn)
+        if (!(body instanceof ConstructorCallExpression)) return false
+        ConstructorCallExpression cce = (ConstructorCallExpression) body
+        if (cce.type?.nameWithoutPackage != ct.nameWithoutPackage) return false
+        List<Expression> cargs = (cce.arguments instanceof ArgumentListExpression) ?
+            ((ArgumentListExpression) cce.arguments).expressions : Collections.<Expression>emptyList()
+        cargs.size() == 1 && isApplyOnParamToField(cargs.get(0), mn.parameters[0].name, cf.name)
     }
 
     /**
@@ -1070,6 +1237,9 @@ class Encoder {
         if (e == null) return null
         if (expectedSort == session.intSort()) return translate(e)
         if (expectedSort == session.realSort()) return asReal(e)   // Phase 70 — decimal element value
+        // Phase C — a carrier content read (`m.v` / `new C(x).v`) is the datatype selector, not an enum constant;
+        // translate it directly so it isn't mis-handled by the PropertyExpression-as-enum branch below.
+        if (e instanceof PropertyExpression && isCarrierContentRead((PropertyExpression) e)) return translate(e)
         if (e instanceof ConstantExpression) {
             Object v = ((ConstantExpression) e).value
             if (v instanceof String) return session.litOfSort(expectedSort, (String) v)
@@ -3128,10 +3298,39 @@ class Encoder {
             return session.ite(c, t, f)
         }
 
+        // Phase B — `new Res(a)` on a recognised wrapper carrier: the datatype constructor (unit/of). The
+        // contract-side type is unresolved (re-parsed), so the resolved carrier is recovered by simple name.
+        if (expr instanceof ConstructorCallExpression) {
+            ConstructorCallExpression cce = (ConstructorCallExpression) expr
+            ClassNode carrier = cce.type != null ? carrierByName(cce.type.nameWithoutPackage) : null
+            if (carrier != null) {
+                FieldNode cf = wrapperContentField(carrier)
+                List<Expression> cargs = (cce.arguments instanceof ArgumentListExpression) ?
+                    ((ArgumentListExpression) cce.arguments).expressions : Collections.<Expression>emptyList()
+                if (cf != null && cargs.size() == 1) {
+                    Object cSort = contentSortFor(cf)
+                    Object val = translateInSort(cargs.get(0), cSort)
+                    if (val != null) return session.wrapperUnit(carrier.nameWithoutPackage, cSort, val)
+                }
+            }
+        }
+
         if (expr instanceof PropertyExpression) {
             PropertyExpression pe = (PropertyExpression) expr
             String prop = pe.propertyAsString
             Expression obj = pe.objectExpression
+            // Phase B — `<carrier>.content`: the datatype selector (content read). The receiver may be a
+            // carrier-typed variable (`m.v`) or a freshly-constructed carrier (`new Res(x).v`).
+            ClassNode mt = null
+            if (obj instanceof VariableExpression) mt = scalarTypes.get(((VariableExpression) obj).name)
+            else if (obj instanceof ConstructorCallExpression && ((ConstructorCallExpression) obj).type != null)
+                mt = carrierByName(((ConstructorCallExpression) obj).type.nameWithoutPackage)
+            FieldNode cf = mt != null ? wrapperContentField(mt) : null
+            if (cf != null && cf.name == prop) {
+                Object cSort = contentSortFor(cf)
+                Object carrier = translate(obj)
+                if (carrier != null) return session.wrapperContent(mt.nameWithoutPackage, cSort, carrier)
+            }
             // Phase 44 polish — JDK boxed-numeric range constants fold to their literal values, so a
             // user can write {@code @Requires({ n < Integer.MAX_VALUE })} (or the {@code Long}
             // equivalents) and the verifier sees the same literal a tighter explicit bound would
@@ -4063,6 +4262,47 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // Phase A (higher-order) — `f.apply(x)` on a stable named reference (a parameter/field/local `f`):
+        // model `f` as an uninterpreted function over an uninterpreted value sort. We know nothing about what
+        // `f` computes, only that it is a function (equal arguments → equal results), which is exactly an
+        // uninterpreted-function symbol. This is the foundation for higher-order contract reasoning — notably
+        // the @Monadic monad laws, which quantify over arbitrary `Function`s. Restricted to a VariableExpression
+        // receiver so the UF key (`apply$<name>`) denotes a stable function; a computed receiver stays unmodelled.
+        if (m == 'apply' && args.size() == 1 && recv instanceof VariableExpression) {
+            Object vSort = session.declareSort('Object')
+            String rn = ((VariableExpression) recv).name
+            ClassNode rt = functionReturnTypes.get(rn)
+            Object range = rt != null ? sortFor(rt) : vSort      // Phase C — a bind function returns the carrier
+            Object arg = translateInSort(args.get(0), vSort)
+            if (arg != null) return session.applyUF('apply$' + rn, [arg], range)
+        }
+
+        // Phase C — `m.bind(f)` / `m.map(p)` on a recognised wrapper carrier whose bind/map *bodies* are the
+        // Identity-wrapper shape (verified, not assumed): model them by their definitions, so the monad/functor
+        // laws compose with f.apply (Phase A) and the carrier datatype (Phase B).
+        //   bind:  m.bind(f) == f.apply(content(m))            (f: value → carrier)
+        //   map:   m.map(p)  == unit(p.apply(content(m)))      (p: value → value)
+        if (args.size() == 1) {
+            ClassNode ct = carrierTypeOf(recv)
+            FieldNode cf = ct != null ? wrapperContentField(ct) : null
+            if (cf != null) {
+                Object cSort = contentSortFor(cf)
+                Object recvH = (m == bindMethodName(ct) || m == mapMethodName(ct)) ? translate(recv) : null
+                if (recvH != null && m == bindMethodName(ct) && isIdentityBind(ct, m, cf)) {
+                    // m.bind(f) == f.apply(content(m)) ; f returns the carrier.
+                    Object content = session.wrapperContent(ct.nameWithoutPackage, cSort, recvH)
+                    Object r = applyFunction(args.get(0), content, sortFor(ct))
+                    if (r != null) return r
+                }
+                if (recvH != null && m == mapMethodName(ct) && isIdentityMap(ct, m, cf)) {
+                    // m.map(p) == unit(p.apply(content(m))) ; p returns a value.
+                    Object content = session.wrapperContent(ct.nameWithoutPackage, cSort, recvH)
+                    Object mapped = applyFunction(args.get(0), content, cSort)
+                    if (mapped != null) return session.wrapperUnit(ct.nameWithoutPackage, cSort, mapped)
+                }
+            }
+        }
 
         // Phase 116 — equational combiner inlining: a call to a registered combiner `f(args)` (no `@Requires`,
         // `@Ensures({ result == E })`) is translated as `E[formals := args]`, so a reduction `acc = f(acc, x)`

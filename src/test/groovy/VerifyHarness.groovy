@@ -8875,6 +8875,120 @@ class WrapCounter implements Counter { }
         [group: 'P-nonnull', name: '@NonNull caught alongside NullChecker (no double-report)', expect: 'Cannot prove postcondition',
          src: HDR + NONNULL_ANN + tcExt(['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'], '''class C {
                         @NonNull static String foo(String x) { return x } }''')],
+        // Phase A (higher-order foundation) — a `java.util.function.Function` parameter's `f.apply(x)` is modelled
+        // as an uninterpreted function. Congruence (same arg → same result) is provable; distinctness is not.
+        [group: 'P-hof', name: 'apply is congruent: f(a) == f(a) proves', ok: true,
+         src: tc('''class C {
+                        @Ensures({ f.apply(a) == f.apply(a) })
+                        static void refl(java.util.function.Function f, Object a) { } }''')],
+        [group: 'P-hof', name: 'apply on distinct args not forced equal: f(a) == f(b) refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ f.apply(a) == f.apply(b) })
+                        static void distinct(java.util.function.Function f, Object a, Object b) { } }''')],
+        [group: 'P-hof', name: 'apply congruence under an equal-args premise proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ a == b })
+                        @Ensures({ f.apply(a) == f.apply(b) })
+                        static void congruent(java.util.function.Function f, Object a, Object b) { } }''')],
+        [group: 'P-hof', name: 'CONTROL a==b must not prove f(a)==f(c)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ a == b })
+                        @Ensures({ f.apply(a) == f.apply(c) })
+                        static void control(java.util.function.Function f, Object a, Object b, Object c) { } }''')],
+
+        // Phase 136 (auto-synthesis) — @Monadic alone now carries the proof: the three identity laws are derived
+        // from the annotation and discharged, with NO hand-written lemma methods (à la @Reducer).
+        [group: 'P-monadauto', name: '@Monadic carrier: identity laws auto-prove (no lemmas)', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) } }''')],
+        // A @Monadic carrier outside the modellable shape (here, bind/map swapped — non-Identity) is left to the
+        // annotation's own assertion: no synthesis, no false vouch, no noise (Maybe/Either/Stream land here too).
+        [group: 'P-monadauto', name: '@Monadic carrier outside the modellable shape is left alone', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Bad {
+                        final Object v
+                        Bad(Object v) { this.v = v }
+                        @Requires({ f != null }) Bad chain(java.util.function.Function f) { new Bad(f.apply(v)) }
+                        @Requires({ f != null }) Bad transform(java.util.function.Function f) { (Bad) f.apply(v) } }''')],
+
+        // Phase C (Tier-1 law) — left identity `unit(a).chain(f) == f.apply(a)` discharged over the carrier
+        // datatype (Phase B) + uninterpreted apply (Phase A), with bind modelled from its verified Identity body.
+        [group: 'P-monadlaw', name: 'left identity proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ new Res(a).chain(f) == f.apply(a) })
+                        static void leftIdentity(Object a, java.util.function.Function<Object, Res> f) { } }''')],
+        [group: 'P-monadlaw', name: 'CONTROL bind not forced equal to a different application refutes', expect: 'Cannot prove postcondition',
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ new Res(a).chain(f) == f.apply(b) })
+                        static void bogus(Object a, Object b, java.util.function.Function<Object, Res> f) { } }''')],
+        // Right identity `m.chain(unit) == m` and functor identity `m.transform(id) == m` — the unit/identity
+        // functions arrive as closure literals, beta-reduced to `unit(content(m))`, then the datatype round-trip.
+        [group: 'P-monadlaw', name: 'right identity proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ m.chain({ x -> new Res(x) }) == m })
+                        static void rightIdentity(Res m) { } }''')],
+        [group: 'P-monadlaw', name: 'functor identity proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ m.transform({ x -> x }) == m })
+                        static void functorIdentity(Res m) { } }''')],
+        [group: 'P-monadlaw', name: 'CONTROL functor identity does not collapse distinct carriers', expect: 'Cannot prove postcondition',
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Requires({ f != null }) Res chain(java.util.function.Function f) { (Res) f.apply(v) }
+                        @Requires({ f != null }) Res transform(java.util.function.Function f) { new Res(f.apply(v)) }
+                        @Ensures({ m.transform({ x -> x }) == n })
+                        static void bogus2(Res m, Res n) { } }''')],
+
+        // Phase B (carrier model) — a single-field @Monadic wrapper carrier is modelled as a one-constructor
+        // datatype; the unit/content round-trips hold by datatype theory (`unit(content(m))==m`, `content(unit(x))==x`).
+        [group: 'P-carrier', name: 'wrapper round-trip: new Res(m.v) == m proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Ensures({ new Res(m.v) == m })
+                        static void unitOfContent(Res m) { } }''')],
+        [group: 'P-carrier', name: 'wrapper round-trip: new Res(m.v).v == m.v proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Ensures({ new Res(m.v).v == m.v })
+                        static void contentOfUnit(Res m) { } }''')],
+        [group: 'P-carrier', name: 'CONTROL distinct carriers not forced equal refutes', expect: 'Cannot prove postcondition',
+         src: tc('''@groovy.transform.Monadic(bind = 'chain', map = 'transform')
+                    class Res {
+                        final Object v
+                        Res(Object v) { this.v = v }
+                        @Ensures({ m == n })
+                        static void bogus(Res m, Res n) { } }''')],
+
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'nested loop: count = n*n', ok: true,
          src: tc('''class C {

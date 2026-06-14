@@ -109,6 +109,25 @@ interface SmtSession extends AutoCloseable {
      */
     Object uninterpretedFunc(String name, List<Object> intArgs)
 
+    /**
+     * Phase A (higher-order) — apply an uninterpreted function {@code name} to {@code args}, declared
+     * lazily from the args' actual sorts → {@code rangeSort}. Unlike {@link #uninterpretedFunc} (Int-only),
+     * this works over any sorts, so a {@code java.util.function.Function} parameter's {@code f.apply(x)} can
+     * be modelled as an uninterpreted map over a value sort. Sound by construction: the only fact asserted is
+     * functional congruence (equal arguments yield equal results), nothing about what the function computes.
+     */
+    Object applyUF(String name, List<Object> args, Object rangeSort)
+
+    /**
+     * Phase B (carrier model) — a single-field immutable wrapper carrier (`@Monadic` Identity-shaped) as a
+     * one-constructor datatype: {@code mk$type(content$type: contentSort)}. {@link #wrapperSort} declares it,
+     * {@link #wrapperUnit} applies the constructor ("of"), {@link #wrapperContent} the selector (field read).
+     * Z3's datatype theory supplies both round-trips automatically.
+     */
+    Object wrapperSort(String typeName, Object contentSort)
+    Object wrapperUnit(String typeName, Object contentSort, Object value)
+    Object wrapperContent(String typeName, Object contentSort, Object carrier)
+
     /** If-then-else over integer branches — Z3 {@code (ite cond thenV elseV)}. */
     Object ite(Object cond, Object thenV, Object elseV)
 

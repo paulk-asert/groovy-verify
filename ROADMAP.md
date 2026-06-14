@@ -6241,6 +6241,121 @@ same three ways.
 
 ---
 
+## Phase 133 — uninterpreted functions: `f.apply(x)` as a higher-order foundation  *(shipped — Phase A of the `@Monadic` derivation)*
+
+The `@Monadic` monad-law derivation (scoped as Phase A→D) needs reasoning over *arbitrary* functions — its laws
+quantify over the `Function`s passed to `bind`/`map`. This phase lands **Phase A**, the reusable foundation: a
+`java.util.function.Function` parameter's `f.apply(x)` is modelled as an **uninterpreted function** over an
+uninterpreted value sort. We assert nothing about what `f` computes — only functional congruence (equal arguments
+→ equal results), which is exactly a UF symbol; sound by construction.
+
+Mechanics: a new backend primitive `SmtBackend.applyUF(name, args, rangeSort)` (the value-sorted generalisation
+of the Int-only `uninterpretedFunc`, declaring the `FuncDecl` lazily from the args' sorts). In
+`Encoder.translateMethodCall`, `recv.apply(x)` on a **`VariableExpression` receiver** translates to
+`applyUF('apply$' + recv, [translateInSort(x, ObjectSort)], ObjectSort)` — restricted to a named receiver so the
+key denotes a stable function (a computed receiver stays unmodelled). No global `sortFor` change; the argument is
+translated in a dedicated value sort, keeping the blast radius to the `apply` shape itself.
+
+**Shipped tests** (group `P-hof`) pin the exact UF soundness profile: `f(a) == f(a)` proves (congruence),
+`f(a) == f(b)` refutes (not forced equal), `a==b ⟹ f(a)==f(b)` proves (the premise connects), and the control
+`a==b ⟹ f(a)==f(c)` refutes (no spurious equality).
+
+**Next (not yet built)**: Phase B (wrapper-carrier content/`unit` model), Phase C (the three identity laws),
+Phase D (closures → defined functions, for associativity/functor-composition). See the `@Monadic` scope.
+
+---
+
+## Phase 134 — wrapper-carrier datatype model  *(shipped — Phase B of the `@Monadic` derivation)*
+
+A single-value `@Monadic` carrier (Identity/Box/`Res`-shaped) is modelled as a **one-constructor Z3 datatype**:
+`Res ≅ mk$Res(content$Res: V)`. The two unit/content round-trips — `content(unit(x)) == x` and
+`unit(content(m)) == m` — then hold by *datatype theory*, for free, with no hand-written axioms and no
+quantifier-trigger fragility (the reason datatypes beat the uninterpreted-sort-plus-axioms encoding the scope
+floated).
+
+Mechanics: `SmtBackend.wrapperSort`/`wrapperUnit`/`wrapperContent` (Z3 `mkDatatypeSort` + constructor/selector).
+`Encoder.wrapperContentField(cn)` recognises a carrier — `@Monadic`-annotated, exactly one non-static *final*
+field; `sortFor` maps it to the datatype sort, `new Res(a)` to the constructor, and `m.content` (variable *or*
+freshly-constructed receiver) to the selector. The resolved carrier is threaded in via a new `carrierTypes` map
+(parallel to `combiners`), because a re-parsed contract's `new Res(a)` carries an unresolved type — recovered by
+simple name.
+
+A dead end worth recording: making `java.lang.Object` a global value sort (so an `Object` field/param shares the
+`f.apply` value sort) **breaks `def`/`var`/untyped params** — Groovy represents both `Object x` and untyped `def x`
+as `java.lang.Object`, so they're indistinguishable by type, and 6 inference tests regressed. So the carrier's
+content keeps its field's natural sort here; unifying the apply/content value sort is deferred to Phase C, which
+will need it only inside the laws (where the carrier context disambiguates).
+
+**Shipped tests** (group `P-carrier`): `new Res(m.v) == m` and `new Res(m.v).v == m.v` prove by datatype theory;
+the control `m == n` over two distinct carriers refutes (not vacuous).
+
+**Next**: Phase C — synthesize the three identity laws (à la Phase 130) and discharge them over the Phase-A
+`apply` + Phase-B carrier, unifying the value sort; Phase D — closures as defined functions (the stretch).
+
+---
+
+## Phase 135 — the Tier-1 monad/functor laws (left, right & functor identity)  *(shipped — Phase C of the `@Monadic` derivation)*
+
+Where Phases A and B finally combine: **all three Tier-1 identity laws** are **proven** for an Identity-shaped
+`@Monadic` carrier — left identity `unit(a).chain(f) == f.apply(a)`, right identity `m.chain(unit) == m`, and
+functor identity `m.transform(id) == m` — over the carrier datatype (Phase B), the uninterpreted `apply` (Phase A),
+and a model of `bind`/`map`.
+
+Four pieces made it compose:
+- **Value-sort unification.** A carrier's `Object` content now shares the `f.apply` value sort (`contentSortFor`),
+  so `content(m)` and `f`'s argument are the same sort. (A bug this surfaced: `translateInSort` mis-read a content
+  read `m.v` as an *enum constant* under a non-Int sort — fixed by recognising carrier content reads first.)
+- **Function return types.** A `Function<A, R>` parameter's `f.apply(x)` now ranges over `sortFor(R)`
+  (`collectFunctionReturnTypes`), so a *bind* function (`Function<Object, Res>`) applies into the **carrier** — the
+  law's two sides (`…chain(f)` and `f.apply(a)`) then share one UF.
+- **Sound bind/map modelling.** `m.bind(f)`/`m.map(p)` are modelled by their *definitions* —
+  `f.apply(content(m))` / `unit(p.apply(content(m)))` — but only after **verifying** (not assuming) the carrier's
+  bind/map *bodies* are the Identity shape (`(C) f.apply(field)` / `new C(f.apply(field))`), read from the clean
+  pre-contract snapshot so a `@Requires` guard doesn't hide it.
+- **Applying a function argument** (`applyFunction`): a *named* function becomes its UF symbol (left identity); a
+  single-parameter *closure literal* is **beta-reduced** (`translateWith` binds the param). That's exactly how the
+  `unit` (`{ x -> new C(x) }`) and `identity` (`{ x -> x }`) functions of right/functor identity reach the carrier —
+  both reduce to `unit(content(m))`, which the datatype round-trip equates to `m`.
+
+**Shipped tests** (group `P-monadlaw`): left, right, and functor identity all prove; two controls refute —
+`unit(a).chain(f) == f.apply(b)` (applications not forced equal) and `m.transform(id) == n` (distinct carriers not
+collapsed).
+
+**Deferred** (honest scope): **associativity** needs the *general* constructed closure `{ x -> f(x).chain(g) }`
+(Phase D — a closure whose body itself calls bind, beyond the unit/identity beta-reduction here); method-reference
+unit (`Res::new`) isn't recognised yet (closure form only). Carriers remain restricted to single-value immutable
+wrappers (Maybe/Either/`Stream` out, as scoped). **Phase 136 adds the auto-synthesis.**
+
+---
+
+## Phase 136 — `@Monadic` auto-synthesis: the annotation proves itself  *(shipped — completes Phase C)*
+
+The thin Phase-130-style layer on top of the Tier-1 law engine: a `@Monadic` carrier's three identity laws are now
+**derived from the annotation and discharged with no hand-written lemmas** — the same "the annotation proves
+itself" story `@Reducer` got, for monads.
+
+`verifyMonadicLaws(ClassNode)` fires per class in `afterVisitClass` (the per-class hook, vs `@Reducer`'s
+per-method). It reads `@Monadic`'s `bind`/`map` members (structural defaults `flatMap`/`map`), takes the
+constructor as `unit`, and synthesises a void lemma per law via the `@ContractSource` trick (`runMonadicLaw`):
+`new C(a).bind(f) == f.apply(a)` (left), `m.bind(x -> new C(x)) == m` (right), `m.map(x -> x) == m` (functor) — the
+bind-function param typed `Function<Object, C>` so `f.apply` ranges over the carrier. Each rides the normal
+machinery and is discharged by Phases A–C; a refutation reports as `Cannot prove @Monadic <law> for carrier <C>`
+(`Reporter.formatMonadicLawFailure`).
+
+Crucially it is **gated on the modellable shape** (`Encoder.isIdentityWrapperCarrier`: single-value wrapper whose
+bind *and* map bodies are the verified Identity shapes). Any other `@Monadic` carrier — a multi-case
+Maybe/Either, an effectful `Stream`, or simply one whose bind/map we can't model — gets **no synthesis, no false
+vouch, and no noise**, exactly as scoped. (This gating is also what keeps the synthesis from polluting carriers
+that opt into `@Monadic` for the shape but aren't the Identity wrapper.)
+
+**Shipped tests** (group `P-monadauto`): a `@Monadic` carrier with **no lemma methods** has its three identity
+laws auto-prove (clean compile); a carrier outside the modellable shape compiles clean (left to the annotation).
+The hand-written `P-monadlaw` lemmas keep working alongside the synthesis.
+
+**Still deferred**: associativity (Phase D's general closure), method-reference unit, and non-wrapper carriers.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
