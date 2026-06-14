@@ -1045,6 +1045,13 @@ class Encoder {
      */
     Object varForOfSort(String name, Object sort) {
         if (sort == session.intSort()) return varFor(name)
+        // Phase 130 — honour an explicit env binding first, exactly as varForRaw does for the Int path. A
+        // `translateWith` overlay (notably combiner inlining, which binds a formal to its actual-argument handle)
+        // writes into `env`; without this, a String/Enum-typed name would skip that binding and mint a fresh
+        // unconstrained constant from sortedEnv — silently dropping the binding when a combiner formal's name
+        // collides with a surrounding String variable (e.g. inlining `op(a,b)` where `a` is also a method param).
+        Object bound = env.get(name)
+        if (bound != null) return bound
         String key = name + ':' + sort.toString()
         Object cached = sortedEnv.get(key)
         if (cached != null) return cached

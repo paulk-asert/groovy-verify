@@ -6141,6 +6141,42 @@ proves, return-position combiner call skips loudly, while-loop fold refutes clea
 
 ---
 
+## Phase 130 — derive the monoid laws from `@Reducer`/`@Associative` (the annotation proves itself)  *(shipped)*
+
+`@Reducer`/`@Associative` *assert* that a combiner is a monoid/semigroup but check nothing — their own javadoc:
+*"this annotation asserts the laws; it [checks nothing]."* Until now the user spelled the laws out as extra lemma
+methods (`@Ensures({ op(op(a,b),c) == op(a,op(b,c)) })`, `@Ensures({ op(a,zero) == a … })`) for groovy-verify to
+discharge. This phase reads the annotation directly and synthesises those obligations, so the lemmas are no longer
+needed — the annotation proves itself. This is the natural other half of the Phase-116/CombinerChecker split:
+CombinerChecker trusts the annotation's *shape*, groovy-verify now proves its *semantics*.
+
+`verifyReducerLaws` fires per method in `afterVisitMethod`. For an `@Reducer`/`@Associative` combiner that is the
+Phase-116 equational shape (binary `T×T→T`, no `@Requires`, `@Ensures({ result == E })`, `E` pure over the two
+formals), it synthesises a void lemma method per law whose `@Ensures` *calls the combiner* —
+`op(op(a,b),c) == op(a,op(b,c))` for associativity (both annotations), and `op(a,Z) == a && op(Z,a) == a` for
+identity (`@Reducer` with a declared `zero`, parsed from the annotation member) — then runs it through the normal
+`before/afterVisitMethod` path (the same trick `verifyTraitDefaultMethods` uses). The Phase-116 inliner unfolds the
+`op(...)` calls back to `E`, so each law reduces to the closed goal the user used to write by hand. Proves
+silently; refutes with a tailored `Reporter.formatReducerLawFailure` — `Cannot prove @Reducer associativity for
+combiner sub` / `… identity …` — anchored on the combiner's real position. Sound: the combiner's own `@Ensures` is
+verified where it is declared, and there is no `@Requires` to discharge. When the combiner is non-equational /
+impure, the annotation asserts laws we can't model, so it skips *loudly* (a postcondition-skipped diagnostic)
+rather than vouching silently.
+
+A latent bug surfaced and was fixed en route: combiner inlining bound a formal to its actual-argument handle via
+`translateWith` (which writes `env`), but a **String**/Enum-typed name resolves through `varForOfSort`→`sortedEnv`,
+so the binding was silently dropped whenever a combiner formal's name collided with a surrounding String variable
+(e.g. inlining `op(a,b)` inside a method that also has a param `a`). `varForOfSort` now honours the `env` binding
+first, exactly as the Int-path `varForRaw` already did — fixing the auto-derived identity (whose synthesised params
+reuse the formals' names) and any real user code with the same collision.
+
+**Shipped tests**: group `P-reducer` (string-concat monoid and int-sum monoid auto-prove assoc + identity;
+`@Associative` on subtraction refutes associativity; a wrong `zero` refutes identity) and a `P-seqconcat`
+regression for the colliding-name inline fix. README `CombinerChecker`/`Sum` example updated to drop the
+spelled-out `associative` lemma and show the annotation alone carrying the proof.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

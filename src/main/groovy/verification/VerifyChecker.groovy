@@ -113,6 +113,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
     private static final ClassNode CONTRACT_SOURCE_TYPE = ClassHelper.make(ContractSource)
     private static final ClassNode CLASS_INVARIANT_SOURCE_TYPE = ClassHelper.make(ClassInvariantSource)
+    /** Phase 130 — metadata on a synthesized @Reducer/@Associative law lemma: {@code [combinerName, lawName]}. */
+    private static final String REDUCER_LAW_KEY = 'verification.reducerLaw'
 
     private SmtBackend backend
     private PathFacts currentFacts
@@ -301,6 +303,99 @@ class VerifyChecker extends TypeCheckingExtension {
             }
         })
         ok[0]
+    }
+
+    // ---- Phase 130: discharge the monoid/semigroup laws a @Reducer/@Associative combiner asserts ----
+
+    /**
+     * A {@code @Reducer}/{@code @Associative}-annotated combiner *asserts* it is a monoid/semigroup but the
+     * annotation checks nothing (its own javadoc: "this annotation <em>asserts</em> the laws"). When {@code node}
+     * carries one of those annotations and is an equational binary combiner (the Phase-116 shape: no
+     * {@code @Requires}, {@code @Ensures({ result == E })}, {@code E} pure over the two formals), we synthesise and
+     * discharge the laws it claims:
+     * <ul>
+     *   <li><b>associativity</b> ({@code @Associative} and {@code @Reducer}): {@code op(op(a,b),c) == op(a,op(b,c))}
+     *   <li><b>identity</b> ({@code @Reducer} with a declared {@code zero}): {@code op(a,Z) == a && op(Z,a) == a}
+     * </ul>
+     * Each law is a synthetic void lemma whose {@code @Ensures} calls the combiner; the Phase-116 inliner unfolds
+     * those calls to {@code E}, so the law reduces to the same closed goal the user would write by hand
+     * (e.g. {@code (a+b)+c == a+(b+c)}). The lemma rides the normal postcondition machinery — proves silently,
+     * refutes with a counterexample. Sound: the combiner's own {@code @Ensures} is verified where it is declared,
+     * and there is no {@code @Requires} to discharge.
+     */
+    private void verifyReducerLaws(MethodNode node) {
+        AnnotationNode reducer = annotationByName(node, 'Reducer')
+        AnnotationNode associative = annotationByName(node, 'Associative')
+        if (reducer == null && associative == null) return
+        if (node.parameters.length != 2) return
+        ClassNode t = node.parameters[0].type
+        if (t == null || node.parameters[1].type == null || t.name != node.parameters[1].type.name) return
+        if (findRequires(node) != null) return
+        Expression ens = contractAstFor(node, 'ensures')
+        if (ens instanceof BooleanExpression) ens = ((BooleanExpression) ens).expression
+        Expression e = equationalEnsuresRhs(ens)
+        List<String> formals = new ArrayList<String>()
+        for (Parameter p : node.parameters) formals.add(p.name)
+        if (e == null || !isPureOver(e, formals)) {
+            // The annotation asserts laws we can't model (non-equational / impure combiner). Say so, loudly.
+            addStaticTypeError(Reporter.formatPostconditionSkipped(node.name,
+                "@Reducer/@Associative combiner is not an equational combiner the verifier can model"), node)
+            return
+        }
+        String op = node.name
+        // associativity — asserted by both @Associative and @Reducer
+        runReducerLaw(node, t, 'associativity', ['a', 'b', 'c'],
+            "${op}(${op}(a, b), c) == ${op}(a, ${op}(b, c))")
+        // identity — only @Reducer, and only when a zero is declared (an empty zero ⇒ @Associative semantics)
+        if (reducer != null) {
+            String zero = reducerZeroSource(reducer)
+            if (zero != null && !zero.trim().isEmpty()) {
+                runReducerLaw(node, t, 'identity', ['a'],
+                    "${op}(a, ${zero}) == a && ${op}(${zero}, a) == a")
+            }
+        }
+    }
+
+    /** Synthesise a void lemma method whose {@code @Ensures} is {@code lawText} over fresh params of type
+     *  {@code t}, and run it through the normal per-method verification. */
+    private void runReducerLaw(MethodNode combiner, ClassNode t, String law, List<String> paramNames, String lawText) {
+        List<Parameter> ps = new ArrayList<Parameter>()
+        for (String n : paramNames) ps.add(new Parameter(t, n))
+        MethodNode m = new MethodNode(combiner.name + '$' + law,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, ClassHelper.VOID_TYPE,
+            ps.toArray(new Parameter[0]), ClassNode.EMPTY_ARRAY, new BlockStatement())
+        m.declaringClass = combiner.declaringClass
+        m.addAnnotation(new AnnotationNode(ENSURES_TYPE))   // marker so findEnsures sees a postcondition
+        AnnotationNode cs = new AnnotationNode(CONTRACT_SOURCE_TYPE)
+        cs.addMember('ensures', new ConstantExpression(lawText))
+        m.addAnnotation(cs)
+        // Anchor on the combiner's real declaration so the (void-lemma) diagnostic actually surfaces (Phase 94).
+        m.setSourcePosition(combiner)
+        m.putNodeMetaData(REDUCER_LAW_KEY, [combiner.name, law] as String[])
+        beforeVisitMethod(m)
+        afterVisitMethod(m)
+    }
+
+    /** The {@code zero} member of a {@code @Reducer} as constant-expression source text (e.g. {@code ""},
+     *  {@code 0}), or null when absent/blank (which the javadoc gives @Associative semantics — associativity only). */
+    private static String reducerZeroSource(AnnotationNode reducer) {
+        Expression z = reducer.getMember('zero')
+        if (z instanceof ConstantExpression && ((ConstantExpression) z).value instanceof String) {
+            return (String) ((ConstantExpression) z).value
+        }
+        null
+    }
+
+    /** First annotation on {@code m} whose type name is {@code name} or ends with {@code .name} (so a simple
+     *  name matches the fully-qualified {@code groovy.transform.*}); avoids a hard compile dependency. */
+    private static AnnotationNode annotationByName(MethodNode m, String name) {
+        List<AnnotationNode> anns = m.getAnnotations()
+        if (anns == null) return null
+        for (AnnotationNode a : anns) {
+            String cn = a.classNode?.name
+            if (cn != null && (cn == name || cn.endsWith('.' + name))) return a
+        }
+        null
     }
 
     /** If {@code call} is a recognised deterministic int→String conversion, the value expression being
@@ -1537,6 +1632,15 @@ class VerifyChecker extends TypeCheckingExtension {
             // Pure contract-implication checks, independent of the body. Best-effort.
             try {
                 verifyBehavioralSubtyping(node)
+            } catch (Throwable ignored) {
+            }
+
+            // Phase 130 (monoid laws): if this method is a @Reducer/@Associative combiner, discharge the
+            // associativity (and, for @Reducer with a declared zero, identity) laws the annotation *asserts*.
+            // Best-effort. Runs last: it recursively visits synthesized lemma methods, which reset the per-method
+            // `current*` state — fine, since nothing after this needs the combiner's context before the finally.
+            try {
+                verifyReducerLaws(node)
             } catch (Throwable ignored) {
             }
         } finally {
@@ -3966,6 +4070,13 @@ class VerifyChecker extends TypeCheckingExtension {
             // Phase 62 — when the solver could not *decide* a postcondition (a quantifier/recurrence
             // timeout, the weak refutation direction), fall back to bounded property-based testing of
             // the executable contract: a concrete failing input turns an honest UNKNOWN into a repro.
+            // Phase 130 — a synthesized @Reducer/@Associative law lemma carries this metadata; report it with
+            // law-and-combiner wording (and skip the body-based PBT fallback — the lemma has no executable body).
+            String[] redLaw = (String[]) node.getNodeMetaData(REDUCER_LAW_KEY)
+            if (redLaw != null) {
+                addStaticTypeError(Reporter.formatReducerLawFailure(redLaw[0], redLaw[1], postAst?.text, r), anchor)
+                return
+            }
             if (r.status == CheckResult.Status.UNKNOWN && postAst != null) {
                 String failing = pbtFailingCall(node, postAst, reqAst)
                 if (failing != null) {

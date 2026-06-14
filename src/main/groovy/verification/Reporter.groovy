@@ -88,6 +88,30 @@ class Reporter {
         sb.toString()
     }
 
+    /**
+     * Phase 130 — a monoid/semigroup law a {@code @Reducer}/{@code @Associative} combiner *asserts* but that
+     * groovy-verify could not prove. Derived automatically from the annotation + the combiner's equation, so the
+     * wording names the law and the combiner rather than a synthetic method.
+     */
+    static String formatReducerLawFailure(String combinerName, String law, String lawText, CheckResult result) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append("Cannot prove @Reducer ").append(law).append(" for combiner ").append(combinerName)
+                if (lawText) sb.append("\n    law: ").append(lawText)
+                appendModel(sb, result)
+                break
+            case CheckResult.Status.UNKNOWN:
+                sb.append("Could not decide @Reducer ").append(law).append(" for combiner ").append(combinerName)
+                  .append(" (solver: ").append(result.reason).append(")")
+                if (lawText) sb.append("\n    law: ").append(lawText)
+                break
+            default:
+                sb.append("@Reducer ").append(law).append(" verified — no error to report")
+        }
+        sb.toString()
+    }
+
     /** Phase 71 — a self-contradictory @Requires: it can never hold, so the contract is never checked. */
     static String formatVacuousPrecondition(String methodName, String requiresText) {
         StringBuilder sb = new StringBuilder()

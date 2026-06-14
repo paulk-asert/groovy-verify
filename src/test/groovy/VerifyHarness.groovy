@@ -8760,6 +8760,38 @@ class WrapCounter implements Counter { }
                             while (i < parts.length) { acc = glue(acc, parts[i]); i = i + 1 }
                             return acc } }''')],
 
+        // Phase 130 — combiner inlining lost a String formal's binding when the formal's name collided with a
+        // surrounding String variable (the env/sortedEnv split); `varForOfSort` now honours the env binding first.
+        [group: 'P-seqconcat', name: 'combiner-inline identity with colliding param name proves', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == a + b })
+                        static String glue(String a, String b) { a + b }
+                        @Ensures({ glue(a, '') == a && glue('', a) == a })
+                        static void id(String a) { } }''')],
+
+        // Phase 130 — a @Reducer/@Associative combiner *asserts* a monoid/semigroup; groovy-verify now derives and
+        // discharges those laws automatically from the annotation + the combiner's equation (no spelled-out lemmas).
+        [group: 'P-reducer', name: 'string concat monoid: @Reducer auto-proves assoc + identity', ok: true,
+         src: tc('''class C {
+                        @groovy.transform.Reducer(zero = '""')
+                        @Ensures({ result == a + b })
+                        static String glue(String a, String b) { a + b } }''')],
+        [group: 'P-reducer', name: 'int sum monoid: @Reducer(zero=0) auto-proves', ok: true,
+         src: tc('''class C {
+                        @groovy.transform.Reducer(zero = '0')
+                        @Ensures({ result == a + b })
+                        static int add(int a, int b) { a + b } }''')],
+        [group: 'P-reducer', name: '@Associative on subtraction refutes associativity', expect: 'Cannot prove @Reducer associativity',
+         src: tc('''class C {
+                        @groovy.transform.Associative
+                        @Ensures({ result == a - b })
+                        static int sub(int a, int b) { a - b } }''')],
+        [group: 'P-reducer', name: 'wrong zero (1 for sum) refutes identity', expect: 'Cannot prove @Reducer identity',
+         src: tc('''class C {
+                        @groovy.transform.Reducer(zero = '1')
+                        @Ensures({ result == a + b })
+                        static int add(int a, int b) { a + b } }''')],
+
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'nested loop: count = n*n', ok: true,
          src: tc('''class C {
