@@ -78,6 +78,15 @@ class VerifyHarness {
         }
     '''.stripIndent()
 
+    /** A user-defined @NonNull marker (matched by simple name, like NullChecker) for the implicit-invariant slice. */
+    static final String NONNULL_ANN = '''
+        @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+        @java.lang.annotation.Target([java.lang.annotation.ElementType.FIELD,
+                                      java.lang.annotation.ElementType.METHOD,
+                                      java.lang.annotation.ElementType.PARAMETER])
+        @interface NonNull {}
+    '''.stripIndent()
+
     // Split across helper methods so each list-literal initializer stays under the JVM's 64KB
     // per-method bytecode limit (a single static initializer for all cases overflowed `<clinit>`).
     static final List<Map> CASES = casesPart1() + casesPart2()
@@ -8792,6 +8801,80 @@ class WrapCounter implements Counter { }
                         @Ensures({ result == a + b })
                         static int add(int a, int b) { a + b } }''')],
 
+        [group: 'NNFIELD', name: 'N0 explicit class invariant name!=null establishes via ctor', ok: true,
+         src: tc('''@groovy.contracts.Invariant({ name != null })
+                    class C {
+                        String name
+                        @Requires({ n != null })
+                        C(String n) { name = n } }''')],
+        [group: 'NNFIELD', name: 'N0b ctor without guard may leave field null refutes', expect: 'Cannot prove class invariant',
+         src: tc('''@groovy.contracts.Invariant({ name != null })
+                    class C {
+                        String name
+                        C(String n) { name = n } }''')],
+        [group: 'NNFIELD', name: 'N0c method nulls field refutes preservation', expect: 'class invariant',
+         src: tc('''@groovy.contracts.Invariant({ name != null })
+                    class C {
+                        String name
+                        @Requires({ n != null })
+                        C(String n) { name = n }
+                        void clear() { name = null } }''')],
+        // @NonNull field → implicit `field != null` invariant (no spelled-out @Invariant needed).
+        [group: 'NNFIELD', name: 'N1 @NonNull field established by guarded ctor', ok: true,
+         src: HDR + NONNULL_ANN + tc('''class C {
+                        @NonNull String name
+                        @Requires({ n != null })
+                        C(String n) { name = n } }''')],
+        [group: 'NNFIELD', name: 'N2 @NonNull field unguarded ctor refutes', expect: 'class invariant',
+         src: HDR + NONNULL_ANN + tc('''class C {
+                        @NonNull String name
+                        C(String n) { name = n } }''')],
+        [group: 'NNFIELD', name: 'N3 @NonNull field nulled by method refutes', expect: 'class invariant',
+         src: HDR + NONNULL_ANN + tc('''class C {
+                        @NonNull String name
+                        @Requires({ n != null })
+                        C(String n) { name = n }
+                        void clear() { name = null } }''')],
+
+        [group: 'NNDOC', name: 'README @NonNull lifecycle under both checkers', ok: true,
+         src: HDR + NONNULL_ANN + tcExt(['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'], '''class Greeter {
+                        @NonNull String name                          // implicit invariant: name != null
+                        @Requires({ n != null })
+                        Greeter(String n) { name = n }                // establishment proven
+                        @NonNull String greet() { 'hi ' + name }      // @NonNull return proven (concat is non-null)
+                    }''')],
+
+        // Phase 131 — value-flow nullity: a method can now *prove* it returns non-null (literal / new / concat /
+        // known-non-null param), so explicit @Ensures({ result != null }) and the implicit @NonNull form both work.
+        [group: 'P-nonnull', name: 'explicit result!=null from non-null param proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ x != null })
+                        @Ensures({ result != null })
+                        static String foo(String x) { return x } }''')],
+        [group: 'P-nonnull', name: 'explicit result!=null from literal proves', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result != null })
+                        static String foo() { return 'hi' } }''')],
+        [group: 'P-nonnull', name: 'explicit result!=null unconstrained param refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result != null })
+                        static String foo(String x) { return x } }''')],
+        [group: 'P-nonnull', name: '@NonNull return: implicit obligation proves (concat)', ok: true,
+         src: HDR + NONNULL_ANN + tc('''class C {
+                        @NonNull static String foo(String x, String y) { return x + y } }''')],
+        [group: 'P-nonnull', name: '@NonNull return: implicit obligation refutes on nullable param', expect: 'Cannot prove postcondition',
+         src: HDR + NONNULL_ANN + tc('''class C {
+                        @NonNull static String foo(String x) { return x } }''')],
+        [group: 'P-nonnull', name: '@NonNull return composes with an explicit @Ensures', ok: true,
+         src: HDR + NONNULL_ANN + tc('''class C {
+                        @Requires({ x != null })
+                        @Ensures({ result == x })
+                        @NonNull static String foo(String x) { return x } }''')],
+        // Complementary to NullChecker: alongside it, groovy-verify still catches the nullable-param return its
+        // flow analysis passes (NullChecker stays silent here; no double-report). Documents the integration.
+        [group: 'P-nonnull', name: '@NonNull caught alongside NullChecker (no double-report)', expect: 'Cannot prove postcondition',
+         src: HDR + NONNULL_ANN + tcExt(['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'], '''class C {
+                        @NonNull static String foo(String x) { return x } }''')],
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------
         [group: 'README examples', name: 'nested loop: count = n*n', ok: true,
          src: tc('''class C {

@@ -2970,6 +2970,32 @@ class Encoder {
         v
     }
 
+    /** Phase 131 — bind {@code name}'s nullity flag to {@code handle} (a Bool: true ⇒ null), so a later
+     *  {@code name == null}/{@code name != null} reads it. The value-flow analogue of {@link #bind} for nullity. */
+    void bindNullity(String name, Object handle) { if (handle != null) nullEnv.put(name, handle) }
+
+    /**
+     * Phase 131 — the nullity flag implied by the *value* of {@code e}, or null when its nullity is unknown
+     * (the caller then leaves the oracle free, the pre-Phase-131 behaviour). This is what lets a method *prove*
+     * it returns/holds a non-null value — `null`/non-null literals, a freshly constructed object, a collection or
+     * GString literal, and string concatenation all have statically-known nullity; a bare variable ties to its
+     * own oracle (so a `@Requires`-known-non-null param flows through `return x`).
+     */
+    Object nullityOfExpr(Expression e) {
+        if (e == null) return null
+        if (e instanceof ConstantExpression) return session.boolLit(((ConstantExpression) e).value == null)
+        if (e instanceof VariableExpression) {
+            String n = ((VariableExpression) e).name
+            if (n == 'null') return session.boolLit(true)
+            return nullityOf(n)
+        }
+        if (e instanceof ConstructorCallExpression || e instanceof ListExpression ||
+            e instanceof MapExpression || e instanceof GStringExpression) return session.boolLit(false)
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS &&
+            isStringReceiver(e)) return session.boolLit(false)   // String concatenation is never null
+        null
+    }
+
     /**
      * Phase 37 — get-or-mint the per-element nullity array for a list/array container. The handle
      * is an {@code Array<Int, Int>} where {@code select(arr, i) == 1} means element {@code i} is

@@ -6177,6 +6177,70 @@ spelled-out `associative` lemma and show the annotation alone carrying the proof
 
 ---
 
+## Phase 131 — prove `@NonNull` returns (nullity value-flow; complementary to NullChecker)  *(shipped — return form)*
+
+The next "annotation asserts, we prove" target after `@Reducer` was `@NonNull` (the NullChecker family). It split
+into two forms, and surfaced a real foundational gap.
+
+**Foundation — nullity *value-flow*.** groovy-verify could only ever *assume* non-nullness (a `@Requires({ x !=
+null })` discharges a later `x.foo()` NPE obligation); it could not *prove* it, because the nullity oracle
+(`Encoder.nullEnv`, a Bool per name) was never tied to a value's provenance. So even `@Ensures({ result != null })`
+with `return "hi"` *refuted* — the `result?null` flag was free. Fixed by `Encoder.nullityOfExpr(e)` (the nullity a
+value *implies*: `null`/non-null literals, `new`, collection/GString literals, and string concat are statically
+known; a bare variable ties to its own oracle) plus `bindNullity`, called at the return binding in `checkPath`. Now
+`return "x"` / `return new T()` / `return x + y` / `return x` (for a `@Requires`-non-null `x`) all establish
+non-nullness; an unconstrained `return x` refutes with `fails on: foo(null)`.
+
+**Return form (shipped).** A `@NonNull` (reference) return is conjoined an implicit `result != null` postcondition
+in `verifyPostcondition` (`hasNonNullReturn`), riding the normal machinery. Proves silently; refutes with the
+counterexample. Genuinely complementary to NullChecker, which is *flow*-level: it stays silent on a returned
+nullable param that groovy-verify's *value*-level reasoning refutes.
+
+**Double-reporting — a non-issue (no coordination code).** Tested both checkers together: they partition cleanly.
+On a nullable-param return NullChecker is silent and only groovy-verify fires; on an explicit `return null`
+NullChecker reports "Cannot return null from @NonNull method" and groovy-verify *skips* (`return null` is outside
+its fragment). No overlap, so the "coordinate reporting" worry needed nothing.
+
+**Field form (deferred to Phase 132).** A `@NonNull` *field* → invariant `field != null` was prototyped but
+**reverted here**: it rested on a separate pre-existing gap — constructor/method field-writes propagated an int
+*value* to the field oracle but not *nullity*, so even an *explicit* `@Invariant({ name != null })` with
+`C(String n){ name = n }` (`@Requires n != null`) refuted (`fails on: <init>("")`). Shipping the implicit field
+invariant on top of that would *false-positive* on correct code, so it waited on a "field-write nullity
+propagation" slice — **Phase 132**.
+
+**Shipped tests**: group `P-nonnull` (explicit and implicit `result != null` prove from literal/concat/known-param;
+refute on a nullable param; compose with an explicit `@Ensures`; and a both-checkers case showing the
+complementary catch with no double-report).
+
+---
+
+## Phase 132 — field-write nullity propagation (unblocks the `@NonNull` field form)  *(shipped)*
+
+Phase 131 flowed nullity onto `result` at a return; this extends the same value-flow to **field/local writes**, so a
+class invariant can finally be *established* and *preserved* over a reference field's nullity — which had been a
+silent gap (an int-valued invariant established in a constructor, but a nullity one never did).
+
+In `checkPath`'s scalar-assignment replay, a write `name = expr` to a reference-typed name now propagates nullity:
+the known nullity of `expr` (`Encoder.nullityOfExpr`) binds directly, an unknown RHS **havocs** to a fresh free
+flag (sound — a reassignment never retains a stale non-null fact), and the formerly out-of-fragment `name = null`
+is handled specially (value havoc'd, nullity pinned to *definitely null*) so nulling a field **refutes
+preservation** instead of skipping. With that, an *explicit* `@Invariant({ name != null })` with
+`C(String n){ name = n }` (`@Requires n != null`) now **establishes** (was `fails on: <init>("")`), an unguarded
+constructor refutes, and a method that nulls the field refutes preservation.
+
+On that foundation the **`@NonNull` field form** (reverted in Phase 131) ships: a `@NonNull` reference field
+contributes an implicit `field != null` to the class's invariant set (`addNonNullFieldInvariants`, woven into
+`walkClassInvariants`), so it rides the full establish/preserve machinery — and cross-class reasoning may now
+*assume* a `@NonNull` field is non-null too. Complementary to NullChecker exactly as the return form is:
+groovy-verify proves the object-invariant lifecycle (every constructor establishes it, every method preserves it)
+that a flow checker doesn't frame.
+
+**Shipped tests**: group `NNFIELD` — explicit `@Invariant({ name != null })` establishes via a guarded ctor /
+refutes unguarded / refutes when a method nulls the field; and the `@NonNull` field form proving and refuting the
+same three ways.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

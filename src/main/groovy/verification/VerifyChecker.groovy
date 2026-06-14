@@ -614,6 +614,16 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
+    /** Phase 131 — true if {@code node} returns a reference type carrying a NullChecker-style @NonNull
+     *  annotation (on the method or on the return type use). Primitive/void returns can't be null → false. */
+    private static boolean hasNonNullReturn(MethodNode node) {
+        if (node instanceof ConstructorNode) return false
+        ClassNode rt = node.returnType
+        if (rt == null || ClassHelper.isPrimitiveType(rt) || rt == ClassHelper.VOID_TYPE) return false
+        return hasAnnotationNamed(node.annotations, NON_NULL_ANNOTATION_NAMES) ||
+               hasAnnotationNamed(rt.annotations, NON_NULL_ANNOTATION_NAMES)
+    }
+
     /** Same shape as {@link #hasNonNullElementAnnotation} but for the component type of an array. */
     private static boolean hasNonNullComponentAnnotation(ClassNode arrType) {
         try {
@@ -3394,8 +3404,12 @@ class VerifyChecker extends TypeCheckingExtension {
         // for non-static methods. So we now run even when there's no @Ensures, provided the class
         // carries an invariant. The pre-filtered list lives in {@link #currentClassInvariants}.
         List<Expression> classInvs = currentClassInvariants
+        // Phase 131 — a @NonNull return is an implicit postcondition `result != null`. NullChecker only
+        // *asserts* it (flow-level); groovy-verify can *prove* it (value-level), catching returns that are null
+        // for reasons flow analysis can't follow. Conjoined into the postcondition below.
+        boolean nnReturn = hasNonNullReturn(node)
 
-        if (ens == null && classInvs.isEmpty()) return
+        if (ens == null && classInvs.isEmpty() && !nnReturn) return
         if (node.code == null) return
 
         Expression postAst = ens != null ? contractAstFor(node, 'ensures') : null
@@ -3405,6 +3419,12 @@ class VerifyChecker extends TypeCheckingExtension {
                     "contract source was not captured by ContractExpansionTransform"),
                 node)
             return
+        }
+        if (nnReturn) {
+            Expression nn = parseContract('result != null')
+            if (nn != null) {
+                postAst = (postAst == null) ? nn : (parseContract("(${postAst.text}) && (result != null)") ?: postAst)
+            }
         }
 
         // A method may use its own @Requires as an entry assumption.
@@ -3834,6 +3854,21 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (rhs != null) {
                         session.assertExpr(session.eq(fresh, rhs))
                         enc.bind(a.name, fresh)
+                        // Phase 132 — flow nullity through the write of a reference-typed name (field or local), so
+                        // `name = n` under `@Requires({ n != null })` establishes a `name != null` invariant, and a
+                        // later `name = <nullable>` correctly *forgets* the old non-null fact. Known nullity binds
+                        // directly; an unknown RHS havocs to a fresh free flag (sound — never retains a stale fact).
+                        if (declaredType != null && !isIntElement(declaredType) && !enc.isDecimalName(a.name)) {
+                            Object rhsNull = enc.nullityOfExpr(a.rhs)
+                            enc.bindNullity(a.name, rhsNull != null ? rhsNull : session.boolVar(a.name + '?null#' + ssaVersion))
+                        }
+                    } else if (a.rhs instanceof ConstantExpression && ((ConstantExpression) a.rhs).value == null &&
+                               declaredType != null && !isIntElement(declaredType)) {
+                        // Phase 132 — `name = null` on a reference field/local: the value isn't modelled (null has no
+                        // sort handle), but the nullity is *definitely* null — so a `name != null` invariant refutes
+                        // preservation here. Havoc the value, pin the nullity flag to true.
+                        enc.bind(a.name, fresh)
+                        enc.bindNullity(a.name, session.boolLit(true))
                     } else if (isCallExpr(a.rhs) && currentTupleTypes.get(a.name) != null) {
                         // Phase 113 — `Tuple2 r = callee(...)`: a tuple-returning call. Register r as a tuple
                         // local and constrain its slots by the callee's @Ensures (with `result` renamed to r),
@@ -4010,6 +4045,10 @@ class VerifyChecker extends TypeCheckingExtension {
                             "return expression '${p.result.text}' is outside fragment")
                     }
                     enc.bind('result', resHandle)
+                    // Phase 131 — flow the return value's nullity onto `result`, so an @Ensures({ result != null })
+                    // (or an implicit @NonNull-return obligation) can be *proven* — `return "x"`, `return new T()`,
+                    // `return x + y`, or `return x` for a @Requires-known-non-null `x` all establish non-nullness.
+                    enc.bindNullity('result', enc.nullityOfExpr(p.result))
                     // Phase 45b — when the return expression is a list-typed local, also alias the
                     // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures
                     // resolve to the same threaded state the local carries. Without this, the result
@@ -6257,6 +6296,11 @@ class VerifyChecker extends TypeCheckingExtension {
         walkClassInvariants(cn.superClass, out)
         ClassNode[] itfs = cn.interfaces
         if (itfs != null) for (ClassNode itf : itfs) walkClassInvariants(itf, out)
+        // Phase 132 — a @NonNull (reference) field is an implicit object invariant `field != null`, which the
+        // sibling NullChecker only *asserts*. With field-write nullity now flowing (this phase), the existing
+        // class-invariant machinery can prove establishment (every constructor leaves it non-null) and
+        // preservation (no method nulls it).
+        addNonNullFieldInvariants(cn, out)
         List<AnnotationNode> sources = cn.getAnnotations(CLASS_INVARIANT_SOURCE_TYPE)
         if (sources == null || sources.isEmpty()) return
         Expression member = sources[0].getMember('invariants')
@@ -6269,6 +6313,24 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (parsed != null) out.add(parsed)
                 }
             }
+        }
+    }
+
+    /** Phase 132 — append an implicit `field != null` invariant for each non-static, reference-typed field of
+     *  {@code cn} carrying a NullChecker-style @NonNull annotation (on the field or its type use). Primitive
+     *  fields can't be null and are skipped; an unencodable clause is dropped later by filterEncodableInvariants. */
+    private static void addNonNullFieldInvariants(ClassNode cn, List<Expression> out) {
+        List<FieldNode> fields = cn.fields
+        if (fields == null) return
+        for (FieldNode f : fields) {
+            if (f.isStatic()) continue
+            ClassNode ft = f.type
+            if (ft == null || ClassHelper.isPrimitiveType(ft)) continue
+            boolean nonNull = hasAnnotationNamed(f.annotations, NON_NULL_ANNOTATION_NAMES) ||
+                              hasAnnotationNamed(ft.annotations, NON_NULL_ANNOTATION_NAMES)
+            if (!nonNull) continue
+            Expression parsed = parseContract(f.name + ' != null')
+            if (parsed != null) out.add(parsed)
         }
     }
 

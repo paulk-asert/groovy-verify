@@ -2584,7 +2584,7 @@ them (note especially the runtime `@NullCheck` transform versus the compile-time
 | `@groovy.transform.NullCheck` | AST transform | runtime | injects fail-fast guards on parameters |
 | `?.` / `?:` | language operators | runtime | safe-navigation / Elvis |
 | **`groovy.typecheckers.NullChecker`** | **type-checking extension** | **compile time** | flow-sensitive nullness via `@Nullable` / `@NonNull` / `@MonotonicNonNull` |
-| **groovy-verify** | **type-checking extension** | **compile time** | SMT obligation `recv != null` at each dereference |
+| **groovy-verify** | **type-checking extension** | **compile time** | SMT obligation `recv != null` at each dereference; also *proves* `@NonNull` returns/fields when non-nullness is provable |
 
 The last two are siblings — the same extension SPI — approaching null from opposite ends.
 **`NullChecker` is the specialist:** annotation-driven and flow-sensitive (it follows null guards,
@@ -2618,9 +2618,33 @@ class C {
 
 Drop the `xs[0] != null` premise and groovy-verify **disproves** the assumption — `Possible
 NullPointerException`, counterexample `firstLen([null])` — while strict NullChecker stays silent, its flow
-model having no handle on the element. The annotation-driven direction is NullChecker's: a `@NonNull` return
-that yields a `@Nullable`, or `null` passed to a `@NonNull` parameter, is *its* error to raise, over source
-positions groovy-verify doesn't model. Same extension SPI, opposite ends of the same question.
+model having no handle on the element. The annotation-driven direction now **composes** too. A `@NonNull`
+return is read as an implicit `result != null` postcondition groovy-verify **proves** at the value level —
+catching a nullable value that reaches the return through reasoning (arithmetic, contracts, a `@Requires`-only
+guarantee) NullChecker's flow model passes over. A `@NonNull` *field* becomes an implicit object invariant
+`field != null` that groovy-verify proves *establishment and preservation* for — every constructor leaves it
+non-null, no method nulls it — the design-by-contract lifecycle a flow checker doesn't frame. The two don't
+double-report: where NullChecker raises an obvious `return null`, groovy-verify skips it as outside its fragment;
+`null` passed to a `@NonNull` *parameter*, over source positions groovy-verify doesn't model, stays NullChecker's
+to raise. Same extension SPI, complementary ends of the same question.
+
+Both forms in one class (`@NonNull` is any name from NullChecker's set — `@NonNull` / `@NotNull` / `@Nonnull` /
+`@MonotonicNonNull`):
+
+```groovy
+@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'])
+class Greeter {
+    @NonNull String name                          // implicit invariant: name != null
+    @Requires({ n != null })
+    Greeter(String n) { name = n }                // groovy-verify proves the field is *established* non-null
+    @NonNull String greet() { 'hi ' + name }      // …and the @NonNull return holds (a concatenation is never null)
+}
+```
+
+Drop the constructor's `@Requires({ n != null })` and the field can no longer be established non-null —
+groovy-verify refutes the implicit invariant with `<init>(null)`; add a `void clear() { name = null }` and it
+refutes *preservation* at `clear`. NullChecker, which has no class-invariant lifecycle model, stays silent on
+both — the design-by-contract framing is groovy-verify's to supply.
 
 ### Two checkers, one regex — syntax beside semantics
 
