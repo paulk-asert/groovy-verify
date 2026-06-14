@@ -6108,6 +6108,39 @@ example is the verbatim void/over-params pair.
 
 ---
 
+## Phase 129 — route `+` by operand *sort*, not static type (string concat no longer crashes the compile)  *(shipped — graceful degradation)*
+
+A string accumulator folded in a loop (`acc = glue(acc, x)`, or `acc = acc + x`) could throw out of the encoder
+and **crash the whole compile** — `ClassCastException: SeqExpr cannot be cast to ArithExpr` from
+`Encoder.inlineCombiner → Z3Backend.plus`, or `Z3Exception: Sorts Int and String are incompatible` from `mkEq`.
+That violates the project's *loud-unsoundness* tenet: everything outside the fragment must skip with a diagnostic,
+never crash.
+
+Root cause: the `String` `+` → `stringConcat` route is gated by the **static** `isStringReceiver`, which inspects
+the operand *expressions* and only recognises String literals / String-typed names in `scalarTypes`. A combiner's
+defining `a + b` inlined at a fold site (Phase 116) is translated with the formals bound to seq *handles* whose
+types are invisible to that static check, so it slipped past and hit the integer `plus`. The same blind spot let a
+String-returning call modelled as a generic Int result handle reach `mkEq` against a String.
+
+Fix: decide by the translated operand **sort** (the authoritative signal we already hold), via a new
+`SmtBackend.isSeq(handle)`. In `Encoder.translateBinary`, right after both operands are translated:
+`+` on two sequences → `stringConcat` (the genuine concat the inline intended); a lone sequence operand against a
+non-sequence → return null (**loud skip**). Two sequences under `==`/`!=` still flow to the sort-polymorphic
+`eq`/`ne` below (this is how the Phase-128 string laws run, unchanged).
+
+Net effect — string concatenation now **degrades gracefully** instead of crashing: combiner inlining over String
+params/locals *proves* in expression/postcondition position; a String-returning combiner call in *return* position
+skips loudly (the body-replay's `assumeCalleeEnsures` mints a generic Int result handle for the String-returning
+callee, which the sort guard then declines — no crash); and a string fold in a loop refutes/skips cleanly. (Making
+the *return*-position and loop-fold cases prove would need a sort-aware `assumeCalleeEnsures` and seq-carrying loop
+invariants — the `Seq`-theory-in-loops boundary noted in Phases 124–127, deliberately not chased here.)
+
+**Shipped tests**: group `P-seqconcat` (4 cases — straight-line concat proves, combiner inline in postcondition
+proves, return-position combiner call skips loudly, while-loop fold refutes cleanly). Reported by a user
+(`groovy-fizzbuzz` repo) who hit the crash building a parallel emoji-FizzBuzz join.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

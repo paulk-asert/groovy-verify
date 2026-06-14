@@ -3754,6 +3754,18 @@ class Encoder {
         Object L = translate(be.leftExpression)
         Object R = translate(be.rightExpression)
         if (L == null || R == null) return null
+        // Phase 129 — a String/sequence operand reached the arithmetic/comparison dispatch, which is typed for
+        // the Int sort and would throw (an {@code ArithExpr} cast in {@code plus}, or a sort-mismatch in
+        // {@code mkEq}). The static {@link #isStringReceiver} route above only fires when both operand
+        // *expressions* are statically recognisable as String, so two shapes slip past it: a combiner's
+        // `a + b` inlined at a fold site (formals bound to seq handles, their types invisible here), and a
+        // String-returning call whose result was modelled as a generic Int handle then compared to a String.
+        // Decide by the translated operand *sort* instead: `+` on two sequences is concatenation (the genuine
+        // string concat the inline intended); a lone sequence operand against a non-sequence has no fragment
+        // meaning — skip loudly rather than crash. Two sequences under `==`/`!=` fall through to the
+        // sort-polymorphic {@code eq}/{@code ne} in the switch below (this is how the string-law examples run).
+        if (op == Types.PLUS && session.isSeq(L) && session.isSeq(R)) return session.stringConcat(L, R)
+        if (session.isSeq(L) != session.isSeq(R)) return null
         // Phase 48 — operator-text dispatch for {@code /} and {@code %}: Groovy's parser
         // assigns {@code %} a token outside {@code Types.MOD} (same caveat ObligationCollector
         // notes), so {@code op.text} is the robust key. Used for both div and mod for parity

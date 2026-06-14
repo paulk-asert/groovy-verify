@@ -163,6 +163,7 @@ interface SmtSession extends AutoCloseable {
     Object sumReal(Object arr, Object lo, Object hi)   // (Array Int Real, Int, Int) -> Real
     boolean isReal(Object handle)
     boolean isInt(Object handle)                       // true if the term has the Int sort
+    boolean isSeq(Object handle)                       // true if the term has the String/sequence sort
     /** Phase 126 — evaluate {@code handle} in the most recent SAT model and render it for display
      *  (Int → number, String/Seq → quoted text), or null if there's no model / unsupported sort. */
     String evalDisplay(Object handle)
