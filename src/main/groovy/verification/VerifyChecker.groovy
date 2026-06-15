@@ -3702,6 +3702,10 @@ class VerifyChecker extends TypeCheckingExtension {
             String[] nameHolder = new String[1]
             Expression rhs = assignTarget(stmtExpr, nameHolder)
             if (nameHolder[0] != null) {
+                // §III-A secure-update: if the target is a control variable (read by a value-dependent
+                // classification), changing it must not leave a controlled variable holding data above its NEW
+                // classification. Checked against the pre-assignment Γ of each controlled variable.
+                checkSecureUpdate(nameHolder[0], rhs, env, lat, node)
                 Map<String, Expression> ne = copyEnv(env)
                 Expression g = gammaExpr(rhs, env, lat)
                 // An assignment under a non-⊥ PC raises the target to at least the PC (implicit flow). An
@@ -3797,6 +3801,62 @@ class VerifyChecker extends TypeCheckingExtension {
         for (String n : mentioned) {
             Expression lvl = env.get(n)
             if (lvl != null) srcLevels.add(lvl)
+        }
+    }
+
+    /**
+     * §III-A secure-update obligation. When {@code assignedName := rhs} assigns a **control variable** — one
+     * read by some parameter's value-dependent classification {@code @Label(by = 'm')} — every variable it
+     * controls must still hold data within its <i>new</i> classification: {@code leq( Γ(y), L_y[control := rhs] )},
+     * where {@code L_y[control := rhs]} is the classification method called with {@code rhs} substituted for the
+     * control argument. This catches "flip the flag to make a field public while it still holds a secret": the
+     * classification becomes lower while the held data does not, so a value previously legitimately High is
+     * suddenly over a Low classification. Discharged under the path conditions, like the other obligations.
+     */
+    private void checkSecureUpdate(String assignedName, Expression rhs, Map<String, Expression> env,
+                                   ClassNode lat, MethodNode node) {
+        ClassNode dc = node.declaringClass
+        if (dc == null) return
+        for (Parameter y : node.parameters) {
+            String by = labelBy(y)
+            if (by == null) continue
+            Expression gammaY = env.get(y.name)
+            if (gammaY == null) continue                    // the controlled variable is untracked → nothing to check
+            for (MethodNode m : dc.getMethods(by)) {        // its classification method (first overload)
+                boolean controls = false
+                List<Expression> args = new ArrayList<Expression>()
+                for (Parameter cp : m.parameters) {
+                    if (cp.name == assignedName) { controls = true; args.add(rhs) }   // the new control value
+                    else args.add(new VariableExpression(cp.name))
+                }
+                if (controls) {
+                    Expression newClass = new MethodCallExpression(new VariableExpression('this'), by, new ArgumentListExpression(args))
+                    dischargeSecureUpdate(node, assignedName, y.name, rhs, sameClassCall('leq', gammaY, newClass))
+                }
+                break
+            }
+        }
+    }
+
+    /** Refute the secure-update obligation; VERIFIED ⇒ the control-variable assignment is secure, else a leak. */
+    private void dischargeSecureUpdate(MethodNode node, String controlVar, String controlled, Expression rhs, Expression goal) {
+        SmtSession session = backend.session()
+        try {
+            Encoder enc = mkEncoder(session)
+            assumeIfFacts(session, enc)
+            Object g = enc.translateGoal(goal)
+            if (g == null) {
+                addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                    "secure-update obligation '${goal.text}' is outside fragment"), anchorOf(rhs, node))
+                return
+            }
+            session.assertExpr(session.not(g))
+            CheckResult r = shown(session.check())
+            if (r.status == CheckResult.Status.VERIFIED) return
+            addStaticTypeError(
+                Reporter.formatSecureUpdate(node.name, controlVar, controlled, r), anchorOf(rhs, node))
+        } finally {
+            try { session.close() } catch (Throwable ignored) {}
         }
     }
 

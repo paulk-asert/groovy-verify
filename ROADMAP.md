@@ -6592,8 +6592,19 @@ static int implicit(@verification.Label('High') boolean secret,
   condition does **not** declassify. **This is the capability dataflow taint structurally cannot express** — a
   classification that evolves with the program state — and it falls out of the same SMT backend, reusing the
   L0 sort-aware pure-function machinery. (The discharge assumes the path *guards*; classifications over a
-  *changing local* or a *field*, and the full §III-A control-variable / `secure_update` obligation, remain
-  deferred — see below.)
+  *changing local* or a *field* remain deferred — see below.)
+
+- **control variables / secure-update (§III-A).** The dual obligation to value-dependence: when a *control
+  variable* — one a value-dependent classification reads — is assigned, every variable it controls must still
+  hold data within its **new** classification: `leq( Γ(y), L_y[control := rhs] )`. This catches the
+  *declassify-by-flag* bug — flipping a flag to make a field public while it still holds a secret. With
+  `L classifyData(boolean authed) { authed ? L.Low : L.High }`, `authed = true` **refutes** (it makes `L(data)`
+  Low though `data` may hold High), while `authed = false` (raising the classification) **verifies**, and
+  assigning a non-control variable raises no obligation. Discharged under the path conditions, reusing the same
+  classification-call machinery as value-dependence — the assignment rule's *both* premises (no-leak ∧
+  secure-update) are now in place. (Soundness note: the held-data level `Γ(y)` is the entry classification; a
+  tighter model would narrow it as the body proves data low — that, and control over a *field*, are the
+  remaining §III-A refinements.)
 
 - **loops — the Γ-invariant is inferred.** `while` / `do-while` / C-style `for` are in the fragment. A variable
   assigned in the loop is raised to the join of every tracked source the body and guard touch, plus the loop's
@@ -6622,13 +6633,14 @@ flow; and interprocedural sink parameters — same-class **and cross-class withi
 `for`-each over a collection, `break`/`continue`, or any construct outside the fragment. Quiet boundaries that
 remain: a sink in a **precompiled / imported** class (the receiver is an unresolved name off the pre-STC
 snapshot) and a **field receiver** skip silently; and a value-dependent classification's controls are matched by
-name in scope, so one that depends on a **changing local** or a **field** isn't yet tracked. Deferred, each a
-named slice: external/precompiled sinks; the full §III-A **control-variable / `secure_update`** obligation
-(writing a control variable must not drop a controlled variable below its data's level); a tighter
-**per-variable loop fixpoint**; **array element labels** (§III-C); and **declassification** (§III-E, a *proved*
-two-state predicate rather than a blanket sanitisation cast). Locked by the `PL1 infoflow` cases (1a/1b/1c, the
-interprocedural-sink set, the cross-class set, the value-dependent set, the loop set, the scoped-PC precision
-case, and the loud-skip controls). Annotation: `verification.Label`.
+name in scope, so one that depends on a **changing local** or a **field** isn't yet tracked. Both premises of the
+§III-A assignment rule ship: the **no-leak** check and the **control-variable / secure-update** obligation.
+Deferred, each a named slice: external/precompiled sinks; classification over a **field** or a **changing local**
+(narrowing the held-data level); a tighter **per-variable loop fixpoint**; **array element labels** (§III-C); and
+**declassification** (§III-E, a *proved* two-state predicate rather than a blanket sanitisation cast). Locked by
+the `PL1 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the cross-class set, the value-dependent set,
+the loop set, the secure-update set, the scoped-PC precision case, and the loud-skip controls). Annotation:
+`verification.Label`.
 
 ---
 

@@ -240,6 +240,16 @@ class Reporter {
             "Could not decide information-flow obligation for ${methodName}", result)
     }
 
+    /**
+     * A §III-A secure-update refutation: assigning a control variable would leave a variable it controls holding
+     * data above its new, lower classification — "flip the flag public while it still holds a secret".
+     */
+    static String formatSecureUpdate(String methodName, String controlVar, String controlled, CheckResult result) {
+        implicit("Possible information leak: updating control variable '${controlVar}' would leave '${controlled}' holding data above its new classification",
+            "leq(level(${controlled}), L(${controlled})[${controlVar} := …])",
+            "Could not decide secure-update obligation for ${methodName}", result)
+    }
+
     /** An information-flow obligation the verifier cannot model (unlabelled source, no lattice, …) — skipped loudly. */
     static String formatLeakSkipped(String methodName, String reason) {
         "Skipped information-flow check for ${methodName} (${reason}). " +

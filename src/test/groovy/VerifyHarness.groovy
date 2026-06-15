@@ -10491,6 +10491,46 @@ class WrapCounter implements Counter { }
                         }
                     }''')],
 
+        // ----- Control-variable / secure-update (Smith §III-A) -----
+        // `data`'s classification is Low when authed, else High (value-dependent). `authed` is therefore a
+        // CONTROL variable. Flipping it to `true` makes L(data) == Low — but data may still hold High data (when
+        // it was unauthenticated), so the classification dropped below the held level. REFUTED at the assignment:
+        // the "declassify-by-flag" bug — making a field public while it still holds a secret.
+        [group: 'PL1 infoflow', name: 'secure-update: flipping the flag public refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        static void declassify(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                            authed = true
+                        }
+                    }''')],
+        // The opposite update — making the classification MORE secret (authed := false ⇒ L(data) == High) — is
+        // always secure: whatever data holds is below High. Verifies.
+        [group: 'PL1 infoflow', name: 'secure-update: raising the classification verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        static void protect(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                            authed = false
+                        }
+                    }''')],
+        // Assigning a *non*-control variable triggers no secure-update obligation (and no false alarm): `other`
+        // is read by no classification, so flipping it is fine.
+        [group: 'PL1 infoflow', name: 'secure-update: assigning a non-control variable is fine', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        static void f(boolean authed, boolean other, @verification.Label(by = 'classifyData') int data) {
+                            other = true
+                        }
+                    }''')],
+
         // ----- Interprocedural slice — labels cross method boundaries into a sink parameter -----
         // THE SINK HEADLINE (the SQL-injection / log-a-secret shape): a High value passed to a method whose
         // parameter is classified Low refutes — the leak is at the *call*, not a return. `leak` itself is void
