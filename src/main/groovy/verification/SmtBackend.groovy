@@ -61,6 +61,13 @@ interface SmtSession extends AutoCloseable {
     Object intSort()
 
     /**
+     * The Boolean sort, as an opaque handle. Lets the Encoder name {@code Bool} as the range of a
+     * Boolean-returning pure function (so {@code leq(l1, l2)}-style predicates over a non-Int domain
+     * can be declared via {@link #applyUF}), without the backend type leaking through.
+     */
+    Object boolSort()
+
+    /**
      * Declare-or-get an uninterpreted sort by {@code name}. Idempotent — two calls with the
      * same name return the same handle, so a {@code Set<String>} in one method and a
      * {@code Set<String>} in another share the {@code String!Sort}. Used to model element types

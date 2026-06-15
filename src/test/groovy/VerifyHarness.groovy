@@ -10181,6 +10181,260 @@ class WrapCounter implements Counter { }
                             return x
                         }
                     }''')],
+
+        // ---------- Phase L0 — security lattice + well-formedness laws (Smith, "A Dafny-based approach to
+        //            thread-local information flow analysis", §III) ----------
+        // The foundation of the paper's information-flow approach: a user-defined security lattice, with lemmas
+        // proving it is *indeed* a lattice (leq a partial order; join/meet the least-upper / greatest-lower bound).
+        // It maps onto existing machinery with no new solver theory: the lattice is an enum sort (Phase 27–30),
+        // leq/join/meet are pure functions characterised by their @Ensures (Phase 130 `glue` combiner idiom), and
+        // each law is a method whose params are the universally-quantified levels — Z3 discharges it by case-split
+        // over the finite enum domain (the same shape as the monad-law cases above). This is Slice 0: the algebra
+        // and its laws only — the Γ-tracking assignment/branch noninterference VCs are Slice 1 (a future phase).
+
+        // The case study's boolean lattice (Low ⊑ High), transcribed verbatim. All seven lattice laws prove.
+        // leq/join/meet are contract-free so the verifier inlines each as a pure function (its body is the
+        // defining equation); only the law methods carry @Ensures (a contracted callee would instead be the
+        // inter-procedural path). The two-element form leans on L having *exactly* {Low, High} — the join being
+        // an upper bound only holds because the domain is finite — which the enum-domain-closure axiom supplies
+        // (each enum-sorted param is pinned to `c1 ∨ … ∨ cN`, since enum sorts are otherwise open).
+        [group: 'PL0 lattice', name: 'boolean lattice (Low/High): partial-order + join/meet bound laws prove', ok: true,
+         src: tc('''class Sec {
+                        enum L { Low, High }
+                        static boolean leq(L l1, L l2) { l1 == L.Low || l2 == L.High }
+                        static L join(L l1, L l2) { leq(l1, l2) ? l2 : l1 }
+                        static L meet(L l1, L l2) { leq(l1, l2) ? l1 : l2 }
+                        @Ensures({ leq(l1, l1) })
+                        static void reflexive(L l1) { }
+                        @Ensures({ (leq(l1, l2) && leq(l2, l1)) ==> (l1 == l2) })
+                        static void antisymmetric(L l1, L l2) { }
+                        @Ensures({ (leq(l1, l2) && leq(l2, l3)) ==> leq(l1, l3) })
+                        static void transitive(L l1, L l2, L l3) { }
+                        @Ensures({ leq(l1, join(l1, l2)) && leq(l2, join(l1, l2)) })
+                        static void joinUpperBound(L l1, L l2) { }
+                        @Ensures({ (leq(l1, l3) && leq(l2, l3)) ==> leq(join(l1, l2), l3) })
+                        static void joinLeast(L l1, L l2, L l3) { }
+                        @Ensures({ leq(meet(l1, l2), l1) && leq(meet(l1, l2), l2) })
+                        static void meetLowerBound(L l1, L l2) { }
+                        @Ensures({ (leq(l3, l1) && leq(l3, l2)) ==> leq(l3, meet(l1, l2)) })
+                        static void meetGreatest(L l1, L l2, L l3) { }
+                    }''')],
+
+        // The paper's general "diamond" lattice — A above B and C (incomparable), both above D. This is the
+        // datatype L = A | B | C | D / leq / join / meet of §III, and its partialorder / joinLemma / meetLemma
+        // lemmas, transcribed. All prove for the genuine lattice.
+        [group: 'PL0 lattice', name: 'diamond lattice (A/B/C/D): partialorder + joinLemma + meetLemma prove', ok: true,
+         src: tc('''class Diamond {
+                        enum L { A, B, C, D }
+                        static boolean leq(L l1, L l2) { l1 == L.D || l1 == l2 || l2 == L.A }
+                        static L join(L l1, L l2) { leq(l1, l2) ? l2 : (leq(l2, l1) ? l1 : L.A) }
+                        static L meet(L l1, L l2) { leq(l1, l2) ? l1 : (leq(l2, l1) ? l2 : L.D) }
+                        @Ensures({ leq(l1, l1) })
+                        @Ensures({ (leq(l1, l2) && leq(l2, l1)) ==> (l1 == l2) })
+                        @Ensures({ (leq(l1, l2) && leq(l2, l3)) ==> leq(l1, l3) })
+                        static void partialorder(L l1, L l2, L l3) { }
+                        @Ensures({ leq(l1, join(l1, l2)) && leq(l2, join(l1, l2)) })
+                        @Ensures({ (leq(l1, l3) && leq(l2, l3)) ==> leq(join(l1, l2), l3) })
+                        static void joinLemma(L l1, L l2, L l3) { }
+                        @Ensures({ leq(meet(l1, l2), l1) && leq(meet(l1, l2), l2) })
+                        @Ensures({ (leq(l3, l1) && leq(l3, l2)) ==> leq(l3, meet(l1, l2)) })
+                        static void meetLemma(L l1, L l2, L l3) { }
+                    }''')],
+
+        // Soundness — a mis-specified order is caught. This leq makes A ⊑ B and B ⊑ C but NOT A ⊑ C, so it is not
+        // transitive and hence not a partial order: the transitivity lemma must refute, with the witnessing triple
+        // (l1=A, l2=B, l3=C) as the counterexample. This is exactly the check the paper relies on to know the
+        // user's encoding "is indeed a lattice".
+        [group: 'PL0 lattice', name: 'non-transitive order: transitivity lemma refuted (A⊑B, B⊑C, ¬A⊑C)',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class BadOrder {
+                        enum L { A, B, C }
+                        static boolean leq(L l1, L l2) { l1 == l2 || (l1 == L.A && l2 == L.B) || (l1 == L.B && l2 == L.C) }
+                        @Ensures({ (leq(l1, l2) && leq(l2, l3)) ==> leq(l1, l3) })
+                        static void transitive(L l1, L l2, L l3) { }
+                    }''')],
+
+        // Soundness — a "join" that is not actually an upper bound is caught. This join returns its first argument,
+        // so leq(l2, join(l1,l2)) fails (e.g. l1=D, l2=B over the diamond): the upper-bound lemma refutes. Guards
+        // against the subtle bug where a programmer's join/meet definitions don't match their leq.
+        [group: 'PL0 lattice', name: 'broken join (returns l1, not an upper bound): joinLemma upper-bound refuted',
+         expect: 'Cannot prove postcondition',
+         src: tc('''class BadJoin {
+                        enum L { A, B, C, D }
+                        static boolean leq(L l1, L l2) { l1 == L.D || l1 == l2 || l2 == L.A }
+                        static L join(L l1, L l2) { l1 }
+                        @Ensures({ leq(l1, join(l1, l2)) && leq(l2, join(l1, l2)) })
+                        static void joinUpperBound(L l1, L l2) { }
+                    }''')],
+        // ---------- Phase L1 — information-flow noninterference (static labels), Smith §III ----------
+        // Slice 1 builds on the PL0 lattice: a method whose result carries an @Label classification, with
+        // @Label-tagged parameters as sources. For each `return e`, the verifier discharges the no-leak
+        // obligation leq(ΓE(e), L(result)) over the class's own leq/join — so a High parameter reaching a
+        // Low result refutes ("information leak"), while a Low→Low flow proves. Static labels / straight-line
+        // returns only; locals, branches (PC), arrays and value-dependent labels are later slices.
+        // The lattice the class carries (Low ⊑ High), shared by every PL1 case below.
+        [group: 'PL1 infoflow', name: 'Low source → Low result verifies (no leak)', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int pass(@verification.Label('Low') int pub, @verification.Label('High') int secret) { return pub }
+                    }''')],
+        // The headline: a High parameter returned where the result is classified Low — refuted.
+        [group: 'PL1 infoflow', name: 'High source → Low result refuted (leak caught)', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int leak(@verification.Label('Low') int pub, @verification.Label('High') int secret) { return secret }
+                    }''')],
+        // A High result accepts anything (High is the top): High source → High result verifies.
+        [group: 'PL1 infoflow', name: 'High source → High result verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('High')
+                        static int hi(@verification.Label('High') int secret) { return secret }
+                    }''')],
+        // Compound source: join of operand levels. `pub + secret` is High (Low ⊔ High), so a Low result refutes.
+        [group: 'PL1 infoflow', name: 'join of sources (pub + secret) → Low result refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int combine(@verification.Label('Low') int pub, @verification.Label('High') int secret) { return pub + secret }
+                    }''')],
+        // Loud-skip soundness: a return drawing on an unlabelled source is not silently passed — it is skipped.
+        [group: 'PL1 infoflow', name: 'unlabelled source skips loudly (not a silent pass)', expect: 'Skipped information-flow check',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int unlabelled(int x) { return x }
+                    }''')],
+
+        // ----- Slice 1b — Γ threaded through local assignments -----
+        // The headline 1b case: a High value laundered through a local is still High at the Low result — caught.
+        [group: 'PL1 infoflow', name: '1b: High via local (int t = secret; return t) refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int launder(@verification.Label('High') int secret) { int t = secret; return t }
+                    }''')],
+        // A Low value through a local stays Low → verifies.
+        [group: 'PL1 infoflow', name: '1b: Low via local verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int via(@verification.Label('Low') int pub) { int t = pub; return t }
+                    }''')],
+        // Reassignment: Γ reflects the *current* contents — t is overwritten with a Low value before return, so
+        // the earlier High assignment does not leak. (Last write wins on a straight-line path.)
+        [group: 'PL1 infoflow', name: '1b: reassignment to Low before return verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int over(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
+                            int t = secret
+                            t = pub
+                            return t
+                        }
+                    }''')],
+        // Chained locals + join: u = t (High) then return combined with a Low local → still High, refuted.
+        [group: 'PL1 infoflow', name: '1b: chained local + join (return u + pub) refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int chain(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
+                            int t = secret
+                            int u = t
+                            return u + pub
+                        }
+                    }''')],
+
+        // ----- Slice 1c — program-counter label / implicit flow -----
+        // THE IMPLICIT-FLOW HEADLINE: assigning a Low value to t under a branch on a High secret raises t to High
+        // (its value now reveals which branch ran). Returning t at a Low result refutes — no explicit High value
+        // is ever assigned to the result, yet the leak is caught via the PC. No literals needed.
+        [group: 'PL1 infoflow', name: '1c: implicit flow (assign under secret branch) refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int implicit(@verification.Label('High') boolean secret,
+                                            @verification.Label('Low') int a, @verification.Label('Low') int b) {
+                            int t = a
+                            if (secret) t = a else t = b
+                            return t
+                        }
+                    }''')],
+        // A return *inside* a branch on a secret leaks the guard (which branch ran), even returning a Low value.
+        [group: 'PL1 infoflow', name: '1c: return inside secret branch refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int branchReturn(@verification.Label('High') boolean secret,
+                                                @verification.Label('Low') int a, @verification.Label('Low') int b) {
+                            if (secret) return a else return b
+                        }
+                    }''')],
+        // PRECISION (no false positive): branching on a secret but returning a Low value that does NOT depend on
+        // the branch is secure — the PC is scoped to the if, so post-branch code does not inherit it.
+        [group: 'PL1 infoflow', name: '1c: PC scoped — low value after secret branch verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int scoped(@verification.Label('High') boolean secret, @verification.Label('Low') int pub) {
+                            int t = pub
+                            if (secret) { int dummy = pub }
+                            return t
+                        }
+                    }''')],
+        // A branch on a *public* guard does not raise the PC: returning a value set under it stays Low → verifies.
+        [group: 'PL1 infoflow', name: '1c: branch on public guard does not raise PC', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int pubGuard(@verification.Label('Low') boolean flag,
+                                            @verification.Label('Low') int a, @verification.Label('Low') int b) {
+                            int t = a
+                            if (flag) t = a else t = b
+                            return t
+                        }
+                    }''')],
+        // Loud-skip: a loop body is outside the straight-line + if/else fragment → skipped, not silently passed.
+        [group: 'PL1 infoflow', name: '1c: loop body skips loudly', expect: 'Skipped information-flow check',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int loopy(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
+                            int t = pub
+                            for (int i = 0; i < 3; i++) { t = pub }
+                            return t
+                        }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

@@ -205,6 +205,17 @@ class PureEvaluator {
         throw new NotEvaluable()   // fell off the end without returning a value
     }
 
+    /**
+     * The declared return type of the pure function a {@code Call} resolves to, or {@code null} if it
+     * cannot be resolved. Lets the Encoder pick the SMT range sort of the call's shared symbol from the
+     * callee's signature (so an enum/Boolean-returning helper is declared over its real sort, not Int).
+     */
+    ClassNode returnType(Call c) {
+        if (c == null) return null
+        MethodNode m = resolve(c.name, c.args.size())
+        m?.returnType
+    }
+
     private MethodNode resolve(String name, int arity) {
         if (owner == null || name == null) return null
         for (MethodNode m : owner.getMethods(name)) {

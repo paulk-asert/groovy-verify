@@ -112,6 +112,7 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private static final ClassNode REQUIRES_TYPE = ClassHelper.make(Requires)
     private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
+    private static final ClassNode LABEL_TYPE = ClassHelper.make(Label)   // Phase L1 — security classification
     private static final ClassNode CONTRACT_SOURCE_TYPE = ClassHelper.make(ContractSource)
     private static final ClassNode CLASS_INVARIANT_SOURCE_TYPE = ClassHelper.make(ClassInvariantSource)
     /** Phase 130 — metadata on a synthesized @Reducer/@Associative law lemma: {@code [combinerName, lawName]}. */
@@ -1748,6 +1749,15 @@ class VerifyChecker extends TypeCheckingExtension {
 
             if (site != null) verifyLoop(node, site)
             else verifyPostcondition(node)
+
+            // Phase L1 (information flow): if the method declares an output security classification (@Label),
+            // discharge the noninterference obligation — no labelled source above that classification may flow
+            // to the result. Best-effort, like the other discharges. Straight-line returns only for now; an
+            // unlabelled/unsupported source skips loudly inside.
+            try {
+                verifyNoLeak(node)
+            } catch (Throwable ignored) {
+            }
 
             // Phase 7 (induction): prove the @Decreases measure decreases at each recursive call,
             // justifying the inductive hypothesis used in verifyPostcondition. No-op unless the
@@ -3576,6 +3586,248 @@ class VerifyChecker extends TypeCheckingExtension {
             addStaticTypeError(
                 Reporter.formatPostconditionSkipped(node.name, e.message), node)
         }
+    }
+
+    // ---- Phase L1: information flow — static-label noninterference (no-leak) ----------------------
+
+    /**
+     * Discharge the noninterference obligation for a method that declares an output security classification
+     * via {@code @Label}. For each {@code return e}, the security level of {@code e} — {@code ΓE(e)}, the join
+     * of the labels of the sources flowing into it (plus the program-counter label) — must not exceed the
+     * result's classification: {@code leq(join(ΓE(e), PC), L(result))}. The goal is synthesised as a lattice
+     * expression over the class's own {@code leq}/{@code join} and discharged by the same Z3 backend; a high
+     * value reaching a low result refutes. Slice 1 covers static labels over straight-line code, local
+     * Γ-threading (1b) and branch PC / implicit flow (1c); arrays, loops and value-dependent classifications
+     * are later slices, and an unlabelled/unsupported source skips loudly.
+     *
+     * <p>The analysis is a syntax-directed walk (the paper's framing) carrying a {@code Γ} environment
+     * (variable → security level, as a lattice AST) and a {@code PC} label (the join of the levels of the
+     * guards enclosing the current point). Unlike a flat path enumeration, the recursive walk scopes the PC to
+     * its branch, so post-{@code if} code does not inherit it. Branch joins merge the two arms' environments by
+     * lattice join. This subsumes the straight-line case (no guards ⇒ {@code PC = ⊥}).
+     */
+    private void verifyNoLeak(MethodNode node) {
+        if (node.isVoidMethod() || node instanceof ConstructorNode) return
+        String outLevel = labelValue(node)
+        if (outLevel == null) return                       // no declared result classification → nothing to check
+        ClassNode lat = latticeEnumOf(node)
+        if (lat == null) {
+            addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                "no security lattice (a same-class enum-valued leq/join/meet) is in scope"), node)
+            return
+        }
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return
+        Map<String, Expression> env = new LinkedHashMap<String, Expression>()
+        for (Map.Entry<String, String> en : paramLabels(node).entrySet()) {
+            env.put(en.key, enumConstExpr(lat, en.value))
+        }
+        try {
+            ifWalk(body, env, null, lat, outLevel, node)   // PC starts at ⊥ (null)
+        } catch (UnsupportedConstructException ex) {
+            addStaticTypeError(Reporter.formatLeakSkipped(node.name, ex.message), node)
+        }
+    }
+
+    /**
+     * Syntax-directed information-flow walk. Carries {@code env} (variable → Γ level) and {@code pc} (the
+     * program-counter label, null = ⊥), emitting a no-leak obligation at each {@code return} and returning the
+     * environment after {@code s}. Throws {@link UnsupportedConstructException} for a construct outside the
+     * fragment (loops, switch, …) so the caller skips loudly.
+     */
+    private Map<String, Expression> ifWalk(Statement s, Map<String, Expression> env, Expression pc,
+                                           ClassNode lat, String outLevel, MethodNode node) {
+        if (s == null || s instanceof EmptyStatement) return env
+        if (s instanceof BlockStatement) {
+            Map<String, Expression> cur = env
+            for (Statement st : ((BlockStatement) s).statements) {
+                cur = ifWalk(st, cur, pc, lat, outLevel, node)
+            }
+            return cur
+        }
+        if (s instanceof ReturnStatement) {
+            Expression e = ((ReturnStatement) s).expression
+            if (e != null) emitReturnLeak(node, e, env, pc, lat, outLevel)
+            return env
+        }
+        if (s instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) s
+            // Branching on classified data raises the PC inside both arms (implicit flow): PC ⊔ ΓE(guard).
+            Expression pcInner = pcJoin(pc, gammaExpr(ifs.booleanExpression, env, lat))
+            Map<String, Expression> thenEnv = ifWalk(ifs.ifBlock, copyEnv(env), pcInner, lat, outLevel, node)
+            Statement elseBlk = ifs.elseBlock
+            Map<String, Expression> elseEnv = (elseBlk != null && !(elseBlk instanceof EmptyStatement)) ?
+                ifWalk(elseBlk, copyEnv(env), pcInner, lat, outLevel, node) : copyEnv(env)
+            return mergeEnvs(thenEnv, elseEnv)             // post-if: join the arms; PC is popped (not pcInner)
+        }
+        if (s instanceof ExpressionStatement) {
+            String[] nameHolder = new String[1]
+            Expression rhs = assignTarget(((ExpressionStatement) s).expression, nameHolder)
+            if (nameHolder[0] != null) {
+                Map<String, Expression> ne = copyEnv(env)
+                Expression g = gammaExpr(rhs, env, lat)
+                // An assignment under a non-⊥ PC raises the target to at least the PC (implicit flow). An
+                // untracked RHS un-binds the target (a later return on it skips loudly).
+                if (g == null) ne.remove(nameHolder[0]) else ne.put(nameHolder[0], pcJoin(g, pc))
+                return ne
+            }
+            return env                                     // a non-assigning statement expression: no flow effect
+        }
+        throw new UnsupportedConstructException(
+            "a ${s.getClass().simpleName} is outside the information-flow fragment (straight-line + if/else)")
+    }
+
+    /** Emit the no-leak obligation for a {@code return e} under environment {@code env} and program counter {@code pc}. */
+    private void emitReturnLeak(MethodNode node, Expression e, Map<String, Expression> env, Expression pc,
+                               ClassNode lat, String outLevel) {
+        Expression gamma = gammaExpr(e, env, lat)
+        if (gamma == null) {
+            addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                "return expression '${e.text}' draws on an unlabelled or unsupported source"), anchorOf(e, node))
+            return
+        }
+        Expression level = pcJoin(gamma, pc)               // the returned value is observed under the PC
+        Expression goal = sameClassCall('leq', level, enumConstExpr(lat, outLevel))
+        dischargeLeak(node, e, goal, outLevel)
+    }
+
+    /** Lattice join of two levels, with null treated as ⊥ (identity): {@code a ⊔ b}. */
+    private Expression pcJoin(Expression a, Expression b) {
+        if (a == null) return b
+        if (b == null) return a
+        sameClassCall('join', a, b)
+    }
+
+    private static Map<String, Expression> copyEnv(Map<String, Expression> env) {
+        new LinkedHashMap<String, Expression>(env)
+    }
+
+    /** Merge two branch environments: a variable defined (and tracked) on both arms takes the join of its levels;
+     *  a variable tracked on only one arm becomes untracked after the join. */
+    private Map<String, Expression> mergeEnvs(Map<String, Expression> a, Map<String, Expression> b) {
+        Map<String, Expression> out = new LinkedHashMap<String, Expression>()
+        for (Map.Entry<String, Expression> en : a.entrySet()) {
+            Expression bv = b.get(en.key)
+            if (bv == null) continue
+            Expression av = en.value
+            out.put(en.key, av.is(bv) ? av : sameClassCall('join', av, bv))
+        }
+        out
+    }
+
+    /** If {@code e} is {@code name = rhs} or {@code Type name = rhs}, set {@code holder[0]=name} and return the
+     *  RHS; otherwise {@code holder[0]=null}. */
+    private static Expression assignTarget(Expression e, String[] holder) {
+        holder[0] = null
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            if (de.leftExpression instanceof VariableExpression) {
+                holder[0] = ((VariableExpression) de.leftExpression).name
+                return de.rightExpression
+            }
+        } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+            BinaryExpression be = (BinaryExpression) e
+            if (be.leftExpression instanceof VariableExpression) {
+                holder[0] = ((VariableExpression) be.leftExpression).name
+                return be.rightExpression
+            }
+        }
+        null
+    }
+
+    /** Refute {@code ¬goal} (the no-leak obligation) for one return path; VERIFIED ⇒ secure, else a leak. */
+    private void dischargeLeak(MethodNode node, Expression returnExpr, Expression goal, String outLevel) {
+        SmtSession session = backend.session()
+        try {
+            Encoder enc = mkEncoder(session)
+            Object g = enc.translateGoal(goal)
+            if (g == null) {
+                addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                    "security obligation '${goal.text}' is outside fragment"), anchorOf(returnExpr, node))
+                return
+            }
+            session.assertExpr(session.not(g))
+            CheckResult r = shown(session.check())
+            if (r.status == CheckResult.Status.VERIFIED) return
+            addStaticTypeError(
+                Reporter.formatInformationLeak(node.name, returnExpr.text, outLevel, r),
+                anchorOf(returnExpr, node))
+        } finally {
+            try { session.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /** The security level of an expression, {@code ΓE(e)}, as a lattice AST — or null (skip) if any leaf source
+     *  is unlabelled / unsupported. A variable contributes its current Γ from {@code gammaEnv} (a parameter's
+     *  label or a local's threaded level); a compound expression joins its operands' levels. (Slice 1: literals
+     *  yield null — a constant source is ⊥, deferred until the lattice's bottom is identified.) */
+    private Expression gammaExpr(Expression e, Map<String, Expression> gammaEnv, ClassNode lat) {
+        if (e instanceof BooleanExpression) {                     // an `if` guard arrives wrapped
+            return gammaExpr(((BooleanExpression) e).expression, gammaEnv, lat)
+        }
+        if (e instanceof VariableExpression) {
+            return gammaEnv.get(((VariableExpression) e).name)   // null ⇒ untracked source
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression b = (BinaryExpression) e
+            Expression gl = gammaExpr(b.leftExpression, gammaEnv, lat)
+            Expression gr = gammaExpr(b.rightExpression, gammaEnv, lat)
+            if (gl == null || gr == null) return null
+            return sameClassCall('join', gl, gr)
+        }
+        null
+    }
+
+    /** {@code @Label('X')} on a parameter/method/field → {@code 'X'}, or null. */
+    private static String labelValue(org.codehaus.groovy.ast.AnnotatedNode n) {
+        List<AnnotationNode> anns = n.getAnnotations(LABEL_TYPE)
+        if (anns == null || anns.isEmpty()) return null
+        Expression m = anns.get(0).getMember('value')
+        if (m instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) m).value
+            return v != null ? v.toString() : null
+        }
+        null
+    }
+
+    /** Parameter-name → security label, for the parameters that carry {@code @Label}. */
+    private static Map<String, String> paramLabels(MethodNode node) {
+        Map<String, String> out = new LinkedHashMap<String, String>()
+        for (Parameter p : node.parameters) {
+            String lvl = labelValue(p)
+            if (lvl != null) out.put(p.name, lvl)
+        }
+        out
+    }
+
+    /** The security lattice in scope: the (enum) type the class's binary {@code leq} ranges over, or null. */
+    private static ClassNode latticeEnumOf(MethodNode node) {
+        ClassNode dc = node.declaringClass
+        if (dc == null) return null
+        for (MethodNode m : dc.getMethods('leq')) {
+            if (m.parameters.length == 2) {
+                ClassNode t = m.parameters[0].type
+                if (t != null && t.isEnum()) return t
+            }
+        }
+        null
+    }
+
+    /** {@code Lattice.CONST} as a post-resolution property access (interns to the enum constant). */
+    private static Expression enumConstExpr(ClassNode lat, String constName) {
+        new PropertyExpression(new ClassExpression(lat), constName)
+    }
+
+    /** A same-class call {@code name(a, b)} (implicit-{@code this}), as the encoder's pure-function path expects. */
+    private static Expression sameClassCall(String name, Expression a, Expression b) {
+        new MethodCallExpression(new VariableExpression('this'), name,
+            new ArgumentListExpression([a, b] as List<Expression>))
+    }
+
+    /** Anchor a diagnostic on a positioned expression when available, else the method node. */
+    private static ASTNode anchorOf(Expression e, MethodNode node) {
+        (e != null && e.lineNumber > 0) ? (ASTNode) e : (ASTNode) node
     }
 
     // ---- Phase 122: verify a trait's concrete default methods against the implementing class ----

@@ -2247,6 +2247,70 @@ method. One honest boundary remains on both axes: a method is verified only agai
 an inherited `@Ensures` isn't re-checked against an *uncontracted* override (groovy-contracts still enforces it
 at runtime).
 
+## Information flow — taint tracking, generalized
+
+Compile-time **taint analysis** — Ballerina's `@tainted`/`@untainted`, the OWASP-style trackers — labels data as
+trusted or not and refuses to let untrusted data reach a sensitive sink, at zero runtime cost. The same idea, on
+this engine, is one *instance* of a more general construction: a security **lattice** (a proved `enum` of levels)
+plus a `@Label` on each source and sink. For every `return e` the verifier discharges the **noninterference**
+obligation — `leq( join(ΓE(e), PC), L(result) )` — over the class's *own* lattice, by the same Z3 backend that
+proves the contracts. No new solver theory; the obligation is just a lattice formula.
+
+A two-point `Low ⊑ High` is the taint lattice (read `High` as "secret" for confidentiality, or "untrusted" for
+integrity — they're duals). A high value reaching a low result refutes:
+
+```groovy
+class Flow {
+    enum L { Low, High }
+    static boolean leq(L a, L b) { a == L.Low || b == L.High }
+    static L join(L a, L b) { leq(a, b) ? b : a }
+
+    @verification.Label('Low')                                   // result is public
+    static int explicit(@verification.Label('High') int secret) {
+        return secret                                            // REFUTED — a secret flows to a public result
+    }
+}
+```
+
+```
+[Static type checking] - Possible information leak: 'secret' may carry data above the result's 'Low' classification
+    obligation: leq(level(secret), Low)
+```
+
+**The part most taint checkers skip: implicit flows.** A secret can leak *without ever being assigned to the
+sink* — through control flow. Branching on a secret raises a program-counter label inside both arms, so anything
+assigned there is tainted by *which branch ran*:
+
+```groovy
+    @verification.Label('Low')
+    static int implicit(@verification.Label('High') boolean secret,
+                        @verification.Label('Low') int a, @verification.Label('Low') int b) {
+        int t = a
+        if (secret) t = a else t = b                             // t now reveals `secret`…
+        return t                                                 // REFUTED — though only Low values are ever assigned
+    }
+```
+
+Neither `a` nor `b` is secret, yet `t`'s value tells you `secret` — and the verifier refuses it. **And it
+doesn't cry wolf:** the PC is *scoped* to the branch, so a low value that doesn't depend on the secret is still
+fine afterwards:
+
+```groovy
+    @verification.Label('Low')
+    static int scoped(@verification.Label('High') boolean secret, @verification.Label('Low') int pub) {
+        int t = pub
+        if (secret) { int unused = pub }                         // branch on a secret, but t is untouched
+        return t                                                 // VERIFIED — t never depended on it
+    }
+```
+
+That precision is the whole game: a tool that rejects every branch near a secret is useless. Here it falls out of
+a syntax-directed walk that pushes the PC on entering a branch and pops it on exit. Straight-line code and
+`if`/`else`, within one method; loops, arrays, flow *across* method boundaries (the sink-parameter shape — a
+secret reaching a `@Label('Low')` argument), **value-dependent** labels (a classification that depends on program
+state — where this SMT approach reaches past what dataflow taint can express), and principled declassification are
+named, deferred slices, each skipping loudly rather than passing silently.
+
 ## What's demonstrated
 
 The examples above are a slice; here is the full inventory of what the engine proves today, by phase:
@@ -2373,6 +2437,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Recursive-sequence specs: `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a,b)` / `Lcm.of(a,b)`** | Fibonacci (`fib$`: base `0,1`, step `fib(k)=fib(k-1)+fib(k-2)`), tribonacci/`fibfib` (`trib$`: base `0,0,1`, step `trib(k)=trib(k-1)+trib(k-2)+trib(k-3)`), and Euclid's gcd (`gcd$`: base `∀x. gcd(x,0)=x`, step `∀x,y. y≠0 ⟹ gcd(x,y)=gcd(y, x%y)`) spec helpers — the two-/three-term-recurrence and two-*argument* siblings of `sum`/`prod`. The textbook iterative-equals-recursive proof verifies (`result == Fib.of(n)` / `Trib.of(n)`; `result == Gcd.of(a,b)` for Euclid's loop, whose invariant `Gcd.of(x,y) == Gcd.of(a,b)` is preserved by `t=x%y; x=y; y=t` via the step axiom and collapses at exit `y==0` through the base, terminating on the variant `y`). **`Lcm.of(a,b)`** is the multiplicative sibling — `lcm$` built on `gcd$` via the fundamental identity `lcm(a,b)·gcd(a,b)==a·b` — so the identity proves symbolically and `Lcm.of(4,6)==12` unfolds via Euclid (a co-shipped `gcd≠0` axiom lets the `a.intdiv(Gcd.of(a,b))` divide-by-gcd idiom discharge its divisor obligation). These **are** HumanEval **055** (`fib`), **063** (`fibfib`), and **013** (`greatest_common_divisor`); 039's outer `prime_fib` search is a deliberate non-target (open-problem termination). All are **prove-friendly but refute-hostile** — e-matching certifies a true spec fast, but a *false* one (e.g. `Gcd.of(12,8)==5`) only soft-fails on a "could not decide / timeout" because finding a SAT model under an infinitely-instantiable axiom defeats MBQI (still sound — rejected, never a false pass). | ✅ Phase 55 / 63 / 87 |
 | **Logical implication — `==>` operator & `.implies()` method** | Groovy 5's `a ==> b` (a BinaryExpression) and the DGM `a.implies(b)` both lower to `!a ∨ b` (the backend's `implies`). Frame conditions read naturally — `every { it != j ==> a[it] == old.a[it] }` — and modus ponens / DFS "closed-except-on-stack" invariants simplify. (Eager, like the method; the short-circuit-obligation path for a body-level `==>` guarding an access is a residual — use `if` there) | ✅ Phase 57 |
 | **Spaceship operator `<=>`** | `a <=> b` (Int) lowers to the three-way sign `ite(a<b, -1, ite(a==b, 0, 1))` — exactly `Integer.compareTo`'s `-1/0/1` — so a `compareTo`/`compare` method's three-way contract verifies. Int-oriented like the other comparisons; a `String <=>` (lexicographic) skips (would need Z3 string ordering) | ✅ Phase 58 |
+| **Security lattice, proved well-formed** | A user-defined `enum` of classification levels with pure `leq`/`join`/`meet` functions, *proved* a lattice — `leq` a partial order, `join`/`meet` the lub/glb — by the same empty-bodied law lemmas the monad/monoid arcs use, now over a new algebra. A mis-specified order (non-transitive `leq`, a "join" that isn't an upper bound) refutes with the witnessing triple. Two general engine enablers fell out: same-class pure functions now declare over their real **enum/Boolean range** (not Int-only), and enum-sorted scalars get a quantifier-free **domain-closure** axiom (`v == c1 ∨ … ∨ cN`), since Z3 models an `enum` as an open sort | ✅ Phase L0 |
+| **Information-flow noninterference (static labels)** | `@Label('High')` on a parameter, `@Label('Low')` on a method result; for each `return e` the verifier discharges `leq( join(ΓE(e), PC), L(result) )` over the class's own lattice, so a high value reaching a low result refutes ("information leak"). A syntax-directed walk threads a `Γ` environment and a **program-counter label**, catching **explicit** flow (`return secret`), flow **through locals** (`int t = secret; return t`), and **implicit** flow via the PC (`if (secret) t = a else t = b; return t` refutes though only `Low` values are assigned) — with the PC *scoped* to its branch, so an independent low value after the branch verifies (no false positive). A generalisation of compile-time *taint* tracking to an arbitrary, machine-proved lattice that also catches implicit flows; confidentiality here is the dual of taint's integrity. Straight-line + if/else, intra-procedural; loops, arrays, interprocedural/sink-parameter flow, value-dependent labels and declassification are deferred (loud-skip) | ✅ Phase L1 |
 
 ## Building & testing
 
@@ -2903,7 +2969,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 
 | File | Role |
 |---|---|
-| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, and annotation-law synthesis (`@Reducer` / `@Monadic`) |
+| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, annotation-law synthesis (`@Reducer` / `@Monadic`), and the information-flow noninterference walk (`@Label`) |
 | `Encoder` | Groovy expression → SMT (the fragment lives here) |
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
@@ -2912,6 +2978,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `PathFacts` | enclosing-`if` path conditions per expression site |
 | `ContractTester` | the bounded property-based fallback (Phase 62): runs the executable contract over a small integer grid when the solver returns *UNKNOWN*, reporting a `fails on:` repro |
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
+| `Label` | the `@Label('level')` security classification on a parameter / method result, driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
 | `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses |
 | `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |

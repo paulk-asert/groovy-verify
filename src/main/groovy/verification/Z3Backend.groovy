@@ -161,6 +161,11 @@ class Z3Session implements SmtSession {
         ctx.getIntSort()
     }
 
+    @Override
+    Object boolSort() {
+        ctx.getBoolSort()
+    }
+
     /**
      * Phase 47 — Z3's native String sort, cached on first request. Replaces the Phase-27
      * uninterpreted {@code String!Sort} so {@code str.prefixof}/{@code str.len}/{@code str.at}/

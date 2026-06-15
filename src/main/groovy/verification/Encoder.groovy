@@ -812,12 +812,24 @@ class Encoder {
      * receivers). Used by {@link #setElementSort} / {@link #mapKeySort} / {@link #mapValueSort} /
      * {@link #listElementSort}.
      */
+    /**
+     * Does a pure function's return type warrant a non-Int range sort for its shared symbol? True for an
+     * enum (the security-lattice case) or a Boolean predicate; everything else keeps the historic Int-only
+     * declaration path, so existing Int/recurrence helpers are unaffected.
+     */
+    private static boolean isNonIntPureRange(ClassNode t) {
+        if (t == null) return false
+        String n = t.name
+        n == 'boolean' || n == 'java.lang.Boolean' || t.isEnum() || isEnumLikeType(t)
+    }
+
     private Object sortFor(ClassNode t) {
         if (t == null) return session.intSort()
         String name = t.name
         if (name == 'java.lang.String') return session.declareSort('String')
         if (isDecimalElementType(t)) return session.realSort()   // Phase 70 — List<BigDecimal> contents
         if (isFpElementType(t)) return session.fpSort(isFpDoubleType(t))   // Phase 77 — double/float contents
+        if (name == 'boolean' || name == 'java.lang.Boolean') return session.boolSort()
         if (isIntLikeType(t)) return session.intSort()
         if (t.isEnum() || isEnumLikeType(t)) return session.declareSort(enumSortName(t))
         FieldNode cf = wrapperContentField(t)   // Phase B — a wrapper carrier is a one-constructor datatype
@@ -1324,6 +1336,25 @@ class Encoder {
         count
     }
 
+    /**
+     * Assert that a freshly-minted enum-sorted scalar inhabits its enum's finite domain:
+     * {@code v == c1 ∨ … ∨ cN} over the enum's constants. Z3 models an enum as an *open* uninterpreted
+     * sort, so without this fact a parameter of type {@code L} could be some element outside the declared
+     * constants — which silently defeats any property that holds only because the lattice is finite (e.g.
+     * a two-element security lattice's join being an upper bound). Sound (the disjunction is always true)
+     * and quantifier-free (asserted per scalar, not as a {@code ∀}), so no trigger fragility. Applies only
+     * to enum-typed scalars in {@link #scalarTypes}; set/map element domains keep their own coverage axioms.
+     */
+    private void assertEnumDomainClosure(String name, Object sort, Object v) {
+        ClassNode t = scalarTypes.get(name)
+        if (t == null || !(t.isEnum() || isEnumLikeType(t))) return
+        List<String> consts = enumConstantNames(t)
+        if (consts.isEmpty()) return
+        List<Object> disj = new ArrayList<Object>()
+        for (String cn : consts) disj.add(session.eq(v, session.litOfSort(sort, cn)))
+        session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
+    }
+
     private boolean isKnownEnumName(String name) {
         if (knownEnumNames == null) {
             knownEnumNames = new HashSet<String>()
@@ -1457,6 +1488,7 @@ class Encoder {
         if (cached != null) return cached
         Object v = session.varOfSort(name, sort)
         sortedEnv.put(key, v)
+        assertEnumDomainClosure(name, sort, v)
         v
     }
 
@@ -5292,7 +5324,16 @@ class Encoder {
             if (h == null) return null
             handles.add(h)
         }
-        Object fSharp = session.uninterpretedFunc(c.name, handles)
+        // The call's shared symbol f#(args). Int-returning helpers keep the historic Int-only declaration
+        // (byte-identical to before); a helper whose return type is an enum or Boolean (e.g. a security
+        // lattice's leq/join/meet) is declared over its real range sort via applyUF, which also infers the
+        // domain sorts from the argument handles. Without this, an enum-sorted argument hits a sort mismatch
+        // against the Int-only declaration. The range comes from the callee's signature, so it is stable
+        // across occurrences (congruence) even before the body is unfolded.
+        ClassNode pureRt = pureEvaluator.returnType(c)
+        Object fSharp = isNonIntPureRange(pureRt)
+            ? session.applyUF(c.name, handles, sortFor(pureRt))
+            : session.uninterpretedFunc(c.name, handles)
 
         // Assert its defining equation f#(args) == body[params↦args] (the function's definition — sound by
         // its purity). Asserted once per distinct term and fuel-bounded, so recursion unfolds to a finite

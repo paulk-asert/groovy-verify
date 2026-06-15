@@ -6500,6 +6500,98 @@ identity, previously hand-tested only over the single-value `Res` wrapper).
 
 ---
 
+## Phase L0 — security lattices, proved well-formed  *(shipped — two small engine enablers)*
+
+**A new *kind* of object, harvested from Smith, *A Dafny-based approach to thread-local information flow
+analysis* (§III).** The foundation of an information-flow analysis is a **security lattice** of classification
+levels. Here it is an ordinary Groovy `enum` with three pure functions — `leq` (the order), `join` (least upper
+bound), `meet` (greatest lower bound) — and the verifier *proves it is actually a lattice*: `leq` is a partial
+order (reflexive, antisymmetric, transitive) and `join`/`meet` are the lub/glb. These are the same
+empty-bodied "law" lemmas the monad/monoid arcs use (Phase 130/137), now over a new algebra; a mis-specified
+order (a non-transitive `leq`, a "join" that isn't an upper bound) refutes with the witnessing triple.
+
+```groovy
+enum L { A, B, C, D }                                    // the paper's diamond: A ⊐ B,C ⊐ D
+static boolean leq(L l1, L l2) { l1 == L.D || l1 == l2 || l2 == L.A }
+static L join(L l1, L l2) { leq(l1, l2) ? l2 : (leq(l2, l1) ? l1 : L.A) }
+static L meet(L l1, L l2) { leq(l1, l2) ? l1 : (leq(l2, l1) ? l2 : L.D) }
+@Ensures({ leq(l1, l1) })                               // reflexive — proves
+@Ensures({ (leq(l1, l2) && leq(l2, l1)) ==> (l1 == l2) })   // antisymmetric — proves
+@Ensures({ (leq(l1, l2) && leq(l2, l3)) ==> leq(l1, l3) })  // transitive — proves
+static void partialorder(L l1, L l2, L l3) { }
+```
+
+**Engine enablers (two, both small and general).** The lattice example surfaced two genuine boundaries, fixed
+once and reused everywhere:
+
+- **Sort-aware pure functions.** A same-class pure call `f#(args)` (Phase 8a's defining-equation symbol) was
+  declared **Int-only**, so an enum-sorted argument hit a Z3 sort mismatch. It now declares over the callee's
+  real range via the existing sort-aware `applyUF` when the return type is an enum or Boolean; the Int path is
+  byte-identical, so every existing recurrence/monad helper is unaffected. (`leq`/`join`/`meet` are this case.)
+- **Enum-domain closure.** Z3 models an `enum` as an *open* uninterpreted sort, so a parameter of type `L`
+  could be an element outside the declared constants — which silently defeats any property that holds only
+  because the lattice is finite (a two-element lattice's join being an upper bound). Each freshly-minted
+  enum-sorted scalar is now pinned to `v == c1 ∨ … ∨ cN` (quantifier-free, per-variable — no trigger
+  fragility). Set/map element domains keep their own coverage axioms (Phase 29).
+
+Locked by the `PL0 lattice` cases (boolean `Low/High`, the diamond, and the two refutations).
+
+---
+
+## Phase L1 — information flow: static-label noninterference  *(shipped — the first security property)*
+
+**The first property that isn't functional correctness.** Building on the L0 lattice, a `@Label('High')`
+annotation classifies a parameter, and `@Label('Low')` a method result (a sink). The verifier then discharges
+the **noninterference** obligation of an information-flow logic (Smith §III, after Murray et al. / Winter et
+al.): for each `return e`, the security level of `e` must not exceed the result's classification —
+`leq( join(ΓE(e), PC), L(result) )` — proved by the *same Z3 backend* that discharges the contracts. A high
+value reaching a low result refutes with an "information leak" diagnostic naming the offending return. No new
+solver theory: the obligation is just a lattice formula over the class's own `leq`/`join`.
+
+The analysis is a **syntax-directed walk** (the paper's framing — "purely based on the program syntax")
+carrying a `Γ` environment (variable → level) and a `PC` label (the program counter — the join of the levels
+of the guards enclosing the current point). It shipped in three slices:
+
+- **1a — explicit flow over parameters.** `ΓE(e)` is the join of the labels of the parameters flowing into
+  `e`; `return secret` (High) at a `Low` result refutes, `return pub` (Low) verifies.
+- **1b — Γ threaded through locals.** Each assignment re-binds the target to `ΓE(rhs)`, so a value laundered
+  through a local keeps its level: `int t = secret; return t` refutes; a reassignment `t = pub` before the
+  return narrows it back (last write wins on a straight-line path).
+- **1c — branch PC / implicit flow.** Branching on classified data raises the PC inside both arms by
+  `PC ⊔ ΓE(guard)`, and an assignment under a non-⊥ PC raises its target — so
+  `if (secret) t = a else t = b; return t` refutes **even though only `Low` values are ever assigned** (the
+  returned value reveals which branch ran). The recursive walk *scopes* the PC to its branch, so the precision
+  cost a flat path-enumeration would pay is avoided: `if (secret) { … }; return pub` (an independent low value
+  after the branch) correctly **verifies** — no false positive.
+
+```groovy
+@verification.Label('Low')                              // the result is classified Low
+static int implicit(@verification.Label('High') boolean secret,
+                    @verification.Label('Low') int a, @verification.Label('Low') int b) {
+    int t = a
+    if (secret) t = a else t = b                        // t now depends on secret → raised to High
+    return t                                            // REFUTED: implicit leak of `secret`
+}
+```
+
+**Where it sits — beyond taint, short of full IFC.** This is a generalisation of compile-time *taint tracking*
+(Ballerina's `@tainted`/`@untainted`, the OWASP-style trackers): taint is the two-point *integrity* instance of
+an arbitrary security lattice, and unlike most taint analyses this one **also catches implicit flows** (1c) and
+reasons over a *machine-proved* multi-level lattice rather than a hardcoded two-point order. The confidentiality
+framing here (secret ↛ public) is the dual of taint's integrity framing (untrusted ↛ trusted) — same engine,
+flip the lattice.
+
+**Honest scope (Slice 1 = straight-line + if/else, intra-procedural).** Loud-skips a loop body, an unlabelled
+source, or any construct outside the fragment. Deferred, each a named next slice: **interprocedural** flow
+(labels crossing method boundaries — the biggest gap vs. a whole-program taint checker, and where *sink
+parameters* like a query argument would live); **value-dependent classifications** `L(x) = f(state)` (§III-A,
+where the SMT approach pays off in a way dataflow taint cannot); **array element labels** (§III-C); **loops**
+(a `Γ`-invariant, the analogue of `@Invariant`); and **declassification** (§III-E, a *proved* two-state
+predicate rather than a blanket sanitisation cast). Locked by the `PL1 infoflow` cases (1a/1b/1c, including the
+scoped-PC precision case and the loud-skip controls). Annotation: `verification.Label`.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:

@@ -215,6 +215,28 @@ class Reporter {
         "linear int arithmetic). The method is allowed to proceed unchecked."
     }
 
+    // ---- Information flow (Phase L1) ----
+
+    /**
+     * A noninterference (no-leak) refutation: the security level of a returned value exceeds the result's
+     * declared classification, so high information could flow to a low observer. The obligation is the lattice
+     * order {@code leq(ΓE(return), L(result))}.
+     */
+    static String formatInformationLeak(String methodName, String returnText, String outLevel,
+                                        CheckResult result) {
+        implicit("Possible information leak: '${returnText}' may carry data above the result's '${outLevel}' classification",
+            "leq(level(${returnText}), ${outLevel})",
+            "Could not decide information-flow obligation for ${methodName}", result)
+    }
+
+    /** An information-flow obligation the verifier cannot model (unlabelled source, no lattice, …) — skipped loudly. */
+    static String formatLeakSkipped(String methodName, String reason) {
+        "Skipped information-flow check for ${methodName} (${reason}). " +
+        "The source draws on a value or construct outside the supported fragment " +
+        "(labelled parameters, straight-line returns over a same-class security lattice). " +
+        "The method is allowed to proceed unchecked."
+    }
+
     static String formatSkipped(String calleeName, String reason) {
         "Skipped verification of precondition for ${calleeName} (${reason}). " +
         "The contract or one of the actual arguments is outside the spike's " +
