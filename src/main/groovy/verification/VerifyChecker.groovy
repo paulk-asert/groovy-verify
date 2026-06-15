@@ -3613,8 +3613,13 @@ class VerifyChecker extends TypeCheckingExtension {
         if (outLevel == null && plabels.isEmpty()) return  // nothing labelled → not in the information-flow analysis
         ClassNode lat = latticeEnumOf(node)
         if (lat == null) {
-            addStaticTypeError(Reporter.formatLeakSkipped(node.name,
-                "no security lattice (a same-class enum-valued leq/join/meet) is in scope"), node)
+            // A labelled *result* method clearly intends in-class analysis, so a missing lattice is flagged; a
+            // params-only method (a sink declaration consumed by callers elsewhere) is left alone — its class
+            // need not carry the lattice.
+            if (outLevel != null) {
+                addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                    "no security lattice (a same-class enum-valued leq/join/meet) is in scope"), node)
+            }
             return
         }
         Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
@@ -3715,8 +3720,8 @@ class VerifyChecker extends TypeCheckingExtension {
             @Override void visitStaticMethodCallExpression(StaticMethodCallExpression c) { calls.add(c); super.visitStaticMethodCallExpression(c) }
         })
         for (Expression c : calls) {
-            MethodNode callee = resolveSinkCallee(c, node.declaringClass)
-            if (callee == null) continue                   // not a resolvable same-class call → nothing to check
+            MethodNode callee = resolveSinkCallee(c, node)
+            if (callee == null) continue                   // not a resolvable call → nothing to check
             List<Expression> args = callArgs(c)
             Parameter[] ps = callee.parameters
             if (args == null || ps.length != args.size()) continue   // arity mismatch / varargs → skip
@@ -3760,28 +3765,65 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
-    /** Resolve a same-class call (implicit-{@code this} / {@code this.m(…)} / {@code Self.m(…)}) to its callee. */
-    private static MethodNode resolveSinkCallee(Expression c, ClassNode declaringClass) {
-        if (declaringClass == null) return null
+    /**
+     * Resolve a call to its callee {@link MethodNode} — same-class (implicit-{@code this} / {@code this.m(…)})
+     * or **cross-class**. The receiver determines the target type: a {@code ClassExpression} ({@code Foo.m(…)}
+     * post-resolution) or a {@link StaticMethodCallExpression} gives the owner directly; a bare
+     * {@code VariableExpression} receiver is either an object parameter of known type ({@code log.m(…)}) or — in
+     * the pre-resolution body snapshot — a class *name* ({@code Foo.m(…)} parses as {@code Var(Foo).m}), looked
+     * up among the compilation unit's classes. A receiver that is none of these (an external/precompiled type we
+     * can't resolve off the snapshot) returns null → the call is skipped.
+     */
+    private MethodNode resolveSinkCallee(Expression c, MethodNode caller) {
+        ClassNode self = caller?.declaringClass
+        if (self == null) return null
+        ClassNode targetType = null
         String name
         if (c instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) c
             Expression recv = mce.objectExpression
-            boolean sameClass = mce.implicitThis ||
-                (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this') ||
-                (recv instanceof ClassExpression && recv.type?.name == declaringClass.name)
-            if (!sameClass) return null
             name = mce.methodAsString
+            if (mce.implicitThis || (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')) {
+                targetType = self
+            } else if (recv instanceof ClassExpression) {
+                targetType = ((ClassExpression) recv).type
+            } else if (recv instanceof VariableExpression) {
+                String rn = ((VariableExpression) recv).name
+                ClassNode pt = paramType(caller, rn)           // an instance receiver: the parameter's declared type
+                targetType = (pt != null) ? pt : lookupClassInModule(self, rn)   // else a class name
+            }
         } else if (c instanceof StaticMethodCallExpression) {
             StaticMethodCallExpression sce = (StaticMethodCallExpression) c
-            if (sce.ownerType == null || sce.ownerType.name != declaringClass.name) return null
+            targetType = sce.ownerType
             name = sce.method
         } else {
             return null
         }
+        if (targetType == null || name == null) return null
         int arity = callArgs(c).size()
-        for (MethodNode m : declaringClass.getMethods(name)) {
+        for (MethodNode m : targetType.getMethods(name)) {
             if (m.parameters.length == arity) return m
+        }
+        null
+    }
+
+    /** The declared type of the parameter named {@code name} on {@code m}, or null. */
+    private static ClassNode paramType(MethodNode m, String name) {
+        if (m == null || name == null) return null
+        for (Parameter p : m.parameters) {
+            if (p.name == name) return p.type
+        }
+        null
+    }
+
+    /** A class with the given simple name in {@code from}'s compilation unit (same source / module), or null. */
+    private static ClassNode lookupClassInModule(ClassNode from, String simpleName) {
+        if (from == null || simpleName == null) return null
+        if (from.nameWithoutPackage == simpleName) return from
+        if (from.module != null) {
+            for (ClassNode cn : from.module.classes) {
+                if (cn.nameWithoutPackage == simpleName) return cn
+            }
         }
         null
     }

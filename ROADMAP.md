@@ -6591,15 +6591,18 @@ flip the lattice. The Γ/lattice encoding follows Smith §III; the paper's headl
 *concurrent* programs via rely/guarantee — is deliberately **not** pursued (concurrency soundness is a non-goal).
 
 **Honest scope.** Covers static labels over straight-line code + `if`/`else`, local Γ-threading, branch-PC
-implicit flow, and **same-class** interprocedural sink parameters. Loud-skips a loop body, an unlabelled source,
-or any construct outside the fragment. One quiet boundary: a **cross-class** sink call is skipped silently — the
-callee's `@Label` parameters aren't resolvable off the pre-STC body snapshot without the STC method-call target,
-so cross-class resolution is the immediate next step. Deferred, each a named slice: cross-class sinks;
-**value-dependent classifications** `L(x) = f(state)` (§III-A, where the SMT approach pays off in a way dataflow
-taint cannot); **array element labels** (§III-C); **loops** (a `Γ`-invariant, the analogue of `@Invariant`); and
+implicit flow, and interprocedural sink parameters — same-class **and cross-class within the compilation unit**:
+a `ClassName.sink(arg)` static call resolves its owner by simple name among the module's classes, and an instance
+call `recv.sink(arg)` resolves through the receiver parameter's declared type. Loud-skips a loop body, an
+unlabelled source, or any construct outside the fragment. One quiet boundary remains: a sink in a **precompiled /
+imported** class (the receiver is an unresolved name off the pre-STC snapshot, not a module class) and a **field
+receiver** are skipped silently — resolving those needs the STC method-call target or the module's import table,
+the immediate next step. Deferred, each a named slice: external/precompiled sinks; **value-dependent
+classifications** `L(x) = f(state)` (§III-A, where the SMT approach pays off in a way dataflow taint cannot);
+**array element labels** (§III-C); **loops** (a `Γ`-invariant, the analogue of `@Invariant`); and
 **declassification** (§III-E, a *proved* two-state predicate rather than a blanket sanitisation cast). Locked by
-the `PL1 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the scoped-PC precision case, and the loud-skip
-controls). Annotation: `verification.Label`.
+the `PL1 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the cross-class set, the scoped-PC precision
+case, and the loud-skip controls). Annotation: `verification.Label`.
 
 ---
 

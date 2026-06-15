@@ -10487,6 +10487,44 @@ class WrapCounter implements Counter { }
                         static void sink(@verification.Label('Low') int x) { }
                         static void pass(@verification.Label('Low') int pub, int other) { sink(other) }
                     }''')],
+
+        // ----- Cross-class sinks — the sink lives in another class (the library-call shape) -----
+        // THE CROSS-CLASS HEADLINE: a High value into a Low sink parameter of *another* class refutes. The caller
+        // C carries the lattice + the labelled source; the sink class Audit just declares the @Label parameter
+        // (it isn't @TypeChecked, only resolved). Audit.log(secret) → REFUTED at the call.
+        [group: 'PL1 infoflow', name: 'cross-class: High arg → Low sink in another class refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void leak(@verification.Label('High') int secret) { Audit.log(secret) }
+                    }
+                    class Audit {
+                        static void log(@verification.Label('Low') int x) { }
+                    }''')],
+        // A Low value into the same cross-class sink verifies.
+        [group: 'PL1 infoflow', name: 'cross-class: Low arg → Low sink verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void send(@verification.Label('Low') int pub) { Audit.log(pub) }
+                    }
+                    class Audit {
+                        static void log(@verification.Label('Low') int x) { }
+                    }''')],
+        // Instance receiver of a known object-parameter type: log.write(secret) where `log` is a Logger param —
+        // resolved via the receiver's declared type, refuted just the same.
+        [group: 'PL1 infoflow', name: 'cross-class: instance sink via typed receiver refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        void leak(Logger log, @verification.Label('High') int secret) { log.write(secret) }
+                    }
+                    class Logger {
+                        void write(@verification.Label('Low') int x) { }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

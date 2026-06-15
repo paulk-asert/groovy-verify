@@ -2268,21 +2268,24 @@ class Service {
     static boolean leq(L a, L b) { a == L.Low || b == L.High }
     static L join(L a, L b) { leq(a, b) ? b : a }
 
-    static void publish(@verification.Label('Low') int x) { /* … to a public channel … */ }
-
     static void handle(@verification.Label('High') int secret) {
-        publish(secret)                                          // REFUTED — a secret reaches a public sink
+        Audit.log(secret)                                       // REFUTED — a secret reaches a public sink
     }
+}
+
+class Audit {                                                   // the sink, in its own class
+    static void log(@verification.Label('Low') int x) { /* … to a public channel … */ }
 }
 ```
 
 ```
-[Static type checking] - Possible information leak: 'secret' may carry data above the 'Low' classification of parameter 'x' of publish
+[Static type checking] - Possible information leak: 'secret' may carry data above the 'Low' classification of parameter 'x' of log
     obligation: leq(level(secret), Low)
 ```
 
-Laundering through a local doesn't help — `int t = secret; publish(t)` refutes just the same. The label rides the
-*value*, not the variable name.
+The sink lives in another class; `Service` carries the lattice and the labelled source. Laundering through a local
+doesn't help — `int t = secret; Audit.log(t)` refutes just the same. The label rides the *value*, not the
+variable name.
 
 **The part most taint checkers skip: implicit flows.** A secret can leak *without ever being assigned to the
 sink* — through control flow. Branching on a secret raises a program-counter label inside both arms, so anything
@@ -2315,9 +2318,10 @@ That precision is the whole game: a tool that rejects every branch near a secret
 syntax-directed walk that pushes the PC entering a branch and pops it on exit, threading a `Γ` environment (value
 → level) through assignments, returns, and call arguments alike.
 
-Where it stops, it says so. Same-class methods, straight-line code and `if`/`else`; a loop body, an unlabelled
-source, or a construct outside the fragment skips loudly. The named next steps: **cross-class** sinks (a secret
-into a library call), **value-dependent** labels (a classification that depends on program state — where this SMT
+Where it stops, it says so. Straight-line code and `if`/`else`, with sinks resolved both same-class and
+cross-class within the compilation unit; a loop body, an unlabelled source, or a construct outside the fragment
+skips loudly. The named next steps: sinks in a **precompiled/imported** class (resolving the receiver through the
+import table), **value-dependent** labels (a classification that depends on program state — where this SMT
 approach reaches past what dataflow taint can express), array element labels, loops, and principled
 declassification.
 
@@ -2448,7 +2452,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Logical implication — `==>` operator & `.implies()` method** | Groovy 5's `a ==> b` (a BinaryExpression) and the DGM `a.implies(b)` both lower to `!a ∨ b` (the backend's `implies`). Frame conditions read naturally — `every { it != j ==> a[it] == old.a[it] }` — and modus ponens / DFS "closed-except-on-stack" invariants simplify. (Eager, like the method; the short-circuit-obligation path for a body-level `==>` guarding an access is a residual — use `if` there) | ✅ Phase 57 |
 | **Spaceship operator `<=>`** | `a <=> b` (Int) lowers to the three-way sign `ite(a<b, -1, ite(a==b, 0, 1))` — exactly `Integer.compareTo`'s `-1/0/1` — so a `compareTo`/`compare` method's three-way contract verifies. Int-oriented like the other comparisons; a `String <=>` (lexicographic) skips (would need Z3 string ordering) | ✅ Phase 58 |
 | **Security lattice, proved well-formed** | A user-defined `enum` of classification levels with pure `leq`/`join`/`meet` functions, *proved* a lattice — `leq` a partial order, `join`/`meet` the lub/glb — by the same empty-bodied law lemmas the monad/monoid arcs use, now over a new algebra. A mis-specified order (non-transitive `leq`, a "join" that isn't an upper bound) refutes with the witnessing triple. Two general engine enablers fell out: same-class pure functions now declare over their real **enum/Boolean range** (not Int-only), and enum-sorted scalars get a quantifier-free **domain-closure** axiom (`v == c1 ∨ … ∨ cN`), since Z3 models an `enum` as an open sort | ✅ Phase L0 |
-| **Information-flow noninterference (static labels)** | `@Label('High')` on a parameter, `@Label('Low')` on a method result; for each `return e` the verifier discharges `leq( join(ΓE(e), PC), L(result) )` over the class's own lattice, so a high value reaching a low result refutes ("information leak"). A syntax-directed walk threads a `Γ` environment and a **program-counter label**, catching **explicit** flow (`return secret`), flow **through locals** (`int t = secret; return t`),, **implicit** flow via the PC (`if (secret) t = a else t = b; return t` refutes though only `Low` values are assigned — PC *scoped* to its branch, so an independent low value after it verifies), and **interprocedural** flow into a sink parameter (`sink(secret)` where `sink(@Label('Low') x)` — the injection shape, refuted at the call). A generalisation of compile-time *taint* tracking to an arbitrary, machine-proved lattice that also catches implicit flows; confidentiality here is the dual of taint's integrity (the Γ/lattice encoding follows Smith §III). Same-class; loops, arrays, cross-class sinks, value-dependent labels and declassification are deferred (loud-skip; cross-class sinks skip silently) | ✅ Phase L1 |
+| **Information-flow noninterference (static labels)** | `@Label('High')` on a parameter, `@Label('Low')` on a method result; for each `return e` the verifier discharges `leq( join(ΓE(e), PC), L(result) )` over the class's own lattice, so a high value reaching a low result refutes ("information leak"). A syntax-directed walk threads a `Γ` environment and a **program-counter label**, catching **explicit** flow (`return secret`), flow **through locals** (`int t = secret; return t`),, **implicit** flow via the PC (`if (secret) t = a else t = b; return t` refutes though only `Low` values are assigned — PC *scoped* to its branch, so an independent low value after it verifies), and **interprocedural** flow into a sink parameter (`sink(secret)` where `sink(@Label('Low') x)` — the injection shape, refuted at the call). A generalisation of compile-time *taint* tracking to an arbitrary, machine-proved lattice that also catches implicit flows; confidentiality here is the dual of taint's integrity (the Γ/lattice encoding follows Smith §III). Interprocedural sinks resolve same-class and **cross-class within the compilation unit** (static `ClassName.sink(arg)` and instance `recv.sink(arg)` via the receiver's type); loops, arrays, value-dependent labels and declassification are deferred, and a sink in a precompiled/imported class or via a field receiver skips silently | ✅ Phase L1 |
 
 ## Building & testing
 
