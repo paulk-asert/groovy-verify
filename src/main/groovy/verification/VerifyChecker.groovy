@@ -59,6 +59,7 @@ import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -2179,6 +2180,21 @@ class VerifyChecker extends TypeCheckingExtension {
                 }
                 continue
             }
+            if (st instanceof AssertStatement) {
+                // A user `assert P` is an obligation the author wrote explicitly: prove P at this point under the
+                // reaching context. First collect any implicit obligations inside P (e.g. the `a[i]` in
+                // `assert a[i] > 0`); then add the assertion itself; then thread it as a Guard so a *subsequent*
+                // obligation may use it (e.g. `assert i < n; … a[i]`) — sound by assume/enforce, since P is proven
+                // by the obligation just added.
+                Expression cond = ((AssertStatement) st).booleanExpression
+                scanObligations(cond, steps, out)
+                AssertSite as = new AssertSite()
+                as.node = st
+                as.cond = cond
+                out.add(mkVf(as, new ArrayList<Object>(steps)))
+                steps.add(new Guard(cond, true))
+                continue
+            }
             // Loops, switch, try/catch, etc. — outside the value-flow fragment.
             throw new UnsupportedConstructException(
                 "statement ${st.class.simpleName} outside value-flow fragment")
@@ -2537,6 +2553,21 @@ class VerifyChecker extends TypeCheckingExtension {
      * discharged. Shared by the havoc pass and the Phase 5 value-flow pass.
      */
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+        if (site instanceof AssertSite) {
+            AssertSite as = (AssertSite) site
+            Object p = enc.translateGoal(as.cond)
+            if (p == null) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
+                    "condition '${as.cond.text}' is outside fragment"), as.node)
+                return
+            }
+            s.assertExpr(s.not(p))                       // negation of the asserted predicate
+            CheckResult r = shown(s.check())
+            if (r.status != CheckResult.Status.VERIFIED) {
+                addStaticTypeError(Reporter.formatAssertion(as.cond.text, r), as.node)
+            }
+            return
+        }
         if (site instanceof IndexSite) {
             IndexSite ix = (IndexSite) site
             // m[k] on a map is a key lookup, not a bounds-checked array index — no obligation.
@@ -3427,6 +3458,8 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     @CompileStatic private static class IndexSite  { ASTNode node; String receiver; Expression index }
+    /** A user {@code assert P} — its own obligation is the predicate {@code cond} itself. */
+    @CompileStatic private static class AssertSite { ASTNode node; Expression cond }
     // requirePositive: Groovy's a.mod(b) (BigInteger.mod) throws unless b > 0; the `%`/`/`/intdiv/
     // remainder forms only require b != 0.
     @CompileStatic private static class DivideSite { ASTNode node; Expression divisor; boolean requirePositive = false }

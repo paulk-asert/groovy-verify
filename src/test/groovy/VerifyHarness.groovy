@@ -10492,6 +10492,52 @@ class WrapCounter implements Counter { }
                         }
                     }''')],
 
+        // ----- Inline `assert` as a compile-time obligation (Dafny-style) -----
+        // The motivating example: a constant-true assert compiles, a constant-false one refuses to compile.
+        [group: 'PL-assert', name: 'assert: true constant verifies', ok: true,
+         src: tc('''class C { static void f() { assert 2 < 3 } }''')],
+        [group: 'PL-assert', name: 'assert: false constant refuted at compile time', expect: 'Assertion may not hold',
+         src: tc('''class C { static void f() { assert 3 < 2 } }''')],
+        // The substance: an assert over program state, proved from the @Requires.
+        [group: 'PL-assert', name: 'assert: provable from @Requires verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ x > 5 })
+                        static void f(int x) { assert x > 0 }
+                    }''')],
+        // …and refuted when the context doesn't justify it (counterexample x = 0).
+        [group: 'PL-assert', name: 'assert: unjustified over a parameter refuted', expect: 'Assertion may not hold',
+         src: tc('''class C {
+                        static void f(int x) { assert x > 0 }
+                    }''')],
+        // Proved from a preceding assignment (value-flow), not just a guard.
+        [group: 'PL-assert', name: 'assert: provable from a preceding assignment verifies', ok: true,
+         src: tc('''class C {
+                        static void f() { int y = 7; assert y > 0 }
+                    }''')],
+        // An assert provable from the @Requires sits alongside a verified array access — both checked, clean.
+        // (A sound assert must itself be provable; an `assert i < a.length` with an unconstrained `i` correctly
+        // refutes, exactly as Dafny would.)
+        [group: 'PL-assert', name: 'assert provable from @Requires, beside a verified array access', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && i >= 0 && i < a.length })
+                        static int f(int[] a, int i) { assert i < a.length; return a[i] }
+                    }''')],
+        // THE WART FIX: an assert in a contracted body no longer skips the @Ensures — it is now checked (and here
+        // the @Ensures holds, so the method verifies cleanly with the assert present).
+        [group: 'PL-assert', name: 'assert in body no longer disables the @Ensures', ok: true,
+         src: tc('''class C {
+                        @Requires({ x > 0 })
+                        @Ensures({ result == x })
+                        static int f(int x) { assert x > 0; return x }
+                    }''')],
+        // …and the @Ensures is genuinely checked alongside the assert: a wrong @Ensures still refutes.
+        [group: 'PL-assert', name: 'assert present, wrong @Ensures still refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ x > 0 })
+                        @Ensures({ result == x + 1 })
+                        static int f(int x) { assert x > 0; return x }
+                    }''')],
+
         // ----- Rely/guarantee well-formedness (Smith §IV compatibility lemmas) -----
         // The producer/consumer R/G conditions over shared (head, tail). Each predicate is a two-state function:
         // the first half of its parameters is the pre-state, the second half the post-state. The verifier auto-

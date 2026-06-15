@@ -31,6 +31,7 @@ import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.syntax.Token
+import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -188,6 +189,15 @@ class BodyEncoder {
             Path np = copy(prefix)
             np.result = ((ReturnStatement) s).expression
             res.terminated.add(np)
+            return res
+        }
+
+        if (s instanceof AssertStatement) {
+            // A user `assert P` has no effect on the value/path model the postcondition walk needs, so it is
+            // passed through here rather than aborting the @Ensures proof (it used to fall to the unsupported
+            // throw, silently skipping the postcondition). The assertion itself is discharged as an obligation
+            // by the implicit-obligation pass; it is not yet *assumed* downstream of this point (a later slice).
+            res.live.add(prefix)
             return res
         }
 

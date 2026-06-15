@@ -499,6 +499,24 @@ intermediate `assert` can be discharged by evaluation) and with Phase 6's
 instantiation hints. It is the bounded, defensible cousin of tactics: control
 when automation fails, without becoming a proof assistant.
 
+**The bare `assert P` as a compile-time obligation — *shipped*.** A Groovy
+`assert P` in a verified body is now discharged at compile time: `assert 2 < 3`
+compiles, `assert 3 < 2` does not, and `assert P(state)` is proved (or refuted
+with a counterexample) under the reaching context — `@Requires`, prior
+single-assignments, and enclosing guards (it rides the Phase-5 value-flow pass,
+so `int y = 7; assert y > 0` proves from the assignment, not just a guard). A
+proven assert is also threaded as a fact for *subsequent* implicit obligations
+(`assert i < n; … a[i]`), sound by assume/enforce. Two things this *closes*: the
+capability itself (a Dafny `assert`), and a latent wart — an `assert` in a body
+used to make `BodyEncoder` bail and **silently skip the `@Ensures`**; it is now
+passed through, so the postcondition is still checked. *Still deferred (the rest
+of 8b):* **assuming** a proven assert downstream of the *postcondition* (so an
+`@Ensures` that *depends* on an assert can use it — today such an `@Ensures` is
+checked without it), `assert … by { }` blocks, `calc` chains, and asserts inside
+loop bodies / past a re-assignment (outside the value-flow fragment → unchecked,
+a documented boundary, not a silent pass within the fragment). Locked by
+`PL-assert`.
+
 ### Not in scope here
 
 Full interactive tactics and proof terms (the Coq/Lean/F\* `intro; split; qed`

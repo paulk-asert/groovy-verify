@@ -2428,6 +2428,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | Preconditions discharged at call sites | `@Requires` | ✅ |
 | Postconditions vs. method body | `@Ensures` | ✅ |
 | Loop invariants & termination | `@Invariant` / `@Decreases` | ✅ |
+| **Inline `assert P` discharged at compile time** (Dafny-style) — `assert 3 < 2` fails to compile; `assert P(state)` proved under `@Requires` + prior assignments + guards, refuted with a counterexample; a proven assert feeds later bounds/null/div checks. Straight-line + `if`/`else` (value-flow fragment); loop bodies deferred | `assert P` | ✅ Phase 8b |
 | **Array/list index in bounds** | *(implicit)* | ✅ Phase 1 |
 | **Division / modulo by zero** | *(implicit)* | ✅ Phase 1 |
 | **Null dereference** | *(implicit)* | ✅ Phase 1 |

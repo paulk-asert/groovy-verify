@@ -275,6 +275,15 @@ class Reporter {
         "The call is allowed to proceed unchecked."
     }
 
+    // ---- User assertions (Dafny-style compile-time `assert`) ----
+
+    /** A user {@code assert P} the verifier could not prove holds at that point (or refuted with a counterexample). */
+    static String formatAssertion(String assertText, CheckResult result) {
+        implicit("Assertion may not hold: ${assertText}",
+            assertText,
+            "Could not decide assertion: ${assertText}", result)
+    }
+
     // ---- Implicit safety obligations (array bounds, division, null deref) ----
 
     static String formatIndexBounds(String indexText, String sizeTerm, CheckResult result) {
