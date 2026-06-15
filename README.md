@@ -1851,11 +1851,11 @@ termination; that needs concurrent separation logic, out of scope for a sequenti
 
 There is one further sliver of the *rely/guarantee* story that **is** pure logic, so we do check it:
 `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state, with the verifier auto-discharging the
-§IV **compatibility lemmas** — each rely reflexive and transitive, each guarantee reflexive, and every thread's
-guarantee implying every *other* thread's rely (`G_i ⟹ R_j`). A producer/consumer's conditions over `(head,
-tail)` verify; a producer that stops keeping `head` fixed refutes against the consumer's rely. That certifies the
-rely/guarantee *conditions* compose — the gluing logic of thread-local reasoning — but it still doesn't prove the
-threads' *code* respects them (the havoc-under-rely interleaving proof is the part that stays out).
+rely/guarantee **compatibility lemmas** — each rely reflexive and transitive, each guarantee reflexive, and every
+thread's guarantee implying every *other* thread's rely (`G_i ⟹ R_j`). That certifies the rely/guarantee *conditions*
+compose — the gluing logic of thread-local reasoning — but it still doesn't prove the threads' *code* respects
+them (the havoc-under-rely interleaving proof is the part that stays out). The producer/consumer below is the
+worked example.
 
 ### Locks — the monitor invariant
 
@@ -1979,6 +1979,47 @@ stages resolve lazily at the receive site, so a producer in a trailing `async {}
 value.) The functional transform `(x + 1) * 2` proves; claim `result == x + 1` instead and it refutes with a
 counterexample. As everywhere in this section, FIFO delivery is the assumed half — we prove *what each element
 becomes*, not that the channel delivers or terminates.
+
+### Rely/guarantee — proving the conditions compose
+
+The producer/consumer is the capstone case study of the information-flow paper this work follows — Smith's
+*A Dafny-based approach to thread-local information flow analysis*. Most of that case study is machine-checked by
+the [information-flow examples](#information-flow--taint-tracking-generalized) further down: the buffer element's
+classification is *value-dependent* on `head`/`tail`, advancing `tail` is a *secure-update* on a control variable,
+and the producer *declassifies* what it releases. The one concurrency-specific piece is the **rely/guarantee**
+coupling (the paper's §IV) — `head`/`tail` are shared, so each thread reasons locally by *relying* on how its
+neighbour behaves. Those conditions are two-state predicates (the parameters split into a pre-state and a
+post-state), and the verifier proves they *compose*:
+
+```groovy
+class Buffer {                                   // shared state: int head, int tail
+    @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) {
+        head == oldHead && oldTail <= tail       // env keeps my read pointer, only grows the buffer
+    }
+    @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) {
+        head == oldHead && oldTail <= tail       // I never move head; I only append
+    }
+    @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) {
+        tail == oldTail                          // env keeps my write pointer
+    }
+    @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) {
+        tail == oldTail && oldHead <= head       // I never move tail; I only advance head
+    }
+}
+```
+
+This compiles clean: `gProd ⟹ rCons` and `gCons ⟹ rProd` both hold, and every rely is reflexive and transitive —
+the lemmas that justify analysing each thread alone. Weaken `gProd` to drop `head == oldHead` (let the producer
+move the consumer's read pointer) and it no longer implies the consumer's rely:
+
+```
+[Static type checking] - Rely/guarantee compatibility does not hold: guarantee 'gProd' (Producer) implies rely 'rCons' (Consumer)
+```
+
+That is the **gluing logic** of thread-local reasoning. What it does *not* do is prove the threads' code actually
+maintains its guarantee — that step instruments each body with a havoc-under-rely between statements, the
+interleaving proof a sequential checker leaves out. So the producer/consumer's *information flow* and its
+rely/guarantee *conditions* are verified; only the interleaving is assumed.
 
 ## Other Examples
 
