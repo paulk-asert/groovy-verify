@@ -822,7 +822,18 @@ class Encoder {
         if (t.isEnum() || isEnumLikeType(t)) return session.declareSort(enumSortName(t))
         FieldNode cf = wrapperContentField(t)   // Phase B — a wrapper carrier is a one-constructor datatype
         if (cf != null) return session.wrapperSort(t.nameWithoutPackage, contentSortFor(cf))
+        Object[] mc = multiCaseInfo(t)          // Phase M-C — a two-case carrier (Some|None) is a two-constructor datatype
+        if (mc != null) return multiCaseSort(t, (FieldNode) mc[2])
         session.intSort()   // default — preserves today's Int-only behaviour for unrecognised types
+    }
+
+    /** Phase M-C — declare/get the {@code Some(content) | None} datatype sort for a recognised two-case carrier. */
+    private Object multiCaseSort(ClassNode carrier, FieldNode contentField) {
+        Object cSort = contentSortFor(contentField)
+        session.datatypeSort(carrier.nameWithoutPackage, [
+            ['Some', [[contentField.name, cSort] as Object[]]] as Object[],
+            ['None', []] as Object[]
+        ])
     }
 
     /** Phase C — the SMT sort of a wrapper carrier's content. An {@code Object} content field shares the
@@ -862,17 +873,20 @@ class Encoder {
     private ClassNode carrierTypeOf(Expression obj) {
         if (obj instanceof VariableExpression) {
             ClassNode t = scalarTypes.get(((VariableExpression) obj).name)
-            return wrapperContentField(t) != null ? t : null
+            return (wrapperContentField(t) != null || multiCaseInfo(t) != null) ? t : null
         }
         if (obj instanceof ConstructorCallExpression && ((ConstructorCallExpression) obj).type != null)
             return carrierByName(((ConstructorCallExpression) obj).type.nameWithoutPackage)
         if (obj instanceof MethodCallExpression) {
             MethodCallExpression mc = (MethodCallExpression) obj
             String mm = mc.methodAsString
+            // Phase M-C — some(v)/none() factory of a two-case carrier returns that carrier
+            Object[] fac = carrierFactoryMatch(mm, argList(mc).size())
+            if (fac != null) return (ClassNode) fac[0]
             // f.apply(x) where f is a Function declared to return a carrier
             if (mm == 'apply' && mc.objectExpression instanceof VariableExpression) {
                 ClassNode rt = functionReturnTypes.get(((VariableExpression) mc.objectExpression).name)
-                if (rt != null && wrapperContentField(rt) != null) return rt
+                if (rt != null && isCarrier(rt)) return rt
             }
             // recv.bind(…) / recv.map(…) returns recv's carrier type
             ClassNode rct = carrierTypeOf(mc.objectExpression)
@@ -881,11 +895,153 @@ class Encoder {
         null
     }
 
-    /** True if {@code pe} reads a wrapper carrier's content field (`m.v`). */
+    /** True if {@code pe} reads a carrier's content field (`m.v` for a wrapper, `m.value` for a two-case carrier). */
     private boolean isCarrierContentRead(PropertyExpression pe) {
         ClassNode ct = carrierTypeOf(pe.objectExpression)
-        FieldNode cf = ct != null ? wrapperContentField(ct) : null
-        cf != null && cf.name == pe.propertyAsString
+        if (ct == null) return false
+        FieldNode cf = wrapperContentField(ct)
+        if (cf != null) return cf.name == pe.propertyAsString
+        Object[] mc = multiCaseInfo(ct)
+        mc != null && ((FieldNode) mc[2]).name == pe.propertyAsString
+    }
+
+    // ---- Phase M-C: recognise a tightly-scoped two-case carrier (Some(content) | None) ----
+
+    /** Info for a recognised two-case {@code @Monadic} carrier: {@code [someFactory(String), noneFactory(String),
+     *  contentField(FieldNode)]}, or null. Tightly scoped: {@code @Monadic}, exactly two non-static fields (one
+     *  {@code boolean} discriminant + one content), a static 1-arg unit/some factory and a static 0-arg none
+     *  factory, both returning the carrier. (A single-field wrapper is the Phase-B path and is excluded here.) */
+    /** True if {@code cn} is a recognised carrier — a single-field wrapper (Phase B) or a two-case carrier (M-C). */
+    static boolean isCarrier(ClassNode cn) { wrapperContentField(cn) != null || multiCaseInfo(cn) != null }
+
+    static Object[] multiCaseInfo(ClassNode cn) {
+        if (cn == null || wrapperContentField(cn) != null || monadicAnn(cn) == null) return null
+        List<FieldNode> inst = new ArrayList<FieldNode>()
+        for (FieldNode f : (cn.fields ?: [])) if (!f.isStatic()) inst.add(f)
+        if (inst.size() != 2) return null
+        FieldNode boolF = null, contentF = null
+        for (FieldNode f : inst) {
+            String tn = f.type?.name
+            if (tn == 'boolean' || tn == 'java.lang.Boolean') boolF = f else contentF = f
+        }
+        if (boolF == null || contentF == null) return null
+        String someName = monadicMember(cn, 'unit', 'some')
+        if (staticFactory(cn, someName, 1) == null) return null
+        MethodNode noneM = staticFactory(cn, null, 0)
+        noneM != null ? [someName, noneM.name, contentF, boolF] as Object[] : null
+    }
+
+    /** A static method on {@code cn} returning the carrier itself, with the given arity; {@code name} null matches
+     *  any name (used to find the nullary {@code none} factory). */
+    private static MethodNode staticFactory(ClassNode cn, String name, int arity) {
+        for (MethodNode mn : (cn.methods ?: [])) {
+            if (mn.isStatic() && mn.parameters.length == arity && (name == null || mn.name == name) &&
+                mn.returnType?.nameWithoutPackage == cn.nameWithoutPackage) return mn
+        }
+        null
+    }
+
+    /** If {@code methodName}/{@code arity} is the some (1-arg) or none (0-arg) factory of a two-case carrier in
+     *  scope, return {@code [carrier(ClassNode), ctorName('Some'|'None'), contentField(FieldNode)]}; else null. */
+    private Object[] carrierFactoryMatch(String methodName, int arity) {
+        for (ClassNode cn : carrierTypes.values()) {
+            Object[] mc = multiCaseInfo(cn)
+            if (mc == null) continue
+            if (arity == 1 && mc[0] == methodName) return [cn, 'Some', mc[2]] as Object[]
+            if (arity == 0 && mc[1] == methodName) return [cn, 'None', mc[2]] as Object[]
+        }
+        null
+    }
+
+    // ---- Phase M-D: case-split flatMap/map bodies (`present ? someCase : this`) for a two-case carrier ----
+
+    private static boolean isFieldRef(Expression e, String name) {
+        if (e instanceof BooleanExpression) e = ((BooleanExpression) e).expression
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name == name
+        (e instanceof PropertyExpression && isThisExpr(((PropertyExpression) e).objectExpression) &&
+            ((PropertyExpression) e).propertyAsString == name)
+    }
+    private static boolean isThisExpr(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == 'this'
+    }
+    /** The true-branch of a `<discriminant> ? trueExpr : this` body (clean snapshot), or null. */
+    private static Expression caseSplitTrueExpr(MethodNode mn, String discrimName) {
+        Expression body = soleReturnExpr(mn)
+        if (!(body instanceof TernaryExpression)) return null
+        TernaryExpression t = (TernaryExpression) body
+        (isFieldRef(t.booleanExpression, discrimName) && isThisExpr(t.falseExpression)) ? t.trueExpression : null
+    }
+    // A factory call in a resolved method body is a StaticMethodCallExpression (`Maybe.some(…)`); in a re-parsed
+    // contract it's a MethodCallExpression (`some(…)`). These read either form uniformly.
+    private static String callName(Expression e) {
+        if (e instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) e).method
+        if (e instanceof MethodCallExpression) return ((MethodCallExpression) e).methodAsString
+        null
+    }
+    private static List<Expression> callArgs(Expression e) {
+        Expression a = (e instanceof StaticMethodCallExpression) ? ((StaticMethodCallExpression) e).arguments :
+                       (e instanceof MethodCallExpression) ? ((MethodCallExpression) e).arguments : null
+        (a instanceof ArgumentListExpression) ? ((ArgumentListExpression) a).expressions : Collections.<Expression>emptyList()
+    }
+    /** {@code factory(param.apply(content))} — a Some-wrap of the mapped value. */
+    private static boolean isFactoryOfApply(Expression e, String factory, String param, String content) {
+        if (callName(e) != factory) return false
+        List<Expression> as = callArgs(e)
+        as.size() == 1 && isApplyOnParamToField(as.get(0), param, content)
+    }
+    /** A nullary {@code factory()} call (the none-wrap). */
+    private static boolean isNullaryFactory(Expression e, String factory) {
+        callName(e) == factory && callArgs(e).isEmpty()
+    }
+    /** {@code param.apply(content) == null}. */
+    private static boolean isApplyEqNull(Expression e, String param, String content) {
+        if (e instanceof BooleanExpression) e = ((BooleanExpression) e).expression
+        if (!(e instanceof BinaryExpression)) return false
+        BinaryExpression b = (BinaryExpression) e
+        if (b.operation.type != Types.COMPARE_EQUAL) return false
+        boolean lnull = b.rightExpression instanceof ConstantExpression && ((ConstantExpression) b.rightExpression).value == null
+        Expression other = lnull ? b.leftExpression : b.rightExpression
+        boolean otherNull = b.leftExpression instanceof ConstantExpression && ((ConstantExpression) b.leftExpression).value == null
+        (lnull || otherNull) && isApplyOnParamToField(lnull ? b.leftExpression : b.rightExpression, param, content)
+    }
+
+    /** Phase M-D — verify a carrier's bind is the lawful two-case shape `present ? (C) f.apply(content) : this`. */
+    private static boolean isMultiCaseBind(ClassNode ct, String name, Object[] mc) {
+        MethodNode mn = singleArgMethod(ct, name)
+        if (mn == null) return false
+        Expression t = caseSplitTrueExpr(mn, ((FieldNode) mc[3]).name)
+        t != null && isApplyOnParamToField(t, mn.parameters[0].name, ((FieldNode) mc[2]).name)
+    }
+    /** Phase M-D — a carrier's map kind: 'vavr' (`present ? some(g(content)) : this`), 'optional' (`present ?
+     *  (g(content)==null ? none() : some(g(content))) : this`), or null. The discriminator for the functor law. */
+    private static String multiCaseMapKind(ClassNode ct, String name, Object[] mc) {
+        MethodNode mn = singleArgMethod(ct, name)
+        if (mn == null) return null
+        Expression t = caseSplitTrueExpr(mn, ((FieldNode) mc[3]).name)
+        if (t == null) return null
+        String p = mn.parameters[0].name, content = ((FieldNode) mc[2]).name, some = (String) mc[0], none = (String) mc[1]
+        if (isFactoryOfApply(t, some, p, content)) return 'vavr'
+        if (t instanceof TernaryExpression) {
+            TernaryExpression tt = (TernaryExpression) t
+            if (isApplyEqNull(tt.booleanExpression, p, content) && isNullaryFactory(tt.trueExpression, none) &&
+                isFactoryOfApply(tt.falseExpression, some, p, content)) return 'optional'
+        }
+        null
+    }
+    /** Phase M-D — the discriminant is wired canonically: {@code some} constructs with the discriminant arg
+     *  {@code true}, {@code none} with {@code false}, so {@code present(m) ⟺ is$Some(m)} (model soundness). */
+    private static boolean isCanonicalWiring(ClassNode cn, Object[] mc) {
+        ctorBoolArg(staticFactory(cn, (String) mc[0], 1), Boolean.TRUE) &&
+        ctorBoolArg(staticFactory(cn, (String) mc[1], 0), Boolean.FALSE)
+    }
+    private static boolean ctorBoolArg(MethodNode factory, Boolean expected) {
+        if (factory == null) return false
+        Expression body = soleReturnExpr(factory)
+        if (!(body instanceof ConstructorCallExpression)) return false
+        List<Expression> as = (((ConstructorCallExpression) body).arguments instanceof ArgumentListExpression) ?
+            ((ArgumentListExpression) ((ConstructorCallExpression) body).arguments).expressions : Collections.<Expression>emptyList()
+        // the boolean discriminant is the first constructor argument in the canonical idiom
+        !as.isEmpty() && as.get(0) instanceof ConstantExpression && ((ConstantExpression) as.get(0)).value == expected
     }
 
     // ---- Phase C: the bind/map method names a carrier declares, and whether their bodies are Identity-shaped ----
@@ -906,6 +1062,22 @@ class Encoder {
     static boolean isIdentityWrapperCarrier(ClassNode cn) {
         FieldNode cf = wrapperContentField(cn)
         cf != null && isIdentityBind(cn, bindMethodName(cn), cf) && isIdentityMap(cn, mapMethodName(cn), cf)
+    }
+
+    /** Phase M-E — true if {@code cn} is a modellable two-case carrier (canonical wiring, lawful case-split bind,
+     *  a recognised map kind — Vavr or Optional). The auto-synthesis gates on this; the *verdict* (whether the
+     *  laws then hold) is the synthesis's job — an Optional-style carrier is modellable yet refutes functor
+     *  composition. The some-factory name (its `unit`) is {@code multiCaseInfo(cn)[0]}. */
+    static boolean isModellableTwoCaseCarrier(ClassNode cn) {
+        Object[] mc = multiCaseInfo(cn)
+        mc != null && isCanonicalWiring(cn, mc) &&
+            isMultiCaseBind(cn, bindMethodName(cn), mc) && multiCaseMapKind(cn, mapMethodName(cn), mc) != null
+    }
+
+    /** Phase M-E — the some-factory (unit) name of a recognised two-case carrier, or null. */
+    static String someFactoryName(ClassNode cn) {
+        Object[] mc = multiCaseInfo(cn)
+        mc != null ? (String) mc[0] : null
     }
 
     /** The single-argument method named {@code name} on {@code ct}, or null. */
@@ -956,11 +1128,20 @@ class Encoder {
      *  function (the bind/map of left identity), or beta-reduction for a single-parameter closure literal — which
      *  is how the {@code unit} ({@code x -> new C(x)}) and {@code identity} ({@code x -> x}) functions of the
      *  right-/functor-identity laws reach a carrier. Returns null for forms not yet modelled (e.g. method refs). */
+    /** The SMT range of {@code f.apply(...)} from {@code f}'s declared return type: an {@code Object} return uses
+     *  the shared value sort (not the Int default), a carrier return its datatype, anything else its natural sort;
+     *  an unknown return type falls back to {@code defaultRange}. */
+    private Object functionRange(String fname, Object defaultRange) {
+        ClassNode rt = functionReturnTypes.get(fname)
+        if (rt == null) return defaultRange
+        if (rt.name == 'java.lang.Object') return session.declareSort('Object')
+        sortFor(rt)
+    }
+
     private Object applyFunction(Expression fexpr, Object arg, Object defaultRange) {
         if (fexpr instanceof VariableExpression) {
             String fn = ((VariableExpression) fexpr).name
-            ClassNode rt = functionReturnTypes.get(fn)
-            return session.applyUF('apply$' + fn, [arg], rt != null ? sortFor(rt) : defaultRange)
+            return session.applyUF('apply$' + fn, [arg], functionRange(fn, defaultRange))
         }
         if (fexpr instanceof ClosureExpression) {
             ClosureExpression cl = (ClosureExpression) fexpr
@@ -3336,17 +3517,21 @@ class Encoder {
             PropertyExpression pe = (PropertyExpression) expr
             String prop = pe.propertyAsString
             Expression obj = pe.objectExpression
-            // Phase B — `<carrier>.content`: the datatype selector (content read). The receiver may be a
-            // carrier-typed variable (`m.v`) or a freshly-constructed carrier (`new Res(x).v`).
-            ClassNode mt = null
-            if (obj instanceof VariableExpression) mt = scalarTypes.get(((VariableExpression) obj).name)
-            else if (obj instanceof ConstructorCallExpression && ((ConstructorCallExpression) obj).type != null)
-                mt = carrierByName(((ConstructorCallExpression) obj).type.nameWithoutPackage)
-            FieldNode cf = mt != null ? wrapperContentField(mt) : null
-            if (cf != null && cf.name == prop) {
-                Object cSort = contentSortFor(cf)
-                Object carrier = translate(obj)
-                if (carrier != null) return session.wrapperContent(mt.nameWithoutPackage, cSort, carrier)
+            // Phase B/M-C — `<carrier>.content`: the datatype selector. The receiver may be a carrier-typed
+            // variable, a freshly-constructed carrier (`new Res(x).v`), or a factory call (`some(x).value`).
+            ClassNode mt = carrierTypeOf(obj)
+            if (mt != null) {
+                FieldNode cf = wrapperContentField(mt)
+                if (cf != null && cf.name == prop) {
+                    Object carrier = translate(obj)
+                    if (carrier != null) return session.wrapperContent(mt.nameWithoutPackage, contentSortFor(cf), carrier)
+                }
+                Object[] mc = multiCaseInfo(mt)
+                if (mc != null && ((FieldNode) mc[2]).name == prop) {
+                    sortFor(mt)
+                    Object carrier = translate(obj)
+                    if (carrier != null) return session.datatypeSelect(mt.nameWithoutPackage, 'Some', prop, carrier)
+                }
             }
             // Phase 44 polish — JDK boxed-numeric range constants fold to their literal values, so a
             // user can write {@code @Requires({ n < Integer.MAX_VALUE })} (or the {@code Long}
@@ -4280,6 +4465,17 @@ class Encoder {
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
 
+        // Phase M-C — `some(v)` / `none()` factory call of a two-case carrier → the datatype constructor.
+        Object[] fac = carrierFactoryMatch(m, args.size())
+        if (fac != null) {
+            ClassNode cn = (ClassNode) fac[0]
+            String ctor = (String) fac[1]
+            sortFor(cn)   // ensure the datatype is declared
+            if (ctor == 'None') return session.datatypeConstruct(cn.nameWithoutPackage, 'None', [])
+            Object val = translateInSort(args.get(0), contentSortFor((FieldNode) fac[2]))
+            if (val != null) return session.datatypeConstruct(cn.nameWithoutPackage, 'Some', [val])
+        }
+
         // Phase A (higher-order) — `f.apply(x)` on a stable named reference (a parameter/field/local `f`):
         // model `f` as an uninterpreted function over an uninterpreted value sort. We know nothing about what
         // `f` computes, only that it is a function (equal arguments → equal results), which is exactly an
@@ -4289,8 +4485,7 @@ class Encoder {
         if (m == 'apply' && args.size() == 1 && recv instanceof VariableExpression) {
             Object vSort = session.declareSort('Object')
             String rn = ((VariableExpression) recv).name
-            ClassNode rt = functionReturnTypes.get(rn)
-            Object range = rt != null ? sortFor(rt) : vSort      // Phase C — a bind function returns the carrier
+            Object range = functionRange(rn, vSort)              // Phase C — a bind function returns the carrier
             Object arg = translateInSort(args.get(0), vSort)
             if (arg != null) return session.applyUF('apply$' + rn, [arg], range)
         }
@@ -4317,6 +4512,36 @@ class Encoder {
                     Object content = session.wrapperContent(ct.nameWithoutPackage, cSort, recvH)
                     Object mapped = applyFunction(args.get(0), content, cSort)
                     if (mapped != null) return session.wrapperUnit(ct.nameWithoutPackage, cSort, mapped)
+                }
+            }
+            // Phase M-D — a two-case carrier's case-split bind/map: `ite(is$Some(m), someCase, m)`. bind is the
+            // same for any lawful Maybe; map's some-case is the discriminator — Vavr wraps in Some, Optional
+            // collapses a null result to None (which is where its functor law breaks).
+            Object[] mc = ct != null ? multiCaseInfo(ct) : null
+            if (mc != null && isCanonicalWiring(ct, mc) && (m == bindMethodName(ct) || m == mapMethodName(ct))) {
+                Object recvH = translate(recv)
+                if (recvH != null) {
+                    String tn = ct.nameWithoutPackage
+                    FieldNode cfld = (FieldNode) mc[2]
+                    Object cSort = contentSortFor(cfld)
+                    sortFor(ct)   // ensure datatype declared
+                    Object isSome = session.datatypeRecognize(tn, 'Some', recvH)
+                    Object content = session.datatypeSelect(tn, 'Some', cfld.name, recvH)
+                    if (m == bindMethodName(ct) && isMultiCaseBind(ct, m, mc)) {
+                        Object someCase = applyFunction(args.get(0), content, sortFor(ct))   // f.apply(content): carrier
+                        if (someCase != null) return session.ite(isSome, someCase, recvH)
+                    }
+                    if (m == mapMethodName(ct)) {
+                        String kind = multiCaseMapKind(ct, m, mc)
+                        Object mapped = kind != null ? applyFunction(args.get(0), content, cSort) : null   // g.apply(content): value
+                        if (mapped != null) {
+                            Object someV = session.datatypeConstruct(tn, 'Some', [mapped])
+                            Object someCase = (kind == 'vavr') ? someV :
+                                session.ite(session.eq(mapped, session.nullValue(cSort)),
+                                            session.datatypeConstruct(tn, 'None', []), someV)
+                            return session.ite(isSome, someCase, recvH)
+                        }
+                    }
                 }
             }
         }

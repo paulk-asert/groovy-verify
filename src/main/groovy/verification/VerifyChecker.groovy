@@ -286,13 +286,13 @@ class VerifyChecker extends TypeCheckingExtension {
     private static Map<String, ClassNode> collectCarrierTypes(MethodNode node) {
         Map<String, ClassNode> out = new HashMap<String, ClassNode>()
         ClassNode dc = node.declaringClass
-        if (dc != null && Encoder.wrapperContentField(dc) != null) out.put(dc.nameWithoutPackage, dc)
+        if (dc != null && Encoder.isCarrier(dc)) out.put(dc.nameWithoutPackage, dc)
         for (Parameter p : node.parameters) {
             ClassNode t = p.type
-            if (t != null && Encoder.wrapperContentField(t) != null) out.put(t.nameWithoutPackage, t)
+            if (t != null && Encoder.isCarrier(t)) out.put(t.nameWithoutPackage, t)
         }
         ClassNode rt = node.returnType
-        if (rt != null && Encoder.wrapperContentField(rt) != null) out.put(rt.nameWithoutPackage, rt)
+        if (rt != null && Encoder.isCarrier(rt)) out.put(rt.nameWithoutPackage, rt)
         out
     }
 
@@ -460,27 +460,40 @@ class VerifyChecker extends TypeCheckingExtension {
             if (cn != null && (cn == 'Monadic' || cn.endsWith('.Monadic'))) { monadic = a; break }
         }
         if (monadic == null) return
-        // Only the modellable shape (single-value wrapper with Identity-shaped bind/map) is synthesised; other
-        // @Monadic carriers (multi-case Maybe/Either, effectful Stream, or any non-Identity bind/map) are out of
-        // scope — left to the annotation's own assertion, no synthesis, no noise.
-        if (!Encoder.isIdentityWrapperCarrier(carrier)) return
+        // Two modellable shapes: a single-value Identity wrapper (Phase 136) and a two-case carrier (M-E). Other
+        // @Monadic carriers (effectful Stream, non-canonical shapes) are out of scope — no synthesis, no noise.
+        boolean identity = Encoder.isIdentityWrapperCarrier(carrier)
+        boolean twoCase = Encoder.isModellableTwoCaseCarrier(carrier)
+        if (!identity && !twoCase) return
         String bind = monadicMember(monadic, 'bind', 'flatMap')
         String map = monadicMember(monadic, 'map', 'map')
         String cn = carrier.nameWithoutPackage
-        // A `Function<Object, C>` type for the bind-function parameter, so f.apply ranges over the carrier.
-        ClassNode fnType = ClassHelper.make(java.util.function.Function).getPlainNodeReference()
-        fnType.setGenericsTypes([new GenericsType(ClassHelper.OBJECT_TYPE.getPlainNodeReference()),
-                                 new GenericsType(carrier.getPlainNodeReference())] as GenericsType[])
+        // unit(arg): `new C(arg)` for a wrapper, `some(arg)` for a two-case carrier.
+        String someF = twoCase ? Encoder.someFactoryName(carrier) : null
+        Closure<String> unit = { String arg -> twoCase ? "${someF}(${arg})" : "new ${cn}(${arg})" }
+        ClassNode fnCarrier = functionType(carrier)                    // Function<Object, C> — a bind function
+        ClassNode fnValue = functionType(ClassHelper.OBJECT_TYPE)      // Function<Object, Object> — a map function
         runMonadicLaw(carrier, 'left identity',
-            [new Parameter(ClassHelper.OBJECT_TYPE, 'a'), new Parameter(fnType, 'f')] as Parameter[],
-            "new ${cn}(a).${bind}(f) == f.apply(a)")
+            [new Parameter(ClassHelper.OBJECT_TYPE, 'a'), new Parameter(fnCarrier, 'f')] as Parameter[],
+            "${unit('a')}.${bind}(f) == f.apply(a)")
         runMonadicLaw(carrier, 'right identity', [new Parameter(carrier, 'm')] as Parameter[],
-            "m.${bind}({ x -> new ${cn}(x) }) == m")
+            "m.${bind}({ x -> ${unit('x')} }) == m")
         runMonadicLaw(carrier, 'functor identity', [new Parameter(carrier, 'm')] as Parameter[],
             "m.${map}({ x -> x }) == m")
+        runMonadicLaw(carrier, 'functor composition',
+            [new Parameter(carrier, 'm'), new Parameter(fnValue, 'p'), new Parameter(fnValue, 'q')] as Parameter[],
+            "m.${map}(p).${map}(q) == m.${map}({ x -> q.apply(p.apply(x)) })")
         runMonadicLaw(carrier, 'associativity',
-            [new Parameter(carrier, 'm'), new Parameter(fnType, 'f'), new Parameter(fnType, 'g')] as Parameter[],
+            [new Parameter(carrier, 'm'), new Parameter(fnCarrier, 'f'), new Parameter(fnCarrier, 'g')] as Parameter[],
             "m.${bind}(f).${bind}(g) == m.${bind}({ x -> f.apply(x).${bind}(g) })")
+    }
+
+    /** A {@code Function<Object, R>} ClassNode (so {@code f.apply}'s range is known). */
+    private static ClassNode functionType(ClassNode r) {
+        ClassNode fn = ClassHelper.make(java.util.function.Function).getPlainNodeReference()
+        fn.setGenericsTypes([new GenericsType(ClassHelper.OBJECT_TYPE.getPlainNodeReference()),
+                             new GenericsType(r.getPlainNodeReference())] as GenericsType[])
+        fn
     }
 
     /** {@code @Monadic}'s named bind/map member, or the structural default. */
@@ -883,12 +896,12 @@ class VerifyChecker extends TypeCheckingExtension {
         Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
         for (Parameter p : node.parameters) {
             ClassNode t = p.type
-            if (isNonIntScalar(t) || Encoder.wrapperContentField(t) != null) out.put(p.name, t)   // Phase B — carrier params
+            if (isNonIntScalar(t) || Encoder.isCarrier(t)) out.put(p.name, t)   // Phase B — carrier params
         }
         ClassNode dc = node.declaringClass
         if (dc != null) for (FieldNode f : dc.fields) {
             ClassNode t = f.type
-            if (isNonIntScalar(t) || Encoder.wrapperContentField(t) != null) out.put(f.name, t)
+            if (isNonIntScalar(t) || Encoder.isCarrier(t)) out.put(f.name, t)
         }
         // Phase 47h — the implicit {@code result} variable in {@code @Ensures} takes the
         // method's return type. Without this entry, a {@code @Ensures({ result.startsWith(…) })}
@@ -6443,6 +6456,11 @@ class VerifyChecker extends TypeCheckingExtension {
     private static void addNonNullFieldInvariants(ClassNode cn, List<Expression> out) {
         List<FieldNode> fields = cn.fields
         if (fields == null) return
+        // Phase M-E — a @Monadic carrier's @NonNull content is *conditional* (`present ⟹ value != null`, the
+        // Optional contract), not a blanket field invariant — `None` legitimately holds a null content. The
+        // carrier models that nullity itself (the M-E datatype axiom); a blanket `value != null` here would be
+        // false for `None` and mis-translate the carrier's case-split bodies. So skip carrier classes.
+        if (Encoder.isCarrier(cn)) return
         for (FieldNode f : fields) {
             if (f.isStatic()) continue
             ClassNode ft = f.type

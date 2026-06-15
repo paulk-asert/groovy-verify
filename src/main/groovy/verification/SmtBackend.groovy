@@ -128,6 +128,28 @@ interface SmtSession extends AutoCloseable {
     Object wrapperUnit(String typeName, Object contentSort, Object value)
     Object wrapperContent(String typeName, Object contentSort, Object carrier)
 
+    /**
+     * Phase M-A (multi-case carriers) — an N-constructor algebraic datatype (the generalisation of the
+     * single-constructor wrapper, for {@code Some(v) | None}-shaped carriers). {@code constructors} is a list of
+     * {@code [String ctorName, List<[String fieldName, Object sort]> fields]}; a nullary constructor (like
+     * {@code None}) has an empty field list. Z3's datatype theory then supplies the case-analysis, selector
+     * round-trips ({@code content(some(v)) == v}), and constructor distinctness ({@code some(v) != none()}) for
+     * free. {@link #datatypeConstruct} applies a constructor, {@link #datatypeSelect} a field selector, and
+     * {@link #datatypeRecognize} the {@code is$Ctor} tester (a Bool).
+     */
+    Object datatypeSort(String typeName, List<Object[]> constructors)
+    Object datatypeConstruct(String typeName, String ctorName, List<Object> args)
+    Object datatypeSelect(String typeName, String ctorName, String fieldName, Object carrier)
+    Object datatypeRecognize(String typeName, String ctorName, Object carrier)
+
+    /**
+     * Phase M-B — the distinguished {@code null} element of an (uninterpreted) value sort, minted once per sort.
+     * It's an ordinary value of the sort (so a Vavr-style {@code Some(null)} is a real, distinct carrier), but it
+     * is the element a function can map *to*, and the one an Optional-style {@code map} collapses to {@code None}.
+     * {@code x == nullValue(sort)} is exactly the collapse predicate.
+     */
+    Object nullValue(Object valueSort)
+
     /** If-then-else over integer branches — Z3 {@code (ite cond thenV elseV)}. */
     Object ite(Object cond, Object thenV, Object elseV)
 

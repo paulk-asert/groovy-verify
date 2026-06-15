@@ -330,6 +330,71 @@ class Z3Session implements SmtSession {
         ctx.mkApp(wrapperSel.get(typeName), (Expr) carrier)
     }
 
+    // Phase M-A — general N-constructor algebraic datatypes (Some(v) | None, …). Decls are read back from the
+    // DatatypeSort by index after creation (constructors[i], recognizers[i], accessors[i][j]).
+    private final Map<String, DatatypeSort> dtSorts = [:]
+    private final Map<String, Integer> dtCtorIdx = [:]    // 'type/ctor'        -> constructor index
+    private final Map<String, Integer> dtFieldIdx = [:]   // 'type/ctor/field'  -> field index
+
+    @Override
+    Object datatypeSort(String typeName, List<Object[]> constructors) {
+        DatatypeSort cached = dtSorts.get(typeName)
+        if (cached != null) return cached
+        Constructor[] ctors = new Constructor[constructors.size()]
+        for (int i = 0; i < constructors.size(); i++) {
+            Object[] c = constructors.get(i)
+            String ctorName = (String) c[0]
+            List<Object[]> fields = (List<Object[]>) c[1]
+            int n = fields.size()
+            String[] fieldNames = new String[n]
+            Sort[] fieldSorts = new Sort[n]
+            int[] sortRefs = new int[n]
+            for (int j = 0; j < n; j++) {
+                fieldNames[j] = (String) fields.get(j)[0]
+                fieldSorts[j] = (Sort) fields.get(j)[1]
+                sortRefs[j] = 0
+                dtFieldIdx.put(typeName + '/' + ctorName + '/' + fieldNames[j], j)
+            }
+            ctors[i] = ctx.mkConstructor(ctorName, 'is$' + ctorName, fieldNames, fieldSorts, sortRefs)
+            dtCtorIdx.put(typeName + '/' + ctorName, i)
+        }
+        DatatypeSort dt = ctx.mkDatatypeSort(typeName, ctors)
+        dtSorts.put(typeName, dt)
+        dt
+    }
+
+    @Override
+    Object datatypeConstruct(String typeName, String ctorName, List<Object> args) {
+        FuncDecl ctor = dtSorts.get(typeName).getConstructors()[dtCtorIdx.get(typeName + '/' + ctorName)]
+        ctx.mkApp(ctor, args.collect { (Expr) it } as Expr[])
+    }
+
+    @Override
+    Object datatypeSelect(String typeName, String ctorName, String fieldName, Object carrier) {
+        int ci = dtCtorIdx.get(typeName + '/' + ctorName)
+        int fi = dtFieldIdx.get(typeName + '/' + ctorName + '/' + fieldName)
+        ctx.mkApp(dtSorts.get(typeName).getAccessors()[ci][fi], (Expr) carrier)
+    }
+
+    @Override
+    Object datatypeRecognize(String typeName, String ctorName, Object carrier) {
+        FuncDecl rec = dtSorts.get(typeName).getRecognizers()[dtCtorIdx.get(typeName + '/' + ctorName)]
+        ctx.mkApp(rec, (Expr) carrier)
+    }
+
+    // Phase M-B — the distinguished `null` element per value sort (mint-once).
+    private final Map<String, Expr> nullVals = [:]
+    @Override
+    Object nullValue(Object valueSort) {
+        Sort sort = (Sort) valueSort
+        String tag = (sort == stringSort()) ? 'String' : sort.getName().toString()
+        Expr cached = nullVals.get(tag)
+        if (cached != null) return cached
+        Expr v = ctx.mkConst('null$' + tag, sort)
+        nullVals.put(tag, v)
+        v
+    }
+
     @Override
     Object applyUF(String name, List<Object> args, Object rangeSort) {
         Expr[] a = args.collect { (Expr) it } as Expr[]

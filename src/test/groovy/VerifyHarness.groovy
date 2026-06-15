@@ -8896,6 +8896,88 @@ class WrapCounter implements Counter { }
                         @Ensures({ f.apply(a) == f.apply(c) })
                         static void control(java.util.function.Function f, Object a, Object b, Object c) { } }''')],
 
+        // Phase M-C — a two-case @Monadic carrier (Some(value) | None) is recognised and modelled as a two-constructor
+        // datatype: `some(x).value == x` and `some(x) != none()` hold by datatype theory (carrier-rooted, no bare param).
+        [group: 'P-maybe', name: 'two-case carrier: some/none/content round-trips', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+                    class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Ensures({ some(m.value).value == m.value })
+                        static void contentRoundTrip(Maybe m) { }
+                        @Ensures({ some(m.value) != none() })
+                        static void someDistinctFromNone(Maybe m) { } }''')],
+
+        // Phase M-E — auto-synthesis for two-case carriers. @Monadic alone carries the verdict: a Vavr-style Maybe
+        // (no lemmas) auto-proves all five laws; an Optional-style Maybe auto-REFUTES functor composition.
+        [group: 'P-maybe', name: 'Vavr-style @Monadic Maybe: all laws auto-prove (no lemmas)', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+                    class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? some(g.apply(value)) : this } }''')],
+        // Optional-style: the null-collapsing map is not a lawful functor — auto-synthesis REFUTES it. (Our model
+        // permits Some(null), so functor *identity* breaks first; constraining content to @NonNull, Optional's
+        // actual contract, would shift the sole refutation to functor *composition* — a documented refinement.)
+        [group: 'P-maybe', name: 'Optional-style @Monadic Maybe: auto-refutes a functor law', expect: 'Cannot prove @Monadic functor',
+         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+                    class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? (g.apply(value) == null ? none() : some(g.apply(value))) : this } }''')],
+
+        // Phase M-D — case-split flatMap/map. The core result: functor composition PROVES for Vavr-style map
+        // (always Some(g(v))) and REFUTES for Optional-style map (collapses a null result to None).
+        [group: 'P-maybe', name: 'Vavr-style functor composition proves', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+                    class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? some(g.apply(value)) : this }
+                        @Ensures({ m.map(p).map(q) == m.map({ x -> q.apply(p.apply(x)) }) })
+                        static void functorComposition(Maybe m, java.util.function.Function<Object, Object> p, java.util.function.Function<Object, Object> q) { } }''')],
+        [group: 'P-maybe', name: 'Optional-style functor composition REFUTES (null collapse)', expect: 'Cannot prove postcondition',
+         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+                    class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? (g.apply(value) == null ? none() : some(g.apply(value))) : this }
+                        @Ensures({ m.map(p).map(q) == m.map({ x -> q.apply(p.apply(x)) }) })
+                        static void functorComposition(Maybe m, java.util.function.Function<Object, Object> p, java.util.function.Function<Object, Object> q) { } }''')],
+        [group: 'P-maybe', name: 'two-case monad laws (left identity + associativity) prove', ok: true,
+         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+                    class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? some(g.apply(value)) : this }
+                        @Ensures({ some(a).flatMap(f) == f.apply(a) })
+                        static void leftIdentity(Object a, java.util.function.Function<Object, Maybe> f) { }
+                        @Ensures({ m.flatMap(f).flatMap(g) == m.flatMap({ x -> f.apply(x).flatMap(g) }) })
+                        static void associativity(Maybe m, java.util.function.Function<Object, Maybe> f, java.util.function.Function<Object, Maybe> g) { } }''')],
+
         // Phase 136/137 (auto-synthesis) — @Monadic alone now carries the proof: all four laws (the three identity
         // laws plus associativity) are derived from the annotation and discharged, with NO hand-written lemmas.
         [group: 'P-monadauto', name: '@Monadic carrier: all laws auto-prove (no lemmas)', ok: true,

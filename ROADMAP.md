@@ -6382,6 +6382,114 @@ effectful `Stream` out); method-reference unit (`Res::new`) — closure form onl
 
 ---
 
+## Phase 138 — multi-case datatype backend (M-A + M-B)  *(shipped — foundation of the `Maybe`/`Either` extension)*
+
+The backend foundation of the multi-case extension, whose acceptance test is the four-checker example: our own
+`Maybe` proving lawful under Vavr semantics and **refuting functor composition** under Optional (null-collapsing)
+semantics, compiled under NullChecker + MonadicChecker + PurityChecker + VerifyChecker.
+
+**M-A — N-constructor datatypes.** Generalises the single-constructor wrapper (Phase B) to an **N-constructor
+algebraic datatype** — the shape a two-case carrier `Some(v) | None` needs. New `SmtSession` primitives
+(`datatypeSort`/`datatypeConstruct`/`datatypeSelect`/`datatypeRecognize`, backed by Z3's `mkDatatypeSort` with
+per-constructor selectors and `is$Ctor` recognizers; nullary constructors like `None` supported). Z3's datatype
+theory supplies the case-analysis theorems for free — no axioms, no triggers.
+
+**M-B — the `null` element.** `nullValue(sort)` mints a distinguished `null$` per value sort: an ordinary value
+(so a Vavr-style `Some(null)` is a real, distinct carrier) that a function can map *to*, and the one an
+Optional-style `map` collapses on. `x == nullValue(sort)` is exactly the collapse predicate.
+
+Pure backend, gated by **direct** tests (`DatatypeBackendTest`, the first non-harness unit tests) rather than
+source-compilation probes, since the encoder doesn't recognise multi-case carriers until M-C: (1) a `Maybe`
+datatype satisfies `content(Some(v)) == v`, `is$Some(Some(v))`, `is$None(None)`, `Some(v) != None` by
+construction; (2) the null-collapse seed — *when `g(x)` is null*, Vavr-`map` (`Some(g(x))`) and Optional-`map`
+(`None`) **diverge** (`Some(null) != None`), the exact point at which Optional's functor law breaks.
+
+**Next**: M-C (recognise a multi-case `@Monadic` carrier from source); M-D (case-split bind/map — where functor
+composition *proves* for Vavr-style and *refutes* for Optional-style, the core result); M-E (synthesis + the
+functor-composition law + the four-checker example).
+
+---
+
+## Phase 139 — recognise a two-case carrier from source (M-C)  *(shipped)*
+
+Leaves the backend and enters the encoder: a tightly-scoped two-case `@Monadic` carrier — `@Monadic`, exactly two
+non-static fields (a `boolean` discriminant + a content field), a static 1-arg `some` factory and a static 0-arg
+`none` factory — is recognised (`Encoder.multiCaseInfo`) and modelled as the M-A two-constructor datatype.
+`sortFor` maps it to `Some(value) | None`; `some(v)`/`none()` factory calls translate to the constructors;
+`m.value` to the `Some` selector. `carrierTypeOf` resolves a factory-call receiver (so `some(x).value` works), and
+`isCarrier` (single *or* two-case) threads carriers into `scalarTypes`/`carrierTypes`.
+
+**Gate** (group `P-maybe`): a real `Maybe` source class proves `some(m.value).value == m.value` and
+`some(m.value) != none()` by datatype theory — carrier-rooted so no bare-`Object` param re-introduces the
+value-sort split.
+
+Detail of note: the `@Monadic.unit` member is only on mavenLocal (not the ASF snapshot the build uses), so the
+some-factory is recognised by the **structural default name `some`**, not `unit=` — which is fine, and keeps the
+example buildable against the public snapshot.
+
+**Next**: M-D — case-split `flatMap`/`map` bodies (`present ? … : this`), where the value-sort `null$` (M-B) drives
+the Vavr-proves / Optional-refutes verdict on functor composition; then M-E.
+
+---
+
+## Phase 140 — case-split bind/map: the Vavr-proves / Optional-refutes verdict (M-D)  *(shipped — the core result)*
+
+The payoff. A two-case carrier's `flatMap`/`map` bodies (`present ? someCase : this`) are recognised
+(`caseSplitTrueExpr` + shape matchers, reading the clean snapshot) and modelled as `ite(is$Some(m), someCase, m)`.
+`flatMap`'s some-case is `f.apply(content(m))` (the same for any lawful Maybe); `map`'s some-case is **the
+discriminator** — *Vavr* wraps in `Some(g(content))`, *Optional* collapses a null result
+`g(content)==null$ ? None : Some(g(content))`. Soundness gated on `isCanonicalWiring` (`some` constructs the
+discriminant `true`, `none` `false`, so `present(m) ⟺ is$Some(m)`).
+
+The result, on real `Maybe` source classes (group `P-maybe`):
+- **functor composition PROVES for Vavr-style** and **REFUTES for Optional-style** — the witness being a function
+  that returns null, exactly Optional's broken-functor folklore turned into a counterexample.
+- left identity + associativity **prove** for the two-case carrier (the monad laws hold for both, since `flatMap`
+  doesn't collapse — only `map` does).
+
+Two bugs surfaced and fixed along the way: (1) resolved method bodies use `StaticMethodCallExpression`
+(`Maybe.some(…)`) where re-parsed contracts use `MethodCallExpression` — the body matchers now read either; (2) an
+`Object`-returning function's `apply` range was the `Int` default (`sortFor(Object)`), mismatching the value sort —
+a new `functionRange` helper maps `Object`→the value sort and carriers→their datatype, fixing both the apply path
+and `applyFunction` (and `carrierTypeOf` now accepts a function returning *any* carrier, not just single-field
+wrappers, so the associativity closure `{x -> f.apply(x).flatMap(g)}` resolves).
+
+**Next**: M-E — generalise `verifyMonadicLaws` to two-case carriers (+ the functor-composition law) and assemble
+the four-checker example (Optional almost-monad, Vavr lawful reference, our two-variant `Maybe`) under NullChecker +
+MonadicChecker + PurityChecker + VerifyChecker.
+
+---
+
+## Phase 141 — `@Monadic` auto-synthesis for two-case carriers (M-E)  *(shipped — the verdict is now annotation-driven)*
+
+`verifyMonadicLaws` now covers **both** modellable shapes — the single-value Identity wrapper (Phase 136) and the
+two-case carrier (`Encoder.isModellableTwoCaseCarrier`) — and synthesises **five** laws (the four identity/assoc
+laws plus **functor composition**, the discriminator). `unit(arg)` is parameterised: `new C(arg)` for a wrapper,
+`some(arg)` for a two-case carrier. So `@Monadic` alone now carries the verdict for a `Maybe`:
+
+- a **Vavr-style** `Maybe` (no hand-written lemmas) **auto-proves all five laws** — clean compile;
+- an **Optional-style** `Maybe` **auto-refutes a functor law** — `Cannot prove @Monadic functor …`, flagging that
+  the null-collapsing `map` is not a lawful functor.
+
+A collision fixed en route: a two-case carrier's `@NonNull` content is *conditional* (`present ⟹ value != null`;
+`None` legitimately holds null), so the Phase-132 blanket `value != null` field invariant is **skipped for carrier
+classes** (it would be false for `None` and mis-translate the case-split bodies). The carrier owns its content
+nullity.
+
+**Shipped tests** (group `P-maybe`): Vavr-style all-laws-auto-prove; Optional-style auto-refutes a functor law.
+
+**Honest remaining scope (M-E part 2 / the headline example):**
+- **The faithful Optional verdict.** With our unconstrained model, Optional refutes functor *identity* first
+  (because we permit `Some(null)`). Optional's real contract is `@NonNull` content, under which identity *holds*
+  and *composition* is the sole break. The fix is a **per-param** ground assumption `is$Some(m) ⟹ content(m) !=
+  null$` (a *universal* axiom over-constrains — it forces the collapse's `Some(p(c))` some-branch term to be
+  non-null even when unselected, wrongly proving composition). That per-param plumbing is the next slice.
+- **The four-checker example** itself (NullChecker × MonadicChecker × PurityChecker × VerifyChecker, with a
+  comprehension and the `@Pure`/`@Nullable`/`@NonNull` annotations) is integration/packaging on top — the engine
+  capability (prove-Vavr / refute-Optional via auto-synthesis) is done.
+
+---
+
 ## Non-goals
 
 Things deliberately not pursued, because they don't pay back:
