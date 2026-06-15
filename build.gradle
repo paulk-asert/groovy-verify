@@ -89,6 +89,10 @@ dependencies {
     // the published POM (test scope is not transitive). Here, to exercise multi-extension composition.
     testImplementation "org.apache.groovy:groovy-typecheckers:$groovyVersion"
 
+    // Test-only: the `DO(x in m, …) { … }` monadic-comprehension macro, so a test can exercise MonadicChecker
+    // (which checks comprehension *use* sites) on a hand-rolled @Monadic carrier — not just define+verify it.
+    testImplementation "org.apache.groovy:groovy-macro-library:$groovyVersion"
+
     // JUnit 6 — drives the VerifyHarness `@TestFactory` (one dynamic test per CASES entry), so the
     // suite is individually runnable from the IDE / `./gradlew test`. The compact `CASES` data and the
     // `./gradlew verify` console runner (VerifyHarness.main) are unchanged; both share `evaluate()`.

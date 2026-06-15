@@ -1044,6 +1044,37 @@ class Encoder {
         !as.isEmpty() && as.get(0) instanceof ConstantExpression && ((ConstantExpression) as.get(0)).value == expected
     }
 
+    private static final Set<String> NON_NULL_NAMES = ['NonNull', 'NotNull', 'Nonnull', 'MonotonicNonNull'] as Set<String>
+    /** Phase M-E — true if the content field (or its type use) carries a NullChecker-style @NonNull annotation
+     *  (the Optional contract: {@code Some} never holds null). */
+    static boolean hasNonNullContent(FieldNode f) {
+        annHasNonNull(f?.annotations) || annHasNonNull(f?.type?.annotations)
+    }
+    private static boolean annHasNonNull(List<AnnotationNode> anns) {
+        if (anns == null) return false
+        for (AnnotationNode a : anns) {
+            String n = a?.classNode?.nameWithoutPackage
+            if (n != null && NON_NULL_NAMES.contains(n.substring(n.lastIndexOf('$') + 1))) return true
+        }
+        false
+    }
+
+    /** Phase M-E — for a *specific* carrier variable {@code handle} (a param), assume the @NonNull-content contract
+     *  {@code is$Some(handle) ⟹ content(handle) != null$} (mint-once per name). A *ground* assumption, not a
+     *  universal axiom — it constrains the param without forcing every constructed {@code Some(p(c))} subterm
+     *  non-null (which would wrongly prove functor composition). Sound: NullChecker enforces the @NonNull. */
+    private final Set<String> nnContentAsserted = new HashSet<String>()
+    private void assumeNonNullContent(String name, ClassNode declared, Object handle) {
+        Object[] mc = multiCaseInfo(declared)
+        if (mc == null || !hasNonNullContent((FieldNode) mc[2]) || !nnContentAsserted.add(name)) return
+        FieldNode cf = (FieldNode) mc[2]
+        String tn = declared.nameWithoutPackage
+        Object isSome = session.datatypeRecognize(tn, 'Some', handle)
+        Object content = session.datatypeSelect(tn, 'Some', cf.name, handle)
+        session.assertExpr(session.implies(isSome,
+            session.not(session.eq(content, session.nullValue(contentSortFor(cf))))))
+    }
+
     // ---- Phase C: the bind/map method names a carrier declares, and whether their bodies are Identity-shaped ----
 
     private static AnnotationNode monadicAnn(ClassNode ct) {
@@ -1374,7 +1405,11 @@ class Encoder {
         ClassNode declared = scalarTypes.get(name)
         if (declared != null) {
             Object sort = sortFor(declared)
-            if (sort != session.intSort()) return varForOfSort(name, sort)
+            if (sort != session.intSort()) {
+                Object h = varForOfSort(name, sort)
+                assumeNonNullContent(name, declared, h)   // Phase M-E — a @NonNull-content carrier param's content is non-null when Some
+                return h
+            }
         }
         // Phase 48b — boolean local: mint a Bool variable (not Int) so subsequent {@code not(v)},
         // {@code and([v, …])} etc. translate without a sort-mismatch crash. {@code env} caches

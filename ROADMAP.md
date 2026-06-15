@@ -6478,15 +6478,29 @@ nullity.
 
 **Shipped tests** (group `P-maybe`): Vavr-style all-laws-auto-prove; Optional-style auto-refutes a functor law.
 
-**Honest remaining scope (M-E part 2 / the headline example):**
-- **The faithful Optional verdict.** With our unconstrained model, Optional refutes functor *identity* first
-  (because we permit `Some(null)`). Optional's real contract is `@NonNull` content, under which identity *holds*
-  and *composition* is the sole break. The fix is a **per-param** ground assumption `is$Some(m) ⟹ content(m) !=
-  null$` (a *universal* axiom over-constrains — it forces the collapse's `Some(p(c))` some-branch term to be
-  non-null even when unselected, wrongly proving composition). That per-param plumbing is the next slice.
-- **The four-checker example** itself (NullChecker × MonadicChecker × PurityChecker × VerifyChecker, with a
-  comprehension and the `@Pure`/`@Nullable`/`@NonNull` annotations) is integration/packaging on top — the engine
-  capability (prove-Vavr / refute-Optional via auto-synthesis) is done.
+### M-E part 2 — the faithful verdict + the four-checker example  *(shipped)*
+
+**The faithful Optional verdict (per-param `@NonNull`).** Optional's real contract is `@NonNull` content (`Some`
+never holds null). We now assume `is$Some(m) ⟹ content(m) != null$` as a **per-param ground** fact (in `varFor`,
+mint-once per carrier-typed name; `Encoder.assumeNonNullContent`) — *not* a universal axiom, which over-constrains
+by forcing the collapse's unselected `Some(p(c))` some-branch term non-null (wrongly proving composition). With it,
+an Optional-style `Maybe` with `@NonNull` content has functor *identity* **hold** and functor *composition* as the
+**sole** refutation — exactly the textbook "Optional is not a lawful functor". (Collision fixed: the per-param
+assumption is sound only because NullChecker *enforces* the `@NonNull`; same assume/enforce division as Phases
+131–132.)
+
+**The four-checker example (`P-fourchecker`).** One class under
+`['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker', 'groovy.typecheckers.PurityChecker',
+'verification.VerifyChecker']`, **with a live `DO`-comprehension** (`DO(a in some(2), b in some(3)) { some(a + b) }`,
+via the `groovy-macro-library` test dep) so MonadicChecker actually *fires* — not present-but-quiet. A **Vavr-style**
+`Maybe` is lawful — all four quiet (VerifyChecker auto-proves the five laws, MonadicChecker shape-checks the
+comprehension); the **Optional-style** (null-collapsing `map`, `@NonNull` content) compiles under the other three but
+**VerifyChecker refutes** `Cannot prove @Monadic functor composition for carrier Maybe`. Four checkers composing on
+one class, with groovy-verify supplying the semantic verdict the others trust. *This completes the `Maybe`/`Either`
+arc and the whole `@Monadic` line — the prove-Maybe / refute-Optional result, machine-checked, annotation-driven.*
+
+**Remaining polish (not blocking):** the recognised carrier idiom stays tight (present/value fields + `some`/`none`
+factories); `Either` (two content types) and effectful/lazy carriers remain out, as scoped.
 
 ---
 

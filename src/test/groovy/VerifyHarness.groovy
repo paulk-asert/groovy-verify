@@ -8911,6 +8911,34 @@ class WrapCounter implements Counter { }
                         @Ensures({ some(m.value) != none() })
                         static void someDistinctFromNone(Maybe m) { } }''')],
 
+        // The headline four-checker example: NullChecker + MonadicChecker + PurityChecker + VerifyChecker on one
+        // class, with a real DO-comprehension so MonadicChecker actually fires (it checks comprehension use-sites).
+        // A Vavr-style Maybe is lawful — all four quiet (VerifyChecker auto-proves the laws, MonadicChecker
+        // shape-checks the DO); the Optional-style (null-collapsing map) compiles under the other three but
+        // VerifyChecker REFUTES functor composition. "Optional is not a lawful functor", machine-checked, four
+        // checkers composing.
+        [group: 'P-fourchecker', name: 'Vavr Maybe: all four checkers + DO-comprehension, clean (laws auto-prove)', ok: true,
+         src: HDR + '@groovy.transform.Monadic(bind = \'flatMap\', map = \'map\')\n' +
+              "@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker', 'groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])\n" + '''class Maybe {
+                        final boolean present
+                        final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? some(g.apply(value)) : this }
+                        static Maybe addPair() { DO(a in some(2), b in some(3)) { some(((Integer) a) + ((Integer) b)) } } }'''],
+        [group: 'P-fourchecker', name: 'Optional Maybe: all four checkers, VerifyChecker refutes functor composition', expect: 'Cannot prove @Monadic functor composition',
+         src: HDR + NONNULL_ANN + '@groovy.transform.Monadic(bind = \'flatMap\', map = \'map\')\n' +
+              "@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker', 'groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])\n" + '''class Maybe {
+                        final boolean present
+                        @NonNull final Object value
+                        private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+                        static Maybe some(Object v) { new Maybe(true, v) }
+                        static Maybe none() { new Maybe(false, null) }
+                        @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
+                        @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? (g.apply(value) == null ? none() : some(g.apply(value))) : this } }'''],
+
         // Phase M-E — auto-synthesis for two-case carriers. @Monadic alone carries the verdict: a Vavr-style Maybe
         // (no lemmas) auto-proves all five laws; an Optional-style Maybe auto-REFUTES functor composition.
         [group: 'P-maybe', name: 'Vavr-style @Monadic Maybe: all laws auto-prove (no lemmas)', ok: true,
@@ -8923,14 +8951,14 @@ class WrapCounter implements Counter { }
                         static Maybe none() { new Maybe(false, null) }
                         @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
                         @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? some(g.apply(value)) : this } }''')],
-        // Optional-style: the null-collapsing map is not a lawful functor — auto-synthesis REFUTES it. (Our model
-        // permits Some(null), so functor *identity* breaks first; constraining content to @NonNull, Optional's
-        // actual contract, would shift the sole refutation to functor *composition* — a documented refinement.)
-        [group: 'P-maybe', name: 'Optional-style @Monadic Maybe: auto-refutes a functor law', expect: 'Cannot prove @Monadic functor',
-         src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
+        // Optional-style with @NonNull content (Optional's real contract: Some never holds null). NullChecker
+        // enforces it / groovy-verify assumes it (per param), so functor IDENTITY holds and the sole refutation is
+        // functor COMPOSITION — the faithful "Optional is not a lawful functor", auto-derived from @Monadic.
+        [group: 'P-maybe', name: 'Optional-style @Monadic Maybe (@NonNull content): auto-refutes functor composition', expect: 'Cannot prove @Monadic functor composition',
+         src: HDR + NONNULL_ANN + tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
                     class Maybe {
                         final boolean present
-                        final Object value
+                        @NonNull final Object value
                         private Maybe(boolean present, Object value) { this.present = present; this.value = value }
                         static Maybe some(Object v) { new Maybe(true, v) }
                         static Maybe none() { new Maybe(false, null) }

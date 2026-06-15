@@ -2759,6 +2759,63 @@ pattern. The parallel recombination = sequential fold is `injectParallel`'s own 
 contract — which CombinerChecker checks and we prove: the same "prove the local fact, rely on the library's
 structural guarantee" shape as the monitor invariant.
 
+### `MonadicChecker` — laws beside shape
+
+The same split, one level up. Groovy 6's `MonadicChecker` validates a **monadic comprehension**'s *shape* — that
+the carrier in a `DO(a in m, …) { … }` block participates (has `flatMap`/`map`, or is `@Monadic`) and that the
+closures return the right carrier type. For the laws it **trusts the `@Monadic` annotation** — whose own javadoc
+says it *"asserts that the carrier is lawful"* and checks nothing. groovy-verify discharges exactly that: from
+`@Monadic` + the carrier's `bind`/`map`/`unit`, it synthesises and proves the **monad and functor laws** (left /
+right identity, associativity, functor identity / composition) — no hand-written lemmas, the `@Monadic` analogue
+of the `@Reducer` story above. A whole-class, *four*-checker compile:
+
+```groovy
+@Monadic(bind = 'flatMap', map = 'map')
+@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker',
+                           'groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
+class Maybe {                                              // a hand-rolled Some(value) | None
+    final boolean present
+    final Object value
+    private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+    static Maybe some(Object v) { new Maybe(true, v) }     // unit
+    static Maybe none()         { new Maybe(false, null) }
+
+    @Requires({ f != null }) Maybe flatMap(Function f) { present ? (Maybe) f.apply(value) : this }
+    @Requires({ g != null }) Maybe map(Function g)     { present ? some(g.apply(value)) : this }   // Vavr-style
+
+    static Maybe addPair() { DO(a in some(2), b in some(3)) { some(((Integer) a) + ((Integer) b)) } }
+}
+```
+
+Each extension does a *distinct* job on the one class: **MonadicChecker** shape-checks the `DO` comprehension,
+**PurityChecker** the side-effect freedom the laws assume, **NullChecker** the nullness, and **groovy-verify**
+proves the five laws from `@Monadic` alone — all four compile quietly because this `Maybe` *is* lawful.
+
+The payoff is the carrier that **isn't**. `java.util.Optional` is famously *almost* a monad: its `flatMap` laws
+hold, but `map` **collapses a `null` result to empty** (`ofNullable`), which breaks the functor-composition law —
+`m.map(f).map(g) ≠ m.map(f ∘ g)` when `f` returns `null`. Write that `map` (Optional's semantics) instead, with
+`@NonNull` content (Optional's contract — `Some` never holds null, which NullChecker enforces and groovy-verify
+assumes per parameter):
+
+```groovy
+    @NonNull final Object value
+    @Requires({ g != null })
+    Maybe map(Function g) { present ? (g.apply(value) == null ? none() : some(g.apply(value))) : this }
+```
+
+…and groovy-verify **refutes** the law the annotation asserts:
+
+```
+[Static type checking] - Cannot prove @Monadic functor composition for carrier Maybe
+    law: (m.map(p).map(q) == m.map({ x -> q.apply(p.apply(x)) }))
+```
+
+Same engine, opposite verdicts: it **proves** the Vavr-style `Maybe` lawful and **disproves** the Optional-style
+one — turning "Optional is not a lawful functor" from folklore into a counterexample, while the other three
+checkers compose around it. (For a *production* `Option`/`Either`, reach for a library like Vavr or Functional
+Java — verifying laws is for the carrier you *build*; the libraries' are trusted and, being bytecode, out of
+groovy-verify's source-level reach anyway.)
+
 ### `PurityChecker` — discharging a premise groovy-verify relies on
 
 Composition isn't always orthogonal. groovy-verify's pure-function evaluation (Phase 8a) proves a method
