@@ -36,6 +36,7 @@ import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.Expression
@@ -61,6 +62,7 @@ import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
@@ -3609,8 +3611,11 @@ class VerifyChecker extends TypeCheckingExtension {
     private void verifyNoLeak(MethodNode node) {
         if (node instanceof ConstructorNode) return
         String outLevel = labelValue(node)                 // result classification (may be null — e.g. a void sink-caller)
-        Map<String, String> plabels = paramLabels(node)
-        if (outLevel == null && plabels.isEmpty()) return  // nothing labelled → not in the information-flow analysis
+        boolean anyLabel = outLevel != null
+        for (Parameter p : node.parameters) {
+            if (labelValue(p) != null || labelBy(p) != null) { anyLabel = true; break }
+        }
+        if (!anyLabel) return                              // nothing labelled → not in the information-flow analysis
         ClassNode lat = latticeEnumOf(node)
         if (lat == null) {
             // A labelled *result* method clearly intends in-class analysis, so a missing lattice is flagged; a
@@ -3626,15 +3631,23 @@ class VerifyChecker extends TypeCheckingExtension {
         if (body == null) body = node.code
         if (body == null) return
         Map<String, Expression> env = new LinkedHashMap<String, Expression>()
-        for (Map.Entry<String, String> en : plabels.entrySet()) {
-            env.put(en.key, enumConstExpr(lat, en.value))
+        for (Parameter p : node.parameters) {              // each labelled parameter → its classification (constant or value-dependent)
+            Expression g = paramClassification(p, node, lat)
+            if (g != null) env.put(p.name, g)
         }
+        ifFacts = new ArrayList<Object[]>()                // path conditions assumed at discharge (value-dependent levels)
         try {
             ifWalk(body, env, null, lat, outLevel, node)   // PC starts at ⊥ (null)
         } catch (UnsupportedConstructException ex) {
             addStaticTypeError(Reporter.formatLeakSkipped(node.name, ex.message), node)
+        } finally {
+            ifFacts = new ArrayList<Object[]>()
         }
     }
+
+    /** Path conditions (each {@code [Expression cond, Boolean positive]}) enclosing the current walk point —
+     *  assumed when discharging a value-dependent classification so it resolves under the branch. */
+    private List<Object[]> ifFacts = new ArrayList<Object[]>()
 
     /**
      * Syntax-directed information-flow walk. Carries {@code env} (variable → Γ level) and {@code pc} (the
@@ -3662,13 +3675,25 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (s instanceof IfStatement) {
             IfStatement ifs = (IfStatement) s
-            checkCallSinks(ifs.booleanExpression, env, pc, lat, node)   // a call in the guard
+            Expression cond = ifs.booleanExpression
+            checkCallSinks(cond, env, pc, lat, node)       // a call in the guard
             // Branching on classified data raises the PC inside both arms (implicit flow): PC ⊔ ΓE(guard).
-            Expression pcInner = pcJoin(pc, gammaExpr(ifs.booleanExpression, env, lat))
-            Map<String, Expression> thenEnv = ifWalk(ifs.ifBlock, copyEnv(env), pcInner, lat, outLevel, node)
+            Expression pcInner = pcJoin(pc, gammaExpr(cond, env, lat))
+            // Push the guard as a path condition so a value-dependent classification resolves under the branch;
+            // pop on exit so it is scoped (mirrors the PC). The else arm carries its negation.
+            ifFacts.add([cond, Boolean.TRUE] as Object[])
+            Map<String, Expression> thenEnv
+            try { thenEnv = ifWalk(ifs.ifBlock, copyEnv(env), pcInner, lat, outLevel, node) }
+            finally { ifFacts.remove(ifFacts.size() - 1) }
             Statement elseBlk = ifs.elseBlock
-            Map<String, Expression> elseEnv = (elseBlk != null && !(elseBlk instanceof EmptyStatement)) ?
-                ifWalk(elseBlk, copyEnv(env), pcInner, lat, outLevel, node) : copyEnv(env)
+            Map<String, Expression> elseEnv
+            if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
+                ifFacts.add([cond, Boolean.FALSE] as Object[])
+                try { elseEnv = ifWalk(elseBlk, copyEnv(env), pcInner, lat, outLevel, node) }
+                finally { ifFacts.remove(ifFacts.size() - 1) }
+            } else {
+                elseEnv = copyEnv(env)
+            }
             return mergeEnvs(thenEnv, elseEnv)             // post-if: join the arms; PC is popped (not pcInner)
         }
         if (s instanceof ExpressionStatement) {
@@ -3686,8 +3711,93 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             return env                                     // a non-assigning statement expression: no flow effect
         }
+        if (s instanceof WhileStatement || s instanceof DoWhileStatement || s instanceof ForStatement) {
+            return walkLoop(s, env, pc, lat, outLevel, node)
+        }
         throw new UnsupportedConstructException(
-            "a ${s.getClass().simpleName} is outside the information-flow fragment (straight-line + if/else)")
+            "a ${s.getClass().simpleName} is outside the information-flow fragment (straight-line + if/else + loops)")
+    }
+
+    /**
+     * Information-flow over a loop. The security level of a variable assigned in the loop is raised to the join
+     * of every tracked source the body (and guard) touches, plus the loop's PC — a sound <i>Γ-invariant</i>
+     * inferred automatically (over the finite level lattice, the level of a loop-carried variable is bounded by
+     * that join, an upper bound for every iteration, so no user-written invariant is needed). Obligations inside
+     * the body are then discharged once under that raised environment, and the post-loop environment is it too.
+     * Conservative but sound: a variable assigned only low values in a loop that <i>also</i> touches a secret is
+     * raised — a per-variable fixpoint would be tighter, a later refinement. A {@code for}-each over a collection
+     * (element labels not yet modelled) skips loudly.
+     */
+    private Map<String, Expression> walkLoop(Statement s, Map<String, Expression> env, Expression pc,
+                                             ClassNode lat, String outLevel, MethodNode node) {
+        if (s instanceof ForStatement && !(((ForStatement) s).collectionExpression instanceof ClosureListExpression)) {
+            throw new UnsupportedConstructException("a for-each loop is outside the information-flow fragment")
+        }
+        Statement body = ((LoopingStatement) s).loopBlock
+        Expression guard = loopGuard(s)
+        checkCallSinks(guard, env, pc, lat, node)
+        Expression pcLoop = pcJoin(pc, gammaExpr(guard, env, lat))   // the guard raises the PC inside the loop
+
+        // The loop's Γ-effect: which variables it assigns, and the join of every tracked level it touches.
+        Set<String> assigned = new LinkedHashSet<String>()
+        List<Expression> srcLevels = new ArrayList<Expression>()
+        collectLoopEffect(body, env, assigned, srcLevels)
+        Expression bodyLevel = pcLoop
+        for (Expression lvl : srcLevels) bodyLevel = pcJoin(bodyLevel, lvl)
+
+        Map<String, Expression> newEnv = copyEnv(env)
+        for (String a : assigned) {
+            if (bodyLevel == null) newEnv.remove(a)             // a loop over no tracked data → assigned vars untracked
+            else newEnv.put(a, pcJoin(newEnv.get(a), bodyLevel))
+        }
+
+        // One obligation-emitting pass over the body under the raised (invariant) environment; the loop guard
+        // holds inside, so push it as a path condition for value-dependent classifications.
+        boolean pushed = guard != null
+        if (pushed) ifFacts.add([guard, Boolean.TRUE] as Object[])
+        try {
+            ifWalk(body, newEnv, pcLoop, lat, outLevel, node)
+        } finally {
+            if (pushed) ifFacts.remove(ifFacts.size() - 1)
+        }
+        return newEnv                                           // post-loop: the loop may have run any number of times
+    }
+
+    /** The loop guard: the {@code while}/{@code do-while} condition, or the {@code cond} of a C-style {@code for}; null otherwise. */
+    private static Expression loopGuard(Statement s) {
+        if (s instanceof WhileStatement) return ((WhileStatement) s).booleanExpression
+        if (s instanceof DoWhileStatement) return ((DoWhileStatement) s).booleanExpression
+        if (s instanceof ForStatement) {
+            Expression col = ((ForStatement) s).collectionExpression
+            if (col instanceof ClosureListExpression) {
+                List<Expression> parts = ((ClosureListExpression) col).expressions
+                if (parts.size() == 3) return parts.get(1)
+            }
+        }
+        null
+    }
+
+    /** Collect the names a loop body assigns, and the (entry) Γ levels of every tracked variable it mentions. */
+    private void collectLoopEffect(Statement body, Map<String, Expression> env,
+                                   Set<String> assigned, List<Expression> srcLevels) {
+        Set<String> mentioned = new LinkedHashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression v) { mentioned.add(v.name) }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) assigned.add(((VariableExpression) de.leftExpression).name)
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof VariableExpression) {
+                    assigned.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        for (String n : mentioned) {
+            Expression lvl = env.get(n)
+            if (lvl != null) srcLevels.add(lvl)
+        }
     }
 
     /** Emit the no-leak obligation for a {@code return e} under environment {@code env} and program counter {@code pc}. */
@@ -3749,6 +3859,7 @@ class VerifyChecker extends TypeCheckingExtension {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
+            assumeIfFacts(session, enc)                    // assume the enclosing branch conditions (value-dependent levels)
             Object g = enc.translateGoal(goal)
             if (g == null) {
                 addStaticTypeError(Reporter.formatLeakSkipped(node.name,
@@ -3762,6 +3873,17 @@ class VerifyChecker extends TypeCheckingExtension {
                 Reporter.formatSinkLeak(node.name, arg.text, callee, paramName, paramLevel, r), anchorOf(arg, node))
         } finally {
             try { session.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Assume each enclosing path condition (a guard, possibly negated) into the discharge session, so a
+     *  value-dependent classification {@code L_x(controls…)} resolves under the branch it sits in. Best-effort:
+     *  a guard the encoder can't translate is simply not assumed (sound — fewer assumptions, never a false pass). */
+    private void assumeIfFacts(SmtSession session, Encoder enc) {
+        for (Object[] fact : ifFacts) {
+            Object c = enc.translate((Expression) fact[0])
+            if (c == null) continue
+            session.assertExpr(((Boolean) fact[1]) ? c : session.not(c))
         }
     }
 
@@ -3885,6 +4007,7 @@ class VerifyChecker extends TypeCheckingExtension {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
+            assumeIfFacts(session, enc)                    // assume the enclosing branch conditions (value-dependent levels)
             Object g = enc.translateGoal(goal)
             if (g == null) {
                 addStaticTypeError(Reporter.formatLeakSkipped(node.name,
@@ -3924,25 +4047,47 @@ class VerifyChecker extends TypeCheckingExtension {
     }
 
     /** {@code @Label('X')} on a parameter/method/field → {@code 'X'}, or null. */
+    /** The constant lattice-level name of a {@code @Label}'s {@code value} member, or null (absent/empty). */
     private static String labelValue(org.codehaus.groovy.ast.AnnotatedNode n) {
+        return labelMember(n, 'value')
+    }
+
+    /** The classification-method name of a {@code @Label}'s {@code by} member (value-dependent), or null. */
+    private static String labelBy(org.codehaus.groovy.ast.AnnotatedNode n) {
+        return labelMember(n, 'by')
+    }
+
+    private static String labelMember(org.codehaus.groovy.ast.AnnotatedNode n, String member) {
         List<AnnotationNode> anns = n.getAnnotations(LABEL_TYPE)
         if (anns == null || anns.isEmpty()) return null
-        Expression m = anns.get(0).getMember('value')
+        Expression m = anns.get(0).getMember(member)
         if (m instanceof ConstantExpression) {
             Object v = ((ConstantExpression) m).value
-            return v != null ? v.toString() : null
+            String s = v != null ? v.toString() : null
+            return (s != null && !s.isEmpty()) ? s : null
         }
         null
     }
 
-    /** Parameter-name → security label, for the parameters that carry {@code @Label}. */
-    private static Map<String, String> paramLabels(MethodNode node) {
-        Map<String, String> out = new LinkedHashMap<String, String>()
-        for (Parameter p : node.parameters) {
-            String lvl = labelValue(p)
-            if (lvl != null) out.put(p.name, lvl)
+    /**
+     * The classification of a labelled parameter as a lattice-level AST: a constant ({@code @Label('High')} →
+     * {@code Lattice.High}) or a **value-dependent** call ({@code @Label(by = 'm')} → {@code m(controls…)}, where
+     * each control argument is the in-scope variable matching the classification method's parameter name). Null
+     * for an unlabelled parameter or an unresolvable {@code by} method.
+     */
+    private Expression paramClassification(Parameter p, MethodNode enclosing, ClassNode lat) {
+        String v = labelValue(p)
+        if (v != null) return enumConstExpr(lat, v)
+        String by = labelBy(p)
+        if (by == null) return null
+        ClassNode dc = enclosing.declaringClass
+        if (dc == null) return null
+        for (MethodNode m : dc.getMethods(by)) {            // the classification method: control vars by parameter name
+            List<Expression> ctrlArgs = new ArrayList<Expression>()
+            for (Parameter cp : m.parameters) ctrlArgs.add(new VariableExpression(cp.name))
+            return new MethodCallExpression(new VariableExpression('this'), by, new ArgumentListExpression(ctrlArgs))
         }
-        out
+        null
     }
 
     /** The security lattice in scope: the (enum) type the class's binary {@code leq} ranges over, or null. */

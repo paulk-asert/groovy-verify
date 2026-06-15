@@ -41,10 +41,23 @@ import java.lang.annotation.Target
  * loudly rather than passing silently.
  *
  * <p>The {@code value} is the name of a constant of the lattice enum (e.g. {@code 'Low'} / {@code 'High'}).
+ *
+ * <p><b>Value-dependent classification.</b> Instead of a constant level, a parameter may carry
+ * {@code @Label(by = 'm')}, naming a pure classification method {@code m(…)} that returns the lattice level
+ * <i>as a function of program state</i> (Smith §III-A — the {@code L_x()} of the paper). The method's parameters
+ * are matched by name to the variables in scope at the use site, so {@code L classifyData(boolean authed) }
+ * {@code { authed ? L.Low : L.High }} makes {@code data}'s classification depend on the {@code authed} control
+ * variable. The no-leak obligation is then discharged <i>under the path conditions</i>: {@code if (authed) }
+ * {@code return data} verifies (there {@code authed} holds, so {@code L(data) == Low}), while an unguarded
+ * {@code return data} refutes. This is the capability dataflow taint cannot express — a classification that
+ * evolves with the state — and it falls out of the same SMT backend.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target([ElementType.PARAMETER, ElementType.METHOD, ElementType.FIELD])
 @Documented
 @interface Label {
-    String value()
+    /** A constant lattice level name (e.g. {@code 'Low'}); empty when {@link #by} is used. */
+    String value() default ''
+    /** The name of a pure classification method giving a value-dependent level; empty for a constant {@link #value}. */
+    String by() default ''
 }

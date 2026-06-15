@@ -10422,8 +10422,22 @@ class WrapCounter implements Counter { }
                             return t
                         }
                     }''')],
-        // Loud-skip: a loop body is outside the straight-line + if/else fragment → skipped, not silently passed.
-        [group: 'PL1 infoflow', name: '1c: loop body skips loudly', expect: 'Skipped information-flow check',
+        // ----- Loops — the Γ-invariant is inferred over the finite level lattice -----
+        // A loop that only moves Low data keeps t Low across iterations → verifies (the loop is handled, not skipped).
+        [group: 'PL1 infoflow', name: 'loop: Low-only loop verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int loopy(@verification.Label('Low') int pub) {
+                            int t = pub
+                            for (int i = 0; i < 3; i++) { t = pub }
+                            return t
+                        }
+                    }''')],
+        // A loop that pulls a High value into t raises t to High for all iterations → the later return refutes.
+        [group: 'PL1 infoflow', name: 'loop: High pulled in raises the loop variable (refuted)', expect: 'information leak',
          src: tc('''class C {
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
@@ -10431,7 +10445,48 @@ class WrapCounter implements Counter { }
                         @verification.Label('Low')
                         static int loopy(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
                             int t = pub
-                            for (int i = 0; i < 3; i++) { t = pub }
+                            while (t > 0) { t = secret }
+                            return t
+                        }
+                    }''')],
+        // A while-countdown over Low data (with arithmetic) stays Low → verifies. Exercises a literal in the body.
+        [group: 'PL1 infoflow', name: 'loop: countdown stays Low verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int countdown(@verification.Label('Low') int n) {
+                            int t = n
+                            while (t > 0) { t = t - 1 }
+                            return t
+                        }
+                    }''')],
+        // Implicit flow through a loop: looping on a secret condition and writing t inside raises t (the number
+        // of iterations reveals the secret) → refuted via the loop PC.
+        [group: 'PL1 infoflow', name: 'loop: implicit flow via secret loop guard (refuted)', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int countSecret(@verification.Label('High') int secret, @verification.Label('Low') int pub) {
+                            int t = pub
+                            int s = secret
+                            while (s > 0) { t = pub; s = s - 1 }
+                            return t
+                        }
+                    }''')],
+        // Loud-skip: a for-each over a collection is still outside the fragment (element labels not modelled).
+        [group: 'PL1 infoflow', name: 'loop: for-each over a collection skips loudly', expect: 'Skipped information-flow check',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int eachLoop(@verification.Label('Low') int pub, List<Integer> xs) {
+                            int t = pub
+                            for (x in xs) { t = pub }
                             return t
                         }
                     }''')],
@@ -10524,6 +10579,65 @@ class WrapCounter implements Counter { }
                     }
                     class Logger {
                         void write(@verification.Label('Low') int x) { }
+                    }''')],
+
+        // ----- Value-dependent classifications — L(x) depends on program state (Smith §III-A) -----
+        // The "beyond taint" capability: `data`'s classification is given by classifyData(authed) — Low when
+        // authenticated, High otherwise. Releasing it *under the authentication guard* is secure (there
+        // L(data) == Low), so this verifies. The discharge assumes the path condition `authed`.
+        [group: 'PL1 infoflow', name: 'value-dependent: release under the guard verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        @verification.Label('Low')
+                        static int get(boolean authed, @verification.Label(by = 'classifyData') int data,
+                                       @verification.Label('Low') int fallback) {
+                            if (authed) return data
+                            return fallback
+                        }
+                    }''')],
+        // The same value released WITHOUT the guard refutes — when !authed, L(data) is High and the result is
+        // Low. The counterexample is the unauthenticated state (authed = false). This is what taint cannot
+        // express: a classification that depends on state.
+        [group: 'PL1 infoflow', name: 'value-dependent: release without the guard refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        @verification.Label('Low')
+                        static int get(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                            return data
+                        }
+                    }''')],
+        // Value-dependent into a cross-class sink, under the guard — secure.
+        [group: 'PL1 infoflow', name: 'value-dependent: release into sink under guard verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        static void serve(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                            if (authed) Audit.log(data)
+                        }
+                    }
+                    class Audit {
+                        static void log(@verification.Label('Low') int x) { }
+                    }''')],
+        // The wrong guard does not help: guarding on an unrelated condition leaves L(data) able to be High → refuted.
+        [group: 'PL1 infoflow', name: 'value-dependent: wrong guard does not declassify (refuted)', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        @verification.Label('Low')
+                        static int get(boolean authed, boolean other, @verification.Label(by = 'classifyData') int data) {
+                            if (other) return data
+                            return data
+                        }
                     }''')],
     ] }
 

@@ -6582,6 +6582,30 @@ static int implicit(@verification.Label('High') boolean secret,
   branch* both refute) and the analysis now runs on any method carrying a label, so a `void` sink-caller with no
   result classification is checked too.
 
+- **value-dependent classifications — `L(x) = f(state)`.** A parameter's classification need not be a constant:
+  `@Label(by = 'm')` names a pure method `m(controls…)` returning the lattice level *as a function of state* (the
+  paper's `L_x()`), with the classification method's parameters matched by name to the variables in scope. The
+  no-leak obligation is then discharged **under the path conditions** — the enclosing guards are assumed — so a
+  classification declassifies itself on the branch where its predicate holds. `static L classifyData(boolean }
+  `authed) { authed ? L.Low : L.High }` makes `if (authed) return data` *verify* (there `L(data) == Low`) while
+  an unguarded `return data` *refutes* (when `!authed`, `L(data)` is `High`), and a guard on an unrelated
+  condition does **not** declassify. **This is the capability dataflow taint structurally cannot express** — a
+  classification that evolves with the program state — and it falls out of the same SMT backend, reusing the
+  L0 sort-aware pure-function machinery. (The discharge assumes the path *guards*; classifications over a
+  *changing local* or a *field*, and the full §III-A control-variable / `secure_update` obligation, remain
+  deferred — see below.)
+
+- **loops — the Γ-invariant is inferred.** `while` / `do-while` / C-style `for` are in the fragment. A variable
+  assigned in the loop is raised to the join of every tracked source the body and guard touch, plus the loop's
+  PC — a sound *Γ-invariant* that, over the finite level lattice, upper-bounds the variable's level on every
+  iteration, so **no user-written invariant is needed** (unlike the paper, which requires one — the level
+  lattice's finiteness is what makes inference free). A Low-only loop keeps its variable Low (verifies); a loop
+  that pulls in a secret, or that loops on a secret guard while writing a variable (implicit flow — the iteration
+  count reveals the secret), raises it and refutes. Conservative but sound: a variable assigned only low values
+  in a loop that *also* touches a secret is raised (a per-variable fixpoint would be tighter — a refinement). A
+  `for`-each over a collection (element labels not modelled), `break`/`continue`, and a return *inside* a loop
+  after literal arithmetic skip loudly.
+
 **Where it sits — beyond taint, short of full IFC.** This is a generalisation of compile-time *taint tracking*
 (Ballerina's `@tainted`/`@untainted`, the OWASP-style trackers): taint is the two-point *integrity* instance of
 an arbitrary security lattice, and unlike most taint analyses this one **also catches implicit flows** (1c) and
@@ -6590,18 +6614,20 @@ framing here (secret ↛ public) is the dual of taint's integrity framing (untru
 flip the lattice. The Γ/lattice encoding follows Smith §III; the paper's headline result — thread-local IFC for
 *concurrent* programs via rely/guarantee — is deliberately **not** pursued (concurrency soundness is a non-goal).
 
-**Honest scope.** Covers static labels over straight-line code + `if`/`else`, local Γ-threading, branch-PC
-implicit flow, and interprocedural sink parameters — same-class **and cross-class within the compilation unit**:
-a `ClassName.sink(arg)` static call resolves its owner by simple name among the module's classes, and an instance
-call `recv.sink(arg)` resolves through the receiver parameter's declared type. Loud-skips a loop body, an
-unlabelled source, or any construct outside the fragment. One quiet boundary remains: a sink in a **precompiled /
-imported** class (the receiver is an unresolved name off the pre-STC snapshot, not a module class) and a **field
-receiver** are skipped silently — resolving those needs the STC method-call target or the module's import table,
-the immediate next step. Deferred, each a named slice: external/precompiled sinks; **value-dependent
-classifications** `L(x) = f(state)` (§III-A, where the SMT approach pays off in a way dataflow taint cannot);
-**array element labels** (§III-C); **loops** (a `Γ`-invariant, the analogue of `@Invariant`); and
-**declassification** (§III-E, a *proved* two-state predicate rather than a blanket sanitisation cast). Locked by
-the `PL1 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the cross-class set, the scoped-PC precision
+**Honest scope.** Covers static *and value-dependent* labels over straight-line code, `if`/`else`, and
+`while`/`do-while`/`for` **loops** (inferred Γ-invariant); local Γ-threading; branch-PC and loop-PC implicit
+flow; and interprocedural sink parameters — same-class **and cross-class within the compilation unit** (a
+`ClassName.sink(arg)` static call resolves its owner by simple name among the module's classes; an instance call
+`recv.sink(arg)` resolves through the receiver parameter's declared type). Loud-skips an unlabelled source, a
+`for`-each over a collection, `break`/`continue`, or any construct outside the fragment. Quiet boundaries that
+remain: a sink in a **precompiled / imported** class (the receiver is an unresolved name off the pre-STC
+snapshot) and a **field receiver** skip silently; and a value-dependent classification's controls are matched by
+name in scope, so one that depends on a **changing local** or a **field** isn't yet tracked. Deferred, each a
+named slice: external/precompiled sinks; the full §III-A **control-variable / `secure_update`** obligation
+(writing a control variable must not drop a controlled variable below its data's level); a tighter
+**per-variable loop fixpoint**; **array element labels** (§III-C); and **declassification** (§III-E, a *proved*
+two-state predicate rather than a blanket sanitisation cast). Locked by the `PL1 infoflow` cases (1a/1b/1c, the
+interprocedural-sink set, the cross-class set, the value-dependent set, the loop set, the scoped-PC precision
 case, and the loud-skip controls). Annotation: `verification.Label`.
 
 ---
