@@ -229,6 +229,17 @@ class Reporter {
             "Could not decide information-flow obligation for ${methodName}", result)
     }
 
+    /**
+     * An interprocedural noninterference refutation: an argument's security level exceeds the classification of
+     * the sink parameter it flows into. The "a secret reaches a public sink (a query/log/response argument)" shape.
+     */
+    static String formatSinkLeak(String methodName, String argText, String callee, String paramName,
+                                 String paramLevel, CheckResult result) {
+        implicit("Possible information leak: '${argText}' may carry data above the '${paramLevel}' classification of parameter '${paramName}' of ${callee}",
+            "leq(level(${argText}), ${paramLevel})",
+            "Could not decide information-flow obligation for ${methodName}", result)
+    }
+
     /** An information-flow obligation the verifier cannot model (unlabelled source, no lattice, …) — skipped loudly. */
     static String formatLeakSkipped(String methodName, String reason) {
         "Skipped information-flow check for ${methodName} (${reason}). " +

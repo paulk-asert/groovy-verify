@@ -6574,21 +6574,32 @@ static int implicit(@verification.Label('High') boolean secret,
 }
 ```
 
+- **interprocedural — labels into a sink parameter.** Flow crosses method boundaries: an argument reaching a
+  `@Label`-classified *parameter* of a called method must not exceed it — `leq( join(ΓE(arg), PC), L(param) )`,
+  discharged at the call. This is the recognisable "a secret reaches a public sink (a query/log/response
+  argument)" shape — the dual of a taint checker's "tainted value reaches an untrusted sink", and the leak that
+  most actually matters. It composes with the earlier slices (a laundered local or a call *under a secret
+  branch* both refute) and the analysis now runs on any method carrying a label, so a `void` sink-caller with no
+  result classification is checked too.
+
 **Where it sits — beyond taint, short of full IFC.** This is a generalisation of compile-time *taint tracking*
 (Ballerina's `@tainted`/`@untainted`, the OWASP-style trackers): taint is the two-point *integrity* instance of
 an arbitrary security lattice, and unlike most taint analyses this one **also catches implicit flows** (1c) and
 reasons over a *machine-proved* multi-level lattice rather than a hardcoded two-point order. The confidentiality
 framing here (secret ↛ public) is the dual of taint's integrity framing (untrusted ↛ trusted) — same engine,
-flip the lattice.
+flip the lattice. The Γ/lattice encoding follows Smith §III; the paper's headline result — thread-local IFC for
+*concurrent* programs via rely/guarantee — is deliberately **not** pursued (concurrency soundness is a non-goal).
 
-**Honest scope (Slice 1 = straight-line + if/else, intra-procedural).** Loud-skips a loop body, an unlabelled
-source, or any construct outside the fragment. Deferred, each a named next slice: **interprocedural** flow
-(labels crossing method boundaries — the biggest gap vs. a whole-program taint checker, and where *sink
-parameters* like a query argument would live); **value-dependent classifications** `L(x) = f(state)` (§III-A,
-where the SMT approach pays off in a way dataflow taint cannot); **array element labels** (§III-C); **loops**
-(a `Γ`-invariant, the analogue of `@Invariant`); and **declassification** (§III-E, a *proved* two-state
-predicate rather than a blanket sanitisation cast). Locked by the `PL1 infoflow` cases (1a/1b/1c, including the
-scoped-PC precision case and the loud-skip controls). Annotation: `verification.Label`.
+**Honest scope.** Covers static labels over straight-line code + `if`/`else`, local Γ-threading, branch-PC
+implicit flow, and **same-class** interprocedural sink parameters. Loud-skips a loop body, an unlabelled source,
+or any construct outside the fragment. One quiet boundary: a **cross-class** sink call is skipped silently — the
+callee's `@Label` parameters aren't resolvable off the pre-STC body snapshot without the STC method-call target,
+so cross-class resolution is the immediate next step. Deferred, each a named slice: cross-class sinks;
+**value-dependent classifications** `L(x) = f(state)` (§III-A, where the SMT approach pays off in a way dataflow
+taint cannot); **array element labels** (§III-C); **loops** (a `Γ`-invariant, the analogue of `@Invariant`); and
+**declassification** (§III-E, a *proved* two-state predicate rather than a blanket sanitisation cast). Locked by
+the `PL1 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the scoped-PC precision case, and the loud-skip
+controls). Annotation: `verification.Label`.
 
 ---
 

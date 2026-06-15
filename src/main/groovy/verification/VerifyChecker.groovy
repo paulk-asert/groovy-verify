@@ -3607,9 +3607,10 @@ class VerifyChecker extends TypeCheckingExtension {
      * lattice join. This subsumes the straight-line case (no guards ⇒ {@code PC = ⊥}).
      */
     private void verifyNoLeak(MethodNode node) {
-        if (node.isVoidMethod() || node instanceof ConstructorNode) return
-        String outLevel = labelValue(node)
-        if (outLevel == null) return                       // no declared result classification → nothing to check
+        if (node instanceof ConstructorNode) return
+        String outLevel = labelValue(node)                 // result classification (may be null — e.g. a void sink-caller)
+        Map<String, String> plabels = paramLabels(node)
+        if (outLevel == null && plabels.isEmpty()) return  // nothing labelled → not in the information-flow analysis
         ClassNode lat = latticeEnumOf(node)
         if (lat == null) {
             addStaticTypeError(Reporter.formatLeakSkipped(node.name,
@@ -3620,7 +3621,7 @@ class VerifyChecker extends TypeCheckingExtension {
         if (body == null) body = node.code
         if (body == null) return
         Map<String, Expression> env = new LinkedHashMap<String, Expression>()
-        for (Map.Entry<String, String> en : paramLabels(node).entrySet()) {
+        for (Map.Entry<String, String> en : plabels.entrySet()) {
             env.put(en.key, enumConstExpr(lat, en.value))
         }
         try {
@@ -3648,11 +3649,15 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (s instanceof ReturnStatement) {
             Expression e = ((ReturnStatement) s).expression
-            if (e != null) emitReturnLeak(node, e, env, pc, lat, outLevel)
+            if (e != null) {
+                checkCallSinks(e, env, pc, lat, node)          // a call in the return expr, e.g. return sink(secret)
+                if (outLevel != null) emitReturnLeak(node, e, env, pc, lat, outLevel)
+            }
             return env
         }
         if (s instanceof IfStatement) {
             IfStatement ifs = (IfStatement) s
+            checkCallSinks(ifs.booleanExpression, env, pc, lat, node)   // a call in the guard
             // Branching on classified data raises the PC inside both arms (implicit flow): PC ⊔ ΓE(guard).
             Expression pcInner = pcJoin(pc, gammaExpr(ifs.booleanExpression, env, lat))
             Map<String, Expression> thenEnv = ifWalk(ifs.ifBlock, copyEnv(env), pcInner, lat, outLevel, node)
@@ -3662,8 +3667,10 @@ class VerifyChecker extends TypeCheckingExtension {
             return mergeEnvs(thenEnv, elseEnv)             // post-if: join the arms; PC is popped (not pcInner)
         }
         if (s instanceof ExpressionStatement) {
+            Expression stmtExpr = ((ExpressionStatement) s).expression
+            checkCallSinks(stmtExpr, env, pc, lat, node)       // a bare sink call, or one in an assignment RHS
             String[] nameHolder = new String[1]
-            Expression rhs = assignTarget(((ExpressionStatement) s).expression, nameHolder)
+            Expression rhs = assignTarget(stmtExpr, nameHolder)
             if (nameHolder[0] != null) {
                 Map<String, Expression> ne = copyEnv(env)
                 Expression g = gammaExpr(rhs, env, lat)
@@ -3690,6 +3697,101 @@ class VerifyChecker extends TypeCheckingExtension {
         Expression level = pcJoin(gamma, pc)               // the returned value is observed under the PC
         Expression goal = sameClassCall('leq', level, enumConstExpr(lat, outLevel))
         dischargeLeak(node, e, goal, outLevel)
+    }
+
+    /**
+     * Interprocedural sink check (Phase L1, interprocedural slice). For every same-class call inside {@code e},
+     * each argument flowing to a {@code @Label}-classified parameter must not exceed that parameter's
+     * classification: {@code leq( join(ΓE(arg), PC), L(param) )}. This is the "a secret reaching a public sink"
+     * shape (a query/log/response argument) — the dual of a taint checker's "tainted value reaching an
+     * untrusted sink". Calls with no labelled parameter (e.g. the lattice's own {@code leq}/{@code join}) are
+     * ignored; a labelled sink fed an untracked argument skips loudly.
+     */
+    private void checkCallSinks(Expression e, Map<String, Expression> env, Expression pc, ClassNode lat, MethodNode node) {
+        if (e == null) return
+        List<Expression> calls = new ArrayList<Expression>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression c) { calls.add(c); super.visitMethodCallExpression(c) }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression c) { calls.add(c); super.visitStaticMethodCallExpression(c) }
+        })
+        for (Expression c : calls) {
+            MethodNode callee = resolveSinkCallee(c, node.declaringClass)
+            if (callee == null) continue                   // not a resolvable same-class call → nothing to check
+            List<Expression> args = callArgs(c)
+            Parameter[] ps = callee.parameters
+            if (args == null || ps.length != args.size()) continue   // arity mismatch / varargs → skip
+            for (int i = 0; i < ps.length; i++) {
+                String plabel = labelValue(ps[i])
+                if (plabel == null) continue               // unlabelled parameter — not a sink
+                Expression arg = args.get(i)
+                Expression argGamma = gammaExpr(arg, env, lat)
+                if (argGamma == null) {
+                    addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                        "argument '${arg.text}' to the '${plabel}' parameter '${ps[i].name}' of ${callee.name} " +
+                        "draws on an unlabelled or unsupported source"), anchorOf(arg, node))
+                    continue
+                }
+                Expression level = pcJoin(argGamma, pc)    // the argument is passed under the current PC
+                Expression goal = sameClassCall('leq', level, enumConstExpr(lat, plabel))
+                dischargeSinkLeak(node, arg, callee.name, ps[i].name, plabel, goal)
+            }
+        }
+    }
+
+    /** Refute the no-leak obligation for one sink argument; VERIFIED ⇒ secure, else a leak into the sink parameter. */
+    private void dischargeSinkLeak(MethodNode node, Expression arg, String callee, String paramName,
+                                   String paramLevel, Expression goal) {
+        SmtSession session = backend.session()
+        try {
+            Encoder enc = mkEncoder(session)
+            Object g = enc.translateGoal(goal)
+            if (g == null) {
+                addStaticTypeError(Reporter.formatLeakSkipped(node.name,
+                    "sink obligation '${goal.text}' is outside fragment"), anchorOf(arg, node))
+                return
+            }
+            session.assertExpr(session.not(g))
+            CheckResult r = shown(session.check())
+            if (r.status == CheckResult.Status.VERIFIED) return
+            addStaticTypeError(
+                Reporter.formatSinkLeak(node.name, arg.text, callee, paramName, paramLevel, r), anchorOf(arg, node))
+        } finally {
+            try { session.close() } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Resolve a same-class call (implicit-{@code this} / {@code this.m(…)} / {@code Self.m(…)}) to its callee. */
+    private static MethodNode resolveSinkCallee(Expression c, ClassNode declaringClass) {
+        if (declaringClass == null) return null
+        String name
+        if (c instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) c
+            Expression recv = mce.objectExpression
+            boolean sameClass = mce.implicitThis ||
+                (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this') ||
+                (recv instanceof ClassExpression && recv.type?.name == declaringClass.name)
+            if (!sameClass) return null
+            name = mce.methodAsString
+        } else if (c instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sce = (StaticMethodCallExpression) c
+            if (sce.ownerType == null || sce.ownerType.name != declaringClass.name) return null
+            name = sce.method
+        } else {
+            return null
+        }
+        int arity = callArgs(c).size()
+        for (MethodNode m : declaringClass.getMethods(name)) {
+            if (m.parameters.length == arity) return m
+        }
+        null
+    }
+
+    /** The positional argument expressions of a call (empty for none / non-positional). */
+    private static List<Expression> callArgs(Expression c) {
+        Expression a = (c instanceof MethodCallExpression) ? ((MethodCallExpression) c).arguments :
+                       (c instanceof StaticMethodCallExpression) ? ((StaticMethodCallExpression) c).arguments : null
+        (a instanceof ArgumentListExpression) ? ((ArgumentListExpression) a).expressions :
+            Collections.<Expression> emptyList()
     }
 
     /** Lattice join of two levels, with null treated as ⊥ (identity): {@code a ⊔ b}. */

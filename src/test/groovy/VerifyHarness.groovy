@@ -10435,6 +10435,58 @@ class WrapCounter implements Counter { }
                             return t
                         }
                     }''')],
+
+        // ----- Interprocedural slice — labels cross method boundaries into a sink parameter -----
+        // THE SINK HEADLINE (the SQL-injection / log-a-secret shape): a High value passed to a method whose
+        // parameter is classified Low refutes — the leak is at the *call*, not a return. `leak` itself is void
+        // and has no labelled result; it is in the analysis purely because it carries a labelled source.
+        [group: 'PL1 infoflow', name: 'interproc: High arg → Low sink parameter refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void sink(@verification.Label('Low') int x) { }     // a public sink
+                        static void leak(@verification.Label('High') int secret) { sink(secret) }
+                    }''')],
+        // A Low argument into the same Low sink is fine.
+        [group: 'PL1 infoflow', name: 'interproc: Low arg → Low sink verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void sink(@verification.Label('Low') int x) { }
+                        static void send(@verification.Label('Low') int pub) { sink(pub) }
+                    }''')],
+        // Launder through a local, then into the sink — still High at the boundary, refuted (1b + interproc).
+        [group: 'PL1 infoflow', name: 'interproc: laundered local into Low sink refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void sink(@verification.Label('Low') int x) { }
+                        static void leak(@verification.Label('High') int secret) { int t = secret; sink(t) }
+                    }''')],
+        // Implicit flow into a sink: a Low value passed to a Low sink *under a secret branch* leaks (the call
+        // happening reveals the branch) — refuted via the PC (1c + interproc).
+        [group: 'PL1 infoflow', name: 'interproc: implicit flow into sink (call under secret branch) refuted', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void sink(@verification.Label('Low') int x) { }
+                        static void cond(@verification.Label('High') boolean secret, @verification.Label('Low') int pub) {
+                            if (secret) sink(pub)
+                        }
+                    }''')],
+        // An unlabelled argument to a labelled sink is not silently passed — it skips loudly.
+        [group: 'PL1 infoflow', name: 'interproc: unlabelled arg to Low sink skips loudly', expect: 'Skipped information-flow check',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void sink(@verification.Label('Low') int x) { }
+                        static void pass(@verification.Label('Low') int pub, int other) { sink(other) }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
