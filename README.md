@@ -2430,7 +2430,10 @@ a coverage metric. In expressions the fragment is:
   `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) so
   `5 / 2 == 2.5` and `BigDecimal` contracts prove (int operands coerced; only `BigDecimal` is
   exact-Real — `double`/`float` take the IEEE-754 FP path, below); divide-by-zero and
-  `.mod`-non-positive obligations fire; `**` is out;
+  `.mod`-non-positive obligations fire; `**` lowers to an axiomatised `pow$` (Phase 93) — a literal
+  exponent folds to a value (`(2 ** 3).intValue() == 8` proves) and the doubling recurrence
+  `2 ** (n+1) == 2 * (2 ** n)` proves for *symbolic* `n`, though a false symbolic-exponent value claim
+  is refute-hostile (soft-fails to "could not decide", like the `Fib`/`Gcd` recurrences);
 - bitwise / shift operators `& | ^ << >>` (Phase: bitwise) — shifts by a non-negative literal stay in
   unbounded Int arithmetic (`x << k` is `x * 2^k`, `x >> k` is `⌊x / 2^k⌋`), while `& | ^` and variable
   shifts lower to Z3's **bit-vector theory at Java's 32-bit width** (faithful two's-complement; bit-blasted,
@@ -2520,6 +2523,13 @@ a coverage metric. In expressions the fragment is:
   factory's nullity and size pinned on the assignment so implicit checks pass too;
 - fuel-bounded inlining of contract-free pure functions (a closed call like
   `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
+- higher-order functions and algebraic carriers, for *law* proofs: a `java.util.function.Function`'s
+  `f.apply(x)` is an uninterpreted function (functional congruence only), and a `@Monadic` carrier — a
+  single-value immutable wrapper *or* a two-case `Some(v) | None` — is modelled as a Z3 datatype, so the
+  monad / functor laws (left/right identity, associativity, functor identity/composition) derive from the
+  annotation alone (Phases 133–141); the combiner analogue inlines an `@Reducer`/`@Associative` method as
+  its `@Ensures` equation at call sites and derives the monoid laws (Phase 130) — both worked through in
+  [Relationship to Groovy's other checkers](#relationship-to-groovys-other-checkers);
 - scalar instance-field reads (`this.count` / bare `count`) in contracts and bodies.
 
 The unit of verification is a **method** (static or instance) carrying contracts — the enclosing definition is
@@ -2791,6 +2801,35 @@ Each extension does a *distinct* job on the one class: **MonadicChecker** shape-
 **PurityChecker** the side-effect freedom the laws assume, **NullChecker** the nullness, and **groovy-verify**
 proves the five laws from `@Monadic` alone — all four compile quietly because this `Maybe` *is* lawful.
 
+Unlike the `@Reducer` example above — which spelled out the `associative` lemma in the class before deleting it —
+we've kept the laws *out* of `Maybe` here, because `@Monadic` is a heavier annotation and the explicit forms would
+swamp the example. But they're the point, so here is exactly what those five obligations would look like written by
+hand, as the `@Ensures` lemmas you would otherwise add (`f` / `g` a bind function `Function<Object, Maybe>`, `p` /
+`q` a plain map function `Function`):
+
+```groovy
+@Ensures({ some(a).flatMap(f) == f.apply(a) })                                       // left identity
+static void leftIdentity(Object a, Function<Object, Maybe> f) { }
+
+@Ensures({ m.flatMap({ x -> some(x) }) == m })                                       // right identity
+static void rightIdentity(Maybe m) { }
+
+@Ensures({ m.flatMap(f).flatMap(g) == m.flatMap({ x -> f.apply(x).flatMap(g) }) })  // associativity
+static void associativity(Maybe m, Function<Object, Maybe> f, Function<Object, Maybe> g) { }
+
+@Ensures({ m.map({ x -> x }) == m })                                                 // functor identity
+static void functorIdentity(Maybe m) { }
+
+@Ensures({ m.map(p).map(q) == m.map({ x -> q.apply(p.apply(x)) }) })                 // functor composition
+static void functorComposition(Maybe m, Function p, Function q) { }
+```
+
+`@Monadic` synthesises and discharges all five — so, exactly as with the `@Reducer` lemma, none of them needs to
+be in the source: the carrier declares `@Monadic` and the laws are proved for it. (Four of these — the identity
+and associativity laws — are verified directly as hand-written lemmas in the `P-monadlaw` / `P-maybe` test groups;
+functor composition is the discriminator the auto-synthesis proves for the Vavr-style `Maybe` and refutes for the
+Optional-style one, next.)
+
 The payoff is the carrier that **isn't**. `java.util.Optional` is famously *almost* a monad: its `flatMap` laws
 hold, but `map` **collapses a `null` result to empty** (`ofNullable`), which breaks the functor-composition law —
 `m.map(f).map(g) ≠ m.map(f ∘ g)` when `f` returns `null`. Write that `map` (Optional's semantics) instead, with
@@ -2864,7 +2903,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 
 | File | Role |
 |---|---|
-| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks |
+| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, and annotation-law synthesis (`@Reducer` / `@Monadic`) |
 | `Encoder` | Groovy expression → SMT (the fragment lives here) |
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |

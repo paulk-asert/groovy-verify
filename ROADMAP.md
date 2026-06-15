@@ -6260,9 +6260,6 @@ translated in a dedicated value sort, keeping the blast radius to the `apply` sh
 `f(a) == f(b)` refutes (not forced equal), `a==b ⟹ f(a)==f(b)` proves (the premise connects), and the control
 `a==b ⟹ f(a)==f(c)` refutes (no spurious equality).
 
-**Next (not yet built)**: Phase B (wrapper-carrier content/`unit` model), Phase C (the three identity laws),
-Phase D (closures → defined functions, for associativity/functor-composition). See the `@Monadic` scope.
-
 ---
 
 ## Phase 134 — wrapper-carrier datatype model  *(shipped — Phase B of the `@Monadic` derivation)*
@@ -6288,9 +6285,6 @@ will need it only inside the laws (where the carrier context disambiguates).
 
 **Shipped tests** (group `P-carrier`): `new Res(m.v) == m` and `new Res(m.v).v == m.v` prove by datatype theory;
 the control `m == n` over two distinct carriers refutes (not vacuous).
-
-**Next**: Phase C — synthesize the three identity laws (à la Phase 130) and discharge them over the Phase-A
-`apply` + Phase-B carrier, unifying the value sort; Phase D — closures as defined functions (the stretch).
 
 ---
 
@@ -6321,10 +6315,10 @@ Four pieces made it compose:
 `unit(a).chain(f) == f.apply(b)` (applications not forced equal) and `m.transform(id) == n` (distinct carriers not
 collapsed).
 
-**Deferred** (honest scope): **associativity** needs the *general* constructed closure `{ x -> f(x).chain(g) }`
-(Phase D — a closure whose body itself calls bind, beyond the unit/identity beta-reduction here); method-reference
-unit (`Res::new`) isn't recognised yet (closure form only). Carriers remain restricted to single-value immutable
-wrappers (Maybe/Either/`Stream` out, as scoped). **Phase 136 adds the auto-synthesis.**
+**Deferred at this point** (all subsequently shipped): **associativity** — the *general* constructed closure
+`{ x -> f(x).chain(g) }`, a closure whose body itself binds — landed in Phase 137; the auto-synthesis in Phase 136;
+multi-case carriers (`Maybe`/`Either`) in Phases 138–141. Method-reference unit (`Res::new`) stays unrecognised
+(closure form only).
 
 ---
 
@@ -6352,8 +6346,8 @@ that opt into `@Monadic` for the shape but aren't the Identity wrapper.)
 laws auto-prove (clean compile); a carrier outside the modellable shape compiles clean (left to the annotation).
 The hand-written `P-monadlaw` lemmas keep working alongside the synthesis.
 
-**Still deferred**: associativity (Phase D's general closure — **now shipped, Phase 137**), method-reference unit,
-and non-wrapper carriers.
+Associativity (Phase 137) and non-wrapper multi-case carriers (Phases 138–141) followed; only method-reference
+unit (`Res::new`) stays deferred.
 
 ---
 
@@ -6377,8 +6371,8 @@ to full parity with `@Reducer`: the annotation proves itself.
 **Shipped tests**: `P-monadlaw` adds associativity (proves) and the bind-order control (refutes); `P-monadauto`
 now auto-proves all four laws from the annotation alone.
 
-**Remaining scope boundaries** (unchanged): single-value immutable wrappers only (multi-case Maybe/Either,
-effectful `Stream` out); method-reference unit (`Res::new`) — closure form only.
+**Scope here**: single-value immutable wrappers — the multi-case `Maybe`/`Either` extension follows in
+Phases 138–141. Effectful `Stream` and method-reference unit (`Res::new`) stay out.
 
 ---
 
@@ -6404,10 +6398,6 @@ datatype satisfies `content(Some(v)) == v`, `is$Some(Some(v))`, `is$None(None)`,
 construction; (2) the null-collapse seed — *when `g(x)` is null*, Vavr-`map` (`Some(g(x))`) and Optional-`map`
 (`None`) **diverge** (`Some(null) != None`), the exact point at which Optional's functor law breaks.
 
-**Next**: M-C (recognise a multi-case `@Monadic` carrier from source); M-D (case-split bind/map — where functor
-composition *proves* for Vavr-style and *refutes* for Optional-style, the core result); M-E (synthesis + the
-functor-composition law + the four-checker example).
-
 ---
 
 ## Phase 139 — recognise a two-case carrier from source (M-C)  *(shipped)*
@@ -6426,9 +6416,6 @@ value-sort split.
 Detail of note: the `@Monadic.unit` member is only on mavenLocal (not the ASF snapshot the build uses), so the
 some-factory is recognised by the **structural default name `some`**, not `unit=` — which is fine, and keeps the
 example buildable against the public snapshot.
-
-**Next**: M-D — case-split `flatMap`/`map` bodies (`present ? … : this`), where the value-sort `null$` (M-B) drives
-the Vavr-proves / Optional-refutes verdict on functor composition; then M-E.
 
 ---
 
@@ -6453,10 +6440,6 @@ Two bugs surfaced and fixed along the way: (1) resolved method bodies use `Stati
 a new `functionRange` helper maps `Object`→the value sort and carriers→their datatype, fixing both the apply path
 and `applyFunction` (and `carrierTypeOf` now accepts a function returning *any* carrier, not just single-field
 wrappers, so the associativity closure `{x -> f.apply(x).flatMap(g)}` resolves).
-
-**Next**: M-E — generalise `verifyMonadicLaws` to two-case carriers (+ the functor-composition law) and assemble
-the four-checker example (Optional almost-monad, Vavr lawful reference, our two-variant `Maybe`) under NullChecker +
-MonadicChecker + PurityChecker + VerifyChecker.
 
 ---
 
@@ -6501,6 +6484,19 @@ arc and the whole `@Monadic` line — the prove-Maybe / refute-Optional result, 
 
 **Remaining polish (not blocking):** the recognised carrier idiom stays tight (present/value fields + `some`/`none`
 factories); `Either` (two content types) and effectful/lazy carriers remain out, as scoped.
+
+**Library-equivalent law tests (group `P-libmonad`).** The three real-world `Maybe`/`Option` flavors, each written
+out as the full five-law hand set (the README's "what the implicit `@Monadic` contracts are equivalent to" forms),
+over source carriers replicating each library's semantics *and* naming — the *actual* library types are bytecode, out
+of source-level reach. **Vavr**'s `Option` (`flatMap`/`map`, `some`/`none`) and **Functional Java**'s `Option`
+(`bind`/`map`, `some`/`none`) are lawful, so all five laws prove; **java.util.Optional** — named faithfully `of`/`empty`
+via `@Monadic(unit = 'of')` — has a null-collapsing `map` (modelled with its real `@NonNull` content contract, so
+functor *identity* holds) that keeps the four monad/functor laws but makes its functor *composition* the sole
+refutation. No engine change, but it exercises two member-name paths for a two-case carrier that nothing else did:
+`@Monadic(bind = 'bind')` (Functional Java's spelling) and `@Monadic(unit = 'of')` (the `unit` attribute, now
+published in the snapshot — the `of`-named Optional is recognised *only* because the verifier honors `unit`, since it
+has no `some` factory). Plus the complete five-law hand set over a two-case carrier (right identity / functor
+identity, previously hand-tested only over the single-value `Res` wrapper).
 
 ---
 
