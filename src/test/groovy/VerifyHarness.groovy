@@ -52,6 +52,7 @@ class VerifyHarness {
         import verification.Gcd
         import verification.Lcm
         import verification.CheckOverflow
+        import verification.Declassify
     '''.stripIndent()
 
     /** A contracted producer reused by the cross-call precondition cases. */
@@ -10491,6 +10492,37 @@ class WrapCounter implements Counter { }
                         }
                     }''')],
 
+        // ----- Rely/guarantee well-formedness (Smith §IV compatibility lemmas) -----
+        // The producer/consumer R/G conditions over shared (head, tail). Each predicate is a two-state function:
+        // the first half of its parameters is the pre-state, the second half the post-state. The verifier auto-
+        // discharges: each rely reflexive + transitive, each guarantee reflexive, and G_i ⟹ R_j (i≠j). A
+        // well-formed, compatible set compiles cleanly.
+        [group: 'PL1 rg', name: 'rg: producer/consumer conditions are compatible (verifies)', ok: true,
+         src: tc('''class Buffer {
+                        @verification.Rely('Consumer')      static boolean rCons(int oh, int ot, int h, int t) { h == oh && ot <= t }
+                        @verification.Guarantee('Producer') static boolean gProd(int oh, int ot, int h, int t) { h == oh && ot <= t }
+                        @verification.Rely('Producer')      static boolean rProd(int oh, int ot, int h, int t) { t == ot }
+                        @verification.Guarantee('Consumer') static boolean gCons(int oh, int ot, int h, int t) { t == ot && oh <= h }
+                    }''')],
+        // Incompatible: the producer's guarantee no longer keeps `head` fixed, so it fails to imply the consumer's
+        // rely (which requires head == oh) — G_Producer ⟹ R_Consumer refutes.
+        [group: 'PL1 rg', name: 'rg: producer guarantee not implying consumer rely refutes', expect: 'Rely/guarantee compatibility does not hold',
+         src: tc('''class Buffer {
+                        @verification.Rely('Consumer')      static boolean rCons(int oh, int ot, int h, int t) { h == oh && ot <= t }
+                        @verification.Guarantee('Producer') static boolean gProd(int oh, int ot, int h, int t) { ot <= t }
+                    }''')],
+        // Ill-formed: a rely that demands the environment *increment* head is not reflexive (it forbids "no change")
+        // — reflexivity refutes.
+        [group: 'PL1 rg', name: 'rg: non-reflexive rely refutes', expect: 'Rely/guarantee compatibility does not hold',
+         src: tc('''class Buffer {
+                        @verification.Rely('T')             static boolean rBad(int oh, int h) { h == oh + 1 }
+                    }''')],
+        // Ill-formed: a rely that is not transitive — "tail stays within one of its old value" doesn't compose.
+        [group: 'PL1 rg', name: 'rg: non-transitive rely refutes', expect: 'Rely/guarantee compatibility does not hold',
+         src: tc('''class Buffer {
+                        @verification.Rely('T')             static boolean rNT(int ot, int t) { t <= ot + 1 && ot <= t }
+                    }''')],
+
         // ----- Control-variable / secure-update (Smith §III-A) -----
         // `data`'s classification is Low when authed, else High (value-dependent). `authed` is therefore a
         // CONTROL variable. Flipping it to `true` makes L(data) == Low — but data may still hold High data (when
@@ -10528,6 +10560,59 @@ class WrapCounter implements Counter { }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
                         static void f(boolean authed, boolean other, @verification.Label(by = 'classifyData') int data) {
                             other = true
+                        }
+                    }''')],
+
+        // ----- Declassification — explicit, auditable controlled release (Smith §III-E) -----
+        // The password-checker: releasing the single equality *bit* (correct/incorrect) is permitted — but only
+        // through an explicit Declassify marker. `Declassify.to('Low', password == guess)` releases it at Low, so
+        // the Low-classified result verifies. Every release is greppable and reviewable in the source.
+        [group: 'PL1 infoflow', name: 'declassify: password check releases the equality bit (verifies)', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static boolean check(@verification.Label('High') int password, @verification.Label('Low') int guess) {
+                            return Declassify.to('Low', password == guess)
+                        }
+                    }''')],
+        // The SAME method *without* the declassification marker leaks — `password == guess` carries High → refuted.
+        // Declassification is required and explicit, not implicit.
+        [group: 'PL1 infoflow', name: 'declassify: equality bit without the marker refutes', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static boolean check(@verification.Label('High') int password, @verification.Label('Low') int guess) {
+                            return password == guess
+                        }
+                    }''')],
+        // Declassification into a cross-class sink: explicitly release a derived value at Low into the log.
+        [group: 'PL1 infoflow', name: 'declassify: release into a sink verifies', ok: true,
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void audit(@verification.Label('High') int secret, @verification.Label('Low') int pub) {
+                            Audit.log(Declassify.to('Low', secret == pub))
+                        }
+                    }
+                    class Audit {
+                        static void log(@verification.Label('Low') boolean x) { }
+                    }''')],
+        // Soundness control: declassifying to 'High' does NOT launder a secret to a Low result — releasing the
+        // secret at High still exceeds the Low classification → refuted. The marker releases at the *named* level,
+        // it is not a blanket downgrade.
+        [group: 'PL1 infoflow', name: 'declassify: releasing at High still refutes a Low result', expect: 'information leak',
+         src: tc('''class C {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        @verification.Label('Low')
+                        static int passthrough(@verification.Label('High') int secret) {
+                            return Declassify.to('High', secret)
                         }
                     }''')],
 

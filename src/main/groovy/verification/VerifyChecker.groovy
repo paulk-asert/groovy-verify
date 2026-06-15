@@ -115,6 +115,9 @@ class VerifyChecker extends TypeCheckingExtension {
     private static final ClassNode REQUIRES_TYPE = ClassHelper.make(Requires)
     private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
     private static final ClassNode LABEL_TYPE = ClassHelper.make(Label)   // Phase L1 — security classification
+    private static final ClassNode RELY_TYPE = ClassHelper.make(Rely)         // Phase L1 — rely/guarantee well-formedness
+    private static final ClassNode GUARANTEE_TYPE = ClassHelper.make(Guarantee)
+    private static final String RG_LAW_KEY = 'verification.relyGuaranteeLaw'
     private static final ClassNode CONTRACT_SOURCE_TYPE = ClassHelper.make(ContractSource)
     private static final ClassNode CLASS_INVARIANT_SOURCE_TYPE = ClassHelper.make(ClassInvariantSource)
     /** Phase 130 — metadata on a synthesized @Reducer/@Associative law lemma: {@code [combinerName, lawName]}. */
@@ -519,6 +522,132 @@ class VerifyChecker extends TypeCheckingExtension {
         m.addAnnotation(cs)
         m.setSourcePosition(carrier)
         m.putNodeMetaData(MONADIC_LAW_KEY, [carrier.nameWithoutPackage, law] as String[])
+        beforeVisitMethod(m)
+        afterVisitMethod(m)
+    }
+
+    // ---- Phase L1: rely/guarantee well-formedness (Smith §IV compatibility lemmas) ----------------
+
+    /**
+     * Discharge the rely/guarantee compatibility obligations for a class's {@code @Rely}/{@code @Guarantee}
+     * conditions: each rely reflexive and transitive, each guarantee reflexive, and every thread's guarantee
+     * implies every <i>other</i> thread's rely ({@code G_i ⟹ R_j}, {@code i ≠ j}). These are the lemmas that let
+     * per-thread rely/guarantee proofs compose; they are pure two-state-predicate implications, discharged like
+     * the lattice/monoid laws. A condition is a pure boolean method whose parameters split in half into a
+     * pre-state and a matching post-state.
+     */
+    private void verifyRelyGuarantee(ClassNode classNode) {
+        List<Object[]> relies = new ArrayList<Object[]>()       // [threadName, MethodNode]
+        List<Object[]> guars = new ArrayList<Object[]>()
+        for (MethodNode m : classNode.methods) {
+            if (!isRgPredicate(m)) continue
+            String rt = rgThread(m, RELY_TYPE)
+            String gt = rgThread(m, GUARANTEE_TYPE)
+            if (rt != null) relies.add([rt, m] as Object[])
+            if (gt != null) guars.add([gt, m] as Object[])
+        }
+        if (relies.isEmpty() && guars.isEmpty()) return
+
+        for (Object[] r : relies) {
+            MethodNode m = (MethodNode) r[1]
+            runRgLaw(classNode, "rely '${m.name}' is reflexive", reflexiveParams(m), reflexiveText(m))
+            runRgLaw(classNode, "rely '${m.name}' is transitive", transitiveParams(m), transitiveText(m))
+        }
+        for (Object[] g : guars) {
+            MethodNode m = (MethodNode) g[1]
+            runRgLaw(classNode, "guarantee '${m.name}' is reflexive", reflexiveParams(m), reflexiveText(m))
+        }
+        for (Object[] g : guars) {
+            MethodNode gm = (MethodNode) g[1]
+            for (Object[] r : relies) {
+                if (g[0] == r[0]) continue                      // a thread needn't honour its own rely
+                MethodNode rm = (MethodNode) r[1]
+                if (gm.parameters.length != rm.parameters.length) continue
+                runRgLaw(classNode, "guarantee '${gm.name}' (${g[0]}) implies rely '${rm.name}' (${r[0]})",
+                    pairParams(gm), implicationText(gm, rm))
+            }
+        }
+    }
+
+    /** A {@code @Rely}/{@code @Guarantee} condition: a boolean method with an even, non-zero parameter count
+     *  (n pre-state + n post-state) and no contract (so it inlines as a pure function). */
+    private static boolean isRgPredicate(MethodNode m) {
+        int n = m.parameters.length
+        return n >= 2 && (n % 2 == 0) && m.returnType != null &&
+            (m.returnType.name == 'boolean' || m.returnType.name == 'java.lang.Boolean') && findRequires(m) == null
+    }
+
+    /** {@code @Rely('X')} / {@code @Guarantee('X')} → the thread name {@code 'X'}, or null. */
+    private static String rgThread(MethodNode m, ClassNode annType) {
+        List<AnnotationNode> anns = m.getAnnotations(annType)
+        if (anns == null || anns.isEmpty()) return null
+        Expression v = anns.get(0).getMember('value')
+        return (v instanceof ConstantExpression && ((ConstantExpression) v).value != null) ?
+            ((ConstantExpression) v).value.toString() : null
+    }
+
+    /** n fresh parameters of the pre-state types — one state, for a reflexivity lemma {@code R(s, s)}. */
+    private static Parameter[] reflexiveParams(MethodNode m) {
+        int n = m.parameters.length.intdiv(2)
+        Parameter[] out = new Parameter[n]
+        for (int i = 0; i < n; i++) out[i] = new Parameter(m.parameters[i].type, 'a' + i)
+        out
+    }
+
+    private static String reflexiveText(MethodNode m) {
+        int n = m.parameters.length.intdiv(2)
+        String s = csv('a', 0, n)
+        "${m.name}(${s}, ${s})"
+    }
+
+    /** 3n fresh parameters (three states a, b, c) for a transitivity lemma. */
+    private static Parameter[] transitiveParams(MethodNode m) {
+        int n = m.parameters.length.intdiv(2)
+        Parameter[] out = new Parameter[3 * n]
+        String[] pfx = ['a', 'b', 'c']
+        for (int s = 0; s < 3; s++) for (int i = 0; i < n; i++) out[s * n + i] = new Parameter(m.parameters[i].type, pfx[s] + i)
+        out
+    }
+
+    private static String transitiveText(MethodNode m) {
+        int n = m.parameters.length.intdiv(2)
+        String a = csv('a', 0, n), b = csv('b', 0, n), c = csv('c', 0, n)
+        "(${m.name}(${a}, ${b}) && ${m.name}(${b}, ${c})) ==> ${m.name}(${a}, ${c})"
+    }
+
+    /** 2n fresh parameters (one full pre→post transition) for a compatibility lemma {@code G(s,s') ==> R(s,s')}. */
+    private static Parameter[] pairParams(MethodNode m) {
+        int two = m.parameters.length
+        Parameter[] out = new Parameter[two]
+        for (int i = 0; i < two; i++) out[i] = new Parameter(m.parameters[i].type, 'a' + i)
+        out
+    }
+
+    private static String implicationText(MethodNode gm, MethodNode rm) {
+        String s = csv('a', 0, gm.parameters.length)
+        "${gm.name}(${s}) ==> ${rm.name}(${s})"
+    }
+
+    /** {@code "<prefix>lo, <prefix>lo+1, …, <prefix>hi-1"}. */
+    private static String csv(String prefix, int lo, int hi) {
+        StringBuilder sb = new StringBuilder()
+        for (int i = lo; i < hi; i++) { if (i > lo) sb.append(', '); sb.append(prefix).append(i) }
+        sb.toString()
+    }
+
+    /** Synthesise and discharge one rely/guarantee lemma: a {@code void} method with the given parameters whose
+     *  {@code @Ensures} is {@code lawText} (a pure predicate over the {@code @Rely}/{@code @Guarantee} functions). */
+    private void runRgLaw(ClassNode owner, String law, Parameter[] params, String lawText) {
+        MethodNode m = new MethodNode('rg$' + Integer.toHexString(law.hashCode()),
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, ClassHelper.VOID_TYPE,
+            params, ClassNode.EMPTY_ARRAY, new BlockStatement())
+        m.declaringClass = owner
+        m.addAnnotation(new AnnotationNode(ENSURES_TYPE))
+        AnnotationNode cs = new AnnotationNode(CONTRACT_SOURCE_TYPE)
+        cs.addMember('ensures', new ConstantExpression(lawText))
+        m.addAnnotation(cs)
+        m.setSourcePosition(owner)
+        m.putNodeMetaData(RG_LAW_KEY, [law] as String[])
         beforeVisitMethod(m)
         afterVisitMethod(m)
     }
@@ -1676,6 +1805,9 @@ class VerifyChecker extends TypeCheckingExtension {
         // Phase 136 — a @Monadic carrier asserts the monad/functor laws; discharge the Tier-1 identity laws it
         // claims, derived from the annotation (à la @Reducer). Best-effort.
         try { verifyMonadicLaws(classNode) } catch (Throwable ignored) { }
+        // Phase L1 (rely/guarantee) — discharge the well-formedness/compatibility lemmas of any @Rely/@Guarantee
+        // conditions the class declares (reflexive/transitive relies, reflexive guarantees, G_i ⟹ R_j). Best-effort.
+        try { verifyRelyGuarantee(classNode) } catch (Throwable ignored) { }
         for (ConstructorNode ctor : classNode.declaredConstructors) {
             try {
                 beforeVisitMethod(ctor)
@@ -4093,6 +4225,8 @@ class VerifyChecker extends TypeCheckingExtension {
         if (e instanceof BooleanExpression) {                     // an `if` guard arrives wrapped
             return gammaExpr(((BooleanExpression) e).expression, gammaEnv, lat)
         }
+        String dLevel = declassifyLevel(e)                        // §III-E — an explicit `Declassify.to('Low', …)` release
+        if (dLevel != null) return enumConstExpr(lat, dLevel)
         if (e instanceof VariableExpression) {
             return gammaEnv.get(((VariableExpression) e).name)   // null ⇒ untracked source
         }
@@ -4102,6 +4236,25 @@ class VerifyChecker extends TypeCheckingExtension {
             Expression gr = gammaExpr(b.rightExpression, gammaEnv, lat)
             if (gl == null || gr == null) return null
             return sameClassCall('join', gl, gr)
+        }
+        null
+    }
+
+    /** If {@code e} is an explicit declassification {@code Declassify.to('Level', value)}, the released level
+     *  name {@code 'Level'}; otherwise null. The released value's own level is deliberately discarded — that is
+     *  the controlled release (§III-E). */
+    private static String declassifyLevel(Expression e) {
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) e
+        if (mce.methodAsString != 'to') return null
+        Expression recv = mce.objectExpression
+        String rn = (recv instanceof VariableExpression) ? ((VariableExpression) recv).name :
+                    (recv instanceof ClassExpression) ? recv.type?.nameWithoutPackage : null
+        if (rn != 'Declassify') return null
+        List<Expression> args = callArgs(mce)
+        if (args.size() == 2 && args.get(0) instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) args.get(0)).value
+            return v != null ? v.toString() : null
         }
         null
     }
@@ -4849,6 +5002,11 @@ class VerifyChecker extends TypeCheckingExtension {
             String[] monLaw = (String[]) node.getNodeMetaData(MONADIC_LAW_KEY)
             if (monLaw != null) {
                 addStaticTypeError(Reporter.formatMonadicLawFailure(monLaw[0], monLaw[1], postAst?.text, r), anchor)
+                return
+            }
+            String[] rgLaw = (String[]) node.getNodeMetaData(RG_LAW_KEY)
+            if (rgLaw != null) {
+                addStaticTypeError(Reporter.formatRelyGuaranteeFailure(rgLaw[0], r), anchor)
                 return
             }
             if (r.status == CheckResult.Status.UNKNOWN && postAst != null) {

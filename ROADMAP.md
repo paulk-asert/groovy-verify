@@ -6606,6 +6606,31 @@ static int implicit(@verification.Label('High') boolean secret,
   tighter model would narrow it as the body proves data low — that, and control over a *field*, are the
   remaining §III-A refinements.)
 
+- **declassification — explicit controlled release (§III-E).** `Declassify.to('Low', expr)` marks `expr` as
+  released at a named lattice level, so the analysis treats it as that level regardless of the secrets it draws
+  on — the *unconditional* ("predicate-true") form, in the spirit of Mantel &amp; Sands. The value is that every
+  release is **explicit and localized**: you can grep `Declassify.to` and audit every point where classified
+  data leaves the lattice — the opposite of an invisible `@untainted`-style cast. A password checker returning
+  `Declassify.to('Low', password == guess)` releases the single equality bit (verifies); the same method
+  *without* the marker refutes; and the marker is not a blanket downgrade — `Declassify.to('High', secret)` to a
+  Low result still refutes (it releases at the *named* level). The **predicate-gated** form — a two-state
+  predicate relating the released value to the program's initial state, so only the specified function of the
+  secret may escape (the paper's `diff == old(x) − v` example) — needs `old`-state tracking and is deferred.
+
+- **rely/guarantee *well-formedness* — the §IV compatibility lemmas (and only those).** `@Rely('T')` /
+  `@Guarantee('T')` mark pure two-state predicates over shared state (parameters split in half: pre-state, then
+  post-state). The verifier auto-discharges the lemmas that let per-thread rely/guarantee proofs *compose*: each
+  rely reflexive and transitive, each guarantee reflexive, and every thread's guarantee implies every **other**
+  thread's rely (`G_i ⟹ R_j`, `i ≠ j`). A producer/consumer's conditions over `(head, tail)` verify; a producer
+  guarantee that stops keeping `head` fixed fails to imply the consumer's rely and refutes; a non-reflexive or
+  non-transitive rely refutes. These are pure predicate implications — discharged exactly like the lattice/monoid
+  laws (à la `@Reducer`'s "the annotation proves itself"), no new engine model. **This is deliberately the lemma
+  half only:** it checks the rely/guarantee *conditions* are well-formed and mutually compatible; it does **not**
+  prove the threads' code respects them. That proof — instrumenting each thread's body with a *havoc-under-rely*
+  between statements and a *guarantee* assertion after each (the interleaving model) — is the architectural piece
+  the sequential design exists to avoid, and stays a non-goal. So: the §IV *gluing logic* ships; the §IV
+  *interleaving* does not. Annotations: `verification.Rely`, `verification.Guarantee`.
+
 - **loops — the Γ-invariant is inferred.** `while` / `do-while` / C-style `for` are in the fragment. A variable
   assigned in the loop is raised to the join of every tracked source the body and guard touch, plus the loop's
   PC — a sound *Γ-invariant* that, over the finite level lattice, upper-bounds the variable's level on every
@@ -6635,12 +6660,16 @@ remain: a sink in a **precompiled / imported** class (the receiver is an unresol
 snapshot) and a **field receiver** skip silently; and a value-dependent classification's controls are matched by
 name in scope, so one that depends on a **changing local** or a **field** isn't yet tracked. Both premises of the
 §III-A assignment rule ship: the **no-leak** check and the **control-variable / secure-update** obligation.
-Deferred, each a named slice: external/precompiled sinks; classification over a **field** or a **changing local**
-(narrowing the held-data level); a tighter **per-variable loop fixpoint**; **array element labels** (§III-C); and
-**declassification** (§III-E, a *proved* two-state predicate rather than a blanket sanitisation cast). Locked by
-the `PL1 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the cross-class set, the value-dependent set,
-the loop set, the secure-update set, the scoped-PC precision case, and the loud-skip controls). Annotation:
-`verification.Label`.
+With explicit declassification (§III-E, unconditional form), the whole **sequential** fragment of the paper is in
+place — both premises of the assignment rule, the branch and loop rules, sinks, value-dependence, and controlled
+release. Deferred, each a named slice: external/precompiled sinks; classification over a **field** or a
+**changing local** (narrowing the held-data level); a tighter **per-variable loop fixpoint**; **array element
+labels** (§III-C); and the **predicate-gated** (two-state `old`) form of declassification. The paper's headline
+— *concurrent* IFC via rely/guarantee (§IV+) — stays a non-goal (concurrency soundness). Locked by the `PL1
+infoflow` cases (1a/1b/1c, the interprocedural-sink set, the cross-class set, the value-dependent set, the loop
+set, the secure-update set, the declassification set, the scoped-PC precision case, and the loud-skip controls);
+the `PL1 rg` cases lock the rely/guarantee compatibility lemmas. Annotations: `verification.Label`,
+`verification.Declassify`, `verification.Rely`, `verification.Guarantee`.
 
 ---
 
@@ -6665,7 +6694,10 @@ Things deliberately not pursued, because they don't pay back:
 - **Concurrency soundness.** No race detection, no interleaving or deadlock reasoning. The concurrency
   examples (Phases 115–119) prove a *sequential* local obligation and **assume** the structural guarantee
   (mutual exclusion / serialization / single-assignment / FIFO delivery); they don't verify that guarantee.
-  Proving thread safety itself is a different tool.
+  Proving thread safety itself is a different tool. *(One genuinely-checkable sliver does ship — the §IV
+  rely/guarantee **compatibility lemmas** (`@Rely`/`@Guarantee`, `G_i ⟹ R_j` etc.), which are pure logic. That
+  certifies the rely/guarantee **conditions** compose; it still does not prove the threads' **code** respects
+  them — the havoc-under-rely interleaving proof remains the non-goal.)*
 - **Inheritance & traits — *supported* (Phases 15a, 120, 121, 122); one override slice remains.** A subclass is
   verified along the `extends` axis (conjoined class `@Invariant`s up the superclass chain; `super.m(…)` assumes
   the parent's `@Ensures` / discharges its `@Requires`; group `P-inheritance`), an override that redeclares its

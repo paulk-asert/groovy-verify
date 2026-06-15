@@ -1849,6 +1849,14 @@ What we *never* prove is the structural half itself — no mutual exclusion, no 
 termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
 "prove half the property" results: the half SMT can discharge, which is usually the functional one.
 
+There is one further sliver of the *rely/guarantee* story that **is** pure logic, so we do check it:
+`@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state, with the verifier auto-discharging the
+§IV **compatibility lemmas** — each rely reflexive and transitive, each guarantee reflexive, and every thread's
+guarantee implying every *other* thread's rely (`G_i ⟹ R_j`). A producer/consumer's conditions over `(head,
+tail)` verify; a producer that stops keeping `head` fixed refutes against the consumer's rely. That certifies the
+rely/guarantee *conditions* compose — the gluing logic of thread-local reasoning — but it still doesn't prove the
+threads' *code* respects them (the havoc-under-rely interleaving proof is the part that stays out).
+
 ### Locks — the monitor invariant
 
 Like `@TailRecursive`, Groovy's **lock AST transforms** (`@WithReadLock` / `@WithWriteLock` / `@Synchronized`)
@@ -2350,11 +2358,25 @@ secret — is caught too:
 Flipping the flag the other way (`authed = false`, *raising* the classification) verifies. That's the §III-A
 secure-update rule: assigning a control variable mustn't strand a value it controls above its new level.
 
+Sometimes a release is *intended* — a password checker must reveal whether the guess was right. That's
+**declassification**, and here it's an explicit, greppable act rather than an invisible cast:
+
+```groovy
+    @verification.Label('Low')
+    static boolean check(@verification.Label('High') int password, @verification.Label('Low') int guess) {
+        return Declassify.to('Low', password == guess)           // release one bit — verified
+    }
+```
+
+Drop the `Declassify.to` and the same method refutes (`password == guess` carries `High`); release the secret
+itself (`Declassify.to('Low', password)`) and a reviewer sees exactly what escaped. Every release point is in the
+source, by name.
+
 Where it stops, it says so. Straight-line code, `if`/`else`, and `while`/`for` loops (with an inferred
 Γ-invariant), sinks resolved both same-class and cross-class within the compilation unit; an unlabelled source, a
-`for`-each over a collection, or a construct outside the fragment skips loudly. The named next steps: sinks in a
-**precompiled/imported** class (resolving the receiver through the import table), classification over a field,
-array element labels, and principled declassification.
+`for`-each over a collection, or a construct outside the fragment skips loudly. The whole *sequential* fragment of
+Smith §III is in place; the named next steps are the refinements — sinks in a **precompiled/imported** class,
+classification over a field, array element labels, and the predicate-gated (two-state) form of declassification.
 
 ## What's demonstrated
 
@@ -2483,7 +2505,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | **Logical implication — `==>` operator & `.implies()` method** | Groovy 5's `a ==> b` (a BinaryExpression) and the DGM `a.implies(b)` both lower to `!a ∨ b` (the backend's `implies`). Frame conditions read naturally — `every { it != j ==> a[it] == old.a[it] }` — and modus ponens / DFS "closed-except-on-stack" invariants simplify. (Eager, like the method; the short-circuit-obligation path for a body-level `==>` guarding an access is a residual — use `if` there) | ✅ Phase 57 |
 | **Spaceship operator `<=>`** | `a <=> b` (Int) lowers to the three-way sign `ite(a<b, -1, ite(a==b, 0, 1))` — exactly `Integer.compareTo`'s `-1/0/1` — so a `compareTo`/`compare` method's three-way contract verifies. Int-oriented like the other comparisons; a `String <=>` (lexicographic) skips (would need Z3 string ordering) | ✅ Phase 58 |
 | **Security lattice, proved well-formed** | A user-defined `enum` of classification levels with pure `leq`/`join`/`meet` functions, *proved* a lattice — `leq` a partial order, `join`/`meet` the lub/glb — by the same empty-bodied law lemmas the monad/monoid arcs use, now over a new algebra. A mis-specified order (non-transitive `leq`, a "join" that isn't an upper bound) refutes with the witnessing triple. Two general engine enablers fell out: same-class pure functions now declare over their real **enum/Boolean range** (not Int-only), and enum-sorted scalars get a quantifier-free **domain-closure** axiom (`v == c1 ∨ … ∨ cN`), since Z3 models an `enum` as an open sort | ✅ Phase L0 |
-| **Information-flow noninterference (static labels)** | `@Label('High')` on a parameter, `@Label('Low')` on a method result; for each `return e` the verifier discharges `leq( join(ΓE(e), PC), L(result) )` over the class's own lattice, so a high value reaching a low result refutes ("information leak"). A syntax-directed walk threads a `Γ` environment and a **program-counter label**, catching **explicit** flow (`return secret`), flow **through locals** (`int t = secret; return t`),, **implicit** flow via the PC (`if (secret) t = a else t = b; return t` refutes though only `Low` values are assigned — PC *scoped* to its branch, so an independent low value after it verifies), and **interprocedural** flow into a sink parameter (`sink(secret)` where `sink(@Label('Low') x)` — the injection shape, refuted at the call). A generalisation of compile-time *taint* tracking to an arbitrary, machine-proved lattice that also catches implicit flows; confidentiality here is the dual of taint's integrity (the Γ/lattice encoding follows Smith §III). Interprocedural sinks resolve same-class and **cross-class within the compilation unit** (static `ClassName.sink(arg)` and instance `recv.sink(arg)` via the receiver's type). **Value-dependent** classifications — `@Label(by = 'm')` for a state-function level `L(x) = m(state)`, discharged under the path conditions — refute an unguarded release but verify it under the guard that declassifies it (the capability taint can't express). **Loops** (`while`/`for`) carry an *inferred* Γ-invariant — a loop that pulls in or branches on a secret raises its variables and refutes, a low-only loop verifies. **Control variables** (§III-A secure-update): assigning a variable a value-dependent classification reads must not strand a controlled variable above its new level — the *declassify-by-flag* bug (`authed = true` while `data` may be secret) refutes. Arrays, classification over a field, and declassification are deferred; a `for`-each, or a sink in a precompiled/imported class or via a field receiver, skips loudly/silently | ✅ Phase L1 |
+| **Information-flow noninterference (static labels)** | `@Label('High')` on a parameter, `@Label('Low')` on a method result; for each `return e` the verifier discharges `leq( join(ΓE(e), PC), L(result) )` over the class's own lattice, so a high value reaching a low result refutes ("information leak"). A syntax-directed walk threads a `Γ` environment and a **program-counter label**, catching **explicit** flow (`return secret`), flow **through locals** (`int t = secret; return t`), **implicit** flow via the PC (`if (secret) t = a else t = b; return t` refutes though only `Low` values are assigned — PC *scoped* to its branch, so an independent low value after it verifies), and **interprocedural** flow into a sink parameter (`sink(secret)` where `sink(@Label('Low') x)` — the injection shape, refuted at the call). A generalisation of compile-time *taint* tracking to an arbitrary, machine-proved lattice that also catches implicit flows; confidentiality here is the dual of taint's integrity (the Γ/lattice encoding follows Smith §III). Interprocedural sinks resolve same-class and **cross-class within the compilation unit** (static `ClassName.sink(arg)` and instance `recv.sink(arg)` via the receiver's type). **Value-dependent** classifications — `@Label(by = 'm')` for a state-function level `L(x) = m(state)`, discharged under the path conditions — refute an unguarded release but verify it under the guard that declassifies it (the capability taint can't express). **Loops** (`while`/`for`) carry an *inferred* Γ-invariant — a loop that pulls in or branches on a secret raises its variables and refutes, a low-only loop verifies. **Control variables** (§III-A secure-update): assigning a variable a value-dependent classification reads must not strand a controlled variable above its new level — the *declassify-by-flag* bug (`authed = true` while `data` may be secret) refutes. **Declassification** (§III-E): `Declassify.to('Low', password == guess)` is an explicit, greppable controlled release — a password check's equality bit verifies, the same return without the marker refutes. The whole *sequential* §III fragment now ships; arrays, classification over a field, and the predicate-gated (two-state) form of declassification are deferred; a `for`-each, or a sink in a precompiled/imported class or via a field receiver, skips loudly/silently | ✅ Phase L1 |
 
 ## Building & testing
 
@@ -3023,7 +3045,8 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `PathFacts` | enclosing-`if` path conditions per expression site |
 | `ContractTester` | the bounded property-based fallback (Phase 62): runs the executable contract over a small integer grid when the solver returns *UNKNOWN*, reporting a `fails on:` repro |
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
-| `Label` | the `@Label('level')` security classification on a parameter / method result, driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
+| `Label` / `Declassify` | the `@Label('level')` / `@Label(by = 'm')` security classification (constant or value-dependent) on a parameter / method result / sink, and `Declassify.to(level, expr)` for explicit controlled release — driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
+| `Rely` / `Guarantee` | `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state; the verifier auto-discharges the §IV rely/guarantee *compatibility* lemmas (reflexive/transitive relies, `G_i ⟹ R_j`) — the gluing logic, not the interleaving proof (Phase L1) |
 | `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses |
 | `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |

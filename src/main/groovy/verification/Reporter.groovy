@@ -250,6 +250,16 @@ class Reporter {
             "Could not decide secure-update obligation for ${methodName}", result)
     }
 
+    /**
+     * A rely/guarantee compatibility lemma that does not hold — the {@code @Rely}/{@code @Guarantee} conditions
+     * are not well-formed or not compatible (so the per-thread proofs would not compose, Smith §IV).
+     */
+    static String formatRelyGuaranteeFailure(String law, CheckResult result) {
+        implicit("Rely/guarantee compatibility does not hold: ${law}",
+            law,
+            "Could not decide rely/guarantee compatibility: ${law}", result)
+    }
+
     /** An information-flow obligation the verifier cannot model (unlabelled source, no lattice, …) — skipped loudly. */
     static String formatLeakSkipped(String methodName, String reason) {
         "Skipped information-flow check for ${methodName} (${reason}). " +
