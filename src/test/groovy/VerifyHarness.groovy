@@ -10504,10 +10504,21 @@ class WrapCounter implements Counter { }
                         @Requires({ x > 5 })
                         static void f(int x) { assert x > 0 }
                     }''')],
-        // …and refuted when the context doesn't justify it (counterexample x = 0).
-        [group: 'PL-assert', name: 'assert: unjustified over a parameter refuted', expect: 'Assertion may not hold',
+        // …and refuted when the context doesn't justify it (counterexample x = 0). Because the assertion is over
+        // a parameter, the diagnostic nudges toward @Requires (a precondition written as a runtime check).
+        [group: 'PL-assert', name: 'assert: unjustified over a parameter refuted, suggests @Requires', expect: 'declare it as @Requires',
          src: tc('''class C {
                         static void f(int x) { assert x > 0 }
+                    }''')],
+        // An unprovable assertion *not* over a parameter (a bare local) refutes without the @Requires nudge.
+        [group: 'PL-assert', name: 'assert over a local refutes without the @Requires hint', expect: 'Assertion may not hold',
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        static int pick(int n) {
+                            int y = n - n - 1     // y == -1
+                            assert y > 0          // refuted; y is a local, not a parameter → no @Requires hint
+                            return y
+                        }
                     }''')],
         // Proved from a preceding assignment (value-flow), not just a guard.
         [group: 'PL-assert', name: 'assert: provable from a preceding assignment verifies', ok: true,
@@ -10537,6 +10548,64 @@ class WrapCounter implements Counter { }
                         @Ensures({ result == x + 1 })
                         static int f(int x) { assert x > 0; return x }
                     }''')],
+        // Step 3 — an @Ensures may now USE a proven assert (it is assumed downstream, assume/enforce).
+        [group: 'PL-assert', name: 'step3: @Ensures uses a proven assert', ok: true,
+         src: tc('''class C {
+                        @Requires({ x >= 2 && y >= 2 })
+                        @Ensures({ result >= 4 })
+                        static int f(int x, int y) { assert x * y >= 4; return x * y }
+                    }''')],
+        // Soundness — a *false* assert is loudly reported; the @Ensures is not silently vacuously passed under it.
+        [group: 'PL-assert', name: 'step3: a false assert is reported, not silently assumed', expect: 'Assertion may not hold',
+         src: tc('''class C {
+                        @Ensures({ result == 5 })
+                        static int f(int x) { assert x == 5; return x }
+                    }''')],
+        // An assert in a body outside the value-flow fragment (here a double-assignment) is *loudly skipped*
+        // rather than silently unchecked — and is not assumed in the postcondition either.
+        [group: 'PL-assert', name: 'assert outside the value-flow fragment skips loudly', expect: 'Skipped assertion safety check',
+         src: tc('''class C {
+                        static int f() { int y = 1; assert y > 0; y = 2; return y }
+                    }''')],
+
+        // ----- Groovy truth in contract/assert position (non-boolean coerced as Groovy does) -----
+        // An empty String is Groovy-false, so `@Ensures({ result })` returning "" must REFUTE (previously crashed).
+        [group: 'PL-truth', name: 'truth: @Ensures({ result }) returning empty String refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C { @Ensures({ result }) static String h() { '' } }''')],
+        // …returning a non-empty String verifies (Groovy-true).
+        [group: 'PL-truth', name: 'truth: @Ensures({ result }) returning non-empty String verifies', ok: true,
+         src: tc('''class C { @Ensures({ result }) static String h() { 'x' } }''')],
+        // A bare-String assertion is Groovy truth: provable only when non-null ∧ non-empty.
+        [group: 'PL-truth', name: 'truth: assert over a parameter String is unprovable (refuted)', expect: 'Assertion may not hold',
+         src: tc('''class C { static void f(String s) { assert s } }''')],
+        [group: 'PL-truth', name: 'truth: assert non-empty String literal verifies', ok: true,
+         src: tc('''class C { static void f() { assert 'hi' } }''')],
+        [group: 'PL-truth', name: 'truth: assert empty String literal refuted', expect: 'Assertion may not hold',
+         src: tc('''class C { static void f() { assert '' } }''')],
+        // Integral Groovy truth: assert x  ≡  x != 0.
+        [group: 'PL-truth', name: 'truth: assert non-zero int literal verifies', ok: true,
+         src: tc('''class C { static void f() { assert 7 } }''')],
+        [group: 'PL-truth', name: 'truth: assert zero int literal refuted', expect: 'Assertion may not hold',
+         src: tc('''class C { static void f() { assert 0 } }''')],
+        // A bare-list precondition (`@Requires({ xs })`) is Groovy truth (non-null ∧ non-empty): it is *assumed*,
+        // so a body relying on xs being non-empty verifies — and is no longer silently dropped.
+        [group: 'PL-truth', name: 'truth: @Requires({ xs }) assumes the list is non-empty', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs })
+                        @Ensures({ result >= 1 })
+                        static int sizeOf(List xs) { xs.size() }
+                    }''')],
+        // Soundness: without the truthy precondition, the list may be null/empty — here the very first failure is
+        // the null dereference `xs.size()`, which `@Requires({ xs })` (non-null ∧ non-empty) is exactly what rules out.
+        [group: 'PL-truth', name: 'truth: without @Requires the list may be null (deref refused)', expect: 'NullPointerException',
+         src: tc('''class C {
+                        @Ensures({ result >= 1 })
+                        static int sizeOf(List xs) { xs.size() }
+                    }''')],
+
+        // A truthiness we don't model (a decimal's Groovy truth) is *loudly skipped* — no crash, no silent drop.
+        [group: 'PL-truth', name: 'truth: unmodelled truthiness (double) skips loudly', expect: 'Skipped assertion safety check',
+         src: tc('''class C { static void f(double d) { assert d } }''')],
 
         // ----- Rely/guarantee well-formedness (Smith §IV compatibility lemmas) -----
         // The producer/consumer R/G conditions over shared (head, tail). Each predicate is a two-state function:

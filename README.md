@@ -2296,6 +2296,61 @@ method. One honest boundary remains on both axes: a method is verified only agai
 an inherited `@Ensures` isn't re-checked against an *uncontracted* override (groovy-contracts still enforces it
 at runtime).
 
+### Inline assertions — a Dafny-style `assert`
+
+A bare Groovy `assert P` in a verified method is discharged at *compile* time, not only at runtime. The trivial
+cases behave as you'd hope:
+
+```groovy
+class C {
+    static void ok()  { assert 2 < 3 }    // compiles
+    static void bad() { assert 3 < 2 }    // does not compile
+}
+```
+
+```
+[Static type checking] - Assertion may not hold: (3 < 2)
+```
+
+The substance is `assert P(state)` — proved from the reaching context (`@Requires`, prior assignments, enclosing
+guards), and refuted with a concrete counterexample when the context doesn't justify it:
+
+```groovy
+@Requires({ x > 5 })
+static void f(int x) { assert x > 0 }     // verified — x > 5 ⟹ x > 0
+
+static void g(int x) { assert x > 0 }     // refuted — counterexample x = 0
+```
+
+A verified `assert` means *prove this holds here*, not *check it at runtime* — so `g`'s assertion over a parameter
+the signature doesn't constrain is refuted, and the diagnostic nudges toward the right tool:
+
+```
+[Static type checking] - Assertion may not hold: (x > 0)
+    counterexample: x = 0
+    hint: if this is a caller precondition, declare it as @Requires({ (x > 0) }) — it is then documented and checked at every call site.
+```
+
+A *proven* assert is then **used as a fact** downstream — both by the implicit safety checks (`assert i < n; …
+a[i]`) and by the method's `@Ensures` — so a proof can be broken into steps the solver reaches one at a time.
+That's the bounded core of Dafny's `assert`, kept sound by **assume/enforce**: the assert is *enforced* as its own
+obligation, so assuming it is sound, and a false assert is reported rather than silently assumed. Straight-line
+code and `if`/`else`; an assert past a re-assignment or inside a loop is loudly skipped rather than checked. (This
+also fixed a wart — an `assert` in a body used to make the postcondition walk bail and *silently skip the
+`@Ensures`*; it is now carried through, so the contract is still checked.)
+
+> **`assert` is not a substitute for a contract.** It's tempting, now that assertions are checked, to write
+> `assert x > 0` as a method's first statement instead of `@Requires({ x > 0 })`. Don't — they put the obligation
+> in *opposite* places. `@Requires` is **assumed** in the body and **proved at every call site**, so `f(0)` is
+> rejected at the *caller* and the body may rely on `x > 0`. An `assert` must be **proved inside the body** (from
+> nothing — so it refutes, as `g` does) and constrains **no caller** — the failure lands in the wrong place. The
+> split runs through all of them: `@Ensures` names `result` and `old(…)` and is what *callers* assume about the
+> return value; `@Invariant` holds across every method; an override is checked for behavioural subtyping against
+> the contract it inherits — and the annotations are *declarative specifications* read by groovy-contracts (runtime
+> enforcement), by a consumer compiling against your jar, by IDEs, doc tools, and AI agents. An inline `assert`
+> does none of that. **Rule of thumb: contracts describe the interface (what callers see and rely on); `assert`
+> helps prove the implementation (an internal step the verifier can't take alone).**
+
 ## Information flow — taint tracking, generalized
 
 Compile-time **taint analysis** — Ballerina's `@tainted`/`@untainted`, the OWASP-style trackers — labels data and
@@ -2428,7 +2483,8 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | Preconditions discharged at call sites | `@Requires` | ✅ |
 | Postconditions vs. method body | `@Ensures` | ✅ |
 | Loop invariants & termination | `@Invariant` / `@Decreases` | ✅ |
-| **Inline `assert P` discharged at compile time** (Dafny-style) — `assert 3 < 2` fails to compile; `assert P(state)` proved under `@Requires` + prior assignments + guards, refuted with a counterexample; a proven assert feeds later bounds/null/div checks. Straight-line + `if`/`else` (value-flow fragment); loop bodies deferred | `assert P` | ✅ Phase 8b |
+| **Inline `assert P` discharged at compile time** (Dafny-style) — `assert 3 < 2` fails to compile; `assert P(state)` proved under `@Requires` + prior assignments + guards, refuted with a counterexample; a proven assert is then **used as a fact** by later bounds/null/div checks *and* by the `@Ensures` (assume/enforce). Straight-line + `if`/`else` (value-flow fragment); outside it (loop body / re-assignment) the assert is loudly skipped | `assert P` | ✅ Phase 8b |
+| **Groovy truth in a contract / assert / boolean operand** — a non-Boolean in boolean position is coerced as Groovy coerces it: `int != 0`; `String`/`List`/`Set`/`Map` non-null ∧ non-empty; a plain reference non-null. So `@Ensures({ result })` returning `""` *refutes*, `assert 0` *refutes*, and `@Requires({ xs })` *assumes* the list non-empty. A truthiness not modelled (a decimal, an array, an `asBoolean()`-customiser) is loudly skipped — never a silent drop or a sort-mismatch crash | *(implicit)* | ✅ Phase 8c |
 | **Array/list index in bounds** | *(implicit)* | ✅ Phase 1 |
 | **Division / modulo by zero** | *(implicit)* | ✅ Phase 1 |
 | **Null dereference** | *(implicit)* | ✅ Phase 1 |

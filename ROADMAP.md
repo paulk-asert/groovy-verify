@@ -499,23 +499,29 @@ intermediate `assert` can be discharged by evaluation) and with Phase 6's
 instantiation hints. It is the bounded, defensible cousin of tactics: control
 when automation fails, without becoming a proof assistant.
 
-**The bare `assert P` as a compile-time obligation — *shipped*.** A Groovy
-`assert P` in a verified body is now discharged at compile time: `assert 2 < 3`
-compiles, `assert 3 < 2` does not, and `assert P(state)` is proved (or refuted
-with a counterexample) under the reaching context — `@Requires`, prior
-single-assignments, and enclosing guards (it rides the Phase-5 value-flow pass,
-so `int y = 7; assert y > 0` proves from the assignment, not just a guard). A
-proven assert is also threaded as a fact for *subsequent* implicit obligations
-(`assert i < n; … a[i]`), sound by assume/enforce. Two things this *closes*: the
-capability itself (a Dafny `assert`), and a latent wart — an `assert` in a body
-used to make `BodyEncoder` bail and **silently skip the `@Ensures`**; it is now
-passed through, so the postcondition is still checked. *Still deferred (the rest
-of 8b):* **assuming** a proven assert downstream of the *postcondition* (so an
-`@Ensures` that *depends* on an assert can use it — today such an `@Ensures` is
-checked without it), `assert … by { }` blocks, `calc` chains, and asserts inside
-loop bodies / past a re-assignment (outside the value-flow fragment → unchecked,
-a documented boundary, not a silent pass within the fragment). Locked by
-`PL-assert`.
+**The `assert P` as a compile-time obligation, used as a fact — *shipped*.** A
+Groovy `assert P` in a verified body is now discharged at compile time:
+`assert 2 < 3` compiles, `assert 3 < 2` does not, and `assert P(state)` is proved
+(or refuted with a counterexample) under the reaching context — `@Requires`,
+prior single-assignments, and enclosing guards (it rides the Phase-5 value-flow
+pass, so `int y = 7; assert y > 0` proves from the assignment, not just a guard).
+A verified `assert` means *prove this holds here*, not *check it at runtime* (the
+Dafny/OpenJML reading, not Groovy's defensive-guard one) — so an assertion over a
+parameter the signature doesn't constrain is refuted, and the diagnostic **nudges
+toward `@Requires`**, the right tool for a caller precondition (documented and
+discharged at every call site). A proven assert is then **used as a fact
+downstream** — by subsequent implicit obligations (`assert i < n; … a[i]`) *and*
+by the method's `@Ensures` (the postcondition replay assumes it) — sound by
+**assume/enforce**: the assert is
+enforced by the obligation pass, so assuming it is sound, and when that pass
+bails the postcondition does *not* assume it (and the assert is **loudly
+skipped**, never silently unchecked). Two things this *closed*: the capability
+itself (a Dafny `assert`), and a latent wart — an `assert` used to make
+`BodyEncoder` bail and **silently skip the `@Ensures`**; it is now carried
+through, so the postcondition is still checked. *Still deferred (the rest of
+8b):* `assert … by { }` blocks and `calc` chains (the structured-decomposition
+syntax), and asserts inside loop bodies / past a re-assignment (outside the
+value-flow fragment — loudly skipped, not checked). Locked by `PL-assert`.
 
 ### Not in scope here
 
@@ -6812,6 +6818,23 @@ So `6 & 3 == 2`, `5 ^ 3 == 6`, `a ^ a == 0`, `a & a == a`, `a | 0 == a`, and the
 sound (rejected, never a false pass), just no counterexample. **Still out:** `~` (bitwise NOT), `>>>`
 (unsigned/logical right shift), and shift-overflow obligations under `@CheckOverflow` (a shift's synthesised
 `*` isn't an AST `MULTIPLY` site, so the overflow collector doesn't see it). Locked by the `bitwise` tests.
+
+---
+
+## Groovy truth in boolean position  *(shipped — soundness fix)*
+
+A contract, `assert`, or boolean-operator operand whose expression isn't `Boolean` is now coerced with **Groovy
+truth**, as the language (and groovy-contracts at runtime) does: `int != 0`; `String`/`List`/`Set`/`Map` non-null
+∧ non-empty; a plain object reference non-null. So `@Ensures({ result })` returning `""` **refutes**, `assert 0`
+**refutes**, and `@Requires({ xs })` **assumes** the list non-empty. The coercion (`Encoder.truthy`, applied at
+the goal/precondition top and at `&&`/`||`/`!` operands) is by *sort* where the value carries it (Bool/Int/Seq)
+and by *name* otherwise (a sized container, via the size oracle).
+
+This **closed a real bug**, not just a gap: previously a bare-truth in a postcondition **crashed** with an
+internal sort-mismatch (`SeqExpr → BoolExpr`), and in an `assert`/precondition was **silently dropped** (the
+exception swallowed) — so an unverified truthiness compiled clean, masquerading as checked. Now a truthiness we
+*don't* model (a decimal, an array, an `asBoolean()`-customiser, an un-nameable receiver) is a **loud skip**,
+never a crash or a silent pass. Locked by `PL-truth`.
 
 ---
 

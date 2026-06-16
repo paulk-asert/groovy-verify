@@ -82,6 +82,14 @@ class LemmaCall {
     Expression call
 }
 
+/** A user {@code assert P} on a path. The postcondition replay assumes {@code cond} downstream — but only when
+ *  the asserts were discharged by the implicit-obligation pass (assume/enforce); otherwise it is a no-op. */
+@CompileStatic
+@TupleConstructor
+class AssertAssume {
+    Expression cond
+}
+
 /**
  * One straight-line execution path through a method body: an ordered
  * list of {@link Guard}/{@link Assign} steps and the expression whose
@@ -193,11 +201,13 @@ class BodyEncoder {
         }
 
         if (s instanceof AssertStatement) {
-            // A user `assert P` has no effect on the value/path model the postcondition walk needs, so it is
-            // passed through here rather than aborting the @Ensures proof (it used to fall to the unsupported
-            // throw, silently skipping the postcondition). The assertion itself is discharged as an obligation
-            // by the implicit-obligation pass; it is not yet *assumed* downstream of this point (a later slice).
-            res.live.add(prefix)
+            // A user `assert P` carries through as an AssertAssume step: it never aborts the @Ensures proof (it
+            // used to fall to the unsupported throw, silently skipping the postcondition). The assertion is
+            // discharged as an obligation by the implicit-obligation pass; checkPath assumes `P` downstream only
+            // when that pass vouched for it (assume/enforce), so the step is a no-op otherwise.
+            Path np = copy(prefix)
+            np.steps.add(new AssertAssume(((AssertStatement) s).booleanExpression))
+            res.live.add(np)
             return res
         }
 

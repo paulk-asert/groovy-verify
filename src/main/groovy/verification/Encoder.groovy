@@ -3490,7 +3490,8 @@ class Encoder {
         }
 
         if (expr instanceof NotExpression) {
-            Object inner = translate(((NotExpression) expr).expression)
+            Expression ie = ((NotExpression) expr).expression
+            Object inner = truthy(ie, translate(ie))   // the negated operand may be non-Boolean (Groovy truth)
             return inner == null ? null : session.not(inner)
         }
 
@@ -4326,8 +4327,14 @@ class Encoder {
                 if (isStringReceiver(be.leftExpression) || isStringReceiver(be.rightExpression)) return null
                 return session.ite(session.lt(L, R), session.intLit(-1L),
                            session.ite(session.eq(L, R), session.intLit(0L), session.intLit(1L)))
-            case Types.LOGICAL_AND:         return session.and([L, R])
-            case Types.LOGICAL_OR:          return session.or([L, R])
+            case Types.LOGICAL_AND: {       // operands may be non-Boolean (Groovy truth): `xs && i > 0`
+                Object lb = truthy(be.leftExpression, L), rb = truthy(be.rightExpression, R)
+                return (lb == null || rb == null) ? null : session.and([lb, rb])
+            }
+            case Types.LOGICAL_OR: {
+                Object lb = truthy(be.leftExpression, L), rb = truthy(be.rightExpression, R)
+                return (lb == null || rb == null) ? null : session.or([lb, rb])
+            }
             default:                        return null
         }
     }
@@ -5913,10 +5920,59 @@ class Encoder {
         goalPositiveEvery.clear()
         markPositiveEvery(e, true)
         try {
-            return translate(e)
+            return translateBool(e)
         } finally {
             goalPositiveEvery.clear()
         }
+    }
+
+    /**
+     * Phase 8c — translate {@code e} in a <b>boolean position</b> (a contract, assert, guard, or boolean-operator
+     * operand), applying **Groovy truth** to a non-Boolean value as Groovy itself does. Recurses through
+     * {@code &&}/{@code ||}/{@code !}/{@code ==>} (coercing each operand), and at a leaf coerces a non-Boolean via
+     * {@link #truthy}. Returns null (caller skips loudly) when an operand's truth can't be modelled — never a
+     * silent drop or a sort-mismatch crash. This is what makes `@Requires({ xs })`, `assert s`, and
+     * `@Ensures({ result })` mean what they mean in Groovy.
+     */
+    Object translateBool(Expression e) {
+        return truthy(e, translate(e))            // translate handles the structure (incl. &&/||/! operand
+                                                  // coercion); this coerces the result to Boolean if it isn't one
+    }
+
+    /**
+     * Groovy truth of {@code e} (whose translated value is {@code h}) as a Boolean term — by *sort* where the
+     * value carries it (already Boolean → unchanged; Int → {@code != 0}; String/Seq → non-null ∧ length &gt; 0)
+     * and by *name* otherwise (a list/set/map → non-null ∧ size &gt; 0; a plain object reference → non-null).
+     * Returns null when the kind's truth isn't modelled (a decimal, an {@code asBoolean()}-customiser, or an
+     * un-nameable reference) so the caller skips loudly — never a silent pass or a crash.
+     */
+    private Object truthy(Expression e, Object h) {
+        if (h != null && session.isBool(h)) return h                  // already Boolean — nothing to coerce
+        // A known sized container is checked first — its value handle may be Int-sorted (a size), which would
+        // otherwise be mis-read as integral truth. Groovy truth: non-null ∧ size > 0.
+        if (e instanceof VariableExpression) {
+            String name = ((VariableExpression) e).name
+            if (listElementTypes.containsKey(name) || listNames.contains(name) ||
+                setElementTypes.containsKey(name) || mapTypes.containsKey(name)) {
+                return session.and([session.not(nullityOf(name)), session.gt(sizeOf(name), session.intLit(0L))])
+            }
+        }
+        if (h != null) {
+            if (session.isSeq(h)) {                                   // String: non-null ∧ length > 0
+                Object lenPos = session.gt(session.stringLength(h), session.intLit(0L))
+                if (!(e instanceof VariableExpression)) return lenPos // a literal / concat is non-null by construction
+                return session.and([session.not(nullityOf(((VariableExpression) e).name)), lenPos])
+            }
+            if (session.isInt(h)) return session.ne(h, session.intLit(0L))   // integral truth: != 0
+        }
+        if (e instanceof VariableExpression) {                       // a plain object reference: non-null
+            String name = ((VariableExpression) e).name
+            ClassNode st = scalarTypes.get(name)
+            if (objectParams.containsKey(name) || (st != null && isPlainObjectTruth(st))) {
+                return session.not(nullityOf(name))
+            }
+        }
+        null
     }
 
     /**

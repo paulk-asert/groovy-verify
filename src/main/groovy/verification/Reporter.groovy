@@ -279,9 +279,33 @@ class Reporter {
 
     /** A user {@code assert P} the verifier could not prove holds at that point (or refuted with a counterexample). */
     static String formatAssertion(String assertText, CheckResult result) {
-        implicit("Assertion may not hold: ${assertText}",
-            assertText,
-            "Could not decide assertion: ${assertText}", result)
+        formatAssertion(assertText, result, false)
+    }
+
+    /**
+     * As above; when {@code suggestRequires} (the assertion is over a method parameter — usually a caller
+     * precondition written as a runtime check), append a hint to lift it to {@code @Requires}, which documents
+     * it and is discharged at every call site.
+     */
+    static String formatAssertion(String assertText, CheckResult result, boolean suggestRequires) {
+        StringBuilder sb = new StringBuilder()
+        switch (result.status) {
+            case CheckResult.Status.REFUTED:
+                sb.append("Assertion may not hold: ").append(assertText)
+                appendModel(sb, result)               // the head already names the predicate — no redundant obligation line
+                break
+            case CheckResult.Status.UNKNOWN:
+                sb.append("Could not decide assertion: ").append(assertText)
+                  .append(" (solver: ").append(result.reason).append(")")
+                break
+            default:
+                return "Verified — no error to report"
+        }
+        if (suggestRequires) {
+            sb.append("\n    hint: if this is a caller precondition, declare it as ")
+              .append("@Requires({ ").append(assertText).append(" }) — it is then documented and checked at every call site.")
+        }
+        sb.toString()
     }
 
     // ---- Implicit safety obligations (array bounds, division, null deref) ----

@@ -488,6 +488,7 @@ class Z3Session implements SmtSession {
     @Override boolean isReal(Object handle) { ((Expr) handle).getSort().equals(ctx.getRealSort()) }
     @Override boolean isInt(Object handle) { ((Expr) handle).getSort().equals(ctx.getIntSort()) }
     @Override boolean isSeq(Object handle) { ((Expr) handle).getSort().equals(stringSort()) }
+    @Override boolean isBool(Object handle) { ((Expr) handle).getSort().equals(ctx.getBoolSort()) }
     @Override String evalDisplay(Object handle) {
         if (lastModel == null || handle == null) return null
         try {

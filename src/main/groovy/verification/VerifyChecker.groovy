@@ -165,6 +165,14 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private boolean currentOverflowChecking = false
     /**
+     * Phase 8b (step 3) — true once the value-flow pass has discharged every {@code assert} in the body (proven
+     * or loudly refuted). Only then is it sound for the postcondition replay to *assume* a user assertion
+     * downstream (so an {@code @Ensures} can use it): assume/enforce, the assert being enforced by that pass. If
+     * the value-flow pass bailed (loop / re-assignment), the asserts weren't all discharged, so the postcondition
+     * treats them as pass-through (checked without them) rather than assuming an undischarged fact.
+     */
+    private boolean currentAssertsTrusted = false
+    /**
      * Phase 45 — class-typed parameter names visible to the current method (each value is the
      * parameter's declared {@link ClassNode}). Used by the cross-class reasoning machinery: a
      * read {@code b.field} translates to a receiver-qualified entity {@code b$field}; the
@@ -1933,6 +1941,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentClassInvariants = Collections.<Expression> emptyList()
             currentIsConstructor = false
             currentOverflowChecking = false
+            currentAssertsTrusted = false
             currentObjectParams = new LinkedHashMap<String, ClassNode>()
             currentTupleParams = new LinkedHashMap<String, ClassNode>()
             currentSetElementTypes = new HashMap<String, ClassNode>()
@@ -1985,7 +1994,7 @@ class VerifyChecker extends TypeCheckingExtension {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
-            Object pre = enc.translate(reqAst)
+            Object pre = enc.translateBool(reqAst)
             if (pre == null) return   // didn't fully translate → can't judge soundly; stay silent
             s.assertExpr(pre)
             assumeClassInvariants(s, enc)
@@ -2012,12 +2021,14 @@ class VerifyChecker extends TypeCheckingExtension {
         // by a guard — is provable. Anything outside that fragment (a loop, a
         // re-assignment, an unsupported statement) throws, and we fall back to
         // the path-fact-only havoc pass: sound, but value-flow-blind.
+        currentAssertsTrusted = false
         try {
             List<VfObligation> sites = new ArrayList<VfObligation>()
             collectVfObligations(topStatements(body),
                 new ArrayList<Object>(),
                 new HashSet<String>(), sites)
             for (VfObligation v : sites) dischargeVfObligation(node, v, reqAst)
+            currentAssertsTrusted = true   // every assert was discharged here → safe to assume them in the postcondition
         } catch (UnsupportedConstructException ignored) {
             // Value-flow bailed (a re-assignment — including the `i = i + 1` an expression-position `a[i++]`
             // expands to — or an unsupported shape). Re-discharge through dischargeRegion, which threads the
@@ -2028,7 +2039,38 @@ class VerifyChecker extends TypeCheckingExtension {
             } catch (Throwable t) {
                 dischargeObligationsHavoc(node, body, reqAst)
             }
+            // The fallback passes don't discharge user `assert`s, so any in this body go unchecked here — say so
+            // loudly rather than skip silently (and they are not assumed in the postcondition: trusted stays false).
+            for (AssertStatement as : collectAssertStatements(body)) {
+                addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
+                    "the method body is outside the value-flow fragment (a re-assignment or loop)"), as)
+            }
         }
+    }
+
+    /** True if {@code e} mentions any parameter of {@code m} by name — the "this assert is a precondition" smell. */
+    private static boolean referencesParameter(Expression e, MethodNode m) {
+        if (e == null || m == null || m.parameters.length == 0) return false
+        Set<String> params = new HashSet<String>()
+        for (Parameter p : m.parameters) params.add(p.name)
+        boolean[] hit = [false]
+        try {
+            e.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression v) { if (params.contains(v.name)) hit[0] = true }
+            })
+        } catch (Throwable ignored) { }
+        hit[0]
+    }
+
+    /** All {@code assert} statements lexically in {@code body} (best-effort; failures yield an empty list). */
+    private static List<AssertStatement> collectAssertStatements(Statement body) {
+        List<AssertStatement> out = new ArrayList<AssertStatement>()
+        try {
+            body.visit(new CodeVisitorSupport() {
+                @Override void visitAssertStatement(AssertStatement s) { out.add(s); super.visitAssertStatement(s) }
+            })
+        } catch (Throwable ignored) { }
+        out
     }
 
     /** The value-flow-blind fallback: assume @Requires + enclosing ifs only (pre-Phase-5 behaviour). */
@@ -2266,7 +2308,7 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) {
-                Object pre = enc.translate(reqAst)
+                Object pre = enc.translateBool(reqAst)
                 if (pre != null) s.assertExpr(pre)
                 assumePreconditionNonNullFacts(s, enc, reqAst)
             }
@@ -2317,7 +2359,7 @@ class VerifyChecker extends TypeCheckingExtension {
     /** Assume the method's own @Requires (if encodable), the class invariants, plus the path facts at a site. */
     private void assumeContext(SmtSession s, Encoder enc, Expression reqAst, ASTNode site, PathFacts pf) {
         if (reqAst != null) {
-            Object pre = enc.translate(reqAst)
+            Object pre = enc.translateBool(reqAst)
             if (pre != null) s.assertExpr(pre)
             assumePreconditionNonNullFacts(s, enc, reqAst)
         }
@@ -2564,7 +2606,10 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(p))                       // negation of the asserted predicate
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatAssertion(as.cond.text, r), as.node)
+                // If the assertion is over a method parameter, it is usually a caller precondition written as a
+                // runtime check; nudge toward @Requires, which documents it and is checked at every call site.
+                boolean overParam = referencesParameter(as.cond, currentMethod)
+                addStaticTypeError(Reporter.formatAssertion(as.cond.text, r, overParam), as.node)
             }
             return
         }
@@ -4653,7 +4698,7 @@ class VerifyChecker extends TypeCheckingExtension {
             int ssaVersion = 0   // mints fresh versions for re-assigned names (SSA, see the Assign step)
 
             if (reqAst != null) {
-                Object pre = enc.translate(reqAst)
+                Object pre = enc.translateBool(reqAst)
                 if (pre == null) {
                     throw new UnsupportedConstructException(
                         "precondition '${reqAst.text}' is outside fragment")
@@ -4705,7 +4750,16 @@ class VerifyChecker extends TypeCheckingExtension {
             currentBcountKExprs = bcountKArgs(postAst)
 
             for (Object step : p.steps) {
-                if (step instanceof Guard) {
+                if (step instanceof AssertAssume) {
+                    // Phase 8b (step 3) — assume a user `assert P` downstream, so an @Ensures may use it. Sound
+                    // only because the implicit-obligation pass discharged it (assume/enforce); when that pass
+                    // bailed (currentAssertsTrusted == false) the step is a no-op, so the @Ensures is checked
+                    // without the unproven fact. An unencodable P simply isn't assumed (weaker, still sound).
+                    if (currentAssertsTrusted) {
+                        Object c = enc.translate(((AssertAssume) step).cond)
+                        if (c != null) session.assertExpr(c)
+                    }
+                } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
                     if (c == null) {
@@ -6671,7 +6725,7 @@ class VerifyChecker extends TypeCheckingExtension {
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) {
-                Object pre = enc.translate(reqAst)
+                Object pre = enc.translateBool(reqAst)
                 if (pre != null) s.assertExpr(pre)
             }
             // Measure on entry — translated BEFORE the body effects below are replayed, so a measure over
