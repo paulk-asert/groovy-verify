@@ -2063,74 +2063,74 @@ under a growing-tail rely correctly **fails** — and a write that transiently b
 caught). The one thing that genuinely stays out is the scheduler itself — that the threads really interleave with
 the assumed atomicity — a structural assumption, like the lock examples.
 
-The capstone below sets this same shape inside the *full* §VII body, where each access also carries an
-information-flow obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) —
-and that intersection is now **machine-checked**, both properties on one class.
+This same shape now runs inside the *full* §VII body, where each access also carries an information-flow
+obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) — and that
+intersection is **machine-checked**, both properties on one class.
 
-> [!NOTE]
-> **The full §VII capstone — info-flow × rely/guarantee, verified together.** Smith's culminating example has plain
-> *and secret* messages produced and consumed concurrently. The buffer above proved bounds-safety under
-> interference; the same `Buffer`, given a **value-dependent positional label**, now also proves **no secret
-> leaks** — the two obligations discharged on one body, each step's info-flow check evaluated *through* the
-> rely-step's havoc. This is the composition the whole arc built toward.
->
-> ```groovy
-> @Invariant({ 0 <= head && head <= tail && tail <= values.length })
-> class Buffer {
->     enum L { Low, High }
->     static boolean leq(L a, L b) { a == L.Low || b == L.High }
->     static L join(L a, L b) { leq(a, b) ? b : a }
->     int head, tail
->     @Label(by = 'level') int[] values                              // each slot's level depends on POSITION…
->     static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }   // …the region [head,tail) is Low
->
->     @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
->     @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
->     @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
->     @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
->
->     @Ensures({ true }) static void deliver(@Label('Low') int x) { }   // a PUBLIC sink — only accepts Low
->
->     @Requires({ head < tail })
->     @UnderRely('Consumer')                 // runs under the producer's interference: head pinned, tail grows
->     int consume() {
->         int v = values[head]               // in [head, tail) ⇒ Low (proven across the concurrent append)
->         deliver(v)                         // Low → Low public sink: NO LEAK
->         head = head + 1
->         return v
->     }
->     @Requires({ tail < values.length })
->     @UnderRely('Producer')                 // runs under the consumer's interference: tail pinned, head grows
->     void produce(@Label('High') int secret) {
->         int msg = Declassify.to('Low', secret)   // §III-E controlled release
->         values[tail] = msg                       // a Low value at the boundary slot
->         tail = tail + 1                          // §III-A array secure-update: old.tail ENTERS the Low region
->     }
-> }
-> ```
->
-> This **verifies** — and verifies *both* properties on each body. `consume()` is proven free of out-of-bounds
-> access under the concurrent producer (the R/G half above) **and** free of leaks: `values[head]` is `Low` (the
-> label says so when `head < tail`, which the rely re-establishes), so the public `deliver` accepts it; advancing
-> `head` pushes the just-read slot back to `High` (re-securing — always safe). `produce()` declassifies, writes the
-> `Low` value, and advances `tail` — the **array secure-update** obligation `leq(Γ(values[tail]), level(tail, head,
-> tail+1))`, discharged under the invariant that makes the new level `Low` for **any** `head ≤ tail`.
->
-> **Why it is sound under interleaving.** The info-flow obligations are discharged *through* the rely-step's havoc,
-> not on a frozen snapshot. A rely-step forgets every tracked array slot whose index names a field the environment
-> may move — but keeps the ones the rely *pins*: the producer's `rProd` holds `tail == old.tail`, so the value
-> written at `values[tail]` survives the step and the secure-update sees it. Because `level(tail, head, tail+1)` is
-> `Low` for *every* `head ≤ tail` the consumer could leave behind, the release is secure against all interleavings
-> the rely permits — not one lucky schedule. And the machinery does **not** mask a leak: drop the `Declassify` and
-> write the raw `secret`, and the secure-update **refutes** at `tail++` (`High → Low`) with the full R/G
-> instrumentation still in place.
->
-> **Honest framing.** This is §VII's *shape* reconstructed on the per-thread rely-step model already built for
-> bounds — the security lattice now rides the same havoc-under-rely interleaving the bounds proof uses. It is **not**
-> a machine-checked concurrency proof: that the threads genuinely interleave with the assumed atomicity stays a
-> *modelling assumption*, the same structural one as the lock / serial-agent examples. What is mechanical is the
-> decomposition — value-dependent `@Label(by = …)`, the secure-update on `tail`, `Declassify.to`, the four
-> compatibility lemmas, and the rely-step framing — all composing on one class, both properties at once.
+### The full §VII capstone — info-flow × rely/guarantee, verified together
+
+Smith's culminating example has plain *and secret* messages produced and consumed concurrently. The buffer above
+proved bounds-safety under interference; the same `Buffer`, given a **value-dependent positional label**, now also
+proves **no secret leaks** — the two obligations discharged on one body, each step's info-flow check evaluated
+*through* the rely-step's havoc. This is the composition the whole arc built toward.
+
+```groovy
+@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+class Buffer {
+    enum L { Low, High }
+    static boolean leq(L a, L b) { a == L.Low || b == L.High }
+    static L join(L a, L b) { leq(a, b) ? b : a }
+    int head, tail
+    @Label(by = 'level') int[] values                              // each slot's level depends on POSITION…
+    static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }   // …the region [head,tail) is Low
+
+    @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+    @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+    @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
+    @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
+
+    @Ensures({ true }) static void deliver(@Label('Low') int x) { }   // a PUBLIC sink — only accepts Low
+
+    @Requires({ head < tail })
+    @UnderRely('Consumer')                 // runs under the producer's interference: head pinned, tail grows
+    int consume() {
+        int v = values[head]               // in [head, tail) ⇒ Low (proven across the concurrent append)
+        deliver(v)                         // Low → Low public sink: NO LEAK
+        head = head + 1
+        return v
+    }
+    @Requires({ tail < values.length })
+    @UnderRely('Producer')                 // runs under the consumer's interference: tail pinned, head grows
+    void produce(@Label('High') int secret) {
+        int msg = Declassify.to('Low', secret)   // §III-E controlled release
+        values[tail] = msg                       // a Low value at the boundary slot
+        tail = tail + 1                          // §III-A array secure-update: old.tail ENTERS the Low region
+    }
+}
+```
+
+This **verifies** — and verifies *both* properties on each body. `consume()` is proven free of out-of-bounds
+access under the concurrent producer (the R/G half above) **and** free of leaks: `values[head]` is `Low` (the
+label says so when `head < tail`, which the rely re-establishes), so the public `deliver` accepts it; advancing
+`head` pushes the just-read slot back to `High` (re-securing — always safe). `produce()` declassifies, writes the
+`Low` value, and advances `tail` — the **array secure-update** obligation `leq(Γ(values[tail]), level(tail, head,
+tail+1))`, discharged under the invariant that makes the new level `Low` for **any** `head ≤ tail`.
+
+**Why it is sound under interleaving.** The info-flow obligations are discharged *through* the rely-step's havoc,
+not on a frozen snapshot. A rely-step forgets every tracked array slot whose index names a field the environment
+may move — but keeps the ones the rely *pins*: the producer's `rProd` holds `tail == old.tail`, so the value
+written at `values[tail]` survives the step and the secure-update sees it. Because `level(tail, head, tail+1)` is
+`Low` for *every* `head ≤ tail` the consumer could leave behind, the release is secure against all interleavings
+the rely permits — not one lucky schedule. And the machinery does **not** mask a leak: drop the `Declassify` and
+write the raw `secret`, and the secure-update **refutes** at `tail++` (`High → Low`) with the full R/G
+instrumentation still in place.
+
+**Honest framing.** This is §VII's *shape* reconstructed on the per-thread rely-step model already built for
+bounds — the security lattice now rides the same havoc-under-rely interleaving the bounds proof uses. It is **not**
+a machine-checked concurrency proof: that the threads genuinely interleave with the assumed atomicity stays a
+*modelling assumption*, the same structural one as the lock / serial-agent examples. What is mechanical is the
+decomposition — value-dependent `@Label(by = …)`, the secure-update on `tail`, `Declassify.to`, the four
+compatibility lemmas, and the rely-step framing — all composing on one class, both properties at once.
 
 The machinery isn't specific to the buffer's two pointers. A different shape — a shared scalar with a
 **monotonicity** rely — works the same way: two threads only ever increment a `count`, each relying on the other
