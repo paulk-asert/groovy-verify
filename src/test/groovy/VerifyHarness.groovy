@@ -361,35 +361,141 @@ class VerifyHarness {
                        @Ensures({ count == old.count + 1 })
                        void inc() { count = count + 2 }
                    }''')],
-        // Soundness (value-flow SSA fragment): a *bare* write to a field/param reuses that name's entry symbol,
-        // so the single-assignment model would thread `name == rhs` onto it — `tail = tail + 1` ⇒ the
-        // self-contradictory `tail == tail + 1`, an UNSAT context that *silently* discharged every downstream
-        // obligation (incl. user asserts) vacuously. Fixed: such a write bails the value-flow pass, so the body
-        // routes to the LOUD "Skipped … (outside the value-flow fragment)" path instead of passing silently.
-        [group: 'P-vf-field', name: 'field self-increment then false assert is loud-skipped (was silent)', expect: 'Skipped assertion safety check',
+        // Value-flow SSA versioning of an Int field/param write (fix b). A *bare* write to a field/param reuses
+        // that name's entry symbol; as a plain `name == rhs` binding `tail = tail + 1` threads the self-
+        // contradictory `tail == tail + 1` (UNSAT) so every downstream obligation discharged *vacuously and
+        // silently*. Now the write is replayed as an SSA *versioning* step (fresh symbol for the post-write value),
+        // so obligations are really discharged: a false assert REFUTES (not a silent pass, not a loud skip)…
+        [group: 'P-vf-field', name: 'field self-increment then false assert refutes', expect: 'Assertion may not hold',
          src: tc('''class Buffer {
                        int tail
                        @Requires({ tail == 0 })
                        void m() { tail = tail + 1; assert tail == 0 }
                    }''')],
-        // Field const-write clashing with @Requires: tail==0 ∧ tail==5 was UNSAT ⇒ vacuous silent pass. Now loud.
-        [group: 'P-vf-field', name: 'field const-write false assert is loud-skipped', expect: 'Skipped assertion safety check',
+        // …and the corresponding TRUE assert PROVES — real discharge, not a skip (tail becomes 1).
+        [group: 'P-vf-field', name: 'field self-increment then true assert proves', ok: true,
+         src: tc('''class Buffer {
+                       int tail
+                       @Requires({ tail == 0 })
+                       void m() { tail = tail + 1; assert tail == 1 }
+                   }''')],
+        // Const-write: tail becomes 5, so `tail == 99` refutes (was the vacuous `tail==0 ∧ tail==5` silent pass).
+        [group: 'P-vf-field', name: 'field const-write false assert refutes', expect: 'Assertion may not hold',
          src: tc('''class Buffer {
                        int tail
                        @Requires({ tail == 0 })
                        void m() { tail = 5; assert tail == 99 }
                    }''')],
-        // Same hole for a *parameter* write under a constraining @Requires; also now loud-skipped, not vacuous.
-        [group: 'P-vf-field', name: 'param reassignment false assert is loud-skipped', expect: 'Skipped assertion safety check',
+        // Parameter write is versioned the same way: x becomes 5, so `x == 999` refutes, `x == 5` proves.
+        [group: 'P-vf-field', name: 'param reassignment false assert refutes', expect: 'Assertion may not hold',
          src: tc('''class C {
                        @Requires({ x == 0 })
                        static void m(int x) { x = 5; assert x == 999 }
                    }''')],
-        // Surgical: a LOCAL single-assignment is still on the value-flow path — the assert is really discharged,
-        // not skipped (proves here; the bad-local counterpart already refutes elsewhere). Guards over-throwing.
+        [group: 'P-vf-field', name: 'param reassignment true assert proves', ok: true,
+         src: tc('''class C {
+                       @Requires({ x == 0 })
+                       static void m(int x) { x = 5; assert x == 5 }
+                   }''')],
+        // Boundary: a NON-Int field write isn't versioned — it stays a loud "outside the value-flow fragment"
+        // skip (sound, honest) rather than risking a sort-mismatched fresh symbol.
+        [group: 'P-vf-field', name: 'non-Int field write stays a loud skip', expect: 'Skipped assertion safety check',
+         src: tc('''class Buffer {
+                       String tag
+                       @Requires({ tag == 'a' })
+                       void m() { tag = 'b'; assert tag == 'a' }
+                   }''')],
+        // Surgical: a LOCAL single-assignment is still on the value-flow path — the assert is really discharged.
         [group: 'P-vf-field', name: 'local single-assignment assert still proven (not over-skipped)', ok: true,
          src: tc('''class C {
                        static void m() { int x = 1; assert x == 1 }
+                   }''')],
+        // P-rg-guarantee: with fix (b), the per-segment GUARANTEE assertion — a two-state assert over a mutated
+        // Int field (`int t = tail; …; assert <relate t and tail>`) — is really discharged, standalone and after
+        // a rely-step call; violations refute (sound, not vacuous). This is the assert the sidebar marks `gCons`.
+        // P-call-frame: the value-flow pass now gives a standalone @Modifies/@Ensures *call* the same caller-side
+        // framing the postcondition path has — it havocs the callee's frame and assumes its @Ensures (was a silent
+        // no-op). Havoc: a rely that does NOT pin head leaves it unknown after the call, so `a == b` can't prove.
+        [group: 'P-call-frame', name: 'modifies call havocs an un-pinned field', expect: 'Assertion may not hold',
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ old.tail <= tail })
+                       void relyConsumer() {}
+                       void step() { int a = head; relyConsumer(); int b = head; assert a == b }
+                   }''')],
+        // The rely's @Ensures is assumed: head < tail is re-established across the rely-step (head pinned, tail grew).
+        [group: 'P-call-frame', name: 'rely ensures re-establishes obligation', ok: true,
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ head == old.head && old.tail <= tail })
+                       void relyConsumer() {}
+                       @Requires({ head < tail })
+                       void step() { relyConsumer(); assert head < tail }
+                   }''')],
+        // Soundness: drop the head-preserving conjunct from the rely → head < tail no longer survives → refutes.
+        [group: 'P-call-frame', name: 'weak rely no longer re-establishes obligation', expect: 'Assertion may not hold',
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ old.tail <= tail })
+                       void relyConsumer() {}
+                       @Requires({ head < tail })
+                       void step() { relyConsumer(); assert head < tail }
+                   }''')],
+        // Capstone: a full hand-instrumented consumer segment now checks end-to-end in one pass — the rely-step
+        // havocs+assumes (head < tail survives), the field write `head++` is SSA-versioned, and BOTH the
+        // in-segment obligation (head <= tail) and the guarantee (tail unchanged) are discharged.
+        [group: 'P-call-frame', name: 'full rely/guarantee consumer segment checks', ok: true,
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ head == old.head && old.tail <= tail })
+                       void relyConsumer() {}
+                       @Requires({ head < tail })
+                       @Modifies({ [this.head, this.tail] })
+                       void step() {
+                           relyConsumer()
+                           int t = tail
+                           head = head + 1
+                           assert head <= tail
+                           assert tail == t
+                       }
+                   }''')],
+        [group: 'P-rg-guarantee', name: 'standalone guarantee proves', ok: true,
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       void step() { int t = tail; head = head + 1; assert tail == t }
+                   }''')],
+        [group: 'P-rg-guarantee', name: 'standalone guarantee violation refutes', expect: 'Assertion may not hold',
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       void step() { int t = tail; tail = tail + 1; assert tail == t }
+                   }''')],
+        [group: 'P-rg-guarantee', name: 'guarantee after rely-call', ok: true,
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ head == old.head && old.tail <= tail })
+                       void relyConsumer() {}
+                       void step() { relyConsumer(); int t = tail; head = head + 1; assert tail == t }
+                   }''')],
+        [group: 'P-rg-guarantee', name: 'guarantee after rely-call VIOLATION refutes (sound, not vacuous)', expect: 'Assertion may not hold',
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ head == old.head && old.tail <= tail })
+                       void relyConsumer() {}
+                       void step() { relyConsumer(); int t = tail; tail = tail + 1; assert tail == t }
                    }''')],
         // A rely-step is just a *framed assume*: havoc the shared frame (@Modifies), then assume a two-state
         // relation between old and new (@Ensures over `old`). So Phase 13's caller-side framing already lets us

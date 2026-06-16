@@ -6926,15 +6926,42 @@ implicit-obligation value-flow pass (`VerifyChecker.verifyImplicitObligations` �
 - **Scope.** Latent and narrow: needs a value-flow-eligible body (straight-line/if, no loop/local re-assignment)
   ∧ a bare field write ∧ a downstream obligation/assert. But it is a *silent* pass, which the loud-skip tenet
   says we don't tolerate.
-- **Fix (a) — shipped.** In `collectVfObligations`, a bare-name assignment whose LHS `accessedVariable` is a
-  `FieldNode` or `Parameter` now `throw`s `UnsupportedConstructException`, routing the body to the existing loud
-  "Skipped … (outside the value-flow fragment)" path — matching what the `this.`-qualified write already did.
-  The silent-vacuous pass is gone. Locked by `P-vf-field` (field self-increment, field const-write clashing
-  `@Requires`, and parameter reassignment all now loud-skip; a local single-assignment still proves, guarding
-  against over-throwing). No regressions — nothing in the suite relied on the unsound field modelling.
-- **Fix (b) — still open (the rely/guarantee slice).** Model bare field writes with SSA-fresh symbols + `old`
-  snapshots the way the postcondition path does. That is exactly the capability the per-segment guarantee
-  assertion needs, so it is the natural next engine step toward the interleaving half.
+- **Fix (a) — shipped, then superseded by (b).** First cut: in `collectVfObligations`, a bare-name write whose
+  LHS `accessedVariable` is a `FieldNode`/`Parameter` `throw`s `UnsupportedConstructException` → the loud
+  "Skipped … (outside the value-flow fragment)" path. That removed the *silent* pass (sound + honest), but only
+  by skipping rather than discharging.
+- **Fix (b) — shipped (SSA versioning for Int field/param writes).** Instead of skipping, a bare write to an
+  **Int-typed** field/param is recorded as a `FieldAssign` step and replayed as an SSA *versioning* step
+  (`dischargeVfObligation`): evaluate the rhs against the field's pre-write symbol, then `bind` the name to a
+  fresh symbol equal to it. So `tail = tail + 1` threads `tail₁ == tail₀ + 1` (not the self-contradictory
+  `tail == tail + 1`), and downstream obligations are **really discharged**. The former silent repro now
+  **refutes** (`tail = tail + 1; assert tail == 0` → "Assertion may not hold"); the true variant proves; the
+  same holds for parameter writes. A **non-Int** field write (String/enum/boolean/double — a sort the Int fresh
+  symbol can't carry) still takes the loud (a)-skip. Locked by `P-vf-field` (refute + prove + non-Int loud-skip +
+  local control); no regressions (1171 green).
+- **Bonus (b) closes — the per-segment guarantee assertion.** A guarantee is a two-state assert over a field the
+  segment mutates; with a ghost snapshot (`int t = tail; …; assert <relate t and tail>`) it is now *discharged*,
+  not the "marker" the README sidebar called it. Verified standalone and immediately after a rely-step call, with
+  the violation refuting (sound, not vacuous) — `P-rg-guarantee`. So the gap re-grades again: the guarantee
+  assertion is **done** for Int shared state; what remains of the interleaving is the orchestration (auto-insert,
+  mechanical), modelling the state as concurrently shared (a *modelling assumption*), and the item below.
+- **Call-framing — shipped.** The implicit-obligation value-flow pass used to treat a standalone `@Modifies`
+  **call** as a no-op (the Phase-42 LemmaCall path only applied set/map/list mutations) — it did *not* havoc the
+  callee's frame nor assume its `@Ensures`, unlike the postcondition path. That was a latent unsoundness (a
+  downstream obligation could be proven assuming a field a `@Modifies` call actually changed) and it under-modelled
+  the rely-step. Fixed: when no set/map/list mutation handler matches, the LemmaCall replay now calls
+  `assumeCalleeEnsures(s, enc, call, node, …)` — the *same* helper the postcondition path uses, which havocs the
+  declared frame, pins `old.X` at the call, and assumes the callee's `@Ensures`. Verified by `P-call-frame`: an
+  un-pinned field is now unknown after the call (`a == b` refutes); a rely's `@Ensures` re-establishes an
+  in-segment obligation (`head < tail` survives); weakening the rely makes it refute (sound); an uncontracted call
+  (no `@Modifies`/`@Ensures`) still no-ops. No regressions (1175 green) — nothing relied on the no-op.
+- **Where this lands the interleaving story.** With field-write SSA (b) + call-framing, the value-flow pass now
+  checks a **full hand-instrumented rely/guarantee segment end-to-end in one pass** (`P-call-frame` capstone):
+  the rely-step havocs+assumes, the field write is versioned, and both the in-segment obligation and the guarantee
+  assertion discharge. For Int scalar shared state, the per-thread sequential proof the §IV reduction rests on is
+  now *mechanically checkable* — what remains is the orchestration (an AST transform to insert the rely-steps from
+  `@Rely`/`@Guarantee`, mechanical), non-Int shared state, and treating the state as concurrently shared (the
+  modelling assumption). The interleaving is far closer than "a large architectural piece" implied.
 
 ---
 

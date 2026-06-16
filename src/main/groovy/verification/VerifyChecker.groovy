@@ -2130,8 +2130,26 @@ class VerifyChecker extends TypeCheckingExtension {
     @CompileStatic
     private static class VfObligation {
         Object site                 // IndexSite | DivideSite | DerefSite
-        List<Object> steps          // Assign | Guard | LemmaCall, in source order
+        List<Object> steps          // Assign | FieldAssign | Guard | LemmaCall, in source order
     }
+
+    /**
+     * A bare scalar write to an Int-typed *field* or *parameter* (`tail = tail + 1`) — replayed as an SSA
+     * *versioning* step, not a plain {@code name == rhs} binding. A field/param reuses its entry symbol, so a
+     * binding would thread {@code tail == tail + 1} (self-contradictory) onto it — an UNSAT context that then
+     * discharges every downstream obligation *vacuously and silently*. Versioning (evaluate the rhs against the
+     * pre-write symbol, then rebind the name to a fresh symbol equal to it) keeps it sound, and lets a body that
+     * bumps a shared counter discharge its real obligations. Non-Int field/param writes stay a loud skip.
+     */
+    @CompileStatic
+    private static class FieldAssign {
+        String name
+        Expression rhs
+        FieldAssign(String name, Expression rhs) { this.name = name; this.rhs = rhs }
+    }
+
+    /** Mints unique fresh symbols for SSA-versioned field/param writes ({@link FieldAssign}) at replay. */
+    private int ssaCounter = 0
 
     /**
      * Walk the value-flow fragment, snapshotting for each implicit obligation
@@ -2194,17 +2212,22 @@ class VerifyChecker extends TypeCheckingExtension {
                         String name = ((VariableExpression) be.leftExpression).name
                         scanObligations(be.rightExpression, steps, out)
                         // A bare write to a *field* or *parameter* (not a fresh local) reuses that name's entry
-                        // symbol, so the single-assignment model would thread `name == rhs` onto the entry value —
-                        // e.g. `tail = tail + 1` becomes the self-contradictory `tail == tail + 1`, an UNSAT context
-                        // that then discharges every downstream obligation (incl. user `assert`s) *vacuously and
-                        // silently*. The SSA fragment is sound only for locals; bail loudly so such a body routes to
-                        // the honest "outside the value-flow fragment" skip instead of a silent pass. (A `this.`-
-                        // qualified write is a PropertyExpression LHS and already throws below; this catches the
-                        // bare-name form. Field-delta *postconditions* are unaffected — they use the old-snapshot
-                        // postcondition replay, a different path.)
+                        // symbol. As a plain `name == rhs` binding it would thread the self-contradictory
+                        // `tail == tail + 1` onto the entry value (UNSAT → every downstream obligation discharges
+                        // vacuously). For an Int-typed field/param we emit a FieldAssign instead, replayed as an SSA
+                        // *versioning* step (a fresh symbol for the post-write value) — sound, and it discharges the
+                        // body's real obligations (the rely/guarantee shared counter `tail` is the motivating case).
+                        // A non-Int field/param write (and a `this.`-qualified write, a PropertyExpression that
+                        // throws below) still bails loudly to the "outside the value-flow fragment" skip. Field-delta
+                        // *postconditions* are unaffected — they use the old-snapshot postcondition replay.
                         Variable acc = ((VariableExpression) be.leftExpression).accessedVariable
                         if (acc instanceof FieldNode || acc instanceof Parameter) {
-                            throw new UnsupportedConstructException("assignment to a field/parameter '${name}'")
+                            ClassNode lt = (acc instanceof FieldNode) ? ((FieldNode) acc).type : ((Parameter) acc).type
+                            if (isIntElement(lt)) {
+                                steps.add(new FieldAssign(name, be.rightExpression))
+                                continue
+                            }
+                            throw new UnsupportedConstructException("assignment to a non-Int field/parameter '${name}'")
                         }
                         if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
                         steps.add(new Assign(name, be.rightExpression))
@@ -2349,18 +2372,36 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                     Object rhs = enc.translate(a.rhs)
                     if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
+                } else if (step instanceof FieldAssign) {
+                    // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
+                    // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
+                    // without the entry symbol picking up a self-contradictory `name == rhs` constraint.
+                    FieldAssign a = (FieldAssign) step
+                    Object rhs = enc.translate(a.rhs)
+                    if (rhs != null) {
+                        Object fresh = s.intVar('ssa$' + a.name + '$' + (ssaCounter++))
+                        s.assertExpr(s.eq(fresh, rhs))
+                        enc.bind(a.name, fresh)
+                    }
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
                     if (c != null) s.assertExpr(g.positive ? c : s.not(c))
                 } else if (step instanceof LemmaCall) {
                     Expression call = ((LemmaCall) step).call
+                    // Note: countVals are scoped to a postcondition's @Ensures, not relevant for implicit
+                    // obligations (bounds/null/div) — pass empty so the bcount boundary law just skips for
+                    // unrelated v's. The size-thread is what we need here.
                     if (applySetMutation(s, enc, call)) continue
                     if (applyMapPut(s, enc, call)) continue
-                    applyListMutation(s, enc, call, Collections.<Object>emptyList())
-                    // Note: countVals are scoped to a postcondition's @Ensures, not relevant for
-                    // implicit obligations (bounds/null/div) — pass empty so the bcount boundary
-                    // law just skips for unrelated v's. The size-thread is what we need here.
+                    if (applyListMutation(s, enc, call, Collections.<Object>emptyList())) continue
+                    // Caller-side framing for a standalone @Modifies / @Ensures call: havoc the callee's declared
+                    // frame and assume its @Ensures — exactly as the postcondition path (`assumeCalleeEnsures`)
+                    // does — so a downstream obligation can't assume a field the call modified is unchanged.
+                    // Without this the call was a silent no-op, so an in-segment obligation could be proven over a
+                    // field a @Modifies call actually changed (the call-framing gap). An uncontracted call (no
+                    // @Modifies/@Ensures) still no-ops here — assumeCalleeEnsures returns false, nothing to model.
+                    assumeCalleeEnsures(s, enc, call, node, null, hasDecreases(node))
                 }
             }
             dischargeObligationUnder(s, enc, v.site)
