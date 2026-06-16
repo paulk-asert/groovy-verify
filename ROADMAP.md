@@ -523,6 +523,21 @@ through, so the postcondition is still checked. *Still deferred (the rest of
 syntax), and asserts inside loop bodies / past a re-assignment (outside the
 value-flow fragment — loudly skipped, not checked). Locked by `PL-assert`.
 
+**An assert is a throw-site — part of the totality story.** A failing `assert P`
+throws `AssertionError`, so a *verified* assert is one more proof that an
+exception can't escape here — the same guarantee as the bounds / null / divide
+checks, just one the author wrote down. In particular **`assert false` is the
+unreachability idiom**: it discharges `false` under the path's assumptions, so it
+*verifies* exactly when the path condition is contradictory (genuinely dead code,
+e.g. `x > 0 ∧ x < 0`) and *refutes* — with a witnessing counterexample — when the
+point is actually reachable. The downstream-assume of a proven assert is likewise
+the "the throwing path is pruned" semantics (the `@Ensures` need only hold where
+the assert didn't throw), sound by assume/enforce. This sits as the no-handlers
+leaf of a future `try`/`catch` model: today every throw-site is proved unreachable
+(no exception escapes); a full model would generalise to "prove `P` only when the
+`AssertionError` would be *unhandled*," treating an assert as one typed throw-site
+in a unified throw→catch flow — nothing here needs unwinding for that.
+
 ### Not in scope here
 
 Full interactive tactics and proof terms (the Coq/Lean/F\* `intro; split; qed`
@@ -6835,6 +6850,29 @@ internal sort-mismatch (`SeqExpr → BoolExpr`), and in an `assert`/precondition
 exception swallowed) — so an unverified truthiness compiled clean, masquerading as checked. Now a truthiness we
 *don't* model (a decimal, an array, an `asBoolean()`-customiser, an un-nameable receiver) is a **loud skip**,
 never a crash or a silent pass. Locked by `PL-truth`.
+
+---
+
+## `@SelfEnsures` — the body is the postcondition  *(prototype)*
+
+For a **self-specifying** declarative function — FizzBuzz's `spec`, an equational combiner `add(a,b){a+b}`, a
+getter — the `@Ensures({ result == E })` just restates the body `{ E }`. `@SelfEnsures` writes it once: the
+`ContractExpansionTransform` desugars it, at CONVERSION, into a captured `@Ensures({ result == <body> })`, so
+**everything downstream is unchanged** — the postcondition proof and the equational-combiner reader both see an
+ordinary ensures. A `@SelfEnsures @Reducer add(a,b){a+b}` proves its monoid laws from the body equation with no
+hand-written `@Ensures`; a `@SelfEnsures` subtraction under `@Associative` still refutes. A non-single-expression
+body (statements, a loop) is a **loud error** — there's no one expression to lift.
+
+**Honest framing.** When the body *is* the spec, `result == body` is **vacuous** — the real assurance is the
+body's *totality* (its bounds/null/division obligations) and that it's in the fragment, plus exporting the body as
+a contract for callers/tools. So `@SelfEnsures` deliberately trades away the (weak) double-accounting of writing
+spec and body separately; a genuinely different spec stays an explicit `@Ensures` (the FizzBuzz `spec`-vs-`build`
+split is the canonical example — `spec` would be `@SelfEnsures`, `build` keeps its property `@Ensures`).
+
+This is an **incubator prototype**: the annotation is shaped to desugar to `@Ensures` precisely so it's
+upstream-ready (a future groovy-contracts feature, positioned as a *specification* — its runtime check being
+vacuous — once the spec-consumer story is proven here). Locked by `PL-selfensures`. Annotation:
+`verification.SelfEnsures`.
 
 ---
 

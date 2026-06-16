@@ -2142,7 +2142,7 @@ the broken variant below gets wrong. The emoji-FizzBuzz flourish is borrowed, wi
 
 ```groovy
 class FizzBuzz {
-    @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+    @SelfEnsures   // the body *is* the spec — lifted into @Ensures({ result == <body> }), written once
     static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
 
     @Requires({ upTo >= 1 })
@@ -2163,8 +2163,9 @@ class FizzBuzz {
 The proof shows:
 * the array is the right length
 * the loop terminates
-* **no slot can hold the wrong value** — `spec`'s `@Ensures` inlines equationally, so the body's `spec(i + 1)`
-  and the invariant's `spec(k + 1)` are one term and the every-quantifier extends by one element per step
+* **no slot can hold the wrong value** — `spec` is self-specifying (`@SelfEnsures` lifts its body into
+  `@Ensures({ result == <body> })`), so the body's `spec(i + 1)` and the invariant's `spec(k + 1)` are one term
+  and the every-quantifier extends by one element per step
 
 Break it and it refutes, naming the offending slot. Write `r[i] = spec(i)` instead of `spec(i + 1)` and the loop
 invariant isn't preserved; the diagnostic reports the actual element against the spec:
@@ -2491,6 +2492,7 @@ The examples above are a slice; here is the full inventory of what the engine pr
 | Loop invariants & termination | `@Invariant` / `@Decreases` | ✅ |
 | **Inline `assert P` discharged at compile time** (Dafny-style) — `assert 3 < 2` fails to compile; `assert P(state)` proved under `@Requires` + prior assignments + guards, refuted with a counterexample; a proven assert is then **used as a fact** by later bounds/null/div checks *and* by the `@Ensures` (assume/enforce). Straight-line + `if`/`else` (value-flow fragment); outside it (loop body / re-assignment) the assert is loudly skipped | `assert P` | ✅ Phase 8b |
 | **Groovy truth in a contract / assert / boolean operand** — a non-Boolean in boolean position is coerced as Groovy coerces it: `int != 0`; `String`/`List`/`Set`/`Map` non-null ∧ non-empty; a plain reference non-null. So `@Ensures({ result })` returning `""` *refutes*, `assert 0` *refutes*, and `@Requires({ xs })` *assumes* the list non-empty. A truthiness not modelled (a decimal, an array, an `asBoolean()`-customiser) is loudly skipped — never a silent drop or a sort-mismatch crash | *(implicit)* | ✅ Phase 8c |
+| **`@SelfEnsures` — the body is the postcondition** *(prototype)* — for a self-specifying expression-bodied method (`add(a,b){a+b}`, a getter, FizzBuzz's `spec`), lifts `{ E }` into `@Ensures({ result == E })` once. Desugars at CONVERSION, so the combiner-equation reader and postcondition proof are unchanged: `@SelfEnsures @Reducer add` proves its monoid laws from the body. A non-expression body is a loud error. (Honest: `result == body` is vacuous — the assurance is totality + contract export, not double-accounting) | `@SelfEnsures` | ✅ prototype |
 | **Array/list index in bounds** | *(implicit)* | ✅ Phase 1 |
 | **Division / modulo by zero** | *(implicit)* | ✅ Phase 1 |
 | **Null dereference** | *(implicit)* | ✅ Phase 1 |

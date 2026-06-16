@@ -4605,7 +4605,7 @@ class WrapCounter implements Counter { }
         // loop invariant). This is the full pretty FizzBuzz, numbers and all, machine-checked element by element:
         [group: 'P-fizzbuzz', name: 'FizzBuzz array-fill with number default (n.toString)', ok: true,
          src: tc('''class FizzBuzz {
-                        @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
+                        @verification.SelfEnsures
                         static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
                         @Requires({ upTo >= 1 })
                         @Ensures({ result.length == upTo })
@@ -10567,6 +10567,47 @@ class WrapCounter implements Counter { }
          src: tc('''class C {
                         static int f() { int y = 1; assert y > 0; y = 2; return y }
                     }''')],
+        // `assert false` is the unreachability idiom: it VERIFIES on a path whose conditions are contradictory
+        // (genuinely dead code) — here `x > 0 ∧ x < 0`.
+        [group: 'PL-assert', name: 'assert false on a contradictory (dead) path verifies', ok: true,
+         src: tc('''class C {
+                        @Requires({ x > 0 })
+                        static void f(int x) { if (x < 0) { assert false } }
+                    }''')],
+        // …and REFUTES when the point is actually reachable (an AssertionError could be thrown there).
+        [group: 'PL-assert', name: 'assert false on a reachable path refuted', expect: 'Assertion may not hold',
+         src: tc('''class C { static void f(int x) { assert false } }''')],
+
+        // ----- @SelfEnsures — the (single-expression) body IS the postcondition (prototype) -----
+        // The body is lifted into `result == body`; it verifies (vacuous equality + real totality on the body).
+        [group: 'PL-selfensures', name: 'self: expression body verifies (derived result == body)', ok: true,
+         src: tc('''class C { @verification.SelfEnsures static int dbl(int x) { x * 2 } }''')],
+        // The derived equation feeds the @Reducer monoid-law proof — no hand-written @Ensures({ result == a + b }).
+        [group: 'PL-selfensures', name: 'self: @Reducer reads the body equation, monoid laws prove', ok: true,
+         src: tc('''class C {
+                        @groovy.transform.Reducer(zero = '0')
+                        @verification.SelfEnsures
+                        static int add(int a, int b) { a + b }
+                    }''')],
+        // A @SelfEnsures combiner used in another method's contract — equivalent to the @Ensures form.
+        [group: 'PL-selfensures', name: 'self: combiner used in a contract (equivalent to @Ensures)', ok: true,
+         src: tc('''class C {
+                        @verification.SelfEnsures
+                        static String glue(String a, String b) { a + b }
+                        @Ensures({ glue(s, t) == s + t })
+                        static void check(String s, String t) { }
+                    }''')],
+        // The derived equation is genuinely used: a @SelfEnsures combiner whose body isn't associative is refuted
+        // by the @Associative law — exactly as the hand-written @Ensures({ result == a - b }) form is.
+        [group: 'PL-selfensures', name: 'self: @Associative on a subtraction body refutes (equation used)', expect: 'Cannot prove @Reducer associativity',
+         src: tc('''class C {
+                        @groovy.transform.Associative
+                        @verification.SelfEnsures
+                        static int sub(int a, int b) { a - b }
+                    }''')],
+        // Loud error: @SelfEnsures on a non-expression (multi-statement) body — there's no single expression to lift.
+        [group: 'PL-selfensures', name: 'self: non-expression body is a loud error', expect: '@SelfEnsures requires a single-expression body',
+         src: tc('''class C { @verification.SelfEnsures static int f(int x) { int y = x + 1; return y } }''')],
 
         // ----- Groovy truth in contract/assert position (non-boolean coerced as Groovy does) -----
         // An empty String is Groovy-false, so `@Ensures({ result })` returning "" must REFUTE (previously crashed).

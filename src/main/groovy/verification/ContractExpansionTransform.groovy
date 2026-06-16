@@ -48,6 +48,8 @@ import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.control.messages.SyntaxErrorMessage
+import org.codehaus.groovy.syntax.SyntaxException
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.WhileStatement
 import org.codehaus.groovy.syntax.Types
@@ -217,6 +219,20 @@ class ContractExpansionTransform implements ASTTransformation {
             else if (kind == 'modifiesContainer') addContainerTexts(an, source, modifiesTexts)
             else { String t = closureText(an, source); if (t) decreases = t }  // method-level @Decreases
         }
+        // @SelfEnsures — the method's single-expression body *is* its postcondition. Desugar it here into a
+        // captured `result == <body>` so everything downstream (postcondition proof, equational-combiner reading)
+        // treats it as an ordinary @Ensures. A non-expression body is a loud error (no single expression to lift).
+        if (hasSelfEnsures(mn)) {
+            String bodyExpr = singleExpressionText(mn, source)
+            if (bodyExpr == null) {
+                source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
+                    "@SelfEnsures requires a single-expression body ({ E } or { return E }); '${mn.name}' has none — " +
+                    "use @Ensures for a method with statements/loops.", mn.lineNumber, mn.columnNumber), source))
+            } else {
+                ensuresTexts.add("result == (${bodyExpr})".toString())
+            }
+        }
+
         String requires = conjoinTexts(requiresTexts)
         String ensures = conjoinTexts(ensuresTexts)
         String modifies = combineModifies(modifiesTexts)
@@ -258,6 +274,28 @@ class ContractExpansionTransform implements ASTTransformation {
             // each loop body is isolated separately by loopBodyCopy.
             mn.setNodeMetaData(ORIGINAL_BODY_KEY, copyBody((BlockStatement) mn.code, hasTailRecursive(mn)))
         }
+    }
+
+    /** True if the method carries {@code verification.SelfEnsures} (matched by FQN, no hard dependency). */
+    private static boolean hasSelfEnsures(MethodNode mn) {
+        for (AnnotationNode a : mn.annotations) {
+            ClassNode cn = a.classNode
+            if (cn != null && (cn.name == 'verification.SelfEnsures' || cn.nameWithoutPackage == 'SelfEnsures')) return true
+        }
+        return false
+    }
+
+    /** The source text of a single-expression body ({@code { E }} or {@code { return E }}), or null if the body
+     *  isn't a lone expression (multiple statements, a loop, a void body, …). */
+    private static String singleExpressionText(MethodNode mn, SourceUnit source) {
+        if (!(mn.code instanceof BlockStatement)) return null
+        List<Statement> stmts = ((BlockStatement) mn.code).statements
+        if (stmts == null || stmts.size() != 1) return null
+        Statement s = stmts.get(0)
+        Expression e = (s instanceof ReturnStatement) ? ((ReturnStatement) s).expression :
+                       (s instanceof ExpressionStatement) ? ((ExpressionStatement) s).expression : null
+        // Verbatim source (not getText(), which drops string/char-literal quotes — e.g. emoji '🥤' → 🥤).
+        return e != null ? verbatimText(e, source) : null
     }
 
     /** True if the method carries {@code @groovy.transform.TailRecursive} (matched by FQN, so no hard
@@ -680,9 +718,13 @@ class ContractExpansionTransform implements ASTTransformation {
             }
         }
         if (expr == null) return null
+        return verbatimText(expr, source)
+    }
 
-        // Reuse power-assert's verbatim slicing by wrapping the boolean in a
-        // synthetic AssertStatement that carries the original source position.
+    /** The verbatim source text of {@code expr} (preserving string/char literals, which {@code getText()} drops),
+     *  via power-assert's slicing — wrap the expression in a synthetic {@code AssertStatement} at its source
+     *  position and read {@link SourceText}. Falls back to AST reconstruction if the source can't be sliced. */
+    static String verbatimText(Expression expr, SourceUnit source) {
         BooleanExpression be = new BooleanExpression(expr)
         be.setSourcePosition(expr)
         AssertStatement assertStmt = new AssertStatement(be)
