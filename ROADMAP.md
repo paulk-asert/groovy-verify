@@ -6965,6 +6965,94 @@ implicit-obligation value-flow pass (`VerifyChecker.verifyImplicitObligations` �
 
 ---
 
+## Orchestration — `@UnderRely`, the declarative rely-step  *(prototype)*
+
+The first slice of the orchestration the reassessment named "mechanical." A rely-step call (`relyOnWriter()` at the
+top of `read()`) no longer needs to be hand-written: tag the method `@UnderRely('relyOnWriter')` and
+`ContractExpansionTransform` prepends a `this.relyOnWriter()` call at the start of the body, *before* the clean-body
+snapshot — so the verifier's value-flow pass picks it up as a call and the just-shipped call-framing havocs the
+shared frame and assumes the rely. The source body stays pure logic; the rely-step becomes a *contract*, exactly as
+`@WithWriteLock` replaces a manual `lock()`. Verified by `P-ring` (`@UnderRely` form proves identically to the
+hand-written call; a weak rely via `@UnderRely` still refutes the out-of-bounds read). No regressions (1180 green)
+— `prependRelySteps` is a no-op unless the method carries `@UnderRely`.
+
+**Soundness scope.** A single rely-step is prepended at body *entry*, which models the method as an *atomic
+critical section* that runs after one environment step — the same atomicity assumption the lock / actor examples
+already make. Sound for short critical sections (the `Ring`'s `read`/`write`); a long method with several
+independent shared interactions would need a rely-step before *each* access, not just one at entry — a later slice.
+
+**Synthesis from `@Rely` predicates — shipped.** The rely-step *method* no longer needs to be hand-written either.
+When `@UnderRely('Role')` names a role that has a matching `@Rely('Role')` two-state predicate in the class,
+`augmentClass` synthesises a `$rely$Role` method (before the per-method augment loop sees it) carrying a
+`@ContractSource`: `@Modifies` is the post-state fields, and `@Ensures` is the predicate body with each pre-state
+param rewritten to `old.<i-th post-state param>` (textual, word-boundary substitution — rely predicates are pure
+arithmetic, no string literals), **conjoined with the class invariant**. The invariant is essential: a pure
+param-predicate can't mention a field like `values.length`, yet the rely-step must re-establish the bound the
+environment preserves — so `$rely$Writer` assumes the class invariant on the post-havoc state (sound, since every
+thread, including the environment, is verified to maintain it). The empty body discharges the synthesised
+`@Ensures` reflexively. Convention: the i-th post-state parameter name *is* the field it tracks (mismatch is a loud
+error). `@UnderRely` falls back to "method name" when no `@Rely` role matches, so the hand-written form still works.
+
+So the full loop closes: write the `@Rely` / `@Guarantee` predicates once (they already drive the compatibility
+lemmas), tag the methods `@UnderRely('Role')`, and the rely-step method *and* its call are both generated. Verified
+by `P-ring` (`rely-step synthesised from @Rely predicate` proves in bounds; a weakened `@Rely` predicate refutes the
+out-of-bounds read). No regressions (1182 green). Annotations: `verification.UnderRely`, `verification.Rely`.
+
+**Multi-access placement — shipped.** When the rely is synthesised (so the transform knows the shared frame from
+the `@Rely` predicate's post-state fields), `prependRelySteps` no longer prepends one rely-step at entry; it
+inserts a rely-step **before every top-level statement that touches a framed field** (`referencesAnyField`) — so a
+non-atomic body with several shared accesses models the environment *between* them, not just before the method.
+Crucially there is **no trailing rely**: relies sit before each framed access, the last of which is shared-
+modifying, so the class invariant is checked on the body's own exit state rather than vacuously re-assumed by a
+post-body environment step. (Each rely conjoins the invariant — the *environment*'s preservation, assumed — while
+the exit check verifies *this thread*'s preservation; the two are different points, so no vacuity.) Locked by
+`P-ring`: `multi-access body: rely-step before each shared read` proves; `multi-access exit invariant is not
+vacuous` refutes a body that breaks the invariant in its last write. Hand-written rely-steps (no `@Rely` role →
+unknown frame) keep the entry-only model.
+
+**Masking hole found and fixed (the multi-access correction).** The first multi-access cut was *unsound* for a
+write that **transiently** breaks the invariant: `void m() { head = tail + 1; head = 0 }` compiled clean. Because a
+rely-step is inserted between the two writes and a rely conjoins the invariant, the environment was modelled as
+*repairing* the broken state (`head = tail + 1` then "the writer grows tail"), so the violation was masked — the
+exit check only ever saw the final, repaired state. (The earlier `sneaky` case escaped only because its trailing
+read happened to be out of bounds.) Fix: after each statement that **writes** a framed field, the transform now
+inserts a fresh `assert <class invariant>` (re-parsed via `AstBuilder`, discharged by the assert checker + the
+Phase-b field-write SSA) — so each of *this thread*'s writes is invariant-checked at the write, before any
+following rely-step can mask it. Locked by `P-ring :: transient invariant violation between shared writes refutes`.
+
+**Nested control flow — shipped.** Placement is now recursive (`placeRelyStepsIn`): a rely-step before each
+*statement at any depth* that touches a framed field, before an `if` whose **condition** touches one, and recursing
+into both branches (braceless branches are wrapped in a block first). Locked by `P-ring`: `nested if-branch shared
+read is in bounds` proves, `nested if-branch unsafe read refutes` (a `head <= tail` guard admits an out-of-bounds
+read). No regressions (1187 green).
+
+**Loop-body placement — shipped (the `LoopEncoder` half + read-only auto-placement).** The loop verifier used to
+loud-skip *any* method call in the loop region, so a rely-step in a loop body was unverifiable. Now `LoopEncoder`
+carries a `LoopCallHandler` (static, set with save-restore around a method's loop verification); when `applyAssign`
+meets an unrecognised call it hands it to the handler, which `VerifyChecker` installs as a thin wrapper over
+`assumeCalleeEnsures` — so a rely-step call inside a loop body havocs the shared frame and assumes its `@Ensures`
+**per iteration**, modelling the environment's interference at each step. The transform's `placeRelyStepsIn` now
+recurses into loop bodies too, so this is automatic. Verified sound by `P-ring`: `rely-step inside loop body
+verifies` (a *rely-stable* loop invariant — `k <= tail` under a growing-tail rely — proves), `auto rely-step placed
+inside loop body verifies` (the transform inserts it, no hand-writing), and crucially `non-rely-stable loop
+invariant refutes` (`tail == t0` under a growing-tail rely fails preservation because the in-body rely-step havocs
+`tail`). No regressions to the core loop machinery (1191 green).
+
+**In-loop assert discharge — shipped (write loops now verify).** A loop body that **writes** a framed field gets
+the masking-fix `assert <invariant>` after the write; the loop fragment used to reject it. Now `LoopEncoder.symExec`
+*assumes* an `AssertStatement`'s condition (threading it as a fact for the rest of the body — proven separately, so
+assume/enforce), and `dischargeStatementShortCircuit` *proves* an in-loop assert as an `AssertSite` under the loop
+invariant ∧ guard ∧ the replayed preceding body — gated by a new `handleAsserts` flag so the straight-line fallback
+(which loud-skips asserts) is untouched. So `consumeOne` (a `head++` loop) now **verifies**, and `loopMask`
+(`head = tail + 1; head = 0` in the body — a transient violation preservation alone would miss, since the loop
+invariant holds at the body's end) **refutes** at the in-loop assert. No regressions (1192 green).
+
+**Still out.** The scheduler itself — that the threads really interleave with the assumed atomicity — stays an
+assumption throughout (the one structural assumption the whole concurrency-"lite" section rests on). Within the
+rely/guarantee tooling, straight-line, branching, and loop bodies (read and write) are now all covered.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

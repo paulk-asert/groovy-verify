@@ -21,7 +21,9 @@ import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.ConstructorNode
+import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.ImportNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.ModuleNode
@@ -35,19 +37,24 @@ import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
+import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.ListExpression
+import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
+import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
+import groovyjarjarasm.asm.Opcodes
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage
 import org.codehaus.groovy.syntax.SyntaxException
 import org.codehaus.groovy.ast.stmt.Statement
@@ -160,12 +167,94 @@ class ContractExpansionTransform implements ASTTransformation {
                 }
             }
         }
+        // @UnderRely('Role') → synthesise a rely-step method `$rely$Role` from the class's @Rely('Role')
+        // predicate, BEFORE the per-method augment loop sees it. Needs the class invariant (the rely-step must
+        // re-establish it post-havoc, and a pure param-predicate can't mention fields like `values.length`).
+        synthesizeRelySteps(cn, conjoinTexts(texts), source)
         if (texts.isEmpty()) return
         AnnotationNode holder = new AnnotationNode(ClassHelper.make(ClassInvariantSource))
         ListExpression list = new ListExpression()
         for (String t : texts) list.addExpression(new ConstantExpression(t))
         holder.addMember('invariants', list)
         cn.addAnnotation(holder)
+    }
+
+    /** For each {@code @Rely('Role')}-predicate referenced by some {@code @UnderRely('Role')}, synthesise an
+     *  (empty-bodied) rely-step method {@code $rely$Role} carrying {@code @Modifies} (the post-state fields) and
+     *  {@code @Ensures} (the predicate with pre-state params rewritten to {@code old.<field>}, conjoined with the
+     *  class invariant the environment preserves). The verifier then frames+assumes it at the prepended call. */
+    private static void synthesizeRelySteps(ClassNode cn, String classInv, SourceUnit source) {
+        Set<String> roles = new LinkedHashSet<String>()
+        for (MethodNode mn : cn.methods) roles.addAll(underRelyMethods(mn))
+        if (roles.isEmpty()) return
+        Set<String> fields = new HashSet<String>()
+        for (FieldNode f : cn.fields) fields.add(f.name)
+        for (String role : roles) {
+            MethodNode pred = relyPredicateFor(cn, role)
+            if (pred == null) continue                              // @UnderRely names a method, not a @Rely role
+            if (!cn.getMethods('$rely$' + role).isEmpty()) continue // already synthesised
+            synthesizeOneRelyStep(cn, role, pred, classInv, fields, source)
+        }
+    }
+
+    /** The {@code @Rely('role')} two-state predicate method in {@code cn}, or null. */
+    private static MethodNode relyPredicateFor(ClassNode cn, String role) {
+        for (MethodNode m : cn.methods) {
+            for (AnnotationNode a : m.annotations) {
+                ClassNode acn = a.classNode
+                if (acn == null || (acn.name != 'verification.Rely' && acn.nameWithoutPackage != 'Rely')) continue
+                Expression v = a.getMember('value')
+                if (v instanceof ConstantExpression && role == ((ConstantExpression) v).value) return m
+            }
+        }
+        null
+    }
+
+    private static void synthesizeOneRelyStep(ClassNode cn, String role, MethodNode pred,
+                                              String classInv, Set<String> fields, SourceUnit source) {
+        int two = pred.parameters.length
+        Expression body = singleExpression(pred)
+        if (two < 2 || two % 2 != 0 || body == null) {
+            source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
+                "@Rely('${role}') predicate '${pred.name}' must be a single-expression body with an even, non-zero " +
+                "parameter count (n pre-state, then n post-state) to synthesise a rely-step.", pred.lineNumber, pred.columnNumber), source))
+            return
+        }
+        int n = two.intdiv(2)
+        String ensuresRely = verbatimText(body, source)
+        List<String> postNames = new ArrayList<String>()
+        for (int i = 0; i < n; i++) {
+            String preName = pred.parameters[i].name
+            String postName = pred.parameters[n + i].name
+            postNames.add(postName)
+            if (!fields.contains(postName)) {
+                source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
+                    "@Rely('${role}'): post-state parameter '${postName}' must name a field of '${cn.nameWithoutPackage}' " +
+                    "(synthesis maps the i-th pre-state param to old.<i-th post-state param>).", pred.lineNumber, pred.columnNumber), source))
+                return
+            }
+            ensuresRely = ensuresRely.replaceAll('\\b' + preName + '\\b', 'old.' + postName)
+        }
+        String ensures = classInv != null ? "(${ensuresRely}) && (${classInv})".toString() : ensuresRely
+        String modifies = '[' + postNames.collect { 'this.' + it }.join(', ') + ']'
+
+        MethodNode step = new MethodNode('$rely$' + role, Opcodes.ACC_PUBLIC, ClassHelper.VOID_TYPE,
+            Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, new BlockStatement())
+        AnnotationNode holder = new AnnotationNode(ClassHelper.make(ContractSource))
+        holder.addMember('ensures', new ConstantExpression(ensures))
+        holder.addMember('modifies', new ConstantExpression(modifies))
+        step.addAnnotation(holder)
+        cn.addMethod(step)
+    }
+
+    /** The lone expression of a single-statement ({@code return E} / {@code E}) body, or null. */
+    private static Expression singleExpression(MethodNode mn) {
+        if (!(mn.code instanceof BlockStatement)) return null
+        List<Statement> ss = ((BlockStatement) mn.code).statements
+        if (ss == null || ss.size() != 1) return null
+        Statement s = ss.get(0)
+        (s instanceof ReturnStatement) ? ((ReturnStatement) s).expression :
+            (s instanceof ExpressionStatement) ? ((ExpressionStatement) s).expression : null
     }
 
     /** Verbatim text of an {@code @Invariant}'s closure, or null if absent/unparseable. */
@@ -233,6 +322,11 @@ class ContractExpansionTransform implements ASTTransformation {
             }
         }
 
+        // @UnderRely — the *declarative* rely-step. Prepend a call to each named rely-step method at the start of
+        // the body (before the snapshot below), so the verifier's caller-side framing havocs the shared frame and
+        // assumes the rely, exactly as a hand-written call would — while the source body stays pure logic.
+        prependRelySteps(mn, source)
+
         String requires = conjoinTexts(requiresTexts)
         String ensures = conjoinTexts(ensuresTexts)
         String modifies = combineModifies(modifiesTexts)
@@ -283,6 +377,227 @@ class ContractExpansionTransform implements ASTTransformation {
             if (cn != null && (cn.name == 'verification.SelfEnsures' || cn.nameWithoutPackage == 'SelfEnsures')) return true
         }
         return false
+    }
+
+    /** Prepend a {@code this.<rely>()} call for each method named by {@code @UnderRely}, in order, at the start of
+     *  the body — so caller-side framing havocs+assumes the rely before the body's first shared-state access. No-op
+     *  unless the method carries {@code @UnderRely} and has a block body. */
+    private static void prependRelySteps(MethodNode mn, SourceUnit source) {
+        List<String> relies = underRelyMethods(mn)
+        if (relies.isEmpty()) return
+        if (!(mn.code instanceof BlockStatement)) {
+            source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
+                "@UnderRely needs a block body to instrument; '${mn.name}' has none.", mn.lineNumber, mn.columnNumber), source))
+            return
+        }
+        List<Statement> stmts = ((BlockStatement) mn.code).statements
+        // Resolve each rely to its target method, and (for a synthesised rely, where we know the predicate) the
+        // shared frame it havocs. A role with a matching @Rely('role') resolves to `$rely$role`; otherwise `rely`
+        // is a rely-step method name directly (the first-slice, hand-written form, whose frame we don't read here).
+        List<String> targets = new ArrayList<String>()
+        Set<String> frame = new LinkedHashSet<String>()
+        for (String rely : relies) {
+            MethodNode pred = relyPredicateFor(mn.declaringClass, rely)
+            if (pred != null) {
+                targets.add('$rely$' + rely)
+                int n = pred.parameters.length.intdiv(2)
+                for (int i = 0; i < n; i++) frame.add(pred.parameters[n + i].name)   // post-state fields
+            } else {
+                targets.add(rely)
+            }
+        }
+        if (frame.isEmpty()) {
+            // No synthesised rely with a known frame → one rely-step at entry (the atomic-critical-section model).
+            int at = 0
+            for (String t : targets) stmts.add(at++, relyCallStmt(t, mn))
+            return
+        }
+        // Multi-access placement: a rely-step before EACH statement that touches a framed (shared) field — at any
+        // nesting depth (recurses into if/else branches) — so every shared access sees a fresh environment step.
+        // AND a class-invariant assertion AFTER each shared *write*: a write that transiently breaks the invariant
+        // would otherwise be masked by the rely-step that follows it (the environment is assumed to preserve the
+        // invariant, so it would be modelled as repairing the violation). There is no trailing rely, so the body's
+        // own final state is still invariant-checked at exit.
+        String invText = classInvariantText(mn.declaringClass, source.AST, source)
+        placeRelyStepsIn(stmts, targets, frame, invText, mn, source)
+    }
+
+    /** Recursively instrument {@code stmts}: a rely-step before each statement (or {@code if}-condition) that
+     *  touches a framed field, and a class-invariant assertion after each shared write. Recurses into {@code if}
+     *  branches; a loop that touches a framed field gets a single rely-step before it (its body is left to the
+     *  loop-invariant machinery — per-iteration placement inside loops is a later slice). */
+    private static void placeRelyStepsIn(List<Statement> stmts, List<String> targets, Set<String> frame,
+                                         String invText, MethodNode mn, SourceUnit source) {
+        int i = 0
+        while (i < stmts.size()) {
+            Statement st = stmts.get(i)
+            if (st instanceof BlockStatement) {
+                placeRelyStepsIn(((BlockStatement) st).statements, targets, frame, invText, mn, source)
+                i++
+            } else if (st instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) st
+                if (referencesAnyFieldExpr(ifs.booleanExpression, frame)) {
+                    for (int k = 0; k < targets.size(); k++) stmts.add(i + k, relyCallStmt(targets.get(k), mn))
+                    i += targets.size()
+                    ifs = (IfStatement) stmts.get(i)
+                }
+                ifs.ifBlock = ensureBlock(ifs.ifBlock)
+                placeRelyStepsIn(((BlockStatement) ifs.ifBlock).statements, targets, frame, invText, mn, source)
+                if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) {
+                    ifs.elseBlock = ensureBlock(ifs.elseBlock)
+                    placeRelyStepsIn(((BlockStatement) ifs.elseBlock).statements, targets, frame, invText, mn, source)
+                }
+                i++
+            } else if (st instanceof LoopingStatement) {
+                // Recurse into the loop body so each shared access is framed *per iteration* (the LoopEncoder frames
+                // the rely-step call). A framed *write* in the body also gets an invariant assert — which the loop
+                // fragment doesn't model yet, so such a loop loud-skips (honest). The guard is left to the loop
+                // @Invariant, which must be rely-stable (the in-body rely-step enforces that at preservation).
+                Statement body = ((LoopingStatement) st).loopBlock
+                if (body instanceof BlockStatement) {
+                    placeRelyStepsIn(((BlockStatement) body).statements, targets, frame, invText, mn, source)
+                }
+                i++
+            } else if (referencesAnyField(st, frame)) {
+                for (int k = 0; k < targets.size(); k++) stmts.add(i + k, relyCallStmt(targets.get(k), mn))
+                i += targets.size()                       // i now points at st
+                AssertStatement inv = writesFramedField(stmts.get(i), frame) ? buildInvariantAssert(invText, mn) : null
+                if (inv != null) stmts.add(i + 1, inv)
+                i += (inv != null) ? 2 : 1                // skip st (and the invariant assert)
+            } else {
+                i++
+            }
+        }
+    }
+
+    /** {@code s} if it is already a block, else a fresh block wrapping it (so a braceless branch can be instrumented). */
+    private static BlockStatement ensureBlock(Statement s) {
+        if (s instanceof BlockStatement) return (BlockStatement) s
+        BlockStatement b = new BlockStatement()
+        b.addStatement(s)
+        b
+    }
+
+    /** True if {@code st} is a top-level assignment / {@code ++}/{@code --} whose target is a framed field. */
+    private static boolean writesFramedField(Statement st, Set<String> fields) {
+        if (!(st instanceof ExpressionStatement)) return false
+        Expression e = ((ExpressionStatement) st).expression
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+            return lhsIsField(((BinaryExpression) e).leftExpression, fields)
+        }
+        if (e instanceof PostfixExpression) return lhsIsField(((PostfixExpression) e).expression, fields)
+        if (e instanceof PrefixExpression) return lhsIsField(((PrefixExpression) e).expression, fields)
+        false
+    }
+
+    private static boolean lhsIsField(Expression lhs, Set<String> fields) {
+        if (lhs instanceof VariableExpression) return fields.contains(((VariableExpression) lhs).name)
+        if (lhs instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) lhs
+            return pe.objectExpression instanceof VariableExpression &&
+                ((VariableExpression) pe.objectExpression).name == 'this' && fields.contains(pe.propertyAsString)
+        }
+        false
+    }
+
+    /** A fresh {@code assert <classInvariant>} statement (re-parsed each call), or null if there is no invariant. */
+    private static AssertStatement buildInvariantAssert(String invText, MethodNode mn) {
+        if (invText == null) return null
+        Expression e = reparse(invText)
+        if (e == null) return null
+        AssertStatement as = new AssertStatement(new BooleanExpression(e))
+        as.setSourcePosition(mn)
+        as
+    }
+
+    /** The conjoined verbatim text of the class's {@code @Invariant}(s), or null. */
+    private static String classInvariantText(ClassNode cn, ModuleNode module, SourceUnit source) {
+        List<String> texts = new ArrayList<String>()
+        for (AnnotationNode an : cn.annotations) {
+            if (isClassInvariantAnnotation(an, module)) {
+                String t = captureInvariantText(an, source); if (t) texts.add(t)
+            } else if (isClassInvariantsContainer(an, module)) {
+                Expression value = an.getMember('value')
+                if (value instanceof ListExpression) {
+                    for (Expression child : ((ListExpression) value).expressions) {
+                        if (child instanceof AnnotationConstantExpression) {
+                            Object inner = ((AnnotationConstantExpression) child).value
+                            if (inner instanceof AnnotationNode) { String t = captureInvariantText((AnnotationNode) inner, source); if (t) texts.add(t) }
+                        }
+                    }
+                }
+            }
+        }
+        conjoinTexts(texts)
+    }
+
+    /** {@link #referencesAnyField} for a bare expression (an {@code if} condition). */
+    private static boolean referencesAnyFieldExpr(Expression e, Set<String> fields) {
+        boolean[] hit = [false]
+        try {
+            e.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression v) {
+                    if (fields.contains(v.name)) hit[0] = true
+                }
+                @Override void visitPropertyExpression(PropertyExpression pe) {
+                    if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name == 'this' &&
+                        fields.contains(pe.propertyAsString)) hit[0] = true
+                    super.visitPropertyExpression(pe)
+                }
+            })
+        } catch (Throwable ignored) { }
+        hit[0]
+    }
+
+    /** A {@code this.<target>()} call statement, positioned on {@code mn}. */
+    private static ExpressionStatement relyCallStmt(String target, MethodNode mn) {
+        MethodCallExpression call = new MethodCallExpression(
+            new VariableExpression('this'), target, new ArgumentListExpression())
+        call.setImplicitThis(true)
+        ExpressionStatement es = new ExpressionStatement(call)
+        es.setSourcePosition(mn)
+        es
+    }
+
+    /** True if {@code st} reads or writes any of {@code fields}, as a bare name or {@code this.field}. */
+    private static boolean referencesAnyField(Statement st, Set<String> fields) {
+        boolean[] hit = [false]
+        try {
+            st.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression v) {
+                    if (fields.contains(v.name)) hit[0] = true
+                }
+                @Override void visitPropertyExpression(PropertyExpression pe) {
+                    if (pe.objectExpression instanceof VariableExpression &&
+                        ((VariableExpression) pe.objectExpression).name == 'this' &&
+                        fields.contains(pe.propertyAsString)) hit[0] = true
+                    super.visitPropertyExpression(pe)
+                }
+            })
+        } catch (Throwable ignored) { }
+        hit[0]
+    }
+
+    /** The rely-step method names declared by {@code @UnderRely} on {@code mn} (matched by FQN/simple name). */
+    private static List<String> underRelyMethods(MethodNode mn) {
+        List<String> out = new ArrayList<String>()
+        for (AnnotationNode a : mn.annotations) {
+            ClassNode cn = a.classNode
+            if (cn == null || (cn.name != 'verification.UnderRely' && cn.nameWithoutPackage != 'UnderRely')) continue
+            collectStringValues(a.getMember('value'), out)
+        }
+        out
+    }
+
+    /** Flatten a String constant / list-of-String-constants annotation member into {@code out}. */
+    private static void collectStringValues(Expression v, List<String> out) {
+        if (v instanceof ConstantExpression) {
+            Object c = ((ConstantExpression) v).value
+            if (c instanceof String) out.add((String) c)
+        } else if (v instanceof ListExpression) {
+            for (Expression e : ((ListExpression) v).expressions) collectStringValues(e, out)
+        }
     }
 
     /** The source text of a single-expression body ({@code { E }} or {@code { return E }}), or null if the body

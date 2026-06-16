@@ -26,6 +26,7 @@ import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
+import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
@@ -77,6 +78,17 @@ class LoopSpec {
 @CompileStatic
 class LoopEncoder {
 
+    /** Frames a contracted call (e.g. an {@code @UnderRely} rely-step) inside a loop body — havoc its declared
+     *  frame and assume its {@code @Ensures}. Returns true if it handled the call. {@link VerifyChecker} installs
+     *  one (delegating to {@code assumeCalleeEnsures}) around a method's loop verification; null elsewhere. */
+    interface LoopCallHandler {
+        boolean handle(MethodCallExpression call, Encoder enc, SmtSession s)
+    }
+
+    /** Installed by {@link VerifyChecker} around the loop verification of a method; read by {@link #applyAssign}.
+     *  Thread-local + set/restore, so concurrent compilations (parallel builds) don't collide. */
+    static final ThreadLocal<LoopCallHandler> callHandler = new ThreadLocal<LoopCallHandler>()
+
     /** Translate, raising a "skipped" rather than returning null. */
     static Object tr(Encoder enc, Expression e, String what) {
         Object h = enc.translate(e)
@@ -110,6 +122,12 @@ class LoopEncoder {
                 applyAssign((ExpressionStatement) st, enc, s)
             } else if (st instanceof IfStatement) {
                 applyIf((IfStatement) st, enc, s)
+            } else if (st instanceof AssertStatement) {
+                // Assume the asserted condition — it is proven separately by the in-loop assert discharge
+                // (verifyLoopObligations), so threading it as a fact for the rest of the body is sound
+                // (assume/enforce). An unmodelable condition just isn't assumed (fewer facts, still sound).
+                Object c = enc.translate(((AssertStatement) st).booleanExpression)
+                if (c != null) s.assertExpr(c)
             } else if (innerSpec != null) {
                 summarizeInner(innerSpec, enc, s)
             } else {
@@ -360,6 +378,11 @@ class LoopEncoder {
         // pass doesn't carry countVals).
         if (e instanceof MethodCallExpression) {
             if (applyListMutationInLoop((MethodCallExpression) e, enc, s)) return
+            // A rely-step call (havoc the shared frame + assume its @Ensures): handed off to VerifyChecker's
+            // caller-side framing via the installed handler, so a loop body under @UnderRely is modelled with the
+            // environment running per iteration. Returns false for any other (uncontracted) call → loud skip below.
+            LoopCallHandler h = callHandler.get()
+            if (h != null && h.handle((MethodCallExpression) e, enc, s)) return
         }
         throw new UnsupportedConstructException(
             "unsupported statement in loop region (line ${st.lineNumber})")

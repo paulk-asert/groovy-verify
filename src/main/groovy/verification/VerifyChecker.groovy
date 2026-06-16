@@ -1884,14 +1884,23 @@ class VerifyChecker extends TypeCheckingExtension {
             // annotated loop they are discharged *with the invariant in scope*
             // (Phase 5b); otherwise via the per-method value-flow/havoc pass
             // (Phase 5a). Best-effort: never fail the build over them.
+            // Install the rely-step framing handler so a loop body under @UnderRely (a contracted call inside the
+            // loop) is modelled with the environment running per iteration, exactly as the straight-line value-flow
+            // pass frames such calls. Restored after, so a method without loops/rely-steps is unaffected.
+            LoopEncoder.LoopCallHandler prevHandler = LoopEncoder.callHandler.get()
+            LoopEncoder.callHandler.set(relyCallHandler(node))
             try {
-                if (site != null) verifyLoopObligations(node, site)
-                else verifyImplicitObligations(node)
-            } catch (Throwable ignored) {
-            }
+                try {
+                    if (site != null) verifyLoopObligations(node, site)
+                    else verifyImplicitObligations(node)
+                } catch (Throwable ignored) {
+                }
 
-            if (site != null) verifyLoop(node, site)
-            else verifyPostcondition(node)
+                if (site != null) verifyLoop(node, site)
+                else verifyPostcondition(node)
+            } finally {
+                LoopEncoder.callHandler.set(prevHandler)
+            }
 
             // Phase L1 (information flow): if the method declares an output security classification (@Label),
             // discharge the noninterference obligation — no labelled source above that classification may flow
@@ -2890,10 +2899,11 @@ class VerifyChecker extends TypeCheckingExtension {
         for (Object s : sitesInExpression(spec.guard)) {
             dischargeSeeded(s, reqAst, spec.invariants, null, Collections.<Statement>emptyList())
         }
-        // 3. Body: invariant ∧ guard, threaded through the (straight-line) body.
+        // 3. Body: invariant ∧ guard, threaded through the (straight-line) body. handleAsserts=true so an in-loop
+        // `assert` (the masking-fix class-invariant assert after a shared write) is discharged here.
         List<Expression> bodyAssumed = new ArrayList<Expression>(spec.invariants)
         bodyAssumed.add(spec.guard)
-        dischargeRegion(spec.body, reqAst, bodyAssumed, null)
+        dischargeRegion(spec.body, reqAst, bodyAssumed, null, Collections.<Statement>emptyList(), true)
         // 4. Suffix: invariant ∧ ¬guard (the loop has exited).
         dischargeRegion(site.suffix, reqAst, spec.invariants, spec.guard)
         // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
@@ -2903,7 +2913,7 @@ class VerifyChecker extends TypeCheckingExtension {
             LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
             List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
             innerAssumed.add(innerSpec.guard)
-            dischargeRegion(innerSpec.body, reqAst, innerAssumed, null)
+            dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
         }
     }
 
@@ -2923,7 +2933,8 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private void dischargeRegion(List<Statement> stmts, Expression reqAst,
                                  List<Expression> assumePos, Expression assumeNeg,
-                                 List<Statement> outerPreceding = Collections.<Statement>emptyList()) {
+                                 List<Statement> outerPreceding = Collections.<Statement>emptyList(),
+                                 boolean handleAsserts = false) {
         if (stmts == null) return
         // Expression-position `++`/`--` (`a[i++]`) → an explicit `[…uses i…, i = i+1]` sequence, so the
         // index's implicit bounds obligation is collected on `a[i]` and a later access sees the bumped `i`
@@ -2952,19 +2963,19 @@ class VerifyChecker extends TypeCheckingExtension {
                 dischargeExpression(ifs.booleanExpression, reqAst, assumePos, assumeNeg, preceding)
                 List<Expression> thenAssume = new ArrayList<Expression>(assumePos)
                 thenAssume.add(ifs.booleanExpression)
-                dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg, preceding)
+                dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg, preceding, handleAsserts)
                 Statement elseBlk = ifs.elseBlock
                 if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
                     List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
                     elseAssume.add(new NotExpression(ifs.booleanExpression))
-                    dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg, preceding)
+                    dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg, preceding, handleAsserts)
                 }
                 continue
             }
             // Non-if statement: walk each top-level expression with short-circuit awareness too,
             // not just {@code sitesInStatement}, so an inline {@code a != null && a.m()} in any
             // statement gets the same treatment.
-            dischargeStatementShortCircuit(st, reqAst, assumePos, assumeNeg, preceding)
+            dischargeStatementShortCircuit(st, reqAst, assumePos, assumeNeg, preceding, handleAsserts)
         }
     }
 
@@ -3024,7 +3035,7 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private void dischargeStatementShortCircuit(Statement st, Expression reqAst,
                                                 List<Expression> assumePos, Expression assumeNeg,
-                                                List<Statement> preceding) {
+                                                List<Statement> preceding, boolean handleAsserts = false) {
         if (st instanceof ExpressionStatement) {
             dischargeExpression(((ExpressionStatement) st).expression,
                 reqAst, assumePos, assumeNeg, preceding)
@@ -3033,6 +3044,19 @@ class VerifyChecker extends TypeCheckingExtension {
         if (st instanceof ReturnStatement) {
             dischargeExpression(((ReturnStatement) st).expression,
                 reqAst, assumePos, assumeNeg, preceding)
+            return
+        }
+        if (handleAsserts && st instanceof AssertStatement) {
+            // An in-loop `assert P` (e.g. the masking-fix class-invariant assert after a shared write): prove P
+            // holds under the loop invariant ∧ guard ∧ the replayed preceding body. First discharge any obligations
+            // inside P (e.g. an `a[i]` in the condition), then the assertion itself. symExec assumes P downstream.
+            // Gated on handleAsserts so the straight-line fallback (which loud-skips asserts) is unchanged.
+            Expression cond = ((AssertStatement) st).booleanExpression
+            dischargeExpression(cond, reqAst, assumePos, assumeNeg, preceding)
+            AssertSite as = new AssertSite()
+            as.node = st
+            as.cond = cond
+            dischargeSeeded(as, reqAst, assumePos, assumeNeg, preceding)
             return
         }
         // Fallback: collect statement-wide sites and discharge each — preserves the original
@@ -7149,6 +7173,17 @@ class VerifyChecker extends TypeCheckingExtension {
                 expr.transformExpression(this)
             }
         })
+    }
+
+    /** A {@link LoopEncoder.LoopCallHandler} that frames a contracted (rely-step) call inside a loop body via the
+     *  same caller-side framing the straight-line pass uses — havoc the callee's {@code @Modifies} frame, assume
+     *  its {@code @Ensures}. Returns false for an uncontracted call (→ the loop still loud-skips it). */
+    private LoopEncoder.LoopCallHandler relyCallHandler(MethodNode node) {
+        return new LoopEncoder.LoopCallHandler() {
+            @Override boolean handle(MethodCallExpression call, Encoder enc, SmtSession s) {
+                return assumeCalleeEnsures(s, enc, call, node, null, false)
+            }
+        }
     }
 
     private boolean assumeCalleeEnsures(SmtSession s, Encoder enc, Expression callExpr,

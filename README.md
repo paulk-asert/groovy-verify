@@ -2069,9 +2069,34 @@ counterexample.
 This closes the loop with the compatibility lemmas above: each rely-step's `@Ensures` *is* the neighbour's
 `@Guarantee` — `relyOnWriter` mirrors `gProd`, `relyOnReader` mirrors `gCons`. The lemmas certify those relies
 **compose** (`G_i ⟹ R_j`); the `Ring` proves each body **upholds** its end. Both halves of §IV, on one buffer.
-What stays out is the **orchestration** — a transform could emit the `relyOnWriter()` / `relyOnReader()` calls
-from the `@Rely` / `@Guarantee` predicates, so you'd write `read()` / `write()` with ordinary bodies — and
-modelling `head` / `tail` as genuinely concurrent, a structural assumption like the lock examples.
+
+None of this need be hand-written. Tag the method `@UnderRely('Writer')` and a CONVERSION transform synthesises
+the rely-step from the `@Rely('Writer')` predicate you already wrote for the compatibility lemmas — deriving the
+`@Modifies` frame from its post-state fields, rewriting its pre-state params to `old.<field>`, and conjoining the
+class invariant the environment preserves — then prepends the call. So the rely-step method *and* its call are
+both generated, and the body stays pure logic — exactly as `@WithWriteLock` replaces a manual `lock()`:
+
+```groovy
+@Rely('Writer')                              // written once; also drives the G_i ⟹ R_j compatibility lemma
+static boolean rWriter(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+
+@Requires({ head < tail })
+@UnderRely('Writer')                         // → synthesises $rely$Writer (havoc-frame + assume) and calls it
+int read() { int v = values[head]; head = head + 1; return v }
+```
+
+This verifies identically to the hand-written `Ring`, and a weakened `@Rely` predicate still refutes the
+out-of-bounds read. So the loop is fully closed: **write the `@Rely` / `@Guarantee` predicates once, tag the
+methods, done.** The body need not even be a single critical section: because synthesis tells the transform which
+fields are shared, it inserts a rely-step **before each shared access** — at any nesting depth, recursing into
+`if`/`else` branches — so a method that touches `head` several times models the environment *between* those
+accesses, not just at entry — and it reaches **inside loop bodies** too: each shared access in a loop is framed
+*per iteration*, so a loop verifies only under a *rely-stable* invariant (`tail == constant` under a growing-tail
+rely correctly **fails**), and a loop body that *writes* a shared field is checked too — the per-write class-
+invariant assertion is discharged inside the loop (a transient violation between two writes is caught, even though
+the invariant holds at the iteration's end). So straight-line, branching, and loop bodies are all covered. The one
+thing that genuinely stays out is the scheduler itself — that the threads really interleave with the assumed
+atomicity — a structural assumption, like the lock examples.
 
 The sidebar below sets this same shape inside the *full* §VII body, where each access also carries an
 information-flow obligation (the consumed element must be `Low`) — the part that is still illustration.
@@ -3265,7 +3290,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
 | `Label` / `Declassify` | the `@Label('level')` / `@Label(by = 'm')` security classification (constant or value-dependent) on a parameter / method result / sink, and `Declassify.to(level, expr)` for explicit controlled release — driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
 | `Rely` / `Guarantee` | `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state; the verifier auto-discharges the §IV rely/guarantee *compatibility* lemmas (reflexive/transitive relies, `G_i ⟹ R_j`) — the gluing logic, not the interleaving proof (Phase L1) |
-| `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` / `SelfEnsures` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses; also desugars `@SelfEnsures` into a captured `@Ensures({ result == <verbatim body> })` so a self-specifying body is written once (prototype) |
+| `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` / `SelfEnsures` / `UnderRely` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses; also desugars `@SelfEnsures` into a captured `@Ensures({ result == <verbatim body> })` so a self-specifying body is written once, and for `@UnderRely('Role')` synthesises a `$rely$Role` rely-step from the class's `@Rely('Role')` predicate (frame + `old`-rewritten ensures + class invariant) and prepends the call before the snapshot (prototypes) |
 | `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |
 
