@@ -37,6 +37,9 @@ plugins {
     // Maven Central publishing (signs + uploads to the Central Portal). Inert until its own tasks
     // (`jreleaserDeploy` / `jreleaserConfig`) are invoked — does not touch build / verify / check.
     id 'org.jreleaser' version '1.24.0'
+    // Fray controlled-schedule concurrency testing (rung 3 for the lock-ordering / deadlock half). Pointed at
+    // the isolated `frayCheck` task below, so it never touches the main `test` execution. Run: ./gradlew frayCheck
+    id 'org.pastalab.fray.gradle' version '0.8.5'
 }
 
 // Group + name are what Gradle matches for includeBuild dependency substitution, so the companion
@@ -62,6 +65,10 @@ tasks.named('rat') {
 // self-contained: no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can
 // add mavenLocal() above; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
+    // The locally-built Groovy snapshot carrying the `groovy.indy.callsite.cleaner.inline` flag (used by the
+    // frayCheck task to suppress the PIC-Cleaner daemon thread that otherwise reads as a deadlock to Fray).
+    // Scoped to the Groovy module so it doesn't shadow anything else; falls through to the ASF snapshot repo.
+    mavenLocal { content { includeModule('org.apache.groovy', 'groovy') } }
     mavenCentral()
     maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
 }
@@ -324,4 +331,41 @@ tasks.register('tlcCheck', JavaExec) {
     workingDir = tlcWorkDir
     args = ['-nowarning', 'Buffer.tla']         // Buffer.cfg is picked up by name; invariants + relies + Progress
     jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
+}
+
+// ---- Fray: controlled-schedule deadlock detection (rung 3 for the lock-ordering half) ----------
+// Complements the Lincheck spike: Lincheck checks linearizability (the race/atomicity half of the locks
+// example); Fray drives the real JVM scheduler over a *hand-threaded* bank-transfer to check the OTHER
+// disclaimed half — deadlock / lock-ordering. Fray runs on (and downloads) Corretto JDK 25, this project's
+// own toolchain. Isolated in its own source set + task; the `fray { testTask = 'frayCheck' }` binding makes
+// the plugin configure THIS task (agent + Fray JDK) rather than the main `test`. Run: ./gradlew frayCheck
+sourceSets {
+    frayCheck {
+        groovy.srcDir 'src/fray/groovy'
+    }
+}
+
+dependencies {
+    frayCheckImplementation "org.apache.groovy:groovy:$groovyVersion"
+    frayCheckImplementation platform('org.junit:junit-bom:6.1.0')
+    frayCheckImplementation 'org.junit.jupiter:junit-jupiter'
+    frayCheckRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // fray-core / fray-junit / fray-runtime / fray-jvmti are injected into frayCheckImplementation by the plugin
+}
+
+tasks.register('frayCheck', Test) {
+    group = 'verification'
+    description = 'Fray controlled-schedule check that the ordered-locking bank transfer is deadlock-free'
+    testClassesDirs = sourceSets.frayCheck.output.classesDirs
+    classpath = sourceSets.frayCheck.runtimeClasspath
+    useJUnitPlatform()                          // the plugin re-applies this with includeTags('FrayTest')
+    // Fray seizes every JVM thread, so Groovy's PIC-Cleaner daemon (CacheableCallSite) — which parks
+    // forever on a queue — reads as a false deadlock. `inline = true` cleans call sites inline instead of on
+    // a background thread (the static initializer then skips Thread.start()), so the only threads Fray sees
+    // are the application's. (Needs the flagged Groovy from mavenLocal.)
+    systemProperty 'groovy.indy.callsite.cleaner.inline', 'true'
+}
+
+fray {
+    testTask = 'frayCheck'                       // configure frayCheck (not the main `test`) with the Fray agent + JDK
 }

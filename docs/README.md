@@ -147,6 +147,45 @@ thread switches at shared accesses — it is essentially sequentially-consistent
 logic* bugs (like publish-before-write), not pure *memory-visibility* bugs (a missing `volatile`). For
 that last layer you need a weak-memory checker (GenMC, herd7) or jcstress on real hardware.
 
+## Rung 3 for the locks example — both disclaimed halves
+
+The README "Locks — the monitor invariant" section proves each critical section preserves `balance >= 0`
+*given* mutual exclusion, and explicitly disclaims two things: "no race on unlocked access, no deadlock,
+no lock-ordering." Each disclaimed half gets the tool that fits it.
+
+**Race / atomicity — Lincheck** (`src/concurrent/groovy/concurrent/locks/`, in `./gradlew concurrentTest`).
+A `synchronized` `Account` (modelling what `@WithWriteLock` weaves) is checked linearizable; the unlocked
+`RacyAccount` is not — a read-modify-write race loses an update / overdraws, which Lincheck reports as a
+history no sequential order explains. That is the runtime evidence the proof's "given mutual exclusion"
+premise is load-bearing.
+
+**Deadlock / lock-ordering — Fray** (`src/fray/groovy/`, in `./gradlew frayCheck`). Where Lincheck checks a
+data structure's *operations*, [Fray](https://github.com/cmu-pasta/fray) (OOPSLA'25) drives the real JVM
+scheduler over a *hand-threaded* scenario — two threads transferring between two accounts in opposite
+directions. `orderedTransfer` (lock the lower-id account first → a global lock order) is **deadlock-free**
+across every explored schedule; enable the disabled `naiveTransfer` test and Fray reports a clean
+`DeadlockException`, both threads' stacks pointing at the nested `synchronized`:
+
+```
+Thread-31  monitorEnter  naiveTransfer(BankTransferFrayTest.groovy:57)   ← holds A, waits B
+Thread-32  monitorEnter  naiveTransfer(BankTransferFrayTest.groovy:57)   ← holds B, waits A
+Thread-30  Thread.join   naiveTransferCanDeadlock(...:93)
+```
+
+Two Groovy-specific gotchas were needed (both in `build.gradle` / the test):
+
+- **`-Dgroovy.indy.callsite.cleaner.inline=true`** — Fray seizes *every* thread, and Groovy's runtime
+  `PIC-Cleaner` daemon (`CacheableCallSite`) parks forever on a queue, which Fray reads as a deadlock. The
+  flag (a locally-built Groovy from `mavenLocal`) cleans call sites inline so that thread is never started.
+  *Lincheck tolerates the Groovy runtime; Fray does not* — without the flag, Fray fails on every Groovy test.
+- **`ignoreTimedBlock = true`** — treats a timed park as blocking, so a background `ForkJoinPool` worker's
+  timed park doesn't keep Fray spinning (→ step-explosion OOM) while the app threads are deadlocked.
+
+**Cost note.** Fray is the heavyweight rung: it downloads + jlinks its own Corretto JDK 25 (~800 MB, one
+time), and the controlled-schedule run with per-iteration classloader reset is ~16 s for 200 iterations
+(the default is 1000). Lincheck and TLC are seconds. So Fray earns its place only where it's *distinct* —
+deadlock / lock-ordering on hand-threaded code, which Lincheck-on-operations doesn't exercise.
+
 > **Note.** The Smith/Dafny paper this work follows sits at rung 1 too: Dafny's core is sequential, and
 > the paper gets thread-local IFC by *encoding* rely/guarantee as the same havoc-between-steps trick we
 > use. So the gap from rung 1 to a memory-model-sound system is the same gap in both — this directory is
