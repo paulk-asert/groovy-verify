@@ -2132,6 +2132,15 @@ a machine-checked concurrency proof: that the threads genuinely interleave with 
 decomposition — value-dependent `@Label(by = …)`, the secure-update on `tail`, `Declassify.to`, the four
 compatibility lemmas, and the rely-step framing — all composing on one class, both properties at once.
 
+**The other half — the structural guarantee — lives in [`docs/`](docs/).** That is the part this checker
+*assumes*, made runnable on this exact buffer by two complementary tools: a **TLA+** model (`docs/Buffer.tla`)
+that TLC explores across *every* interleaving — where the rely stops being an assumption and becomes a checked
+theorem about the peer's action, and liveness is checkable too — and a **Lincheck** test
+(`src/concurrent/`) that model-checks the *real bytecode* of a lock-free `SpscBuffer`, catching the same leak as
+a linearizability violation. Three rungs — compile-time proof here, exhaustive model, tested bytecode — each
+trading coverage for fidelity; see [`docs/README.md`](docs/README.md). Run them with `./gradlew tlcCheck` and
+`./gradlew concurrentTest`.
+
 The machinery isn't specific to the buffer's two pointers. A different shape — a shared scalar with a
 **monotonicity** rely — works the same way: two threads only ever increment a `count`, each relying on the other
 to do likewise, so a value once observed below the count stays below it.

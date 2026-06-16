@@ -233,3 +233,95 @@ tasks.named('test', Test) {
 tasks.named('check') {
     dependsOn 'test'   // JUnit dynamic-test run of the suite (verify remains the console runner)
 }
+
+// ---- Concurrency spike: Lincheck on a real SpscBuffer (rung 3 of docs/README.md) ----------------
+// The checker (rung 1) proves the sequential VC; docs/Buffer.tla (rung 2) model-checks an abstract
+// state machine; this rung model-checks the ACTUAL bytecode of a lock-free buffer across interleavings,
+// discharging the atomicity/ordering assumption the other two leave open. Isolated in its own source
+// set + task on a Java 21 toolchain (Lincheck's well-supported LTS) so the JDK-25 main build and the
+// z3 suite are untouched. NOT wired into `check` — run explicitly:  ./gradlew concurrentTest
+sourceSets {
+    concurrent {
+        groovy.srcDir 'src/concurrent/groovy'
+    }
+}
+
+dependencies {
+    // The buffers + Lincheck operation holders are @CompileStatic Groovy -> clean, dispatch-free bytecode
+    // for Lincheck to instrument (the reason these were Java originally; @CompileStatic removes the need).
+    concurrentImplementation "org.apache.groovy:groovy:$groovyVersion"
+    concurrentImplementation 'org.jetbrains.kotlinx:lincheck:2.39'
+    concurrentImplementation platform('org.junit:junit-bom:6.1.0')
+    concurrentImplementation 'org.junit.jupiter:junit-jupiter'
+    concurrentRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+def jdk21Compiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(21) }
+def jdk21Launcher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+
+tasks.named('compileConcurrentJava') { javaCompiler = jdk21Compiler }   // no Java sources now, but keep pinned
+tasks.named('compileConcurrentGroovy') {
+    javaLauncher = jdk21Launcher
+    // Override the project-wide `parameters = true` (set for the checker): with parameter names present,
+    // Lincheck reads `offer(int x)` as a reference to a *named* generator "x" and fails. Off -> it uses a
+    // default type-based int generator, as the Java version did.
+    groovyOptions.parameters = false
+}
+
+tasks.register('concurrentTest', Test) {
+    group = 'verification'
+    description = 'Lincheck linearizability test of a real lock-free SpscBuffer (rung 3 of docs/README.md)'
+    testClassesDirs = sourceSets.concurrent.output.classesDirs
+    classpath = sourceSets.concurrent.runtimeClasspath
+    useJUnitPlatform()
+    javaLauncher = jdk21Launcher
+    // Lincheck's managed strategy instruments bytecode and reaches into java.base internals.
+    jvmArgs = [
+        '--add-opens', 'java.base/jdk.internal.misc=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+        '--add-exports', 'java.base/jdk.internal.util=ALL-UNNAMED',
+        '--add-exports', 'java.base/sun.security.action=ALL-UNNAMED',
+    ]
+    testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
+}
+
+// ---- TLA+ model check: TLC on docs/Buffer.tla (rung 2 of docs/README.md) ------------------------
+// Model-checks the §VII buffer across EVERY interleaving (the rely becomes a checked theorem about the
+// peer; liveness too) — the exhaustive-model rung the compile-time checker leaves open. tla2tools isn't
+// on Maven Central, so resolve the pinned release jar from GitHub releases via an Ivy repo, scoped to
+// just that one artifact (Gradle caches it; no download script). NOT wired into `check` — run with:
+//   ./gradlew tlcCheck                 (secure spec: expects "No error has been found")
+// The leak variant is a one-liner demo (TLC exits non-zero on the violation it is meant to find):
+//   java -cp <jar> tlc2.TLC -config BufferLeak.cfg docs/Buffer.tla
+repositories {
+    ivy {
+        name = 'tlaplus-github-releases'
+        url = 'https://github.com/tlaplus/tlaplus/releases/download'
+        patternLayout { artifact '[revision]/[module].[ext]' }
+        metadataSources { artifact() }
+        content { includeModule('tlaplus', 'tla2tools') }   // this repo serves ONLY tla2tools
+    }
+}
+
+configurations { tlc }
+dependencies { tlc 'tlaplus:tla2tools:v1.7.4@jar' }          // -> .../download/v1.7.4/tla2tools.jar (TLC 2.19)
+
+// TLC writes scratch (states/, metadata) into its working dir, so run it in build/ — never the source
+// tree. Sync the model + configs there first; `docs/` stays clean.
+def tlcWorkDir = layout.buildDirectory.dir('tlc').get().asFile
+
+def tlcPrepare = tasks.register('tlcPrepare', Sync) {
+    from('docs') { include '*.tla', '*.cfg' }
+    into tlcWorkDir
+}
+
+tasks.register('tlcCheck', JavaExec) {
+    group = 'verification'
+    description = 'Model-check docs/Buffer.tla (secure spec) with TLA+ TLC — rung 2 of docs/README.md'
+    dependsOn tlcPrepare
+    classpath = configurations.tlc
+    mainClass = 'tlc2.TLC'
+    workingDir = tlcWorkDir
+    args = ['-nowarning', 'Buffer.tla']         // Buffer.cfg is picked up by name; invariants + relies + Progress
+    jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
+}
