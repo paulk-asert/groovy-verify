@@ -2019,7 +2019,83 @@ move the consumer's read pointer) and it no longer implies the consumer's rely:
 That is the **gluing logic** of thread-local reasoning. What it does *not* do is prove the threads' code actually
 maintains its guarantee — that step instruments each body with a havoc-under-rely between statements, the
 interleaving proof a sequential checker leaves out. So the producer/consumer's *information flow* and its
-rely/guarantee *conditions* are verified; only the interleaving is assumed.
+rely/guarantee *conditions* are verified; only the interleaving is assumed — the sidebar below shows what that
+omitted instrumentation would look like.
+
+> [!NOTE]
+> **Sidebar — the *instrumented* form (the half a sequential checker omits).** The check above proves the
+> rely/guarantee *conditions* compose; it stops short of the **interleaving proof** — re-checking that each
+> thread's body keeps its guarantee while the environment runs between every statement. This aside shows what
+> that omitted step looks like — and most of it is **not** invented notation: a rely-step is just a *framed
+> assume*, which `groovy-verify` already spells with stock contracts.
+>
+> A rely-step is "the other threads ran": havoc the shared frame, then assume a two-state relation tying the
+> new state to the old. That is exactly `@Modifies` (the havoc frame) plus `@Ensures` over `old` (the assumed
+> relation) — and Phase 13's caller-side framing makes a *call* to such a method havoc-then-assume:
+>
+> ```groovy
+> @Modifies({ [this.head, this.tail] })               // the havoc frame
+> @Ensures({ head == old.head && old.tail <= tail })  // the assumed rely  (old ↦ state at the call)
+> void relyConsumer() {}                              // models the environment; the empty body checks out
+>                                                     //   precisely because a rely is reflexive
+> ```
+>
+> This is not hypothetical — it verifies. A consumer step that relies on the buffer staying non-empty across
+> an interleaving point proves clean, and weakening the rely (dropping `head == old.head`) refutes it:
+>
+> ```groovy
+> @Requires({ head < tail })                 // an element is available on entry
+> @Modifies({ [this.head, this.tail] })
+> @Ensures({ head < tail })                  // … and still is after the environment ran
+> void step() { relyConsumer() }             // ✓ proves;  drop `head == old.head` from rCons ⇒ refutes
+> ```
+>
+> Spread across a real body, a `relyConsumer()` lands between every statement — each call havocs `head`/`tail`
+> under `rCons`. The one piece that *stays* a marker is `assert gCons`: a guarantee relates one rely-point to
+> the next (a local two-state *segment*), which is not a method postcondition you can drop mid-body —
+> `groovy-verify` has no surface syntax for a per-segment two-state obligation.
+>
+> ```groovy
+> relyConsumer()                         // producer may have appended → tail grew, head unchanged
+> if (head < tail) {                     // an element is available
+>     relyConsumer()                     // ← THE CRUX: the producer can run again right here
+>     process(values[head])              //   obligation: L(values[head]) ⊑ Low  (process requires Low)
+>     assert gCons                       //   marker: read but didn't move tail → my guarantee holds
+>     relyConsumer()
+>     head++                             //   advance read pointer
+>     assert gCons                       //   marker: tail unchanged, head moved as allowed
+>     relyConsumer()
+> }
+> ```
+>
+> **Why the read stays safe across interleaving** — at `process(values[head])` the obligation reduces to
+> `head < tail` (that is what makes `values[head]` `Low`). It held at the `if`; then a `relyConsumer()` fired
+> and the producer ran. `rCons` supplies `head == old.head` and `old.tail <= tail`, so `head < old.tail <= tail`
+> — still holds. That conjunct is load-bearing, and the compatibility lemma is exactly what forces the producer
+> to honour it. (This is the `step()` proof above, in miniature.)
+>
+> The producer has the same shape, and reuses pieces already shipped — `Declassify.to` and the §III-A
+> secure-update on the control variable `tail`:
+>
+> ```groovy
+> relyProducer()
+> def diff = Declassify.to('Low', temp - classified)   // release only what's allowed
+> values[tail] = diff                    // index tail is OUTSIDE [head, tail) → High region → any value ok
+> assert gProd                           //   marker
+> relyProducer()
+> tail++                                 // control-variable update: index old(tail) now ENTERS [head, tail)
+> assert gProd                           //   secure-update: values[old tail] must be Low ⇒ why we declassified
+> relyProducer()
+> ```
+>
+> So §VII decomposes into **things `groovy-verify` already does** — value-dependent `@Label(by = …)`, the
+> secure-update on `tail`, `Declassify.to`, and now the rely-step as `@Modifies` + `@Ensures`. What's left is
+> **orchestration, and most of it is mechanical**: the `relyConsumer()` / `relyProducer()` methods and the calls
+> threaded between statements are derivable straight from the `@Rely` / `@Guarantee` predicates already on the
+> class — an AST transform could emit them exactly as groovy-contracts injects its runtime checks, so you would
+> never hand-write them. The genuine gap is narrower still: a per-segment guarantee obligation (today only an
+> `assert gCons` marker) and treating `head` / `tail` as concurrently shared — the interleaving *model* the
+> sequential design exists to avoid.
 
 ## Other Examples
 

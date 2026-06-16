@@ -361,6 +361,39 @@ class VerifyHarness {
                        @Ensures({ count == old.count + 1 })
                        void inc() { count = count + 2 }
                    }''')],
+        // A rely-step is just a *framed assume*: havoc the shared frame (@Modifies), then assume a two-state
+        // relation between old and new (@Ensures over `old`). So Phase 13's caller-side framing already lets us
+        // model the rely/guarantee interleaving step in stock vocabulary — no `havoc`/`assume` primitive needed.
+        // The empty body checks out precisely because a rely is reflexive (nothing changed ⊨ the relation).
+        // This is the omitted-interleaving half of the README rely/guarantee sidebar, made concrete.
+        [group: 'P-rely-step', name: 'rely-step (@Modifies+@Ensures) survives interleaving', ok: true,
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })               // the havoc frame
+                       @Ensures({ head == old.head && old.tail <= tail })  // the assumed rely (old ↦ at the call)
+                       void relyConsumer() {}                              // models the environment, not real code
+
+                       @Requires({ head < tail })
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ head < tail })                          // the read stays in-range across the step
+                       void step() { relyConsumer() }
+                   }''')],
+        // Drop the load-bearing `head == old.head` conjunct: the producer could now move the read pointer past
+        // tail, so `head < tail` no longer survives the rely-step — exactly the refutation the sidebar describes.
+        [group: 'P-rely-step', name: 'weakened rely no longer protects the read', expect: 'Cannot prove postcondition',
+         src: tc('''class Buffer {
+                       int head
+                       int tail
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ old.tail <= tail })                     // weakened: read pointer no longer pinned
+                       void relyConsumer() {}
+
+                       @Requires({ head < tail })
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ head < tail })
+                       void step() { relyConsumer() }
+                   }''')],
         // Array element FRAME (the @Modifies enabler): a setter changes only a[j]; every other
         // element equals its old value. `old.a[it]` is the entry snapshot of the array's contents.
         [group: 'P11 old', name: 'array element frame via old', ok: true,
