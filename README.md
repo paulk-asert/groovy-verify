@@ -2339,6 +2339,12 @@ code and `if`/`else`; an assert past a re-assignment or inside a loop is loudly 
 also fixed a wart — an `assert` in a body used to make the postcondition walk bail and *silently skip the
 `@Ensures`*; it is now carried through, so the contract is still checked.)
 
+A failing `assert` throws `AssertionError`, so a *verified* assert is one more proof that an exception can't escape
+here — the same totality guarantee as the bounds/null/division checks. In particular, **`assert false` is the
+unreachability idiom**: it *verifies* exactly when the path is contradictory (genuinely dead code, e.g.
+`@Requires({ x > 0 })` then `if (x < 0) { assert false }`) and *refutes*, with a counterexample, when the point is
+actually reachable.
+
 > **`assert` is not a substitute for a contract.** It's tempting, now that assertions are checked, to write
 > `assert x > 0` as a method's first statement instead of `@Requires({ x > 0 })`. Don't — they put the obligation
 > in *opposite* places. `@Requires` is **assumed** in the body and **proved at every call site**, so `f(0)` is
