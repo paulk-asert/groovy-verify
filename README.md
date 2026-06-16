@@ -2069,6 +2069,31 @@ under a growing-tail rely correctly **fails** — and a write that transiently b
 caught). The one thing that genuinely stays out is the scheduler itself — that the threads really interleave with
 the assumed atomicity — a structural assumption, like the lock examples.
 
+> [!NOTE]
+> **What `@UnderRely` expands to — the interleaving, made visible.** The instrumentation just described is real
+> but happens in an AST transform, so it's invisible in the source above. Here is the *actual desugared body* the
+> verifier sees for `read()` (not pseudocode — it's what the transform emits). Each `@Rely('Consumer')` predicate
+> is synthesised into a rely-step method that **havocs the shared frame and assumes the rely**: `relyConsumer()`
+> below is `$rely$Consumer`, carrying `@Modifies({ [this.head, this.tail] })` and
+> `@Ensures({ head == old.head && old.tail <= tail && /* class invariant */ })`.
+>
+> ```groovy
+> int read() {                 // @Requires({ head < tail })  @UnderRely('Consumer')
+>     relyConsumer()           // ← env step: havoc head/tail; assume head==old.head, old.tail<=tail, + invariant
+>     int v = values[head]     //   still in bounds: env kept head, only grew tail ⇒ head < tail <= values.length
+>     relyConsumer()           // ← env step AGAIN: the producer may run right here, before the write
+>     head = head + 1
+>     assert 0 <= head && head <= tail && tail <= values.length   // ← masking-fix: the write kept the invariant
+>     return v                 //   (a local-only statement gets no rely-step — only shared accesses do)
+> }
+> ```
+>
+> A rely-step sits before *each* shared access — not one at entry — and the transform recurses into `if`/`else`
+> and loop bodies the same way; the post-write `assert` stops a transiently-broken invariant from being masked by
+> the step that follows. That is the Smith/Dafny interleaving shape: environment interference modelled wherever
+> the environment could actually run. (Only the frameless hand-written `@UnderRely('someRelyStep')` shorthand,
+> with no `@Rely` predicate to read the frame from, falls back to a single rely-step at entry.)
+
 This same shape now runs inside the *full* §VII body, where each access also carries an information-flow
 obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) — and that
 intersection is **machine-checked**, both properties on one class.
