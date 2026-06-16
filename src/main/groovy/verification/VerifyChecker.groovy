@@ -2193,6 +2193,19 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (be.leftExpression instanceof VariableExpression) {
                         String name = ((VariableExpression) be.leftExpression).name
                         scanObligations(be.rightExpression, steps, out)
+                        // A bare write to a *field* or *parameter* (not a fresh local) reuses that name's entry
+                        // symbol, so the single-assignment model would thread `name == rhs` onto the entry value —
+                        // e.g. `tail = tail + 1` becomes the self-contradictory `tail == tail + 1`, an UNSAT context
+                        // that then discharges every downstream obligation (incl. user `assert`s) *vacuously and
+                        // silently*. The SSA fragment is sound only for locals; bail loudly so such a body routes to
+                        // the honest "outside the value-flow fragment" skip instead of a silent pass. (A `this.`-
+                        // qualified write is a PropertyExpression LHS and already throws below; this catches the
+                        // bare-name form. Field-delta *postconditions* are unaffected — they use the old-snapshot
+                        // postcondition replay, a different path.)
+                        Variable acc = ((VariableExpression) be.leftExpression).accessedVariable
+                        if (acc instanceof FieldNode || acc instanceof Parameter) {
+                            throw new UnsupportedConstructException("assignment to a field/parameter '${name}'")
+                        }
                         if (!assigned.add(name)) throw new UnsupportedConstructException("re-assignment of '${name}'")
                         steps.add(new Assign(name, be.rightExpression))
                         continue

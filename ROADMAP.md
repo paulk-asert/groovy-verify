@@ -6876,6 +6876,68 @@ vacuous — once the spec-consumer story is proven here). Locked by `PL-selfensu
 
 ---
 
+## Rely/guarantee interleaving — reassessment, and a silent-assert hole it surfaced
+
+**Reassessment (the gap is smaller and better-shaped than "a large architectural piece").** The §IV/§VII
+*interleaving* proof was filed as the architectural non-goal the sequential design exists to avoid. Re-graded
+against current machinery it decomposes into:
+
+- **The rely-step itself — havoc the shared frame, assume a two-state relation old→new — already works.** It is
+  exactly `@Modifies` (the havoc frame) + `@Ensures` over `old` (the assumed relation), and Phase 13's
+  caller-side framing makes a *call* to such a method havoc-then-assume. Verified end-to-end (`P-rely-step`): a
+  consumer `step()` that relies on `head < tail` surviving one rely-step proves clean, and dropping the
+  `head == old.head` conjunct from the rely refutes it. So the piece once called "the new engine work" is
+  stock vocabulary today.
+- **The soundness *reduction* needs no interleaving engine.** R/G's whole point is that per-thread sequential
+  proof + the compatibility lemmas (`G_i ⟹ R_j`, each rely reflexive/transitive) *is* the parallel-correctness
+  proof (Jones). We already discharge those lemmas (the Phase L1 R/G slice). There is no interleaving *search* to
+  build.
+- **The instrumentation is mechanical** — inserting a rely-step between every statement, derivable from the
+  `@Rely`/`@Guarantee` predicates already on the class. An AST transform could emit it exactly as
+  groovy-contracts injects runtime checks. Engineering, not research.
+- **Two pieces are genuine engine work, not boilerplate:** (1) the per-segment **guarantee assertion** — a
+  two-state `assert` over a shared field the segment itself mutates — which is **not discharged today** (see the
+  hole below); and (2) modelling `head`/`tail` as concurrently shared with statement-granular atomicity, which
+  stays a *modelling assumption* of the same kind as the lock/serial-agent examples ("assume the structural
+  guarantee"), not a proof obligation.
+
+Net: from "a large architectural piece" to "one mechanical transform + one missing assert capability + one
+documented assumption." Captured in the README rely/guarantee sidebar.
+
+**The hole the probing surfaced (silent — worth making loud).** Trying to express the guarantee assertion via a
+ghost snapshot (`int t = tail; …; assert <relation over t and tail>`) exposed a latent silent-unsoundness in the
+implicit-obligation value-flow pass (`VerifyChecker.verifyImplicitObligations` → `collectVfObligations`):
+
+- **Repro:** `@Requires({ tail == 0 }) void m() { tail = tail + 1; assert tail == 0 }` (`tail` a field) compiles
+  **clean** — no proof, no refutation, no loud skip — though the assert is plainly false. `assert false` in the
+  same spot *is* caught, so asserts are otherwise checked.
+- **Root cause.** `collectVfObligations` models a scalar assignment `x = rhs` whose LHS is a bare
+  `VariableExpression` as a single-assignment `Assign(x, rhs)`, threaded to the solver as `x == rhs`. That is
+  sound for an SSA **local** (a fresh name), but a **field** write reuses the field's *entry* symbol — so
+  `tail = tail + 1` becomes the assumption `tail == tail + 1` (self-contradictory), and `tail = 5` becomes
+  `tail == 5` clashing with the `@Requires` `tail == 0`. Either way the path context is **UNSAT**, so every
+  downstream obligation — implicit (bounds/div/null) *and* user `assert` — discharges **vacuously**. No bail
+  fires because a field's single in-body write is a *first* `assigned.add`; only a genuine *re-assignment*
+  throws `UnsupportedConstructException` (→ the loud "outside the value-flow fragment" skip).
+- **Asymmetry (confirmed).** A `this.`-qualified field write (`this.tail = 5`) is a non-variable LHS → hits the
+  "assignment to a non-variable target" throw → **loud** skip. Only the **bare-name** field write is silently
+  vacuous. (Field-delta *postconditions* like `@Ensures({ count == old.count + 1 })` are unaffected — they run
+  through the postcondition replay with `old`-snapshots, a different path.)
+- **Scope.** Latent and narrow: needs a value-flow-eligible body (straight-line/if, no loop/local re-assignment)
+  ∧ a bare field write ∧ a downstream obligation/assert. But it is a *silent* pass, which the loud-skip tenet
+  says we don't tolerate.
+- **Fix (a) — shipped.** In `collectVfObligations`, a bare-name assignment whose LHS `accessedVariable` is a
+  `FieldNode` or `Parameter` now `throw`s `UnsupportedConstructException`, routing the body to the existing loud
+  "Skipped … (outside the value-flow fragment)" path — matching what the `this.`-qualified write already did.
+  The silent-vacuous pass is gone. Locked by `P-vf-field` (field self-increment, field const-write clashing
+  `@Requires`, and parameter reassignment all now loud-skip; a local single-assignment still proves, guarding
+  against over-throwing). No regressions — nothing in the suite relied on the unsound field modelling.
+- **Fix (b) — still open (the rely/guarantee slice).** Model bare field writes with SSA-fresh symbols + `old`
+  snapshots the way the postcondition path does. That is exactly the capability the per-segment guarantee
+  assertion needs, so it is the natural next engine step toward the interleaving half.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

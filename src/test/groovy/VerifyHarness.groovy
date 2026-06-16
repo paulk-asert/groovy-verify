@@ -361,6 +361,36 @@ class VerifyHarness {
                        @Ensures({ count == old.count + 1 })
                        void inc() { count = count + 2 }
                    }''')],
+        // Soundness (value-flow SSA fragment): a *bare* write to a field/param reuses that name's entry symbol,
+        // so the single-assignment model would thread `name == rhs` onto it — `tail = tail + 1` ⇒ the
+        // self-contradictory `tail == tail + 1`, an UNSAT context that *silently* discharged every downstream
+        // obligation (incl. user asserts) vacuously. Fixed: such a write bails the value-flow pass, so the body
+        // routes to the LOUD "Skipped … (outside the value-flow fragment)" path instead of passing silently.
+        [group: 'P-vf-field', name: 'field self-increment then false assert is loud-skipped (was silent)', expect: 'Skipped assertion safety check',
+         src: tc('''class Buffer {
+                       int tail
+                       @Requires({ tail == 0 })
+                       void m() { tail = tail + 1; assert tail == 0 }
+                   }''')],
+        // Field const-write clashing with @Requires: tail==0 ∧ tail==5 was UNSAT ⇒ vacuous silent pass. Now loud.
+        [group: 'P-vf-field', name: 'field const-write false assert is loud-skipped', expect: 'Skipped assertion safety check',
+         src: tc('''class Buffer {
+                       int tail
+                       @Requires({ tail == 0 })
+                       void m() { tail = 5; assert tail == 99 }
+                   }''')],
+        // Same hole for a *parameter* write under a constraining @Requires; also now loud-skipped, not vacuous.
+        [group: 'P-vf-field', name: 'param reassignment false assert is loud-skipped', expect: 'Skipped assertion safety check',
+         src: tc('''class C {
+                       @Requires({ x == 0 })
+                       static void m(int x) { x = 5; assert x == 999 }
+                   }''')],
+        // Surgical: a LOCAL single-assignment is still on the value-flow path — the assert is really discharged,
+        // not skipped (proves here; the bad-local counterpart already refutes elsewhere). Guards over-throwing.
+        [group: 'P-vf-field', name: 'local single-assignment assert still proven (not over-skipped)', ok: true,
+         src: tc('''class C {
+                       static void m() { int x = 1; assert x == 1 }
+                   }''')],
         // A rely-step is just a *framed assume*: havoc the shared frame (@Modifies), then assume a two-state
         // relation between old and new (@Ensures over `old`). So Phase 13's caller-side framing already lets us
         // model the rely/guarantee interleaving step in stock vocabulary — no `havoc`/`assume` primitive needed.

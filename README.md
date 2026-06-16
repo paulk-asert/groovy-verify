@@ -2052,8 +2052,12 @@ omitted instrumentation would look like.
 >
 > Spread across a real body, a `relyConsumer()` lands between every statement — each call havocs `head`/`tail`
 > under `rCons`. The one piece that *stays* a marker is `assert gCons`: a guarantee relates one rely-point to
-> the next (a local two-state *segment*), which is not a method postcondition you can drop mid-body —
-> `groovy-verify` has no surface syntax for a per-segment two-state obligation.
+> the next (a local two-state *segment*) — an assertion over a shared field the segment itself mutates. This is
+> the **real engine gap, not just missing syntax**: `groovy-verify`'s static assert checker discharges
+> `assert false`, but an assertion whose truth depends on a field *reassigned earlier in the same body* it
+> currently passes silently (verified: `void m() { tail = tail + 1; assert tail == 0 }` compiles clean). So the
+> guarantee half needs that capability — statically checking a two-state assert over in-body-mutated state —
+> before it could be discharged.
 >
 > ```groovy
 > relyConsumer()                         // producer may have appended → tail grew, head unchanged
@@ -2093,9 +2097,9 @@ omitted instrumentation would look like.
 > **orchestration, and most of it is mechanical**: the `relyConsumer()` / `relyProducer()` methods and the calls
 > threaded between statements are derivable straight from the `@Rely` / `@Guarantee` predicates already on the
 > class — an AST transform could emit them exactly as groovy-contracts injects its runtime checks, so you would
-> never hand-write them. The genuine gap is narrower still: a per-segment guarantee obligation (today only an
-> `assert gCons` marker) and treating `head` / `tail` as concurrently shared — the interleaving *model* the
-> sequential design exists to avoid.
+> never hand-write them. Two pieces are genuine engine work, not boilerplate: the per-segment guarantee
+> assertion above (a two-state assert over in-body-mutated state, not discharged today) and treating `head` /
+> `tail` as concurrently shared — the interleaving *model* the sequential design exists to avoid.
 
 ## Other Examples
 
