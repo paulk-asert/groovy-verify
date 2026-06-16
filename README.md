@@ -1902,6 +1902,12 @@ no deadlock, no lock-ordering); that needs concurrent separation logic with frac
 Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker.
 So this is an honest *monitor-invariant* proof, not a from-scratch proof of thread safety.
 
+Those two disclaimed halves are exercised on this exact example by the runtime checkers in [`docs/`](docs/): a
+**Lincheck** spike (`./gradlew concurrentTest`) shows a `synchronized` `Account` is linearizable while an
+unlocked one races, and a **Fray** spike (`./gradlew frayCheck`) drives the JVM scheduler over a two-account
+bank transfer to confirm ordered locking is deadlock-free — and to catch the lock-ordering deadlock when it
+isn't. Same boundary, made concrete; see [`docs/README.md`](docs/README.md).
+
 ### Agents & actors — the same invariant, a different paradigm
 
 The lock trick isn't really about locks; it's "prove the local obligation, assume the structural guarantee."
