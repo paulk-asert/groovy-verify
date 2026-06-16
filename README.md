@@ -1991,172 +1991,170 @@ classification is *value-dependent* on `head`/`tail`, advancing `tail` is a *sec
 and the producer *declassifies* what it releases. The one concurrency-specific piece is the **rely/guarantee**
 coupling (the paper's §IV) — `head`/`tail` are shared, so each thread reasons locally by *relying* on how its
 neighbour behaves. Those conditions are two-state predicates (the parameters split into a pre-state and a
-post-state), and the verifier proves they *compose*:
+post-state). One `Buffer` class carries both them and the thread bodies that run under them:
 
 ```groovy
-class Buffer {                                   // shared state: int head, int tail
+@Invariant({ 0 <= head && head <= tail && tail <= values.length })   // the bounded-buffer invariant
+class Buffer {
+    int head, tail
+    int[] values
+
     @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) {
-        head == oldHead && oldTail <= tail       // env keeps my read pointer, only grows the buffer
+        head == oldHead && oldTail <= tail       // the producer keeps my read pointer, only grows the buffer
     }
     @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) {
         head == oldHead && oldTail <= tail       // I never move head; I only append
     }
     @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) {
-        tail == oldTail                          // env keeps my write pointer
+        tail == oldTail                          // the consumer keeps my write pointer
     }
     @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) {
         tail == oldTail && oldHead <= head       // I never move tail; I only advance head
     }
-}
-```
-
-This compiles clean: `gProd ⟹ rCons` and `gCons ⟹ rProd` both hold, and every rely is reflexive and transitive —
-the lemmas that justify analysing each thread alone. Weaken `gProd` to drop `head == oldHead` (let the producer
-move the consumer's read pointer) and it no longer implies the consumer's rely:
-
-```
-[Static type checking] - Rely/guarantee compatibility does not hold: guarantee 'gProd' (Producer) implies rely 'rCons' (Consumer)
-```
-
-That is the **gluing logic** of thread-local reasoning — the §IV *compatibility* half. The other half is the
-per-thread *interleaving* proof: re-checking that each thread's body stays safe while the other thread runs
-between its statements. The paper models that by **instrumenting** the body with a `rely()` step (havoc the
-shared state, assume the rely) before each access — and a rely-step is just a *framed assume*, `@Modifies` (the
-havoc frame) plus `@Ensures` over `old` (the assumed relation), which the obligation checker havocs-then-assumes
-at the call. So for **Int shared state that instrumented proof now runs** — on a *real* safety property: a
-concurrent bounded buffer whose reader and writer are each proven free of **out-of-bounds access**.
-
-```groovy
-@Invariant({ 0 <= head && head <= tail && tail <= values.length })   // the bounded-buffer invariant
-class Ring {
-    int head, tail
-    int[] values
-
-    @Modifies({ [this.head, this.tail] })       // the writer's guarantee = the reader's rely:
-    @Ensures({ head == old.head && old.tail <= tail && tail <= values.length })
-    void relyOnWriter() {}                       //   writer keeps my read pointer, only appends, within capacity
-    @Modifies({ [this.head, this.tail] })       // the reader's guarantee = the writer's rely:
-    @Ensures({ tail == old.tail && old.head <= head && head <= tail })
-    void relyOnReader() {}                       //   reader keeps my write pointer, only advances head
 
     @Requires({ head < tail })                   // an element is available
+    @UnderRely('Consumer')                       // run under the consumer's rely (rCons) — synthesised + framed
     int read() {
-        relyOnWriter()                           // a concurrent write may have happened
-        int v = values[head]                     // ← PROVEN in bounds, despite the concurrent writer
+        int v = values[head]                     // ← PROVEN in bounds despite the concurrent producer
         head = head + 1
         return v
     }
-
     @Requires({ tail < values.length })          // room to append
+    @UnderRely('Producer')                       // run under the producer's rely (rProd)
     void write(int x) {
-        relyOnReader()                           // a concurrent read may have happened
-        values[tail] = x                         // ← PROVEN in bounds, despite the concurrent reader
+        values[tail] = x                         // ← PROVEN in bounds despite the concurrent consumer
         tail = tail + 1
     }
 }
 ```
 
-This **verifies**. At `values[head]` the obligation is `0 <= head < values.length`; the `relyOnWriter()` call
-havocs `head`/`tail` and assumes the rely, so `head == old.head` (the writer never touched my read pointer) and
-the entry invariant `old.head < old.tail <= values.length` together still give `head < values.length` — the read
-is in bounds *across the concurrent write*. The `head++` is symbolically versioned, and `read()` re-establishes
-the class invariant on exit; the writer is the mirror image. **Weaken either rely and the safety is gone** — and
-the load-bearing conjunct is exactly the neighbour's promise about *your* pointer: drop `head == old.head` (let
-the writer move the read pointer past the buffer) and `values[head]` refutes; drop `tail == old.tail` (let the
-reader move the write pointer past capacity) and `values[tail]` refutes — each with an out-of-bounds
-counterexample.
+**Both halves of §IV, on one class.** The four predicates are the *compatibility conditions* — each thread's
+`@Rely` is its neighbour's `@Guarantee` — and the verifier discharges them as pure logic: `gProd ⟹ rCons` and
+`gCons ⟹ rProd` both hold, and every rely is reflexive and transitive, the lemmas that justify analysing each
+thread alone. Weaken `gProd` to drop `head == oldHead` (let the producer move the consumer's read pointer) and it
+no longer implies the consumer's rely:
 
-This closes the loop with the compatibility lemmas above: each rely-step's `@Ensures` *is* the neighbour's
-`@Guarantee` — `relyOnWriter` mirrors `gProd`, `relyOnReader` mirrors `gCons`. The lemmas certify those relies
-**compose** (`G_i ⟹ R_j`); the `Ring` proves each body **upholds** its end. Both halves of §IV, on one buffer.
-
-None of this need be hand-written. Tag the method `@UnderRely('Writer')` and a CONVERSION transform synthesises
-the rely-step from the `@Rely('Writer')` predicate you already wrote for the compatibility lemmas — deriving the
-`@Modifies` frame from its post-state fields, rewriting its pre-state params to `old.<field>`, and conjoining the
-class invariant the environment preserves — then prepends the call. So the rely-step method *and* its call are
-both generated, and the body stays pure logic — exactly as `@WithWriteLock` replaces a manual `lock()`:
-
-```groovy
-@Rely('Writer')                              // written once; also drives the G_i ⟹ R_j compatibility lemma
-static boolean rWriter(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
-
-@Requires({ head < tail })
-@UnderRely('Writer')                         // → synthesises $rely$Writer (havoc-frame + assume) and calls it
-int read() { int v = values[head]; head = head + 1; return v }
+```
+[Static type checking] - Rely/guarantee compatibility does not hold: guarantee 'gProd' (Producer) implies rely 'rCons' (Consumer)
 ```
 
-This verifies identically to the hand-written `Ring`, and a weakened `@Rely` predicate still refutes the
-out-of-bounds read. So the loop is fully closed: **write the `@Rely` / `@Guarantee` predicates once, tag the
-methods, done.** The body need not even be a single critical section: because synthesis tells the transform which
-fields are shared, it inserts a rely-step **before each shared access** — at any nesting depth, recursing into
-`if`/`else` branches — so a method that touches `head` several times models the environment *between* those
-accesses, not just at entry — and it reaches **inside loop bodies** too: each shared access in a loop is framed
-*per iteration*, so a loop verifies only under a *rely-stable* invariant (`tail == constant` under a growing-tail
-rely correctly **fails**), and a loop body that *writes* a shared field is checked too — the per-write class-
-invariant assertion is discharged inside the loop (a transient violation between two writes is caught, even though
-the invariant holds at the iteration's end). So straight-line, branching, and loop bodies are all covered. The one
-thing that genuinely stays out is the scheduler itself — that the threads really interleave with the assumed
-atomicity — a structural assumption, like the lock examples.
+That is the **gluing logic** of thread-local reasoning. The *other* half — that each thread's **code** upholds
+its rely — is the `read` / `write` bodies above, a *real* safety property: each is proven free of **out-of-bounds
+access** under a concurrent peer. `@UnderRely('Consumer')` runs `read()` under the consumer's rely: a CONVERSION
+transform **synthesises the rely-step from `rCons`** — the very predicate that drives the lemma — by havocing the
+shared frame, assuming `rCons` rewritten over `old`, and conjoining the class invariant; then it frames every
+shared access with that step, so `head` / `tail` are re-havoced wherever the environment could have run. The body
+stays pure logic, as `@WithWriteLock` replaces a manual `lock()`.
 
-The sidebar below sets this same shape inside the *full* §VII body, where each access also carries an
-information-flow obligation (the consumed element must be `Low`) — the part that is still illustration.
+This **verifies**. At `values[head]` the obligation is `0 <= head < values.length`; the synthesised rely gives
+`head == old.head` (the producer never touched my read pointer) and the entry invariant
+`old.head < old.tail <= values.length`, so `head < values.length` — in bounds *across the concurrent write*.
+`read()` re-establishes the invariant on exit; `write()` is the mirror image under `rProd`. **Weaken a rely and
+the safety is gone**, and the load-bearing conjunct is exactly the neighbour's promise about *your* pointer: drop
+`head == oldHead` from `rCons` and `values[head]` refutes; drop `tail == oldTail` from `rProd` and `values[tail]`
+refutes — each with an out-of-bounds counterexample.
+
+So the whole loop closes on one buffer: **write the `@Rely` / `@Guarantee` predicates once, tag the methods,
+done.** The lemmas certify the relies *compose* (`G_i ⟹ R_j`); the bodies prove each thread *upholds* its rely.
+And the framing isn't limited to a single critical section: because synthesis knows which fields are shared, the
+rely-step is inserted **before each shared access at any depth** — between statements, inside `if`/`else`
+branches, and **per loop iteration** (so a loop verifies only under a *rely-stable* invariant — `tail == constant`
+under a growing-tail rely correctly **fails** — and a write that transiently breaks the invariant mid-loop is
+caught). The one thing that genuinely stays out is the scheduler itself — that the threads really interleave with
+the assumed atomicity — a structural assumption, like the lock examples.
+
+The capstone below sets this same shape inside the *full* §VII body, where each access also carries an
+information-flow obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) —
+and that intersection is now **machine-checked**, both properties on one class.
 
 > [!NOTE]
-> **Sidebar — the full §VII body (the verified core above, in its information-flow context).** The mechanics just
-> shown — the rely-step, the field update, the guarantee — are machine-checked. What the paper layers on top, and
-> what is **still illustration here**, is the *information-flow* obligation each step carries: the consumed element
-> must be `Low`, the producer *declassifies* what it releases, and advancing `tail` is a *secure-update*. That
-> intersection — info-flow evaluated *through* the rely-step's havoc — isn't wired yet, so the
-> `process` / `Low` / `Declassify` lines below are pseudocode. (The `relyConsumer()` is the one defined above; the
-> `assert gCons` / `assert gProd` are the guarantee assertions shown real above, abbreviated here as markers.)
->
-> The consumer, with a `relyConsumer()` between every statement:
+> **The full §VII capstone — info-flow × rely/guarantee, verified together.** Smith's culminating example has plain
+> *and secret* messages produced and consumed concurrently. The buffer above proved bounds-safety under
+> interference; the same `Buffer`, given a **value-dependent positional label**, now also proves **no secret
+> leaks** — the two obligations discharged on one body, each step's info-flow check evaluated *through* the
+> rely-step's havoc. This is the composition the whole arc built toward.
 >
 > ```groovy
-> relyConsumer()                         // producer may have appended → tail grew, head unchanged
-> if (head < tail) {                     // an element is available
->     relyConsumer()                     // ← THE CRUX: the producer can run again right here
->     process(values[head])              //   ILLUSTRATION: obligation L(values[head]) ⊑ Low (process needs Low)
->     assert gCons                       //   guarantee (real above) — read but didn't move tail
->     relyConsumer()
->     head++                             //   advance read pointer (this update is the verified part)
->     assert gCons                       //   guarantee (real above) — tail unchanged, head moved as allowed
->     relyConsumer()
+> @Invariant({ 0 <= head && head <= tail && tail <= values.length })
+> class Buffer {
+>     enum L { Low, High }
+>     static boolean leq(L a, L b) { a == L.Low || b == L.High }
+>     static L join(L a, L b) { leq(a, b) ? b : a }
+>     int head, tail
+>     @Label(by = 'level') int[] values                              // each slot's level depends on POSITION…
+>     static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }   // …the region [head,tail) is Low
+>
+>     @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+>     @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+>     @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
+>     @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
+>
+>     @Ensures({ true }) static void deliver(@Label('Low') int x) { }   // a PUBLIC sink — only accepts Low
+>
+>     @Requires({ head < tail })
+>     @UnderRely('Consumer')                 // runs under the producer's interference: head pinned, tail grows
+>     int consume() {
+>         int v = values[head]               // in [head, tail) ⇒ Low (proven across the concurrent append)
+>         deliver(v)                         // Low → Low public sink: NO LEAK
+>         head = head + 1
+>         return v
+>     }
+>     @Requires({ tail < values.length })
+>     @UnderRely('Producer')                 // runs under the consumer's interference: tail pinned, head grows
+>     void produce(@Label('High') int secret) {
+>         int msg = Declassify.to('Low', secret)   // §III-E controlled release
+>         values[tail] = msg                       // a Low value at the boundary slot
+>         tail = tail + 1                          // §III-A array secure-update: old.tail ENTERS the Low region
+>     }
 > }
 > ```
 >
-> **Why the read stays safe across interleaving** — at `process(values[head])` the obligation reduces to
-> `head < tail` (that is what makes `values[head]` `Low`). It held at the `if`; then a `relyConsumer()` fired
-> and the producer ran. `rCons` supplies `head == old.head` and `old.tail <= tail`, so `head < old.tail <= tail`
-> — still holds. That conjunct is load-bearing, and the compatibility lemma is exactly what forces the producer
-> to honour it. (The `head < tail` part is exactly the `step()` example above; the `values[head]` *is* `Low`
-> conclusion is the info-flow obligation that still rides on top as illustration.)
+> This **verifies** — and verifies *both* properties on each body. `consume()` is proven free of out-of-bounds
+> access under the concurrent producer (the R/G half above) **and** free of leaks: `values[head]` is `Low` (the
+> label says so when `head < tail`, which the rely re-establishes), so the public `deliver` accepts it; advancing
+> `head` pushes the just-read slot back to `High` (re-securing — always safe). `produce()` declassifies, writes the
+> `Low` value, and advances `tail` — the **array secure-update** obligation `leq(Γ(values[tail]), level(tail, head,
+> tail+1))`, discharged under the invariant that makes the new level `Low` for **any** `head ≤ tail`.
 >
-> The producer has the same shape, and reuses pieces already shipped — `Declassify.to` and the §III-A
-> secure-update on the control variable `tail`:
+> **Why it is sound under interleaving.** The info-flow obligations are discharged *through* the rely-step's havoc,
+> not on a frozen snapshot. A rely-step forgets every tracked array slot whose index names a field the environment
+> may move — but keeps the ones the rely *pins*: the producer's `rProd` holds `tail == old.tail`, so the value
+> written at `values[tail]` survives the step and the secure-update sees it. Because `level(tail, head, tail+1)` is
+> `Low` for *every* `head ≤ tail` the consumer could leave behind, the release is secure against all interleavings
+> the rely permits — not one lucky schedule. And the machinery does **not** mask a leak: drop the `Declassify` and
+> write the raw `secret`, and the secure-update **refutes** at `tail++` (`High → Low`) with the full R/G
+> instrumentation still in place.
 >
-> ```groovy
-> relyProducer()
-> def diff = Declassify.to('Low', temp - classified)   // ILLUSTRATION: release only what's allowed
-> values[tail] = diff                    // index tail is OUTSIDE [head, tail) → High region → any value ok
-> assert gProd                           //   guarantee (real above)
-> relyProducer()
-> tail++                                 // control-variable update: index old(tail) now ENTERS [head, tail)
-> assert gProd                           //   ILLUSTRATION secure-update: values[old tail] must be Low ⇒ declassified
-> relyProducer()
-> ```
->
-> So the **rely-step mechanics in this body are machine-checked** (the verified `step()` above is exactly one such
-> segment), and `§VII` decomposes into things `groovy-verify` already does — value-dependent `@Label(by = …)`, the
-> secure-update on `tail`, `Declassify.to`, and the rely-step havoc + assume + guarantee — leaving **two pieces
-> not yet wired**. The first is the **intersection** drawn here: an *information-flow* obligation evaluated
-> *through* the rely-step's havoc, so `process(values[head])`'s `Low` check is discharged under the rely that
-> re-establishes `head < tail`. The info-flow walk and the rely-step framing are separate passes today; composing
-> them is the remaining engine slice (that, plus non-Int shared state). The second is just **orchestration** —
-> the `relyConsumer()` / `relyProducer()` calls are derivable from the `@Rely` / `@Guarantee` predicates above, so
-> a transform could emit them as groovy-contracts injects its runtime checks; you'd never hand-write them. Beyond
-> those, treating `head` / `tail` as genuinely concurrent stays a *modelling assumption* of the same kind as the
-> lock / serial-agent examples — the interleaving *model* the sequential design exists to avoid.
+> **Honest framing.** This is §VII's *shape* reconstructed on the per-thread rely-step model already built for
+> bounds — the security lattice now rides the same havoc-under-rely interleaving the bounds proof uses. It is **not**
+> a machine-checked concurrency proof: that the threads genuinely interleave with the assumed atomicity stays a
+> *modelling assumption*, the same structural one as the lock / serial-agent examples. What is mechanical is the
+> decomposition — value-dependent `@Label(by = …)`, the secure-update on `tail`, `Declassify.to`, the four
+> compatibility lemmas, and the rely-step framing — all composing on one class, both properties at once.
+
+The machinery isn't specific to the buffer's two pointers. A different shape — a shared scalar with a
+**monotonicity** rely — works the same way: two threads only ever increment a `count`, each relying on the other
+to do likewise, so a value once observed below the count stays below it.
+
+```groovy
+@Invariant({ count >= 0 })
+class Counter {
+    int count
+    @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }   // others only increment
+    @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count }    // I only increment
+
+    @Requires({ k <= count })
+    @UnderRely('Other')
+    void atLeast(int k) {
+        assert count >= k                        // ← STILL holds across concurrent increments
+    }
+}
+```
+
+`count >= k` survives because the rely says the environment only *raises* `count` — the synthesised rely-step
+havocs it under `oldCount <= count`, so `k <= old.count <= count`. Make the rely non-monotonic and the bound is
+gone; lift it into a loop and the loop invariant `k <= count` proves only because it is rely-stable (the rely-step
+frames each iteration). Same `@Rely` / `@UnderRely`, a wholly different concurrent property.
 
 ## Other Examples
 
@@ -3289,7 +3287,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `ContractTester` | the bounded property-based fallback (Phase 62): runs the executable contract over a small integer grid when the solver returns *UNKNOWN*, reporting a `fails on:` repro |
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
 | `Label` / `Declassify` | the `@Label('level')` / `@Label(by = 'm')` security classification (constant or value-dependent) on a parameter / method result / sink, and `Declassify.to(level, expr)` for explicit controlled release — driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
-| `Rely` / `Guarantee` | `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state; the verifier auto-discharges the §IV rely/guarantee *compatibility* lemmas (reflexive/transitive relies, `G_i ⟹ R_j`) — the gluing logic, not the interleaving proof (Phase L1) |
+| `Rely` / `Guarantee` / `UnderRely` | `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state; the verifier auto-discharges the §IV rely/guarantee *compatibility* lemmas (reflexive/transitive relies, `G_i ⟹ R_j`). `@UnderRely('T')` then runs a method's body under that rely: `ContractExpansionTransform` synthesises a rely-step from the `@Rely('T')` predicate and frames every shared access (straight-line, branches, and loop bodies via the `LoopEncoder` call-handler), so each thread's *code* is proven to uphold its rely — both §IV halves (Phase L1) |
 | `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` / `SelfEnsures` / `UnderRely` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses; also desugars `@SelfEnsures` into a captured `@Ensures({ result == <verbatim body> })` so a self-specifying body is written once, and for `@UnderRely('Role')` synthesises a `$rely$Role` rely-step from the class's `@Rely('Role')` predicate (frame + `old`-rewritten ensures + class invariant) and prepends the call before the snapshot (prototypes) |
 | `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |

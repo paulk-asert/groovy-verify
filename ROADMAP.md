@@ -6645,6 +6645,24 @@ static int implicit(@verification.Label('High') boolean secret,
   tighter model would narrow it as the body proves data low — that, and control over a *field*, are the
   remaining §III-A refinements.)
 
+- **array element labels — the value-dependent label over a *position* (§III-C), both sides of the buffer.**
+  `@Label(by = 'level') int[] values` with `static L level(int i, int head, int tail)` gives each *slot* a
+  classification that depends on the index **and** the control fields — Smith's actual producer/consumer buffer,
+  where the consumable region `[head, tail)` is `Low` and everything else `High`. **Read side:** an array access
+  `values[k]` is classified by `level(k, head, tail)` (the index becomes the first argument; the rest bind to the
+  control fields by name), so `process(values[head])` under `head < tail` **verifies** (the slot is in-region →
+  `Low`), while reading `values[0]` when `0 < head` **refutes** (before the region → `High` into a `Low` sink).
+  **Producer side — the array secure-update.** Writing a value and then advancing `tail` pulls the slot at
+  `old.tail` *into* the `Low` region; that reclassification is the §III-A obligation over an element. The producer
+  that **declassifies first** — `int msg = Declassify.to('Low', secret); values[tail] = msg; tail = tail + 1` —
+  **verifies** (`leq( Γ(values[tail]), level(tail, head, tail+1) )` holds, given the buffer `@Invariant` makes the
+  new level `Low`); the producer that advances `tail` over an **undeclassified** secret (`values[tail] = secret;
+  tail = tail + 1`) **refutes** at the `tail++` — a `High` value would become readable as `Low`. The boundary
+  slot's held level is tracked across **straight-line** writes only (`arrayElemGamma`, keyed `arr[idxText]`);
+  a branch or loop forgets it, so a later secure-update **loud-skips** rather than trust a one-arm write. The
+  discharge assumes the method `@Requires` and the class invariant (the new level often needs `head <= tail`).
+  This is the §III-C oracle the rest of the value-flow array machinery already rode, now carrying a *label*.
+
 - **declassification — explicit controlled release (§III-E).** `Declassify.to('Low', expr)` marks `expr` as
   released at a named lattice level, so the analysis treats it as that level regardless of the secrets it draws
   on — the *unconditional* ("predicate-true") form, in the spirit of Mantel &amp; Sands. The value is that every
@@ -6698,17 +6716,39 @@ flow; and interprocedural sink parameters — same-class **and cross-class withi
 remain: a sink in a **precompiled / imported** class (the receiver is an unresolved name off the pre-STC
 snapshot) and a **field receiver** skip silently; and a value-dependent classification's controls are matched by
 name in scope, so one that depends on a **changing local** or a **field** isn't yet tracked. Both premises of the
-§III-A assignment rule ship: the **no-leak** check and the **control-variable / secure-update** obligation.
+§III-A assignment rule ship: the **no-leak** check and the **control-variable / secure-update** obligation —
+the latter over both **scalars** and **array elements** (§III-C value-dependent slot labels, both buffer sides).
 With explicit declassification (§III-E, unconditional form), the whole **sequential** fragment of the paper is in
-place — both premises of the assignment rule, the branch and loop rules, sinks, value-dependence, and controlled
-release. Deferred, each a named slice: external/precompiled sinks; classification over a **field** or a
-**changing local** (narrowing the held-data level); a tighter **per-variable loop fixpoint**; **array element
-labels** (§III-C); and the **predicate-gated** (two-state `old`) form of declassification. The paper's headline
-— *concurrent* IFC via rely/guarantee (§IV+) — stays a non-goal (concurrency soundness). Locked by the `PL1
+place — both premises of the assignment rule, the branch and loop rules, sinks, value-dependence (scalar and
+positional array labels), and controlled release. Deferred, each a named slice: external/precompiled sinks;
+classification over a **field** or a **changing local** (narrowing the held-data level); a tighter **per-variable
+loop fixpoint**; array-element label tracking **across branches/loops** (currently straight-line only); and the
+**predicate-gated** (two-state `old`) form of declassification. Locked by the `PL1
 infoflow` cases (1a/1b/1c, the interprocedural-sink set, the cross-class set, the value-dependent set, the loop
 set, the secure-update set, the declassification set, the scoped-PC precision case, and the loud-skip controls);
 the `PL1 rg` cases lock the rely/guarantee compatibility lemmas. Annotations: `verification.Label`,
 `verification.Declassify`, `verification.Rely`, `verification.Guarantee`.
+
+**The §VII capstone — info-flow × rely/guarantee on one buffer (`P-vii`).** Smith's culminating example: plain
+and secret messages produced and consumed concurrently. A *single* `Buffer` now carries **all four** layers and
+is checked for **both** properties at once — the composition the whole arc built toward. The class declares the
+lattice + a **value-dependent positional label** (`@Label(by='level') int[] values`, with the consumable region
+`[head, tail)` classified `Low`), the **four §IV compatibility predicates** (`@Rely`/`@Guarantee` over
+`(head, tail)`), and two `@UnderRely` methods. `consume()` reads `values[head]` and delivers it to a public sink
+under the *producer's* interference (head pinned, tail grows); `produce()` declassifies a secret, writes it at
+`tail`, and advances `tail` — the §III-A array secure-update — under the *consumer's* interference (tail pinned,
+head grows). Each method is verified for **bounds-safety-under-interference** (the R/G interleaving model) *and*
+**no-leak** (the info-flow obligations) on the same body. The composition is sound because the info-flow
+obligations are discharged **under the rely**: a rely-step forgets every tracked array slot whose index names a
+field the environment may havoc (slots the rely *pins* — the producer's `values[tail]` — survive), and the
+sink/secure-update discharges assume only the rely-stable facts (the class invariant + `@Requires`). So
+`level(tail, head, tail+1)` is `Low` for **any** `head ≤ tail` the consumer could leave behind — the producer's
+release is secure against all interleavings the rely permits, not just one schedule. And the machinery does **not**
+mask a leak: a producer that advances `tail` over an *undeclassified* secret still refutes at the `tail++`, with
+the full R/G instrumentation in place. **Honest framing:** this is §VII's *shape* reconstructed on the per-thread
+rely-step model already built for bounds — the security lattice now rides the same havoc-under-rely interleaving.
+It is **not** a machine-checked concurrency proof (a full scheduler/trace soundness argument remains out of
+scope); it is the sequential rely/guarantee reconstruction of the paper's headline, both properties on one class.
 
 ---
 

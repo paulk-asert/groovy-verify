@@ -362,6 +362,303 @@ class VerifyHarness {
                        @Ensures({ count == old.count + 1 })
                        void inc() { count = count + 2 }
                    }''')],
+        // PROBE-counter (Step 1 — a second R/G example, a different shape: one shared scalar with a *monotonicity*
+        // rely, not array pointers). Two symmetric threads only ever increment `count`; each relies on the other to
+        // do the same (oldCount <= count). So a value I've observed below the count stays below it despite
+        // concurrent increments — `count >= k` is preserved by the environment.
+        [group: 'P-counter', name: 'monotonic counter: observed bound persists', ok: true,
+         src: tc('''@Invariant({ count >= 0 })
+                    class Counter {
+                       int count
+                       @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }
+                       @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count }
+                       @Requires({ k <= count })
+                       @UnderRely('Other')
+                       void atLeast(int k) {
+                           assert count >= k        // STILL holds: the environment only increments count
+                       }
+                   }''')],
+        // The rely is load-bearing: a weak rely that lets count *decrease* no longer keeps the observed bound.
+        [group: 'P-counter', name: 'weak (non-monotonic) rely drops the bound', expect: 'Assertion may not hold',
+         src: tc('''@Invariant({ count >= 0 })
+                    class Counter {
+                       int count
+                       @Rely('Other')   static boolean rOther(int oldCount, int count) { count >= 0 }
+                       @Guarantee('Me') static boolean gMe(int oldCount, int count)    { count >= 0 }
+                       @Requires({ k <= count })
+                       @UnderRely('Other')
+                       void atLeast(int k) {
+                           assert count >= k
+                       }
+                   }''')],
+        // Loop form: the loop invariant `k <= count` is rely-stable (count only grows), so it survives the
+        // environment running each iteration — the rely-step is framed per iteration inside the loop body.
+        [group: 'P-counter', name: 'monotonic counter loop verifies', ok: true,
+         src: tc('''@Invariant({ count >= 0 })
+                    class Counter {
+                       int count
+                       @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }
+                       @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count }
+                       @Requires({ 0 <= k && k <= count })
+                       @UnderRely('Other')
+                       int observe(int k) {
+                           int seen = 0
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= k && k <= count })
+                           @Decreases({ k - i })
+                           while (i < k) {
+                               int c = count        // read the shared count → rely-step framed per iteration
+                               seen = seen + 1
+                               i = i + 1
+                           }
+                           return seen
+                       }
+                   }''')],
+        // Loop soundness: a non-monotonic rely makes `k <= count` not rely-stable, so the per-iteration rely-step's
+        // havoc breaks it and preservation fails — exactly as the buffer's non-rely-stable loop test.
+        [group: 'P-counter', name: 'non-monotonic rely breaks the loop invariant', expect: 'invariant',
+         src: tc('''@Invariant({ count >= 0 })
+                    class Counter {
+                       int count
+                       @Rely('Other')   static boolean rOther(int oldCount, int count) { count >= 0 }
+                       @Guarantee('Me') static boolean gMe(int oldCount, int count)    { count >= 0 }
+                       @Requires({ 0 <= k && k <= count })
+                       @UnderRely('Other')
+                       int observe(int k) {
+                           int seen = 0
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= k && k <= count })
+                           @Decreases({ k - i })
+                           while (i < k) {
+                               int c = count
+                               seen = seen + 1
+                               i = i + 1
+                           }
+                           return seen
+                       }
+                   }''')],
+        // PROBE-msg (Step 2 — Smith's producer/consumer info-flow, sequential/atomic, on SCALAR messages). The
+        // §III mechanics assembled into one producer/consumer narrative: declassify (§III-E) to produce a Low
+        // message, a public Low sink, and the secure-update (§III-A) when the control that classifies a message
+        // flips. (The array buffer of messages is the deferred extension — info-flow Γ is scalar/name-based today.)
+        [group: 'P-msg', name: 'produce: declassify a secret, then deliver it (verifies)', ok: true,
+         src: tc('''class Messages {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void consume(@Label('Low') int msg) { }
+                        static void produce(@Label('High') int secret) {
+                            int msg = Declassify.to('Low', secret)   // §III-E controlled release → msg is Low
+                            consume(msg)                             // Low → Low public sink: verifies
+                        }
+                    }''')],
+        [group: 'P-msg', name: 'leak: deliver a secret without declassifying (refutes)', expect: 'information leak',
+         src: tc('''class Messages {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static void consume(@Label('Low') int msg) { }
+                        static void leak(@Label('High') int secret) {
+                            consume(secret)                          // High → Low sink: REFUTES
+                        }
+                    }''')],
+        // §III-A secure-update: `released` controls a message's classification (Low once released, else High).
+        // Flipping `released` to true while the message may still be secret drops its classification — refutes.
+        [group: 'P-msg', name: 'secure-update: publishing an unreleased (secret) message refutes', expect: 'information leak',
+         src: tc('''class Messages {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L level(boolean released) { released ? L.Low : L.High }
+                        static void publish(boolean released, @Label(by = 'level') int msg) {
+                            released = true                          // declassify-by-flag bug: REFUTES
+                        }
+                    }''')],
+        // Raising a message's classification (released := false) is always secure. Verifies.
+        [group: 'P-msg', name: 'secure-update: re-securing a message verifies', ok: true,
+         src: tc('''class Messages {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        static L level(boolean released) { released ? L.Low : L.High }
+                        static void hide(boolean released, @Label(by = 'level') int msg) {
+                            released = false
+                        }
+                    }''')],
+        // PROBE-array (Step 2b — array-element labels, Smith §VII's actual buffer). The element's classification is
+        // value-dependent on POSITION and the control fields: L(values[i]) = (head <= i < tail) ? Low : High (the
+        // consumable region is Low). The consumer reads values[head] under the availability guard `head < tail`, so
+        // the element is Low and the public sink accepts it. (`level`'s first param is the index; the rest bind by
+        // name to the control fields, like the scalar @Label(by=) convention.)
+        [group: 'P-array', name: 'consume the Low region verifies', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Ensures({ true }) static void process(@Label('Low') int x) { }
+                        void consume() {
+                            if (head < tail) {
+                                process(values[head])      // in bounds (head < tail <= length); L = Low → sink accepts
+                            }
+                        }
+                    }''')],
+        // Reading OUTSIDE the consumable region — an index before `head` is High — leaks into the public sink.
+        [group: 'P-array', name: 'consume the High region refutes', expect: 'information leak',
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Ensures({ true }) static void process(@Label('Low') int x) { }
+                        @Requires({ 0 < head })
+                        void consume() {
+                            process(values[0])             // index 0 is BEFORE [head, tail) → High → REFUTES (in bounds: 0 < length)
+                        }
+                    }''')],
+        // PRODUCER side (§III-A secure-update over the array). The producer declassifies a secret, writes it at
+        // `tail`, then advances `tail` — which pulls the element at old.tail INTO the Low region. That is secure
+        // only because the value there is Low (declassified): leq(Γ(values[tail]), level(tail, head, tail+1)).
+        [group: 'P-array', name: 'producer: declassify, write, advance tail (verifies)', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Requires({ tail < values.length })
+                        void produce(@Label('High') int secret) {
+                            int msg = Declassify.to('Low', secret)   // §III-E: declassify → Low
+                            values[tail] = msg                        // write a Low value at the boundary slot
+                            tail = tail + 1                           // §III-A secure-update: old.tail enters Low region
+                        }
+                    }''')],
+        // The leak: advancing `tail` over an UNDECLASSIFIED secret reclassifies a High value to Low — refutes at tail++.
+        [group: 'P-array', name: 'producer: advancing tail over an undeclassified secret refutes', expect: 'information leak',
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Requires({ tail < values.length })
+                        void produce(@Label('High') int secret) {
+                            values[tail] = secret                     // write a HIGH value at the boundary slot
+                            tail = tail + 1                           // reclassifies High → Low: REFUTES
+                        }
+                    }''')],
+        // §VII CAPSTONE — info-flow × rely/guarantee on ONE buffer (Smith's culminating example: plain and secret
+        // messages produced/consumed concurrently). The same `Buffer` carries: the lattice + value-dependent
+        // POSITIONAL label (the region [head,tail) is Low), the four §IV compatibility predicates, AND two
+        // @UnderRely methods that are checked for BOTH bounds-safety-under-interference (R/G) AND no-leak (info-flow).
+        // The consumer reads values[head] (Low region) and delivers it to a public sink under the producer's
+        // interference (head fixed, tail grows); the producer declassifies, writes at tail, and advances tail (the
+        // §III-A array secure-update) under the consumer's interference (tail fixed, head grows). The secure-update
+        // is rely-stable: level(tail, head, tail+1) is Low for ANY head <= tail (the invariant), so the consumer
+        // advancing head cannot break it. Both properties hold together — the composition Step 3 set out to reach.
+        [group: 'P-vii', name: 'capstone: info-flow × R/G on one buffer verifies', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+                        @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+                        @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
+                        @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
+                        @Ensures({ true }) static void deliver(@Label('Low') int x) { }      // public sink
+                        @Requires({ head < tail })
+                        @UnderRely('Consumer')
+                        int consume() {
+                            int v = values[head]        // in [head, tail) → Low; in bounds (head < tail <= length)
+                            deliver(v)                  // Low → Low public sink: no leak
+                            head = head + 1
+                            return v
+                        }
+                        @Requires({ tail < values.length })
+                        @UnderRely('Producer')
+                        void produce(@Label('High') int secret) {
+                            int msg = Declassify.to('Low', secret)   // §III-E controlled release
+                            values[tail] = msg                        // a Low value at the boundary slot
+                            tail = tail + 1                           // §III-A secure-update under interference
+                        }
+                    }''')],
+        // SOUNDNESS of the capstone — the R/G interleaving machinery does NOT mask an info-flow leak. The producer
+        // skips the declassification and advances `tail` over a raw secret: the §III-A array secure-update refutes
+        // at `tail++` (High → Low) even though the body is also being checked under the consumer's interference.
+        [group: 'P-vii', name: 'capstone: producer leaking a secret under R/G still refutes', expect: 'information leak',
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
+                        @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
+                        @Requires({ tail < values.length })
+                        @UnderRely('Producer')
+                        void produce(@Label('High') int secret) {
+                            values[tail] = secret                     // a raw HIGH value at the boundary slot
+                            tail = tail + 1                           // pulls High into the Low region: REFUTES
+                        }
+                    }''')],
+        // The README flagship `Buffer` — keep in sync with the rely/guarantee subsection. ONE class drives BOTH
+        // halves of §IV: the @Rely/@Guarantee predicates discharge the compatibility lemmas, AND the same @Rely
+        // predicates synthesise the rely-steps for read()/write() (via @UnderRely), each proven free of
+        // out-of-bounds access. One vocabulary (Producer/Consumer), one class.
+        [group: 'P-ring', name: 'merged buffer: both §IV halves on one class (README flagship)', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                       int head
+                       int tail
+                       int[] values
+                       @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) {
+                           head == oldHead && oldTail <= tail
+                       }
+                       @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) {
+                           head == oldHead && oldTail <= tail
+                       }
+                       @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) {
+                           tail == oldTail
+                       }
+                       @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) {
+                           tail == oldTail && oldHead <= head
+                       }
+                       @Requires({ head < tail })
+                       @UnderRely('Consumer')
+                       int read() {
+                           int v = values[head]
+                           head = head + 1
+                           return v
+                       }
+                       @Requires({ tail < values.length })
+                       @UnderRely('Producer')
+                       void write(int x) {
+                           values[tail] = x
+                           tail = tail + 1
+                       }
+                   }''')],
         // Loop-body placement: a rely-step INSIDE a loop body is framed per iteration (LoopEncoder call-handler), so
         // a loop verifies under the environment's interference. Summing the first k elements under a rely where the
         // writer keeps head and only grows tail: the loop invariant `k <= tail` is rely-stable (tail only grows), so
@@ -501,8 +798,9 @@ class VerifyHarness {
         // writer keeping `head` and only growing `tail` within capacity; the writer relies on the reader keeping
         // `tail` and only advancing `head`. Given that, `values[head]`/`values[tail]` are in bounds despite the
         // concurrent peer, and each method preserves the invariant. Composes fix-b (head++/tail++ SSA),
-        // call-framing (the rely-step havoc+assume), array bounds, and the class invariant. This is the README
-        // "Ring" flagship example — keep them in sync.
+        // call-framing (the rely-step havoc+assume), array bounds, and the class invariant. (Engine-coverage form
+        // with hand-written @Modifies/@Ensures rely-steps; the README flagship uses the @UnderRely-synthesised form
+        // above.)
         [group: 'P-ring', name: 'concurrent bounded buffer: reader + writer both in bounds', ok: true,
          src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
                     class Ring {

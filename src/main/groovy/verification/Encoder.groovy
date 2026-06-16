@@ -3445,8 +3445,41 @@ class Encoder {
      * Translate a Groovy expression to an SMT handle. Returns null
      * if anything in the subtree is outside the fragment.
      */
+    /** The released value of an explicit declassification {@code Declassify.to('Level', value)} → {@code value};
+     *  otherwise null. Value-level identity (§III-E only releases the label, never alters the value). */
+    private static Expression declassifyValue(Expression e) {
+        String m = null
+        Expression recv = null, args = null
+        if (e instanceof MethodCallExpression) {
+            m = ((MethodCallExpression) e).methodAsString; recv = ((MethodCallExpression) e).objectExpression
+            args = ((MethodCallExpression) e).arguments
+        } else if (e instanceof StaticMethodCallExpression) {
+            m = ((StaticMethodCallExpression) e).method; recv = null
+            args = ((StaticMethodCallExpression) e).arguments
+            if (((StaticMethodCallExpression) e).ownerType?.nameWithoutPackage != 'Declassify') return null
+        } else {
+            return null
+        }
+        if (m != 'to') return null
+        if (e instanceof MethodCallExpression) {
+            String rn = (recv instanceof VariableExpression) ? ((VariableExpression) recv).name :
+                        (recv instanceof ClassExpression) ? recv.type?.nameWithoutPackage : null
+            if (rn != 'Declassify') return null
+        }
+        if (args instanceof ArgumentListExpression) {
+            List<Expression> as = ((ArgumentListExpression) args).expressions
+            if (as.size() == 2) return as.get(1)
+        }
+        null
+    }
+
     Object translate(Expression expr) {
         if (expr == null) return null
+
+        // §III-E declassification is a value-level identity: `Declassify.to('Low', e)` carries the value of `e`
+        // unchanged (only its security label is released). Unwrap so the value-flow fragment sees through it.
+        Expression declassified = declassifyValue(expr)
+        if (declassified != null) return translate(declassified)
 
         if (expr instanceof ConstantExpression) {
             Object v = ((ConstantExpression) expr).value

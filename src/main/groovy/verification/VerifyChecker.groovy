@@ -3903,6 +3903,9 @@ class VerifyChecker extends TypeCheckingExtension {
         for (Parameter p : node.parameters) {
             if (labelValue(p) != null || labelBy(p) != null) { anyLabel = true; break }
         }
+        if (!anyLabel && node.declaringClass != null) {    // a labelled FIELD (e.g. an array's element label) a sink call could read
+            for (FieldNode f : node.declaringClass.fields) if (labelValue(f) != null || labelBy(f) != null) { anyLabel = true; break }
+        }
         if (!anyLabel) return                              // nothing labelled → not in the information-flow analysis
         ClassNode lat = latticeEnumOf(node)
         if (lat == null) {
@@ -3924,18 +3927,25 @@ class VerifyChecker extends TypeCheckingExtension {
             if (g != null) env.put(p.name, g)
         }
         ifFacts = new ArrayList<Object[]>()                // path conditions assumed at discharge (value-dependent levels)
+        arrayElemGamma = new HashMap<String, Expression>()
         try {
             ifWalk(body, env, null, lat, outLevel, node)   // PC starts at ⊥ (null)
         } catch (UnsupportedConstructException ex) {
             addStaticTypeError(Reporter.formatLeakSkipped(node.name, ex.message), node)
         } finally {
             ifFacts = new ArrayList<Object[]>()
+            arrayElemGamma = new HashMap<String, Expression>()
         }
     }
 
     /** Path conditions (each {@code [Expression cond, Boolean positive]}) enclosing the current walk point —
      *  assumed when discharging a value-dependent classification so it resolves under the branch. */
     private List<Object[]> ifFacts = new ArrayList<Object[]>()
+
+    /** Γ of the value last written to an array element, keyed {@code "arr[indexText]"} — so a control-field update
+     *  that reclassifies that element (the §III-A array secure-update) can check the held value is within its new
+     *  level. Cleared at branch boundaries (only straight-line writes are tracked; a branched write → untracked). */
+    private Map<String, Expression> arrayElemGamma = new HashMap<String, Expression>()
 
     /**
      * Syntax-directed information-flow walk. Carries {@code env} (variable → Γ level) and {@code pc} (the
@@ -3961,9 +3971,19 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             return env
         }
+        if (s instanceof AssertStatement) {
+            // A synthesised post-write invariant assert (the @UnderRely masking fix) carries no information flow —
+            // it neither reaches a sink nor rebinds Γ. Scan its condition for a sink, then treat it as a no-op.
+            checkCallSinks(((AssertStatement) s).booleanExpression, env, pc, lat, node)
+            return env
+        }
         if (s instanceof IfStatement) {
             IfStatement ifs = (IfStatement) s
             Expression cond = ifs.booleanExpression
+            // Array-element classifications are only tracked across straight-line writes; a branch makes the held
+            // value position-uncertain, so forget them (a later secure-update then loud-skips rather than unsoundly
+            // trusting a one-arm write).
+            arrayElemGamma.clear()
             checkCallSinks(cond, env, pc, lat, node)       // a call in the guard
             // Branching on classified data raises the PC inside both arms (implicit flow): PC ⊔ ΓE(guard).
             Expression pcInner = pcJoin(pc, gammaExpr(cond, env, lat))
@@ -3986,7 +4006,11 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         if (s instanceof ExpressionStatement) {
             Expression stmtExpr = ((ExpressionStatement) s).expression
+            if (handleRelyStep(stmtExpr, node)) return env     // a synthesised rely-step: havoc interfered slots, no flow
             checkCallSinks(stmtExpr, env, pc, lat, node)       // a bare sink call, or one in an assignment RHS
+            // An array store `arr[idx] = x`: record the element's data classification so a later control-field
+            // update that reclassifies it (the §III-A array secure-update) can check the held value is in range.
+            if (recordArrayStore(stmtExpr, env, pc, lat)) return env
             String[] nameHolder = new String[1]
             Expression rhs = assignTarget(stmtExpr, nameHolder)
             if (nameHolder[0] != null) {
@@ -3994,6 +4018,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 // classification), changing it must not leave a controlled variable holding data above its NEW
                 // classification. Checked against the pre-assignment Γ of each controlled variable.
                 checkSecureUpdate(nameHolder[0], rhs, env, lat, node)
+                checkArraySecureUpdate(nameHolder[0], rhs, lat, node)   // §III-A over array elements (boundary element)
                 Map<String, Expression> ne = copyEnv(env)
                 Expression g = gammaExpr(rhs, env, lat)
                 // An assignment under a non-⊥ PC raises the target to at least the PC (implicit flow). An
@@ -4004,6 +4029,7 @@ class VerifyChecker extends TypeCheckingExtension {
             return env                                     // a non-assigning statement expression: no flow effect
         }
         if (s instanceof WhileStatement || s instanceof DoWhileStatement || s instanceof ForStatement) {
+            arrayElemGamma.clear()                          // loop bodies re-run: positions are uncertain (see above)
             return walkLoop(s, env, pc, lat, outLevel, node)
         }
         throw new UnsupportedConstructException(
@@ -4126,11 +4152,127 @@ class VerifyChecker extends TypeCheckingExtension {
         }
     }
 
+    /** Record the data classification of the value stored by an array element write {@code arr[idx] = x} into
+     *  {@link #arrayElemGamma}, keyed {@code "arr[idxText]"}. Returns true iff {@code e} is such a store. */
+    private boolean recordArrayStore(Expression e, Map<String, Expression> env, Expression pc, ClassNode lat) {
+        if (!(e instanceof BinaryExpression) || ((BinaryExpression) e).operation.type != Types.ASSIGN) return false
+        BinaryExpression asgn = (BinaryExpression) e
+        if (!(asgn.leftExpression instanceof BinaryExpression)) return false
+        BinaryExpression lhs = (BinaryExpression) asgn.leftExpression
+        if (lhs.operation.type != Types.LEFT_SQUARE_BRACKET || !(lhs.leftExpression instanceof VariableExpression)) return false
+        String key = ((VariableExpression) lhs.leftExpression).name + '[' + lhs.rightExpression.text + ']'
+        Expression gx = gammaExpr(asgn.rightExpression, env, lat)
+        arrayElemGamma.put(key, gx == null ? null : pcJoin(gx, pc))
+        return true
+    }
+
+    /**
+     * §III-A secure-update over array elements. When {@code control := rhs} bumps a control field that some
+     * array's element label {@code @Label(by = 'm')} reads, the element at position {@code control} (the boundary
+     * slot — e.g. {@code values[tail]} as {@code tail} advances) is reclassified. It is secure only if the value
+     * it holds is within its NEW level: {@code leq( Γ(arr[control]), m(control, …, rhs) )}. The held level is what
+     * a preceding {@code arr[control] = x} wrote (tracked in {@link #arrayElemGamma}); with no tracked write, the
+     * slot's data is within its CURRENT label level {@code m(control, …current…)} (the info-flow invariant — every
+     * slot satisfies its own label), so that is the sound fallback. This makes a control-advance that pushes the
+     * slot to a HIGHER level (e.g. consuming: {@code head++} sends {@code values[head]} from Low to High) verify
+     * without a write, while still refuting a real downgrade of an unwritten (conservatively classified) slot.
+     */
+    private void checkArraySecureUpdate(String control, Expression rhs, ClassNode lat, MethodNode node) {
+        ClassNode dc = node.declaringClass
+        if (dc == null) return
+        for (FieldNode arr : dc.fields) {
+            String by = labelBy(arr)
+            if (by == null) continue
+            for (MethodNode m : dc.getMethods(by)) {
+                if (m.parameters.length < 1) break
+                boolean controls = false                                  // a non-index param named `control`?
+                for (int k = 1; k < m.parameters.length; k++) if (m.parameters[k].name == control) controls = true
+                if (!controls) break
+                String key = arr.name + '[' + control + ']'
+                // the boundary slot's new classification: m(control, …, rhs) — control param ↦ rhs (the post value)
+                Expression newClass = labelCallAt(m, by, control, rhs)
+                // its held level: a tracked write, else its current label level m(control, …current…) (pre-update)
+                Expression gammaElem = arrayElemGamma.get(key)
+                if (gammaElem == null) gammaElem = labelCallAt(m, by, control, new VariableExpression(control))
+                dischargeSecureUpdate(node, control, key, rhs, sameClassCall('leq', gammaElem, newClass))
+                break
+            }
+        }
+    }
+
+    /**
+     * Account for a synthesised {@code @UnderRely} rely-step call {@code $rely$Role()} in the info-flow walk. The
+     * step models the environment's interference: it havocs its {@code @Modifies} fields (subject to the rely
+     * relation). Any array slot we are tracking whose key references a havoced field could now denote a *different*
+     * slot, so forget it — sound under interference. Fields the rely pins ({@code f == old.f} in its {@code @Ensures},
+     * e.g. the producer's {@code tail}) are preserved, so {@code values[tail]} survives. Returns true iff a rely-step.
+     */
+    private boolean handleRelyStep(Expression stmtExpr, MethodNode node) {
+        String mname = (stmtExpr instanceof MethodCallExpression) ? ((MethodCallExpression) stmtExpr).methodAsString : null
+        if (mname == null || !mname.startsWith('$rely$')) return false
+        ClassNode dc = node.declaringClass
+        List<MethodNode> steps = (dc != null) ? dc.getMethods(mname) : null
+        if (steps == null || steps.isEmpty()) { arrayElemGamma.clear(); return true }   // unknown frame → forget all
+        Set<String> modified = modifiedNames(steps.get(0))
+        if (modified == null) { arrayElemGamma.clear(); return true }
+        Set<String> havoced = new HashSet<String>(modified)
+        havoced.removeAll(pinnedFields(steps.get(0)))                  // a pinned field (f == old.f) is not really havoced
+        if (havoced.isEmpty()) return true
+        Iterator<Map.Entry<String, Expression>> it = arrayElemGamma.entrySet().iterator()
+        while (it.hasNext()) {
+            String k = it.next().key
+            for (String f : havoced) if (k =~ ('\\b' + java.util.regex.Pattern.quote(f) + '\\b')) { it.remove(); break }
+        }
+        return true
+    }
+
+    /** Fields a rely-step's {@code @Ensures} pins unchanged — every {@code f == old.f} conjunct (either order). */
+    private Set<String> pinnedFields(MethodNode step) {
+        Set<String> out = new HashSet<String>()
+        Expression ens = contractAstFor(step, 'ensures')
+        if (ens == null) return out
+        ens.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression b) {
+                if (b.operation.type == Types.COMPARE_EQUAL) {
+                    String f = pinnedPair(b.leftExpression, b.rightExpression)
+                    if (f == null) f = pinnedPair(b.rightExpression, b.leftExpression)
+                    if (f != null) out.add(f)
+                }
+                super.visitBinaryExpression(b)
+            }
+        })
+        out
+    }
+
+    /** If {@code a} is a bare name {@code f} and {@code b} is {@code old.f}, that field name; else null. */
+    private static String pinnedPair(Expression a, Expression b) {
+        if (!(a instanceof VariableExpression) || !(b instanceof PropertyExpression)) return null
+        String name = ((VariableExpression) a).name
+        PropertyExpression p = (PropertyExpression) b
+        (p.objectExpression instanceof VariableExpression && ((VariableExpression) p.objectExpression).name == 'old'
+            && p.propertyAsString == name) ? name : null
+    }
+
+    /** A value-dependent label call {@code m(control, …)} over the boundary slot at index {@code control}; the
+     *  control param is bound to {@code controlVal} (the post value {@code rhs} for the new level, or the field
+     *  itself for the current level), every other control param to its own field name. */
+    private Expression labelCallAt(MethodNode m, String by, String control, Expression controlVal) {
+        List<Expression> args = new ArrayList<Expression>()
+        args.add(new VariableExpression(control))                         // index = boundary position (the control value)
+        for (int k = 1; k < m.parameters.length; k++) {
+            args.add(m.parameters[k].name == control ? controlVal : new VariableExpression(m.parameters[k].name))
+        }
+        new MethodCallExpression(new VariableExpression('this'), by, new ArgumentListExpression(args))
+    }
+
     /** Refute the secure-update obligation; VERIFIED ⇒ the control-variable assignment is secure, else a leak. */
     private void dischargeSecureUpdate(MethodNode node, String controlVar, String controlled, Expression rhs, Expression goal) {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
+            // The secure-update level may depend on the method's @Requires / class invariant (e.g. a buffer's
+            // `head <= tail` makes the boundary element's new level Low); assume them, plus the branch conditions.
+            assumePreAndInvariants(session, enc, node)
             assumeIfFacts(session, enc)
             Object g = enc.translateGoal(goal)
             if (g == null) {
@@ -4207,7 +4349,8 @@ class VerifyChecker extends TypeCheckingExtension {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
-            assumeIfFacts(session, enc)                    // assume the enclosing branch conditions (value-dependent levels)
+            assumePreAndInvariants(session, enc, node)      // @Requires + class invariant (e.g. head <= tail makes the slot Low)
+            assumeIfFacts(session, enc)                     // assume the enclosing branch conditions (value-dependent levels)
             Object g = enc.translateGoal(goal)
             if (g == null) {
                 addStaticTypeError(Reporter.formatLeakSkipped(node.name,
@@ -4222,6 +4365,15 @@ class VerifyChecker extends TypeCheckingExtension {
         } finally {
             try { session.close() } catch (Throwable ignored) {}
         }
+    }
+
+    /** Assume the method's {@code @Requires} and the class invariant into an info-flow discharge session. A
+     *  value-dependent classification (e.g. a buffer's region label {@code level(i, head, tail)}) is often only
+     *  resolvable under them — `head <= tail` is what makes the boundary slot {@code Low}. Best-effort. */
+    private void assumePreAndInvariants(SmtSession session, Encoder enc, MethodNode node) {
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+        if (reqAst != null) { Object pre = enc.translateBool(reqAst); if (pre != null) session.assertExpr(pre) }
+        assumeClassInvariants(session, enc)
     }
 
     /** Assume each enclosing path condition (a guard, possibly negated) into the discharge session, so a
@@ -4386,6 +4538,26 @@ class VerifyChecker extends TypeCheckingExtension {
         if (e instanceof VariableExpression) {
             return gammaEnv.get(((VariableExpression) e).name)   // null ⇒ untracked source
         }
+        if (e instanceof BinaryExpression &&
+            ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            // An array access `arr[idx]`: its element classification is value-dependent on the POSITION and the
+            // control fields — `@Label(by = 'm')` on the array, where `m`'s first parameter is the index and the
+            // rest bind by name to the control fields (the array analogue of the scalar `@Label(by=)`). So
+            // L(arr[idx]) = m(idx, <controls>); not a join of the array's and the index's own levels.
+            BinaryExpression acc = (BinaryExpression) e
+            if (acc.leftExpression instanceof VariableExpression) {
+                MethodNode by = arrayElementLabelMethod(((VariableExpression) acc.leftExpression).name)
+                if (by != null && by.parameters.length >= 1) {
+                    List<Expression> args = new ArrayList<Expression>()
+                    args.add(acc.rightExpression)                            // the index
+                    for (int k = 1; k < by.parameters.length; k++) {
+                        args.add(new VariableExpression(by.parameters[k].name))   // control fields by name
+                    }
+                    return new MethodCallExpression(new VariableExpression('this'), by.name, new ArgumentListExpression(args))
+                }
+            }
+            return null                                              // unlabelled array access → untracked
+        }
         if (e instanceof BinaryExpression) {
             BinaryExpression b = (BinaryExpression) e
             Expression gl = gammaExpr(b.leftExpression, gammaEnv, lat)
@@ -4394,6 +4566,22 @@ class VerifyChecker extends TypeCheckingExtension {
             return sameClassCall('join', gl, gr)
         }
         null
+    }
+
+    /** For an array named {@code arrName} carrying {@code @Label(by = 'm')} (a position-dependent element label),
+     *  the classification method {@code m}; null otherwise. Looks at the current method's parameters then its
+     *  declaring class's fields. {@code m}'s first parameter is the index; the rest are control vars bound by name. */
+    private MethodNode arrayElementLabelMethod(String arrName) {
+        if (currentMethod == null) return null
+        org.codehaus.groovy.ast.AnnotatedNode decl = null
+        for (Parameter p : currentMethod.parameters) if (p.name == arrName) { decl = p; break }
+        ClassNode dc = currentMethod.declaringClass
+        if (decl == null && dc != null) for (FieldNode f : dc.fields) if (f.name == arrName) { decl = f; break }
+        if (decl == null || dc == null) return null
+        String by = labelBy(decl)
+        if (by == null) return null
+        List<MethodNode> ms = dc.getMethods(by)
+        ms.isEmpty() ? null : ms.get(0)
     }
 
     /** If {@code e} is an explicit declassification {@code Declassify.to('Level', value)}, the released level
