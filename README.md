@@ -2379,13 +2379,13 @@ class Service {
     static boolean leq(L a, L b) { a == L.Low || b == L.High }
     static L join(L a, L b) { leq(a, b) ? b : a }
 
-    static void handle(@verification.Label('High') int secret) {
+    static void handle(@Label('High') int secret) {
         Audit.log(secret)                                       // REFUTED — a secret reaches a public sink
     }
 }
 
 class Audit {                                                   // the sink, in its own class
-    static void log(@verification.Label('Low') int x) { /* … to a public channel … */ }
+    static void log(@Label('Low') int x) { /* … to a public channel … */ }
 }
 ```
 
@@ -2403,9 +2403,9 @@ sink* — through control flow. Branching on a secret raises a program-counter l
 assigned (or any sink called) there is tainted by *which branch ran*:
 
 ```groovy
-    @verification.Label('Low')
-    static int implicit(@verification.Label('High') boolean secret,
-                        @verification.Label('Low') int a, @verification.Label('Low') int b) {
+    @Label('Low')
+    static int implicit(@Label('High') boolean secret,
+                        @Label('Low') int a, @Label('Low') int b) {
         int t = a
         if (secret) t = a else t = b                             // t now reveals `secret`…
         return t                                                 // REFUTED — though only Low values are ever assigned
@@ -2417,8 +2417,8 @@ doesn't cry wolf:** the PC is *scoped* to the branch, so a low value that doesn'
 fine afterwards:
 
 ```groovy
-    @verification.Label('Low')
-    static int scoped(@verification.Label('High') boolean secret, @verification.Label('Low') int pub) {
+    @Label('Low')
+    static int scoped(@Label('High') boolean secret, @Label('Low') int pub) {
         int t = pub
         if (secret) { int unused = pub }                         // branch on a secret, but t is untouched
         return t                                                 // VERIFIED — t never depended on it
@@ -2436,9 +2436,9 @@ Declare `data` secret *unless authenticated*:
 ```groovy
     static L classifyData(boolean authed) { authed ? L.Low : L.High }   // value-dependent classification
 
-    @verification.Label('Low')
-    static int get(boolean authed, @verification.Label(by = 'classifyData') int data,
-                   @verification.Label('Low') int fallback) {
+    @Label('Low')
+    static int get(boolean authed, @Label(by = 'classifyData') int data,
+                   @Label('Low') int fallback) {
         if (authed) return data                                  // VERIFIED — under the check, L(data) == Low
         return fallback
     }
@@ -2453,7 +2453,7 @@ And the dual bug — changing the *control* variable to make the classification 
 secret — is caught too:
 
 ```groovy
-    static void declassify(boolean authed, @verification.Label(by = 'classifyData') int data) {
+    static void declassify(boolean authed, @Label(by = 'classifyData') int data) {
         authed = true                                            // REFUTED — L(data) becomes Low, but data may hold High
     }
 ```
@@ -2465,8 +2465,8 @@ Sometimes a release is *intended* — a password checker must reveal whether the
 **declassification**, and here it's an explicit, greppable act rather than an invisible cast:
 
 ```groovy
-    @verification.Label('Low')
-    static boolean check(@verification.Label('High') int password, @verification.Label('Low') int guess) {
+    @Label('Low')
+    static boolean check(@Label('High') int password, @Label('Low') int guess) {
         return Declassify.to('Low', password == guess)           // release one bit — verified
     }
 ```
@@ -2634,8 +2634,8 @@ bad ones fail with the expected diagnostic. The cases are a single compact data 
 `@TestFactory` turns each into an individually-named, individually-runnable JUnit test (`group :: name`),
 and `main` runs the same list as the compact console summary — both share one judging path, so the data
 lives in exactly one place. A process-wide VC cache (Phase 34) keys
-Z3 results on the canonicalised asserted-set so suite-wide duplicates skip the solver;
-the suite currently rebates ~18 % wall-clock at a 20 % hit rate.
+Z3 results on the canonicalised asserted-set so suite-wide duplicates skip the solver
+(measured at ~18 % wall-clock saved on a ~20 % hit rate when the cache landed).
 
 ## Using it in your own build
 
@@ -3153,7 +3153,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |
 | `Label` / `Declassify` | the `@Label('level')` / `@Label(by = 'm')` security classification (constant or value-dependent) on a parameter / method result / sink, and `Declassify.to(level, expr)` for explicit controlled release — driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
 | `Rely` / `Guarantee` | `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state; the verifier auto-discharges the §IV rely/guarantee *compatibility* lemmas (reflexive/transitive relies, `G_i ⟹ R_j`) — the gluing logic, not the interleaving proof (Phase L1) |
-| `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses |
+| `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` / `SelfEnsures` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses; also desugars `@SelfEnsures` into a captured `@Ensures({ result == <verbatim body> })` so a self-specifying body is written once (prototype) |
 | `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
 | `Reporter` | OpenJML-style diagnostics with inline counterexamples |
 

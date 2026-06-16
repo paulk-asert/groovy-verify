@@ -53,6 +53,10 @@ class VerifyHarness {
         import verification.Lcm
         import verification.CheckOverflow
         import verification.Declassify
+        import verification.Label
+        import verification.SelfEnsures
+        import verification.Rely
+        import verification.Guarantee
     '''.stripIndent()
 
     /** A contracted producer reused by the cross-call precondition cases. */
@@ -4605,7 +4609,7 @@ class WrapCounter implements Counter { }
         // loop invariant). This is the full pretty FizzBuzz, numbers and all, machine-checked element by element:
         [group: 'P-fizzbuzz', name: 'FizzBuzz array-fill with number default (n.toString)', ok: true,
          src: tc('''class FizzBuzz {
-                        @verification.SelfEnsures
+                        @SelfEnsures
                         static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
                         @Requires({ upTo >= 1 })
                         @Ensures({ result.length == upTo })
@@ -10279,8 +10283,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int pass(@verification.Label('Low') int pub, @verification.Label('High') int secret) { return pub }
+                        @Label('Low')
+                        static int pass(@Label('Low') int pub, @Label('High') int secret) { return pub }
                     }''')],
         // The headline: a High parameter returned where the result is classified Low — refuted.
         [group: 'PL1 infoflow', name: 'High source → Low result refuted (leak caught)', expect: 'information leak',
@@ -10288,8 +10292,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int leak(@verification.Label('Low') int pub, @verification.Label('High') int secret) { return secret }
+                        @Label('Low')
+                        static int leak(@Label('Low') int pub, @Label('High') int secret) { return secret }
                     }''')],
         // A High result accepts anything (High is the top): High source → High result verifies.
         [group: 'PL1 infoflow', name: 'High source → High result verifies', ok: true,
@@ -10297,8 +10301,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('High')
-                        static int hi(@verification.Label('High') int secret) { return secret }
+                        @Label('High')
+                        static int hi(@Label('High') int secret) { return secret }
                     }''')],
         // Compound source: join of operand levels. `pub + secret` is High (Low ⊔ High), so a Low result refutes.
         [group: 'PL1 infoflow', name: 'join of sources (pub + secret) → Low result refuted', expect: 'information leak',
@@ -10306,8 +10310,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int combine(@verification.Label('Low') int pub, @verification.Label('High') int secret) { return pub + secret }
+                        @Label('Low')
+                        static int combine(@Label('Low') int pub, @Label('High') int secret) { return pub + secret }
                     }''')],
         // Loud-skip soundness: a return drawing on an unlabelled source is not silently passed — it is skipped.
         [group: 'PL1 infoflow', name: 'unlabelled source skips loudly (not a silent pass)', expect: 'Skipped information-flow check',
@@ -10315,7 +10319,7 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
+                        @Label('Low')
                         static int unlabelled(int x) { return x }
                     }''')],
 
@@ -10326,8 +10330,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int launder(@verification.Label('High') int secret) { int t = secret; return t }
+                        @Label('Low')
+                        static int launder(@Label('High') int secret) { int t = secret; return t }
                     }''')],
         // A Low value through a local stays Low → verifies.
         [group: 'PL1 infoflow', name: '1b: Low via local verifies', ok: true,
@@ -10335,8 +10339,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int via(@verification.Label('Low') int pub) { int t = pub; return t }
+                        @Label('Low')
+                        static int via(@Label('Low') int pub) { int t = pub; return t }
                     }''')],
         // Reassignment: Γ reflects the *current* contents — t is overwritten with a Low value before return, so
         // the earlier High assignment does not leak. (Last write wins on a straight-line path.)
@@ -10345,8 +10349,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int over(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
+                        @Label('Low')
+                        static int over(@Label('Low') int pub, @Label('High') int secret) {
                             int t = secret
                             t = pub
                             return t
@@ -10358,8 +10362,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int chain(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
+                        @Label('Low')
+                        static int chain(@Label('Low') int pub, @Label('High') int secret) {
                             int t = secret
                             int u = t
                             return u + pub
@@ -10375,9 +10379,9 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int implicit(@verification.Label('High') boolean secret,
-                                            @verification.Label('Low') int a, @verification.Label('Low') int b) {
+                        @Label('Low')
+                        static int implicit(@Label('High') boolean secret,
+                                            @Label('Low') int a, @Label('Low') int b) {
                             int t = a
                             if (secret) t = a else t = b
                             return t
@@ -10389,9 +10393,9 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int branchReturn(@verification.Label('High') boolean secret,
-                                                @verification.Label('Low') int a, @verification.Label('Low') int b) {
+                        @Label('Low')
+                        static int branchReturn(@Label('High') boolean secret,
+                                                @Label('Low') int a, @Label('Low') int b) {
                             if (secret) return a else return b
                         }
                     }''')],
@@ -10402,8 +10406,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int scoped(@verification.Label('High') boolean secret, @verification.Label('Low') int pub) {
+                        @Label('Low')
+                        static int scoped(@Label('High') boolean secret, @Label('Low') int pub) {
                             int t = pub
                             if (secret) { int dummy = pub }
                             return t
@@ -10415,9 +10419,9 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int pubGuard(@verification.Label('Low') boolean flag,
-                                            @verification.Label('Low') int a, @verification.Label('Low') int b) {
+                        @Label('Low')
+                        static int pubGuard(@Label('Low') boolean flag,
+                                            @Label('Low') int a, @Label('Low') int b) {
                             int t = a
                             if (flag) t = a else t = b
                             return t
@@ -10430,8 +10434,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int loopy(@verification.Label('Low') int pub) {
+                        @Label('Low')
+                        static int loopy(@Label('Low') int pub) {
                             int t = pub
                             for (int i = 0; i < 3; i++) { t = pub }
                             return t
@@ -10443,8 +10447,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int loopy(@verification.Label('Low') int pub, @verification.Label('High') int secret) {
+                        @Label('Low')
+                        static int loopy(@Label('Low') int pub, @Label('High') int secret) {
                             int t = pub
                             while (t > 0) { t = secret }
                             return t
@@ -10456,8 +10460,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int countdown(@verification.Label('Low') int n) {
+                        @Label('Low')
+                        static int countdown(@Label('Low') int n) {
                             int t = n
                             while (t > 0) { t = t - 1 }
                             return t
@@ -10470,8 +10474,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int countSecret(@verification.Label('High') int secret, @verification.Label('Low') int pub) {
+                        @Label('Low')
+                        static int countSecret(@Label('High') int secret, @Label('Low') int pub) {
                             int t = pub
                             int s = secret
                             while (s > 0) { t = pub; s = s - 1 }
@@ -10484,8 +10488,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int eachLoop(@verification.Label('Low') int pub, List<Integer> xs) {
+                        @Label('Low')
+                        static int eachLoop(@Label('Low') int pub, List<Integer> xs) {
                             int t = pub
                             for (x in xs) { t = pub }
                             return t
@@ -10581,18 +10585,18 @@ class WrapCounter implements Counter { }
         // ----- @SelfEnsures — the (single-expression) body IS the postcondition (prototype) -----
         // The body is lifted into `result == body`; it verifies (vacuous equality + real totality on the body).
         [group: 'PL-selfensures', name: 'self: expression body verifies (derived result == body)', ok: true,
-         src: tc('''class C { @verification.SelfEnsures static int dbl(int x) { x * 2 } }''')],
+         src: tc('''class C { @SelfEnsures static int dbl(int x) { x * 2 } }''')],
         // The derived equation feeds the @Reducer monoid-law proof — no hand-written @Ensures({ result == a + b }).
         [group: 'PL-selfensures', name: 'self: @Reducer reads the body equation, monoid laws prove', ok: true,
          src: tc('''class C {
                         @groovy.transform.Reducer(zero = '0')
-                        @verification.SelfEnsures
+                        @SelfEnsures
                         static int add(int a, int b) { a + b }
                     }''')],
         // A @SelfEnsures combiner used in another method's contract — equivalent to the @Ensures form.
         [group: 'PL-selfensures', name: 'self: combiner used in a contract (equivalent to @Ensures)', ok: true,
          src: tc('''class C {
-                        @verification.SelfEnsures
+                        @SelfEnsures
                         static String glue(String a, String b) { a + b }
                         @Ensures({ glue(s, t) == s + t })
                         static void check(String s, String t) { }
@@ -10602,12 +10606,12 @@ class WrapCounter implements Counter { }
         [group: 'PL-selfensures', name: 'self: @Associative on a subtraction body refutes (equation used)', expect: 'Cannot prove @Reducer associativity',
          src: tc('''class C {
                         @groovy.transform.Associative
-                        @verification.SelfEnsures
+                        @SelfEnsures
                         static int sub(int a, int b) { a - b }
                     }''')],
         // Loud error: @SelfEnsures on a non-expression (multi-statement) body — there's no single expression to lift.
         [group: 'PL-selfensures', name: 'self: non-expression body is a loud error', expect: '@SelfEnsures requires a single-expression body',
-         src: tc('''class C { @verification.SelfEnsures static int f(int x) { int y = x + 1; return y } }''')],
+         src: tc('''class C { @SelfEnsures static int f(int x) { int y = x + 1; return y } }''')],
 
         // ----- Groovy truth in contract/assert position (non-boolean coerced as Groovy does) -----
         // An empty String is Groovy-false, so `@Ensures({ result })` returning "" must REFUTE (previously crashed).
@@ -10655,28 +10659,28 @@ class WrapCounter implements Counter { }
         // well-formed, compatible set compiles cleanly.
         [group: 'PL1 rg', name: 'rg: producer/consumer conditions are compatible (verifies)', ok: true,
          src: tc('''class Buffer {
-                        @verification.Rely('Consumer')      static boolean rCons(int oh, int ot, int h, int t) { h == oh && ot <= t }
-                        @verification.Guarantee('Producer') static boolean gProd(int oh, int ot, int h, int t) { h == oh && ot <= t }
-                        @verification.Rely('Producer')      static boolean rProd(int oh, int ot, int h, int t) { t == ot }
-                        @verification.Guarantee('Consumer') static boolean gCons(int oh, int ot, int h, int t) { t == ot && oh <= h }
+                        @Rely('Consumer')      static boolean rCons(int oh, int ot, int h, int t) { h == oh && ot <= t }
+                        @Guarantee('Producer') static boolean gProd(int oh, int ot, int h, int t) { h == oh && ot <= t }
+                        @Rely('Producer')      static boolean rProd(int oh, int ot, int h, int t) { t == ot }
+                        @Guarantee('Consumer') static boolean gCons(int oh, int ot, int h, int t) { t == ot && oh <= h }
                     }''')],
         // Incompatible: the producer's guarantee no longer keeps `head` fixed, so it fails to imply the consumer's
         // rely (which requires head == oh) — G_Producer ⟹ R_Consumer refutes.
         [group: 'PL1 rg', name: 'rg: producer guarantee not implying consumer rely refutes', expect: 'Rely/guarantee compatibility does not hold',
          src: tc('''class Buffer {
-                        @verification.Rely('Consumer')      static boolean rCons(int oh, int ot, int h, int t) { h == oh && ot <= t }
-                        @verification.Guarantee('Producer') static boolean gProd(int oh, int ot, int h, int t) { ot <= t }
+                        @Rely('Consumer')      static boolean rCons(int oh, int ot, int h, int t) { h == oh && ot <= t }
+                        @Guarantee('Producer') static boolean gProd(int oh, int ot, int h, int t) { ot <= t }
                     }''')],
         // Ill-formed: a rely that demands the environment *increment* head is not reflexive (it forbids "no change")
         // — reflexivity refutes.
         [group: 'PL1 rg', name: 'rg: non-reflexive rely refutes', expect: 'Rely/guarantee compatibility does not hold',
          src: tc('''class Buffer {
-                        @verification.Rely('T')             static boolean rBad(int oh, int h) { h == oh + 1 }
+                        @Rely('T')             static boolean rBad(int oh, int h) { h == oh + 1 }
                     }''')],
         // Ill-formed: a rely that is not transitive — "tail stays within one of its old value" doesn't compose.
         [group: 'PL1 rg', name: 'rg: non-transitive rely refutes', expect: 'Rely/guarantee compatibility does not hold',
          src: tc('''class Buffer {
-                        @verification.Rely('T')             static boolean rNT(int ot, int t) { t <= ot + 1 && ot <= t }
+                        @Rely('T')             static boolean rNT(int ot, int t) { t <= ot + 1 && ot <= t }
                     }''')],
 
         // ----- Control-variable / secure-update (Smith §III-A) -----
@@ -10690,7 +10694,7 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        static void declassify(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                        static void declassify(boolean authed, @Label(by = 'classifyData') int data) {
                             authed = true
                         }
                     }''')],
@@ -10702,7 +10706,7 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        static void protect(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                        static void protect(boolean authed, @Label(by = 'classifyData') int data) {
                             authed = false
                         }
                     }''')],
@@ -10714,7 +10718,7 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        static void f(boolean authed, boolean other, @verification.Label(by = 'classifyData') int data) {
+                        static void f(boolean authed, boolean other, @Label(by = 'classifyData') int data) {
                             other = true
                         }
                     }''')],
@@ -10728,8 +10732,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static boolean check(@verification.Label('High') int password, @verification.Label('Low') int guess) {
+                        @Label('Low')
+                        static boolean check(@Label('High') int password, @Label('Low') int guess) {
                             return Declassify.to('Low', password == guess)
                         }
                     }''')],
@@ -10740,8 +10744,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static boolean check(@verification.Label('High') int password, @verification.Label('Low') int guess) {
+                        @Label('Low')
+                        static boolean check(@Label('High') int password, @Label('Low') int guess) {
                             return password == guess
                         }
                     }''')],
@@ -10751,12 +10755,12 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void audit(@verification.Label('High') int secret, @verification.Label('Low') int pub) {
+                        static void audit(@Label('High') int secret, @Label('Low') int pub) {
                             Audit.log(Declassify.to('Low', secret == pub))
                         }
                     }
                     class Audit {
-                        static void log(@verification.Label('Low') boolean x) { }
+                        static void log(@Label('Low') boolean x) { }
                     }''')],
         // Soundness control: declassifying to 'High' does NOT launder a secret to a Low result — releasing the
         // secret at High still exceeds the Low classification → refuted. The marker releases at the *named* level,
@@ -10766,8 +10770,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        @verification.Label('Low')
-                        static int passthrough(@verification.Label('High') int secret) {
+                        @Label('Low')
+                        static int passthrough(@Label('High') int secret) {
                             return Declassify.to('High', secret)
                         }
                     }''')],
@@ -10781,8 +10785,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void sink(@verification.Label('Low') int x) { }     // a public sink
-                        static void leak(@verification.Label('High') int secret) { sink(secret) }
+                        static void sink(@Label('Low') int x) { }     // a public sink
+                        static void leak(@Label('High') int secret) { sink(secret) }
                     }''')],
         // A Low argument into the same Low sink is fine.
         [group: 'PL1 infoflow', name: 'interproc: Low arg → Low sink verifies', ok: true,
@@ -10790,8 +10794,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void sink(@verification.Label('Low') int x) { }
-                        static void send(@verification.Label('Low') int pub) { sink(pub) }
+                        static void sink(@Label('Low') int x) { }
+                        static void send(@Label('Low') int pub) { sink(pub) }
                     }''')],
         // Launder through a local, then into the sink — still High at the boundary, refuted (1b + interproc).
         [group: 'PL1 infoflow', name: 'interproc: laundered local into Low sink refuted', expect: 'information leak',
@@ -10799,8 +10803,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void sink(@verification.Label('Low') int x) { }
-                        static void leak(@verification.Label('High') int secret) { int t = secret; sink(t) }
+                        static void sink(@Label('Low') int x) { }
+                        static void leak(@Label('High') int secret) { int t = secret; sink(t) }
                     }''')],
         // Implicit flow into a sink: a Low value passed to a Low sink *under a secret branch* leaks (the call
         // happening reveals the branch) — refuted via the PC (1c + interproc).
@@ -10809,8 +10813,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void sink(@verification.Label('Low') int x) { }
-                        static void cond(@verification.Label('High') boolean secret, @verification.Label('Low') int pub) {
+                        static void sink(@Label('Low') int x) { }
+                        static void cond(@Label('High') boolean secret, @Label('Low') int pub) {
                             if (secret) sink(pub)
                         }
                     }''')],
@@ -10820,8 +10824,8 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void sink(@verification.Label('Low') int x) { }
-                        static void pass(@verification.Label('Low') int pub, int other) { sink(other) }
+                        static void sink(@Label('Low') int x) { }
+                        static void pass(@Label('Low') int pub, int other) { sink(other) }
                     }''')],
 
         // ----- Cross-class sinks — the sink lives in another class (the library-call shape) -----
@@ -10833,10 +10837,10 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void leak(@verification.Label('High') int secret) { Audit.log(secret) }
+                        static void leak(@Label('High') int secret) { Audit.log(secret) }
                     }
                     class Audit {
-                        static void log(@verification.Label('Low') int x) { }
+                        static void log(@Label('Low') int x) { }
                     }''')],
         // A Low value into the same cross-class sink verifies.
         [group: 'PL1 infoflow', name: 'cross-class: Low arg → Low sink verifies', ok: true,
@@ -10844,10 +10848,10 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static void send(@verification.Label('Low') int pub) { Audit.log(pub) }
+                        static void send(@Label('Low') int pub) { Audit.log(pub) }
                     }
                     class Audit {
-                        static void log(@verification.Label('Low') int x) { }
+                        static void log(@Label('Low') int x) { }
                     }''')],
         // Instance receiver of a known object-parameter type: log.write(secret) where `log` is a Logger param —
         // resolved via the receiver's declared type, refuted just the same.
@@ -10856,10 +10860,10 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        void leak(Logger log, @verification.Label('High') int secret) { log.write(secret) }
+                        void leak(Logger log, @Label('High') int secret) { log.write(secret) }
                     }
                     class Logger {
-                        void write(@verification.Label('Low') int x) { }
+                        void write(@Label('Low') int x) { }
                     }''')],
 
         // ----- Value-dependent classifications — L(x) depends on program state (Smith §III-A) -----
@@ -10872,9 +10876,9 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        @verification.Label('Low')
-                        static int get(boolean authed, @verification.Label(by = 'classifyData') int data,
-                                       @verification.Label('Low') int fallback) {
+                        @Label('Low')
+                        static int get(boolean authed, @Label(by = 'classifyData') int data,
+                                       @Label('Low') int fallback) {
                             if (authed) return data
                             return fallback
                         }
@@ -10888,8 +10892,8 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        @verification.Label('Low')
-                        static int get(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                        @Label('Low')
+                        static int get(boolean authed, @Label(by = 'classifyData') int data) {
                             return data
                         }
                     }''')],
@@ -10900,12 +10904,12 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        static void serve(boolean authed, @verification.Label(by = 'classifyData') int data) {
+                        static void serve(boolean authed, @Label(by = 'classifyData') int data) {
                             if (authed) Audit.log(data)
                         }
                     }
                     class Audit {
-                        static void log(@verification.Label('Low') int x) { }
+                        static void log(@Label('Low') int x) { }
                     }''')],
         // The wrong guard does not help: guarding on an unrelated condition leaves L(data) able to be High → refuted.
         [group: 'PL1 infoflow', name: 'value-dependent: wrong guard does not declassify (refuted)', expect: 'information leak',
@@ -10914,8 +10918,8 @@ class WrapCounter implements Counter { }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
-                        @verification.Label('Low')
-                        static int get(boolean authed, boolean other, @verification.Label(by = 'classifyData') int data) {
+                        @Label('Low')
+                        static int get(boolean authed, boolean other, @Label(by = 'classifyData') int data) {
                             if (other) return data
                             return data
                         }
