@@ -210,6 +210,28 @@ recursive form), the runtime is a **stack-safe loop** (the `@TailRecursive` rewr
 still **runs at runtime** — groovy-contracts inlines its check at the rewritten return, so the
 executable-spec dual-tenet survives even after another AST transform has restructured the body.
 
+> [!NOTE]
+> **A Groovy aside — the loop `@TailRecursive` generates (the form the proof never sees).** The transform runs
+> at `SEMANTIC_ANALYSIS`, *after* the verifier has snapshotted the body at `CONVERSION`, and rewrites the tail
+> call into a reassign-and-loop so the runtime never grows the stack. Roughly:
+>
+> ```groovy
+> static long factHelper(long n, long acc) {
+>     while (true) {                     // @TailRecursive wraps the body in a loop
+>         if (n <= 1) return acc
+>         long next = n * acc
+>         long _n = n - 1, _acc = next   // `return factHelper(n - 1, next)` becomes:
+>         n = _n; acc = _acc             //   reassign the parameters to the call's arguments…
+>         continue                       //   …and loop back, instead of recursing deeper
+>     }
+> }
+> ```
+>
+> So the verifier proves the *recursive* form above (induction via `@Decreases`) while Groovy executes *this*
+> form (constant stack). Same source, two readings — and it's exactly why the lock (`@WithWriteLock`) and rely
+> (`@UnderRely`) transforms can be "transparent" in the same way: the contract and the clean body are captured
+> *before* any of these transforms rewrite it, so each verifies the form you wrote, not the one that runs.
+
 The same machinery handles **aggregation** — and running totals are a classic source of *silently
 wrong* answers (an off-by-one or a forgotten element yields a plausible-but-wrong number, with no
 exception to flag it). Here the loop invariant carries a *prefix sum* `xs[0..<i].sum()` (the idiomatic
@@ -1963,6 +1985,24 @@ single-assignment makes the schedule irrelevant. The functional value `a + b` th
 wrong claim (`result == a`) still refutes with a counterexample. As with locks and actors, we assume the
 structural guarantee (here, that each variable really is bound once) and never prove deadlock-freedom or
 termination — only the value the network computes, given that it computes one.
+
+> [!NOTE]
+> **The straight-line form the verifier actually sees.** That desugaring isn't pseudocode — the whole concurrent
+> network above collapses to three assignments, and *that* is what the SMT backend reasons about:
+>
+> ```groovy
+> int dataflowSum(int a, int b) {   // @Ensures({ result == a + b })
+>     x = a            // `x << a`                  — the single binding (new DataflowVariable() drops out)
+>     y = b            // `y << b`
+>     z = x + y        // `z << x.get() + y.get()`  — `.get()` is just the bound value; the async{} blocks flattened
+>     return z         // `z.get()`
+> }
+> ```
+>
+> `a + b` then proves by ordinary sequential reasoning — sound *precisely because* single-assignment makes every
+> schedule produce this same body. (The `Channels` example below is the same trick over a pipeline: `src.send(x)`
+> becomes `src = x`, each `map { f }` becomes `f` applied to the upstream value, so the network collapses to the
+> composition `(x + 1) * 2`.)
 
 ### Channels — the per-element transform via FIFO
 
