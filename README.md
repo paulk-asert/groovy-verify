@@ -1849,13 +1849,15 @@ What we *never* prove is the structural half itself — no mutual exclusion, no 
 termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
 "prove half the property" results: the half SMT can discharge, which is usually the functional one.
 
-There is one further sliver of the *rely/guarantee* story that **is** pure logic, so we do check it:
-`@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state, with the verifier auto-discharging the
-rely/guarantee **compatibility lemmas** — each rely reflexive and transitive, each guarantee reflexive, and every
-thread's guarantee implying every *other* thread's rely (`G_i ⟹ R_j`). That certifies the rely/guarantee *conditions*
-compose — the gluing logic of thread-local reasoning — but it still doesn't prove the threads' *code* respects
-them (the havoc-under-rely interleaving proof is the part that stays out). The producer/consumer below is the
-worked example.
+The *rely/guarantee* story goes further than the four above — here we prove **both halves**. First, the
+**compatibility lemmas** are pure logic: `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state,
+with the verifier auto-discharging that each rely is reflexive and transitive, each guarantee reflexive, and every
+thread's guarantee implies every *other* thread's rely (`G_i ⟹ R_j`) — certifying the rely/guarantee *conditions*
+compose. Second — and this is newer — the per-thread **interleaving proof** itself now runs for Int shared state:
+a rely-step is `@Modifies` (havoc the shared frame) + `@Ensures` over `old` (assume the rely), so each thread's
+*code* is checked to stay safe across the environment's interference. The concurrent bounded buffer below proves a
+real memory-safety property — no out-of-bounds access under a concurrent peer — both ways. What still stays out is
+the *scheduler* itself: that the threads really are concurrently interleaved with the assumed atomicity.
 
 ### Locks — the monitor invariant
 
@@ -1980,7 +1982,7 @@ value.) The functional transform `(x + 1) * 2` proves; claim `result == x + 1` i
 counterexample. As everywhere in this section, FIFO delivery is the assumed half — we prove *what each element
 becomes*, not that the channel delivers or terminates.
 
-### Rely/guarantee — proving the conditions compose
+### Rely/guarantee — the conditions compose, and the bodies uphold them
 
 The producer/consumer is the capstone case study of the information-flow paper this work follows — Smith's
 *A Dafny-based approach to thread-local information flow analysis*. Most of that case study is machine-checked by
@@ -2017,41 +2019,62 @@ move the consumer's read pointer) and it no longer implies the consumer's rely:
 ```
 
 That is the **gluing logic** of thread-local reasoning — the §IV *compatibility* half. The other half is the
-per-thread *interleaving* proof: re-checking that each thread's body keeps its guarantee while the environment
-runs between its statements. The paper models that by **instrumenting** the body — between statements a `rely()`
-step (havoc the shared state, assume the rely), and after each a guarantee assertion. For **Int shared state that
-instrumented body now machine-checks**, because a rely-step is just a *framed assume* — `@Modifies` (the havoc
-frame) plus `@Ensures` over `old` (the assumed relation) — which the obligation checker havocs-then-assumes at the
-call, exactly as the paper prescribes:
+per-thread *interleaving* proof: re-checking that each thread's body stays safe while the other thread runs
+between its statements. The paper models that by **instrumenting** the body with a `rely()` step (havoc the
+shared state, assume the rely) before each access — and a rely-step is just a *framed assume*, `@Modifies` (the
+havoc frame) plus `@Ensures` over `old` (the assumed relation), which the obligation checker havocs-then-assumes
+at the call. So for **Int shared state that instrumented proof now runs** — on a *real* safety property: a
+concurrent bounded buffer whose reader and writer are each proven free of **out-of-bounds access**.
 
 ```groovy
-class Buffer {
+@Invariant({ 0 <= head && head <= tail && tail <= values.length })   // the bounded-buffer invariant
+class Ring {
     int head, tail
-    @Modifies({ [this.head, this.tail] })
-    @Ensures({ head == old.head && old.tail <= tail })   // the rely: env keeps head, only grows the buffer
-    void relyConsumer() {}                               // models the environment (empty body: a rely is reflexive)
+    int[] values
 
-    @Requires({ head < tail })                           // an element is available on entry
-    @Modifies({ [this.head, this.tail] })
-    void step() {
-        relyConsumer()                                   // the environment runs: head/tail havoced under the rely
-        int t = tail                                     // snapshot, for the guarantee
-        head = head + 1                                  // consume one — SSA-versioned, not a stale binding
-        assert head <= tail                              // in-segment obligation: holds because the rely pins head
-        assert tail == t                                 // guarantee: I advanced head, never touched tail
+    @Modifies({ [this.head, this.tail] })       // the writer's guarantee = the reader's rely:
+    @Ensures({ head == old.head && old.tail <= tail && tail <= values.length })
+    void relyOnWriter() {}                       //   writer keeps my read pointer, only appends, within capacity
+    @Modifies({ [this.head, this.tail] })       // the reader's guarantee = the writer's rely:
+    @Ensures({ tail == old.tail && old.head <= head && head <= tail })
+    void relyOnReader() {}                       //   reader keeps my write pointer, only advances head
+
+    @Requires({ head < tail })                   // an element is available
+    int read() {
+        relyOnWriter()                           // a concurrent write may have happened
+        int v = values[head]                     // ← PROVEN in bounds, despite the concurrent writer
+        head = head + 1
+        return v
+    }
+
+    @Requires({ tail < values.length })          // room to append
+    void write(int x) {
+        relyOnReader()                           // a concurrent read may have happened
+        values[tail] = x                         // ← PROVEN in bounds, despite the concurrent reader
+        tail = tail + 1
     }
 }
 ```
 
-This **verifies**. The `relyConsumer()` call havocs `head`/`tail` and assumes the rely, so `head <= tail` is
-*re-established by* the rely rather than assumed unchanged; the `head++` is symbolically versioned; and the
-guarantee `tail == t` discharges against the snapshot. Drop `head == old.head` from the rely and `head <= tail`
-refutes — the producer could move the read pointer past `tail`. What stays out is the **orchestration** (a
-transform could emit the `relyConsumer()` calls from the `@Rely`/`@Guarantee` predicates above) and modelling
-`head`/`tail` as genuinely concurrent — a structural assumption like the lock examples.
+This **verifies**. At `values[head]` the obligation is `0 <= head < values.length`; the `relyOnWriter()` call
+havocs `head`/`tail` and assumes the rely, so `head == old.head` (the writer never touched my read pointer) and
+the entry invariant `old.head < old.tail <= values.length` together still give `head < values.length` — the read
+is in bounds *across the concurrent write*. The `head++` is symbolically versioned, and `read()` re-establishes
+the class invariant on exit; the writer is the mirror image. **Weaken either rely and the safety is gone** — and
+the load-bearing conjunct is exactly the neighbour's promise about *your* pointer: drop `head == old.head` (let
+the writer move the read pointer past the buffer) and `values[head]` refutes; drop `tail == old.tail` (let the
+reader move the write pointer past capacity) and `values[tail]` refutes — each with an out-of-bounds
+counterexample.
 
-The sidebar below sets this same shape inside the *full* §VII body, where each step also carries an
-information-flow obligation — the part that is still illustration.
+This closes the loop with the compatibility lemmas above: each rely-step's `@Ensures` *is* the neighbour's
+`@Guarantee` — `relyOnWriter` mirrors `gProd`, `relyOnReader` mirrors `gCons`. The lemmas certify those relies
+**compose** (`G_i ⟹ R_j`); the `Ring` proves each body **upholds** its end. Both halves of §IV, on one buffer.
+What stays out is the **orchestration** — a transform could emit the `relyOnWriter()` / `relyOnReader()` calls
+from the `@Rely` / `@Guarantee` predicates, so you'd write `read()` / `write()` with ordinary bodies — and
+modelling `head` / `tail` as genuinely concurrent, a structural assumption like the lock examples.
+
+The sidebar below sets this same shape inside the *full* §VII body, where each access also carries an
+information-flow obligation (the consumed element must be `Low`) — the part that is still illustration.
 
 > [!NOTE]
 > **Sidebar — the full §VII body (the verified core above, in its information-flow context).** The mechanics just

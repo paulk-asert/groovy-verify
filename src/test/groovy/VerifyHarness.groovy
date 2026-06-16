@@ -361,6 +361,81 @@ class VerifyHarness {
                        @Ensures({ count == old.count + 1 })
                        void inc() { count = count + 2 }
                    }''')],
+        // P-ring: a complete CONCURRENT bounded buffer — reader AND writer each proven free of OUT-OF-BOUNDS
+        // access, a real memory-safety property (not an abstract assert). The class @Invariant bounds the buffer
+        // (head <= tail <= capacity). Each side's rely is the *other side's guarantee*: the reader relies on the
+        // writer keeping `head` and only growing `tail` within capacity; the writer relies on the reader keeping
+        // `tail` and only advancing `head`. Given that, `values[head]`/`values[tail]` are in bounds despite the
+        // concurrent peer, and each method preserves the invariant. Composes fix-b (head++/tail++ SSA),
+        // call-framing (the rely-step havoc+assume), array bounds, and the class invariant. This is the README
+        // "Ring" flagship example — keep them in sync.
+        [group: 'P-ring', name: 'concurrent bounded buffer: reader + writer both in bounds', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Ring {
+                       int head
+                       int tail
+                       int[] values
+
+                       @Modifies({ [this.head, this.tail] })       // the writer's guarantee, the reader's rely
+                       @Ensures({ head == old.head && old.tail <= tail && tail <= values.length })
+                       void relyOnWriter() {}
+                       @Modifies({ [this.head, this.tail] })       // the reader's guarantee, the writer's rely
+                       @Ensures({ tail == old.tail && old.head <= head && head <= tail })
+                       void relyOnReader() {}
+
+                       @Requires({ head < tail })                  // an element is available to read
+                       int read() {
+                           relyOnWriter()                          // a concurrent write may have happened
+                           int v = values[head]                    // PROVEN in bounds: 0 <= head < values.length
+                           head = head + 1
+                           return v
+                       }
+                       @Requires({ tail < values.length })         // room to append
+                       void write(int x) {
+                           relyOnReader()                          // a concurrent read may have happened
+                           values[tail] = x                        // PROVEN in bounds: 0 <= tail < values.length
+                           tail = tail + 1
+                       }
+                   }''')],
+        // Weaken the reader's rely — drop `head == old.head`, so the writer could move the read pointer past the
+        // buffer — and the read is no longer provably safe: it refutes with an out-of-bounds counterexample.
+        [group: 'P-ring', name: 'weak rely allows out-of-bounds read', expect: 'bounds',
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Ring {
+                       int head
+                       int tail
+                       int[] values
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ old.tail <= tail && tail <= values.length })   // dropped head == old.head
+                       void relyOnWriter() {}
+
+                       @Requires({ head < tail })
+                       int read() {
+                           relyOnWriter()
+                           int v = values[head]
+                           head = head + 1
+                           return v
+                       }
+                   }''')],
+        // Symmetric: weaken the writer's rely — drop `tail == old.tail`, so the reader could move the write
+        // pointer past capacity — and the append refutes with an out-of-bounds counterexample.
+        [group: 'P-ring', name: 'weak rely allows out-of-bounds write', expect: 'bounds',
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Ring {
+                       int head
+                       int tail
+                       int[] values
+                       @Modifies({ [this.head, this.tail] })
+                       @Ensures({ old.head <= head && head <= tail })   // dropped tail == old.tail
+                       void relyOnReader() {}
+
+                       @Requires({ tail < values.length })
+                       void write(int x) {
+                           relyOnReader()
+                           values[tail] = x
+                           tail = tail + 1
+                       }
+                   }''')],
         // Value-flow SSA versioning of an Int field/param write (fix b). A *bare* write to a field/param reuses
         // that name's entry symbol; as a plain `name == rhs` binding `tail = tail + 1` threads the self-
         // contradictory `tail == tail + 1` (UNSAT) so every downstream obligation discharged *vacuously and
