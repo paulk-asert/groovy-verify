@@ -65,10 +65,6 @@ tasks.named('rat') {
 // self-contained: no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can
 // add mavenLocal() above; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
-    // The locally-built Groovy snapshot carrying the `groovy.indy.callsite.cleaner.inline` flag (used by the
-    // frayCheck task to suppress the PIC-Cleaner daemon thread that otherwise reads as a deadlock to Fray).
-    // Scoped to the Groovy module so it doesn't shadow anything else; falls through to the ASF snapshot repo.
-    mavenLocal { content { includeModule('org.apache.groovy', 'groovy') } }
     mavenCentral()
     maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
 }
@@ -362,7 +358,7 @@ tasks.register('frayCheck', Test) {
     // Fray seizes every JVM thread, so Groovy's PIC-Cleaner daemon (CacheableCallSite) — which parks
     // forever on a queue — reads as a false deadlock. `inline = true` cleans call sites inline instead of on
     // a background thread (the static initializer then skips Thread.start()), so the only threads Fray sees
-    // are the application's. (Needs the flagged Groovy from mavenLocal.)
+    // are the application's. (The flag is in the Groovy 6.0.0-SNAPSHOT from the ASF snapshot repo.)
     systemProperty 'groovy.indy.callsite.cleaner.inline', 'true'
 }
 
