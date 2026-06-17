@@ -43,11 +43,39 @@ lives in exactly one place. A process-wide VC cache (Phase 34) keys
 Z3 results on the canonicalised asserted-set so suite-wide duplicates skip the solver
 (measured at ~18 % wall-clock saved on a ~20 % hit rate when the cache landed).
 
-Doc-drift lints keep the documentation honest against the suite (`./gradlew docLint` for the
-human-readable report; the same checks run as JUnit assertions in `./gradlew check`):
-every code block in the docs is either linked to a specific test (`<!-- doclint:case ID -->`,
-which fails the build if the block and its test diverge), exempted as an illustration
-(`<!-- doclint:ignore … -->`), or a verbatim substring of some case.
+## Keeping the docs in sync
+
+Three lints hold the documentation to the code. `./gradlew docLint` prints a human-readable report;
+`./gradlew check` runs the same checks as JUnit assertions
+([`DocLintTest`](src/test/groovy/DocLintTest.groovy)), so any drift fails the build:
+
+1. **group descriptions** — every test group in `CASES` has a one-line capability description in
+   `Harvester.GROUP_DESC` (the text behind the [CAPABILITIES.md](CAPABILITIES.md) rows). Add a group → add a line.
+2. **snippets-as-tests** — every fenced `groovy` block in the docs is accounted for (see below).
+3. **architecture map** — every `src/main/groovy/verification/*.groovy` engine source is named in
+   [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### Documenting an example
+
+Every fenced `groovy` block in `README.md` / `FRAGMENT.md` / `CAPABILITIES.md` / `ARCHITECTURE.md` has one of
+four dispositions:
+
+- **Linked** — a `<!-- doclint:case <id> -->` comment immediately before the fence pins the block to a specific
+  test, where `<id>` is `slug(group)/slug(name)` (lower-cased, non-alphanumerics → `-`). The check fails if the
+  block stops being a substring of that test's source. `./gradlew harvest` (re)writes
+  `build/harvest/corpus.jsonl`, which lists every id. **Comments are part of the check**: a teaching comment shown
+  in the doc must also live in the test's `CASES` source — the test is the single source of truth, so annotate the
+  example *there*. (Gotcha: a `//` comment can't trail a continuation operator inside a multi-line contract — it
+  breaks Groovy's line-continuation when the snippet is compiled — so park such a note on the closing line.)
+- **Exempt** — `<!-- doclint:ignore <reason> -->` marks an illustration with no 1:1 test (a polished README
+  variant, a doc-only fragment). The reason is free text; name what it illustrates.
+- **Blockquoted** — a `>`-quoted `groovy` block is exposition (desugaring / "generated-code" asides) and is
+  auto-exempt; no marker needed.
+- **Unmarked** — a weak fallback that only checks the block is a verbatim substring of *some* case. Prefer an
+  explicit marker.
+
+So: add an example, then **link it** with `doclint:case` if it mirrors a test, or **exempt it** with
+`doclint:ignore <reason>` if it's illustrative — and run `./gradlew docLint` to confirm it's accounted for.
 
 ## Using it in your own build
 
