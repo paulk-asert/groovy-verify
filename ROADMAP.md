@@ -6539,6 +6539,50 @@ identity, previously hand-tested only over the single-value `Res` wrapper).
 
 ---
 
+## Phase 142 — loop-invariant inference for a bare counting loop  *(shipped — first slice, opt-in)*
+
+The first step toward reducing the `@Invariant` annotation burden — and a harvest from the CodeContracts/Clousot
+*inference* idea (infer cheaply, check with the SMT core). For a C-style counting loop
+`for (int i = lo; i < hi; i++)` carrying **no** `@Invariant` (and only when opted in — see below),
+`ContractExpansionTransform.inferCounterBound`
+synthesises the **lower-bound invariant `(lo) <= i`** and injects it into the loop's `LoopSpec`, so the existing
+loop machinery verifies it like a hand-written one. The canonical win: `for (i = 0; i < a.length; i++) a[i]`
+proves its array bounds with **zero** annotations — the upper bound `i < a.length` comes from the *guard*, the
+lower bound from the inferred invariant.
+
+**Soundness is free, by construction.** The lower bound is inductive for a monotone counter — it holds at entry
+(`lo <= lo`) and is preserved (the counter only grows) — so an inferred invariant can **never** raise a spurious
+"invariant not established/preserved" diagnostic. (Establishment/preservation *passed* immediately; only the
+termination *variant* needed care — see below.) And because inference only ever *adds* an invariant to a loop that
+otherwise has none, it can't weaken any existing proof.
+
+**Scope of the first slice (deliberately narrow):**
+- C-style `for` only (init + update are in the `ClosureListExpression`; a `while`-loop's init lives in the method
+  prefix, out of reach of `buildLoopSpec` — deferred).
+- A single counter, strict `i < hi` guard, positive step (`i++`, `++i`, `i += c`, `i = i + c`).
+- **Lower bound only — safety, not termination.** No variant is inferred: injecting `(hi) - i` tripped the
+  *progress* check (the variant decrease relies on the body symbolic-execution updating `i`, which the progress VC
+  didn't reflect for this synthesized shape — worth a later look), so the slice infers invariant-only, exactly as a
+  hand-written safety loop verifies with `@Invariant` and no `@Decreases`.
+- **Opt-in via the parameterised extension syntax** —
+  `@TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')`, the same Groovy-6 mechanism
+  `NullChecker(strict: true)` uses. Groovy parses the `(opts)` and calls `setOptions(Map)` on the extension; here
+  the gate is read at CONVERSION straight off the `@TypeChecked` annotation (so an inferred `LoopSpec` is attached
+  ONLY when opted in — the single-annotated-loop check and all default behaviour are otherwise untouched). Default
+  **off**.
+
+**Shipped tests** (group `PL-infer`): an array walk to `a.length` and a `@Requires`-bounded walk to `n` both verify
+with no `@Invariant`; the same loop with inference **off** reports a possible OOB (the per-method havoc pass can't
+see `i` is bounded) — so the slice also *removes* a false positive. Suite: 1210 tests, 0 failures.
+
+**Next increments:** `while`-shaped counters (recover the init from the prefix); the upper-bound invariant `i <= hi`
+(guarded so its establishment need `lo <= hi` falls back rather than refutes); the termination variant (after the
+progress-VC body-symexec look); and a trial/commit mode so inference can be *automatic* (not just opt-in) without
+ever turning a would-be loud-skip into a new error. (The opt-in gate now rides the real `@TypeChecked` parameterised
+extension syntax — `VerifyChecker(inferLoops: true)` — so VerifyChecker reads checker options like its siblings.)
+
+---
+
 ## Phase L0 — security lattices, proved well-formed  *(shipped — two small engine enablers)*
 
 **A new *kind* of object, harvested from Smith, *A Dafny-based approach to thread-local information flow

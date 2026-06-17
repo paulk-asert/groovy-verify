@@ -11354,6 +11354,42 @@ class WrapCounter implements Counter { }
                         }
                     }''')],
 
+        // ----- Loop-invariant INFERENCE for a bare counting loop -----
+        // Opt-in via the parameterised extension syntax `@TypeChecked(extensions='verification.VerifyChecker(inferLoops: true)')`
+        // (the `tci` helper) — the same mechanism NullChecker uses for `strict`. A `for (int i = 0; i < a.length; i++)`
+        // array walk verifies its bounds with NO hand-written @Invariant: the engine infers the lower-bound invariant
+        // `0 <= i` (sound by construction); the upper bound `i < a.length` comes from the guard.
+        [group: 'PL-infer', name: 'counter loop over array bounds — inferred, no @Invariant', ok: true,
+         src: tci('''class C {
+                       static int sum(int[] a) {
+                           int s = 0
+                           for (int i = 0; i < a.length; i++) { s = s + a[i] }
+                           return s
+                       }
+                   }''')],
+        // Inference also discharges a `@Requires`-bounded walk: guard `i < n` + `n <= a.length` + inferred `0 <= i`.
+        [group: 'PL-infer', name: 'counter loop to n under @Requires — inferred', ok: true,
+         src: tci('''class C {
+                       @Requires({ n <= a.length })
+                       static int sumN(int[] a, int n) {
+                           int s = 0
+                           for (int i = 0; i < n; i++) { s = s + a[i] }
+                           return s
+                       }
+                   }''')],
+        // Negative control — WITHOUT inference (default), the bare loop has no invariant, so the per-method havoc
+        // pass can't see `i` is bounded and reports a *possible* OOB. Inference (above) supplies `0 <= i` and the
+        // report disappears — so this slice actually REMOVES a false positive, and is genuinely opt-in (default off).
+        [group: 'PL-infer', name: 'same loop without inference reports possible OOB (default off)',
+         expect: 'IndexOutOfBoundsException',
+         src: tc('''class C {
+                       static int sum(int[] a) {
+                           int s = 0
+                           for (int i = 0; i < a.length; i++) { s = s + a[i] }
+                           return s
+                       }
+                   }''')],
+
         // ----- Inline `assert` as a compile-time obligation (Dafny-style) -----
         // The motivating example: a constant-true assert compiles, a constant-false one refuses to compile.
         [group: 'PL-assert', name: 'assert: true constant verifies', ok: true,
@@ -11787,6 +11823,12 @@ class WrapCounter implements Counter { }
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
     static String tc(String classText) {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
+    }
+
+    /** Like {@link #tc} but opts into loop-invariant inference via the parameterised extension syntax
+     *  ({@code VerifyChecker(inferLoops: true)}) — the same mechanism NullChecker uses for {@code strict}. */
+    static String tci(String classText) {
+        HDR + "@TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')\n" + classText.stripIndent()
     }
 
     /** Like {@link #tc} but also imports {@code java.util.stream.Stream} (Phase 75 infinite-stream cases). */

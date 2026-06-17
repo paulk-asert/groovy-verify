@@ -27,13 +27,14 @@ import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.ImportNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.ModuleNode
-import org.codehaus.groovy.ast.VariableScope
+import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
+import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
@@ -44,7 +45,6 @@ import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
-import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
@@ -694,7 +694,7 @@ class ContractExpansionTransform implements ASTTransformation {
 
     /** Delegates {@code transformExpression}'s per-child callback back to {@link #freshenVars}. */
     private static final class VarFreshener implements ExpressionTransformer {
-        Expression transform(Expression expr) { return ContractExpansionTransform.freshenVars(expr) }
+        Expression transform(Expression expr) { return freshenVars(expr) }
     }
     private static final VarFreshener VAR_FRESHENER = new VarFreshener()
 
@@ -705,35 +705,69 @@ class ContractExpansionTransform implements ASTTransformation {
      */
     private static boolean captureLoops(MethodNode mn, SourceUnit source) {
         if (!(mn.code instanceof BlockStatement)) return false
-        return captureLoopsIn(((BlockStatement) mn.code).statements, source)
+        boolean inferLoops = verifyInferLoopsEnabled(mn.declaringClass)   // @TypeChecked(...VerifyChecker(inferLoops: true))
+        return captureLoopsIn(((BlockStatement) mn.code).statements, source, inferLoops)
     }
 
     /** Phase 91 — capture loop specs recursively, so a *nested* loop's @Invariant/@Decreases is stashed
      *  on the inner loop node too (the verifier reads it when summarising the inner loop). Since the outer
      *  body is copied shallowly ({@link #loopBodyCopy}), the inner node is shared and the metadata is seen. */
-    private static boolean captureLoopsIn(List<Statement> stmts, SourceUnit source) {
+    private static boolean captureLoopsIn(List<Statement> stmts, SourceUnit source, boolean inferLoops) {
         boolean found = false
-        if (stmts != null) for (Statement st : stmts) found |= captureLoopsStmt(st, source)
+        if (stmts != null) for (Statement st : stmts) found |= captureLoopsStmt(st, source, inferLoops)
         found
     }
 
-    private static boolean captureLoopsStmt(Statement st, SourceUnit source) {
+    private static boolean captureLoopsStmt(Statement st, SourceUnit source, boolean inferLoops) {
         if (st == null) return false
         boolean found = false
         if (st instanceof LoopingStatement) {
-            LoopSpec spec = buildLoopSpec((LoopingStatement) st, source)
+            LoopSpec spec = buildLoopSpec((LoopingStatement) st, source, inferLoops)
             if (spec != null) { st.setNodeMetaData(LOOP_SPEC_KEY, spec); found = true }
-            found |= captureLoopsStmt(((LoopingStatement) st).loopBlock, source)
+            found |= captureLoopsStmt(((LoopingStatement) st).loopBlock, source, inferLoops)
         } else if (st instanceof BlockStatement) {
-            found = captureLoopsIn(((BlockStatement) st).statements, source)
+            found = captureLoopsIn(((BlockStatement) st).statements, source, inferLoops)
         } else if (st instanceof IfStatement) {
-            found |= captureLoopsStmt(((IfStatement) st).ifBlock, source)
-            found |= captureLoopsStmt(((IfStatement) st).elseBlock, source)
+            found |= captureLoopsStmt(((IfStatement) st).ifBlock, source, inferLoops)
+            found |= captureLoopsStmt(((IfStatement) st).elseBlock, source, inferLoops)
         }
         found
     }
 
-    private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source) {
+    /** True iff the class is checked by VerifyChecker with the {@code inferLoops: true} option, i.e.
+     *  {@code @TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')} (the same parameterised
+     *  extension syntax NullChecker uses for {@code strict}). Read here, at CONVERSION, so an inferred loop spec
+     *  is attached ONLY when opted in — default behaviour (and the single-loop check) is otherwise untouched. */
+    private static boolean verifyInferLoopsEnabled(ClassNode cn) {
+        if (cn == null) return false
+        for (AnnotationNode an : cn.getAnnotations()) {
+            if (simpleName(an.classNode?.name) != 'TypeChecked') continue
+            Expression ext = an.getMember('extensions')
+            if (ext == null) continue
+            for (String s : extensionStrings(ext)) {
+                if (s =~ /VerifyChecker\s*\([^)]*\binferLoops\s*:\s*true\b/) return true
+            }
+        }
+        false
+    }
+
+    /** The String values of a {@code @TypeChecked(extensions = …)} member — a single literal or a list literal. */
+    private static List<String> extensionStrings(Expression ext) {
+        List<String> out = new ArrayList<String>()
+        if (ext instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) ext).value
+            if (v != null) out.add(v.toString())
+        } else if (ext instanceof ListExpression) {
+            for (Expression e : ((ListExpression) ext).expressions) {
+                if (e instanceof ConstantExpression && ((ConstantExpression) e).value != null) {
+                    out.add(((ConstantExpression) e).value.toString())
+                }
+            }
+        }
+        out
+    }
+
+    private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source, boolean inferLoops) {
         // Phase 59 — a classic for-loop is desugared to while-shape: its condition is the guard, its
         // init becomes a prefix statement, and its update is normalised to a plain assignment and
         // appended to the loop body. Phase 63 — a for-in loop `for (x in xs)` desugars to an *indexed*
@@ -746,6 +780,7 @@ class ContractExpansionTransform implements ASTTransformation {
         List<Statement> bodyPrefix = null
         Expression autoInvariant = null
         Expression autoVariant = null
+        Expression inferredInvariant = null    // loop-invariant inference (opt-in -Dverify.inferLoops) for a bare counter loop
         String forInVarName = null
         Statement forInBindStmt = null
         Expression guard
@@ -763,6 +798,12 @@ class ContractExpansionTransform implements ASTTransformation {
                 if (!(updE instanceof EmptyExpression)) {
                     updateStmt = normalizeUpdate(updE)
                     if (updateStmt == null) return null   // unsupported update shape → loud skip
+                }
+                // Loop-invariant inference (opt-in via -Dverify.inferLoops): for a bare `for (int i = lo; i < hi; i++)`
+                // with no @Invariant, synthesise the lower-bound invariant + variant so the loop verifies (e.g. an
+                // array walk's bounds) without a hand-written contract. Discarded harmlessly if the user wrote one.
+                if (inferLoops && !(initE instanceof EmptyExpression) && !(updE instanceof EmptyExpression)) {
+                    inferredInvariant = inferCounterBound(initE, guard, updE)
                 }
             } else if (f.collectionExpression instanceof VariableExpression) {
                 // for-in over a named collection. The element type is left to the encoder (Int list/
@@ -813,7 +854,13 @@ class ContractExpansionTransform implements ASTTransformation {
             // the runtime invariant/variant checks from it; we add the compile-time
             // Z3 proof on top.
         }
-        if (invariants.isEmpty()) return null   // a loop needs a user @Invariant to be verified
+        if (invariants.isEmpty()) {
+            // No user @Invariant. Use an inferred one if available (opt-in counter-loop inference); else loud-skip.
+            // Invariant only — no inferred variant: this proves loop SAFETY (e.g. array bounds), not termination,
+            // matching how a hand-written safety loop verifies with @Invariant and no @Decreases.
+            if (inferredInvariant != null) invariants.add(inferredInvariant)
+            else return null   // a loop needs a user (or inferred) @Invariant to be verified
+        }
         // Phase 63 — the for-in index-bounds invariant is added *after* the user's (so its synthetic
         // name trails the user-facing clauses in any diagnostic), and `size - idx` is the variant
         // unless the user supplied a @Decreases (they have no index to write a better one).
@@ -880,6 +927,78 @@ class ContractExpansionTransform implements ASTTransformation {
         return e != null ? new ExpressionStatement(e) : null
     }
 
+    /**
+     * Loop-invariant inference for a bare counting loop {@code for (int i = lo; i < hi; i++)} (opt-in via
+     * {@code -Dverify.inferLoops}). Returns the LOWER-bound invariant {@code (lo) <= i}; null if the loop isn't a
+     * single-counter, strictly-{@code <}-bounded, positive-step loop.
+     *
+     * <p>Soundness: the lower bound is inductive <em>by construction</em> for a monotone counter — it holds at
+     * entry ({@code lo <= lo}) and is preserved (the counter only grows) — so an inferred invariant can never
+     * raise a spurious "invariant not established/preserved" diagnostic. The array UPPER bound comes from the
+     * guard, so {@code for (i = 0; i < a.length; i++) a[i]} verifies with no hand-written {@code @Invariant}.
+     * Safety only — no variant is inferred, so termination isn't claimed (as for a hand-written safety loop).
+     */
+    private static Expression inferCounterBound(Expression initE, Expression guard, Expression updE) {
+        String name = null
+        Expression lo = null
+        if (initE instanceof DeclarationExpression) {
+            DeclarationExpression d = (DeclarationExpression) initE
+            if (d.leftExpression instanceof VariableExpression) {
+                name = ((VariableExpression) d.leftExpression).name; lo = d.rightExpression
+            }
+        } else if (initE instanceof BinaryExpression) {
+            BinaryExpression b = (BinaryExpression) initE
+            if (b.operation.type == Types.ASSIGN && b.leftExpression instanceof VariableExpression) {
+                name = ((VariableExpression) b.leftExpression).name; lo = b.rightExpression
+            }
+        }
+        if (name == null || lo == null) return null
+        if (strictUpperBoundFor(name, guard) == null) return null   // require a strict `i < hi` guard shape
+        if (!incrementsPositively(name, updE)) return null
+        reparse("(${lo.text}) <= ${name}".toString())
+    }
+
+    /** The strict upper bound {@code hi} when {@code guard} is {@code name < hi} or {@code hi > name}; else null. */
+    private static Expression strictUpperBoundFor(String name, Expression guard) {
+        if (!(guard instanceof BinaryExpression)) return null
+        BinaryExpression b = (BinaryExpression) guard
+        if (b.operation.type == Types.COMPARE_LESS_THAN && isVarNamed(b.leftExpression, name)) return b.rightExpression
+        if (b.operation.type == Types.COMPARE_GREATER_THAN && isVarNamed(b.rightExpression, name)) return b.leftExpression
+        null
+    }
+
+    /** True if {@code upd} increments {@code name} positively: {@code i++}, {@code ++i}, {@code i += c}, {@code i = i + c}. */
+    private static boolean incrementsPositively(String name, Expression upd) {
+        if (upd instanceof PostfixExpression && ((PostfixExpression) upd).operation.type == Types.PLUS_PLUS) {
+            return isVarNamed(((PostfixExpression) upd).expression, name)
+        }
+        if (upd instanceof PrefixExpression && ((PrefixExpression) upd).operation.type == Types.PLUS_PLUS) {
+            return isVarNamed(((PrefixExpression) upd).expression, name)
+        }
+        if (upd instanceof BinaryExpression) {
+            BinaryExpression b = (BinaryExpression) upd
+            if (!isVarNamed(b.leftExpression, name)) return false
+            if (b.operation.type == Types.PLUS_EQUAL) return isPositiveIntLiteral(b.rightExpression)
+            if (b.operation.type == Types.ASSIGN && b.rightExpression instanceof BinaryExpression) {
+                BinaryExpression r = (BinaryExpression) b.rightExpression
+                if (r.operation.type == Types.PLUS) {
+                    if (isVarNamed(r.leftExpression, name) && isPositiveIntLiteral(r.rightExpression)) return true
+                    if (isVarNamed(r.rightExpression, name) && isPositiveIntLiteral(r.leftExpression)) return true
+                }
+            }
+        }
+        false
+    }
+
+    private static boolean isVarNamed(Expression e, String name) {
+        e instanceof VariableExpression && ((VariableExpression) e).name == name
+    }
+
+    private static boolean isPositiveIntLiteral(Expression e) {
+        e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Integer &&
+            ((Integer) ((ConstantExpression) e).value).intValue() > 0
+    }
+
     private static List<Statement> loopBodyCopy(LoopingStatement loop) {
         // Deep-copy the if/return/block spine (not just the list) so the postcondition try/catch that
         // groovy-contracts injects into a loop-body return at INSTRUCTION_SELECTION cannot leak into the
@@ -908,7 +1027,7 @@ class ContractExpansionTransform implements ASTTransformation {
                 }
             }
             return null
-        } catch (Throwable t) {
+        } catch (Throwable ignore) {
             return null
         }
     }
