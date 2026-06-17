@@ -43,6 +43,21 @@ lives in exactly one place. A process-wide VC cache (Phase 34) keys
 Z3 results on the canonicalised asserted-set so suite-wide duplicates skip the solver
 (measured at ~18 % wall-clock saved on a ~20 % hit rate when the cache landed).
 
+### The other half — concurrency rungs
+
+groovy-verify proves the *thread-local* half of the concurrency-lite examples; the structural half (interleavings,
+deadlock) is left to three separate tasks, each its own source set so the JDK-25 z3 suite is untouched. They are
+**not** wired into `check` (different toolchains, heavyweight) — run on demand:
+
+```sh
+./gradlew tlcCheck         # rung 2: model-check docs/Buffer.tla (every interleaving) with TLA+ TLC
+./gradlew concurrentTest   # rung 3a: Lincheck linearizability on a real SpscBuffer (Java 21 toolchain)
+./gradlew frayCheck        # rung 3b: Fray controlled-schedule deadlock check (downloads Corretto JDK 25)
+```
+
+The three-rungs story — compile-time proof, exhaustive model, tested bytecode — is written up in
+[docs/README.md](docs/README.md).
+
 ## Keeping the docs in sync
 
 Three lints hold the documentation to the code. `./gradlew docLint` prints a human-readable report;
