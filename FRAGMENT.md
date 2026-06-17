@@ -28,7 +28,9 @@ write (bounds, aggregation, sortedness, state machines, recurrences), not to cha
 a coverage metric. In expressions the fragment is:
 
 - integer `+`, `-`, `*` (variable products dispatch to Z3's NIA solver under a per-VC timeout, with
-  closed subterms folded first; Phase 48), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
+  closed subterms folded first; Phase 48 — and **`BigInteger`**, Groovy's arbitrary-precision integer, flows in
+  this same unbounded Int sort, the *most* faithful integer type since Z3's `Int` has no width or overflow, modulo
+  a literal wider than 64 bits which skips loudly; Phase 124), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
   `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) so
   `5 / 2 == 2.5` and `BigDecimal` contracts prove (int operands coerced; only `BigDecimal` is
   exact-Real — `double`/`float` take the IEEE-754 FP path, below); divide-by-zero and

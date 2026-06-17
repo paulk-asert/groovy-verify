@@ -143,10 +143,10 @@ you write:
   `@Requires` / `@Ensures` an `interface` declares being inherited by every implementer). The unit of proof is a
   *method* carrying contracts; the type *definitions* themselves — constructors, deconstruction/pattern-matching,
   generated `equals`/`hashCode` — aren't proof targets.
-- **Numbers** — `int` / `long`, exact `BigDecimal`, and IEEE-754 `double` / `float`; the operators `+ - * /`,
-  integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >>`, comparisons and `<=>`, `++` / `--`, and
-  compound assignment — variable (nonlinear) products dispatch to a dedicated solver. *Out:* floating-point loops
-  & transcendentals, `BigInteger`, `~` / `>>>`.
+- **Numbers** — `int` / `long`, arbitrary-precision `BigInteger`, exact `BigDecimal`, and IEEE-754 `double` /
+  `float`; the operators `+ - * /`, integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >>`, comparisons
+  and `<=>`, `++` / `--`, and compound assignment — variable (nonlinear) products dispatch to a dedicated solver.
+  *Out:* floating-point loops & transcendentals, `~` / `>>>`.
 - **Text** — `String` on Z3's native string theory: `length` / `charAt` / `substring` / `indexOf`, `startsWith` /
   `endsWith` / `contains`, `+` / `replace` / `matches` (regex), and GString interpolation. *Out:* building a
   string char-by-char (use a `char[]`), and symbolic case/replace algebra.

@@ -3515,6 +3515,13 @@ class Encoder {
             if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) {
                 return session.intLit(((Number) v).longValue())
             }
+            // BigInteger is Z3's unbounded Int sort exactly (Groovy's arbitrary-precision integer), so a literal
+            // folds straight to an Int constant — within long range. A wider literal is left to skip loudly; the
+            // unbounded *arithmetic* on BigInteger values is modelled regardless (they default to the Int sort).
+            if (v instanceof BigInteger) {
+                BigInteger bi = (BigInteger) v
+                return bi.bitLength() < 63 ? session.intLit(bi.longValue()) : null
+            }
             if (v instanceof Boolean) {
                 return session.boolLit((Boolean) v)
             }
