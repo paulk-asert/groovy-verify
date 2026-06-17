@@ -153,14 +153,17 @@ you write:
   `reverse` — folds on **literal** strings (plus a few weak axioms, e.g. length-preservation), with no general
   symbolic algebra. *Out:* building a string char-by-char (use a `char[]`).
 - **Collections & data** — arrays and lists (read, update, bounds), finite `Set` and `Map` (membership, mutation,
-  cardinality, the full set algebra `∪ ∩ − ^`), `Tuple` / `TupleN` and Groovy's map-as-named-tuple returns, and
-  immutable factories — all reasoned over with bounded **universal *and* existential** quantifiers that nest.
-  *Out:* `.keySet()` / `.values()` projection, nested-set mutation, and unbounded (un-`limit`-ed) streams.
+  cardinality, the full set algebra `∪ ∩ − ^`), `Tuple` / `TupleN` and Groovy's map-as-named-tuple returns,
+  immutable factories, and a `.limit(n)` / `.take(n)`-bounded `every` / `any` over an infinite `Stream.iterate`
+  (proven by induction over the prefix) — all reasoned over with bounded **universal *and* existential**
+  quantifiers that nest. *Out:* `.keySet()` / `.values()` projection, nested-set mutation, and that same infinite stream
+  `every` / `any` with no `.limit` (it never returns).
 - **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
-  nested) with `@Invariant` / `@Decreases`; early `return`; and `switch` *expressions*; plus side-effecting
-  assignment, `++` / `--`, and parallel swap. *Out:* `try` / `catch`, `.each`, and the statement-form / pattern
-  `switch`; closures and lambdas appear only as specification predicates (`every` / `any` / `inject`) and as
-  law-carriers (`@Monadic` / `@Reducer`).
+  nested) with `@Invariant` / `@Decreases`; early `return`; and `switch` *expressions* — the arrow form
+  (`case 1 -> …`) with literal / range labels; plus side-effecting assignment, `++` / `--`, and parallel swap.
+  *Out:* `try` / `catch`, `.each`, the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
+  (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 
 The full itemised enumeration — every operator, type, theory, phase, and honest boundary — is in
 **[FRAGMENT.md](FRAGMENT.md)**. The worked examples below put it through its paces.
