@@ -109,48 +109,57 @@ interesting model — see [Relationship to Groovy's other checkers](#relationshi
 
 ## What's demonstrated
 
-Before the worked examples, the breadth — what the engine proves today:
+The engine proves these kinds of property at **compile time** — and when it can't, it **refutes with a concrete
+counterexample** (Dafny/Verus-style) rather than passing silently:
 
-- integer / decimal / floating-point arithmetic, and opt-in overflow
-- strings
-- arrays and lists, with nested universal *and* existential quantifiers
-- sets and maps, with algebra and cardinality
-- recurrences
-- tuples and records
-- information flow and rely/guarantee
-- monad and monoid law proofs
+- **Preconditions** — every `@Requires` is discharged at each call site.
+- **Postconditions** — a method body is proved to satisfy its `@Ensures` on every path, including early returns.
+- **Class invariants** — a `@Invariant` is established by construction and preserved by every mutator, so a whole
+  data structure (a ring buffer, a bank account) verifies as a unit.
+- **Loop invariants & termination** — a loop `@Invariant` is established and maintained, and `@Decreases` proves
+  the loop *terminates* — the same measure turning a recursive call into proof by induction.
+- **Memory & arithmetic safety** — array indices in bounds, dereferences non-null, divisors non-zero, and — opt-in
+  — no integer overflow: the implicit obligations, discharged from the contracts in scope.
+- **Rely/guarantee** — under concurrent interference each thread's steps uphold its `@Guarantee` while tolerating
+  the others' `@Rely`, so a shared buffer stays in bounds without a lock.
+- **Information flow** — no secret (`@Label('High')`) reaches a public sink (noninterference), with explicit
+  `Declassify` for controlled release.
+- **Behavioural subtyping (Liskov)** — an override may only *weaken* a precondition and *strengthen* a
+  postcondition, never the reverse.
+- **Algebraic laws** — a `@Reducer` combiner is proved to satisfy the monoid laws, and a `@Monadic` carrier the
+  monad / functor laws — automatically, from the annotation alone.
 
-The full inventory is a per-phase table in **[CAPABILITIES.md](CAPABILITIES.md)** — each row a capability, how you
-author it (`@Requires` / `@Ensures` / `@Invariant` / `@Label` / `@Reducer` / …), a ✅ phase tag, and the
-"deferred" notes that mark its honest edge.
+The full per-capability table — each with a ✅ phase tag and its honest "deferred" edge — is in
+**[CAPABILITIES.md](CAPABILITIES.md)**.
 
 ## The fragment
 
-That breadth lives inside a deliberately **modest** fragment, and verification is sound *within* it and
-**loudly unsound outside it**: anything the encoder cannot model emits a "skipped" warning rather than passing
-silently. It is modest by *intent*, not by size — every piece was chosen because it lines up with proofs people
-actually write (bounds, aggregation, sortedness, state machines, recurrences), not to chase a coverage metric.
+Those proofs hold over a deliberately **modest** slice of Groovy — sound *within* it and **loudly unsound outside
+it**: anything the encoder cannot model emits a "skipped" warning rather than passing silently. The slice, by what
+you write:
 
-In brief, it covers:
+- **Type forms** — `class`, `enum`, `record`, and `trait`, with contracts flowing along the type hierarchy
+  (inherited invariants, `super` calls, Liskov subtyping, trait default methods). The unit of proof is a *method*
+  carrying contracts; the type *definitions* themselves — constructors, deconstruction/pattern-matching, generated
+  `equals`/`hashCode` — aren't proof targets, and a plain `interface` has no body to prove.
+- **Numbers** — `int` / `long`, exact `BigDecimal`, and IEEE-754 `double` / `float`; the operators `+ - * /`,
+  integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >>`, comparisons and `<=>`, `++` / `--`, and
+  compound assignment — variable (nonlinear) products dispatch to a dedicated solver. *Out:* floating-point loops
+  & transcendentals, `BigInteger`, `~` / `>>>`.
+- **Text** — `String` on Z3's native string theory: `length` / `charAt` / `substring` / `indexOf`, `startsWith` /
+  `endsWith` / `contains`, `+` / `replace` / `matches` (regex), and GString interpolation. *Out:* building a
+  string char-by-char (use a `char[]`), and symbolic case/replace algebra.
+- **Collections & data** — arrays and lists (read, update, bounds), finite `Set` and `Map` (membership, mutation,
+  cardinality, the full set algebra `∪ ∩ − ^`), `Tuple` / `TupleN` and Groovy's map-as-named-tuple returns, and
+  immutable factories — all reasoned over with bounded **universal *and* existential** quantifiers that nest.
+  *Out:* `.keySet()` / `.values()` projection, nested-set mutation, and unbounded (un-`limit`-ed) streams.
+- **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
+  nested) with `@Invariant` / `@Decreases`; early `return`; and `switch` *expressions*; plus side-effecting
+  assignment, `++` / `--`, and parallel swap. *Out:* `try` / `catch`, `.each`, and the statement-form / pattern
+  `switch`; closures and lambdas appear only as specification predicates (`every` / `any` / `inject`) and as
+  law-carriers (`@Monadic` / `@Reducer`).
 
-- **arithmetic** — integer (variable products via Z3's NIA solver), `BigDecimal`-exact and IEEE-754 floating-point, and bitwise/shift
-- **strings** — Z3's native string theory
-- **arrays and lists** — under the array theory, with bounded universal *and* existential quantifiers that nest
-- **sets and maps** — finite, with full set algebra and per-mutation cardinality laws
-- **extrema and aggregation** — witnessed `xs.max()` / `min()`, and `sum` / product / conservation carried by loop invariants
-- **recurrences** — spec helpers `Fib` / `Trib` / `Tetra` / `Gcd` / `Lcm`
-- **structured returns** — tuples, records, and map-as-named-tuple
-- **law proofs** — higher-order functions / algebraic carriers (`@Monadic` monad/functor, `@Reducer` monoid)
-
-The unit of verification is a **method** carrying contracts; the engine models the enclosing **class** (instance
-fields tracked in SSA, a class `@Invariant` assumed-on-entry / checked-on-exit), **enum** and **record**, and
-follows the **type hierarchy** (inherited invariants, `super` calls, Liskov behavioural subtyping, trait default
-methods). Bodies are straight-line code, `if`/`else`, SSA-tracked locals/fields, compound and side-effecting
-assignment, and annotated `while` / `do-while` / `for` loops (optionally one nested level); across methods a
-callee's `@Ensures` is assumed, `@Decreases` enables proof by induction, and `@Modifies` frames a call. When the
-solver returns *UNKNOWN*, a bounded property-based pass reports a best-effort `fails on:` repro.
-
-The full, itemised enumeration — every operator, every phase, every honest boundary — is in
+The full itemised enumeration — every operator, type, theory, phase, and honest boundary — is in
 **[FRAGMENT.md](FRAGMENT.md)**. The worked examples below put it through its paces.
 
 ## Examples
