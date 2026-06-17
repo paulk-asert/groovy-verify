@@ -84,6 +84,7 @@ dependencies {
     compileOnly "org.apache.groovy:groovy-contracts:$groovyVersion"
 
     testImplementation "org.apache.groovy:groovy:$groovyVersion"
+    testImplementation "org.apache.groovy:groovy-json:$groovyVersion"   // Harvester (agent catalog/corpus generation)
     testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
 
     // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
@@ -206,6 +207,27 @@ def verifyTask = tasks.register('verify', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
     mainClass = 'VerifyHarness'
     jvmArgs = ['--enable-native-access=ALL-UNNAMED']  // quiet the JDK25 native-access warning from z3
+}
+
+// Harvest the agent-facing capability corpus + catalog from VerifyHarness.CASES (the single source of truth).
+//   ./gradlew harvest                          -> build/harvest/{catalog.json, corpus.jsonl}
+//   ./gradlew harvest --args='agents -check'   -> CI freshness gate: fail if committed copies are stale
+tasks.register('harvest', JavaExec) {
+    group = 'verification'
+    description = 'Generate the AI-agent capability catalog + example corpus from the test suite'
+    dependsOn 'compileTestGroovy'
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'Harvester'
+}
+
+// Report-mode drift lints (group descriptions / doc snippets-as-tests / architecture file map). Run on demand;
+// convert each to a JUnit assert to enforce in `check` once the existing gap is baselined.  ./gradlew docLint
+tasks.register('docLint', JavaExec) {
+    group = 'verification'
+    description = 'Report doc/data drift against the test suite (sketch — report-only)'
+    dependsOn 'compileTestGroovy'
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'DocLint'
 }
 
 tasks.register('caseAxiomTiming', JavaExec) {

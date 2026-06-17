@@ -102,7 +102,8 @@ class VerifyHarness {
 
         // ---------- Phase 1: array bounds ----------
         [group: 'P1 bounds', name: 'unguarded index refuted', expect: 'IndexOutOfBoundsException',
-         src: tc('class C { static int g(int[] a, int i) { a[i] } }')],
+         src: tc('''class C { static int g(int[] a, int i) { a[i] }   // index never checked
+                   }''')],
         [group: 'P1 bounds', name: 'guarded index verified', ok: true,
          src: tc('class C { static int g(int[] a, int i) { if (i >= 0 && i < a.length) return a[i]; return -1 } }')],
 
@@ -371,12 +372,12 @@ class VerifyHarness {
          src: tc('''@Invariant({ count >= 0 })
                     class Counter {
                        int count
-                       @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }
-                       @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count }
+                       @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }   // others only increment
+                       @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count }   // I only increment
                        @Requires({ k <= count })
                        @UnderRely('Other')
                        void atLeast(int k) {
-                           assert count >= k        // STILL holds: the environment only increments count
+                           assert count >= k                        // ← STILL holds across concurrent increments
                        }
                    }''')],
         // The rely is load-bearing: a weak rely that lets count *decrease* no longer keeps the observed bound.
@@ -2557,8 +2558,8 @@ class Derived extends Base {
          src: tc('''class Acl {
                         enum Role { ADMIN, USER, GUEST }
                         enum Perm { READ, WRITE, DELETE }
-                        @Requires({ grants[Role.ADMIN].containsAll(required) })
-                        @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })
+                        @Requires({ grants[Role.ADMIN].containsAll(required) })   // ADMIN covers required …
+                        @Ensures({ (Perm.WRITE in required) ==> (Perm.WRITE in grants[Role.ADMIN]) })   // … so WRITE, when requested, is held
                         static int adminMayWrite(Map<Role, Set<Perm>> grants, Set<Perm> required) { 0 }
                     }''')],
         // Soundness anchor: without the containsAll precondition, the postcondition refutes.
@@ -2779,7 +2780,7 @@ class Derived extends Base {
         [group: 'HumanEval port', name: 'get_positive (Verus 030): result.size() <= xs.size()', ok: true,
          src: tc('''class C {
                         @Requires({ xs != null })
-                        @Ensures({ result.size() <= xs.size() })
+                        @Ensures({ result.size() <= xs.size() })   // ← the spec the Verus original omits
                         static List<Integer> getPositive(List<Integer> xs) {
                             List<Integer> positive = []
                             int i = 0
@@ -4280,7 +4281,7 @@ class Derived extends Base {
                                          s == xs[0..<i].sum() && p == xs[0..<i].inject(1) { a, x -> a * x } })
                             @Decreases({ xs.size() - i })
                             while (i < xs.size()) { s += xs[i]; p *= xs[i]; i += 1 }
-                            [s, p]
+                            [s, p]   // also: new int[]{s, p}
                         }
                     }''')],
         // The CONSTRUCTED array-literal form `new int[]{...}` (an ArrayExpression with an initializer) — the
@@ -4457,7 +4458,7 @@ class Derived extends Base {
                         @Ensures({ result.a == b && result.b == a })
                         static Map<String, Integer> swap(final int a, final int b) {
                             int x = a; int y = b
-                            (x, y) = [y, x]
+                            (x, y) = [y, x]   // parallel multiple assignment — RHS snapshotted before either write
                             [a: x, b: y]
                         }
                     }''')],
@@ -4541,7 +4542,7 @@ class Derived extends Base {
         [group: 'P35b set return', name: 'README union: result == granted | extra', ok: true,
          src: tc('''class C {
                         @Requires({ granted != null && extra != null })
-                        @Ensures({ (p in result) == (p in granted || p in extra) })
+                        @Ensures({ (p in result) == (p in granted || p in extra) })   // result == granted ∪ extra
                         static Set<Integer> merge(Set<Integer> granted, Set<Integer> extra, int p) { granted | extra }
                     }''')],
 
@@ -5048,11 +5049,11 @@ class Derived extends Base {
         [group: 'P-induction', name: 'compound return n * fact(n-1) (call hoisted)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 1 })
-                        @Ensures({ result >= n })
+                        @Ensures({ result >= n })   // factorial grows at least linearly — proven by induction on n
                         @Decreases({ n })
                         static int fact(int n) {
                             if (n <= 1) return 1
-                            return n * fact(n - 1)
+                            return n * fact(n - 1)   // the recursive call's @Ensures is the induction hypothesis
                         }
                     }''')],
         // (2) bare tail return `return helper(n-1, next)` — the @TailRecursive accumulator shape.
@@ -5186,8 +5187,8 @@ class Derived extends Base {
         [group: 'P-multichecker', name: 'RegexChecker (syntax) + VerifyChecker (semantics) on the same .matches', ok: true,
          src: tcExt(['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'], '''class C {
                         @Requires({ s != null })
-                        @Ensures({ result == s.matches("[a-z]+") })
-                        static boolean isLower(String s) { s.matches("[a-z]+") }
+                        @Ensures({ result == s.matches("[a-z]+") })   // groovy-verify: result IS the match (str.in_re)
+                        static boolean isLower(String s) { s.matches("[a-z]+") }   // RegexChecker: the pattern is well-formed
                     }''')],
         [group: 'P-multichecker', name: 'RegexChecker fires on a malformed pattern; the proof is unaffected', ok: false, expect: 'Bad regex',
          src: tcExt(['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'], '''class C {
@@ -5468,11 +5469,11 @@ class WrapCounter implements Counter { }
         // loop invariant). This is the full pretty FizzBuzz, numbers and all, machine-checked element by element:
         [group: 'P-fizzbuzz', name: 'FizzBuzz array-fill with number default (n.toString)', ok: true,
          src: tc('''class FizzBuzz {
-                        @SelfEnsures
+                        @SelfEnsures   // the body *is* the spec — lifted into @Ensures({ result == <body> }), written once
                         static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }
                         @Requires({ upTo >= 1 })
-                        @Ensures({ result.length == upTo })
-                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })
+                        @Ensures({ result.length == upTo })   // exactly the size requested
+                        @Ensures({ (0..<upTo).every { int k -> result[k] == FizzBuzz.spec(k + 1) } })   // every element provably correct
                         static String[] build(int upTo) {
                             String[] r = new String[upTo]
                             int i = 0
@@ -5481,7 +5482,8 @@ class WrapCounter implements Counter { }
                             while (i < upTo) { r[i] = FizzBuzz.spec(i + 1); i = i + 1 }
                             return r
                         }
-                    }''')],
+                    }
+                    // build(20) == [1, 2, 🥤, 4, 🐝, 🥤, 7, 8, 🥤, 🐝, 11, 🥤, 13, 14, 🥤🐝, 16, 17, 🥤, 19, 🐝]''')],
         // The same proof through String.valueOf(n) and Integer.toString(n) — all three forms route to intToString.
         [group: 'P-fizzbuzz', name: 'number default via String.valueOf', ok: true,
          src: tc('''class FizzBuzz {
@@ -5569,9 +5571,9 @@ class WrapCounter implements Counter { }
         [group: 'P-multichecker', name: 'PurityChecker + VerifyChecker: @Pure helper, contract proven via pure-eval', ok: true,
          src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
                         @groovy.transform.Pure
-                        static int triple(int n) { 3 * n }
+                        static int triple(int n) { 3 * n }   // PurityChecker: provably side-effect-free
                         @Ensures({ result == 30 })
-                        static int f() { triple(10) }
+                        static int f() { triple(10) }   // groovy-verify: proven by evaluating triple(10)
                     }''')],
         // When the assumption is violated, the combination rejects it — PurityChecker pinpoints WHY
         // (`@Pure violation: field assignment to 'counter'`) where VerifyChecker, unable to evaluate the
@@ -5601,7 +5603,7 @@ class WrapCounter implements Counter { }
         [group: 'P-multichecker', name: 'NullChecker(strict) + VerifyChecker: per-element non-null proven from @Requires', ok: true,
          src: tcExt(["groovy.typecheckers.NullChecker(strict: true)", 'verification.VerifyChecker'], '''class C {
                         @Requires({ xs != null && xs.length > 0 && xs[0] != null })
-                        static int firstLen(String[] xs) { xs[0].length() }
+                        static int firstLen(String[] xs) { xs[0].length() }   // proven safe; strict NullChecker is satisfied too
                     }''')],
         // Drop the `xs[0] != null` premise and groovy-verify *disproves* the assumption with a concrete witness
         // (`firstLen` on a length-1 array holding null) — while strict NullChecker stays silent, its flow model
@@ -5770,7 +5772,7 @@ class WrapCounter implements Counter { }
          src: tc('''class C {
                         @Requires({ n >= 0 && n <= 30 })
                         @Ensures({ (1 << n) == (2 ** n).intValue() })
-                        static void shiftIsPowerOfTwo(int n) {}
+                        static void shiftIsPowerOfTwo(int n) {}   // ✓ holds for all 31 values
                     }''')],
         [group: 'P-shift-power', name: 'shift/power off-by-one is held to account', ok: false, expect: 'postcondition',
          src: tc('''class C {
@@ -5784,9 +5786,9 @@ class WrapCounter implements Counter { }
         // safe-nav carries no non-null implication, so the NPE obligation is still (correctly) flagged.
         [group: 'P97 safe-nav non-null', name: 'titleLen via safe-nav ?. precondition proves', ok: true,
          src: tc('''class C {
-                        @Requires({ name?.startsWith("Dr. ") })
+                        @Requires({ name?.startsWith("Dr. ") })   // ?. ⟹ name != null
                         @Ensures({ result >= 4 })
-                        static int titleLen(String name) { name.length() }
+                        static int titleLen(String name) { name.length() }   // ✓ no NPE obligation left open
                     }''')],
         [group: 'P97 safe-nav non-null', name: 'safe-nav under || does NOT imply non-null (still flags)', ok: false, expect: 'NullPointer',
          src: tc('''class C {
@@ -6830,7 +6832,7 @@ class WrapCounter implements Counter { }
                         List<Integer> xs
                         @Requires({ xs != null })
                         @Modifies({ this.xs })
-                        @Ensures({ xs.count(v) == old.xs.count(v) })
+                        @Ensures({ xs.count(v) == old.xs.count(v) })   // count preserved across a push-pop round-trip
                         void roundTrip(int v) { xs.add(v); xs.removeLast() }
                     }''')],
 
@@ -7035,7 +7037,7 @@ class WrapCounter implements Counter { }
          expect: 'addition overflows 32-bit signed range',
          src: tc('''class C {
                         @CheckOverflow
-                        static int incr(int n) { n + 1 }
+                        static int incr(int n) { n + 1 }   // refutes
                     }''')],
         // Bound the input to make the increment safe. {@code Integer.MAX_VALUE} folds to the
         // literal 2147483647 via the JDK-range-constant peephole, so users can write the natural
@@ -7484,14 +7486,14 @@ class WrapCounter implements Counter { }
         // bounded quantifiers — no new machinery.
         [group: 'P18 reachability', name: 'fuel DFS: visited grows AND node covered', ok: true,
          src: tc('''class C {
-                        Map<Integer,Integer> next
+                        Map<Integer,Integer> next   // functional graph: successor of node u
                         Set<Integer> visited
-                        int n
+                        int n   // node domain 0..<n
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
                         @Decreases({ fuel })
                         @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } &&
-                                   (fuel <= 0 || (u in visited)) })
+                                   (fuel <= 0 || (u in visited)) })   // grows monotonically, and u gets covered
                         void visit(int u, int fuel) {
                             if (fuel > 0 && u !in visited) {
                                 visited.add(u)
@@ -7603,7 +7605,7 @@ class WrapCounter implements Counter { }
         [group: 'P20 bcount', name: 'bound lemma: 0 <= bcount(s,k) <= k', ok: true,
          src: tc('''class C {
                         @Requires({ k >= 0 })
-                        @Ensures({ 0 <= result && result <= k })
+                        @Ensures({ 0 <= result && result <= k })   // the BOUND — the converse counting `card` lacked
                         @Decreases({ k })
                         static int bcount(Set<Integer> s, int k) {
                             if (k == 0) return 0
@@ -7711,14 +7713,14 @@ class WrapCounter implements Counter { }
         // quantifiers, the per-add law and the full-characterization into the DFS soundness property.
         [group: 'P22 full-char', name: 'DFS: unconditional coverage (start in visited)', ok: true,
          src: tc('''class C {
-                        Map<Integer,Integer> next
+                        Map<Integer,Integer> next   // functional graph
                         Set<Integer> visited
                         int n
                         @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
                         @Modifies({ this.visited })
-                        @Decreases({ n - Sets.boundedCount(visited, n) })
+                        @Decreases({ n - Sets.boundedCount(visited, n) })   // strictly decreases — the per-add law
                         @Ensures({ (u in visited) &&
-                                   (0..<n).every { (it in old.visited) ==> (it in visited) } })
+                                   (0..<n).every { (it in old.visited) ==> (it in visited) } })   // ← UNCONDITIONAL coverage
                         void visit(int u) {
                             if (u !in visited && Sets.boundedCount(visited, n) < n) {
                                 visited.add(u)
@@ -8629,12 +8631,12 @@ class WrapCounter implements Counter { }
         // invariant. Z3's exact Real sort models BigDecimal +/- faithfully, so this is a real proof.
         [group: 'P68 financial', name: 'transfer conserves total (no money lost)', ok: true,
          src: tc('''class Bank {
-                       BigDecimal alice
-                       BigDecimal bob
+                       BigDecimal alice, bob
                        @Requires({ amt >= 0.0 && amt <= alice })
-                       @Ensures({ alice + bob == old.alice + old.bob })
+                       @Ensures({ alice + bob == old.alice + old.bob })          // no money is lost in the transfer
                        void transfer(BigDecimal amt) { alice = alice - amt; bob = bob + amt }
-                   }''')],
+                   }
+                   // Change the body to `bob = bob + amt - 0.01` — a salami slice — and the @Ensures REFUTES.''')],
         // The proof is NOT vacuous: a transfer that skims a cent (the classic "salami slice") is
         // caught — the total drops by 0.01, so conservation refutes. (This needed the Phase 67
         // decimal-assignment fix: an int-shadowed field write used to hide the skim.)
@@ -8653,7 +8655,7 @@ class WrapCounter implements Counter { }
         [group: 'P68 financial', name: 'interest credits every cent (round-trip)', ok: true,
          src: tc('''class C {
                        @Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
-                       @Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })
+                       @Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })   // every cent accounted for
                        static int interestCents(int principal, int rateNum, int rateDen) {
                            (principal * rateNum).intdiv(rateDen)
                        }
@@ -9801,8 +9803,8 @@ class WrapCounter implements Counter { }
          src: HDR + NONNULL_ANN + tcExt(['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'], '''class Greeter {
                         @NonNull String name                          // implicit invariant: name != null
                         @Requires({ n != null })
-                        Greeter(String n) { name = n }                // establishment proven
-                        @NonNull String greet() { 'hi ' + name }      // @NonNull return proven (concat is non-null)
+                        Greeter(String n) { name = n }                // groovy-verify proves the field is *established* non-null
+                        @NonNull String greet() { 'hi ' + name }      // …and the @NonNull return holds (a concatenation is never null)
                     }''')],
 
         // Phase 131 — value-flow nullity: a method can now *prove* it returns non-null (literal / new / concat /
@@ -10189,7 +10191,7 @@ class WrapCounter implements Counter { }
                             @Invariant({ 0 <= i && i <= src.length && i == j &&
                                          (0..<i).every { dst[it] == src[it] } })
                             @Decreases({ src.length - i })
-                            while (i < src.length) { dst[j++] = src[i++] }
+                            while (i < src.length) { dst[j++] = src[i++] }   // dst[j] = src[i]; i++; j++
                             return dst
                         }
                     }''')],
@@ -10209,7 +10211,7 @@ class WrapCounter implements Counter { }
                         @Requires({ n >= 1 })
                         @Ensures({ result.length == n && result[0] == x })
                         static int[] singleton(int n, int x) {
-                            int[] r = new int[n]
+                            int[] r = new int[n]   // length n, all zero
                             r[0] = x
                             return r
                         }
@@ -11339,8 +11341,8 @@ class WrapCounter implements Counter { }
                         static int implicit(@Label('High') boolean secret,
                                             @Label('Low') int a, @Label('Low') int b) {
                             int t = a
-                            if (secret) t = a else t = b
-                            return t
+                            if (secret) t = a else t = b   // t now reveals `secret`…
+                            return t   // REFUTED — though only Low values are ever assigned
                         }
                     }''')],
         // A return *inside* a branch on a secret leaks the guard (which branch ran), even returning a Low value.
@@ -11461,7 +11463,7 @@ class WrapCounter implements Counter { }
          src: tci('''class C {
                        static int sum(int[] a) {
                            int s = 0
-                           for (int i = 0; i < a.length; i++) { s = s + a[i] }
+                           for (int i = 0; i < a.length; i++) { s = s + a[i] }   // array bounds PROVEN — no @Invariant written
                            return s
                        }
                    }''')],
@@ -11687,7 +11689,7 @@ class WrapCounter implements Counter { }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         static L classifyData(boolean authed) { authed ? L.Low : L.High }
                         static void declassify(boolean authed, @Label(by = 'classifyData') int data) {
-                            authed = true
+                            authed = true   // REFUTED — L(data) becomes Low, but data may hold High
                         }
                     }''')],
         // The opposite update — making the classification MORE secret (authed := false ⇒ L(data) == High) — is
@@ -11726,7 +11728,7 @@ class WrapCounter implements Counter { }
                         static L join(L a, L b) { leq(a, b) ? b : a }
                         @Label('Low')
                         static boolean check(@Label('High') int password, @Label('Low') int guess) {
-                            return Declassify.to('Low', password == guess)
+                            return Declassify.to('Low', password == guess)   // release one bit — verified
                         }
                     }''')],
         // The SAME method *without* the declassification marker leaks — `password == guess` carries High → refuted.
@@ -11867,11 +11869,11 @@ class WrapCounter implements Counter { }
                         enum L { Low, High }
                         static boolean leq(L a, L b) { a == L.Low || b == L.High }
                         static L join(L a, L b) { leq(a, b) ? b : a }
-                        static L classifyData(boolean authed) { authed ? L.Low : L.High }
+                        static L classifyData(boolean authed) { authed ? L.Low : L.High }   // value-dependent classification
                         @Label('Low')
                         static int get(boolean authed, @Label(by = 'classifyData') int data,
                                        @Label('Low') int fallback) {
-                            if (authed) return data
+                            if (authed) return data   // VERIFIED — under the check, L(data) == Low
                             return fallback
                         }
                     }''')],

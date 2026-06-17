@@ -22,6 +22,7 @@ or simply *the wrong answer*: you say what should be true with stock
 [`groovy.contracts`](https://github.com/spockframework/groovy-contracts) annotations
 (`@Requires` / `@Ensures` / `@Invariant`), compile under
 
+<!-- doclint:case pl-truth/truth-assert-non-zero-int-literal-verifies -->
 ```groovy
 @TypeChecked(extensions = 'verification.VerifyChecker')
 ```
@@ -155,6 +156,7 @@ shows the loop terminates, so the postcondition `result == n` is *proven of the 
 assumed. (Recursion works the same way — a method-level `@Decreases` lets the method's own `@Ensures`
 be assumed at the recursive call: the proof-by-induction step.)
 
+<!-- doclint:case regression-loop/countup-verified -->
 ```groovy
 @Requires({ n >= 0 })
 @Ensures({ result == n })
@@ -170,6 +172,7 @@ static int countUp(int n) {
 The recursion that parenthetical mentions reads the same — a recursive `factorial` whose own `@Ensures`
 is assumed at the recursive call (the induction hypothesis), proven to grow at least linearly:
 
+<!-- doclint:case p-induction/compound-return-n-fact-n-1-call-hoisted -->
 ```groovy
 @Requires({ n >= 1 })
 @Ensures({ result >= n })          // factorial grows at least linearly — proven by induction on n
@@ -307,6 +310,7 @@ contract that would hang at runtime.
 safety obligations (bounds, divide-by-zero, null) need no annotation; an access the checker
 can't prove safe fails the build the way the JVM would name it, plus an input that triggers it:
 
+<!-- doclint:case p1-bounds/unguarded-index-refuted -->
 ```groovy
 static int g(int[] a, int i) { a[i] }   // index never checked
 ```
@@ -329,6 +333,7 @@ is non-null — Groovy's `?.` evaluates to `null` (falsy) on a null receiver —
 implication, so an unguarded `recv.bar()` in the body discharges its null check with no redundant
 `recv != null`:
 
+<!-- doclint:case p97-safe-nav-non-null/titlelen-via-safe-nav-precondition-proves -->
 ```groovy
 @Requires({ name?.startsWith("Dr. ") })          // ?. ⟹ name != null
 @Ensures({ result >= 4 })
@@ -345,6 +350,7 @@ proofs work. Methods (or classes) that annotate `@CheckOverflow` opt into a stro
 every `+`, `-`, `*` becomes an implicit obligation that the math result stays in the operand type's
 signed range, refuted otherwise with a runnable repro:
 
+<!-- doclint:case p44-overflow/unguarded-increment-refutes -->
 ```groovy
 class C {
     @CheckOverflow
@@ -407,6 +413,7 @@ For a property over the *whole* index range there's an even shorter spelling —
 so "every element is non-negative" reads `a.indices.every { a[it] >= 0 }`, and that precondition is enough to
 prove the in-range access `a[k]` yields a non-negative result:
 
+<!-- doclint:case p9-native-quantifiers/indices-every-entails-instance -->
 ```groovy
 @Requires({ a.indices.every { a[it] >= 0 } && 0 <= k && k < a.length })
 @Ensures({ result >= 0 })
@@ -418,6 +425,7 @@ fixed-arity literal `new int[]{a, b}` (or a list literal `[a, b]` coerced to the
 elements; a sized `new int[n]` is a fresh, Java-zero-filled array, so an unwritten slot reads `0` and a body
 store bounds-checks against the length:
 
+<!-- doclint:case readme-examples/singleton-sized-array-symbolic-n -->
 ```groovy
 @Requires({ n >= 1 })
 @Ensures({ result.length == n && result[0] == x })
@@ -436,6 +444,7 @@ expression is supported — the classic two-cursor copy `dst[j++] = src[i++]` ve
 to its value plus the increment, so the loop invariant carries the copied prefix and the whole copy is proven
 element-for-element:
 
+<!-- doclint:case readme-examples/two-cursor-array-copy-dst-j-src-i -->
 ```groovy
 @Requires({ src != null && dst != null && src.length <= dst.length })
 @Ensures({ (0..<src.length).every { result[it] == src[it] } })
@@ -461,6 +470,7 @@ as a mathematical integer and any subscripted, sized receiver as its contents. S
 identically declared `Integer max(Integer a, Integer b)`, and the sorted-`diff` holds verbatim over a
 `List<Integer>`, in the same idiom (`xs[i]`, `xs.size()`):
 
+<!-- doclint:case boxed-list/list-integer-sorted-diff-verified -->
 ```groovy
 @Requires({ (0..<xs.size() - 1).every { xs[it] <= xs[it + 1] } && 0 <= k && k + 1 < xs.size() })
 @Ensures({ result <= 0 })
@@ -525,6 +535,7 @@ The map's *value sort* is the inner set's characteristic-array sort `Array<Perm,
 reads as a transient set; `m[k].contains(p)` is membership, and `m[k].containsAll(required)`
 finite-conjuncts over the inner enum's constants. So a covering-implies-granted claim is a one-liner:
 
+<!-- doclint:case p36-nested-map-set/readme-rbac-adminmaywrite-verifies -->
 ```groovy
 class Acl {
     enum Role { ADMIN, USER, GUEST }
@@ -547,6 +558,7 @@ verify, with both the operator and method spellings: `a + b` / `a | b` / `a.or(b
 difference, "in exactly one"). A method that **returns** a set can spec its `result` member-by-member —
 so a policy merge proves it's exactly the union, characterised at an arbitrary element `p`:
 
+<!-- doclint:case p35b-set-return/readme-union-result-granted-extra -->
 ```groovy
 @Requires({ granted != null && extra != null })
 @Ensures({ (p in result) == (p in granted || p in extra) })   // result == granted ∪ extra
@@ -568,6 +580,7 @@ finite domain the verifier exploits: the pigeonhole `handled.size() <= 3` is aut
 handled` is asserted on the set's first use. So an FSM-completeness claim becomes a one-line
 contract:
 
+<!-- doclint:case p29-enum-sets/fsm-via-set-state-full-coverage-entails-every-state -->
 ```groovy
 class FSM {
     enum State { IDLE, RUNNING, DONE }
@@ -618,6 +631,7 @@ can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide,
 literal is power-of-two arithmetic (`x << 1 == x * 2` proves), and a *low-bit mask* folds to arithmetic too —
 `a & (2^k − 1)` is exactly `a mod 2^k` — so the low bit of any `int` is `0` or `1`:
 
+<!-- doclint:case readme-examples/lowbit-bitwise-low-bit -->
 ```groovy
 @Ensures({ result == 0 || result == 1 })
 static int lowBit(int a) { a & 1 }
@@ -633,6 +647,7 @@ a false pass.
 next multiple of 16 with `n + ((-n) & 0x0f)` — a body that's pure bit manipulation, a spec that's pure
 arithmetic. groovy-verify proves it:
 
+<!-- doclint:case p103-mask-as-mod/openjml-round-up-to-16-proves-range-mod16 -->
 ```groovy
 @Requires({ n <= 0x7ffffff0 })
 @Ensures({ n <= result && result <= n + 15 && result % 16 == 0 })
@@ -649,6 +664,7 @@ body, bridged so the caller never pays the bit-vector cost.
 `(0..10).each { n -> assert (1 << n) == (2 ** n) }`, the verifier proves the identity for *every* `n` in the
 range at once — the `**` recurrence axioms meet the bit-vector shift:
 
+<!-- doclint:case p-shift-power/shift-equals-power-of-two-1-n-2-n-for-n-in-0-30 -->
 ```groovy
 @Requires({ n >= 0 && n <= 30 })
 @Ensures({ (1 << n) == (2 ** n).intValue() })
@@ -665,6 +681,7 @@ that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact an
 exact arithmetic, so a conservation invariant is a *faithful* proof — and it isn't vacuous: skim a cent and
 the build fails.
 
+<!-- doclint:case p68-financial/transfer-conserves-total-no-money-lost -->
 ```groovy
 class Bank {
     BigDecimal alice, bob
@@ -680,6 +697,7 @@ integer minor units (cents), where the framework is strongest: the credited (flo
 retained remainder equals the exact value, so nothing vanishes; and a calc claiming it credits the *exact*
 amount is refuted whenever a remainder exists.
 
+<!-- doclint:case p68-financial/interest-credits-every-cent-round-trip -->
 ```groovy
 @Requires({ principal >= 0 && rateNum >= 0 && rateDen > 0 })
 @Ensures({ result * rateDen + (principal * rateNum) % rateDen == principal * rateNum })  // every cent accounted for
@@ -760,6 +778,7 @@ old.a[it]` works too.
 through one is visible through the other — something lightweight checkers ignore by treating distinct names as
 distinct objects. This method *looks* obviously correct:
 
+<!-- doclint:case p89-field-write/setboth-refuted-under-aliasing-forgot-a-b -->
 ```groovy
 @Ensures({ a.balance == 100 && b.balance == 200 })
 static void setBoth(Account a, Account b) { a.balance = 100; b.balance = 200 }
@@ -776,6 +795,7 @@ but the verifier **refuses** it — because if `a` and `b` are the *same* accoun
 
 Adding the distinctness precondition — Groovy's identity operator `!==` — makes it verify:
 
+<!-- doclint:case p89-field-write/setboth-verifies-with-a-b -->
 ```groovy
 @Requires({ a !== b })
 @Ensures({ a.balance == 100 && b.balance == 200 })
@@ -793,6 +813,7 @@ exchanged" — and there are two faithful ways to write it, whose difference is 
 parameters `final` and swap two **locals** instead: the parameters *can't* be reassigned, so they keep their
 entry values, and the postcondition reads them directly — no `old`:
 
+<!-- doclint:case p90-swap/final-params-swap-locals-readme-form -->
 ```groovy
 @Ensures({ result.a == b && result.b == a })
 static Map<String, Integer> swap(final int a, final int b) {
@@ -811,6 +832,7 @@ If we swap the **parameters themselves**,
 then by the time the postcondition runs `a` and `b` no longer hold their
 entry values — so you must reach back for them with `old`:
 
+<!-- doclint:case p90-swap/swap-params-result-a-old-b-groovy-12078 -->
 ```groovy
 @Ensures({ result.a == old.b && result.b == old.a })
 static Map<String, Integer> swap(int a, int b) {
@@ -835,6 +857,7 @@ bounds-check obligation); `xs.clear()` zeros the size and every tracked count. T
 `bcount(arr, v, 0, size)` matches Groovy's GDK `xs.count(v)` faithfully across all three, so a
 stack-shaped push-then-pop *provably* preserves the count:
 
+<!-- doclint:case p40-list-mutation/readme-stack-roundtrip-preserves-count -->
 ```groovy
 class Stack {
     List<Integer> xs
@@ -862,6 +885,7 @@ fragment.
 carrying its own `@Invariant`/`@Decreases`. The textbook case accumulates `n·n` by counting `1` across an
 `n × n` grid:
 
+<!-- doclint:case readme-examples/nested-loop-count-n-n -->
 ```groovy
 @Requires({ n >= 0 })
 @Ensures({ result == n * n })
@@ -1037,6 +1061,7 @@ hold at once — **soundness** (`visited` only ever grows, a bounded universal o
 *havocs* `visited` and reframes it from the callee's `@Ensures` (sound `@Modifies`), and the self-`@Ensures`
 is the inductive hypothesis:
 
+<!-- doclint:case p18-reachability/fuel-dfs-visited-grows-and-node-covered -->
 ```groovy
 class C {
     Map<Integer,Integer> next   // functional graph: successor of node u
@@ -1045,8 +1070,8 @@ class C {
     @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
     @Modifies({ this.visited })
     @Decreases({ fuel })
-    @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } &&   // soundness: visited only grows
-               (fuel <= 0 || (u in visited)) })                               // progress: u gets visited
+    @Ensures({ (0..<n).every { (it in old.visited) ==> (it in visited) } &&
+               (fuel <= 0 || (u in visited)) })   // grows monotonically, and u gets covered
     void visit(int u, int fuel) {
         if (fuel > 0 && u !in visited) {
             visited.add(u)
@@ -1095,6 +1120,7 @@ domain, `bcount(s,k) = Σ_{i<k} (i ∈ s ? 1 : 0)`, is just an ordinary recursiv
 properties are proved by the framework's *own* induction (`@Decreases` on `k`, the self-`@Ensures` as the
 hypothesis), no built-in axiom:
 
+<!-- doclint:case p20-bcount/bound-lemma-0-bcount-s-k-k -->
 ```groovy
 @Requires({ k >= 0 })
 @Ensures({ 0 <= result && result <= k })          // the BOUND — the converse counting `card` lacked
@@ -1117,6 +1143,7 @@ axiom, and, at every set mutation, the bcount analogue of the per-store `count` 
 `Sets.boundedCount(s∪{u}, k) = Sets.boundedCount(s, k) + (0 <= u < k ∧ u ∉ s ? 1 : 0)`. So a fresh in-domain add raises the
 count by exactly one:
 
+<!-- doclint:case p21-bcount-law/fresh-in-domain-add-increments-count -->
 ```groovy
 @Requires({ 0 <= u && u < k && u !in s })
 @Modifies({ this.s })
@@ -1134,6 +1161,7 @@ asserts the iff for every `Sets.boundedCount` term. With it, a **cardinality-ter
 handed ends up visited — *unconditionally*, no fuel bound — the property that was the honest boundary two
 phases ago:
 
+<!-- doclint:case p22-full-char/dfs-unconditional-coverage-start-in-visited -->
 ```groovy
 class C {
     Map<Integer,Integer> next         // functional graph
@@ -1142,8 +1170,8 @@ class C {
     @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } })
     @Modifies({ this.visited })
     @Decreases({ n - Sets.boundedCount(visited, n) })          // strictly decreases — the per-add law
-    @Ensures({ (u in visited) &&                         // ← UNCONDITIONAL coverage
-               (0..<n).every { (it in old.visited) ==> (it in visited) } })
+    @Ensures({ (u in visited) &&
+               (0..<n).every { (it in old.visited) ==> (it in visited) } })   // ← UNCONDITIONAL coverage
     void visit(int u) {
         if (u !in visited && Sets.boundedCount(visited, n) < n) {
             visited.add(u)
@@ -1221,6 +1249,7 @@ filters, return shapes, and string methods close on **Act 3** over un-curated in
 
 Task 030 — filter a list to its positive elements:
 
+<!-- doclint:case humaneval-port/get-positive-verus-030-result-size-xs-size -->
 ```groovy
 @Requires({ xs != null })
 @Ensures({ result.size() <= xs.size() })            // ← the spec the Verus original omits
@@ -1341,6 +1370,7 @@ literal and reads elements by index — and this is exactly where a declared **`
 too, since the body's literal coerces to the array (or is written explicitly as `new int[]{…}`) and the
 binding keys off the return *expression*, not the declared type:
 
+<!-- doclint:case p78-int-return/sum-product-returns-int-sum-product -->
 ```groovy
 @Requires({ xs != null && xs.size() > 0 })
 @Ensures({ result[0] == xs.sum() && result[1] == xs.inject(1) { a, x -> a * x } })
@@ -1372,6 +1402,7 @@ the numeric running total.
 Task 039's inner `is_prime` — the canonical NIA-plus-control-flow benchmark — ports
 verbatim to the Verus source shape:
 
+<!-- doclint:case humaneval-port/is-prime-verus-039-full-verus-shape-port -->
 ```groovy
 @Requires({ num >= 0 })
 static int isPrime(int num) {
@@ -1496,6 +1527,7 @@ Literals fold to ground constants, out-of-range indices refute with the standard
 `s.startsWith(t) ∧ i < t.length() ⟹ s.charAt(i) == t.charAt(i)` come free from the theory.
 Composing several in one method:
 
+<!-- doclint:case p47h-gstring/showcase-idlength-via-startswith-substring -->
 ```groovy
 @Requires({ s?.startsWith("user:") })
 @Ensures({ result == s.length() - 5 })
@@ -1506,6 +1538,7 @@ That verifies via two theory consequences chained — `startsWith ⟹ length(pre
 gives `s.length() >= 5`, and `substring(s, 5, k).length() == k` gives the identity. A second
 showcase blending regex, GString interpolation, and the structural concat facts:
 
+<!-- doclint:case p47h-gstring/showcase-greet-via-gstring-regex-concat-facts -->
 ```groovy
 @Requires({ name ==~ /[a-zA-Z]+/ })
 @Ensures({ result.startsWith("Hi, ") && result.endsWith(name) })
@@ -1522,6 +1555,7 @@ precondition rides along through whatever shape the body assembles.
 The two operations Z3 has *no* primitive for — `reverse` and case folding — are uninterpreted
 functions pinned at the literal level, and they **compose**:
 
+<!-- doclint:case p47i-reverse/reverse-composes-with-touppercase -->
 ```groovy
 @Ensures({ result == "CBA" })
 static String f() { "abc".reverse().toUpperCase() }
@@ -1541,6 +1575,7 @@ paragraph).
 map verifies completely: the precondition's *integer* range, the body's char shift, and the postcondition's
 *character* range are all checked.
 
+<!-- doclint:case p100-string-next/user-example-a-next-i-for-i-in-0-25-in-a-z -->
 ```groovy
 @Requires({ i in 0..25 })
 @Ensures({ result in 'A'..'Z' })
@@ -1627,6 +1662,7 @@ idiom (Phase 83): a map literal whose entries the contract references by name, r
 Dafny's `sum` / `max`. The literal is the method's trailing expression — Groovy returns it implicitly,
 which also mirrors Dafny's named out-parameters (there is no explicit `return` of them either):
 
+<!-- doclint:case dafny-port/summax-vscomp10-p1-sum-n-max -->
 ```groovy
 @Requires({ 0 <= n && a.length == n && (0..<n).every { a[it] >= 0 } })
 @Ensures({ result.sum <= n * result.max })
@@ -1684,6 +1720,7 @@ method Find(a: array<int>, key: int) returns (index: int)
 
 The port reads almost identically:
 
+<!-- doclint:case dafny-port/find-linear-search-index-0-no-element-equals-key -->
 ```groovy
 @Ensures({ result >= 0 ==> result < a.length && a[result] == key })
 @Ensures({ result < 0 ==> (0..<a.length).every { a[it] != key } })
@@ -1740,6 +1777,7 @@ The port is the **verbatim** shape — `else return mid` inside the loop, `retur
 verifies: both postcondition directions, the excluded-region universal preserved across the narrowing,
 every `a[mid]` bound, and termination:
 
+<!-- doclint:case dafny-port/binarysearch-textbook-return-mid-both-directions-bounds-termination -->
 ```groovy
 @Requires({ a.isSorted() })
 @Ensures({ result < 0  ==> (0..<a.length).every { a[it] != value } })
@@ -1808,6 +1846,7 @@ int max(int[] a) {
 
 The Groovy is the same proof, structure for structure:
 
+<!-- doclint:case p104-openjml/max-by-elimination-result-indexes-a-maximum -->
 ```groovy
 @Requires({ a != null && a.length > 0 })
 @Ensures({ 0 <= result && result < a.length && Forall.range(0, a.length) { int i -> a[i] <= a[result] } })
@@ -1843,6 +1882,7 @@ Z3's array theory is exactly where the engine's quantified-loop machinery alread
 matrix fill proves `∀. a[it] == 0`). So spell the buffer as a `char[]` (an Int-element array — `char` is
 integral) and ChangeCase falls straight out, with no new engine support beyond folding the char literal:
 
+<!-- doclint:case p106-char-seq/functional-changecase-upper-verifies -->
 ```groovy
 @Requires({ a != null })
 @Ensures({ result.length == a.length &&
@@ -2256,6 +2296,7 @@ The machinery isn't specific to the buffer's two pointers. A different shape —
 **monotonicity** rely — works the same way: two threads only ever increment a `count`, each relying on the other
 to do likewise, so a value once observed below the count stays below it.
 
+<!-- doclint:case p-counter/monotonic-counter-observed-bound-persists -->
 ```groovy
 @Invariant({ count >= 0 })
 class Counter {
@@ -2334,6 +2375,7 @@ proof — a **witness search proven total**, then **called twice across methods*
 First, `duplet`: scan all pairs, return the first duplicate. The hard part is **totality** — given a duplicate
 *exists*, prove a real one is *returned*, not the sentinel:
 
+<!-- doclint:case p111-duplets-totality/duplet-totality-verifies -->
 ```groovy
 @Requires({ a != null && (0..<a.length).any { int p -> (p + 1..<a.length).any { int q -> a[p] == a[q] } } })
 @Ensures({ 0 <= result.v1 && result.v1 < result.v2 && result.v2 < a.length && a[result.v1] == a[result.v2] })
@@ -2366,6 +2408,7 @@ existential and it refutes — the proof genuinely rests on it.
 Then `dupletExcept(a, except)` is the same search with one extra conjunct, `a[i] != except` — find a duplicate
 whose *value* differs from `except`. And `duplets` composes the two across method calls:
 
+<!-- doclint:case p113-interproc-tuple/full-two-pass-duplets-composition -->
 ```groovy
 @Requires({ a != null && (0..<a.length).any { int i -> (i + 1..<a.length).any { int j ->
     (0..<a.length).any { int k -> (k + 1..<a.length).any { int l ->
@@ -2395,6 +2438,7 @@ number `i + 1` — that `+ 1` is the bridge between the array index and the Fizz
 the broken variant below gets wrong. The emoji-FizzBuzz flourish is borrowed, with thanks, from Don Raab's
 [*Ternary, Predicate, and Pattern Matching for FizzBuzz with Java 26*](https://donraab.medium.com/ternary-predicate-and-pattern-matching-for-fizzbuzz-with-java-26-646c812a137b).
 
+<!-- doclint:case p-fizzbuzz/fizzbuzz-array-fill-with-number-default-n-tostring -->
 ```groovy
 class FizzBuzz {
     @SelfEnsures   // the body *is* the spec — lifted into @Ensures({ result == <body> }), written once
@@ -2619,6 +2663,7 @@ Every loop above carries a hand-written `@Invariant`. For the *most common* shap
 the engine can infer it. You opt in through the **parameterised extension syntax** — the same mechanism
 `NullChecker` uses for `strict`:
 
+<!-- doclint:case pl-infer/counter-loop-over-array-bounds-inferred-no-invariant -->
 ```groovy
 @TypeChecked(extensions = 'verification.VerifyChecker(inferLoops: true)')
 class C {
@@ -2689,6 +2734,7 @@ variable name.
 sink* — through control flow. Branching on a secret raises a program-counter label inside both arms, so anything
 assigned (or any sink called) there is tainted by *which branch ran*:
 
+<!-- doclint:case pl1-infoflow/1c-implicit-flow-assign-under-secret-branch-refuted -->
 ```groovy
     @Label('Low')
     static int implicit(@Label('High') boolean secret,
@@ -2720,6 +2766,7 @@ syntax-directed walk that pushes the PC entering a branch and pops it on exit, t
 it isn't. Here a value's *classification* can be a function of program state, reasoned about path-sensitively.
 Declare `data` secret *unless authenticated*:
 
+<!-- doclint:case pl1-infoflow/value-dependent-release-under-the-guard-verifies -->
 ```groovy
     static L classifyData(boolean authed) { authed ? L.Low : L.High }   // value-dependent classification
 
@@ -2739,6 +2786,7 @@ classification function the SMT backend evaluates under the path conditions.
 And the dual bug — changing the *control* variable to make the classification public while the data is still
 secret — is caught too:
 
+<!-- doclint:case pl1-infoflow/secure-update-flipping-the-flag-public-refuted -->
 ```groovy
     static void declassify(boolean authed, @Label(by = 'classifyData') int data) {
         authed = true                                            // REFUTED — L(data) becomes Low, but data may hold High
@@ -2751,6 +2799,7 @@ secure-update rule: assigning a control variable mustn't strand a value it contr
 Sometimes a release is *intended* — a password checker must reveal whether the guess was right. That's
 **declassification**, and here it's an explicit, greppable act rather than an invisible cast:
 
+<!-- doclint:case pl1-infoflow/declassify-password-check-releases-the-equality-bit-verifies -->
 ```groovy
     @Label('Low')
     static boolean check(@Label('High') int password, @Label('Low') int guess) {
@@ -2889,6 +2938,7 @@ so it silently assumes an array element `xs[0]` is non-null. groovy-verify makes
 obligation `xs[0] != null` against its per-element oracle (Phase 37) — so on the same code it **proves** what
 NullChecker assumes, or **refutes** it with a witness:
 
+<!-- doclint:case p-multichecker/nullchecker-strict-verifychecker-per-element-non-null-proven-from-requires -->
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker(strict: true)', 'verification.VerifyChecker'])
 class C {
@@ -2912,6 +2962,7 @@ to raise. Same extension SPI, complementary ends of the same question.
 Both forms in one class (`@NonNull` is any name from NullChecker's set — `@NonNull` / `@NotNull` / `@Nonnull` /
 `@MonotonicNonNull`):
 
+<!-- doclint:case nndoc/readme-nonnull-lifecycle-under-both-checkers -->
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'verification.VerifyChecker'])
 class Greeter {
@@ -2933,6 +2984,7 @@ When a `.matches` and a sibling's concern meet on the *same* regex, the division
 `RegexChecker` validates the pattern's **syntax**, groovy-verify proves its **semantics** — both in one
 compile, each reporting only its own kind of error:
 
+<!-- doclint:case p-multichecker/regexchecker-syntax-verifychecker-semantics-on-the-same-matches -->
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.RegexChecker', 'verification.VerifyChecker'])
 class C {
@@ -3142,6 +3194,7 @@ by *inlining a contract-free same-class helper as a value* — sound only if tha
 transparent, which groovy-verify **assumes but never checks**. `PurityChecker` verifies precisely that,
 turning the unstated premise into a machine-checked one:
 
+<!-- doclint:case p-multichecker/puritychecker-verifychecker-pure-helper-contract-proven-via-pure-eval -->
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
 class C {
