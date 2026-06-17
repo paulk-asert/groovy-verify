@@ -109,14 +109,20 @@ interesting model — see [Relationship to Groovy's other checkers](#relationshi
 
 ## What's demonstrated
 
-Before the worked examples, the breadth. The full inventory of what the engine proves today — each row a
-capability, how you author it (`@Requires` / `@Ensures` / `@Invariant` / `@Label` / `@Reducer` / …), and a ✅
-phase tag — spans the whole fragment: integer/decimal/FP arithmetic and overflow, strings, arrays and lists
-with nested universal/existential quantifiers, sets and maps with algebra and cardinality, recurrences, tuples
-and records, information flow, rely/guarantee, and the monad/monoid law proofs — each paired with the "deferred"
-notes that mark its honest edge.
+Before the worked examples, the breadth — what the engine proves today:
 
-The full per-phase table is in **[CAPABILITIES.md](CAPABILITIES.md)**.
+- integer / decimal / floating-point arithmetic, and opt-in overflow
+- strings
+- arrays and lists, with nested universal *and* existential quantifiers
+- sets and maps, with algebra and cardinality
+- recurrences
+- tuples and records
+- information flow and rely/guarantee
+- monad and monoid law proofs
+
+The full inventory is a per-phase table in **[CAPABILITIES.md](CAPABILITIES.md)** — each row a capability, how you
+author it (`@Requires` / `@Ensures` / `@Invariant` / `@Label` / `@Reducer` / …), a ✅ phase tag, and the
+"deferred" notes that mark its honest edge.
 
 ## The fragment
 
@@ -125,14 +131,16 @@ That breadth lives inside a deliberately **modest** fragment, and verification i
 silently. It is modest by *intent*, not by size — every piece was chosen because it lines up with proofs people
 actually write (bounds, aggregation, sortedness, state machines, recurrences), not to chase a coverage metric.
 
-In brief, it covers: integer arithmetic (variable products via Z3's NIA solver), `BigDecimal`-exact and IEEE-754
-floating-point, and bitwise/shift; Z3's native theory of **strings**; **arrays and lists** under the array theory
-with bounded **universal *and* existential** quantifiers that nest; finite **`Set` and `Map`** with full set
-algebra and per-mutation cardinality laws; **witnessed extrema** (`xs.max()` / `min()`) and aggregation specs
-(`sum` / product / conservation) carried by loop invariants; recurrence spec helpers
-(`Fib` / `Trib` / `Tetra` / `Gcd` / `Lcm`); **tuples, records, and map-as-named-tuple** structured returns; and
-higher-order functions / algebraic carriers for **law proofs** (`@Monadic` monad/functor laws, `@Reducer` monoid
-laws).
+In brief, it covers:
+
+- **arithmetic** — integer (variable products via Z3's NIA solver), `BigDecimal`-exact and IEEE-754 floating-point, and bitwise/shift
+- **strings** — Z3's native string theory
+- **arrays and lists** — under the array theory, with bounded universal *and* existential quantifiers that nest
+- **sets and maps** — finite, with full set algebra and per-mutation cardinality laws
+- **extrema and aggregation** — witnessed `xs.max()` / `min()`, and `sum` / product / conservation carried by loop invariants
+- **recurrences** — spec helpers `Fib` / `Trib` / `Tetra` / `Gcd` / `Lcm`
+- **structured returns** — tuples, records, and map-as-named-tuple
+- **law proofs** — higher-order functions / algebraic carriers (`@Monadic` monad/functor, `@Reducer` monoid)
 
 The unit of verification is a **method** carrying contracts; the engine models the enclosing **class** (instance
 fields tracked in SSA, a class `@Invariant` assumed-on-entry / checked-on-exit), **enum** and **record**, and
