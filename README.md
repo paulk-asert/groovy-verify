@@ -435,7 +435,21 @@ The bound is **width-aware**: it follows Java binary numeric promotion of the op
 `long`/`Long` operand widens the check to `[Long.MIN_VALUE, Long.MAX_VALUE]`. `@CheckOverflow long f(long n) { n + 1 }`
 refutes only at the true 64-bit boundary (`n == Long.MAX_VALUE`) and verifies under `n < Long.MAX_VALUE` —
 not a spurious 32-bit refute. `BigInteger` operands carry no obligation — unlike `int`/`long`, the
-default unbounded model is *runtime-exact* for `BigInteger`, which never overflows.
+default unbounded model is *runtime-exact* for `BigInteger`, which never overflows. Where the `int` version
+above needs `@CheckOverflow` and a bound, the `BigInteger` sum is proven for *all* non-negative inputs, however
+large, with no guard at all:
+
+<!-- doclint:case p124-biginteger/addition-verifies-unbounded-int -->
+```groovy
+class C {
+    @Requires({ a >= 0 && b >= 0 })
+    @Ensures({ result == a + b })
+    static BigInteger add(BigInteger a, BigInteger b) { a + b }
+}
+```
+
+(`BigInteger` is Z3's unbounded `Int` sort exactly — the most faithful integer type, since `Int` carries no
+width — and a literal like `42g` folds too, modulo one wider than 64 bits, which skips loudly.)
 
 Method-level math-int reasoning (no annotation) is preserved verbatim — the entire existing test
 suite continues to verify unchanged, and the permutation-sort showcase still uses the unbounded
