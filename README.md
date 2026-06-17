@@ -2030,8 +2030,9 @@ becomes*, not that the channel delivers or terminates.
 
 ### Rely/guarantee — the conditions compose, and the bodies uphold them
 
-The producer/consumer is the capstone case study of the information-flow paper this work follows — Smith's
-*A Dafny-based approach to thread-local information flow analysis*. Most of that case study is machine-checked by
+The producer/consumer is the capstone case study of the information-flow paper this work follows — Graeme Smith's
+[*A Dafny-based approach to thread-local information flow analysis*](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf)
+(FormaliSE 2023). Most of that case study is machine-checked by
 the [information-flow examples](#information-flow--taint-tracking-generalized) further down: the buffer element's
 classification is *value-dependent* on `head`/`tail`, advancing `tail` is a *secure-update* on a control variable,
 and the producer *declassifies* what it releases. The one concurrency-specific piece is the **rely/guarantee**
@@ -2100,6 +2101,15 @@ the safety is gone**, and the load-bearing conjunct is exactly the neighbour's p
 `head == oldHead` from `rCons` and `values[head]` refutes; drop `tail == oldTail` from `rProd` and `values[tail]`
 refutes — each with an out-of-bounds counterexample.
 
+> [!NOTE]
+> **We never checked the buffer actually *works*.** Readers may have noticed what's missing: nothing here proves
+> `read()` returns the value `write()` stored, or that the queue is FIFO. The contracts assert *memory safety*
+> (every access in bounds) — and, in the §VII capstone below, *information flow* (no leak) — but **not functional
+> correctness**. There is deliberately no `@Ensures` relating a read to a prior write. That property — every value
+> read was previously written, in order — is **linearizability**, and it is checked at a different tier: the
+> Lincheck spike in [`docs/`](docs/) exercises it on the real bytecode. Three rungs, three jobs: this checker
+> proves bounds (and info-flow), Lincheck tests value-correctness, and neither subsumes the other.
+
 So the whole loop closes on one buffer: **write the `@Rely` / `@Guarantee` predicates once, tag the methods,
 done.** The lemmas certify the relies *compose* (`G_i ⟹ R_j`); the bodies prove each thread *upholds* its rely.
 And the framing isn't limited to a single critical section: because synthesis knows which fields are shared, the
@@ -2133,6 +2143,19 @@ the assumed atomicity — a structural assumption, like the lock examples.
 > the step that follows. That is the Smith/Dafny interleaving shape: environment interference modelled wherever
 > the environment could actually run. (Only the frameless hand-written `@UnderRely('someRelyStep')` shorthand,
 > with no `@Rely` predicate to read the frame from, falls back to a single rely-step at entry.)
+
+> [!NOTE]
+> **The atomicity grain — and where it bites.** Look at the desugaring above: the rely-steps sit *between*
+> statements, so a single statement like `head = head + 1` (or `head++`) is modeled as one **atomic**
+> read-modify-write — no environment step runs between reading `head` and storing it back. On the JVM that is
+> *not* true: `head++` compiles to a non-atomic read / modify / write, and another thread genuinely can interleave
+> in that window. So statement-atomicity is an assumption the proof *makes*, not a fact it *establishes* — which is
+> exactly why the finer tiers exist (the Lincheck schedule explores the real interleavings; a TLA+ model can split
+> the statement to expose the read/write gap). Two honest ways to close it where a use case demanded it, neither
+> done here because we are only outlining the approach: model the field as an `AtomicInteger` so the
+> read-modify-write really is atomic and the assumption holds, or apply finer-grained interleaving — hand-split the
+> statement into `t = head; head = t + 1` so a rely-step lands in the middle and the lost-update window is
+> *verified* rather than assumed.
 
 This same shape now runs inside the *full* §VII body, where each access also carries an information-flow
 obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) — and that
@@ -2581,8 +2604,10 @@ refuses to let it reach a sink it shouldn't, at zero runtime cost. The same idea
 each source and sink. The verifier discharges the **noninterference** obligation —
 `leq( join(ΓE(e), PC), L(sink) )` — over the class's *own* lattice, by the same Z3 backend that proves the
 contracts. No new solver theory; the obligation is just a lattice formula. (The Γ/lattice encoding follows Smith,
-*A Dafny-based approach to thread-local information flow analysis*, §III; the paper's concurrent rely/guarantee
-story is a deliberate non-goal here.)
+[*A Dafny-based approach to thread-local information flow analysis*](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf),
+§III. The paper's concurrent rely/guarantee story is *reconstructed* on the per-thread rely-step model — see the
+rely/guarantee section — but the underlying concurrency/atomicity soundness, that threads truly interleave at the
+assumed grain, stays a deliberate non-goal.)
 
 A two-point `Low ⊑ High` is the taint lattice — read `High` as "secret" for confidentiality, or "untrusted" for
 integrity; they're duals. **The leak that matters most is into a sink** — a value reaching a parameter classified
