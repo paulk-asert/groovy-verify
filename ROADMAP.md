@@ -6583,6 +6583,35 @@ extension syntax — `VerifyChecker(inferLoops: true)` — so VerifyChecker read
 
 ---
 
+## Phase 143 — fib4 / tetranacci via `Tetra.of(i)` (HumanEval 046)  *(shipped — a mechanical recurrence extension)*
+
+The four-term sibling of `Fib` (2-term, Phase 55), `Trib` (3-term, Phase 63) and `Gcd` (2-arg, Phase 87) — and a
+demonstration that the recurrence-helper machinery extends *purely mechanically* one term wider. New `Tetra.of(i)`
+helper, recognised by the `Encoder` and lowered to an uninterpreted `tetra$ : Int -> Int` constrained by base
+(`tetra(0)==0, tetra(1)==0, tetra(2)==2, tetra(3)==0`) and step (`∀k. k>=4 ⟹ tetra(k)==tetra(k-1)+…+tetra(k-4)`)
+axioms. The cost was ~60 lines, all copy-of-`Trib`: a `tetra` primitive (`SmtBackend` interface + `Z3Backend`
+`mkFuncDecl('tetra$')`), `Encoder.tetraOf` (the axioms) + `Tetra.of` recognition, and the `Tetra` helper class —
+**no new proof technique**. The iterative `fib4` carries a *four*-wide rolling window
+(`a==Tetra.of(i) … d==Tetra.of(i+3)`), re-established across `e = a+b+c+d` by the step axiom e-matching
+`tetra(i+4)`; `return a` proves `result == Tetra.of(n)`, terminating on `n - i`.
+
+**Shipped tests** (group `P46 fib4`): `Tetra.of(8) == 28` (literal unfolds via the axioms), the step law at a
+literal index, and the iterative-equals-recursive proof. Suite: 1213 tests, 0 failures. This was the cleanest of
+the "now only a small upgrade away" Verus-corpus tasks — the same shape as 063, one degree higher.
+
+**Also — HumanEval 057 (`monotonic`), with NO engine change** (group `P57 monotonic`). The dual to 035's single
+existential: a list is monotonic iff all-non-decreasing **or** all-non-increasing — a *disjunctive ∀∀*
+postcondition `result == ((∀ pair: l[j] <= l[j+1]) || (∀ pair: l[j] >= l[j+1]))`. The scan keeps two boolean
+flags, each a bounded existential over the prefix (`increasing == ∃j<i. l[j] < l[j+1]`, mirror for `decreasing`),
+carried in the invariant alongside `!(increasing && decreasing)` (no double-witness, since both-true triggers the
+in-body `return false` — Phase 49b). It verified on the first attempt — two existentials over an *adjacent-pair*
+predicate, a mid-loop return, and a two-clause disjunctive spec all composed from existing features (`every`/`any`
+Phase 9, boolean locals Phase 48b, in-body exits Phase 49b). Dropping the `|| non-increasing` disjunct refutes
+(non-vacuous). The second of the "small upgrade away" Verus-corpus tasks — and it turned out to be no upgrade at
+all, just composition.
+
+---
+
 ## Phase L0 — security lattices, proved well-formed  *(shipped — two small engine enablers)*
 
 **A new *kind* of object, harvested from Smith, *A Dafny-based approach to thread-local information flow

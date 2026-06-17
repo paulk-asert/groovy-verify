@@ -49,6 +49,7 @@ class VerifyHarness {
         import verification.Sorted
         import verification.Fib
         import verification.Trib
+        import verification.Tetra
         import verification.Gcd
         import verification.Lcm
         import verification.CheckOverflow
@@ -6106,6 +6107,103 @@ class WrapCounter implements Counter { }
                                 i = i + 1
                             }
                             return a
+                        }
+                    }''')],
+
+        // ---------- HumanEval 046 (fib4): tetranacci via the Tetra.of(i) helper ----------
+        // The FOUR-term sibling of 063 — the recurrence machinery extends one term wider. `Tetra.of` indexing
+        // matches HumanEval's fib4 (base 0,0,2,0 → 0,0,2,0,2,4,8,14,28,54); a literal index unfolds via the step.
+        [group: 'P46 fib4', name: 'Tetra.of(8) == 28', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Tetra.of(8) == 28 })
+                        static void f() { }
+                    }''')],
+        [group: 'P46 fib4', name: 'Tetra step law at 7 holds', ok: true,
+         src: tc('''class C {
+                        @Ensures({ Tetra.of(7) == Tetra.of(6) + Tetra.of(5) + Tetra.of(4) + Tetra.of(3) })
+                        static void f() { }
+                    }''')],
+        // The textbook proof, one term wider: an iterative fib4 provably equals the recursive definition. A
+        // 4-wide rolling window (a==tetra(i) … d==tetra(i+3)); the step axiom re-establishes it across
+        // `e = a + b + c + d` (e-matching tetra(i+4) == tetra(i+3)+…+tetra(i)). Terminates (`n - i`).
+        [group: 'P46 fib4', name: 'iterative fib4 equals Tetra.of(n)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result == Tetra.of(n) })
+                        static int fib4(int n) {
+                            int a = 0
+                            int b = 0
+                            int c = 2
+                            int d = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= n &&
+                                         a == Tetra.of(i) &&
+                                         b == Tetra.of(i + 1) &&
+                                         c == Tetra.of(i + 2) &&
+                                         d == Tetra.of(i + 3) })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int t = a + b + c + d
+                                a = b
+                                b = c
+                                c = d
+                                d = t
+                                i = i + 1
+                            }
+                            return a
+                        }
+                    }''')],
+
+        // ---------- HumanEval 057 (monotonic): list is all-non-decreasing OR all-non-increasing ----------
+        // A DISJUNCTIVE spec — `(∀ pair: l[j] <= l[j+1]) || (∀ pair: l[j] >= l[j+1])`. The scan tracks two flags;
+        // each is a bounded EXISTENTIAL over the prefix (`increasing == ∃j<i. l[j] < l[j+1]`), carried in the
+        // invariant. The in-body early return (both flags set ⇒ not monotonic) is the Phase-49b machinery.
+        [group: 'P57 monotonic', name: 'monotonic verifies (disjunctive ∀∀ spec)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == ((0..<(l.length - 1)).every { l[it] <= l[it + 1] } ||
+                                              (0..<(l.length - 1)).every { l[it] >= l[it + 1] }) })
+                        static boolean monotonic(int[] l) {
+                            if (l.length <= 1) return true
+                            boolean increasing = false
+                            boolean decreasing = false
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= l.length - 1 &&
+                                         !(increasing && decreasing) &&
+                                         increasing == (0..<i).any { l[it] < l[it + 1] } &&
+                                         decreasing == (0..<i).any { l[it] > l[it + 1] } })
+                            @Decreases({ l.length - 1 - i })
+                            while (i < l.length - 1) {
+                                if (l[i] < l[i + 1]) increasing = true
+                                else if (l[i] > l[i + 1]) decreasing = true
+                                if (increasing && decreasing) return false
+                                i = i + 1
+                            }
+                            return true
+                        }
+                    }''')],
+        // Non-vacuousness control — claim only the non-decreasing half (drop the `|| non-increasing`). The body
+        // returns true for an all-DECREASING list too, so the weaker spec is false there → refutes.
+        [group: 'P57 monotonic', name: 'dropping the OR-decreasing disjunct refutes (proof is non-vacuous)',
+         ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == (0..<(l.length - 1)).every { l[it] <= l[it + 1] } })
+                        static boolean monotonic(int[] l) {
+                            if (l.length <= 1) return true
+                            boolean increasing = false
+                            boolean decreasing = false
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= l.length - 1 &&
+                                         !(increasing && decreasing) &&
+                                         increasing == (0..<i).any { l[it] < l[it + 1] } &&
+                                         decreasing == (0..<i).any { l[it] > l[it + 1] } })
+                            @Decreases({ l.length - 1 - i })
+                            while (i < l.length - 1) {
+                                if (l[i] < l[i + 1]) increasing = true
+                                else if (l[i] > l[i + 1]) decreasing = true
+                                if (increasing && decreasing) return false
+                                i = i + 1
+                            }
+                            return true
                         }
                     }''')],
 

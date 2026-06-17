@@ -1271,6 +1271,16 @@ a ground witness rather than asking Z3 to invent one. `min` is symmetric, and a 
 `a[0]` correctly refutes (the universal clause fails — a later element can exceed it; the existential
 witness alone isn't enough). No new machinery — just `every`/`any` (Phase 9) inside a loop.
 
+Task 057 (`monotonic`) — is a list all-non-decreasing **or** all-non-increasing — takes that one step further
+into a **disjunctive ∀∀ spec**: `result == ((∀ pair: l[j] <= l[j+1]) || (∀ pair: l[j] >= l[j+1]))`. The scan
+keeps two boolean flags, and each is a bounded *existential* over the prefix — `increasing == (∃ j < i. l[j] <
+l[j+1])`, `decreasing` the mirror — carried in the loop invariant; the body's `if (increasing && decreasing)
+return false` is the in-body early-exit machinery. What's notable is that this composed with **no engine change**
+at all: two existentials (each over an *adjacent-pair* predicate `l[j] < l[j+1]`, not a single element), the
+`!(increasing && decreasing)` no-double-witness invariant, a mid-loop return, and a two-clause disjunctive
+postcondition — all from features that already existed. Drop the `|| non-increasing` half and it **refutes** (the
+body returns true for an all-decreasing list, which the weaker spec rejects), so the proof is non-vacuous.
+
 Task 003 (`below_zero`) — detect whether a running balance ever goes negative — is the
 **sum-aggregation** showcase, and the spec is the *full biconditional*: the result is true iff
 **some prefix sum is negative**.
@@ -1427,6 +1437,13 @@ static int fibfib(int n) {
     return a
 }
 ```
+
+Task 046 (`fib4`) — the **tetranacci** number `fib4(n) = fib4(n-1) + … + fib4(n-4)` (base `0, 0, 2, 0`) — is the
+four-term sibling, and confirms the recurrence machinery extends *mechanically* one term wider: a `Tetra.of(i)`
+helper lowers to a `tetra$` with the analogous base/step axioms, and the iterative version carries a *four*-wide
+window — `a == Tetra.of(i) ∧ … ∧ d == Tetra.of(i + 3)` — re-established across `e = a + b + c + d` by the step
+axiom (`tetra(i+4) == tetra(i+3)+…+tetra(i)`). `return a` proves `result == Tetra.of(n)`; same shape as 063,
+one degree higher.
 
 Task 013 (`greatest_common_divisor`) is the **two-argument** sibling: a `Gcd.of(a, b)` helper lowers to a
 `gcd$ : (Int, Int) -> Int` constrained by Euclid's defining axioms — base `∀x. gcd(x, 0) == x` and step
@@ -3427,7 +3444,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
 | `Forall` | the `Forall.range(lo, hi){…}` bounded-quantifier helper (the native GDK `every`/`any` idioms are the preferred surface) |
-| `Sets` / `Sorted` / `Fib` / `Trib` / `Gcd` / `Lcm` | runtime-executable spec helpers the encoder recognises, each lowered to an axiomatised primitive — `Sets.boundedBy`/`boundedCount` (cardinality), `Sorted.ascending`/etc. (the flat two-variable sortedness axiom, also reached via the native `xs.isSorted()`), `Fib.of(i)` (Fibonacci), `Trib.of(i)` (tribonacci/`fibfib`), `Gcd.of(a, b)` (Euclid), `Lcm.of(a, b)` (least common multiple, via the gcd identity) |
+| `Sets` / `Sorted` / `Fib` / `Trib` / `Tetra` / `Gcd` / `Lcm` | runtime-executable spec helpers the encoder recognises, each lowered to an axiomatised primitive — `Sets.boundedBy`/`boundedCount` (cardinality), `Sorted.ascending`/etc. (the flat two-variable sortedness axiom, also reached via the native `xs.isSorted()`), `Fib.of(i)` (Fibonacci), `Trib.of(i)` (tribonacci/`fibfib`), `Tetra.of(i)` (tetranacci/`fib4`), `Gcd.of(a, b)` (Euclid), `Lcm.of(a, b)` (least common multiple, via the gcd identity) |
 | `PathFacts` | enclosing-`if` path conditions per expression site |
 | `ContractTester` | the bounded property-based fallback (Phase 62): runs the executable contract over a small integer grid when the solver returns *UNKNOWN*, reporting a `fails on:` repro |
 | `CheckOverflow` | the opt-in `@CheckOverflow` annotation that turns on 32-bit integer-overflow obligations (Phase 44) |

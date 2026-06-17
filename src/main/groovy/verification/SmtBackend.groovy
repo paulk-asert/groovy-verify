@@ -273,6 +273,14 @@ interface SmtSession extends AutoCloseable {
     Object trib(Object k)
 
     /**
+     * The fib4 / tetranacci-style function {@code tetra(k)} — an uninterpreted {@code Int -> Int} (HumanEval 046
+     * {@code fib4}). Meaning from base ({@code tetra(0)==0}, {@code tetra(1)==0}, {@code tetra(2)==2},
+     * {@code tetra(3)==0}) and step ({@code ∀k. k>=4 ⟹ tetra(k)==tetra(k-1)+tetra(k-2)+tetra(k-3)+tetra(k-4)})
+     * axioms the caller asserts (mint-once, globally). Recognised from {@code Tetra.of(i)} — the four-term sibling.
+     */
+    Object tetra(Object k)
+
+    /**
      * The greatest-common-divisor function {@code gcd(a, b)} — an uninterpreted {@code (Int, Int) -> Int}
      * (HumanEval 013 {@code greatest_common_divisor}). Meaning from Euclid's base ({@code ∀x. gcd(x, 0)==x})
      * and step ({@code ∀x,y. y!=0 ⟹ gcd(x, y)==gcd(y, x % y)}) axioms the caller asserts (mint-once,

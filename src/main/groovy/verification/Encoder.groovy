@@ -3213,6 +3213,35 @@ class Encoder {
         session.trib(kH)
     }
 
+    private boolean tetraConstrained = false
+    /**
+     * The fib4 / tetranacci function {@code tetra(k)} (HumanEval 046 {@code fib4}), asserting its defining axioms
+     * the first time it is seen: base {@code tetra(0)==0} / {@code tetra(1)==0} / {@code tetra(2)==2} /
+     * {@code tetra(3)==0}, step {@code ∀k. k>=4 ⟹ tetra(k)==tetra(k-1)+tetra(k-2)+tetra(k-3)+tetra(k-4)}. The
+     * four-term sibling of {@link #tribOf}: the step (triggered on {@code tetra(k)}) preserves a generation
+     * invariant {@code d == Tetra.of(i+3)} across {@code e = a+b+c+d} by e-matching to
+     * {@code tetra(i+4) == tetra(i+3)+tetra(i+2)+tetra(i+1)+tetra(i)}.
+     */
+    Object tetraOf(Object kH) {
+        if (!tetraConstrained) {
+            tetraConstrained = true
+            Object zero = session.intLit(0L), one = session.intLit(1L), two = session.intLit(2L)
+            Object three = session.intLit(3L), four = session.intLit(4L)
+            session.assertExpr(session.eq(session.tetra(zero), zero))
+            session.assertExpr(session.eq(session.tetra(one), zero))
+            session.assertExpr(session.eq(session.tetra(two), two))
+            session.assertExpr(session.eq(session.tetra(three), zero))
+            Object k = session.boundIntVar('tetra$k' + (quantCounter++))
+            Object term = session.tetra(k)
+            Object rhs = session.plus(session.plus(session.plus(session.tetra(session.minus(k, one)),
+                                                                session.tetra(session.minus(k, two))),
+                                                   session.tetra(session.minus(k, three))),
+                                      session.tetra(session.minus(k, four)))
+            session.assertExpr(session.forall([k], session.implies(session.ge(k, four), session.eq(term, rhs)), [term]))
+        }
+        session.tetra(kH)
+    }
+
     /**
      * The greatest-common-divisor function {@code gcd(a, b)} (HumanEval 013), asserting Euclid's defining
      * axioms the first time it is seen: base {@code ∀x. gcd(x, 0) == x} and step
@@ -4901,6 +4930,15 @@ class Encoder {
         if (m == 'of' && isTrib && args.size() == 1) {
             Object k = translate(args.get(0))
             return k == null ? null : tribOf(k)
+        }
+
+        // Tetra.of(i) — the fib4 / tetranacci spec helper (HumanEval 046 fib4), lowered to the tetra$ primitive.
+        boolean isTetra = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Tetra') ||
+                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Tetra') ||
+                          (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Tetra')
+        if (m == 'of' && isTetra && args.size() == 1) {
+            Object k = translate(args.get(0))
+            return k == null ? null : tetraOf(k)
         }
 
         // Gcd.of(a, b) — the Euclid gcd spec helper (HumanEval 013), lowered to the gcd$ primitive.

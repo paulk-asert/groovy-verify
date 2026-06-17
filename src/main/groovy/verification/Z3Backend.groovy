@@ -592,6 +592,15 @@ class Z3Session implements SmtSession {
         ctx.mkApp(tribFn, (Expr) k)
     }
 
+    private FuncDecl tetraFn
+    @Override
+    Object tetra(Object k) {
+        if (tetraFn == null) {
+            tetraFn = ctx.mkFuncDecl('tetra$', [ctx.getIntSort()] as Sort[], ctx.getIntSort())
+        }
+        ctx.mkApp(tetraFn, (Expr) k)
+    }
+
     private FuncDecl gcdFn
     @Override
     Object gcd(Object a, Object b) {
