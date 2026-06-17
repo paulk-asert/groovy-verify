@@ -107,6 +107,44 @@ interesting model — see [Relationship to Groovy's other checkers](#relationshi
 >
 > "Dafny for Groovy" works as the informal shorthand.
 
+## What's demonstrated
+
+Before the worked examples, the breadth. The full inventory of what the engine proves today — each row a
+capability, how you author it (`@Requires` / `@Ensures` / `@Invariant` / `@Label` / `@Reducer` / …), and a ✅
+phase tag — spans the whole fragment: integer/decimal/FP arithmetic and overflow, strings, arrays and lists
+with nested universal/existential quantifiers, sets and maps with algebra and cardinality, recurrences, tuples
+and records, information flow, rely/guarantee, and the monad/monoid law proofs — each paired with the "deferred"
+notes that mark its honest edge.
+
+The full per-phase table is in **[CAPABILITIES.md](CAPABILITIES.md)**.
+
+## The fragment
+
+That breadth lives inside a deliberately **modest** fragment, and verification is sound *within* it and
+**loudly unsound outside it**: anything the encoder cannot model emits a "skipped" warning rather than passing
+silently. It is modest by *intent*, not by size — every piece was chosen because it lines up with proofs people
+actually write (bounds, aggregation, sortedness, state machines, recurrences), not to chase a coverage metric.
+
+In brief, it covers: integer arithmetic (variable products via Z3's NIA solver), `BigDecimal`-exact and IEEE-754
+floating-point, and bitwise/shift; Z3's native theory of **strings**; **arrays and lists** under the array theory
+with bounded **universal *and* existential** quantifiers that nest; finite **`Set` and `Map`** with full set
+algebra and per-mutation cardinality laws; **witnessed extrema** (`xs.max()` / `min()`) and aggregation specs
+(`sum` / product / conservation) carried by loop invariants; recurrence spec helpers
+(`Fib` / `Trib` / `Tetra` / `Gcd` / `Lcm`); **tuples, records, and map-as-named-tuple** structured returns; and
+higher-order functions / algebraic carriers for **law proofs** (`@Monadic` monad/functor laws, `@Reducer` monoid
+laws).
+
+The unit of verification is a **method** carrying contracts; the engine models the enclosing **class** (instance
+fields tracked in SSA, a class `@Invariant` assumed-on-entry / checked-on-exit), **enum** and **record**, and
+follows the **type hierarchy** (inherited invariants, `super` calls, Liskov behavioural subtyping, trait default
+methods). Bodies are straight-line code, `if`/`else`, SSA-tracked locals/fields, compound and side-effecting
+assignment, and annotated `while` / `do-while` / `for` loops (optionally one nested level); across methods a
+callee's `@Ensures` is assumed, `@Decreases` enables proof by induction, and `@Modifies` frames a call. When the
+solver returns *UNKNOWN*, a bounded property-based pass reports a best-effort `fails on:` repro.
+
+The full, itemised enumeration — every operator, every phase, every honest boundary — is in
+**[FRAGMENT.md](FRAGMENT.md)**. The worked examples below put it through its paces.
+
 ## Examples
 
 Each snippet below is compiled under `@TypeChecked(extensions = 'verification.VerifyChecker')`,
@@ -2856,55 +2894,6 @@ Where it stops, it says so. Straight-line code, `if`/`else`, and `while`/`for` l
 Smith §III is in place; the named next steps are the refinements — sinks in a **precompiled/imported** class,
 classification over a field, array element labels, and the predicate-gated (two-state) form of declassification.
 
-## What's demonstrated
-
-A companion to the worked examples above: the full inventory of what the engine proves today — each row a
-capability, how you author it (`@Requires` / `@Ensures` / `@Invariant` / `@Label` / `@Reducer` / …), and a ✅
-phase tag. It spans the whole fragment — integer/decimal/FP arithmetic and overflow, strings, arrays and lists
-with nested universal/existential quantifiers, sets and maps with algebra and cardinality, recurrences, tuples
-and records, information flow, rely/guarantee, and the monad/monoid law proofs — together with the "deferred"
-notes that mark each capability's honest edge.
-
-The full per-phase table is in **[CAPABILITIES.md](CAPABILITIES.md)**.
-
-## Building & using
-
-Built with JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the
-[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots). `./gradlew verify`
-runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
-JUnit 5 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
-Central yet — consume it via a local install, a Gradle composite build, or JitPack.
-
-The full command set (verbose / cache-stats flags, the single-source `CASES` self-test design, the doc-drift
-gate) and the three ways to depend on it live in **[BUILD.md](BUILD.md)**.
-
-## The fragment
-
-Verification is sound *within* a deliberately **modest** fragment and **loudly unsound outside it**: anything
-the encoder cannot model emits a "skipped" warning rather than passing silently. It is modest by *intent*, not by
-size — every piece was chosen because it lines up with proofs people actually write (bounds, aggregation,
-sortedness, state machines, recurrences), not to chase a coverage metric.
-
-In brief, it covers: integer arithmetic (variable products via Z3's NIA solver), `BigDecimal`-exact and IEEE-754
-floating-point, and bitwise/shift; Z3's native theory of **strings**; **arrays and lists** under the array theory
-with bounded **universal *and* existential** quantifiers that nest; finite **`Set` and `Map`** with full set
-algebra and per-mutation cardinality laws; **witnessed extrema** (`xs.max()` / `min()`) and aggregation specs
-(`sum` / product / conservation) carried by loop invariants; recurrence spec helpers
-(`Fib` / `Trib` / `Tetra` / `Gcd` / `Lcm`); **tuples, records, and map-as-named-tuple** structured returns; and
-higher-order functions / algebraic carriers for **law proofs** (`@Monadic` monad/functor laws, `@Reducer` monoid
-laws).
-
-The unit of verification is a **method** carrying contracts; the engine models the enclosing **class** (instance
-fields tracked in SSA, a class `@Invariant` assumed-on-entry / checked-on-exit), **enum** and **record**, and
-follows the **type hierarchy** (inherited invariants, `super` calls, Liskov behavioural subtyping, trait default
-methods). Bodies are straight-line code, `if`/`else`, SSA-tracked locals/fields, compound and side-effecting
-assignment, and annotated `while` / `do-while` / `for` loops (optionally one nested level); across methods a
-callee's `@Ensures` is assumed, `@Decreases` enables proof by induction, and `@Modifies` frames a call. When the
-solver returns *UNKNOWN*, a bounded property-based pass reports a best-effort `fails on:` repro.
-
-The full, itemised enumeration — every operator, every phase, every honest boundary — is in
-**[FRAGMENT.md](FRAGMENT.md)**.
-
 ## Relationship to Groovy's other checkers
 
 groovy-verify is one of a family of `@TypeChecked` extensions, and it deliberately owns a narrow,
@@ -3244,6 +3233,17 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
   purity pairings shown above put two of them to work; the rest compose the same way. Together the
   family checks far more than any one
   extension's fragment.
+
+## Building & using
+
+Built with JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the
+[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots). `./gradlew verify`
+runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
+JUnit 5 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
+Central yet — consume it via a local install, a Gradle composite build, or JitPack.
+
+The full command set (verbose / cache-stats flags, the single-source `CASES` self-test design, the doc-drift
+gate) and the three ways to depend on it live in **[BUILD.md](BUILD.md)**.
 
 ## Architecture
 
