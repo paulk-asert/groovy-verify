@@ -5385,6 +5385,20 @@ class Restricted2Account extends Account implements MinBalance {
             @Ensures({ result == 100000000000000000000g })
             static BigInteger big() { 100000000000000000000g }
         }''')],
+        // ---------- Phase 125: bitwise complement (~) and unsigned right shift (>>>) ----------
+        // ~x is the two's-complement complement, an exact Int identity (-x - 1) — no bit-vector, not refute-hostile.
+        [group: 'P125 complement & ushr', name: 'complement identity ~x == -x - 1', ok: true,
+         src: tc('class C { @Ensures({ result == -x - 1 }) static int comp(int x) { ~x } }')],
+        [group: 'P125 complement & ushr', name: 'complement literal ~5 == -6', ok: true,
+         src: tc('class C { @Ensures({ result == -6 }) static int c() { ~5 } }')],
+        [group: 'P125 complement & ushr', name: 'a wrong complement refutes', expect: 'postcondition',
+         src: tc('class C { @Ensures({ result == -x }) static int comp(int x) { ~x } }')],
+        // >>> is the logical (zero-fill) shift via the 32-bit bit-vector: x >>> 1 is always non-negative …
+        [group: 'P125 complement & ushr', name: 'unsigned shift is always non-negative', ok: true,
+         src: tc('class C { @Ensures({ result >= 0 }) static int ushr(int x) { x >>> 1 } }')],
+        // … whereas the arithmetic >> sign-fills, so it CAN be negative — the contrast that makes >>> distinct.
+        [group: 'P125 complement & ushr', name: 'arithmetic >> can be negative (contrast)', expect: 'postcondition',
+         src: tc('class C { @Ensures({ result >= 0 }) static int s(int x) { x >> 1 } }')],
         // ---------- Phase 121: traits ----------
         // A trait's class @Invariant is collected along the `implements` axis (walkClassInvariants walks
         // interfaces) and enforced on every implementing class's own methods — the same monitor-invariant proof

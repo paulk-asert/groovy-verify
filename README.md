@@ -144,9 +144,9 @@ you write:
   *method* carrying contracts; the type *definitions* themselves — constructors, deconstruction/pattern-matching,
   generated `equals`/`hashCode` — aren't proof targets.
 - **Numbers** — `int` / `long`, arbitrary-precision `BigInteger`, exact `BigDecimal`, and IEEE-754 `double` /
-  `float`; the operators `+ - * /`, integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >>`, comparisons
-  and `<=>`, `++` / `--`, and compound assignment — variable (nonlinear) products dispatch to a dedicated solver.
-  *Out:* floating-point loops & transcendentals, `~` / `>>>`.
+  `float`; the operators `+ - * /`, integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >> >>>` and
+  complement `~`, comparisons and `<=>`, `++` / `--`, and compound assignment — variable (nonlinear) products
+  dispatch to a dedicated solver. *Out:* floating-point loops & transcendentals.
 - **Text** — *querying / composing* a `String` reasons symbolically on Z3's native string theory: `length` /
   `charAt` / `substring` / `indexOf`, `startsWith` / `endsWith` / `contains`, `+` / `concat`, `matches` (regex),
   and GString interpolation. *Rewriting* a string — `replace` / `replaceAll` / `toUpperCase` / `toLowerCase` /
@@ -708,7 +708,7 @@ obligation still fires on division/`intdiv`/`%` by zero, refuting with a runnabl
 corners (general polynomial identities for symbolic-signed operands, square-root / factoring shapes)
 can time out — Z3 returns UNKNOWN and the verifier surfaces "Could not decide," never a silent pass.
 
-**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >>` are modelled faithfully. A shift by a
+**Bitwise and shift operators — at Java's 32-bit width.** `& | ^ << >> >>>` and complement `~` are modelled faithfully. A shift by a
 literal is power-of-two arithmetic (`x << 1 == x * 2` proves), and a *low-bit mask* folds to arithmetic too —
 `a & (2^k − 1)` is exactly `a mod 2^k` — so the low bit of any `int` is `0` or `1`:
 
@@ -756,6 +756,27 @@ static void shiftIsPowerOfTwo(int n) {}            // ✓ holds for all 31 value
 (`1 << 31 == -2147483648`) while `2 ** n` is an unbounded `BigInteger` (`2 ** 31 == 2147483648`), so they
 really differ — and the verifier correctly declines to prove it there. Drop the guard, or change the equality
 to an off-by-one, and it no longer verifies.
+
+**Complement and unsigned shift — `~` and `>>>`.** The complement `~x` is the two's-complement identity
+`-x - 1`, so it stays in plain integer arithmetic — fully symbolic, never refute-hostile:
+
+<!-- doclint:case p125-complement-ushr/complement-identity-x-x-1 -->
+```groovy
+@Ensures({ result == -x - 1 })
+static int comp(int x) { ~x }
+```
+
+The unsigned right shift `>>>` zero-fills from the left (where the arithmetic `>>` sign-fills), so its result is
+always non-negative — and the bit-vector proves it for *every* `int`:
+
+<!-- doclint:case p125-complement-ushr/unsigned-shift-is-always-non-negative -->
+```groovy
+@Ensures({ result >= 0 })
+static int ushr(int x) { x >>> 1 }
+```
+
+The same `@Ensures({ result >= 0 })` on the arithmetic `x >> 1` correctly **refutes** (`-4 >> 1 == -2`) — exactly
+the distinction `>>>` exists to make.
 
 **Money — conservation, and no fractional cents.** Financial code lives on `BigDecimal`, and the proofs
 that matter are about *value not leaking*. `BigDecimal` `+`/`-`/`*` are exact and Z3's Real sort models

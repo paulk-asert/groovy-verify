@@ -39,6 +39,7 @@ import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.BitwiseNegationExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
@@ -3558,6 +3559,16 @@ class Encoder {
             return translate(((UnaryPlusExpression) expr).expression)
         }
 
+        if (expr instanceof BitwiseNegationExpression) {
+            // `~x` is the two's-complement complement = -x - 1, an exact Int identity (no bit-vector needed, and
+            // not refute-hostile). (`~"regex"` is `Pattern.compile`, not bitwise — its non-Int operand makes the
+            // arithmetic throw, so it skips loudly rather than mis-modelling.)
+            Object inner = translate(((BitwiseNegationExpression) expr).expression)
+            if (inner == null) return null
+            try { return session.minus(session.neg(inner), session.intLit(1L)) }
+            catch (Exception ignored) { return null }
+        }
+
         if (expr instanceof NotExpression) {
             Expression ie = ((NotExpression) expr).expression
             Object inner = truthy(ie, translate(ie))   // the negated operand may be non-Boolean (Groovy truth)
@@ -4434,10 +4445,14 @@ class Encoder {
     private Object translateBitwise(int op, BinaryExpression be, Object L, Object R) {
         boolean shl = (op == Types.LEFT_SHIFT)
         boolean shr = (op == Types.RIGHT_SHIFT)
-        if (op != Types.BITWISE_AND && op != Types.BITWISE_OR && op != Types.BITWISE_XOR && !shl && !shr) {
+        boolean ushr = (op == Types.RIGHT_SHIFT_UNSIGNED)
+        if (op != Types.BITWISE_AND && op != Types.BITWISE_OR && op != Types.BITWISE_XOR && !shl && !shr && !ushr) {
             return null
         }
         try {
+            // `>>>` is the logical (zero-fill) shift: its result depends on the full 32-bit sign pattern, so unlike
+            // `<<`/`>>` it has no unbounded-Int form even for a literal count — it always goes through the bit-vector.
+            if (ushr) return session.bvLShr(L, R)
             if (shl || shr) {
                 Long k = nonNegIntLiteral(be.rightExpression)
                 if (k != null && k <= 31) {

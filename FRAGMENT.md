@@ -38,10 +38,13 @@ a coverage metric. In expressions the fragment is:
   exponent folds to a value (`(2 ** 3).intValue() == 8` proves) and the doubling recurrence
   `2 ** (n+1) == 2 * (2 ** n)` proves for *symbolic* `n`, though a false symbolic-exponent value claim
   is refute-hostile (soft-fails to "could not decide", like the `Fib`/`Gcd` recurrences);
-- bitwise / shift operators `& | ^ << >>` (Phase: bitwise) — shifts by a non-negative literal stay in
-  unbounded Int arithmetic (`x << k` is `x * 2^k`, `x >> k` is `⌊x / 2^k⌋`), while `& | ^` and variable
-  shifts lower to Z3's **bit-vector theory at Java's 32-bit width** (faithful two's-complement; bit-blasted,
-  so timeout-gated and refute-hostile on symbolic claims); `~` / `>>>` stay out;
+- bitwise / shift operators `& | ^ << >> >>>` and complement `~` (Phase: bitwise; Phase 125 for `~` / `>>>`) —
+  shifts by a non-negative literal stay in unbounded Int arithmetic (`x << k` is `x * 2^k`, `x >> k` is
+  `⌊x / 2^k⌋`), while `& | ^` and variable shifts lower to Z3's **bit-vector theory at Java's 32-bit width**
+  (faithful two's-complement; bit-blasted, so timeout-gated and refute-hostile on symbolic claims). `~x` is the
+  exact Int identity `-x - 1` (no bit-vector, not refute-hostile); the logical / unsigned `>>>` always goes
+  through the 32-bit bit-vector — its zero-fill result depends on the sign pattern, so unlike `<<` / `>>` it has
+  no unbounded-Int form even for a literal count, but `x >>> 1 >= 0` still *proves* (bit-vectors are complete);
 - straight-line `double`/`float` on Z3's IEEE-754 **FP theory** (Phase 73) — bit-exact (NaN, ±∞, RNE),
   with `Math.sqrt`/`Math.abs`; `0.1d + 0.2d != 0.3d` and no-NaN/finiteness prove, FP loops/transcendentals
   skip;

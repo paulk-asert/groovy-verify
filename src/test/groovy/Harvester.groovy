@@ -108,6 +108,7 @@ class Harvester {
         'P119 channels'               : "A channel pipeline collapses to function composition (FIFO assumed) and proves the per-element transform; a wrong transform refutes.",
         'P123 interface contracts'    : "An interface method's @Requires/@Ensures is inherited by every implementer — the contract-inheritance walk traverses implemented interfaces, not just the superclass.",
         'P124 BigInteger'             : "BigInteger maps to Z3's unbounded Int sort exactly (no width/overflow): values flow as Int and a literal (42g) folds; a literal wider than 64 bits skips loudly.",
+        'P125 complement & ushr'      : "Bitwise complement ~x (the exact Int identity -x-1) and the unsigned/logical right shift x>>>1 (via the 32-bit bit-vector, always non-negative — unlike the arithmetic >>).",
         'P12 perm'                    : "Permutation reasoning via element multiplicity: a swap preserves the multiset, a copy is not a permutation, insertion sort permutes.",
         'P13 frame'                   : "A @Modifies frame is checked: an honest frame verifies, an undeclared write refutes.",
         'P14 sort'                    : "Insertion sort proven sorted AND a permutation at once; a no-op sort cannot claim sorted.",

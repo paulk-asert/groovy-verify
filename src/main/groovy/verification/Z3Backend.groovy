@@ -445,6 +445,7 @@ class Z3Session implements SmtSession {
     @Override Object bvXor(Object a, Object b) { fromBV(ctx.mkBVXOR(toBV32(a), toBV32(b))) }
     @Override Object bvShl(Object a, Object b) { fromBV(ctx.mkBVSHL(toBV32(a), maskShift(toBV32(b)))) }
     @Override Object bvShr(Object a, Object b) { fromBV(ctx.mkBVASHR(toBV32(a), maskShift(toBV32(b)))) }  // arithmetic >>
+    @Override Object bvLShr(Object a, Object b) { fromBV(ctx.mkBVLSHR(toBV32(a), maskShift(toBV32(b)))) } // logical (zero-fill) >>>
 
     @Override Object select(Object arr, Object idx) { ctx.mkSelect((ArrayExpr) arr, (Expr) idx) }
     @Override Object store(Object arr, Object idx, Object val) { ctx.mkStore((ArrayExpr) arr, (Expr) idx, (Expr) val) }

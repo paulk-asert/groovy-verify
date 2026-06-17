@@ -607,12 +607,13 @@ interface SmtSession extends AutoCloseable {
     // each converts both operands to 32-bit two's-complement bit-vectors, applies the BV op, and reads
     // the result back as a signed Int. Faithful to Java `int` semantics (wraparound, sign extension).
     // Shifts mask the count to 5 bits (Java's `x << (k & 31)`); `bvShr` is the arithmetic (sign-filling)
-    // right shift, matching Java `>>`.
+    // right shift, matching Java `>>`, and `bvLShr` the logical (zero-filling) one, matching Java `>>>`.
     Object bvAnd(Object a, Object b)
     Object bvOr(Object a, Object b)
     Object bvXor(Object a, Object b)
     Object bvShl(Object a, Object b)
     Object bvShr(Object a, Object b)
+    Object bvLShr(Object a, Object b)
 
     // Phase 61 — exact-rational (Z3 Real) support for Groovy's BigDecimal arithmetic. The
     // arithmetic/comparison ops above (plus/minus/times/eq/lt/…) are sort-polymorphic and accept
