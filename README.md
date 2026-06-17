@@ -147,9 +147,11 @@ you write:
   `float`; the operators `+ - * /`, integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >>`, comparisons
   and `<=>`, `++` / `--`, and compound assignment — variable (nonlinear) products dispatch to a dedicated solver.
   *Out:* floating-point loops & transcendentals, `~` / `>>>`.
-- **Text** — `String` on Z3's native string theory: `length` / `charAt` / `substring` / `indexOf`, `startsWith` /
-  `endsWith` / `contains`, `+` / `replace` / `matches` (regex), and GString interpolation. *Out:* building a
-  string char-by-char (use a `char[]`), and symbolic case/replace algebra.
+- **Text** — *querying / composing* a `String` reasons symbolically on Z3's native string theory: `length` /
+  `charAt` / `substring` / `indexOf`, `startsWith` / `endsWith` / `contains`, `+` / `concat`, `matches` (regex),
+  and GString interpolation. *Rewriting* a string — `replace` / `replaceAll` / `toUpperCase` / `toLowerCase` /
+  `reverse` — folds on **literal** strings (plus a few weak axioms, e.g. length-preservation), with no general
+  symbolic algebra. *Out:* building a string char-by-char (use a `char[]`).
 - **Collections & data** — arrays and lists (read, update, bounds), finite `Set` and `Map` (membership, mutation,
   cardinality, the full set algebra `∪ ∩ − ^`), `Tuple` / `TupleN` and Groovy's map-as-named-tuple returns, and
   immutable factories — all reasoned over with bounded **universal *and* existential** quantifiers that nest.

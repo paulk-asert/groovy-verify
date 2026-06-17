@@ -55,10 +55,13 @@ a coverage metric. In expressions the fragment is:
   sums with N-account *conservation* (`bal.sum() == old.bal.sum()`; Phases 68–70); the recurrence spec helpers
   `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/63/87);
 - `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
-  `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` / `replace` /
-  regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion and
-  the uninterpreted (literal-pinned / weak-axiom) ops `toUpperCase` / `toLowerCase` / `replaceAll` /
-  `reverse` (Phase 47i — `"abc".reverse() == "cba"` and literal involution fold; symbolic algebra stays out);
+  `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /
+  regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion. The
+  string-*rewriting* ops are uninterpreted (literal-pinned / weak-axiom) — `toUpperCase` / `toLowerCase` /
+  `replaceAll` / `reverse` (Phase 47i — `"abc".reverse() == "cba"` and literal involution fold; symbolic algebra
+  stays out), and `replace` (Phase 47b), which lowers to Z3's *first-occurrence* `str.replace` whereas Groovy's
+  `replace` is replace-*all* — a known semantic gap, so it is sound only where first and all coincide (e.g. a
+  single occurrence; the tests stay there) until Z3 ships a replace-all primitive;
   plus **read-only per-character loops** — a quantified loop invariant over `s.charAt(i)` (the string analogue
   of the array ∀-element proofs), with the char literal spelled `('a' as char)` (Phase 105). *Building* a
   string char-by-char times out on the seq theory, so a constructed buffer goes through `char[]` (an
