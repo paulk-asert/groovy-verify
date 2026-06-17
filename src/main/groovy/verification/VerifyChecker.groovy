@@ -7477,16 +7477,13 @@ class VerifyChecker extends TypeCheckingExtension {
         loc   // not a formal → a field, same name in the caller
     }
 
-    /** Find a @Requires on the method, walking declared and inherited methods. */
+    /** Find a @Requires on the method, walking declared then inherited methods (superclass + interfaces). */
     private static AnnotationNode findRequires(MethodNode m) {
         List<AnnotationNode> direct = m.getAnnotations(REQUIRES_TYPE)
         if (direct != null && !direct.isEmpty()) return direct[0]
-        // Inheritance: simplistic, just walk superclass.
-        ClassNode dc = m.declaringClass
-        ClassNode sc = dc?.superClass
-        if (sc != null && sc != ClassHelper.OBJECT_TYPE) {
-            MethodNode inherited = sc.getMethod(m.name, m.parameters)
-            if (inherited != null) return findRequires(inherited)
+        for (MethodNode inherited : superAndInterfaceDecls(m)) {
+            AnnotationNode a = findRequires(inherited)
+            if (a != null) return a
         }
         null
     }
@@ -7505,7 +7502,7 @@ class VerifyChecker extends TypeCheckingExtension {
         return text != null ? parseContract(text) : null
     }
 
-    /** Read @ContractSource's member, walking the superclass for inherited contracts. */
+    /** Read @ContractSource's member, walking superclass then implemented interfaces for inherited contracts. */
     private static String findContractText(MethodNode m, String kind) {
         List<AnnotationNode> sources = m.getAnnotations(CONTRACT_SOURCE_TYPE)
         if (sources != null && !sources.isEmpty()) {
@@ -7515,13 +7512,32 @@ class VerifyChecker extends TypeCheckingExtension {
                 if (v instanceof String && !((String) v).isEmpty()) return (String) v
             }
         }
-        ClassNode dc = m.declaringClass
-        ClassNode sc = dc?.superClass
-        if (sc != null && sc != ClassHelper.OBJECT_TYPE) {
-            MethodNode inherited = sc.getMethod(m.name, m.parameters)
-            if (inherited != null) return findContractText(inherited, kind)
+        for (MethodNode inherited : superAndInterfaceDecls(m)) {
+            String t = findContractText(inherited, kind)
+            if (t != null) return t
         }
         return null
+    }
+
+    /** The same-signature ancestor methods this one inherits a contract from, nearest first: the superclass
+     *  declaration, then each directly-implemented interface (Phase 123 — an interface / abstract method's
+     *  {@code @Requires} / {@code @Ensures} is inherited by every implementer, as groovy-contracts enforces at
+     *  runtime). Deeper superclasses and super-interfaces are reached by the callers' recursion. */
+    private static List<MethodNode> superAndInterfaceDecls(MethodNode m) {
+        List<MethodNode> out = new ArrayList<MethodNode>()
+        ClassNode dc = m.declaringClass
+        if (dc == null) return out
+        ClassNode sc = dc.superClass
+        if (sc != null && sc != ClassHelper.OBJECT_TYPE) {
+            MethodNode inh = sc.getMethod(m.name, m.parameters)
+            if (inh != null) out.add(inh)
+        }
+        ClassNode[] itfs = dc.interfaces
+        if (itfs != null) for (ClassNode itf : itfs) {
+            MethodNode inh = itf.getMethod(m.name, m.parameters)
+            if (inh != null) out.add(inh)
+        }
+        out
     }
 
     /**

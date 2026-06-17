@@ -147,10 +147,14 @@ Verification also follows the **type hierarchy**: a subclass method is proved ag
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its
 contract is checked for **behavioral subtyping** (Liskov — precondition weakened, postcondition strengthened),
 and a **trait**'s `@Invariant` and contracted *default methods* are verified on every implementer — worked
-through in [Inheritance, traits & behavioral subtyping](README.md#inheritance-traits--behavioral-subtyping). Two honest
-boundaries: each class needs its own `@TypeChecked` (it isn't inherited), and a method is verified only against
-the contract it *declares* — an inherited `@Ensures` isn't re-checked against an *uncontracted* override
-(groovy-contracts still enforces it at runtime).
+through in [Inheritance, traits & behavioral subtyping](README.md#inheritance-traits--behavioral-subtyping).
+Likewise an **`interface`** method's `@Requires` / `@Ensures` is inherited by every implementer (Phase 123 — the
+contract-inheritance walk traverses implemented interfaces, not just the superclass), so an interface-declared
+precondition guards the implementer's body and an interface-declared postcondition is checked against it. Honest
+boundaries: each class needs its own `@TypeChecked` (it isn't inherited); a method is verified only against the
+contract it *declares* — an inherited `@Ensures` isn't re-checked against an *uncontracted* override
+(groovy-contracts still enforces it at runtime); and when a method inherits a contract from *both* a superclass
+and an implemented interface, the nearer superclass declaration is used (the two aren't conjoined).
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post

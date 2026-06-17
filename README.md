@@ -138,10 +138,11 @@ Those proofs hold over a deliberately **modest** slice of Groovy — sound *with
 it**: anything the encoder cannot model emits a "skipped" warning rather than passing silently. The slice, by what
 you write:
 
-- **Type forms** — `class`, `enum`, `record`, and `trait`, with contracts flowing along the type hierarchy
-  (inherited invariants, `super` calls, Liskov subtyping, trait default methods). The unit of proof is a *method*
-  carrying contracts; the type *definitions* themselves — constructors, deconstruction/pattern-matching, generated
-  `equals`/`hashCode` — aren't proof targets, and a plain `interface` has no body to prove.
+- **Type forms** — `class`, `enum`, `record`, `trait`, and `interface`, with contracts flowing along the type
+  hierarchy (inherited class invariants, `super` calls, Liskov subtyping, trait default methods, and a
+  `@Requires` / `@Ensures` an `interface` declares being inherited by every implementer). The unit of proof is a
+  *method* carrying contracts; the type *definitions* themselves — constructors, deconstruction/pattern-matching,
+  generated `equals`/`hashCode` — aren't proof targets.
 - **Numbers** — `int` / `long`, exact `BigDecimal`, and IEEE-754 `double` / `float`; the operators `+ - * /`,
   integer `intdiv` / `%` / `mod`, `**`, the bit-ops `& | ^ << >>`, comparisons and `<=>`, `++` / `--`, and
   compound assignment — variable (nonlinear) products dispatch to a dedicated solver. *Out:* floating-point loops
@@ -2658,6 +2659,27 @@ Liskov substitution violation in override 'debit': its precondition is not behav
 
 (The postcondition direction is symmetric: a child that *weakens* its `@Ensures` — promising less than the
 parent — refutes the same way.)
+
+**Interface contracts.** A `@Requires` / `@Ensures` an `interface` method declares is inherited by every
+implementing class — so an interface can hand its implementers a precondition. Here `NonZero` promises a non-zero
+argument, and that inherited `@Requires` is exactly what discharges the implicit divide-by-zero obligation in
+`Calc.half` — drop `implements NonZero` and the same body refutes with `d = 0`:
+
+<!-- doclint:case p123-interface-contracts/interface-requires-guards-the-implementer-body-verifies -->
+```groovy
+interface NonZero {
+    @Requires({ d != 0 })
+    int half(int d)
+}
+
+@TypeChecked(extensions = 'verification.VerifyChecker')
+class Calc implements NonZero {
+    int half(int d) { 100.intdiv(d) }
+}
+```
+
+(The interface itself carries no `@TypeChecked` — its contract closure is stock groovy-contracts; only the
+implementing class is verified, against the contract it inherits.)
 
 **Traits.** A trait's class `@Invariant` is enforced across the `implements` axis (the same monitor-invariant
 proof, one axis over) — on the trait's *own* default methods **and** every implementing class's methods, which

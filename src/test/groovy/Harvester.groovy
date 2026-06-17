@@ -106,6 +106,7 @@ class Harvester {
         'P117 agent-invariant'        : "An Agent/actor's class @Invariant is the serialized monitor invariant each handler preserves (bounded-buffer occupancy); an unguarded add refutes.",
         'P118 dataflow'               : "A single-assignment dataflow network desugars to SSA and proves its computed value (a+b); a wrong value refutes.",
         'P119 channels'               : "A channel pipeline collapses to function composition (FIFO assumed) and proves the per-element transform; a wrong transform refutes.",
+        'P123 interface contracts'    : "An interface method's @Requires/@Ensures is inherited by every implementer — the contract-inheritance walk traverses implemented interfaces, not just the superclass.",
         'P12 perm'                    : "Permutation reasoning via element multiplicity: a swap preserves the multiset, a copy is not a permutation, insertion sort permutes.",
         'P13 frame'                   : "A @Modifies frame is checked: an honest frame verifies, an undeclared write refutes.",
         'P14 sort'                    : "Insertion sort proven sorted AND a permutation at once; a no-op sort cannot claim sorted.",
