@@ -9902,6 +9902,88 @@ class WrapCounter implements Counter { }
                         @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
                         @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? (g.apply(value) == null ? none() : some(g.apply(value))) : this } }'''],
 
+        [group: 'P-ring', name: 'README flagship: rely/guarantee Buffer (read + write)', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })   // the bounded-buffer invariant
+class Buffer {
+    int head, tail
+    int[] values
+
+    @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) {
+        head == oldHead && oldTail <= tail       // the producer keeps my read pointer, only grows the buffer
+    }
+    @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) {
+        head == oldHead && oldTail <= tail       // I never move head; I only append
+    }
+    @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) {
+        tail == oldTail                          // the consumer keeps my write pointer
+    }
+    @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) {
+        tail == oldTail && oldHead <= head       // I never move tail; I only advance head
+    }
+
+    @Requires({ head < tail })                   // an element is available
+    @UnderRely('Consumer')                       // run under the consumer's rely (rCons) — synthesised + framed
+    int read() {
+        int v = values[head]                     // ← PROVEN in bounds despite the concurrent producer
+        head = head + 1
+        return v
+    }
+    @Requires({ tail < values.length })          // room to append
+    @UnderRely('Producer')                       // run under the producer's rely (rProd)
+    void write(int x) {
+        values[tail] = x                         // ← PROVEN in bounds despite the concurrent consumer
+        tail = tail + 1
+    }
+}''')],
+        [group: 'P-vii', name: 'README capstone: info-flow x R/G Buffer', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+class Buffer {
+    enum L { Low, High }
+    static boolean leq(L a, L b) { a == L.Low || b == L.High }
+    static L join(L a, L b) { leq(a, b) ? b : a }
+    int head, tail
+    @Label(by = 'level') int[] values                              // each slot's level depends on POSITION…
+    static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }   // …the region [head,tail) is Low
+
+    @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+    @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+    @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
+    @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
+
+    @Ensures({ true }) static void deliver(@Label('Low') int x) { }   // a PUBLIC sink — only accepts Low
+
+    @Requires({ head < tail })
+    @UnderRely('Consumer')                 // runs under the producer's interference: head pinned, tail grows
+    int consume() {
+        int v = values[head]               // in [head, tail) ⇒ Low (proven across the concurrent append)
+        deliver(v)                         // Low → Low public sink: NO LEAK
+        head = head + 1
+        return v
+    }
+    @Requires({ tail < values.length })
+    @UnderRely('Producer')                 // runs under the consumer's interference: tail pinned, head grows
+    void produce(@Label('High') int secret) {
+        int msg = Declassify.to('Low', secret)   // §III-E controlled release
+        values[tail] = msg                       // a Low value at the boundary slot
+        tail = tail + 1                          // §III-A array secure-update: old.tail ENTERS the Low region
+    }
+}''')],
+        [group: 'P-fourchecker', name: 'README: Maybe under four checkers + DO', ok: true,
+         src: HDR + 'import groovy.transform.Monadic\nimport java.util.function.Function\n' + '''@Monadic(bind = 'flatMap', map = 'map')
+@TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker',
+                           'groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
+class Maybe {                                              // a hand-rolled Some(value) | None
+    final boolean present
+    final Object value
+    private Maybe(boolean present, Object value) { this.present = present; this.value = value }
+    static Maybe some(Object v) { new Maybe(true, v) }     // unit
+    static Maybe none()         { new Maybe(false, null) }
+
+    @Requires({ f != null }) Maybe flatMap(Function f) { present ? (Maybe) f.apply(value) : this }
+    @Requires({ g != null }) Maybe map(Function g)     { present ? some(g.apply(value)) : this }   // Vavr-style
+
+    static Maybe addPair() { DO(a in some(2), b in some(3)) { some(((Integer) a) + ((Integer) b)) } }
+}'''],
         // Phase M-E — auto-synthesis for two-case carriers. @Monadic alone carries the verdict: a Vavr-style Maybe
         // (no lemmas) auto-proves all five laws; an Optional-style Maybe auto-REFUTES functor composition.
         [group: 'P-maybe', name: 'Vavr-style @Monadic Maybe: all laws auto-prove (no lemmas)', ok: true,

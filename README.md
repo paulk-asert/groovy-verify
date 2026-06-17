@@ -2125,7 +2125,7 @@ coupling (the paper's §IV) — `head`/`tail` are shared, so each thread reasons
 neighbour behaves. Those conditions are two-state predicates (the parameters split into a pre-state and a
 post-state). One `Buffer` class carries both them and the thread bodies that run under them:
 
-<!-- doclint:ignore README illustration: rely/guarantee Buffer (both halves) -->
+<!-- doclint:case p-ring/readme-flagship-rely-guarantee-buffer-read-write -->
 ```groovy
 @Invariant({ 0 <= head && head <= tail && tail <= values.length })   // the bounded-buffer invariant
 class Buffer {
@@ -2254,7 +2254,7 @@ proved bounds-safety under interference; the same `Buffer`, given a **value-depe
 proves **no secret leaks** — the two obligations discharged on one body, each step's info-flow check evaluated
 *through* the rely-step's havoc. This is the composition the whole arc built toward.
 
-<!-- doclint:ignore README illustration: info-flow x R/G Buffer (capstone) -->
+<!-- doclint:case p-vii/readme-capstone-info-flow-x-r-g-buffer -->
 ```groovy
 @Invariant({ 0 <= head && head <= tail && tail <= values.length })
 class Buffer {
@@ -3152,7 +3152,7 @@ property-test (QuickCheck / ScalaCheck). Proving them at compile time is exactly
 
 A whole-class, *four*-checker compile:
 
-<!-- doclint:ignore README illustration: Maybe monad (4 checkers + DO) -->
+<!-- doclint:case p-fourchecker/readme-maybe-under-four-checkers-do -->
 ```groovy
 @Monadic(bind = 'flatMap', map = 'map')
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker',
