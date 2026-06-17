@@ -134,6 +134,7 @@ The examples build from the shape of a single proof to a fully verified algorith
 
 **Postconditions — the contract is the spec.** Z3 proves the body satisfies `@Ensures`:
 
+<!-- doclint:ignore README illustration: @Ensures on max -->
 ```groovy
 @Ensures({ result >= a && result >= b })
 static int max(int a, int b) { a >= b ? a : b }
@@ -194,6 +195,7 @@ constant stack instead of overflowing it. The proof is untouched by that rewrite
 *recursive* source the loop is derived from, hoisting the tail call to an implicit local bound by the
 callee's `@Ensures` (the induction hypothesis), so the inductive contract still discharges:
 
+<!-- doclint:ignore README illustration: @TailRecursive accumulator induction -->
 ```groovy
 import groovy.transform.TailRecursive
 
@@ -240,6 +242,7 @@ wrong* answers (an off-by-one or a forgotten element yields a plausible-but-wron
 exception to flag it). Here the loop invariant carries a *prefix sum* `xs[0..<i].sum()` (the idiomatic
 Groovy spelling), so the returned value is *proven* equal to the whole-list sum:
 
+<!-- doclint:ignore README illustration: loop-invariant running sum -->
 ```groovy
 @Requires({ xs != null && xs.size() > 0 })
 @Ensures({ result == xs.sum() })
@@ -265,6 +268,7 @@ to the current element (`x >= 0`) — exactly the per-element check groovy-contr
 element clause discharges straight from the precondition `xs.every { it >= 0 }`, and together they prove the
 running total never goes negative:
 
+<!-- doclint:ignore README illustration: for-in non-negative sum -->
 ```groovy
 @Requires({ xs.every { it >= 0 } })
 @Ensures({ result >= 0 })
@@ -289,6 +293,7 @@ spec stays **dual** (it also runs at runtime via groovy-contracts), a `.limit(n)
 check terminates — but the verifier proves the property for *every* element, by the very base-case +
 preservation step the loops above use (`P(seed)` and `∀x. P(x) ⟹ P(f(x))`):
 
+<!-- doclint:ignore README illustration: bounded-stream .every -->
 ```groovy
 @Requires({ n >= 0 })
 @Ensures({ Stream.iterate(0, { k -> (k + 1) % 10 }).limit(n).every { int v -> v >= 0 && v < 10 } })
@@ -393,6 +398,7 @@ unsorted input is a build error, not a surprise at runtime. The contract is a pl
 checker conclude adjacent elements are ordered, and because it's ordinary GDK Groovy it runs as a
 runtime check too:
 
+<!-- doclint:ignore README illustration: sorted-adjacent difference -->
 ```groovy
 @Requires({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && 0 <= k && k + 1 < a.length })
 @Ensures({ result <= 0 })
@@ -483,6 +489,7 @@ an obligation to prove the element non-null — the verifier tracks a per-elemen
 an `@Requires` or an `if` guard discharges, and which is otherwise refuted with a `fails on: f([null])`
 repro (the input that triggers the NPE):
 
+<!-- doclint:ignore README illustration: list-element non-null guard -->
 ```groovy
 @Requires({ xs.size() > 0 && xs[0] != null })
 static int firstLen(List<String> xs) { xs[0].length() }
@@ -506,6 +513,7 @@ variants), the only change being the element sort the encoder uses — every con
 (`x in s`, `s.size()`, `m["k"]`) reads the same. The cardinality law carries across: a fresh-element
 add raises the size by one, refuted if the add isn't fresh:
 
+<!-- doclint:ignore README illustration: set-mutation @Modifies frame -->
 ```groovy
 class Acl {
     Set<String> admins
@@ -603,6 +611,7 @@ division is `a.intdiv(b)` or `(int)(a / b)`). Second, *variable* multiplication 
 neither side is a constant) is now handled by Z3's non-linear integer arithmetic (NIA), so sign facts
 (`i * i >= 0`), divisibility (`n % 2 == 0`), and bounded products verify directly:
 
+<!-- doclint:ignore README illustration: square-in-bounds + div/mod round-trip -->
 ```groovy
 // Bounded squaring — the prime-testing bound check that previously hit the opt-out.
 @Requires({ 0 <= i && i <= 100 })
@@ -714,6 +723,7 @@ The checker models each *faithfully* — `BigDecimal` on Z3's exact-real arithme
 floating-point theory (bit-exact: round-nearest-even — RNE, NaN, ±∞) — so it proves the famous discrepancy
 rather than papering over it:
 
+<!-- doclint:ignore README illustration: BigDecimal vs IEEE-754 double -->
 ```groovy
 @Ensures({ result == 0.3 })   static BigDecimal exact() { 0.1 + 0.2 }    // verified — 0.1 + 0.2 IS 0.3
 @Ensures({ result != 0.3d })  static double    ieee()  { 0.1d + 0.2d }  // verified — 0.1d + 0.2d is NOT 0.3d
@@ -737,6 +747,7 @@ the contract's entry `count` and exit `count` are different values, related by t
 A class invariant declares the bound once — every constructor proves it *at exit* (the receiver
 is valid by construction), and every method assumes it at entry and re-proves it at exit:
 
+<!-- doclint:ignore README illustration: Counter class-invariant lifecycle -->
 ```groovy
 @Invariant({ count >= 0 && count <= max })
 class Counter {
@@ -920,6 +931,7 @@ And it scales from scalar accumulators to **arrays**. Summing a flat *n×m* matr
 machinery's pieces at once — two nested loops, the array-range `.sum()` aggregation carried as a loop
 invariant, and the **nonlinear bound** on the flat read index `a[k]` where `k == i·m + j`:
 
+<!-- doclint:ignore README illustration: matrix sum (nested loop) -->
 ```groovy
 @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
 @Ensures({ result == a[0..<n * m].sum() })
@@ -968,6 +980,7 @@ tightness is what lets the order argument go through), and `v` is an arbitrary v
 a permutation). The `every`/`count`/`old` are all plain GDK Groovy, so the same contract is checked
 at runtime.
 
+<!-- doclint:ignore README illustration: recursive insertion sort (sorted+permutation+frame) -->
 ```groovy
 @Requires({ 0 <= m && m < a.length &&
             (0..<m - 1).every { a[it] <= a[it + 1] } &&   // prefix sorted
@@ -1008,6 +1021,7 @@ the verifier can track. `s.size()` carries one rule: adding an element that isn'
 the size by exactly one. That's the building block for proving a loop or recursion that keeps adding to
 a set actually terminates — and that it didn't double-count (e.g. a graph traversal over finite nodes):
 
+<!-- doclint:ignore README illustration: set add (member + size) -->
 ```groovy
 class C {
     Set<Integer> s
@@ -1037,6 +1051,7 @@ A `m.put(k,v)` does both — stores the value and adds the key — so value read
 key-set cardinality law all hold at once; and because the key-set is the Phase-16 set, `m.size()`
 drives the same DFS-shaped recursive measure over a map's key domain:
 
+<!-- doclint:ignore README illustration: map put (frames other keys) -->
 ```groovy
 class C {
     Map<Integer,Integer> m
@@ -1097,6 +1112,7 @@ lowers to `s.size() <= n && (s.size() < n || (0..<n).every { it in s })` — a f
 the cardinality and a bounded membership universal (no trusted axiom). From it the engine *derives* the two
 facts cardinality-driven search rests on:
 
+<!-- doclint:ignore README illustration: full-set coverage + hole -->
 ```groovy
 @Requires({ Sets.boundedBy(s, n) && s.size() == n && 0 <= u && u < n })
 @Ensures({ u in s })                       // FULL ⇒ MEMBER: a full bounded set covers the whole domain
@@ -1202,6 +1218,7 @@ subtlety. *Completeness* (every reachable node is visited) is the closure fixpoi
   so a top-level `dfs` (empty stack in, empty stack out) leaves `visited` **closed under `next`** — every
   visited node's successor is visited.
 
+<!-- doclint:ignore README illustration: DFS with on-stack closure invariant -->
 ```groovy
 @Requires({ 0 <= u && u < n && (0..<n).every { 0 <= next[it] && next[it] < n } &&
             (0..<n).every { (it in visited) ==> (it in onStack || next[it] in visited) } &&   // closed-except-on-stack
@@ -1280,6 +1297,7 @@ at once: the result is `>=` every element **and** is *equal to* one of them (wit
 clause, a "max" that returned `Integer.MAX_VALUE` would pass). The loop invariant carries both as the
 running maximum grows:
 
+<!-- doclint:ignore README illustration: max-element witnessed extremum -->
 ```groovy
 @Requires({ a != null && a.length > 0 })
 @Ensures({ (0..<a.length).every { a[it] <= result } &&
@@ -1314,6 +1332,7 @@ Task 003 (`below_zero`) — detect whether a running balance ever goes negative 
 **sum-aggregation** showcase, and the spec is the *full biconditional*: the result is true iff
 **some prefix sum is negative**.
 
+<!-- doclint:ignore README illustration: below_zero biconditional -->
 ```groovy
 @Requires({ operations != null })
 @Ensures({ result == (0..operations.size()).any { ((int) operations[0..<it].sum(0)) < 0 } })
@@ -1348,6 +1367,7 @@ aggregations at once. Sum is `xs.sum()`; product has no GDK method, so the idiom
 multiplicative sibling of `sum$`). Both accumulate in one loop, and — returning them as the **typed
 pair** HumanEval uses — each is proven against its *own* aggregate:
 
+<!-- doclint:ignore README illustration: sum/product Tuple2 -->
 ```groovy
 @Requires({ xs != null && xs.size() > 0 })
 @Ensures({ result.v1 == xs.sum() && result.v2 == xs.inject(1) { a, x -> a * x } })
@@ -1434,6 +1454,7 @@ HumanEval's exactly (`Fib.of(10) == 55`, `Fib.of(8) == 21`). The same generation
 non-target** — an unbounded `while true` whose termination depends on the *open* question of whether
 infinitely many Fibonacci primes exist, so no `@Decreases` can exist (even Verus leaves task 039 a `TODO`):
 
+<!-- doclint:ignore README illustration: Fibonacci via Fib.of -->
 ```groovy
 @Requires({ n >= 0 })
 @Ensures({ result == Fib.of(n) })
@@ -1456,6 +1477,7 @@ Task 063 (`fibfib`) — the **tribonacci** number `fibfib(n) = fibfib(n-1) + fib
 carries a *three*-wide window in its invariant — `a == Trib.of(i) ∧ b == Trib.of(i+1) ∧ c == Trib.of(i+2)`
 — re-established across `c = a + b + c` by the step axiom (`trib(i+3) == trib(i+2)+trib(i+1)+trib(i)`):
 
+<!-- doclint:ignore README illustration: tribonacci via Trib.of -->
 ```groovy
 @Requires({ n >= 0 })
 @Ensures({ result == Trib.of(n) })
@@ -1483,6 +1505,7 @@ Task 013 (`greatest_common_divisor`) is the **two-argument** sibling: a `Gcd.of(
 from the loop guard) e-matches `gcd(x, y) == gcd(y, x % y)`; at exit `y == 0` the base axiom collapses
 `gcd(x, 0)` to `x`; and it terminates on the variant `y`, since `x % y ∈ [0, y)` for `x ≥ 0, y > 0`:
 
+<!-- doclint:ignore README illustration: gcd via Gcd.of (Euclid) -->
 ```groovy
 @Requires({ a >= 0 && b >= 0 })
 @Ensures({ result == Gcd.of(a, b) })
@@ -1592,6 +1615,7 @@ contain null, so `s in 'A'..'Z'` infers `s != null` — the same inference `?.` 
 arithmetic, a `switch` expression writes the mapping case by case — and the verifier checks it the same way,
 lowering the arrow-switch to an `ite`-chain that composes with both range operators:
 
+<!-- doclint:ignore README illustration: switch-expression letters -->
 ```groovy
 @Requires({ i in 1..3 })
 @Ensures({ result in 'a'..'c' })
@@ -1946,6 +1970,7 @@ compose with the verifier — and not just trivially. They're *transparent*: the
 method's contract through the lock as if it weren't there. That lets the **class `@Invariant` stand in as the
 lock's monitor invariant**. The classic example — a lock-guarded account that must never overdraw:
 
+<!-- doclint:ignore README illustration: lock-guarded Account (monitor invariant) -->
 ```groovy
 @Invariant({ balance >= 0 })                       // the monitor invariant the lock protects
 class Account {
@@ -1994,6 +2019,7 @@ An **Agent** or **Actor** is a monitor whose mutual exclusion comes not from a l
 message at a time** — so the class `@Invariant` is again the monitor invariant, and each handler is verified to
 preserve it, with **no lock annotation at all**:
 
+<!-- doclint:ignore README illustration: Agent buffer occupancy invariant -->
 ```groovy
 @Invariant({ 0 <= count && count <= capacity })   // the invariant the Agent maintains
 class Buffer {
@@ -2022,6 +2048,7 @@ different: **single-assignment**. Every `DataflowVariable` is bound exactly once
 bind happens — so the network's *value* is independent of the order the concurrent tasks actually run. That's
 the structural half we assume; the functional half — *what* value comes out — we prove:
 
+<!-- doclint:ignore README illustration: GPars dataflow sum -->
 ```groovy
 @Ensures({ result == a + b })
 static int dataflowSum(int a, int b) {
@@ -2068,6 +2095,7 @@ guarantee is **FIFO delivery**: the i-th value received is the i-th value sent, 
 stages. So for a representative element the whole pipeline collapses to *function composition* — exactly the
 combiner trick — and we prove the per-element transform:
 
+<!-- doclint:ignore README illustration: async channel pipeline -->
 ```groovy
 @Ensures({ result == (x + 1) * 2 })
 static int pipe(int x) {
@@ -2097,6 +2125,7 @@ coupling (the paper's §IV) — `head`/`tail` are shared, so each thread reasons
 neighbour behaves. Those conditions are two-state predicates (the parameters split into a pre-state and a
 post-state). One `Buffer` class carries both them and the thread bodies that run under them:
 
+<!-- doclint:ignore README illustration: rely/guarantee Buffer (both halves) -->
 ```groovy
 @Invariant({ 0 <= head && head <= tail && tail <= values.length })   // the bounded-buffer invariant
 class Buffer {
@@ -2225,6 +2254,7 @@ proved bounds-safety under interference; the same `Buffer`, given a **value-depe
 proves **no secret leaks** — the two obligations discharged on one body, each step's info-flow check evaluated
 *through* the rely-step's havoc. This is the composition the whole arc built toward.
 
+<!-- doclint:ignore README illustration: info-flow x R/G Buffer (capstone) -->
 ```groovy
 @Invariant({ 0 <= head && head <= tail && tail <= values.length })
 class Buffer {
@@ -2331,6 +2361,7 @@ behavioral subtyping, and traits.
 Leino's Dafny tutorial) is a bounded queue backed by an array. It's the first example here whose subject is
 **object state that changes**: a class with mutable fields and a *type invariant* every method must preserve.
 
+<!-- doclint:ignore README illustration: bounded Queue enqueue/dequeue -->
 ```groovy
 @Invariant({ 0 < data.length && 0 <= m && m <= n && n <= data.length })
 class Queue {
@@ -2488,6 +2519,7 @@ Groovy's `+` on `String` lowers to the SMT theory of sequences, where concatenat
 commutative** — and the verifier proves the law that holds for every string while refuting the one that doesn't,
 over *arbitrary* strings (not concrete literals):
 
+<!-- doclint:ignore README illustration: String concat associative/commutative -->
 ```groovy
 class StringConcat {
     @Ensures({ (a + b) + c == a + (b + c) })           // holds for all a, b, c — proved
@@ -2521,6 +2553,7 @@ every ancestor's class `@Invariant`, and a `super.m(…)` call is treated like a
 `@Ensures` is assumed for the result, its `@Requires` discharged at the site — so a child can prove a
 strengthened postcondition built on the parent's:
 
+<!-- doclint:ignore README illustration: inheritance super-call postcondition -->
 ```groovy
 class Base    { @Requires({ x >= 0 }) @Ensures({ result == x * 2 })     int f(int x) { x + x } }
 class Derived extends Base { @Ensures({ result == x * 2 + 1 }) int g(int x) { super.f(x) + 1 } }  // proven
@@ -2534,6 +2567,7 @@ it stays substitutable for the method it overrides: the precondition must be **w
 shared parameter/field/result namespace, with a concrete witness on failure. Take a bank account whose `debit`
 may draw down to zero:
 
+<!-- doclint:ignore README illustration: LSP weaken/strengthen precondition -->
 ```groovy
 class Account {
     int balance
@@ -2576,6 +2610,7 @@ all reason over the woven trait state. A wrap-around counter — the trait owns 
 the `0..9` invariant; an implementing class adds a wrapping `dec` — proves both methods keep the counter in
 range:
 
+<!-- doclint:ignore README illustration: trait wrap-around Counter -->
 ```groovy
 @Invariant({ 0 <= count && count <= 9 })
 trait Counter {
@@ -2601,6 +2636,7 @@ at runtime).
 A bare Groovy `assert P` in a verified method is discharged at *compile* time, not only at runtime. The trivial
 cases behave as you'd hope:
 
+<!-- doclint:ignore README illustration: assert compile / no-compile -->
 ```groovy
 class C {
     static void ok()  { assert 2 < 3 }    // compiles
@@ -2615,6 +2651,7 @@ class C {
 The substance is `assert P(state)` — proved from the reaching context (`@Requires`, prior assignments, enclosing
 guards), and refuted with a concrete counterexample when the context doesn't justify it:
 
+<!-- doclint:ignore README illustration: assert from @Requires -->
 ```groovy
 @Requires({ x > 5 })
 static void f(int x) { assert x > 0 }     // verified — x > 5 ⟹ x > 0
@@ -2705,6 +2742,7 @@ A two-point `Low ⊑ High` is the taint lattice — read `High` as "secret" for 
 integrity; they're duals. **The leak that matters most is into a sink** — a value reaching a parameter classified
 below it. This is the injection shape, and it refuses to compile:
 
+<!-- doclint:ignore README illustration: cross-class info-flow leak (Service/Audit) -->
 ```groovy
 class Service {
     enum L { Low, High }
@@ -2749,6 +2787,7 @@ Neither `a` nor `b` is secret, yet `t`'s value tells you `secret` — and the ve
 doesn't cry wolf:** the PC is *scoped* to the branch, so a low value that doesn't depend on the secret is still
 fine afterwards:
 
+<!-- doclint:ignore README illustration: PC-scoped info-flow (untouched value) -->
 ```groovy
     @Label('Low')
     static int scoped(@Label('High') boolean secret, @Label('Low') int pub) {
@@ -3011,6 +3050,7 @@ for an inline closure it scans for a non-associative operator (`-`, `/`, `%`, `*
 the regex case, one level up: CombinerChecker checks the shape, groovy-verify proves the **semantics** — the
 laws actually hold *and* the reduction comes up with the right answer:
 
+<!-- doclint:ignore README illustration: Sum monoid (CombinerChecker + laws) -->
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])
 class Sum {
@@ -3048,6 +3088,7 @@ synthesises and discharges the very laws the annotation claims — associativity
 declared `zero` for `@Reducer`. So the hand-written `associative` lemma above is **redundant**; delete it and the
 proof still holds, because `@Reducer(zero = '0')` already obliges it:
 
+<!-- doclint:ignore README illustration: Sum monoid (@Reducer auto-proves) -->
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])
 class Sum {
@@ -3111,6 +3152,7 @@ property-test (QuickCheck / ScalaCheck). Proving them at compile time is exactly
 
 A whole-class, *four*-checker compile:
 
+<!-- doclint:ignore README illustration: Maybe monad (4 checkers + DO) -->
 ```groovy
 @Monadic(bind = 'flatMap', map = 'map')
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker',
@@ -3139,6 +3181,7 @@ swamp the example. But they're the point, so here is exactly what those five obl
 hand, as the `@Ensures` lemmas you would otherwise add (`f` / `g` a bind function `Function<Object, Maybe>`, `p` /
 `q` a plain map function `Function`):
 
+<!-- doclint:ignore README illustration: monad laws (five laws) -->
 ```groovy
 @Ensures({ some(a).flatMap(f) == f.apply(a) })                                       // left identity
 static void leftIdentity(Object a, Function<Object, Maybe> f) { }
@@ -3168,6 +3211,7 @@ hold, but `map` **collapses a `null` result to empty** (`ofNullable`), which bre
 `@NonNull` content (Optional's contract — `Some` never holds null, which NullChecker enforces and groovy-verify
 assumes per parameter):
 
+<!-- doclint:ignore README illustration: Maybe.map (Optional-style) -->
 ```groovy
     @NonNull final Object value
     @Requires({ g != null })
