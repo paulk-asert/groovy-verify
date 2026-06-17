@@ -3231,7 +3231,16 @@ closures return the right carrier type. For the laws it **trusts the `@Monadic` 
 says it *"asserts that the carrier is lawful"* and checks nothing. groovy-verify discharges exactly that: from
 `@Monadic` + the carrier's `bind`/`map`/`unit`, it synthesises and proves the **monad and functor laws** (left /
 right identity, associativity, functor identity / composition) — no hand-written lemmas, the `@Monadic` analogue
-of the `@Reducer` story above. A whole-class, *four*-checker compile:
+of the `@Reducer` story above.
+
+This shape-versus-laws gap is where even the strongest type systems stop. Haskell's `Monad` and Scala's
+`cats.Monad` enforce the *shape* — the `>>=`/`flatMap` and `return`/`pure` signatures — but **not the laws**: a
+lawless instance (a `flatMap` that drops or reorders effects, breaking associativity or right identity)
+type-checks and compiles in both, the laws left as a documented obligation you uphold by convention or, at best,
+property-test (QuickCheck / ScalaCheck). Proving them at compile time is exactly what a type system structurally
+*can't* do — and it's the line this work is drawn to cross.
+
+A whole-class, *four*-checker compile:
 
 ```groovy
 @Monadic(bind = 'flatMap', map = 'map')
