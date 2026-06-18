@@ -33,7 +33,7 @@ VERIFY_REFUTATION=junit ./gradlew verify  # with VERIFY_VERBOSE: emit each refut
 VERIFY_SUGGEST=contract ./gradlew verify  # with VERIFY_VERBOSE: also suggest the @Requires that would discharge each refutation
 VERIFY_EXPLAIN=1 ./gradlew verify         # on each verified bounds/divide obligation, show which @Requires clauses the proof leaned on
 
-./gradlew test                            # the SAME suite as JUnit 5 dynamic tests (per-case IDE/CI reporting)
+./gradlew test                            # the SAME suite as JUnit 6 dynamic tests (per-case IDE/CI reporting)
 ./gradlew test -Dverify.only='matrix'     # run just the cases whose "group :: name" contains a substring
 ```
 

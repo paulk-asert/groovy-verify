@@ -3424,7 +3424,7 @@ invocations, are in [BUILD.md](BUILD.md).
 Built with JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the
 [ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots). `./gradlew verify`
 runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
-JUnit 5 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
+JUnit 6 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
 Central yet — consume it via a local install, a Gradle composite build, or JitPack.
 
 The full command set (verbose / cache-stats flags, the single-source `CASES` self-test design, the doc-drift

@@ -248,7 +248,7 @@ tasks.register('caseAxiomTiming', JavaExec) {
     jvmArgs = ['--enable-native-access=ALL-UNNAMED']
 }
 
-// JUnit 5 dynamic-test view of the same suite (VerifyHarness.@TestFactory): one named test per CASES
+// JUnit 6 dynamic-test view of the same suite (VerifyHarness.@TestFactory): one named test per CASES
 // entry, individually runnable from the IDE / CLI. `check` uses this; `verify` (above) is the compact
 // console runner. Run one case: `./gradlew test -Dverify.only='matrix sum'`.
 tasks.named('test', Test) {

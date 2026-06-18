@@ -12196,7 +12196,7 @@ class Maybe {                                              // a hand-rolled Some
     }
 
     /**
-     * JUnit 5 dynamic-test view of the same {@link #CASES}: one individually-named, individually-runnable
+     * JUnit 6 dynamic-test view of the same {@link #CASES}: one individually-named, individually-runnable
      * test per case (display name {@code "group :: name"}) — so an IDE / CI sees ~860 tests, not one
      * pass/fail, and `./gradlew test` / the IDE gutter can run a single case. The data list is untouched.
      * Filter from the CLI with {@code -Dverify.only=<substring>} (matched against {@code "group :: name"},
