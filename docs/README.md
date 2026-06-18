@@ -153,11 +153,28 @@ The README "Locks — the monitor invariant" section proves each critical sectio
 *given* mutual exclusion, and explicitly disclaims two things: "no race on unlocked access, no deadlock,
 no lock-ordering." Each disclaimed half gets the tool that fits it.
 
-**Race / atomicity — Lincheck** (`src/concurrent/groovy/concurrent/locks/`, in `./gradlew concurrentTest`).
-A `synchronized` `Account` (modelling what `@WithWriteLock` weaves) is checked linearizable; the unlocked
-`RacyAccount` is not — a read-modify-write race loses an update / overdraws, which Lincheck reports as a
-history no sequential order explains. That is the runtime evidence the proof's "given mutual exclusion"
-premise is load-bearing.
+**Race / atomicity, and logic ⊥ concurrency — Lincheck** (`src/concurrent/groovy/concurrent/locks/`, in
+`./gradlew concurrentTest`). Three accounts make the division of labour concrete — the same truth table as
+[bmc4j](https://github.com/bmc4j/bmc4j)'s *coroutines-and-Lincheck* example, on plain `synchronized` Groovy:
+
+| account | logic (the checker, rung 1) | thread-safe (Lincheck) |
+|---|---|---|
+| `RacyAccount` | ✓ proven — a guarded `withdraw` preserves `balance >= 0` | ✗ a read-modify-write race loses an update / overdraws — a history no sequential order explains |
+| `OverdraftAccount` | ✗ **refuted** — an unguarded `withdraw` breaks `@Invariant({ balance >= 0 })` ("Cannot prove class invariant") | ✓ `synchronized` ⇒ each operation atomic ⇒ linearizable |
+| `Account` (safe) | ✓ proven | ✓ linearizable |
+
+The two right-hand columns are **orthogonal**, and each tool is blind to the other's. `OverdraftAccount` is
+`synchronized`, so Lincheck checks its concurrent histories against its *own* (wrong) sequential behaviour and
+passes — the overdraft is invisible to it — while the checker refutes the invariant. `RacyAccount` is the mirror:
+the checker proves the guarded-withdraw *logic* (it reasons *given* mutual exclusion), but Lincheck finds the race
+the proof assumed away. Only `Account` clears both. That is the whole "we prove the thread-local half, Lincheck the
+structural half" story in one example — **logic correctness and thread-safety are different properties, and you
+need a tool for each.**
+
+The one thing this *doesn't* mirror from bmc4j's example is its coroutine-runtime modeling — verifying a `suspend`
+function's logic across a suspension point. An async / coroutine runtime is outside our SMT fragment, so it
+loud-skips; our accounts are plain `synchronized` methods and the concurrency lives entirely in Lincheck's
+interleavings. (bmc4j's accounts are `@Synchronized` too — the coroutine part is a separate aspect of that example.)
 
 **Deadlock / lock-ordering — Fray** (`src/fray/groovy/`, in `./gradlew frayCheck`). Where Lincheck checks a
 data structure's *operations*, [Fray](https://github.com/cmu-pasta/fray) (OOPSLA'25) drives the real JVM

@@ -26,10 +26,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows
 
 /**
  * Lincheck on the README locks example — the MUTUAL-EXCLUSION / race half of what that section's checker
- * proof assumes. The {@code synchronized} {@link Account} is linearizable; the unlocked {@link RacyAccount}
- * is not (a lost update / overdraw under the right interleaving). Concurrency contract: any operation on
- * any thread (a monitor admits arbitrary concurrent callers), so no {@code nonParallelGroup} here — unlike
- * the SPSC buffer. (Deadlock / lock-ordering — the OTHER half this section disclaims — is the Fray spike.)
+ * proof assumes, across three accounts that together make "logic ⊥ concurrency" concrete (the same matrix as
+ * bmc4j's coroutines-and-Lincheck example, on synchronized Groovy):
+ *
+ * <pre>
+ *   account             logic (groovy-verify, rung 1)   thread-safe (Lincheck, here)
+ *   RacyAccount         ✓ proven                        ✗ race — lost update / overdraw
+ *   OverdraftAccount    ✗ refuted (overdraws)           ✓ linearizable (synchronized ⇒ atomic)
+ *   Account (Safe)      ✓ proven                        ✓ linearizable
+ * </pre>
+ *
+ * Each tool is blind to the other's column — {@link OverdraftAccount} passes Lincheck on wrong logic, and
+ * {@link RacyAccount} verifies in the checker while racing. Concurrency contract: any operation on any thread
+ * (a monitor admits arbitrary concurrent callers), so no {@code nonParallelGroup} here — unlike the SPSC
+ * buffer. (Deadlock / lock-ordering — the OTHER half this section disclaims — is the Fray spike.)
  */
 class AccountLincheckTest {
 
@@ -46,6 +56,15 @@ class AccountLincheckTest {
     @POJO
     static class Racy {
         private final RacyAccount a = new RacyAccount(5)
+        @Operation void deposit(int amount) { a.deposit(amount) }
+        @Operation boolean withdraw(int amount) { a.withdraw(amount) }
+        @Operation int balance() { a.balance() }
+    }
+
+    @CompileStatic
+    @POJO
+    static class Overdraft {
+        private final OverdraftAccount a = new OverdraftAccount(5)
         @Operation void deposit(int amount) { a.deposit(amount) }
         @Operation boolean withdraw(int amount) { a.withdraw(amount) }
         @Operation int balance() { a.balance() }
@@ -69,5 +88,14 @@ class AccountLincheckTest {
     void racyAccountIsCaught() {
         // No lock -> a read-modify-write race; Lincheck finds a history no sequential order explains.
         assertThrows(AssertionError) { LinChecker.check(Racy, opts()) }
+    }
+
+    @Test
+    void overdraftAccountIsLinearizableDespiteWrongLogic() {
+        // Synchronized -> every history linearizes, so Lincheck PASSES — even though `withdraw` overdraws past
+        // `balance >= 0`. Lincheck checks concurrency against the code's OWN sequential behaviour, so it is blind
+        // to the logic bug. groovy-verify's monitor-invariant proof (rung 1) refutes exactly this shape — the
+        // "unguarded withdraw breaks the lock invariant" case. Logic ⊥ concurrency, each tool sees one column.
+        LinChecker.check(Overdraft, opts())
     }
 }
