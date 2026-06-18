@@ -1607,8 +1607,8 @@ class Maybe {                                              // a hand-rolled Some
     final boolean present
     final Object value
     private Maybe(boolean present, Object value) { this.present = present; this.value = value }
-    static Maybe some(Object v) { new Maybe(true, v) }     // unit
-    static Maybe none()         { new Maybe(false, null) }
+    @Pure static Maybe some(Object v) { new Maybe(true, v) }   // unit
+    @Pure static Maybe none()         { new Maybe(false, null) }
 
     @Requires({ f != null }) Maybe flatMap(Function f) { present ? (Maybe) f.apply(value) : this }
     @Requires({ g != null }) Maybe map(Function g)     { present ? some(g.apply(value)) : this }   // Vavr-style
@@ -1618,8 +1618,10 @@ class Maybe {                                              // a hand-rolled Some
 ```
 
 Each extension does a *distinct* job on the one class: **MonadicChecker** shape-checks the `DO` comprehension,
-**PurityChecker** the side-effect freedom the laws assume, **NullChecker** the nullness, and **groovy-verify**
-proves the five laws from `@Monadic` alone — all four compile quietly because this `Maybe` *is* lawful.
+**PurityChecker** the side-effect freedom of the `@Pure`-marked `some` / `none` the laws build on (it checks
+the methods you mark — `flatMap` / `map` call an arbitrary `Function`, so they can't be `@Pure`), **NullChecker**
+the nullness, and **groovy-verify** proves the five laws from `@Monadic` alone — all four compile quietly because
+this `Maybe` *is* lawful.
 
 Unlike the `@Reducer` example above — which spelled out the `associative` lemma in the class before deleting it —
 we've kept the laws *out* of `Maybe` here, because `@Monadic` is a heavier annotation and the explicit forms would

@@ -10025,8 +10025,8 @@ class WrapCounter implements Counter { }
                         final boolean present
                         final Object value
                         private Maybe(boolean present, Object value) { this.present = present; this.value = value }
-                        static Maybe some(Object v) { new Maybe(true, v) }
-                        static Maybe none() { new Maybe(false, null) }
+                        @groovy.transform.Pure static Maybe some(Object v) { new Maybe(true, v) }
+                        @groovy.transform.Pure static Maybe none() { new Maybe(false, null) }
                         @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
                         @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? some(g.apply(value)) : this }
                         static Maybe addPair() { DO(a in some(2), b in some(3)) { some(((Integer) a) + ((Integer) b)) } } }'''],
@@ -10036,8 +10036,8 @@ class WrapCounter implements Counter { }
                         final boolean present
                         @NonNull final Object value
                         private Maybe(boolean present, Object value) { this.present = present; this.value = value }
-                        static Maybe some(Object v) { new Maybe(true, v) }
-                        static Maybe none() { new Maybe(false, null) }
+                        @groovy.transform.Pure static Maybe some(Object v) { new Maybe(true, v) }
+                        @groovy.transform.Pure static Maybe none() { new Maybe(false, null) }
                         @Requires({ f != null }) Maybe flatMap(java.util.function.Function f) { present ? (Maybe) f.apply(value) : this }
                         @Requires({ g != null }) Maybe map(java.util.function.Function g) { present ? (g.apply(value) == null ? none() : some(g.apply(value))) : this } }'''],
 
@@ -10108,15 +10108,15 @@ class Buffer {
     }
 }''')],
         [group: 'P-fourchecker', name: 'README: Maybe under four checkers + DO', ok: true,
-         src: HDR + 'import groovy.transform.Monadic\nimport java.util.function.Function\n' + '''@Monadic(bind = 'flatMap', map = 'map')
+         src: HDR + 'import groovy.transform.Monadic\nimport groovy.transform.Pure\nimport java.util.function.Function\n' + '''@Monadic(bind = 'flatMap', map = 'map')
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker',
                            'groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
 class Maybe {                                              // a hand-rolled Some(value) | None
     final boolean present
     final Object value
     private Maybe(boolean present, Object value) { this.present = present; this.value = value }
-    static Maybe some(Object v) { new Maybe(true, v) }     // unit
-    static Maybe none()         { new Maybe(false, null) }
+    @Pure static Maybe some(Object v) { new Maybe(true, v) }   // unit
+    @Pure static Maybe none()         { new Maybe(false, null) }
 
     @Requires({ f != null }) Maybe flatMap(Function f) { present ? (Maybe) f.apply(value) : this }
     @Requires({ g != null }) Maybe map(Function g)     { present ? some(g.apply(value)) : this }   // Vavr-style
