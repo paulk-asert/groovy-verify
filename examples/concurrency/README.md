@@ -94,9 +94,9 @@ TLC explores interleavings at the **action grain you wrote** — each action is 
 **sequentially consistent**. So this model closes the "all interference is the peer" and liveness gaps,
 but:
 
-- **Atomicity:** `tail = tail + 1` is one atomic action here (same idealization as the checker). To test
-  non-atomic increment you would split it into `t := tail` then `tail := t + 1` as two actions and let
-  TLC explore the new interleavings.
+- **Atomicity:** `tail' = tail + 1` is one atomic action here (same idealization as the checker). To test
+  non-atomic increment you would split it into two actions — `t' = tail` (latch the read) then
+  `tail' = t + 1` — and let TLC explore the new interleavings.
 - **Weak memory (the JMM):** out of scope — TLA+ is sequentially consistent. Justifying the
   "statement-atomic, SC" abstraction against real hardware needs a weak-memory tool (GenMC, herd7) or
   actual synchronization proven sufficient (VerCors / Viper).
