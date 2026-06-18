@@ -172,6 +172,12 @@ also implies non-null, `@Size` does not; a contradictory pair is flagged vacuous
 runtime validation also discharges the compile-time obligation (Phase 128). *Out of this slice:* `Set`/`Map`
 `@Size`, `@DecimalMin`/`@DecimalMax`, and call-site enforcement of the constraint (it's assumed, like `@NonNull`).
 
+In the same vein, a **`@NonNull`-style annotation** (the NullChecker / Checker Framework / JSR-305 vocabulary —
+`@NonNull` / `@NotNull` / `@Nonnull`, matched by *simple* name) on a reference parameter or field is read as a
+`!= null` precondition, assumed in the body the same way `@Requires({ x != null })` would be — so `@NonNull String s`
+discharges `s.length()` and `@NonNull Function g` discharges `g.apply(x)`, with NullChecker still enforcing it at
+call sites (Phase 129). It does not replace `@Requires`, which additionally emits a GContracts *runtime* check.
+
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
 `++`/`--` both as statements and **in expression position** (`x = i++` / `x = ++i` / `a[i++] = v` /

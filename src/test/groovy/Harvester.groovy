@@ -84,6 +84,7 @@ class Harvester {
         'P1 bounds'                   : "An array index is in bounds only under a guard / @Requires; an unguarded index refutes (IndexOutOfBounds).",
         'P1 division'                 : "A divisor/modulus obligation: guarded verifies, unguarded refutes (divide-by-zero).",
         'jakarta validation'          : "Jakarta/javax Bean Validation numeric constraints (@Positive/@Min/@Max/…) read as method-entry preconditions; contradictory ones are flagged vacuous.",
+        'nonnull param'               : "A @NonNull-style annotation (NullChecker / Checker Framework / JSR-305 vocabulary) on a reference parameter is read as a non-null precondition, discharging a deref or apply the unannotated form could not.",
         'P1 null'                     : "A dereference needs a non-null guard or @Requires; an unguarded deref refutes (NPE).",
         'P10 instance'                : "Instance methods with field reads/writes and parameter contracts verify (getter, mutator).",
         'P100 string next'            : "A user String.next() example over A..Z proves the letter-advance; stepping off the range refutes.",

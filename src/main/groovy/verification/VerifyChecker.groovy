@@ -2705,6 +2705,12 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private void assumeConstraintsFor(SmtSession s, Encoder enc, List<AnnotationNode> anns, ClassNode type, String name) {
         if (anns == null || anns.isEmpty()) return
+        // A @NonNull-style annotation (the NullChecker / Checker Framework / JSR-305 vocabulary, matched by simple
+        // name) on a reference parameter or field is a non-null precondition — assumed in the body, the same posture
+        // as `@Requires({ x != null })`, with NullChecker enforcing it flow-sensitively at call sites.
+        if (type != null && !ClassHelper.isPrimitiveType(type) && hasAnnotationNamed(anns, NON_NULL_ANNOTATION_NAMES)) {
+            assertFact(s, s.not(enc.nullityOf(name)), '@NonNull ' + name)
+        }
         boolean numeric = isJvmInt(type) || isJvmLong(type)            // @Positive/@Min/… → bound on the value
         boolean isStr = type?.name == 'java.lang.String'              // @Size/@NotEmpty → string length
         boolean sized = type != null && (type.isArray() || isListType(type))   // @Size/@NotEmpty → collection size

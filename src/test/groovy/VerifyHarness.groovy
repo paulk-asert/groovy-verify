@@ -134,6 +134,15 @@ class VerifyHarness {
         [group: 'jakarta validation', name: '@NotEmpty string charAt verifies', ok: true,
          src: tc('class C { static char c(@NotEmpty String s) { s.charAt(0) } }')],
 
+        // ---------- @NonNull parameter read as a non-null precondition (NullChecker / Checker Framework vocabulary) ----------
+        [group: 'nonnull param', name: '@NonNull param discharges a deref', ok: true,
+         src: HDR + NONNULL_ANN + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { static int len(@NonNull String s) { s.length() } }'],
+        // The unannotated twin (`static int n(String s) { s.length() }`) refutes — see P1 null / P9 repro.
+        [group: 'nonnull param', name: '@NonNull function param discharges apply (the Maybe shape)', ok: true,
+         src: HDR + NONNULL_ANN + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { static Object call(@NonNull java.util.function.Function g, Object x) { g.apply(x) } }'],
+
         // ---------- Phase 1: null dereference ----------
         [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',
          src: tc('class C { static int n(String s) { s.length() } }')],

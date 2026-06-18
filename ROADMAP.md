@@ -7224,6 +7224,30 @@ interprocedural call-site obligation (inherits `@NonNull`'s assume-only posture)
 
 ---
 
+## Phase 129 — `@NonNull`-style annotation on a parameter read as a non-null precondition  *(shipped — same hook as Phase 128)*
+
+A `@NonNull`-style annotation (the NullChecker / Checker Framework / JSR-305 vocabulary — matched by *simple*
+name via `NON_NULL_ANNOTATION_NAMES`, since the same idea is spelled `@NonNull` / `@NotNull` / `@Nonnull` across
+frameworks) on a **reference** parameter or field is now read as a `!= null` precondition — assumed in the body,
+the same posture as `@Requires({ x != null })`, with NullChecker still enforcing it flow-sensitively at call
+sites. So `@NonNull String s` discharges `s.length()`, and `@NonNull Function g` discharges `g.apply(x)` — the
+Maybe / functor shape, where the closure parameter was previously guarded only by a runtime `@Requires`.
+
+- **Where**: a guard at the top of `assumeConstraintsFor` (before the numeric / size early-return, so it covers
+  *any* non-primitive type), asserting `not(nullityOf(name))` when the annotation is present. One place, folded
+  into the same `assumeIntJvmBounds` method-entry hook as the Jakarta reader — every discharge path, no scatter.
+- **Soundness**: monotonic, like Phase 128 — an added non-null assumption only ever proves *more*, so the OFF
+  path and every existing case stay byte-identical (1240 → still green). The fact auto-attributes under
+  `VERIFY_EXPLAIN` (`also leaned on: @NonNull s`).
+- **Not a replacement for `@Requires`**: `@NonNull` is compile-time only (NullChecker), whereas `@Requires`
+  *also* generates a GContracts runtime check — so the README's monadic example keeps its `@Requires({ f != null })`
+  rather than swapping in `@NonNull`, which would lose the runtime guard for callers outside the checked compile.
+
+New cases live in a `nonnull param` group (the unannotated twin's refutation is already covered by `P1 null` /
+`P9 repro`). Out of this slice: the same call-site obligation deferred from Phase 128.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
