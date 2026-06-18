@@ -83,6 +83,7 @@ class Harvester {
         'P-vii'                       : "The §VII capstone: information flow × rely/guarantee on one buffer verifies; a producer leaking a secret under R/G still refutes.",
         'P1 bounds'                   : "An array index is in bounds only under a guard / @Requires; an unguarded index refutes (IndexOutOfBounds).",
         'P1 division'                 : "A divisor/modulus obligation: guarded verifies, unguarded refutes (divide-by-zero).",
+        'jakarta validation'          : "Jakarta/javax Bean Validation numeric constraints (@Positive/@Min/@Max/…) read as method-entry preconditions; contradictory ones are flagged vacuous.",
         'P1 null'                     : "A dereference needs a non-null guard or @Requires; an unguarded deref refutes (NPE).",
         'P10 instance'                : "Instance methods with field reads/writes and parameter contracts verify (getter, mutator).",
         'P100 string next'            : "A user String.next() example over A..Z proves the letter-advance; stepping off the range refutes.",

@@ -2014,20 +2014,25 @@ class VerifyChecker extends TypeCheckingExtension {
      * it can never break the build by itself.
      */
     private void checkPreconditionSatisfiable(MethodNode node) {
-        if (findRequires(node) == null) return
-        Expression reqAst = contractAstFor(node, 'requires')
-        if (reqAst == null) return
+        boolean hasReq = findRequires(node) != null
+        // A method with no @Requires but with Bean Validation constraints can still be vacuous (e.g. @Positive
+        // @Negative on one parameter) — include those so the contradiction isn't a silent vacuous pass.
+        if (!hasReq && !hasValidationConstraints(node)) return
+        Expression reqAst = hasReq ? contractAstFor(node, 'requires') : null
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
-            Object pre = enc.translateBool(reqAst)
-            if (pre == null) return   // didn't fully translate → can't judge soundly; stay silent
-            s.assertExpr(pre)
-            captureExplain(s, enc, reqAst, pre)
+            if (reqAst != null) {
+                Object pre = enc.translateBool(reqAst)
+                if (pre == null) return   // didn't fully translate → can't judge soundly; stay silent
+                s.assertExpr(pre)
+                captureExplain(s, enc, reqAst, pre)
+            }
             assumeClassInvariants(s, enc)
+            assumeValidationConstraints(s, enc)   // the constraints participate in the satisfiability check too
             CheckResult r = s.check()   // VERIFIED == UNSATISFIABLE → the precondition can never hold
             if (r.status == CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatVacuousPrecondition(node.name, reqAst.text), node)
+                addStaticTypeError(Reporter.formatVacuousPrecondition(node.name, reqAst != null ? reqAst.text : null), node)
             }
         } catch (Throwable ignored) {
         } finally { try { s.close() } catch (Throwable ignored) {} }
@@ -2678,6 +2683,108 @@ class VerifyChecker extends TypeCheckingExtension {
                 assumeJvmIntegralBound(s, enc, f.type, f.name)
             }
         }
+        // Bean Validation constraints (@Positive / @Min / @Max / …) are method-entry facts about the same params
+        // and fields. Folded in here so every discharge path that assumes JVM bounds also assumes them — one
+        // place, no scatter. (The vacuity check, which doesn't take this path, calls them separately.)
+        assumeValidationConstraints(s, enc)
+    }
+
+    /**
+     * Jakarta / {@code javax.validation.constraints} numeric constraints on a parameter or field, read as
+     * method-entry preconditions — the same posture as {@code @Requires} / {@code @NonNull}: assumed in the body,
+     * the caller's obligation. Matched by fully-qualified name, so the engine carries no dependency on the
+     * validation API. First slice: numeric ({@code int}/{@code long}) constraints; {@code @NotNull} is already
+     * handled by the nullness reader, and {@code @Size}/{@code @NotEmpty} are a later slice.
+     */
+    private void assumeValidationConstraints(SmtSession s, Encoder enc) {
+        if (currentMethod == null) return
+        for (Parameter p : currentMethod.parameters) assumeConstraintsFor(s, enc, p.annotations, p.type, p.name)
+        ClassNode dc = currentMethod.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) assumeConstraintsFor(s, enc, f.annotations, f.type, f.name)
+    }
+
+    private void assumeConstraintsFor(SmtSession s, Encoder enc, List<AnnotationNode> anns, ClassNode type, String name) {
+        if (anns == null || anns.isEmpty()) return
+        boolean numeric = isJvmInt(type) || isJvmLong(type)            // @Positive/@Min/… → bound on the value
+        boolean isStr = type?.name == 'java.lang.String'              // @Size/@NotEmpty → string length
+        boolean sized = type != null && (type.isArray() || isListType(type))   // @Size/@NotEmpty → collection size
+        if (!numeric && !isStr && !sized) return
+        Object v = numeric ? enc.varFor(name) : null
+        Object sz = isStr ? s.stringLength(enc.varForOfSort(name, s.declareSort('String')))
+                          : (sized ? enc.sizeOf(name) : null)
+        for (AnnotationNode a : anns) {
+            String fqn = a?.classNode?.name
+            if (fqn == null) continue
+            if (!fqn.startsWith('jakarta.validation.constraints.') && !fqn.startsWith('javax.validation.constraints.')) continue
+            String c = fqn.substring(fqn.lastIndexOf('.') + 1)
+            if (numeric) {
+                switch (c) {
+                    case 'Positive':       assertFact(s, s.gt(v, s.intLit(0L)), '@Positive ' + name); break
+                    case 'PositiveOrZero': assertFact(s, s.ge(v, s.intLit(0L)), '@PositiveOrZero ' + name); break
+                    case 'Negative':       assertFact(s, s.lt(v, s.intLit(0L)), '@Negative ' + name); break
+                    case 'NegativeOrZero': assertFact(s, s.le(v, s.intLit(0L)), '@NegativeOrZero ' + name); break
+                    case 'Min':            { Long n = longMember(a); if (n != null) assertFact(s, s.ge(v, s.intLit(n)), "@Min(${n}) ${name}".toString()); break }
+                    case 'Max':            { Long n = longMember(a); if (n != null) assertFact(s, s.le(v, s.intLit(n)), "@Max(${n}) ${name}".toString()); break }
+                }
+            } else if (sz != null) {   // String / array / List — @Size / @NotEmpty bound the length or size
+                switch (c) {
+                    case 'NotEmpty':
+                        // @NotEmpty implies non-null *and* size ≥ 1 (unlike @Size, which a null value satisfies).
+                        assertFact(s, s.not(enc.nullityOf(name)), '@NotEmpty ' + name + ' (≠ null)')
+                        assertFact(s, s.ge(sz, s.intLit(1L)),      '@NotEmpty ' + name + ' (size ≥ 1)')
+                        break
+                    case 'Size':
+                        int mn = intMember(a, 'min', 0)
+                        int mx = intMember(a, 'max', Integer.MAX_VALUE)
+                        if (mn > 0)                 assertFact(s, s.ge(sz, s.intLit((long) mn)), "@Size(min=${mn}) ${name}".toString())
+                        if (mx < Integer.MAX_VALUE) assertFact(s, s.le(sz, s.intLit((long) mx)), "@Size(max=${mx}) ${name}".toString())
+                        break
+                }
+            }
+        }
+    }
+
+    /** Assert a derived constraint fact and, under VERIFY_EXPLAIN, register it for the load-bearing read-out. */
+    private void assertFact(SmtSession s, Object fact, String label) {
+        s.assertExpr(fact)
+        if (Reporter.EXPLAIN) s.explainNoteFact(label, fact)
+    }
+
+    /** The {@code long}-valued {@code value} member of a {@code @Min}/{@code @Max} annotation, or null. */
+    private static Long longMember(AnnotationNode a) {
+        Expression m = a.getMember('value')
+        if (m instanceof ConstantExpression) {
+            Object val = ((ConstantExpression) m).value
+            if (val instanceof Number) return ((Number) val).longValue()
+        }
+        null
+    }
+
+    /** An {@code int}-valued member of a {@code @Size} annotation ({@code min}/{@code max}), or {@code dflt}. */
+    private static int intMember(AnnotationNode a, String member, int dflt) {
+        Expression m = a.getMember(member)
+        if (m instanceof ConstantExpression) {
+            Object val = ((ConstantExpression) m).value
+            if (val instanceof Number) return ((Number) val).intValue()
+        }
+        dflt
+    }
+
+    /** True if any parameter or field carries a Bean Validation constraint annotation (so the vacuity check runs). */
+    private static boolean hasValidationConstraints(MethodNode node) {
+        for (Parameter p : node.parameters) if (hasAnyValidationConstraint(p.annotations)) return true
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (hasAnyValidationConstraint(f.annotations)) return true
+        false
+    }
+
+    private static boolean hasAnyValidationConstraint(List<AnnotationNode> anns) {
+        if (anns == null) return false
+        for (AnnotationNode a : anns) {
+            String fqn = a?.classNode?.name
+            if (fqn != null && (fqn.startsWith('jakarta.validation.constraints.') || fqn.startsWith('javax.validation.constraints.'))) return true
+        }
+        false
     }
 
     /** Phase 44c — assert the integral type's JVM range for a parameter/field: {@code int}/{@code Integer}

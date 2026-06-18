@@ -87,6 +87,12 @@ dependencies {
     testImplementation "org.apache.groovy:groovy-json:$groovyVersion"   // Harvester (agent catalog/corpus generation)
     testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
 
+    // Test-only: Jakarta Bean Validation constraint annotations (@Positive, @Min, @Size, …). The engine reads
+    // them as preconditions but matches by fully-qualified name — it never compiles or runs against this jar —
+    // so it stays out of the published POM (test scope is not transitive). Here only so snippet sources that
+    // carry these annotations resolve at on-the-fly compile time.
+    testImplementation 'jakarta.validation:jakarta.validation-api:3.1.1'
+
     // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
     // PurityChecker / ModifiesChecker). Test-only: a consumer supplies these themselves when they
     // combine checkers — groovy-verify neither compiles nor runs against them — so they never reach
