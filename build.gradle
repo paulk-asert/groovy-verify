@@ -230,6 +230,15 @@ tasks.register('docLint', JavaExec) {
     mainClass = 'DocLint'
 }
 
+tasks.register('explainProbe', JavaExec) {
+    group = 'verification'
+    description = 'Prototype: explain a positive verification via Z3 unsat cores (which contract clauses the proof used)'
+    dependsOn 'compileGroovy', 'compileTestGroovy'
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'ExplainProbe'
+    jvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
 tasks.register('caseAxiomTiming', JavaExec) {
     group = 'verification'
     description = 'Standalone Z3 timing probe for the toUpper/toLower axiom set'
