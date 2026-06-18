@@ -5719,7 +5719,7 @@ class WrapCounter implements Counter { }
         // proof becomes machine-checked. Both pass here.
         [group: 'P-multichecker', name: 'PurityChecker + VerifyChecker: @Pure helper, contract proven via pure-eval', ok: true,
          src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
-                        @groovy.transform.Pure
+                        @Pure
                         static int triple(int n) { 3 * n }   // PurityChecker: provably side-effect-free
                         @Ensures({ result == 30 })
                         static int f() { triple(10) }   // groovy-verify: proven by evaluating triple(10)
@@ -5730,7 +5730,7 @@ class WrapCounter implements Counter { }
         [group: 'P-multichecker', name: 'impure @Pure helper rejected — PurityChecker names the violation', ok: false, expect: '@Pure violation',
          src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
                         static int counter = 0
-                        @groovy.transform.Pure
+                        @Pure
                         static int triple(int n) { counter = counter + 1; 3 * n }
                         @Ensures({ result == 30 })
                         static int f() { triple(10) }
@@ -5738,7 +5738,7 @@ class WrapCounter implements Counter { }
         // And VerifyChecker still checks the contract itself: a false @Ensures over the pure helper refutes.
         [group: 'P-multichecker', name: 'VerifyChecker refutes a false contract over the pure helper', ok: false, expect: 'Cannot prove',
          src: tcExt(['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'], '''class C {
-                        @groovy.transform.Pure
+                        @Pure
                         static int triple(int n) { 3 * n }
                         @Ensures({ result == 31 })
                         static int f() { triple(10) }

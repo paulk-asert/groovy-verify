@@ -1690,7 +1690,7 @@ turning the unstated premise into a machine-checked one:
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
 class C {
-    @groovy.transform.Pure
+    @Pure
     static int triple(int n) { 3 * n }            // PurityChecker: provably side-effect-free
     @Ensures({ result == 30 })
     static int f() { triple(10) }                 // groovy-verify: proven by evaluating triple(10)
