@@ -3401,6 +3401,20 @@ so it's for the method you're studying, not a suite-wide sweep — and it curren
 obligations. An obligation discharged without an authored `@Requires` (an inline guard, invariant, or path fact)
 says so, rather than inventing a clause.
 
+It looks past your `@Requires`, too. A proof often leans on a **structural** fact you didn't write — a class
+invariant, or a JVM integer bound — and those surface as `also leaned on`. On the ring buffer, the bounds proof
+for `values[head]` names the hidden dependency:
+
+```
+explain ✓ values[head] in bounds
+    load-bearing:     @Requires (head < tail)
+    also leaned on:   @Invariant (0 <= head && head <= tail && tail <= values.length)
+```
+
+— so you learn the access is safe *because of* the invariant; weaken it and the proof breaks. Only load-bearing
+structural facts show (a JVM bound that wasn't needed stays quiet), so the dependency that matters isn't lost in
+noise.
+
 The other two are operational rather than directional — `VERIFY_VERBOSE` prints the full diagnostic behind each
 one-line pass/fail, and `VERIFY_CACHE_STATS` reports the VC-cache hit/miss ratio. Both, with the gradle
 invocations, are in [BUILD.md](BUILD.md).

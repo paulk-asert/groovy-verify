@@ -144,6 +144,8 @@ class Z3Session implements SmtSession {
     private BoolExpr explainPreTerm
     private List<String> explainLabels
     private List<BoolExpr> explainTerms
+    private List<String> explainStructLabels    // structural facts (class invariants, JVM bounds) — noted incrementally
+    private List<BoolExpr> explainStructTerms
     private boolean explainGap   // a precondition existed but a conjunct fell outside the encodable fragment
 
     Z3Session(Context ctx, Solver solver, int timeoutMs) {
@@ -1266,20 +1268,42 @@ class Z3Session implements SmtSession {
     }
 
     @Override
-    Map<String, Boolean> explainAuthored() {
-        if (explainTerms == null || explainTerms.isEmpty()) return null
-        // Hold everything except the fused precondition fixed (structural axioms, JVM bounds, class invariants,
-        // path facts, and the negated goal); vary only the authored conjuncts. The baseline (base + all clauses)
-        // must reproduce the proof — else we can't faithfully explain it, so fail closed.
+    void explainNoteFact(String label, Object term) {
+        if (explainStructTerms == null) { explainStructLabels = new ArrayList<String>(); explainStructTerms = new ArrayList<BoolExpr>() }
+        explainStructLabels.add(label)
+        explainStructTerms.add((BoolExpr) term)
+    }
+
+    @Override
+    Map<String, Boolean> explainLoadBearing() {
+        int nAuthored = (explainTerms == null) ? 0 : explainTerms.size()
+        int nStruct = (explainStructTerms == null) ? 0 : explainStructTerms.size()
+        if (nAuthored + nStruct == 0) return null
+        // The droppable set is the authored conjuncts followed by the structural facts; everything else (the
+        // negated goal, path facts, anything not noted) stays fixed. Authored conjuncts are sub-terms of the fused
+        // precondition — not standalone in assertedExprs — so excluding the fused pre re-homes them; structural
+        // facts ARE standalone, so we exclude each by identity and re-add it as droppable.
+        List<BoolExpr> dropTerms = new ArrayList<BoolExpr>()
+        List<String> dropLabels = new ArrayList<String>()
+        for (int i = 0; i < nAuthored; i++) { dropTerms.add(explainTerms.get(i)); dropLabels.add(explainLabels.get(i)) }
+        for (int i = 0; i < nStruct; i++) { dropTerms.add(explainStructTerms.get(i)); dropLabels.add(explainStructLabels.get(i)) }
         List<BoolExpr> base = new ArrayList<BoolExpr>()
-        for (BoolExpr e : assertedExprs) if (!e.is(explainPreTerm)) base.add(e)
-        List<BoolExpr> all = new ArrayList<BoolExpr>(base); all.addAll(explainTerms)
+        for (BoolExpr e : assertedExprs) {
+            if (e.is(explainPreTerm)) continue
+            boolean isDrop = false
+            for (BoolExpr d : dropTerms) if (d.is(e)) { isDrop = true; break }
+            if (!isDrop) base.add(e)
+        }
+        // Baseline (base + every droppable) must reproduce the proof — else we can't faithfully explain it, fail closed.
+        List<BoolExpr> all = new ArrayList<BoolExpr>(base); all.addAll(dropTerms)
         if (!provesUnsat(all)) return null
         Map<String, Boolean> out = new LinkedHashMap<String, Boolean>()
-        for (int k = 0; k < explainTerms.size(); k++) {
+        for (int k = 0; k < dropTerms.size(); k++) {
             List<BoolExpr> without = new ArrayList<BoolExpr>(base)
-            for (int j = 0; j < explainTerms.size(); j++) if (j != k) without.add(explainTerms.get(j))
-            out.put(explainLabels.get(k), !provesUnsat(without))   // removing clause k broke the proof → load-bearing
+            for (int j = 0; j < dropTerms.size(); j++) if (j != k) without.add(dropTerms.get(j))
+            boolean loadBearing = !provesUnsat(without)   // removing fact k broke the proof → load-bearing
+            boolean authored = k < nAuthored
+            if (authored || loadBearing) out.put(dropLabels.get(k), loadBearing)   // structural shown only when load-bearing
         }
         out
     }

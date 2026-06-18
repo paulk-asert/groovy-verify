@@ -2550,7 +2550,7 @@ class VerifyChecker extends TypeCheckingExtension {
         for (Expression c : splitConjuncts(reqAst)) {
             Object t = enc.translateBool(c)
             if (t == null) { s.explainMarkGap(); return }   // a clause is outside the fragment → honest gap, not silence
-            labels.add(c.text)
+            labels.add('@Requires ' + c.text)
             terms.add(t)
         }
         if (!labels.isEmpty()) s.explainRegister(preTerm, labels, terms)
@@ -2563,7 +2563,7 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private void explainIfVerified(SmtSession s, CheckResult r, String obligation) {
         if (Reporter.EXPLAIN && r.status == CheckResult.Status.VERIFIED) {
-            Reporter.emitExplain(obligation, s.explainAuthored(), s.explainHadGap())
+            Reporter.emitExplain(obligation, s.explainLoadBearing(), s.explainHadGap())
         }
     }
 
@@ -2690,7 +2690,9 @@ class VerifyChecker extends TypeCheckingExtension {
         else if (isJvmLong(t)) { lo = Long.MIN_VALUE;           hi = Long.MAX_VALUE }
         else return
         Object v = enc.varFor(name)
-        s.assertExpr(s.and([s.le(s.intLit(lo), v), s.le(v, s.intLit(hi))]))
+        Object bound = s.and([s.le(s.intLit(lo), v), s.le(v, s.intLit(hi))])
+        s.assertExpr(bound)
+        if (Reporter.EXPLAIN) s.explainNoteFact("JVM bound (${name} in ${isJvmInt(t) ? 'int' : 'long'} range)".toString(), bound)
     }
 
     private static boolean isJvmInt(ClassNode t) {
@@ -6478,7 +6480,10 @@ class VerifyChecker extends TypeCheckingExtension {
         if (currentIsConstructor) return
         for (Expression inv : currentClassInvariants) {
             Object h = enc.translate(inv)
-            if (h != null) s.assertExpr(h)
+            if (h != null) {
+                s.assertExpr(h)
+                if (Reporter.EXPLAIN) s.explainNoteFact('@Invariant ' + inv.text, h)
+            }
         }
         // Phase 45 — for each class-typed parameter, assume the parameter's class invariants under
         // a receiver context so {@code count >= 0} in Counter's invariant becomes {@code c$count >= 0}

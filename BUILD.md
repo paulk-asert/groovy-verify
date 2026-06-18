@@ -63,8 +63,11 @@ doesn't ride on the refutation diagnostic — it emits its own `explain ✓ …`
 doesn't need `VERIFY_VERBOSE`. It's for **interactive proof**, where you're studying one method and don't mind the
 O(n) re-proofs per obligation. Because it never uses Z3's weaker unsat-core mode it explains the whole fragment
 (quantifier / FP proofs included), and because it's a pure downstream read-out in a fresh solver it can't change a
-verify / refute. An obligation discharged without an authored `@Requires` (an inline guard, class invariant, or
-path fact) says so, rather than inventing a clause.
+verify / refute. It also attributes **structural** facts the proof leaned on but you didn't write — a class
+invariant or a JVM integer bound — printed as `also leaned on` (only when load-bearing, so an unneeded bound stays
+quiet); that surfaces hidden dependencies, like a `values[head]` bound that holds *because of* the buffer's
+`@Invariant`. An obligation discharged without any attributable fact (an inline guard or path fact carries it)
+says so, rather than inventing a clause.
 
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and

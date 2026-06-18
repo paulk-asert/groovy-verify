@@ -661,12 +661,20 @@ interface SmtSession extends AutoCloseable {
     void explainRegister(Object preTerm, List<String> labels, List<Object> clauseTerms)
 
     /**
-     * VERIFY_EXPLAIN — for the just-checked (VERIFIED) goal, the load-bearing verdict per registered authored
-     * clause, found by drop-one-and-re-prove in fresh full-strength solvers (never the weaker unsat-core mode, so
-     * the result is exact and the main solver is never touched). {@code null} if nothing was registered or the
-     * proof can't be reproduced from the captured set (fail closed — never a fabricated explanation).
+     * VERIFY_EXPLAIN — note a *structural* fact (a class invariant, a JVM integral bound) as an attributable,
+     * droppable assumption, so the read-out can surface it when the proof leaned on it. {@code label} is the
+     * pre-formatted display string (e.g. {@code "@Invariant (size >= 0)"}); {@code term} is its asserted handle.
      */
-    Map<String, Boolean> explainAuthored()
+    void explainNoteFact(String label, Object term)
+
+    /**
+     * VERIFY_EXPLAIN — for the just-checked (VERIFIED) goal, the load-bearing verdict per attributable fact
+     * (authored {@code @Requires} conjunct or noted structural fact), found by drop-one-and-re-prove in fresh
+     * full-strength solvers (never the weaker unsat-core mode, so the result is exact and the main solver is never
+     * touched). Structural facts appear only when load-bearing. {@code null} if nothing was registered or the proof
+     * can't be reproduced from the captured set (fail closed — never a fabricated explanation).
+     */
+    Map<String, Boolean> explainLoadBearing()
 
     /** VERIFY_EXPLAIN — note that a precondition existed but a conjunct fell outside the encodable fragment, so the
      *  read-out is a genuine gap (distinct from "no authored {@code @Requires} at all"). */

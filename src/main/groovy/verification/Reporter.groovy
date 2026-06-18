@@ -51,20 +51,26 @@ class Reporter {
      *  Pure downstream read-out — never changes a verify/refute. {@code null} ⇒ off. */
     static final boolean EXPLAIN = System.getenv('VERIFY_EXPLAIN') != null
 
-    /** Print the load-bearing verdict per authored clause for a discharged obligation (VERIFY_EXPLAIN). A {@code null}
-     *  map means the proof couldn't be reproduced from the captured clauses — reported, never guessed. */
-    static void emitExplain(String obligation, Map<String, Boolean> loadBearing, boolean hadGap) {
-        if (loadBearing == null) {
+    /** Print the load-bearing read-out for a discharged obligation (VERIFY_EXPLAIN). Each {@code facts} key is a
+     *  pre-formatted label carrying its own kind ({@code @Requires …} authored clause, {@code @Invariant …} or
+     *  {@code JVM bound …} structural fact); the value is whether dropping it breaks the proof. Authored clauses
+     *  show both verdicts (the not-load-bearing ones are the hygiene signal); structural facts appear only when
+     *  load-bearing (a *hidden dependency* worth surfacing — a non-load-bearing JVM bound is just noise you can't
+     *  act on, so the map already omits it). A {@code null} / empty map means nothing was attributable. */
+    static void emitExplain(String obligation, Map<String, Boolean> facts, boolean hadGap) {
+        if (facts == null || facts.isEmpty()) {
             println(hadGap
                 ? "  explain ✓ ${obligation} — no explanation (a precondition clause is outside the captured fragment)"
                 : "  explain ✓ ${obligation} — discharged without an authored @Requires (an inline guard / invariant / path fact carries it)")
             return
         }
         println "  explain ✓ ${obligation}"
-        loadBearing.each { String label, Boolean lb ->
-            println(lb ? "      load-bearing:     @Requires ${label}"
-                       : "      not load-bearing: @Requires ${label}")
+        facts.each { String label, Boolean lb ->
+            if (!lb) println "      not load-bearing: ${label}"             // only authored clauses reach here
+            else if (label.startsWith('@Requires')) println "      load-bearing:     ${label}"
+            else println "      also leaned on:   ${label}"                 // a structural fact (invariant / JVM bound)
         }
+        if (hadGap) println "      (note: a precondition clause is outside the captured fragment — not attributed)"
     }
 
     /** Render a reconstructed failing {@code invocation} as a repro test in the requested style. {@code exception}
