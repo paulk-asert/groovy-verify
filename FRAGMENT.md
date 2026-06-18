@@ -164,6 +164,14 @@ contract it *declares* — an inherited `@Ensures` isn't re-checked against an *
 (groovy-contracts still enforces it at runtime); and when a method inherits a contract from *both* a superclass
 and an implemented interface, the nearer superclass declaration is used (the two aren't conjoined).
 
+Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
+a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` on
+`int` / `long`, and `@Size(min, max)` / `@NotEmpty` on an array / `List` / `String` — read as the obvious bound and
+assumed like a precondition (matched by fully-qualified name, so no dependency on the validation API; `@NotEmpty`
+also implies non-null, `@Size` does not; a contradictory pair is flagged vacuous). So an annotation written for
+runtime validation also discharges the compile-time obligation (Phase 128). *Out of this slice:* `Set`/`Map`
+`@Size`, `@DecimalMin`/`@DecimalMax`, and call-site enforcement of the constraint (it's assumed, like `@NonNull`).
+
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
 `++`/`--` both as statements and **in expression position** (`x = i++` / `x = ++i` / `a[i++] = v` /

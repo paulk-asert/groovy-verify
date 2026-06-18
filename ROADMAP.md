@@ -7166,6 +7166,64 @@ rely/guarantee tooling, straight-line, branching, and loop bodies (read and writ
 
 ---
 
+## Phase 127 — diagnostic knobs: counterexample→test, suggested contract, proof explanation, SMT dump  *(shipped — four opt-in env vars, OFF byte-identical)*
+
+Four transient-tooling environment variables that change what the checker *reports*, never what it proves; each
+leaves the default path **byte-identical** when unset (the full suite is unchanged under all four off), so they
+carry zero regression risk. They form a small family around one diagnostic:
+
+- **`VERIFY_REFUTATION=assert|junit|spock`** — renders a refutation's reconstructed `fails on:` counterexample as a
+  runnable repro test (the same call as a self-checking test, green *while the bug is live*). A confirmation
+  bridge: run it to prove the compile-time counterexample is a genuine runtime failure, then fix the bug and *flip
+  the test* into a regression — or delete it. A pure reporting transform over the existing `CheckResult.failingCall`;
+  a verify-only obligation (integer overflow, which wraps and throws nothing) is shown documentary.
+- **`VERIFY_SUGGEST=contract`** — the abduction direction (Clousot / CodeContracts): for a refuted *implicit*
+  obligation (bounds / divide / null) prints the `@Requires` that would discharge it — the positive form of the
+  violated check, in the author's own spelling, gated to clauses expressible as a precondition (params/fields, no
+  locals). Overflow is excluded on purpose: its sound guard depends on operand signs, and the naive range-check
+  reads vacuously under wrapping Groovy int arithmetic.
+- **`VERIFY_EXPLAIN`** — on a *verified* obligation, prints which authored `@Requires` clauses the proof actually
+  leaned on, found by **ablation**: drop one clause, re-prove at full strength (never Z3's weaker unsat-core mode,
+  so it explains the whole fragment — quantifier / FP included); a clause is load-bearing iff its removal breaks
+  the proof. A pure downstream read-out in a fresh solver — it cannot change a verify/refute, and incomplete
+  capture fails *closed* ("no explanation", never a wrong one). It also attributes **structural** facts the proof
+  leaned on but the author didn't write — a class `@Invariant`, a JVM integer bound, and Bean Validation
+  constraints (Phase 128) — printed as `also leaned on` only when load-bearing, so a hidden dependency surfaces
+  without noise. Capture is centralised in one hook (`captureExplain` / `explainNoteFact`) so a new assume path
+  can't silently lose the read-out.
+- **`VERIFY_DUMP_SMT`** — prints every solver query as a self-contained SMT-LIB2 benchmark (declarations,
+  assumptions, the *negated* goal, `(check-sat)`) so an obligation can be piped to another solver for a second
+  opinion or read to debug the encoding; a trailing `; verdict:` comment records Z3's conclusion. The cheap,
+  measured precursor to ever adding a second backend — the `SmtBackend` seam already makes one a drop-in, but the
+  encoder is Z3-tuned, so the right move is to dump-and-test before committing.
+
+The recurring pattern: an opt-in flag gating a reporting-layer transform keeps the OFF path byte-identical.
+
+## Phase 128 — Bean Validation constraints read as preconditions  *(shipped — jakarta/javax, numeric + size)*
+
+A `jakarta.validation` / legacy `javax.validation` constraint annotation on a parameter or field is read as a
+method-entry **precondition** — the same posture as `@Requires` / `@NonNull` (assumed in the body, the caller's
+obligation), matched by fully-qualified name so the engine carries no dependency on the validation API. The
+bmc4j-inspired bridge: an annotation written for *runtime* validation also discharges a *compile-time* obligation.
+
+- **Numeric** (`int` / `long`): `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` → sign;
+  `@Min(n)` / `@Max(n)` → bound. So `@Positive int x` discharges `100 % x` (no divide-by-zero).
+- **Size-bearing**: `@Size(min, max)` and `@NotEmpty` bound the size of an array / `List` (via the same size
+  oracle the bounds obligations use, so `@Size(min=1) int[] a` discharges `a[0]`) or the length of a `String`
+  (via the string-theory length). `@NotEmpty` additionally implies *non-null* — unlike `@Size`, which a null value
+  satisfies per Bean Validation, so `@Size` deliberately does not assert non-null.
+- **Soundness**: monotonic (assumptions only ever prove *more*), so existing cases without these annotations stay
+  byte-identical. The vacuity check (Phase 71) was broadened to include the constraints and to fire on a method
+  with no `@Requires` at all, so a contradictory pair (`@Positive @Negative`) is flagged vacuous, not silently
+  passed. The whole read folds into the single `assumeIntJvmBounds` method-entry helper — one place, every
+  discharge path, no scatter — and each fact auto-attributes under `VERIFY_EXPLAIN` (`also leaned on: @Positive x`).
+
+Out of this slice: `Set` / `Map` `@Size` (cardinality oracle), `@DecimalMin` / `@DecimalMax` (BigDecimal), and
+interprocedural call-site obligation (inherits `@NonNull`'s assume-only posture). The new cases live in a
+`jakarta validation` group; a test-only `jakarta.validation-api` keeps the published POM clean.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
