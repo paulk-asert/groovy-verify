@@ -109,8 +109,24 @@ interesting model — see [Relationship to Groovy's other checkers](#relationshi
 
 ## What's demonstrated
 
-The engine proves these kinds of property at **compile time** — and when it can't, it **refutes with a concrete
-counterexample** (Dafny/Verus-style) rather than passing silently:
+**The shapes this shows up in** — all within the modest fragment below, so these are the forms real code takes that
+the engine proves end-to-end, not "point it at anything":
+
+- **Money & conservation** — `BigDecimal` sums and scale, and N-account transfers that neither create nor destroy
+  value (`bal.sum() == old.bal.sum()`).
+- **Buffers, windows & search** — index arithmetic kept in bounds: ring buffers, sliding windows, binary search,
+  pagination.
+- **Validation & clamping** — range / non-null / size preconditions (your own `@Requires`, or a Jakarta
+  `@Positive` / `@Size`), with opt-in integer-overflow checks.
+- **Stateful objects & their rules** — a class `@Invariant` established by construction and preserved by every
+  mutator; a transient or unreachable bad state refutes.
+- **Ordering & algebraic laws** — sortedness and `compareTo`-shaped ordering, plus monoid / monad / reducer laws
+  proved from an annotation alone.
+- **Past where most tools stop** — information-flow security (no secret reaches a public sink), lock-free
+  rely/guarantee concurrency, and termination.
+
+Concretely, the engine proves these kinds of property at **compile time** — and when it can't, it **refutes with a
+concrete counterexample** (Dafny/Verus-style) rather than passing silently:
 
 - **Preconditions** — every `@Requires` is discharged at each call site.
 - **Postconditions** — a method body is proved to satisfy its `@Ensures` on every path, including early returns.
