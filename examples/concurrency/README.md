@@ -14,18 +14,33 @@
   limitations under the License.
 -->
 
-# `docs/` — "the other half": the concurrency model
+# "the other half": the concurrency model
+
+## The three rungs
+
+1. **Proof** (`groovy-verify`) — the local sequential VC, discharged at compile time by Z3. Decidable,
+   compositional, but assumes the interleaving model.
+2. **Exhaustive model** (`Buffer.tla` + TLC, here) — every interleaving of an *abstract* state machine.
+   Confirms the relies compose and the system makes progress; still SC, action-grained.
+3. **Tested real bytecode** (Lincheck on an actual `SpscBuffer` — see below) — bounded search over
+   schedules of the *real* code, discharging the atomicity/ordering assumption against an implementation.
+
+Each rung trades coverage for fidelity to the running system. None subsumes the others.
+
+## Rung 1 — Proof
 
 `groovy-verify` proves the **local, sequential** obligations of a rely/guarantee argument: each
-thread, run under an *assumed* rely, stays in bounds and leaks nothing (the README §VII capstone).
+thread, run under an *assumed* rely, stays in bounds and leaks nothing (the [§VII capstone](../smith.md)).
 What it deliberately does **not** do is establish that the rely/guarantee abstraction is faithful to a
 real interleaved execution — the scheduler, the atomicity grain, and liveness. That is a different
 class of tool.
 
+## Rung 2 — Exhaustive model
+
 This directory holds the smallest honest artifact for that other half: a **TLA+** model of the §VII
 buffer that an exhaustive model checker (TLC) explores across *every* interleaving.
 
-## Files
+### Files
 
 | File | What it is |
 |------|------------|
@@ -33,7 +48,7 @@ buffer that an exhaustive model checker (TLC) explores across *every* interleavi
 | [`Buffer.cfg`](Buffer.cfg) | The **secure** spec: producer declassifies. All invariants hold, the relies are theorems, progress holds. |
 | [`BufferLeak.cfg`](BufferLeak.cfg) | The **leak** variant: producer skips `Declassify`. TLC reports `RegionSound`/`NoLeak` violated and prints the shortest interleaved trace that leaks. |
 
-## Running it
+### Running it
 
 From the build — the secure spec is wired as a task (resolves `tla2tools` from GitHub releases, runs
 TLC in `build/tlc`, fails the build on any invariant/property violation):
@@ -57,7 +72,7 @@ Validated with TLC 2.19 at `Cap = 3`, `Data = {0, 1}` (49 distinct states): the 
 invariants and temporal properties; the leak variant fails `RegionSound` with a two-step trace
 (`ProduceLeak` advances `tail` over an un-declassified `High` slot, pulling it into the `Low` region).
 
-## What this checks that the compile-time checker does not
+### What this checks that the compile-time checker does not
 
 The pivotal difference is in **how the rely shows up**:
 
@@ -73,7 +88,7 @@ It also checks **liveness** (`Progress`: once `n` items are produced, `n` are ev
 something the sequential checker cannot express at all (`@Decreases` is per-call termination, not
 system progress).
 
-## Where this still stops
+### Where this still stops
 
 TLC explores interleavings at the **action grain you wrote** — each action is atomic and execution is
 **sequentially consistent**. So this model closes the "all interference is the peer" and liveness gaps,
@@ -86,20 +101,14 @@ but:
   "statement-atomic, SC" abstraction against real hardware needs a weak-memory tool (GenMC, herd7) or
   actual synchronization proven sufficient (VerCors / Viper).
 
-## The three rungs
+## Rung 3 — Tested real bytecode
 
-1. **Proof** (`groovy-verify`) — the local sequential VC, discharged at compile time by Z3. Decidable,
-   compositional, but assumes the interleaving model.
-2. **Exhaustive model** (`Buffer.tla` + TLC, here) — every interleaving of an *abstract* state machine.
-   Confirms the relies compose and the system makes progress; still SC, action-grained.
-3. **Tested real bytecode** (Lincheck on an actual `SpscBuffer` — see below) — bounded search over
-   schedules of the *real* code, discharging the atomicity/ordering assumption against an implementation.
+The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — three ways: the
+lock-free §VII buffer and the lock-based accounts (both via **Lincheck**), and deadlock / lock-ordering (via **Fray**).
 
-Each rung trades coverage for fidelity to the running system. None subsumes the others.
+### The Lincheck buffer examples
 
-## Rung 3, concretely — the Lincheck spike
-
-A runnable JVM-level companion lives in [`src/concurrent/groovy/concurrent/`](../src/concurrent/groovy/concurrent):
+A runnable JVM-level companion lives in [`src/concurrent/groovy/concurrent/`](../../src/concurrent/groovy/concurrent):
 
 | File | What it is |
 |------|------------|
@@ -147,9 +156,9 @@ thread switches at shared accesses — it is essentially sequentially-consistent
 logic* bugs (like publish-before-write), not pure *memory-visibility* bugs (a missing `volatile`). For
 that last layer you need a weak-memory checker (GenMC, herd7) or jcstress on real hardware.
 
-## Rung 3 for the locks example — both disclaimed halves
+### The locks example — both disclaimed halves
 
-The README "Locks — the monitor invariant" section proves each critical section preserves `balance >= 0`
+The [*Locks — the monitor invariant*](examples.md) example proves each critical section preserves `balance >= 0`
 *given* mutual exclusion, and explicitly disclaims two things: "no race on unlocked access, no deadlock,
 no lock-ordering." Each disclaimed half gets the tool that fits it.
 
@@ -176,7 +185,9 @@ function's logic across a suspension point. An async / coroutine runtime is outs
 loud-skips; our accounts are plain `synchronized` methods and the concurrency lives entirely in Lincheck's
 interleavings. (bmc4j's accounts are `@Synchronized` too — the coroutine part is a separate aspect of that example.)
 
-**Deadlock / lock-ordering — Fray** (`src/fray/groovy/`, in `./gradlew frayCheck`). Where Lincheck checks a
+### Deadlock / lock-ordering — Fray
+
+Run with `./gradlew frayCheck` (sources in `src/fray/groovy/`). Where Lincheck checks a
 data structure's *operations*, [Fray](https://github.com/cmu-pasta/fray) (OOPSLA'25) drives the real JVM
 scheduler over a *hand-threaded* scenario — two threads transferring between two accounts in opposite
 directions. `orderedTransfer` (lock the lower-id account first → a global lock order) is **deadlock-free**
