@@ -17,7 +17,7 @@
 # Miscellaneous examples
 
 
-A few more that don't belong to one of the per-source sections above: a verified mutable data structure, a
+Examples that don't belong to one of the per-source galleries: a verified mutable data structure, a
 fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
 its source), a Dafny-style element-wise array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat
 is associative but not commutative), and a tour of verification across a Groovy type hierarchy — inheritance,

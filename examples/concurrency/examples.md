@@ -39,8 +39,8 @@ termination; that needs concurrent separation logic, out of scope for a sequenti
 "prove half the property" results: the half SMT can discharge, which is usually the functional one.
 
 Groovy's **rely/guarantee** support goes further than the four above — proving *both* halves on a concurrent
-buffer, and combining with the information-flow lattice it shares a source with (Graeme Smith's Dafny approach).
-That reunited story is its own page: **[Thread-local information flow & rely/guarantee (Smith)](../smith.md)**.
+buffer, and combining with an information-flow lattice (Graeme Smith's Dafny approach):
+**[Thread-local information flow & rely/guarantee (Smith)](../smith.md)**.
 
 ### Locks — the monitor invariant
 

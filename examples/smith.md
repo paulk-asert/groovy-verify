@@ -18,7 +18,7 @@
 
 This gallery reconstructs Graeme Smith's [*A Dafny-based approach to thread-local information flow
 analysis*](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf) (FormaliSE 2023) on groovy-verify — thread-local
-information-flow control via rely/guarantee, the paper's two halves reunited. **§III** is an information-flow
+information-flow control via rely/guarantee. **§III** is an information-flow
 lattice with a noninterference obligation; **§IV** is rely/guarantee for reasoning under a concurrent peer; the
 **§VII** capstone combines them (info-flow × rely/guarantee) on one bounded buffer. The buffer's *structural*
 half — that the threads truly interleave at the assumed grain — is the deliberate non-goal, validated separately
@@ -33,8 +33,7 @@ refuses to let it reach a sink it shouldn't, at zero runtime cost. The same idea
 *instance* of a more general construction: a security **lattice** (a proved `enum` of levels) plus a `@Label` on
 each source and sink. The verifier discharges the **noninterference** obligation —
 `leq( join(ΓE(e), PC), L(sink) )` — over the class's *own* lattice, by the same Z3 backend that proves the
-contracts. No new solver theory; the obligation is just a lattice formula. (The Γ/lattice encoding follows Smith,
-[*A Dafny-based approach to thread-local information flow analysis*](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf),
+contracts. No new solver theory; the obligation is just a lattice formula. (The Γ/lattice encoding follows [Smith](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf),
 §III. The paper's concurrent rely/guarantee story is *reconstructed* on the per-thread rely-step model — see the
 rely/guarantee section — but the underlying concurrency/atomicity soundness, that threads truly interleave at the
 assumed grain, stays a deliberate non-goal.)
@@ -164,16 +163,15 @@ The *rely/guarantee* story goes further than the four above — here we prove **
 **compatibility lemmas** are pure logic: `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state,
 with the verifier auto-discharging that each rely is reflexive and transitive, each guarantee reflexive, and every
 thread's guarantee implies every *other* thread's rely (`G_i ⟹ R_j`) — certifying the rely/guarantee *conditions*
-compose. Second — and this is newer — the per-thread **interleaving proof** itself now runs for Int shared state:
+compose. Second, the per-thread **interleaving proof** itself runs for Int shared state:
 a rely-step is `@Modifies` (havoc the shared frame) + `@Ensures` over `old` (assume the rely), so each thread's
 *code* is checked to stay safe across the environment's interference. The concurrent bounded buffer below proves a
 real memory-safety property — no out-of-bounds access under a concurrent peer — both ways. What still stays out is
 the *scheduler* itself: that the threads really are concurrently interleaved with the assumed atomicity.
 
 
-The producer/consumer is the capstone case study of the information-flow paper this work follows — Graeme Smith's
-[*A Dafny-based approach to thread-local information flow analysis*](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf)
-(FormaliSE 2023). Most of that case study is machine-checked by
+The producer/consumer is the capstone case study of [Smith](https://staff.itee.uq.edu.au/smith/recent/dafny.pdf).
+Most of that case study is machine-checked by
 the **§III** information-flow examples above: the buffer element's
 classification is *value-dependent* on `head`/`tail`, advancing `tail` is a *secure-update* on a control variable,
 and the producer *declassifies* what it releases. The one concurrency-specific piece is the **rely/guarantee**

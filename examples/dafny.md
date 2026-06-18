@@ -23,7 +23,7 @@ canonical examples from Dafny's own materials — its
 [online tutorial](https://dafny.org/latest/OnlineTutorial/guide) and the
 [VSComp 2010 competition suite](https://github.com/dafny-lang/dafny/tree/master/Source/IntegrationTests/TestFiles/LitTests/LitTest/VSComp2010)
 (Leino). They're ported *faithfully* — the Groovy adds nothing the fragment can't express —
-and none overlaps the examples above: the existing set has a *witnessed-extremum equality*
+and none overlaps the examples elsewhere in these docs: the existing set has a *witnessed-extremum equality*
 (`max_element`), a *sum biconditional* (`below_zero`), and *full `sorted ∧ permutation`*
 (insertion sort), but nothing that is a search-returning-index, a nonlinear bound between two
 aggregates, or sorted binary search. All three verify — including Dafny's single most iconic

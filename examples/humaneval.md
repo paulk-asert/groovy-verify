@@ -17,7 +17,7 @@
 # HumanEval examples
 
 
-The examples above are ours — chosen to showcase the fragment. To check the engine against problems
+The examples elsewhere are ours — chosen to showcase the fragment. To check the engine against problems
 *we didn't pick*, it's also been run over an **external, real-world corpus**: Verus'
 [HumanEval suite](https://github.com/secure-foundations/human-eval-verus), the standard benchmark
 for auto-active verifiers on LeetCode-shape problems. Its entries are GPT-generated implementations
@@ -30,7 +30,7 @@ returns, conditional list/string mutation, NIA bounds), and porting them is what
 the later phases (49a/b early-returns, 48 NIA, 46d in-loop path facts). Where the algorithms are
 list / map / loop-shaped, the engine matches or exceeds Verus on what it proves.
 
-Read against the five acts above, the corpus re-runs the same machinery on problems we didn't pick —
+Read against the five Acts of the [README](../README.md), the corpus re-runs the same machinery on problems we didn't pick —
 and roughly in that arc: **Act 1**'s loop invariants and `@Decreases` carry every example below;
 **Act 2**'s NIA bound and divide-by-zero obligations land in `is_prime`; the recurrence tasks extend
 **Act 1**'s proof-by-induction — `Fib`/`Trib`/`Gcd`/`Lcm` package common recurrences as named helpers
@@ -212,7 +212,7 @@ static int isPrime(int num) {
 }
 ```
 
-Three previously-deferred capabilities compose in one method: **prefix early-returns**
+Three capabilities compose in one method: **prefix early-returns**
 (Phase 49a) carry the trivial-input bailouts, the **NIA bound check `i * i <= num`**
 (Phase 48) replaces what used to be the Phase 8a opt-out cliff, the **in-body early-return**
 (Phase 49b) covers the "found a divisor → not prime" shortcut, and the loop invariant

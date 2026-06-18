@@ -18,11 +18,11 @@
 
 
 [OpenJML](https://www.openjml.org/) is the JML verifier for Java — the closest existing tool to
-this one on the JVM, and named as prior art above. Its [examples page](https://www.openjml.org/examples/)
+this one on the JVM. Its [examples page](https://www.openjml.org/examples/)
 collects small, self-contained proofs chosen to each show *one* idea. Two of them have been ported here.
 Examples ported from openjml.org are © their authors, used under the page's **CC BY-NC** terms.
 
-The first is already above, in **Act 3**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
+The first appears in the README **[Act 3](../README.md)**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
 — round a number up to the next multiple of a power of two with `(n + 0xF) & ~0xF`, proven against the
 arithmetic spec it's meant to implement, counterexample at `Integer.MIN_VALUE` and all. The second is here.
 

@@ -1373,15 +1373,14 @@ machine-checked, over a cyclic graph, by induction (no loops). See the roadmap.
 
 ## Other Examples
 
-Beyond the Acts above, the worked-and-verified examples are split by domain — each its own page, so this README
-stays a pitch rather than a catalogue:
+Beyond the Acts above, more worked-and-verified examples by domain:
 
 - **[HumanEval](examples/humaneval.md)** — an external benchmark (Verus' suite) of LeetCode-shape problems we didn't pick.
 - **[Dafny ports](examples/dafny.md)** — the Dafny community's own credentials: `SumMax` (VSComp'10), `Find`, `BinarySearch`.
 - **[OpenJML ports](examples/openjml.md)** — `Max by elimination` and `ChangeCase`, from the JVM's closest prior art (CC BY-NC).
 - **[Concurrency](examples/concurrency/examples.md)** — the *local* half of locks, agents, dataflow, channels, and rely/guarantee; the *structural* half (Lincheck / TLA+ TLC / Fray) is the [three rungs](examples/concurrency/README.md).
 - **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, invariant inference, and Jakarta Bean Validation.
-- **[Thread-local IFC (Smith)](examples/smith.md)** — Graeme Smith's Dafny approach reunited: information flow (a security lattice + noninterference) and rely/guarantee, combined in the §VII capstone.
+- **[Thread-local IFC (Smith)](examples/smith.md)** — Graeme Smith's Dafny approach: information flow (a security lattice + noninterference) and rely/guarantee, combined in the §VII capstone.
 
 ## Relationship to Groovy's other checkers
 
