@@ -2023,6 +2023,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Object pre = enc.translateBool(reqAst)
             if (pre == null) return   // didn't fully translate → can't judge soundly; stay silent
             s.assertExpr(pre)
+            captureExplain(s, enc, reqAst, pre)
             assumeClassInvariants(s, enc)
             CheckResult r = s.check()   // VERIFIED == UNSATISFIABLE → the precondition can never hold
             if (r.status == CheckResult.Status.VERIFIED) {
@@ -2436,7 +2437,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) {
                 Object pre = enc.translateBool(reqAst)
-                if (pre != null) s.assertExpr(pre)
+                if (pre != null) { s.assertExpr(pre); captureExplain(s, enc, reqAst, pre) }
                 assumePreconditionNonNullFacts(s, enc, reqAst)
             }
             // Phase 15a — class invariants are method-entry facts, assumed before any
@@ -2505,7 +2506,10 @@ class VerifyChecker extends TypeCheckingExtension {
     private void assumeContext(SmtSession s, Encoder enc, Expression reqAst, ASTNode site, PathFacts pf) {
         if (reqAst != null) {
             Object pre = enc.translateBool(reqAst)
-            if (pre != null) s.assertExpr(pre)
+            if (pre != null) {
+                s.assertExpr(pre)
+                captureExplain(s, enc, reqAst, pre)
+            }
             assumePreconditionNonNullFacts(s, enc, reqAst)
         }
         // Phase 44c — every Int-typed parameter and field is JVM-bounded to
@@ -2522,6 +2526,44 @@ class VerifyChecker extends TypeCheckingExtension {
             Object c = enc.translate(f.condition)
             if (c == null) continue   // an unencodable fact just weakens the assumption set — safe
             s.assertExpr(f.inThenBranch ? c : s.not(c))
+        }
+    }
+
+    /**
+     * VERIFY_EXPLAIN — capture the authored precondition's top-level {@code &&} conjuncts (label + already-interned
+     * term) for the post-proof ablation read-out. Re-translating each conjunct here is side-effect-free: the whole
+     * precondition was just translated, so every var / literal is already minted. Any unencodable conjunct aborts
+     * the registration (fail closed → "no explanation"), keeping the read-out honest rather than partial.
+     */
+    /**
+     * VERIFY_EXPLAIN — the single capture hook, dropped in right after a precondition is asserted at every path
+     * that assumes one (value-flow, per-site, havoc, loop). Centralised so a new assume path can't silently lose
+     * the read-out. No-op unless the flag is on.
+     */
+    private void captureExplain(SmtSession s, Encoder enc, Expression reqAst, Object pre) {
+        if (Reporter.EXPLAIN && pre != null && reqAst != null) registerExplainClauses(s, enc, reqAst, pre)
+    }
+
+    private void registerExplainClauses(SmtSession s, Encoder enc, Expression reqAst, Object preTerm) {
+        List<String> labels = new ArrayList<String>()
+        List<Object> terms = new ArrayList<Object>()
+        for (Expression c : splitConjuncts(reqAst)) {
+            Object t = enc.translateBool(c)
+            if (t == null) { s.explainMarkGap(); return }   // a clause is outside the fragment → honest gap, not silence
+            labels.add(c.text)
+            terms.add(t)
+        }
+        if (!labels.isEmpty()) s.explainRegister(preTerm, labels, terms)
+    }
+
+    /**
+     * VERIFY_EXPLAIN — for a discharged (VERIFIED) implicit obligation, print which authored {@code @Requires}
+     * clauses the proof actually leaned on. No-op unless the flag is on and the goal verified; the ablation runs
+     * in fresh solvers and cannot affect the result already reported.
+     */
+    private void explainIfVerified(SmtSession s, CheckResult r, String obligation) {
+        if (Reporter.EXPLAIN && r.status == CheckResult.Status.VERIFIED) {
+            Reporter.emitExplain(obligation, s.explainAuthored(), s.explainHadGap())
         }
     }
 
@@ -2776,6 +2818,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
                     ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), r, 'IndexOutOfBoundsException'), ix), ix.node)
             }
+            explainIfVerified(s, r, "${ix.receiver}[${ix.index.text}] in bounds")
             return
         }
         if (site instanceof DivideSite) {
@@ -2803,6 +2846,7 @@ class VerifyChecker extends TypeCheckingExtension {
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatDivisionByZero(dv.divisor.text, r), r, 'ArithmeticException'), dv), dv.node)
             }
+            explainIfVerified(s, r, "${dv.divisor.text} != 0")
             return
         }
         if (site instanceof ParseSite) {
@@ -4454,7 +4498,7 @@ class VerifyChecker extends TypeCheckingExtension {
      *  resolvable under them — `head <= tail` is what makes the boundary slot {@code Low}. Best-effort. */
     private void assumePreAndInvariants(SmtSession session, Encoder enc, MethodNode node) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
-        if (reqAst != null) { Object pre = enc.translateBool(reqAst); if (pre != null) session.assertExpr(pre) }
+        if (reqAst != null) { Object pre = enc.translateBool(reqAst); if (pre != null) { session.assertExpr(pre); captureExplain(session, enc, reqAst, pre) } }
         assumeClassInvariants(session, enc)
     }
 
@@ -5052,6 +5096,7 @@ class VerifyChecker extends TypeCheckingExtension {
                         "precondition '${reqAst.text}' is outside fragment")
                 }
                 session.assertExpr(pre)
+                captureExplain(session, enc, reqAst, pre)
             }
 
             // Phase 15a — class invariants are assumed at method entry (and re-proved at exit
@@ -7074,7 +7119,7 @@ class VerifyChecker extends TypeCheckingExtension {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) {
                 Object pre = enc.translateBool(reqAst)
-                if (pre != null) s.assertExpr(pre)
+                if (pre != null) { s.assertExpr(pre); captureExplain(s, enc, reqAst, pre) }
             }
             // Measure on entry — translated BEFORE the body effects below are replayed, so a measure over
             // *mutated* state (a set's cardinality, `n - s.size()`) reads the entry value, not the

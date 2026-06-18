@@ -31,6 +31,7 @@ VERIFY_VERBOSE=1 ./gradlew verify         # also print the counterexamples for r
 VERIFY_CACHE_STATS=1 ./gradlew verify     # also print the in-process VC cache hit / miss ratio
 VERIFY_REFUTATION=junit ./gradlew verify  # with VERIFY_VERBOSE: emit each refutation as a runnable repro test
 VERIFY_SUGGEST=contract ./gradlew verify  # with VERIFY_VERBOSE: also suggest the @Requires that would discharge each refutation
+VERIFY_EXPLAIN=1 ./gradlew verify         # on each verified bounds/divide obligation, show which @Requires clauses the proof leaned on
 
 ./gradlew test                            # the SAME suite as JUnit 5 dynamic tests (per-case IDE/CI reporting)
 ./gradlew test -Dverify.only='matrix'     # run just the cases whose "group :: name" contains a substring
@@ -54,6 +55,16 @@ it pastes verbatim; overflow is excluded on purpose — its sound guard depends 
 range-check would evaluate vacuously under wrapping Groovy int arithmetic. A human-reviewed hint, not an auto-fix
 (a guarded `if` or a class invariant is often the better home) — and like `VERIFY_REFUTATION`, transient tooling
 that pairs with `VERIFY_VERBOSE`.
+
+`VERIFY_EXPLAIN` runs on the obligations that *pass*: for each verified bounds / divide obligation it prints which
+authored `@Requires` clauses the proof actually leaned on, found by **ablation** — drop one clause, re-prove at
+full strength, and a clause is load-bearing exactly when its removal breaks the proof. Unlike the two above it
+doesn't ride on the refutation diagnostic — it emits its own `explain ✓ …` lines on *verified* obligations, so it
+doesn't need `VERIFY_VERBOSE`. It's for **interactive proof**, where you're studying one method and don't mind the
+O(n) re-proofs per obligation. Because it never uses Z3's weaker unsat-core mode it explains the whole fragment
+(quantifier / FP proofs included), and because it's a pure downstream read-out in a fresh solver it can't change a
+verify / refute. An obligation discharged without an authored `@Requires` (an inline guard, class invariant, or
+path fact) says so, rather than inventing a clause.
 
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and

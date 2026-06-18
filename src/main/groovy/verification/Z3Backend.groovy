@@ -139,6 +139,13 @@ class Z3Session implements SmtSession {
     private final List<BoolExpr> assertedExprs = new ArrayList<BoolExpr>()
     private final int timeoutMs
 
+    // VERIFY_EXPLAIN — passive, opt-in capture for the post-proof ablation read-out. Populated only via
+    // explainRegister (i.e. only when the flag is on); null otherwise, so OFF carries no state, no behaviour.
+    private BoolExpr explainPreTerm
+    private List<String> explainLabels
+    private List<BoolExpr> explainTerms
+    private boolean explainGap   // a precondition existed but a conjunct fell outside the encodable fragment
+
     Z3Session(Context ctx, Solver solver, int timeoutMs) {
         this.ctx = ctx
         this.solver = solver
@@ -1248,6 +1255,49 @@ class Z3Session implements SmtSession {
         BoolExpr be = (BoolExpr) boolExpr
         solver.add(be)
         assertedExprs.add(be)
+    }
+
+    @Override
+    void explainRegister(Object preTerm, List<String> labels, List<Object> clauseTerms) {
+        explainPreTerm = (BoolExpr) preTerm
+        explainLabels = labels
+        explainTerms = new ArrayList<BoolExpr>()
+        for (Object t : clauseTerms) explainTerms.add((BoolExpr) t)
+    }
+
+    @Override
+    Map<String, Boolean> explainAuthored() {
+        if (explainTerms == null || explainTerms.isEmpty()) return null
+        // Hold everything except the fused precondition fixed (structural axioms, JVM bounds, class invariants,
+        // path facts, and the negated goal); vary only the authored conjuncts. The baseline (base + all clauses)
+        // must reproduce the proof — else we can't faithfully explain it, so fail closed.
+        List<BoolExpr> base = new ArrayList<BoolExpr>()
+        for (BoolExpr e : assertedExprs) if (!e.is(explainPreTerm)) base.add(e)
+        List<BoolExpr> all = new ArrayList<BoolExpr>(base); all.addAll(explainTerms)
+        if (!provesUnsat(all)) return null
+        Map<String, Boolean> out = new LinkedHashMap<String, Boolean>()
+        for (int k = 0; k < explainTerms.size(); k++) {
+            List<BoolExpr> without = new ArrayList<BoolExpr>(base)
+            for (int j = 0; j < explainTerms.size(); j++) if (j != k) without.add(explainTerms.get(j))
+            out.put(explainLabels.get(k), !provesUnsat(without))   // removing clause k broke the proof → load-bearing
+        }
+        out
+    }
+
+    @Override
+    void explainMarkGap() { explainGap = true }
+
+    @Override
+    boolean explainHadGap() { explainGap }
+
+    /** A fresh, full-strength solver over {@code terms} — same timeout as the real proof, never the weaker
+     *  {@code unsat_core} mode — where UNSAT means the goal still discharges. Used only by the EXPLAIN ablation;
+     *  it never touches {@code solver}, so it cannot change a verify/refute. */
+    private boolean provesUnsat(List<BoolExpr> terms) {
+        Solver sub = ctx.mkSolver()
+        Params p = ctx.mkParams(); p.add('timeout', timeoutMs); sub.setParameters(p)
+        for (BoolExpr t : terms) sub.add(t)
+        sub.check() == Status.UNSATISFIABLE
     }
 
     // SMT {@code Int} is the unbounded mathematical integer, so a model can pin a counterexample

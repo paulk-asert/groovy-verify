@@ -46,6 +46,27 @@ class Reporter {
         "    suggested fix: @Requires({ ${requiresText} })".toString()
     }
 
+    /** {@code VERIFY_EXPLAIN} — transient tooling for interactive proof: when set, a *verified* implicit obligation
+     *  additionally prints which authored {@code @Requires} clauses the proof actually leaned on (ablation read-out).
+     *  Pure downstream read-out — never changes a verify/refute. {@code null} ⇒ off. */
+    static final boolean EXPLAIN = System.getenv('VERIFY_EXPLAIN') != null
+
+    /** Print the load-bearing verdict per authored clause for a discharged obligation (VERIFY_EXPLAIN). A {@code null}
+     *  map means the proof couldn't be reproduced from the captured clauses — reported, never guessed. */
+    static void emitExplain(String obligation, Map<String, Boolean> loadBearing, boolean hadGap) {
+        if (loadBearing == null) {
+            println(hadGap
+                ? "  explain ✓ ${obligation} — no explanation (a precondition clause is outside the captured fragment)"
+                : "  explain ✓ ${obligation} — discharged without an authored @Requires (an inline guard / invariant / path fact carries it)")
+            return
+        }
+        println "  explain ✓ ${obligation}"
+        loadBearing.each { String label, Boolean lb ->
+            println(lb ? "      load-bearing:     @Requires ${label}"
+                       : "      not load-bearing: @Requires ${label}")
+        }
+    }
+
     /** Render a reconstructed failing {@code invocation} as a repro test in the requested style. {@code exception}
      *  is the runtime exception the call throws, or {@code null} for a verify-only obligation (e.g. integer
      *  overflow, which wraps silently and throws nothing — so the repro is documentary, not a failing test). */

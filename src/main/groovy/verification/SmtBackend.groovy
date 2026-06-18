@@ -652,6 +652,29 @@ interface SmtSession extends AutoCloseable {
      */
     CheckResult check()
 
+    /**
+     * VERIFY_EXPLAIN — register the authored precondition's per-conjunct breakdown for a post-proof ablation
+     * read-out. Passive and opt-in: only ever called when the flag is on, so an OFF run carries no state and no
+     * behaviour change. {@code preTerm} is the fused precondition already asserted (excluded from the held-fixed
+     * base during ablation); {@code labels}/{@code clauseTerms} are the individual top-level {@code &&} conjuncts.
+     */
+    void explainRegister(Object preTerm, List<String> labels, List<Object> clauseTerms)
+
+    /**
+     * VERIFY_EXPLAIN — for the just-checked (VERIFIED) goal, the load-bearing verdict per registered authored
+     * clause, found by drop-one-and-re-prove in fresh full-strength solvers (never the weaker unsat-core mode, so
+     * the result is exact and the main solver is never touched). {@code null} if nothing was registered or the
+     * proof can't be reproduced from the captured set (fail closed — never a fabricated explanation).
+     */
+    Map<String, Boolean> explainAuthored()
+
+    /** VERIFY_EXPLAIN — note that a precondition existed but a conjunct fell outside the encodable fragment, so the
+     *  read-out is a genuine gap (distinct from "no authored {@code @Requires} at all"). */
+    void explainMarkGap()
+
+    /** VERIFY_EXPLAIN — whether {@link #explainMarkGap} fired for this obligation. */
+    boolean explainHadGap()
+
     @Override
     void close()
 }

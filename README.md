@@ -394,42 +394,11 @@ and a null receiver exact, solver-constrained array elements pinned as literals
 (`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
 (`new int[3]`).
 
-**From counterexample to runnable test.** That `fails on:` line is the default repro — a call to paste and watch
-throw. Set `VERIFY_REFUTATION=junit` (or `assert` / `spock`) and the *same* counterexample is rendered as a
-self-checking test instead:
-
-```
-repro (JUnit):
-    @Test void gFails() { assertThrows(IndexOutOfBoundsException.class, () -> C.g(new int[0], -1)); }
-```
-
-It's a confirmation bridge, not a keeper. The test is green *while the bug is live* — the call really throws — so
-run it to prove the compile-time counterexample is a genuine runtime failure (ruling out a verifier
-false-positive). Then fix the bug and **flip the test**: once the call no longer throws, invert the assertion into
-a regression — *"this input is now handled"* — or delete it. (A verify-only
-obligation like integer overflow wraps silently at runtime, so it has no exception to assert and is shown as
-documentary.) It's transient tooling, paired with `VERIFY_VERBOSE` — see [BUILD.md](BUILD.md).
-
-**From refutation to suggested contract.** The complementary move — not *what input breaks it* but *what
-precondition would fix it*. Set `VERIFY_SUGGEST=contract` and each refuted **implicit** obligation (a bounds,
-divide-by-zero, or null check the compiler inserts) also prints the `@Requires` that would discharge it. The same
-`g` refutation from above gains one line:
-
-```
-[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
-    obligation: 0 <= i && i < a.size()
-    counterexample: a.size() = 0, i = -1
-    fails on: g(new int[0], -1)
-    suggested fix: @Requires({ 0 <= i && i < a.size() })
-```
-
-Paste that `@Requires` onto `g` and the bounds obligation discharges — the refutation becomes a proof.
-This is the Clousot / CodeContracts abduction angle: the guard is the positive form of the violated check, in
-your own spelling (`.size()` vs `.length`). It only fires when that guard is a valid precondition — referencing
-parameters and fields, never a local or loop variable — so it pastes verbatim. It's a hint, not an auto-fix (a
-guarded `if` or a class invariant is often the better home), and overflow is excluded on purpose: its honest
-guard depends on operand signs, and the naive range-check would read vacuously under Groovy's wrapping int
-arithmetic. Transient tooling, paired with `VERIFY_VERBOSE` — see [BUILD.md](BUILD.md).
+**That counterexample isn't just a message — it feeds three tools.** The same `fails on:` line can be rendered as
+a runnable repro test, turned into the `@Requires` that would discharge it, and — on the obligations that *pass* —
+queried for which clauses the proof leaned on. These are opt-in environment knobs (`VERIFY_REFUTATION`,
+`VERIFY_SUGGEST`, `VERIFY_EXPLAIN`), each leaving the default path untouched; they're collected under
+[Tool knobs](#tool-knobs) below.
 
 **Safe navigation carries the non-null fact.** A precondition `recv?.foo()` can only be truthy when `recv`
 is non-null — Groovy's `?.` evaluates to `null` (falsy) on a null receiver — and the verifier reads that
@@ -3349,6 +3318,92 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
   purity pairings shown above put two of them to work; the rest compose the same way. Together the
   family checks far more than any one
   extension's fragment.
+
+## Tool knobs
+
+Five environment variables tune what the checker *reports* — never what it proves. They're **transient tooling**,
+set per run, distinct from the permanent `@TypeChecked(extensions = …)` configuration; unset, every one leaves the
+default path byte-identical.
+
+| knob | what it adds |
+|------|--------------|
+| `VERIFY_REFUTATION=assert\|junit\|spock` | render a refutation's counterexample as a runnable repro test |
+| `VERIFY_SUGGEST=contract` | suggest the `@Requires` that would discharge a refuted implicit obligation |
+| `VERIFY_EXPLAIN` | on a *verified* obligation, show which authored `@Requires` clauses the proof used |
+| `VERIFY_VERBOSE` | print the full OpenJML-style diagnostic + counterexample behind each one-line result |
+| `VERIFY_CACHE_STATS` | print the in-process VC-cache hit / miss ratio |
+
+The first three act on one diagnostic, in three directions. Take an unguarded index access:
+
+<!-- doclint:ignore Tool-knobs walkthrough scaffold — illustrative unguarded method shared by the three knob examples -->
+```groovy
+static int g(int[] a, int i) { a[i] }   // no guard — the bounds obligation refutes
+```
+
+It refutes with a concrete counterexample:
+
+```
+[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
+    obligation: 0 <= i && i < a.size()
+    counterexample: a.size() = 0, i = -1
+    fails on: g(new int[0], -1)
+```
+
+**`VERIFY_REFUTATION` — counterexample → runnable test.** That `fails on:` line is the default repro — a call to
+paste and watch throw. Set `VERIFY_REFUTATION=junit` (or `assert` / `spock`) and the *same* counterexample is
+rendered as a self-checking test instead:
+
+```
+repro (JUnit):
+    @Test void gFails() { assertThrows(IndexOutOfBoundsException.class, () -> C.g(new int[0], -1)); }
+```
+
+It's a confirmation bridge, not a keeper. The test is green *while the bug is live* — the call really throws — so
+run it to prove the compile-time counterexample is a genuine runtime failure (ruling out a verifier
+false-positive). Then fix the bug and **flip the test**: once the call no longer throws, invert the assertion into
+a regression — *"this input is now handled"* — or delete it. (A verify-only obligation like integer overflow wraps
+silently at runtime, so it has no exception to assert and is shown as documentary.)
+
+**`VERIFY_SUGGEST` — refutation → suggested contract.** The complementary move — not *what input breaks it* but
+*what precondition would fix it*. Set `VERIFY_SUGGEST=contract` and the same refutation gains one line:
+
+```
+    suggested fix: @Requires({ 0 <= i && i < a.size() })
+```
+
+Paste that `@Requires` onto `g` and the bounds obligation discharges — the refutation becomes a proof. This is the
+Clousot / CodeContracts abduction angle: the guard is the positive form of the violated check, in your own
+spelling (`.size()` vs `.length`). It only fires when that guard is a valid precondition — referencing parameters
+and fields, never a local or loop variable — so it pastes verbatim. It's a hint, not an auto-fix (a guarded `if`
+or a class invariant is often the better home), and overflow is excluded on purpose: its honest guard depends on
+operand signs, and the naive range-check would read vacuously under Groovy's wrapping int arithmetic.
+
+**`VERIFY_EXPLAIN` — proof → the clauses it leaned on.** The third direction runs on the obligations that *pass*.
+With `g` now guarded — and, say, slightly over-specified — `VERIFY_EXPLAIN` reports, per verified obligation,
+which authored `@Requires` clauses the proof actually used, and which it didn't:
+
+```
+@Requires({ i >= 0 && i < a.length && i != 7 })
+static int g(int[] a, int i) { a[i] }
+
+explain ✓ a[i] in bounds
+    load-bearing:     @Requires (i >= 0)
+    load-bearing:     @Requires (i < a.length)
+    not load-bearing: @Requires (i != 7)
+```
+
+That last line is the payoff: `i != 7` carries no weight for the bound, so a hygiene-minded reader can drop it.
+The verdict comes from **ablation** — remove one clause, re-prove at full strength, and a clause is load-bearing
+exactly when its removal breaks the proof. Because it never uses Z3's weaker unsat-core mode it explains the
+*whole* fragment (quantifier and FP proofs included), and because it's a pure downstream read-out in a fresh
+solver it can't change a verify / refute. It's the most interactive of the three — O(n) re-proofs per obligation,
+so it's for the method you're studying, not a suite-wide sweep — and it currently covers the bounds and divide
+obligations. An obligation discharged without an authored `@Requires` (an inline guard, invariant, or path fact)
+says so, rather than inventing a clause.
+
+The other two are operational rather than directional — `VERIFY_VERBOSE` prints the full diagnostic behind each
+one-line pass/fail, and `VERIFY_CACHE_STATS` reports the VC-cache hit/miss ratio. Both, with the gradle
+invocations, are in [BUILD.md](BUILD.md).
 
 ## Building & using
 
