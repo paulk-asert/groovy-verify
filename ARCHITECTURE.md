@@ -59,7 +59,7 @@ groovy-contracts-rewritten forms. (Verbatim text comes from power-assert's
 
 | File | Role |
 |---|---|
-| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, annotation-law synthesis (`@Reducer` / `@Monadic`), and the information-flow noninterference walk (`@Label`) |
+| `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, annotation-law synthesis (`@Reducer` / `@Monadic`), the information-flow noninterference walk (`@Label`), and Bean Validation (`jakarta` / `javax.validation`) constraints read as preconditions (Phase 128) |
 | `Encoder` | Groovy expression → SMT (the fragment lives here) |
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
@@ -71,15 +71,17 @@ groovy-contracts-rewritten forms. (Verbatim text comes from power-assert's
 | `Label` / `Declassify` | the `@Label('level')` / `@Label(by = 'm')` security classification (constant or value-dependent) on a parameter / method result / sink, and `Declassify.to(level, expr)` for explicit controlled release — driving the information-flow noninterference check over a user-defined lattice (Phase L1) |
 | `Rely` / `Guarantee` / `UnderRely` | `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state; the verifier auto-discharges the §IV rely/guarantee *compatibility* lemmas (reflexive/transitive relies, `G_i ⟹ R_j`). `@UnderRely('T')` then runs a method's body under that rely: `ContractExpansionTransform` synthesises a rely-step from the `@Rely('T')` predicate and frames every shared access (straight-line, branches, and loop bodies via the `LoopEncoder` call-handler), so each thread's *code* is proven to uphold its rely — both §IV halves (Phase L1) |
 | `ContractExpansionTransform` / `ContractSource` / `ClassInvariantSource` / `SelfEnsures` / `UnderRely` | global CONVERSION transform capturing verbatim contract text (`requires`/`ensures`/`decreases`/`modifies`, and a class-level `invariant`) + clean body snapshots onto the runtime carriers the checker re-parses; also desugars `@SelfEnsures` into a captured `@Ensures({ result == <verbatim body> })` so a self-specifying body is written once, and for `@UnderRely('Role')` synthesises a `$rely$Role` rely-step from the class's `@Rely('Role')` predicate (frame + `old`-rewritten ensures + class invariant) and prepends the call before the snapshot (prototypes) |
-| `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation |
-| `Reporter` | OpenJML-style diagnostics with inline counterexamples |
+| `SmtBackend` / `Z3Backend` | the solver seam (`SmtBackend.session()` → `SmtSession`) and its z3-turnkey implementation — which also serves the `VERIFY_EXPLAIN` ablation (drop-one re-prove in fresh full-strength solvers) and the `VERIFY_DUMP_SMT` SMT-LIB2 emission (Phase 127) |
+| `Reporter` | OpenJML-style diagnostics with inline counterexamples, plus the opt-in diagnostic knobs `VERIFY_REFUTATION` / `VERIFY_SUGGEST` / `VERIFY_EXPLAIN` / `VERIFY_DUMP_SMT` (Phase 127) |
 
 ## The solver seam
 
 `Encoder` is written against the `SmtBackend` / `SmtSession` interface; `Z3Backend`
 (via the z3-turnkey distribution, native libs bundled) is the only concrete binding,
 so an alternative solver is a drop-in. Z3 runs at the consumer's compile time; the
-project is otherwise pure-Groovy.
+project is otherwise pure-Groovy. (`VERIFY_DUMP_SMT` emits each query as a standalone
+SMT-LIB2 benchmark for piping to another solver — the cheap, measured precursor to ever
+swapping the binding, since the encoder is Z3-tuned.)
 
 ## Metadata handoff
 

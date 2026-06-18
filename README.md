@@ -165,6 +165,10 @@ you write:
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 
+**Spec sources** — beyond `@Requires` / `@Ensures` / `@Invariant`, a precondition can also be read off a Jakarta /
+`javax.validation` constraint on a parameter or field — `@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty` — so
+code already annotated for *runtime* validation verifies as-is.
+
 The full itemised enumeration — every operator, type, theory, phase, and honest boundary — is in
 **[FRAGMENT.md](FRAGMENT.md)**. The worked examples below put it through its paces.
 
