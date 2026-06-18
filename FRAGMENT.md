@@ -155,7 +155,7 @@ Verification also follows the **type hierarchy**: a subclass method is proved ag
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its
 contract is checked for **behavioral subtyping** (Liskov — precondition weakened, postcondition strengthened),
 and a **trait**'s `@Invariant` and contracted *default methods* are verified on every implementer — worked
-through in [Inheritance, traits & behavioral subtyping](README.md#inheritance-traits--behavioral-subtyping).
+through in [Inheritance, traits & behavioral subtyping](examples/miscellaneous.md#inheritance-traits--behavioral-subtyping).
 Likewise an **`interface`** method's `@Requires` / `@Ensures` is inherited by every implementer (Phase 123 — the
 contract-inheritance walk traverses implemented interfaces, not just the superclass), so an interface-declared
 precondition guards the implementer's body and an interface-declared postcondition is checked against it. Honest

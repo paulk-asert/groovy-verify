@@ -20,7 +20,7 @@ import groovy.transform.stc.POJO
 
 /**
  * A correct lock-free single-producer/single-consumer bounded buffer — the real-code rung under the
- * groovy-verify {@code Buffer} (verified sequentially) and {@code docs/Buffer.tla} (model-checked).
+ * groovy-verify {@code Buffer} (verified sequentially) and {@code examples/concurrency/Buffer.tla} (model-checked).
  * Lincheck checks the ACTUAL bytecode across interleavings.
  *
  * <p>{@code @CompileStatic} is load-bearing here: it makes {@code offer}/{@code poll} compile to direct
