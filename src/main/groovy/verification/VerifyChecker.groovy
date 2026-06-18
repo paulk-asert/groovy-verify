@@ -1324,6 +1324,23 @@ class VerifyChecker extends TypeCheckingExtension {
         sizeAccessors.getOrDefault(recv, '.size()')
     }
 
+    /** VERIFY_REFUTATION — append a runnable repro (the reconstructed failing call as a test) to a refutation
+     *  diagnostic, in the requested style. No-op (diagnostic unchanged) unless the env flag is set and a failing
+     *  call was reconstructed. {@code exception} is the runtime exception the obligation throws, or null for a
+     *  verify-only one (overflow). A static method gives a fully-runnable call; an instance method shows a
+     *  best-effort {@code new C(…)} receiver (its field values are in the printed counterexample). */
+    private String withRepro(String diag, CheckResult r, String exception) {
+        // null / 'message' → the default bare `fails on:` line (rendered by appendModel); only the richer
+        // formats (assert/junit/spock) render a self-checking test here.
+        String fmt = Reporter.REFUTATION_FORMAT
+        if (fmt == null || fmt == 'message' || r?.failingCall == null || currentMethod == null) return diag
+        String cls = currentMethod.declaringClass?.nameWithoutPackage ?: 'C'
+        String invocation = currentMethod.isStatic()
+            ? "${cls}.${r.failingCall}".toString()
+            : "new ${cls}(/* see counterexample */).${r.failingCall}".toString()
+        diag + '\n' + Reporter.formatRepro(invocation, exception, currentMethod.name + 'Fails')
+    }
+
     /**
      * Prepare a {@link CheckResult} for reporting (Phase 9): reconstruct a runnable failing call
      * from the raw model ({@link #buildFailingCall}), then render the displayed counterexample in the
@@ -2672,7 +2689,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 // If the assertion is over a method parameter, it is usually a caller precondition written as a
                 // runtime check; nudge toward @Requires, which documents it and is checked at every call site.
                 boolean overParam = referencesParameter(as.cond, currentMethod)
-                addStaticTypeError(Reporter.formatAssertion(as.cond.text, r, overParam), as.node)
+                addStaticTypeError(withRepro(Reporter.formatAssertion(as.cond.text, r, overParam), r, 'AssertionError'), as.node)
             }
             return
         }
@@ -2691,8 +2708,8 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(inBounds))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatIndexBounds(
-                    ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), ix.node)
+                addStaticTypeError(withRepro(Reporter.formatIndexBounds(
+                    ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), r, 'IndexOutOfBoundsException'), ix.node)
             }
             return
         }
@@ -2719,7 +2736,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatDivisionByZero(dv.divisor.text, r), dv.node)
+                addStaticTypeError(withRepro(Reporter.formatDivisionByZero(dv.divisor.text, r), r, 'ArithmeticException'), dv.node)
             }
             return
         }
@@ -2755,8 +2772,8 @@ class VerifyChecker extends TypeCheckingExtension {
                 s.assertExpr(s.eq(flag, s.intLit(1L)))   // negation of (flag == 0, i.e. non-null)
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(Reporter.formatNullDereference(
-                        "${df.receiver}[${df.indexExpr.text}]", df.method, r), df.node)
+                    addStaticTypeError(withRepro(Reporter.formatNullDereference(
+                        "${df.receiver}[${df.indexExpr.text}]", df.method, r), r, 'NullPointerException'), df.node)
                 }
                 return
             }
@@ -2765,7 +2782,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(enc.nullityOf(df.receiver))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatNullDereference(df.receiver, df.method, r), df.node)
+                addStaticTypeError(withRepro(Reporter.formatNullDereference(df.receiver, df.method, r), r, 'NullPointerException'), df.node)
             }
         }
         if (site instanceof StringCharAtSite) {
@@ -2787,8 +2804,8 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(inBounds))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatIndexBounds(
-                    cs.indexExpr.text, cs.receiver + '.length()', r), cs.node)
+                addStaticTypeError(withRepro(Reporter.formatIndexBounds(
+                    cs.indexExpr.text, cs.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), cs.node)
             }
             return
         }
@@ -2824,8 +2841,8 @@ class VerifyChecker extends TypeCheckingExtension {
                 String accessor = ss.endExpr == null
                     ? "${ss.beginExpr.text}"
                     : "${ss.beginExpr.text}, ${ss.endExpr.text}"
-                addStaticTypeError(Reporter.formatIndexBounds(
-                    accessor, ss.receiver + '.length()', r), ss.node)
+                addStaticTypeError(withRepro(Reporter.formatIndexBounds(
+                    accessor, ss.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), ss.node)
             }
             return
         }
@@ -2862,7 +2879,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 s.assertExpr(s.and([s.eq(L, loLit), s.eq(R, s.intLit(-1L))]))
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, width, r), ov.node)
+                    addStaticTypeError(withRepro(Reporter.formatOverflow(ov.text, ov.op, width, r), r, null), ov.node)
                 }
                 return
             }
@@ -2876,7 +2893,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.or([s.lt(result, loLit), s.gt(result, hiLit)]))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(Reporter.formatOverflow(ov.text, ov.op, width, r), ov.node)
+                addStaticTypeError(withRepro(Reporter.formatOverflow(ov.text, ov.op, width, r), r, null), ov.node)
             }
         }
     }
@@ -5375,7 +5392,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 // counterexample distinguishes whether the @Ensures or an invariant clause
                 // broke (a per-clause attribution is a future polish).
                 addStaticTypeError(
-                    Reporter.formatPostconditionFailure(node.name, postAst.text, r), anchor)
+                    withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
             } else {
                 // Phase 15a — no @Ensures present; the obligation is purely the class invariant.
                 String invText = classInvs.collect { it.text }.join(' && ')
@@ -6311,7 +6328,7 @@ class VerifyChecker extends TypeCheckingExtension {
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(
-                    Reporter.formatPostconditionFailure(node.name, postAst.text, r), ex.node)
+                    withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), ex.node)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
@@ -6695,7 +6712,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 ASTNode anchor = (resultExpr != null && resultExpr.lineNumber > 0) ?
                     (ASTNode) resultExpr : (ASTNode) site.loopStmt
                 addStaticTypeError(
-                    Reporter.formatPostconditionFailure(node.name, postAst.text, r), anchor)
+                    withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }

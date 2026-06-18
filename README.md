@@ -394,6 +394,22 @@ and a null receiver exact, solver-constrained array elements pinned as literals
 (`diff([21239, 21238] as int[], 0)`), contents that don't matter left size-filled
 (`new int[3]`).
 
+**From counterexample to runnable test.** That `fails on:` line is the default repro — a call to paste and watch
+throw. Set `VERIFY_REFUTATION=junit` (or `assert` / `spock`) and the *same* counterexample is rendered as a
+self-checking test instead:
+
+```
+repro (JUnit):
+    @Test void gFails() { assertThrows(IndexOutOfBoundsException.class, () -> C.g(new int[0], -1)); }
+```
+
+It's a confirmation bridge, not a keeper. The test is green *while the bug is live* — the call really throws — so
+run it to prove the compile-time counterexample is a genuine runtime failure (ruling out a verifier
+false-positive). Then fix the bug and **flip the test**: once the call no longer throws, invert the assertion into
+a regression — *"this input is now handled"* — or delete it. (A verify-only
+obligation like integer overflow wraps silently at runtime, so it has no exception to assert and is shown as
+documentary.) It's transient tooling, paired with `VERIFY_VERBOSE` — see [BUILD.md](BUILD.md).
+
 **Safe navigation carries the non-null fact.** A precondition `recv?.foo()` can only be truthy when `recv`
 is non-null — Groovy's `?.` evaluates to `null` (falsy) on a null receiver — and the verifier reads that
 implication, so an unguarded `recv.bar()` in the body discharges its null check with no redundant

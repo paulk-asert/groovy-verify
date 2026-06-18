@@ -26,16 +26,24 @@ Built using JDK 25. It builds against `org.apache.groovy:6.0.0-SNAPSHOT` from th
 it relies on some fixes due for release in the next Groovy 6 pre-release.
 
 ```sh
-./gradlew verify                       # compact console runner — one line per case, summary at the end
-VERIFY_VERBOSE=1 ./gradlew verify      # also print the counterexamples for refuted cases
-VERIFY_CACHE_STATS=1 ./gradlew verify  # also print the in-process VC cache hit / miss ratio
+./gradlew verify                          # compact console runner — one line per case, summary at the end
+VERIFY_VERBOSE=1 ./gradlew verify         # also print the counterexamples for refuted cases
+VERIFY_CACHE_STATS=1 ./gradlew verify     # also print the in-process VC cache hit / miss ratio
+VERIFY_REFUTATION=junit ./gradlew verify  # with VERIFY_VERBOSE: emit each refutation as a runnable repro test
 
-./gradlew test                         # the SAME suite as JUnit 5 dynamic tests (per-case IDE/CI reporting)
-./gradlew test -Dverify.only='matrix'  # run just the cases whose "group :: name" contains a substring
+./gradlew test                            # the SAME suite as JUnit 5 dynamic tests (per-case IDE/CI reporting)
+./gradlew test -Dverify.only='matrix'     # run just the cases whose "group :: name" contains a substring
 ```
 
 Verbose mode prints, for each refuted case, the OpenJML-style diagnostic — the failed obligation, a concrete
-counterexample, and a runnable repro — that the compact runner collapses to a one-line pass/fail.
+counterexample, and a runnable repro — that the compact runner collapses to a one-line pass/fail. `VERIFY_REFUTATION`
+chooses **how that repro is rendered** (the formats are mutually exclusive, not additive): `message` — the default —
+is the bare `fails on: <call>` you paste and watch throw, while `assert` / `junit` / `spock` render the *same* call
+as a **self-checking test** (green *while the bug is live*) *in place of* the bare line. It's a confirmation
+bridge, not a keeper: run it to prove the compile-time counterexample is a real runtime failure, then fix the bug
+and **flip the test** into a regression (assert the input is now handled, not that it throws) — or delete it. It's transient tooling, like `VERIFY_VERBOSE` (with which it pairs); a verify-only obligation such as
+integer overflow — which wraps silently and throws nothing at runtime — is shown as documentary (no exception to
+assert).
 
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and

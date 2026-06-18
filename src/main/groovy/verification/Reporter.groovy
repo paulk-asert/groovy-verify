@@ -31,6 +31,28 @@ import groovy.transform.CompileStatic
 @CompileStatic
 class Reporter {
 
+    /** {@code VERIFY_REFUTATION} — transient tooling, like {@code VERIFY_VERBOSE}: when set to {@code assert} /
+     *  {@code junit} / {@code spock}, a refuted obligation additionally emits a runnable repro test in that style
+     *  (the counterexample as a failing test). {@code null} ⇒ default text output, unchanged. */
+    static final String REFUTATION_FORMAT = System.getenv('VERIFY_REFUTATION')
+
+    /** Render a reconstructed failing {@code invocation} as a repro test in the requested style. {@code exception}
+     *  is the runtime exception the call throws, or {@code null} for a verify-only obligation (e.g. integer
+     *  overflow, which wraps silently and throws nothing — so the repro is documentary, not a failing test). */
+    static String formatRepro(String invocation, String exception, String name) {
+        if (exception == null) {
+            return "    repro: ${invocation}   // verify-only — wraps at runtime, throws no exception".toString()
+        }
+        switch (REFUTATION_FORMAT) {
+            case 'junit':
+                return "    repro (JUnit):\n        @Test void ${name}() { assertThrows(${exception}.class, () -> ${invocation}); }".toString()
+            case 'spock':
+                return "    repro (Spock):\n        def '${name}'() { when: ${invocation}; then: thrown(${exception}) }".toString()
+            default:   // 'assert' (and any other value) — the smallest runnable form
+                return "    repro (assert): groovy.test.GroovyAssert.shouldFail(${exception}) { ${invocation} }".toString()
+        }
+    }
+
     static String formatPreconditionFailure(String calleeName,
                                             String contractText,
                                             CheckResult result) {
@@ -474,7 +496,11 @@ class Reporter {
         if (result.notes) {
             for (String note : result.notes) sb.append("\n    ").append(note)
         }
-        if (result.failingCall) {
+        // The bare `fails on:` call IS the default ("message") repro. When a richer repro format is selected
+        // (assert/junit/spock), the checker's withRepro renders the call inside that form instead — so suppress
+        // this line then, rather than printing the call twice.
+        boolean richFormat = REFUTATION_FORMAT != null && REFUTATION_FORMAT != 'message'
+        if (result.failingCall && !richFormat) {
             sb.append("\n    fails on: ").append(result.failingCall)
         }
     }
