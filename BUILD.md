@@ -34,6 +34,9 @@ VERIFY_CACHE_STATS=1 ./gradlew verify  # also print the in-process VC cache hit 
 ./gradlew test -Dverify.only='matrix'  # run just the cases whose "group :: name" contains a substring
 ```
 
+Verbose mode prints, for each refuted case, the OpenJML-style diagnostic — the failed obligation, a concrete
+counterexample, and a runnable repro — that the compact runner collapses to a one-line pass/fail.
+
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and
 bad ones fail with the expected diagnostic. The cases are a single compact data list (`CASES`); a
