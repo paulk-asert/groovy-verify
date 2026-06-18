@@ -30,6 +30,7 @@ it relies on some fixes due for release in the next Groovy 6 pre-release.
 VERIFY_VERBOSE=1 ./gradlew verify         # also print the counterexamples for refuted cases
 VERIFY_CACHE_STATS=1 ./gradlew verify     # also print the in-process VC cache hit / miss ratio
 VERIFY_REFUTATION=junit ./gradlew verify  # with VERIFY_VERBOSE: emit each refutation as a runnable repro test
+VERIFY_SUGGEST=contract ./gradlew verify  # with VERIFY_VERBOSE: also suggest the @Requires that would discharge each refutation
 
 ./gradlew test                            # the SAME suite as JUnit 5 dynamic tests (per-case IDE/CI reporting)
 ./gradlew test -Dverify.only='matrix'     # run just the cases whose "group :: name" contains a substring
@@ -44,6 +45,15 @@ bridge, not a keeper: run it to prove the compile-time counterexample is a real 
 and **flip the test** into a regression (assert the input is now handled, not that it throws) — or delete it. It's transient tooling, like `VERIFY_VERBOSE` (with which it pairs); a verify-only obligation such as
 integer overflow — which wraps silently and throws nothing at runtime — is shown as documentary (no exception to
 assert).
+
+`VERIFY_SUGGEST=contract` adds the **abduction** direction (the Clousot/CodeContracts angle): for each refuted
+*implicit* obligation — bounds, divide-by-zero, or null — it prints the `suggested fix: @Requires({ … })` that
+would discharge it, the positive form of the violated check echoed in your own spelling (`.size()` vs `.length`).
+It only suggests a guard expressible as a precondition (parameters and fields, never a local or loop variable), so
+it pastes verbatim; overflow is excluded on purpose — its sound guard depends on operand signs, and the naive
+range-check would evaluate vacuously under wrapping Groovy int arithmetic. A human-reviewed hint, not an auto-fix
+(a guarded `if` or a class invariant is often the better home) — and like `VERIFY_REFUTATION`, transient tooling
+that pairs with `VERIFY_VERBOSE`.
 
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and

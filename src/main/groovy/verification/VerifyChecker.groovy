@@ -2088,6 +2088,71 @@ class VerifyChecker extends TypeCheckingExtension {
         hit[0]
     }
 
+    /** True if {@code name} is a parameter or instance field of the current method — i.e. in scope at entry, so a
+     *  {@code @Requires} may mention it. */
+    private boolean isEntryName(String name) {
+        if (currentMethod == null) return false
+        for (Parameter p : currentMethod.parameters) if (p.name == name) return true
+        ClassNode dc = currentMethod.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (f.name == name) return true
+        false
+    }
+
+    /** True if every variable in {@code e} names a parameter or instance field — so {@code e} is expressible as a
+     *  precondition. VERIFY_SUGGEST won't propose a {@code @Requires} that references a local / loop variable. */
+    private boolean referencesOnlyEntryState(Expression e) {
+        if (e == null || currentMethod == null) return false
+        Set<String> allowed = new HashSet<String>()
+        for (Parameter p : currentMethod.parameters) allowed.add(p.name)
+        ClassNode dc = currentMethod.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) allowed.add(f.name)
+        boolean[] ok = [true]
+        try {
+            e.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression v) {
+                    if (v.name != 'this' && !allowed.contains(v.name)) ok[0] = false
+                }
+            })
+        } catch (Throwable ignored) { return false }
+        ok[0]
+    }
+
+    /** VERIFY_SUGGEST (Tier 1) — the template {@code @Requires} that discharges a refuted *implicit* obligation:
+     *  the positive form of the violated check (bounds / non-zero / non-null / in-range). Returns the contract
+     *  text, or null when the flag is off, the site isn't a templatable kind, or the guard would reference a
+     *  local / loop variable (not expressible as a precondition). A human-reviewed suggestion, never auto-applied. */
+    private String suggestedGuard(Object site) {
+        if (Reporter.SUGGEST_FORMAT == null) return null
+        if (site instanceof IndexSite) {
+            IndexSite ix = (IndexSite) site
+            if (!isEntryName(ix.receiver) || !referencesOnlyEntryState(ix.index)) return null
+            String i = ix.index.text
+            return "0 <= ${i} && ${i} < ${ix.receiver}${sizeAccessor(ix.receiver)}".toString()
+        }
+        if (site instanceof DivideSite) {
+            DivideSite dv = (DivideSite) site
+            if (!referencesOnlyEntryState(dv.divisor)) return null
+            return (dv.requirePositive ? "${dv.divisor.text} > 0" : "${dv.divisor.text} != 0").toString()
+        }
+        if (site instanceof DerefSite) {
+            DerefSite df = (DerefSite) site
+            if (df.indexExpr == null) return isEntryName(df.receiver) ? "${df.receiver} != null".toString() : null
+            return (isEntryName(df.receiver) && referencesOnlyEntryState(df.indexExpr)) ?
+                "${df.receiver}[${df.indexExpr.text}] != null".toString() : null
+        }
+        // No overflow template: the natural range-check guard (Integer.MIN_VALUE <= a+b <= Integer.MAX_VALUE)
+        // is runtime-vacuous — groovy-contracts evaluates `a + b` with wrapping Groovy int arithmetic, so the
+        // bound always holds. A sound overflow precondition depends on operand signs (no clean fill), so skip it.
+        null
+    }
+
+    /** VERIFY_SUGGEST — append the suggested {@code @Requires} (if any) to a refutation diagnostic. No-op when the
+     *  flag is off or the obligation isn't templatable / is out of precondition scope. */
+    private String withSuggestion(String diag, Object site) {
+        String guard = suggestedGuard(site)
+        guard == null ? diag : diag + '\n' + Reporter.formatSuggestion(guard)
+    }
+
     /** All {@code assert} statements lexically in {@code body} (best-effort; failures yield an empty list). */
     private static List<AssertStatement> collectAssertStatements(Statement body) {
         List<AssertStatement> out = new ArrayList<AssertStatement>()
@@ -2708,8 +2773,8 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(inBounds))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withRepro(Reporter.formatIndexBounds(
-                    ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), r, 'IndexOutOfBoundsException'), ix.node)
+                addStaticTypeError(withSuggestion(withRepro(Reporter.formatIndexBounds(
+                    ix.index.text, ix.receiver + sizeAccessor(ix.receiver), r), r, 'IndexOutOfBoundsException'), ix), ix.node)
             }
             return
         }
@@ -2736,7 +2801,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withRepro(Reporter.formatDivisionByZero(dv.divisor.text, r), r, 'ArithmeticException'), dv.node)
+                addStaticTypeError(withSuggestion(withRepro(Reporter.formatDivisionByZero(dv.divisor.text, r), r, 'ArithmeticException'), dv), dv.node)
             }
             return
         }
@@ -2772,8 +2837,8 @@ class VerifyChecker extends TypeCheckingExtension {
                 s.assertExpr(s.eq(flag, s.intLit(1L)))   // negation of (flag == 0, i.e. non-null)
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
-                    addStaticTypeError(withRepro(Reporter.formatNullDereference(
-                        "${df.receiver}[${df.indexExpr.text}]", df.method, r), r, 'NullPointerException'), df.node)
+                    addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
+                        "${df.receiver}[${df.indexExpr.text}]", df.method, r), r, 'NullPointerException'), df), df.node)
                 }
                 return
             }
@@ -2782,7 +2847,7 @@ class VerifyChecker extends TypeCheckingExtension {
             s.assertExpr(enc.nullityOf(df.receiver))
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
-                addStaticTypeError(withRepro(Reporter.formatNullDereference(df.receiver, df.method, r), r, 'NullPointerException'), df.node)
+                addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(df.receiver, df.method, r), r, 'NullPointerException'), df), df.node)
             }
         }
         if (site instanceof StringCharAtSite) {

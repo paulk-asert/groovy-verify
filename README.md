@@ -410,6 +410,27 @@ a regression — *"this input is now handled"* — or delete it. (A verify-only
 obligation like integer overflow wraps silently at runtime, so it has no exception to assert and is shown as
 documentary.) It's transient tooling, paired with `VERIFY_VERBOSE` — see [BUILD.md](BUILD.md).
 
+**From refutation to suggested contract.** The complementary move — not *what input breaks it* but *what
+precondition would fix it*. Set `VERIFY_SUGGEST=contract` and each refuted **implicit** obligation (a bounds,
+divide-by-zero, or null check the compiler inserts) also prints the `@Requires` that would discharge it. The same
+`g` refutation from above gains one line:
+
+```
+[Static type checking] - Possible IndexOutOfBoundsException: index may be out of bounds
+    obligation: 0 <= i && i < a.size()
+    counterexample: a.size() = 0, i = -1
+    fails on: g(new int[0], -1)
+    suggested fix: @Requires({ 0 <= i && i < a.size() })
+```
+
+Paste that `@Requires` onto `g` and the bounds obligation discharges — the refutation becomes a proof.
+This is the Clousot / CodeContracts abduction angle: the guard is the positive form of the violated check, in
+your own spelling (`.size()` vs `.length`). It only fires when that guard is a valid precondition — referencing
+parameters and fields, never a local or loop variable — so it pastes verbatim. It's a hint, not an auto-fix (a
+guarded `if` or a class invariant is often the better home), and overflow is excluded on purpose: its honest
+guard depends on operand signs, and the naive range-check would read vacuously under Groovy's wrapping int
+arithmetic. Transient tooling, paired with `VERIFY_VERBOSE` — see [BUILD.md](BUILD.md).
+
 **Safe navigation carries the non-null fact.** A precondition `recv?.foo()` can only be truthy when `recv`
 is non-null — Groovy's `?.` evaluates to `null` (falsy) on a null receiver — and the verifier reads that
 implication, so an unguarded `recv.bar()` in the body discharges its null check with no redundant

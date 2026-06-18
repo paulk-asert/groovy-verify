@@ -36,6 +36,16 @@ class Reporter {
      *  (the counterexample as a failing test). {@code null} ⇒ default text output, unchanged. */
     static final String REFUTATION_FORMAT = System.getenv('VERIFY_REFUTATION')
 
+    /** {@code VERIFY_SUGGEST} — transient tooling: when set to {@code contract}, a refuted *implicit* obligation
+     *  (bounds / divide-by-zero / null / overflow) additionally suggests the {@code @Requires} that would discharge
+     *  it (the Clousot/abduction angle). A human-reviewed hint, never auto-applied. {@code null} ⇒ off. */
+    static final String SUGGEST_FORMAT = System.getenv('VERIFY_SUGGEST')
+
+    /** Render the suggested precondition (VERIFY_SUGGEST). */
+    static String formatSuggestion(String requiresText) {
+        "    suggested fix: @Requires({ ${requiresText} })".toString()
+    }
+
     /** Render a reconstructed failing {@code invocation} as a repro test in the requested style. {@code exception}
      *  is the runtime exception the call throws, or {@code null} for a verify-only obligation (e.g. integer
      *  overflow, which wraps silently and throws nothing — so the repro is documentary, not a failing test). */
