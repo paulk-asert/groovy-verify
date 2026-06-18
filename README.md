@@ -148,6 +148,13 @@ concrete counterexample** (Dafny/Verus-style) rather than passing silently:
 The full per-capability table — each with a ✅ phase tag and its honest "deferred" edge — is in
 **[CAPABILITIES.md](CAPABILITIES.md)**.
 
+**It also runs backwards — debugging from the symptom.** When you know a bad state reached production — a total
+that went negative, an `@Invariant` that got corrupted, a combination the code swore couldn't happen — but not
+*which input* got there, state the bad state's **negation** (an inline `assert`, an `@Ensures`, or the class
+`@Invariant` itself) and let the refutation find it. The `fails on:` line is the exact input that produces the bad
+state, and `VERIFY_REFUTATION` renders it as a runnable failing test you can drop into your suite — so you don't
+trace forward from input to symptom, you state the symptom and the engine hands you the cause.
+
 ## The fragment
 
 Those proofs hold over a deliberately **modest** slice of Groovy — sound *within* it and **loudly unsound outside
