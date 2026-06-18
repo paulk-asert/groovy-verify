@@ -84,6 +84,7 @@ class Z3Backend implements SmtBackend {
     static final Map<String, CheckResult> vcCache = new ConcurrentHashMap<>()
     private static final AtomicLong vcHits = new AtomicLong()
     private static final AtomicLong vcMisses = new AtomicLong()
+    static int dumpCounter = 0   // VERIFY_DUMP_SMT — process-wide sequence number for emitted benchmarks
     static long vcCacheHits() { vcHits.get() }
     static long vcCacheMisses() { vcMisses.get() }
     static int  vcCacheSize()  { vcCache.size() }
@@ -1355,16 +1356,40 @@ class Z3Session implements SmtSession {
 
     @Override
     CheckResult check() {
+        if (Reporter.DUMP_SMT) dumpSmt()
         String key = vcKey()
         CheckResult cached = Z3Backend.vcCache.get(key)
+        CheckResult result
         if (cached != null) {
             Z3Backend.recordVCCacheHit()
-            return cached
+            result = cached
+        } else {
+            Z3Backend.recordVCCacheMiss()
+            result = computeCheck()
+            Z3Backend.vcCache.put(key, result)
         }
-        Z3Backend.recordVCCacheMiss()
-        CheckResult result = computeCheck()
-        Z3Backend.vcCache.put(key, result)
+        if (Reporter.DUMP_SMT) println("; groovy-verify/Z3 verdict: ${result.status}".toString())
         return result
+    }
+
+    /** VERIFY_DUMP_SMT — print the current asserted set as a self-contained SMT-LIB2 benchmark. groovy-verify
+     *  asserts the *negated* goal under its assumptions, so {@code (check-sat)} returns {@code unsat} when the
+     *  obligation holds and {@code sat} (with a counterexample model) when it's refuted. {@code Solver.toString()}
+     *  already emits the declarations + assertions; we wrap it with a logic header and {@code (check-sat)}. */
+    private void dumpSmt() {
+        int n = ++Z3Backend.dumpCounter
+        String body = solver.toString()
+        StringBuilder sb = new StringBuilder()
+        sb.append('\n; ==== groovy-verify SMT-LIB dump #').append(n).append(' ====\n')
+        sb.append('; the exact query for this obligation (the NEGATED goal under its assumptions).\n')
+        sb.append(';   (check-sat) -> unsat  =>  obligation HOLDS (verified)\n')
+        sb.append(';   (check-sat) -> sat    =>  REFUTED (the model is the counterexample)\n')
+        sb.append('; pipe to any solver, e.g.  cvc5 q.smt2  |  z3 q.smt2  |  yices-smt2 q.smt2\n')
+        sb.append('(set-logic ALL)\n')
+        sb.append(body)
+        if (!body.endsWith('\n')) sb.append('\n')
+        sb.append('(check-sat)')
+        println sb.toString()
     }
 
     private CheckResult computeCheck() {

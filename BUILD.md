@@ -32,6 +32,7 @@ VERIFY_CACHE_STATS=1 ./gradlew verify     # also print the in-process VC cache h
 VERIFY_REFUTATION=junit ./gradlew verify  # with VERIFY_VERBOSE: emit each refutation as a runnable repro test
 VERIFY_SUGGEST=contract ./gradlew verify  # with VERIFY_VERBOSE: also suggest the @Requires that would discharge each refutation
 VERIFY_EXPLAIN=1 ./gradlew verify         # on each verified bounds/divide obligation, show which @Requires clauses the proof leaned on
+VERIFY_DUMP_SMT=1 ./gradlew verify        # print every solver query as a self-contained SMT-LIB2 benchmark (pipe to cvc5/z3/yices)
 
 ./gradlew test                            # the SAME suite as JUnit 6 dynamic tests (per-case IDE/CI reporting)
 ./gradlew test -Dverify.only='matrix'     # run just the cases whose "group :: name" contains a substring
@@ -68,6 +69,14 @@ invariant or a JVM integer bound — printed as `also leaned on` (only when load
 quiet); that surfaces hidden dependencies, like a `values[head]` bound that holds *because of* the buffer's
 `@Invariant`. An obligation discharged without any attributable fact (an inline guard or path fact carries it)
 says so, rather than inventing a clause.
+
+`VERIFY_DUMP_SMT` is the lowest-level knob: it prints **every** solver query as a self-contained SMT-LIB2
+benchmark — declarations, the assumptions, the *negated* goal, and `(check-sat)`. Pipe an obligation to any solver
+for a second opinion (`cvc5 q.smt2`, `z3 q.smt2`, `yices-smt2 q.smt2`), or read the exact formula to debug the
+encoding. Because the goal is asserted negated, `(check-sat)` returns `unsat` when the obligation **holds** and
+`sat` (with a counterexample model) when it's **refuted**; a trailing `; verdict:` comment records what Z3
+concluded, for easy cross-checking. It emits every query, not just refutations, so it's for focused study — run it
+on a small input (or grep for the dump you want), not as a suite-wide sweep.
 
 The self-test ([`src/test/groovy/VerifyHarness.groovy`](src/test/groovy/VerifyHarness.groovy))
 compiles annotated snippets on the fly and asserts that good ones verify and

@@ -3321,7 +3321,7 @@ groovy-verify is *loudly* partial: anything outside its fragment is skipped, nev
 
 ## Tool knobs
 
-Five environment variables tune what the checker *reports* — never what it proves. They're **transient tooling**,
+Six environment variables tune what the checker *reports* — never what it proves. They're **transient tooling**,
 set per run, distinct from the permanent `@TypeChecked(extensions = …)` configuration; unset, every one leaves the
 default path byte-identical.
 
@@ -3332,6 +3332,7 @@ default path byte-identical.
 | `VERIFY_EXPLAIN` | on a *verified* obligation, show which authored `@Requires` clauses the proof used |
 | `VERIFY_VERBOSE` | print the full OpenJML-style diagnostic + counterexample behind each one-line result |
 | `VERIFY_CACHE_STATS` | print the in-process VC-cache hit / miss ratio |
+| `VERIFY_DUMP_SMT` | print every solver query as a self-contained SMT-LIB2 benchmark (pipe to cvc5/z3/yices) |
 
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 
@@ -3415,9 +3416,11 @@ explain ✓ values[head] in bounds
 structural facts show (a JVM bound that wasn't needed stays quiet), so the dependency that matters isn't lost in
 noise.
 
-The other two are operational rather than directional — `VERIFY_VERBOSE` prints the full diagnostic behind each
-one-line pass/fail, and `VERIFY_CACHE_STATS` reports the VC-cache hit/miss ratio. Both, with the gradle
-invocations, are in [BUILD.md](BUILD.md).
+The other three are operational rather than directional — `VERIFY_VERBOSE` prints the full diagnostic behind each
+one-line pass/fail, `VERIFY_CACHE_STATS` reports the VC-cache hit/miss ratio, and `VERIFY_DUMP_SMT` prints every
+solver query as a self-contained SMT-LIB2 benchmark (declarations, assumptions, the *negated* goal, `(check-sat)`)
+so you can pipe an obligation to another solver for a second opinion or read the exact formula to debug the
+encoding. All three, with the gradle invocations, are in [BUILD.md](BUILD.md).
 
 ## Building & using
 

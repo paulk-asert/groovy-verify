@@ -51,6 +51,10 @@ class Reporter {
      *  Pure downstream read-out — never changes a verify/refute. {@code null} ⇒ off. */
     static final boolean EXPLAIN = System.getenv('VERIFY_EXPLAIN') != null
 
+    /** {@code VERIFY_DUMP_SMT} — when set, every solver query is printed as a self-contained SMT-LIB2 benchmark you
+     *  can pipe to any solver (cvc5 / z3 / yices) or inspect to debug the encoding. Pure output; no behaviour change. */
+    static final boolean DUMP_SMT = System.getenv('VERIFY_DUMP_SMT') != null
+
     /** Print the load-bearing read-out for a discharged obligation (VERIFY_EXPLAIN). Each {@code facts} key is a
      *  pre-formatted label carrying its own kind ({@code @Requires …} authored clause, {@code @Invariant …} or
      *  {@code JVM bound …} structural fact); the value is whether dropping it breaks the proof. Authored clauses
