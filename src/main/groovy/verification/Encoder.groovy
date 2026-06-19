@@ -2246,6 +2246,22 @@ class Encoder {
      */
     void registerTupleLocal(String name, ClassNode type) { if (isTupleType(type)) tupleParams.put(name, type) }
 
+    /**
+     * Phase 133 — temporarily register names as carrier-typed (a callee's carrier formals / {@code result} /
+     * {@code this} while assuming its instance @Ensures), so a {@code name.field} read in that contract resolves
+     * via {@link #carrierTypeOf}. Returns the prior bindings (null = was absent) for {@link #popScalarTypes}.
+     */
+    Map<String, ClassNode> pushScalarTypes(Map<String, ClassNode> add) {
+        Map<String, ClassNode> prev = new LinkedHashMap<String, ClassNode>()
+        add.each { String k, ClassNode v -> prev.put(k, scalarTypes.get(k)); scalarTypes.put(k, v) }
+        prev
+    }
+
+    /** Restore the type registry saved by {@link #pushScalarTypes}. */
+    void popScalarTypes(Map<String, ClassNode> prev) {
+        prev.each { String k, ClassNode v -> if (v == null) scalarTypes.remove(k) else scalarTypes.put(k, v) }
+    }
+
     /** The declared type of slot {@code i} of a {@code TupleN<...>} (from its generics), or null (→ Int). */
     private static ClassNode tupleSlotType(ClassNode t, int i) {
         try {

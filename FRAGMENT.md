@@ -156,9 +156,12 @@ contracts) — but it does *not* in general verify the definition itself: decons
 generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is understood only through
 the fields and finite domain its methods actually touch. A **single-component record** is the exception (Phase
 133): it is modelled as a one-constructor Z3 datatype, so its **canonical constructor round-trips** —
-`new R(v).f == v` holds by datatype theory, and a `result`-typed `new R(…)` with a contract over `.f` verifies
-(the basis for a bespoke, self-contained value type such as a units `Length`). Multi-component records, and
-verifying *through* a carrier-typed local / `+`-operator, still skip loudly.
+`new R(v).f == v` holds by datatype theory, and a `result`-typed `new R(…)` with a contract over `.f` verifies —
+including through **carrier-typed locals** (`Length a = new Length(1000); … new Length(a.metres + b.metres)`) and
+the **`+` operator** when the record carries an instance `plus` with an `@Ensures` and no `@Requires` (`a + b` is
+routed to `a.plus(b)` and discharged via the cross-class instance contract). This is the basis for a bespoke,
+self-contained value type such as a units `Length`, operators and all. Multi-component records, and a *guarded*
+operator (`@Requires` on `plus`, whose precondition the operator site can't check), still skip loudly.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its

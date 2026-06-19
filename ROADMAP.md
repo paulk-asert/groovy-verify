@@ -7351,18 +7351,47 @@ contract end-to-end.
   by its implicit `java.lang.Record` supertype), and `result`'s carrier type is registered alongside params /
   fields. The construct (`wrapperUnit`) and read (`wrapperContent`) machinery was already in place.
 - **No regression**: gated on records (the 1257 prior cases mention none); the existing record tests use
-  *two*-component records, untouched. 1257 → 1265.
+  *two*-component records, untouched.
 - **Robustness (must-fix this slice)**: making records carriers exposed two crash paths the change newly reaches —
-  an arithmetic operator on a carrier operand (`a + b`) and a carrier-typed local. Both now **skip loudly**: the
-  binary path returns null for a carrier operand instead of casting a datatype to an arithmetic term, and
-  `verifyPostcondition` / `verifyLoop` are wrapped so any unexpected encoder error degrades to a positioned
-  "skipped" diagnostic rather than throwing out of the type checker (the "skip outside the fragment, don't crash"
-  contract — `verifyImplicitObligations` already had this guard; the postcondition path didn't).
+  an arithmetic operator on a carrier operand (`a + b`) and a carrier-typed local. The binary path returns null
+  for a carrier operand instead of casting a datatype to an arithmetic term, and `verifyPostcondition` /
+  `verifyLoop` are wrapped so any unexpected encoder error degrades to a positioned "skipped" diagnostic rather
+  than throwing out of the type checker (the "skip outside the fragment, don't crash" contract —
+  `verifyImplicitObligations` already had this guard; the postcondition path didn't).
 
-Out of this slice: **multi-component** records (need a general N-field datatype, the TupleN analogue), verifying
-*through* a carrier-typed **local** (the value-flow needs to sort the local as the carrier), and **operator
-routing** (`a + b` → `a.plus(b)` discharged via the carrier method's contract — the interprocedural instance-call
-plus a known-non-null `new R(…)`, both of which the probes showed are *close*). New cases: `P133 record ctor`.
+**Follow-up (this slice): carrier locals + new-is-non-null.** Two of the three deferred items then landed,
+making the bespoke type genuinely usable:
+
+- **Carrier-typed locals verify end-to-end.** The typed-locals scan now registers carrier types (mirroring the
+  param / field / `result` fix), so the SSA `fresh` handle is minted at the carrier sort instead of `Int` — the
+  sort mismatch that previously crashed (now caught). `Length a = new Length(1000); Length b = new Length(1609.344);
+  new Length(a.metres + b.metres)` proves a units **conservation** exactly.
+- **`new R(…)` is non-null at a call-site precondition.** The interprocedural precondition check tied a formal's
+  nullity oracle only to a *named* actual; a non-variable actual with statically-known nullity (`new R(…)`, a
+  literal, a concatenation) now carries its nullity onto the formal, so a callee `@Requires({ x != null })`
+  discharges (`nullityOfExpr` already knew the value was non-null — it just wasn't propagated).
+
+**Follow-up (this slice): cross-class instance resolution + operator routing.** The third deferred item then
+landed too — the pretty `a + b` form now verifies:
+
+- **Cross-class instance-method contract resolution.** `resolveContractedCallee` searched only the *caller's*
+  class, so a record's `plus` (on `Length`, called from `C`) couldn't resolve. It now also searches the
+  **receiver's** carrier type, and `assumeCalleeEnsures` binds the instance receiver — `this` and each component
+  field, so the callee's bare `metres` / `this.metres` resolves to the receiver's value — while temporarily
+  registering the carrier types of `this` / the formals / `result` (`pushScalarTypes`/`popScalarTypes`) so an
+  `o.metres` / `result.metres` read in the assumed `@Ensures` translates. So `new Length(1000).plus(new
+  Length(1609.344))` discharges its `@Ensures` at the call.
+- **Operator routing, soundly.** `a + b` over carrier operands is rewritten to `a.plus(b)` in the value-flow, so
+  the call path discharges it. The catch is soundness: the operator site is a `BinaryExpression`, not a
+  `MethodCall`, so `onMethodSelection` never checks a precondition there — assuming the `@Ensures` while skipping
+  the `@Requires` would be unsound. So the rewrite fires **only when the operator method has no `@Requires`** (the
+  common record case); a guarded operator stays a loud skip. `Length s = a + b` over a `record Length` with an
+  instance `plus` now proves a units conservation exactly, and a wrong total refutes.
+
+Still out: **multi-component** records (a general N-field datatype, the TupleN analogue); a guarded operator
+(`@Requires` on `plus`) — would need the precondition pass to recognise the operator site; and the carrier-result
+`@Ensures` assumption when the *caller's* signature doesn't mention the carrier (carrier types are registered from
+signatures, so a `new R(…)` whose type is body-only doesn't translate). New cases: `P133 record ctor`. 1257 → 1270.
 
 ---
 

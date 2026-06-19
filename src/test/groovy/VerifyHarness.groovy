@@ -233,11 +233,47 @@ class VerifyHarness {
         [group: 'P133 record ctor', name: 'operator on a record skips (no crash)', expect: 'Skipped verification of postcondition',
          src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { @Ensures({ result.metres == 2609.344 }) static Length s() { new Length(1000.0) + new Length(1609.344) } }'],
-        // Robustness: a carrier-typed local (not yet modelled end-to-end) skips loudly rather than crashing the
-        // compile — the internal-error safety net. (Verifying through carrier locals is a later slice.)
-        [group: 'P133 record ctor', name: 'carrier local skips (no crash)', expect: 'Skipped verification of postcondition',
+        // Carrier-typed locals verify end-to-end (Phase 133): construct two lengths, read their components,
+        // and the constructed sum's component is exact — a pretty, self-contained units conservation proof.
+        [group: 'P133 record ctor', name: 'bespoke units: conservation via locals verifies', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 2609.344 })\n' +
+              '          static Length total() { Length a = new Length(1000.0); Length b = new Length(1609.344); new Length(a.metres + b.metres) } }'],
+        // OPERATOR routing (Phase 133): `a + b` over a record with an instance `plus` dispatches to `a.plus(b)`,
+        // and the cross-class instance @Ensures is assumed at the call — so the pretty form verifies exactly.
+        [group: 'P133 record ctor', name: 'pretty units: operator + verifies', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Ensures({ result.metres == metres + o.metres }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 2609.344 }) static Length sum() {\n' +
+              '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
+        // The same with a WRONG total refutes (operator routing is not vacuous).
+        [group: 'P133 record ctor', name: 'pretty units: operator + wrong total refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Ensures({ result.metres == metres + o.metres }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 2600.0 }) static Length sum() {\n' +
+              '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
+        // Soundness: an operator method WITH a @Requires is NOT routed (the operator site has no precondition
+        // check), so it stays a loud skip rather than assuming @Ensures with an unchecked guard.
+        [group: 'P133 record ctor', name: 'guarded operator stays a skip (sound)', expect: 'Skipped verification of postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Requires({ o != null }) @Ensures({ result.metres == metres + o.metres }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 2609.344 }) static Length sum() {\n' +
+              '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
+        // A carrier local read back through its component (single binding).
+        [group: 'P133 record ctor', name: 'carrier local round-trips', ok: true,
          src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { @Ensures({ result.metres == 5.0 }) static Length f() { Length a = new Length(5.0); a } }'],
+        // new-is-non-null (Phase 133): a callee `@Requires({ s != null })` discharges when the actual is a
+        // statically-non-null expression with no *name* to tie the nullity oracle to (a literal / `new R(…)` /
+        // concatenation). Without the fix the formal's nullity is free and this precondition refutes.
+        [group: 'P133 record ctor', name: 'non-variable non-null actual satisfies a non-null precondition', ok: true,
+         src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '  @Requires({ s != null }) static int g(String s) { 0 }\n' +
+              '  static int f() { g("ab") } }'],
 
         // ---------- Phase 1: null dereference ----------
         [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',

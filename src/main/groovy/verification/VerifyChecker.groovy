@@ -1072,7 +1072,7 @@ class VerifyChecker extends TypeCheckingExtension {
                     if (de.leftExpression instanceof VariableExpression) {
                         ClassNode t = ((VariableExpression) de.leftExpression).originType
                         if (t == null) t = de.leftExpression.type
-                        if (t != null && isNonIntScalar(t)) {
+                        if (t != null && (isNonIntScalar(t) || Encoder.isCarrier(t))) {   // Phase 133 — carrier locals
                             out.putIfAbsent(((VariableExpression) de.leftExpression).name, t)
                         }
                     }
@@ -5498,6 +5498,10 @@ class VerifyChecker extends TypeCheckingExtension {
                     // sort-matched (an intVar fresh + a Real rhs silently mis-modelled the write — a
                     // syphon `b = b + amt - 0.01` could then "verify" conservation it actually breaks).
                     boolean isDecimal = enc.isDecimalName(a.name)
+                    // Phase 133 — `s = a + b` over carrier operands becomes `s = a.plus(b)` (only when `plus` has no
+                    // @Requires — see carrierOperatorCall), so the call path below discharges it via the operator's
+                    // @Ensures. No-op for everything else; the call paths still see `rhsE`.
+                    Expression rhsE = carrierOperatorCall(a.rhs, node)
                     Object rhs = isDecimal ? enc.asRealValue(a.rhs) : enc.translate(a.rhs)
                     ClassNode declaredType = currentScalarTypes.get(a.name)
                     Object fresh
@@ -5530,18 +5534,18 @@ class VerifyChecker extends TypeCheckingExtension {
                         // preservation here. Havoc the value, pin the nullity flag to true.
                         enc.bind(a.name, fresh)
                         enc.bindNullity(a.name, session.boolLit(true))
-                    } else if (isCallExpr(a.rhs) && currentTupleTypes.get(a.name) != null) {
+                    } else if (isCallExpr(rhsE) && currentTupleTypes.get(a.name) != null) {
                         // Phase 113 — `Tuple2 r = callee(...)`: a tuple-returning call. Register r as a tuple
                         // local and constrain its slots by the callee's @Ensures (with `result` renamed to r),
                         // so `r.vN` resolves in the body. Must precede the scalar-call branch below, which
                         // would mis-model the tuple as a single Int handle (sortForType(TupleN) → Int).
                         enc.registerTupleLocal(a.name, currentTupleTypes.get(a.name))
-                        if (!assumeCalleeEnsures(session, enc, a.rhs, node, null, hasDecreases(node), a.name)) {
+                        if (!assumeCalleeEnsures(session, enc, rhsE, node, null, hasDecreases(node), a.name)) {
                             throw new UnsupportedConstructException(
                                 "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                         }
-                    } else if (isCallExpr(a.rhs) &&
-                               assumeCalleeEnsures(session, enc, a.rhs, node, fresh, hasDecreases(node))) {
+                    } else if (isCallExpr(rhsE) &&
+                               assumeCalleeEnsures(session, enc, rhsE, node, fresh, hasDecreases(node))) {
                         enc.bind(a.name, fresh)
                         // s = f(args): s is constrained by f's @Ensures (result ↦ s,
                         // formals ↦ actuals) — Phase 7 inter-procedural reasoning. The
@@ -7194,6 +7198,10 @@ class VerifyChecker extends TypeCheckingExtension {
             // Reference-typed formals bound to a named actual: candidates for
             // tying the size/nullity oracles across the boundary (see below).
             Map<String, String> oracleActuals = [:]
+            // Reference-typed formals bound to a NON-variable actual with statically-known nullity (e.g.
+            // `new X(…)` is non-null, a `null` literal is null): carry that onto the formal's nullity oracle so a
+            // `@Requires({ o != null })` discharges even though there's no actual *name* to tie to (Phase 133).
+            Map<String, Object> formalKnownNullity = [:]
 
             // The context (1b–2c) is built FIRST, against the caller's entry state, then the prefix is
             // replayed to the call site; only THEN are the actual arguments translated (step 1, below),
@@ -7284,6 +7292,9 @@ class VerifyChecker extends TypeCheckingExtension {
                 if (argExprs[i] instanceof VariableExpression &&
                     !ClassHelper.isPrimitiveType(formals[i].type)) {
                     oracleActuals[formals[i].name] = ((VariableExpression) argExprs[i]).name
+                } else if (!ClassHelper.isPrimitiveType(formals[i].type)) {
+                    Object kn = enc.nullityOfExpr(argExprs[i])      // e.g. `new X(…)` → known non-null
+                    if (kn != null) formalKnownNullity[formals[i].name] = kn
                 }
             }
 
@@ -7336,6 +7347,11 @@ class VerifyChecker extends TypeCheckingExtension {
                         enc.nullityOf(formalName), enc.nullityOf(actualName)))
                 }
             }
+            formalKnownNullity.each { String formalName, Object knownNull ->
+                if (enc.hasNullityOracle(formalName)) {
+                    session.assertExpr(session.eq(enc.nullityOf(formalName), knownNull))
+                }
+            }
 
             session.assertExpr(session.not(contractSmt))
 
@@ -7364,6 +7380,52 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private static boolean isCallExpr(Expression e) {
         e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression
+    }
+
+    /** Phase 133 — the Groovy operator-method a binary operator dispatches to (`a + b` is `a.plus(b)`), or null. */
+    private static String carrierOperatorMethod(String op) {
+        switch (op) {
+            case '+': return 'plus'
+            case '-': return 'minus'
+            case '*': return 'multiply'
+            case '/': return 'div'
+            default:  return null
+        }
+    }
+
+    /** The carrier (record/wrapper) ClassNode of {@code e}'s static type, or null. */
+    private static ClassNode carrierTypeOfExpr(Expression e) {
+        if (e == null) return null
+        if (e instanceof ConstructorCallExpression) {
+            ClassNode ct = ((ConstructorCallExpression) e).type
+            if (ct != null && Encoder.isCarrier(ct)) return ct
+        }
+        ClassNode t = null
+        try { t = e.getType() } catch (ignored) {}
+        (t != null && Encoder.isCarrier(t)) ? t : null
+    }
+
+    /**
+     * Phase 133 — rewrite a carrier-operand arithmetic operator to its method-call form (`a + b` → `a.plus(b)`),
+     * so the value-flow's interprocedural path discharges it via the operator method's contract — but ONLY when
+     * that method has no {@code @Requires}. The operator site is a {@link BinaryExpression}, not a {@link MethodCall},
+     * so {@code onMethodSelection} never checks a precondition there; assuming the {@code @Ensures} without checking
+     * the {@code @Requires} would be unsound, so an operator method with a guard stays a loud skip. Any non-carrier
+     * or non-arithmetic expression is returned unchanged.
+     */
+    private static Expression carrierOperatorCall(Expression e, MethodNode caller) {
+        if (!(e instanceof BinaryExpression)) return e
+        BinaryExpression be = (BinaryExpression) e
+        String m = carrierOperatorMethod(be.operation.text)
+        ClassNode rt = (m == null) ? null : carrierTypeOfExpr(be.leftExpression)
+        if (rt == null) return e
+        MethodNode callee = resolveContractedCallee(caller, m, 1, true, rt)
+        if (callee == null || findRequires(callee) != null) return e   // unresolved or guarded → don't route (sound)
+        MethodCallExpression call = new MethodCallExpression(
+            be.leftExpression, m, new ArgumentListExpression(be.rightExpression))
+        call.setImplicitThis(false)
+        call.setSourcePosition(be)
+        call
     }
 
     /** True if the method carries a method-level {@code @Decreases} termination measure. */
@@ -7493,19 +7555,47 @@ class VerifyChecker extends TypeCheckingExtension {
      * method's own postcondition at a recursive call is the inductive hypothesis,
      * which needs {@code @Decreases} for well-foundedness and is a later slice.
      */
-    private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity, boolean allowSelf) {
-        ClassNode dc = caller?.declaringClass
-        if (dc == null || name == null) return null
+    private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity, boolean allowSelf,
+                                                      ClassNode receiverType = null) {
+        if (name == null) return null
+        MethodNode m = resolveContractedIn(caller?.declaringClass, caller, name, arity, allowSelf)
+        if (m != null) return m
+        // Phase 133 — an instance call `recv.m(args)` whose method lives on the *receiver's* (carrier) type rather
+        // than the caller's class — e.g. a record's `plus`. Search there too (a different class, so no self-call).
+        if (receiverType != null && !receiverType.is(caller?.declaringClass)) {
+            return resolveContractedIn(receiverType, null, name, arity, true)
+        }
+        null
+    }
+
+    private static MethodNode resolveContractedIn(ClassNode dc, MethodNode caller, String name, int arity, boolean allowSelf) {
+        if (dc == null) return null
         for (MethodNode m : dc.getMethods(name)) {
             // A self-call is the inductive hypothesis; only honour it when the caller carries a
             // termination measure (@Decreases) — its well-foundedness is checked separately.
-            if (m == caller && !allowSelf) continue
+            if (m.is(caller) && !allowSelf) continue
             if (m.parameters.length != arity) continue
             // Usable if it has an @Ensures to assume, or an @Modifies whose effect (a havoc) we model.
             if (findEnsures(m) == null && contractAstFor(m, 'modifies') == null) continue
             return m
         }
         null
+    }
+
+    /** Phase 133 — the carrier (record/wrapper) type of an instance call's receiver (`recv.m(…)`), or null. */
+    private static ClassNode receiverCarrierType(Expression callExpr) {
+        if (!(callExpr instanceof MethodCallExpression)) return null
+        Expression recv = ((MethodCallExpression) callExpr).objectExpression
+        if (recv == null || ((MethodCallExpression) callExpr).isImplicitThis()) return null
+        ClassNode t = (recv instanceof ConstructorCallExpression) ? ((ConstructorCallExpression) recv).type : null
+        if (t == null) { try { t = recv.getType() } catch (ignored) {} }
+        (t != null && Encoder.isCarrier(t)) ? t : null
+    }
+
+    private static List<FieldNode> instanceFields(ClassNode cn) {
+        List<FieldNode> out = new ArrayList<FieldNode>()
+        if (cn?.fields != null) for (FieldNode f : cn.fields) if (!f.isStatic()) out.add(f)
+        out
     }
 
     /**
@@ -7809,7 +7899,8 @@ class VerifyChecker extends TypeCheckingExtension {
         String name = ((MethodCall) callExpr).methodAsString
         List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
         if (name == null || actuals == null) return false
-        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf)
+        ClassNode receiverType = receiverCarrierType(callExpr)                 // Phase 133 — instance call on a carrier
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, receiverType)
         if (callee == null) return false
         Expression ensuresAst = contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
@@ -7826,6 +7917,26 @@ class VerifyChecker extends TypeCheckingExtension {
         // Phase 113 — a tuple result is bound by renaming `result` to the caller's tuple local in the
         // @Ensures (below), not by a scalar `result` term, so its slot accessors resolve to the local's slots.
         if (resultTupleName == null && resultHandle != null) bindings.put('result', resultHandle)
+
+        // Phase 133 — instance call on a carrier receiver (`recv.m(args)`): bind `this` and each component field
+        // (so the callee's bare `field` / `this.field` resolves to the receiver's value), and register the carrier
+        // types of `this` / formals / `result` so a `o.field` / `result.field` read resolves while translating.
+        Map<String, ClassNode> typeReg = new LinkedHashMap<String, ClassNode>()
+        if (receiverType != null && callExpr instanceof MethodCallExpression) {
+            Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
+            Object recvH = enc.translate(recvExpr)
+            if (recvH == null) return false
+            bindings.put('this', recvH)
+            typeReg.put('this', receiverType)
+            for (FieldNode f : instanceFields(receiverType)) {
+                Object fv = enc.translate(new PropertyExpression(recvExpr, f.name))
+                if (fv != null) bindings.put(f.name, fv)                       // bare `field` == this.field
+            }
+        }
+        for (Parameter p : formals) if (Encoder.isCarrier(p.type)) typeReg.put(p.name, p.type)
+        if (resultHandle != null && resultTupleName == null && Encoder.isCarrier(callee.returnType)) {
+            typeReg.put('result', callee.returnType)
+        }
 
         // Caller-side framing (Phase 13): for each location the callee @Modifies, snapshot its value
         // *at the call*, pin the callee's `old.X` to that snapshot, then HAVOC the location (fresh
@@ -7876,7 +7987,13 @@ class VerifyChecker extends TypeCheckingExtension {
         // `<local>.vN`, which the registered tuple local resolves to its per-slot entities.
         Expression effEnsures = (resultTupleName != null && ensuresAst != null) ?
             renameVariable(ensuresAst, 'result', resultTupleName) : ensuresAst
-        Object post = effEnsures != null ? enc.translateWith(effEnsures, bindings) : null
+        Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
+        Object post
+        try {
+            post = effEnsures != null ? enc.translateWith(effEnsures, bindings) : null
+        } finally {
+            enc.popScalarTypes(savedTypes)
+        }
 
         // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
         savedVar.each { String k, Object v -> if (v != null) enc.bind(k, v) }
