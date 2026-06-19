@@ -19,18 +19,31 @@
 The Mars Climate Orbiter was lost in 1999 to a units mismatch: one team worked in metric, the other in
 US-customary, and the boundary between them carried bare numbers. groovy-verify catches that class of bug at
 **compile time**, three ways — two over the JSR 385 (`javax.measure`) API people already use, and one over a
-self-contained type you define yourself with nothing but a `record` and a contract.
+self-contained type you define yourself with nothing but a `record` and a contract. The same physical fact —
+*1 km + 1 mile = 2609.344 m* — runs through all three, proved further and further from scratch.
 
-These are the second face of the `@Label` information-flow lattice from [Smith](smith.md): the same shape —
-*propagate a label through the program, check it at a forbidden point* — but over a **free abelian group** (`×`
-adds exponents) rather than a join-semilattice.
+We borrow and expand the `@Label` information-flow idea from [Smith](smith.md), but over a **free abelian group**
+(`×` adds exponents) rather than a **join-semilattice**. What does that mean? We propagate a *dimension label*
+through the program, check it at a forbidden point, and refute on a dimensional mismatch. Where the security lattice
+only tracks merge-and-rise — taint that spreads and never cancels — the dimension group also encodes how dimensions
+transform and cancel: `Area / Area` is a scalar, `Volume / Area` is a `Length`.
 
 ## Dimensions over JSR 385 — the unchecked `as Quantity<K>` cast
 
-JSR 385 carries a quantity's *kind* in its generic type — `Quantity<Length>`, `Quantity<Speed>` — and Groovy's
-static checker already rejects `mass.add(length)`. But `multiply` / `divide` return `Quantity<?>`, the result-kind
-the type system **can't** infer, so real code *casts* the result — and that cast is unchecked. groovy-verify
-computes the result's dimension as a `[Length, Mass, Time]` exponent vector and checks the cast:
+JSR 385 carries a quantity's *kind* in a **phantom** type parameter — `Quantity<Length>`, `Quantity<Mass>`,
+`Quantity<Speed>` — so Groovy's static checker already rejects `mass.add(length)` outright. The gap is `multiply` / `divide`, where the
+result kind depends on the operands: `Quantity<Length> × Quantity<Length>` is a `Quantity<Area>`, but
+`Quantity<Length> × Quantity<Area>` is a `Quantity<Volume>`. The interface has only **one** method to express all of
+these — erased to `Quantity<?> multiply(Quantity<?>)` — so the compiler can't give it a kind-specific return type,
+and real code *casts* the result to the kind it expects. That cast is **unchecked**: name the wrong kind and nothing
+complains.
+
+groovy-verify checks it — with a small reader **dedicated to this API**, not inference from arbitrary code. It
+carries a curated table mapping each JSR 385 kind to its `[Length, Mass, Time]` exponent vector — `Length` is
+`(1,0,0)`, `Time` is `(0,0,1)`, `Speed` is `(1,0,-1)` — plus the rule that `×` adds those vectors and `/` subtracts
+them. It recognizes the `javax.measure.Quantity` / `javax.measure.quantity.*` types by name (a dozen common kinds;
+anything outside the table skips rather than guess), computes the result's vector, and compares it to the cast's
+target kind:
 
 <!-- doclint:case p131-dimensions/length-time-as-quantity-speed-verifies -->
 ```groovy
@@ -43,7 +56,7 @@ static Quantity<Speed> v(Quantity<Length> q, Quantity<Time> t) {
 `length / time` is `(1,0,0) − (0,0,1) = (1,0,-1)`, which **is** `Speed`, so the cast verifies. Swap `divide` for
 `multiply` and the result is `(1,0,1)` — not `Speed` — and the cast **refutes** with `Dimensional mismatch`, the
 bug the generics cannot see; cast `length × length` to `Volume` and it refutes too (it is `Area`). It's pure
-compile-time vector arithmetic — no SMT — over the `javax.measure.Quantity` / `javax.measure.quantity.*` types.
+compile-time vector arithmetic — no SMT, just a table lookup and an add.
 
 ## Scale over JSR 385 — the *deeper* Mars bug
 
@@ -69,12 +82,12 @@ them rather than running the conversion — so `UnitScaleTest` pins each one aga
 (the international mile is `1609.344 m`, not the US-survey `1609.347…`), failing loudly if a library ever
 redefines a unit out from under the table.
 
-## A bespoke units type — a record, a contract, and `+`
+## A bespoke units type — from a wrapped number to JSR 385's own sentence
 
-When you do not want a units library at all, a units type is just a **record plus a contract** — no JSR 385, no
-extension modules, no `use()` categories (which `@TypeChecked` rejects outright). groovy-verify models a
-single-component record's constructor as a value, so `new Length(v).metres` round-trips, and routes `a + b` to
-the record's own `plus`:
+If you don't want a units library at all, you can roll your own type — and groovy-verify reaches inside it. It
+models a record's constructor and field reads as ordinary values, so it reasons about a wrapped quantity directly,
+and — as we build up — about a *dimension* you encode right in the record. We'll start with the simplest form: a
+single wrapped value, with `a + b` routed to the record's own `plus`. Even that verifies exactly:
 
 <!-- doclint:case p133-record-ctor/pretty-units-operator-verifies -->
 ```groovy
@@ -83,9 +96,6 @@ record Length(BigDecimal metres) {
     Length plus(Length o) { new Length(metres + o.metres) }
 }
 ```
-
-`+` dispatches to `plus`, whose `@Ensures` is resolved on the *receiver's* type and assumed at the call — so the
-pretty form verifies exactly:
 
 <!-- doclint:case p133-record-ctor/pretty-units-operator-verifies -->
 ```groovy
@@ -98,42 +108,15 @@ static Length sum() {
 }
 ```
 
-A kilometre plus a mile, both in metres, is exactly `2609.344` — operators and all, verified. Claim `2600.0` and
-it **refutes**. A **guarded** operator routes too and stays sound: the precondition hook fires for `a + b`, checks
-`plus`'s `@Requires` at the site (a violated guard refutes), and only then is the `@Ensures` assumed — which is
-exactly what makes the dimension-checked addition below work.
+A kilometre plus a mile, both in metres, is exactly `2609.344` — operator and all. Claim `2600.0` and it
+**refutes**. But be clear what this proves: the **value**. A `Length` is a `BigDecimal` in a wrapper, and the only
+thing stopping you adding a `Length` to a `Mass` is Groovy's static `plus(Length)` signature, not the checker —
+there is no *dimension* and no *scale* inside the record. So let's put them there.
 
-Be clear about what `plus` proves, though: the **value**. A `Length` is a `BigDecimal` in a wrapper — the
-verifier checks the magnitude arithmetic, and the only thing stopping you adding a `Length` to a `Mass` is
-Groovy's static `plus(Length)` signature, not the checker. There is no *dimension* and no *scale* inside the
-record — those are the JSR 385 sections above.
+### Dimension as data
 
-It does go beyond a named number in one real way, though: a **type-changing** operator works. Give `Length` a
-`multiply` that returns a *different* record type (`record Area(BigDecimal squareMetres) {}`) and `*` routes to it
-— the actual dimensional algebra, `Length × Length → Area`, with the area's value proved:
-
-<!-- doclint:case p133-record-ctor/type-changing-operator-length-length-area -->
-```groovy
-record Length(BigDecimal metres) {
-    @Ensures({ result.squareMetres == metres * o.metres })
-    Area multiply(Length o) { new Area(metres * o.metres) }
-}
-```
-
-<!-- doclint:case p133-record-ctor/type-changing-operator-length-length-area -->
-```groovy
-@Ensures({ result.squareMetres == 6.0 })
-static Area area() {
-    Length a = new Length(2.0)
-    Length b = new Length(3.0)
-    Area s = a * b
-    s
-}
-```
-
-`2 m × 3 m == 6 m²`, verified — and a wrong area refutes. So far each unit has been its own record. The fullest
-form collapses them all into **one** type: a record carrying a value *and its dimension vector* `(L, M, T)`, where
-`×` scales the value and **composes the exponents**:
+Collapse every unit into **one** type that carries a value *and* its dimension vector `(L, M, T)`. Multiplication
+scales the value and **composes the exponents**:
 
 <!-- doclint:case p142-multi-record/dimension-carrying-quantity-value-and-exponents-compose -->
 ```groovy
@@ -154,38 +137,19 @@ static Quantity area() {
 }
 ```
 
-`Length(2 m, [1,0,0]) × Length(3 m, [1,0,0])` is `Area(6 m², [2,0,0])` — the dimension *composes* under `×`, value
-and exponent vector both checked, a wrong exponent refuting. `/` subtracts exponents the same way. **Addition**
-completes the algebra, and it's where the dimension check earns its keep: `+` may only combine *matching*
-dimensions, so guard `plus` and the guard is checked at the `a + b` site:
+`Length(2 m, [1,0,0]) × Length(3 m, [1,0,0])` is `Area(6 m², [2,0,0])` — value and exponent vector both checked, a
+wrong exponent refuting. `/` subtracts exponents the same way, and a `multiply` may even return a *different* record
+(`Length × Length → Area`) when a named result type reads better. **Addition** is where the dimension earns its
+keep: it may only combine *matching* dimensions, so `plus` carries a guard `@Requires({ l == o.l && … })` checked at
+the `a + b` site — same-dimension `a + b` verifies, but add a Length `[1,0,0]` to a Mass `[0,1,0]` and the guard
+fails, so `a + b` **refutes**. That is the units bug the *type* system can't catch (every quantity is one `Quantity`
+type), and it completes the algebra from a plain record: `×`/`/` compose exponents, `+`/`−` require them equal, a
+derived unit needs no new type, all machine-checked.
 
-<!-- doclint:case p142-multi-record/dimensional-addition-same-dimension-verifies -->
-```groovy
-record Quantity(BigDecimal value, int l, int m, int t) {
-    @Requires({ l == o.l && m == o.m && t == o.t })
-    @Ensures({ result.value == value + o.value && result.l == l })
-    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }
-}
-```
+### JSR 385's sentence, on your own type
 
-Same-dimension `a + b` verifies; add a Length `[1,0,0]` to a Mass `[0,1,0]` and the guard `l == o.l` fails, so
-`a + b` **refutes** — the units bug the *type* system can't catch, since every quantity is one `Quantity` type.
-That's the full Dafny dimension-ADT algebra reached from the bespoke-record side: `×`/`/` compose exponents,
-`+`/`−` require them equal, a derived unit needs no new type, and the whole thing is machine-checked.
-
-**Conversion** works on the construct-to-SI side: a `Length.km(v)` factory scales a value into metres
-(`new Length(v * 1000)`), and at the use site the converted value is verified — `Length.km(2).metres == 2000`, a
-wrong value refuting — with two constructions of the same physical length comparing **equal**
-(`Length.km(1) == new Length(1000)`, by datatype equality). The *read-out* direction (divide back into a unit,
-`metres / 1000`) now verifies too — `BigDecimal` division is modelled exactly **when the divisor terminates** (a
-power of ten, or any product of 2s and 5s), which covers metric read-outs; a *non-terminating* divisor (`/3`,
-`/60`, a mile) still skips loudly, because Groovy rounds it and exact rational division would be unsound. (A
-record's own conversion methods are verified only if the record itself carries `@TypeChecked`; at the *use* site
-they hold.)
-
-Factories and the guarded operator **compose**: build each operand with a named-unit factory and add them, and
-the whole `1 km + 1 mile` runs on the bespoke type — the same physical computation as the JSR 385 version in §2,
-with no library at all:
+Give that same `Quantity` named-unit factories and the guarded `plus`, and the `1 km + 1 mile` computation runs on
+it — no library:
 
 <!-- doclint:case p144-carrier-replay/factory-operands-feed-a-guarded-operator -->
 ```groovy
@@ -200,41 +164,8 @@ record Quantity(BigDecimal value, int l, int m, int t) {
 }
 ```
 
-<!-- doclint:case p144-carrier-replay/factory-operands-feed-a-guarded-operator -->
-```groovy
-@Ensures({ result.value == 2609.344 })
-static Quantity total() {
-    Quantity a = Quantity.km(1.0)
-    Quantity b = Quantity.mile(1.0)
-    Quantity s = a + b
-    s
-}
-```
-
-`Quantity.km(1) + Quantity.mile(1)`, in metres, is exactly `2609.344` — named-unit factories and a guarded
-operator, all checked. The dimension guard still fires across the factory boundary: build a length and a mass and
-the `l == o.l` precondition **refutes** at `a + b`. (This works because a factory call's result is modelled where
-the operator's precondition is checked, rather than treated as an opaque value — so the operands keep their real
-`Quantity` identity through the check.)
-
-And the operands need not be locals: a carrier-returning call is a value in expression position, so the whole
-thing collapses to a **single fluent chain** — the receiver *and* the argument are factory calls, the shape JSR 385
-itself uses:
-
-<!-- doclint:case p145-carrier-chain/single-expression-chain-verifies -->
-```groovy
-@Ensures({ result.value == 2609.344 })
-static Quantity total() {
-    Quantity.km(1.0).plus(Quantity.mile(1.0))
-}
-```
-
-Each nested call is modelled into a fresh `Quantity` constrained by its `@Ensures`, so `result.value` is exactly
-`2609.344` — a wrong total refutes the postcondition, and the guarded `.plus` still discharges over the real
-argument: chain a length and a mass and the `l == o.l` precondition **refutes**.
-
-And the read-out joins the chain: a component read on the result reads the SI magnitude straight off it — the
-terminal step of the JSR 385 shape (`…​.to(METRE).getValue()`), here a bare `.value`:
+A carrier-returning call is itself a value, so the factories, the guarded add, and a read-out of the result fold
+into a **single fluent expression** — the very shape JSR 385 uses — with the SI magnitude read straight off the end:
 
 <!-- doclint:case p146-chain-read-out/chain-read-out-value-verifies -->
 ```groovy
@@ -244,13 +175,17 @@ static BigDecimal total() {
 }
 ```
 
-The whole `1 km + 1 mile`, read back in metres, is exactly `2609.344` as a `BigDecimal` — no intermediate locals,
-a wrong magnitude refuting. (Each maximal carrier call is hoisted to a temporary so the `.value` read becomes an
-ordinary component read; it composes with further decimal arithmetic and works as a local RHS too.)
+`1 km + 1 mile`, read back in metres, is exactly `2609.344` as a `BigDecimal` — no intermediate locals, a wrong
+magnitude refuting, and the dimension guard still biting (a length plus a mass refutes at `.plus`, because the
+factory's result is modelled right where the guard is checked). Reading the SI magnitude is exact — it is just the
+stored value; reading back into a *named* unit divides by that unit's factor, which stays exact only when it
+terminates (a power of ten), and skips otherwise, since Groovy rounds a non-terminating quotient.
 
-The last step to JSR 385's *literal* shape is to make a **unit itself a value**: a second record carrying a scale
-and a dimension. Then `getQuantity(v, unit)` is just a factory that reads the unit's fields, and a metric prefix is
-a `Unit → Unit` factory — so `KILO(METRE)` is an ordinary nested call:
+### Units as data, too
+
+The one thing the JSR 385 version has that the above leaves implicit is the **unit itself as a value**. Make it a
+second record carrying a scale and a dimension; then `getQuantity(v, unit)` is just a factory that reads the unit's fields, and a
+metric prefix is a `Unit → Unit` factory — so `KILO(METRE)` is an ordinary nested call:
 
 <!-- doclint:case p147-units-as-data/full-jsr-385-shaped-expression -->
 ```groovy
@@ -271,7 +206,7 @@ static Quantity of(BigDecimal v, Unit u) { new Quantity(v * u.scale, u.l, u.m, u
 ```
 
 With that, the bespoke type expresses JSR 385's own sentence — `getQuantity`, a prefixed unit, `add`, a read-out —
-and it verifies end to end:
+verified end to end:
 
 <!-- doclint:case p147-units-as-data/full-jsr-385-shaped-expression -->
 ```groovy
@@ -281,23 +216,26 @@ static BigDecimal total() {
 }
 ```
 
-This is the bespoke twin of `getQuantity(1, KILO(METRE)).add(getQuantity(1, USCustomary.MILE)).to(METRE).getValue()`
-from §2 — but over a type *you* defined, with **no units library and no new engine support**: it falls straight
-out of the multi-component record, carrier-typed factory arguments, and the read-out. A wrong total refutes; and
-the dimension guard still bites — build one quantity in `metre` and another in `gram` and the `l == o.l`
-precondition **refutes**. (Reading back out in a *non-SI* named unit divides by the unit's scale, which is now a
-*symbolic* value rather than a literal — so that direction skips, like any non-terminating divisor; the SI `.value`
-read above is exact.)
+This is the bespoke twin of the JSR 385 sentence
+`getQuantity(1, KILO(METRE)).add(getQuantity(1, USCustomary.MILE)).to(METRE).getValue()` — over a type *you* defined,
+with **no units library and no special engine support**: it falls straight out
+of the multi-component record, carrier-typed factory arguments, and the read-out. (Reading back out in a *non-SI*
+named unit divides by a now-*symbolic* scale, so that direction skips — like any non-terminating divisor; the SI
+`.value` read is exact.)
 
 ## What is proven, and what isn't
 
 - **Exact, not floating-point** — magnitudes are exact `BigDecimal` / rationals, so `2609.344` means `2609.344`.
-- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (§1, at the cast; or §3, as an
-  explicit exponent vector in a `Quantity` record), a wrong **scale** refutes (§2, the value over JSR 385), a
-  wrong **value/total** refutes (§3, the operator); none passes by being un-modelled. The JSR 385 layers read the
-  dimension from the *type*; the bespoke record reasons about whatever you make *data* — a bare `Length` is just a
-  value (its `no Length + Mass` safety is Groovy's static types), while a `Quantity(value, L, M, T)` carries and
-  composes its dimension explicitly.
+- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (at the JSR 385 cast, or as an
+  explicit exponent vector in a bespoke `Quantity`), a wrong **scale** refutes (the value, over JSR 385), a wrong
+  **value/total** refutes (the bespoke operator and read-out); none passes by being un-modelled. And once the unit
+  itself is *data*, that bespoke record expresses JSR 385's own `getQuantity(…).add(…).getValue()` sentence over a
+  type you defined.
+- **Same reasoning, different carrier** — the label lives somewhere different each time: an `@Label` annotation in
+  Smith's information flow, a *phantom* `Quantity<K>` type parameter over JSR 385 (compile-time only — erased at
+  runtime, so the verifier recovers it from the declared types), and a plain `(l, m, t)` record field in the bespoke
+  type (you write the exponents; the verifier reads them as data). The "propagate a label, check it at a forbidden
+  point" shape never changes — only where the label is stored does.
 - **Honest skips** — affine units (°C / °F carry an *offset*, not a pure scale), a read-out by a *non-terminating*
   divisor (Groovy rounds it — unsound to model exactly), and any unit or kind outside the curated tables, all skip
   loudly rather than guess.
