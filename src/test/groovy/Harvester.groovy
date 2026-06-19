@@ -85,6 +85,8 @@ class Harvester {
         'P1 division'                 : "A divisor/modulus obligation: guarded verifies, unguarded refutes (divide-by-zero).",
         'jakarta validation'          : "Jakarta/javax Bean Validation numeric constraints (@Positive/@Min/@Max/…) read as method-entry preconditions; contradictory ones are flagged vacuous.",
         'nonnull param'               : "A @NonNull-style annotation (NullChecker / Checker Framework / JSR-305 vocabulary) on a reference parameter is read as a non-null precondition, discharging a deref or apply the unannotated form could not.",
+        'P131 dimensions'             : "JSR 385 dimensional analysis: a Quantity's kind (its [Length,Mass,Time] exponent vector) is propagated through multiply/divide and checked against the cast/return kind — the result-kind the generic type can't infer.",
+        'P132 unit scale'             : "JSR 385 value/scale: a Quantity built from known units (getQuantity/prefixes/add/to) has its SI magnitude recovered, so getValue() in a named unit verifies exactly and a wrong-unit extraction refutes (the Mars scale bug).",
         'P1 null'                     : "A dereference needs a non-null guard or @Requires; an unguarded deref refutes (NPE).",
         'P10 instance'                : "Instance methods with field reads/writes and parameter contracts verify (getter, mutator).",
         'P100 string next'            : "A user String.next() example over A..Z proves the letter-advance; stepping off the range refutes.",

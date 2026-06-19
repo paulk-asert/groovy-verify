@@ -4101,6 +4101,130 @@ class Encoder {
         return session.isReal(h) ? h : session.intToReal(h)
     }
 
+    // ==================== Phase 132 — JSR 385 value/scale (C₁: SI-normalized magnitudes) ====================
+
+    /** SI base units → their scale (always 1 for a base unit; a non-coherent base like GRAM carries its factor). */
+    private static final Map<String, BigDecimal> BASE_UNIT_SCALE = [
+        'METRE': 1.0G, 'METER': 1.0G, 'SECOND': 1.0G, 'KILOGRAM': 1.0G, 'GRAM': 0.001G,
+        'KELVIN': 1.0G, 'AMPERE': 1.0G, 'MOLE': 1.0G, 'CANDELA': 1.0G,
+    ]
+
+    /** Metric prefixes → their multiplier, so {@code KILO(METRE)} resolves to scale 1000. */
+    private static final Map<String, BigDecimal> PREFIX_SCALE = [
+        'GIGA': 1000000000.0G, 'MEGA': 1000000.0G, 'KILO': 1000.0G, 'HECTO': 100.0G, 'DECA': 10.0G, 'DEKA': 10.0G,
+        'DECI': 0.1G, 'CENTI': 0.01G, 'MILLI': 0.001G, 'MICRO': 0.000001G, 'NANO': 0.000000001G,
+    ]
+
+    /** The scale-to-SI of a unit expression — a base-unit constant or a (nested) prefix application — or null. */
+    private BigDecimal scaleOf(Expression u) {
+        if (u instanceof PropertyExpression) return BASE_UNIT_SCALE.get(((PropertyExpression) u).propertyAsString)
+        if (u instanceof VariableExpression) return BASE_UNIT_SCALE.get(((VariableExpression) u).name)
+        if (u instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) u
+            BigDecimal p = PREFIX_SCALE.get(mc.methodAsString)
+            List<Expression> a = argList(mc)
+            if (p != null && a.size() == 1) { BigDecimal inner = scaleOf(a.get(0)); return inner == null ? null : p * inner }
+        }
+        if (u instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression mc = (StaticMethodCallExpression) u
+            BigDecimal p = PREFIX_SCALE.get(mc.method)
+            List<Expression> a = (mc.arguments instanceof org.codehaus.groovy.ast.expr.ArgumentListExpression) ?
+                ((org.codehaus.groovy.ast.expr.ArgumentListExpression) mc.arguments).expressions : []
+            if (p != null && a.size() == 1) { BigDecimal inner = scaleOf(a.get(0)); return inner == null ? null : p * inner }
+        }
+        null
+    }
+
+    /** True for a {@code tech.units.indriya.quantity.Quantities.getQuantity(value, unit)} construction. */
+    private static boolean isGetQuantityCall(Expression e) {
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            return mc.methodAsString == 'getQuantity' && String.valueOf(mc.objectExpression?.text).endsWith('Quantities')
+        }
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression mc = (StaticMethodCallExpression) e
+            return mc.method == 'getQuantity' && String.valueOf(mc.ownerType?.name).endsWith('Quantities')
+        }
+        false
+    }
+
+    /** A scalar (dimensionless number) factor for {@code multiply}/{@code divide} — a numeric literal or a
+     *  numeric-typed expression, never a Quantity. */
+    private static boolean isNumericScalar(Expression e) {
+        if (e instanceof ConstantExpression) return ((ConstantExpression) e).value instanceof Number
+        ClassNode t = null
+        try { t = e?.getType() } catch (ignored) {}
+        if (t == null || t.name == null) return false
+        String n = t.name
+        n in ['int', 'long', 'short', 'byte', 'double', 'float',
+              'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte',
+              'java.lang.Double', 'java.lang.Float', 'java.math.BigDecimal', 'java.math.BigInteger', 'java.lang.Number']
+    }
+
+    /**
+     * The SI magnitude (a Real term) of a Quantity-valued expression, recovered from its construction:
+     * {@code getQuantity(v, U)} is {@code v·scale(U)}, {@code to(U)} is magnitude-invariant, {@code add}/{@code
+     * subtract} combine same-dimension magnitudes (the dimension match is what STC already enforces on these),
+     * and {@code multiply}/{@code divide} take a Quantity or a scalar. A Quantity whose construction isn't
+     * visible (a parameter) → null, i.e. out of scope.
+     */
+    private Object siMagnitude(Expression e) {
+        if (isGetQuantityCall(e)) {
+            List<Expression> a = callArgs(e)
+            if (a.size() != 2) return null
+            BigDecimal s = scaleOf(a.get(1))
+            Object vR = asReal(a.get(0))
+            if (s == null || vR == null) return null
+            return (s.compareTo(BigDecimal.ONE) == 0) ? vR : session.times(vR, session.realLit(rationalOf(s)))
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            String m = mc.methodAsString
+            List<Expression> a = argList(mc)
+            if (m == 'to' && a.size() == 1) return siMagnitude(mc.objectExpression)         // unit relabel: magnitude invariant
+            if (m in ['add', 'subtract', 'multiply', 'divide'] && a.size() == 1) {
+                Object recvM = siMagnitude(mc.objectExpression)
+                if (recvM == null) return null
+                Expression arg = a.get(0)
+                Object other
+                if (m == 'add' || m == 'subtract') {
+                    other = siMagnitude(arg)                  // add/subtract take a same-dimension Quantity (STC-enforced)
+                } else {
+                    Object q = siMagnitude(arg)               // multiply/divide: a Quantity if we can model it,
+                    other = q != null ? q : (isNumericScalar(arg) ? asReal(arg) : null)   // else a numeric scalar
+                }
+                if (other == null) return null
+                if (m == 'add')      return session.plus(recvM, other)
+                if (m == 'subtract') return session.minus(recvM, other)
+                if (m == 'multiply') return session.times(recvM, other)
+                return session.realDiv(recvM, other)                                          // divide
+            }
+        }
+        null
+    }
+
+    /** {@code X.getValue()} as a Real — only when X's *current unit* is syntactically known (a {@code to(U)} or a
+     *  {@code getQuantity(_, U)} at the top): the value in unit U is {@code siMagnitude(X) / scale(U)}. */
+    private Object quantityValueTerm(Expression recv) {
+        if (recv instanceof MethodCallExpression && ((MethodCallExpression) recv).methodAsString == 'to') {
+            MethodCallExpression toCall = (MethodCallExpression) recv
+            List<Expression> a = argList(toCall)
+            if (a.size() == 1) {
+                BigDecimal s = scaleOf(a.get(0))
+                Object mag = siMagnitude(toCall.objectExpression)
+                if (s != null && mag != null) {
+                    return (s.compareTo(BigDecimal.ONE) == 0) ? mag : session.realDiv(mag, session.realLit(rationalOf(s)))
+                }
+            }
+            return null
+        }
+        if (isGetQuantityCall(recv)) {                       // getQuantity(v, U).getValue() reads back v (its own unit)
+            List<Expression> a = callArgs(recv)
+            return a.size() == 2 ? asReal(a.get(0)) : null
+        }
+        null
+    }
+
     /** A BigDecimal/Double/Float as a Z3 rational numeral string ("25/10" for 2.5G). */
     private static String rationalOf(Object value) {
         BigDecimal bd = (value instanceof BigDecimal) ? (BigDecimal) value : new BigDecimal(value.toString())
@@ -4638,6 +4762,15 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // Phase 132 — JSR 385 value/scale (C₁): a Quantity's `getValue()` read *in a named unit* is its
+        // SI magnitude divided by that unit's scale. The magnitude is recovered structurally from the
+        // construction (`getQuantity`/`to`/`add`/…), so only quantities *built in scope from known units* are
+        // modelled — a Quantity parameter's magnitude/unit is unknown and skips. Exact LRA over rational scales.
+        if (m == 'getValue' && args.isEmpty()) {
+            Object v = quantityValueTerm(recv)
+            if (v != null) return v
+        }
 
         // Phase M-C — `some(v)` / `none()` factory call of a two-case carrier → the datatype constructor.
         Object[] fac = carrierFactoryMatch(m, args.size())

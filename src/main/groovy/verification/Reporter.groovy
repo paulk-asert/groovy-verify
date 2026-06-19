@@ -271,6 +271,18 @@ class Reporter {
         "A method may modify only the locations it declares (an empty @Modifies({}) means none)."
     }
 
+    // ---- Dimensional analysis (Phase 131) ----
+
+    /**
+     * A JSR 385 dimensional-correctness refutation: a {@code Quantity} value's computed dimension (from the
+     * operands' kinds through {@code multiply}/{@code divide}) disagrees with the kind it is cast to or
+     * declared as — the {@code multiply}/{@code divide} result-kind the generic type can't infer.
+     */
+    static String formatDimensionMismatch(String exprText, String gotDim, String targetText, String wantDim) {
+        "Dimensional mismatch: '${exprText}' has dimension ${gotDim}, but is used as ${targetText} (${wantDim}). " +
+        "A unit's dimension is the exponent vector over [Length, Mass, Time]; '*' adds exponents and '/' subtracts them."
+    }
+
     static String formatPostconditionSkipped(String methodName, String reason) {
         "Skipped verification of postcondition for ${methodName} (${reason}). " +
         "The body uses a construct or value outside the spike's supported " +

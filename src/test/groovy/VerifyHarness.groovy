@@ -96,6 +96,14 @@ class VerifyHarness {
         @interface NonNull {}
     '''.stripIndent()
 
+    /** JSR 385 imports for the dimensional-analysis (Phase 131) cases — the unit-api jar is a test dependency. */
+    static final String UOM = 'import javax.measure.Quantity\nimport javax.measure.quantity.*\n'
+
+    /** JSR 385 + Indriya imports for the value/scale (Phase 132) cases — construction, prefixes, conversion. */
+    static final String UOM2 = 'import tech.units.indriya.quantity.Quantities\n' +
+                               'import static tech.units.indriya.unit.Units.*\n' +
+                               'import static javax.measure.MetricPrefix.*\n'
+
     // Split across helper methods so each list-literal initializer stays under the JVM's 64KB
     // per-method bytecode limit (a single static initializer for all cases overflowed `<clinit>`).
     static final List<Map> CASES = casesPart1() + casesPart2()
@@ -143,6 +151,56 @@ class VerifyHarness {
         [group: 'nonnull param', name: '@NonNull function param discharges apply (the Maybe shape)', ok: true,
          src: HDR + NONNULL_ANN + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { static Object call(@NonNull java.util.function.Function g, Object x) { g.apply(x) } }'],
+
+        // ---------- Phase 131: JSR 385 dimensional analysis (C₀ — dimension-only) ----------
+        // (The non-null @Requires isolate the dimensional property from the orthogonal null-deref obligation
+        // the receiver would otherwise trigger — real code gets both checks; here we exercise dimensions.)
+        // The blog's `div` extension: length / time IS velocity (1,0,-1), so the cast verifies.
+        [group: 'P131 dimensions', name: 'length/time as Quantity<Speed> verifies', ok: true,
+         src: HDR + UOM + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ q != null && t != null }) static Quantity<Speed> v(Quantity<Length> q, Quantity<Time> t) { q.divide(t) as Quantity<Speed> } }'],
+        // The multiply typo: length * time is (1,0,1) — NOT velocity — so the cast refutes (the unchecked-cast bug).
+        [group: 'P131 dimensions', name: 'length*time as Quantity<Speed> refutes', expect: 'Dimensional mismatch',
+         src: HDR + UOM + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ q != null && t != null }) static Quantity<Speed> v(Quantity<Length> q, Quantity<Time> t) { q.multiply(t) as Quantity<Speed> } }'],
+        // length / time² = acceleration (1,0,-2) verifies (composition through two divides).
+        [group: 'P131 dimensions', name: 'length/time/time as Quantity<Acceleration> verifies', ok: true,
+         src: HDR + UOM + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ q != null && t != null }) static Quantity<Acceleration> a(Quantity<Length> q, Quantity<Time> t) { q.divide(t).divide(t) as Quantity<Acceleration> } }'],
+        // length*length is Area (2,0,0); casting it to Volume (3,0,0) refutes.
+        [group: 'P131 dimensions', name: 'length*length as Quantity<Volume> refutes', expect: 'Dimensional mismatch',
+         src: HDR + UOM + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ a != null && b != null }) static Quantity<Volume> bad(Quantity<Length> a, Quantity<Length> b) { a.multiply(b) as Quantity<Volume> } }'],
+        // length*length as Area verifies.
+        [group: 'P131 dimensions', name: 'length*length as Quantity<Area> verifies', ok: true,
+         src: HDR + UOM + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ a != null && b != null }) static Quantity<Area> area(Quantity<Length> a, Quantity<Length> b) { a.multiply(b) as Quantity<Area> } }'],
+        // Scalar multiply keeps the dimension: a length times a number is still a length.
+        [group: 'P131 dimensions', name: 'length * scalar stays Length', ok: true,
+         src: HDR + UOM + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ q != null }) static Quantity<Length> scale(Quantity<Length> q) { q.multiply(2) as Quantity<Length> } }'],
+
+        // ---------- Phase 132: JSR 385 value/scale (C₁ — SI-normalized magnitudes) ----------
+        // Mars-in-miniature: 1 km + 50000 cm, read back in metres, is exactly 1500 m (mixed scales, normalized).
+        [group: 'P132 unit scale', name: 'mixed-prefix length sum in metres is exact', ok: true,
+         src: HDR + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 1500.0 })\n' +
+              '          static BigDecimal total() { Quantities.getQuantity(1, KILO(METRE)).add(Quantities.getQuantity(50000, CENTI(METRE))).to(METRE).getValue() as BigDecimal } }'],
+        // The SAME sum read back in KILOMETRES is 1.5 — extracting in the right unit verifies.
+        [group: 'P132 unit scale', name: 'same sum read in kilometres is 1.5', ok: true,
+         src: HDR + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 1.5 })\n' +
+              '          static BigDecimal inKm() { Quantities.getQuantity(1, KILO(METRE)).add(Quantities.getQuantity(50000, CENTI(METRE))).to(KILO(METRE)).getValue() as BigDecimal } }'],
+        // The Mars bug: reading the metre-magnitude but claiming the kilometre number — 1500 ≠ 1.5 → refutes.
+        [group: 'P132 unit scale', name: 'wrong-unit extraction refutes (the scale bug)', expect: 'Cannot prove postcondition',
+         src: HDR + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 1500.0 })\n' +
+              '          static BigDecimal buggy() { Quantities.getQuantity(1, KILO(METRE)).add(Quantities.getQuantity(50000, CENTI(METRE))).to(KILO(METRE)).getValue() as BigDecimal } }'],
+        // Scalar divide on a magnitude: 10 km / 2 = 5000 m.
+        [group: 'P132 unit scale', name: 'scalar divide of a length in metres', ok: true,
+         src: HDR + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 5000.0 })\n' +
+              '          static BigDecimal half() { Quantities.getQuantity(10, KILO(METRE)).divide(2).to(METRE).getValue() as BigDecimal } }'],
 
         // ---------- Phase 1: null dereference ----------
         [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',

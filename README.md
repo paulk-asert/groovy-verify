@@ -123,7 +123,7 @@ the engine proves end-to-end, not "point it at anything":
 - **Ordering & algebraic laws** — sortedness and `compareTo`-shaped ordering, plus monoid / monad / reducer laws
   proved from an annotation alone.
 - **Past where most tools stop** — information-flow security (no secret reaches a public sink), lock-free
-  rely/guarantee concurrency, and termination.
+  rely/guarantee concurrency, dimensional analysis of JSR 385 units, and termination.
 
 Concretely, the engine proves these kinds of property at **compile time** — and when it can't, it **refutes with a
 concrete counterexample** (Dafny/Verus-style) rather than passing silently:
@@ -140,6 +140,13 @@ concrete counterexample** (Dafny/Verus-style) rather than passing silently:
   the others' `@Rely`, so a shared buffer stays in bounds without a lock.
 - **Information flow** — no secret (`@Label('High')`) reaches a public sink (noninterference), with explicit
   `Declassify` for controlled release.
+- **Dimensional analysis** — a JSR 385 `Quantity`'s dimension (its `[Length, Mass, Time]` exponents) is propagated
+  through `multiply` / `divide` and checked against an `as Quantity<K>` cast, catching the result-kind the generic
+  type can't infer: `length / time as Quantity<Speed>` verifies, the `multiply` typo refutes. The same
+  label-propagation shape as information flow, over a group (`×` adds exponents) instead of a lattice. A second
+  layer tracks **value & scale** — a quantity built from known units has a definite SI magnitude, so `1 km + 50000
+  cm` read back in metres verifies as exactly `1500`, and claiming that number while extracting in *kilometres*
+  refutes (the Mars-orbiter scale bug — same dimension, wrong scale — which dimensions alone can't catch).
 - **Behavioural subtyping (Liskov)** — an override may only *weaken* a precondition and *strengthen* a
   postcondition, never the reverse.
 - **Algebraic laws** — a `@Reducer` combiner is proved to satisfy the monoid laws, and a `@Monadic` carrier the

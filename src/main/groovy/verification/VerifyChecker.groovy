@@ -1928,6 +1928,15 @@ class VerifyChecker extends TypeCheckingExtension {
             } catch (Throwable ignored) {
             }
 
+            // Phase 131 (dimensional analysis): if the method works with JSR 385 `javax.measure.Quantity`
+            // values, check the dimensional correctness of each `as Quantity<K>` cast / Quantity-typed return —
+            // the kind the generic type can't infer through `multiply`/`divide`. Best-effort; no-op for code
+            // that mentions no Quantity types.
+            try {
+                verifyDimensions(node)
+            } catch (Throwable ignored) {
+            }
+
             // Phase 7 (induction): prove the @Decreases measure decreases at each recursive call,
             // justifying the inductive hypothesis used in verifyPostcondition. No-op unless the
             // method carries a method-level @Decreases. Best-effort.
@@ -4177,6 +4186,170 @@ class VerifyChecker extends TypeCheckingExtension {
             ifFacts = new ArrayList<Object[]>()
             arrayElemGamma = new HashMap<String, Expression>()
         }
+    }
+
+    // ==================== Phase 131 — JSR 385 dimensional analysis (C₀: dimension-only) ====================
+
+    /** The base dimensions tracked, in vector order. Start with the Dafny base {@code [Length, Mass, Time]}. */
+    private static final String[] DIM_BASE = ['L', 'M', 'T'] as String[]
+
+    /**
+     * {@code javax.measure.quantity.*} kind → its exponent vector over {@link #DIM_BASE}. A curated subset
+     * (matched by fully-qualified name, so the engine never compiles against the unit-api jar); a
+     * {@code Quantity<K>} whose {@code K} isn't here is treated as an unknown dimension and skips.
+     */
+    private static final Map<String, int[]> QUANTITY_KIND = [
+        'javax.measure.quantity.Length'       : [1, 0, 0] as int[],
+        'javax.measure.quantity.Mass'         : [0, 1, 0] as int[],
+        'javax.measure.quantity.Time'         : [0, 0, 1] as int[],
+        'javax.measure.quantity.Speed'        : [1, 0, -1] as int[],
+        'javax.measure.quantity.Acceleration' : [1, 0, -2] as int[],
+        'javax.measure.quantity.Area'         : [2, 0, 0] as int[],
+        'javax.measure.quantity.Volume'       : [3, 0, 0] as int[],
+        'javax.measure.quantity.Frequency'    : [0, 0, -1] as int[],
+        'javax.measure.quantity.Force'        : [1, 1, -2] as int[],
+        'javax.measure.quantity.Energy'       : [2, 1, -2] as int[],
+        'javax.measure.quantity.Power'        : [2, 1, -3] as int[],
+        'javax.measure.quantity.Dimensionless': [0, 0, 0] as int[],
+    ]
+
+    /**
+     * Phase 131 — dimensional correctness for JSR 385 code. JSR 385 carries a quantity's kind in the generic
+     * type ({@code Quantity<Length>}), and the static checker already rejects {@code mass.add(length)}. But
+     * {@code multiply}/{@code divide} return {@code Quantity<?>} — the kind the type system *can't* infer — so
+     * real code casts the result ({@code q.divide(t) as Quantity<Speed>}) or relies on the declared return type.
+     * Those assertions are unchecked. This pass computes the result's exponent vector from the operands'
+     * dimensions and refutes a cast/return whose declared kind disagrees. Pure compile-time vector arithmetic
+     * (the dimensions are static), so no SMT is involved; it's the second face of the {@code @Label} lattice —
+     * a free abelian group (×=add, /=subtract) rather than a join-semilattice.
+     */
+    private void verifyDimensions(MethodNode node) {
+        if (node instanceof ConstructorNode) return
+        if (!mentionsQuantity(node)) return                // not JSR 385 code → nothing to check
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return
+        // Only the `as Quantity<K>` cast is checkable: `multiply`/`divide` return `Quantity<? extends Quantity>`,
+        // which STC won't assign to a `Quantity<K>` return *without* a cast — so real code always casts (the blog
+        // does), and an un-cast return is rejected by the static checker before this pass, not modelled here.
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitCastExpression(CastExpression ce) {
+                int[] want = quantityKindVector(ce.type)
+                if (want != null) checkDim(ce.expression, want, 'Quantity<' + kindSimpleName(ce.type) + '>', ce)
+                super.visitCastExpression(ce)
+            }
+        })
+    }
+
+    /** Emit a refutation if {@code e}'s computed dimension is known and disagrees with {@code want}. */
+    private void checkDim(Expression e, int[] want, String targetText, org.codehaus.groovy.ast.ASTNode at) {
+        int[] got = dimOf(e)
+        if (got == null) return                            // couldn't determine the dimension → silently out of scope
+        if (!java.util.Arrays.equals(got, want)) {
+            addStaticTypeError(Reporter.formatDimensionMismatch(exprText(e), dimLabel(got), targetText, dimLabel(want)), at)
+        }
+    }
+
+    /** True if the method's signature mentions {@code javax.measure.Quantity} (param or return) — the cheap gate. */
+    private static boolean mentionsQuantity(MethodNode node) {
+        if (isQuantityType(node.returnType)) return true
+        for (Parameter p : node.parameters) if (isQuantityType(p.type)) return true
+        false
+    }
+
+    private static boolean isQuantityType(ClassNode t) { t != null && t.name == 'javax.measure.Quantity' }
+
+    /** The exponent vector of a {@code Quantity<K>} type (via its generic argument), or null. */
+    private static int[] quantityKindVector(ClassNode t) {
+        if (!isQuantityType(t)) return null
+        GenericsType[] g = t.genericsTypes
+        if (g == null || g.length < 1 || g[0].type == null) return null
+        QUANTITY_KIND.get(g[0].type.name)
+    }
+
+    private static String kindSimpleName(ClassNode quantityType) {
+        GenericsType[] g = quantityType?.genericsTypes
+        (g != null && g.length >= 1 && g[0].type != null) ? g[0].type.nameWithoutPackage : '?'
+    }
+
+    /**
+     * The exponent vector of a Quantity-typed expression, computed structurally: a declared {@code Quantity<K>}
+     * variable/parameter is its kind; {@code ×} adds exponents, {@code /} subtracts, scalar {@code ×}/{@code /}
+     * and {@code add}/{@code subtract}/{@code to} leave them unchanged; an inner cast contributes its declared
+     * kind. Anything else (or an unknown kind) → null, i.e. out of scope.
+     */
+    private int[] dimOf(Expression e) {
+        if (e instanceof CastExpression) {
+            int[] c = quantityKindVector(((CastExpression) e).type)
+            return c != null ? c : dimOf(((CastExpression) e).expression)
+        }
+        if (e instanceof VariableExpression) {
+            return quantityKindVector(declaredTypeOf((VariableExpression) e))
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mce = (MethodCallExpression) e
+            String m = mce.methodAsString
+            if (m in ['multiply', 'divide', 'add', 'subtract', 'to']) {
+                int[] dRecv = dimOf(mce.objectExpression)
+                if (dRecv == null) return null
+                List<Expression> args = (mce.arguments instanceof org.codehaus.groovy.ast.expr.ArgumentListExpression) ?
+                    ((org.codehaus.groovy.ast.expr.ArgumentListExpression) mce.arguments).expressions : []
+                Expression arg = args.isEmpty() ? null : args.get(0)
+                boolean quantityArg = arg != null && isQuantityType(getType(arg))
+                if (m == 'multiply') return quantityArg ? vadd(dRecv, dimOf(arg)) : dRecv      // scalar × keeps dimension
+                if (m == 'divide')   return quantityArg ? vsub(dRecv, dimOf(arg)) : dRecv      // scalar / keeps dimension
+                return dRecv                                                                    // add/subtract/to: unchanged
+            }
+        }
+        null
+    }
+
+    /** Declared type (with generics) of a variable use — the parameter list is the reliable source of kind args. */
+    private static ClassNode declaredTypeOf(VariableExpression ve) {
+        org.codehaus.groovy.ast.Variable v = ve.accessedVariable
+        (v != null) ? v.type : ve.type
+    }
+
+    private static int[] vadd(int[] a, int[] b) {
+        if (a == null || b == null) return null
+        int[] r = new int[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[i] + b[i]; r
+    }
+    private static int[] vsub(int[] a, int[] b) {
+        if (a == null || b == null) return null
+        int[] r = new int[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[i] - b[i]; r
+    }
+
+    /** A compact source-ish rendering of the expressions this pass walks (for the diagnostic). */
+    private static String exprText(Expression e) {
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name
+        if (e instanceof CastExpression) return exprText(((CastExpression) e).expression) + ' as ' + ((CastExpression) e).type.nameWithoutPackage
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) e
+            List<Expression> args = (m.arguments instanceof org.codehaus.groovy.ast.expr.ArgumentListExpression) ?
+                ((org.codehaus.groovy.ast.expr.ArgumentListExpression) m.arguments).expressions : []
+            return exprText(m.objectExpression) + '.' + m.methodAsString + '(' + args.collect { exprText(it) }.join(', ') + ')'
+        }
+        if (e instanceof ConstantExpression) return String.valueOf(((ConstantExpression) e).value)
+        try { return e?.text ?: '<expr>' } catch (ignored) { return '<expr>' }
+    }
+
+    /** A readable dimension, e.g. {@code [1,0,-1] → "L·T⁻¹"}, {@code [0,0,0] → "dimensionless"}. */
+    private static String dimLabel(int[] d) {
+        if (d == null) return '?'
+        StringBuilder sb = new StringBuilder()
+        for (int i = 0; i < d.length; i++) {
+            if (d[i] == 0) continue
+            if (sb.length() > 0) sb.append('·')
+            sb.append(DIM_BASE[i])
+            if (d[i] != 1) sb.append(superscript(d[i]))
+        }
+        sb.length() == 0 ? 'dimensionless' : sb.toString()
+    }
+    private static String superscript(int n) {
+        String s = String.valueOf(Math.abs(n))
+        StringBuilder b = new StringBuilder(n < 0 ? '⁻' : '')   // superscript minus
+        for (char c : s.toCharArray()) b.append('⁰¹²³⁴⁵⁶⁷⁸⁹'.charAt((int) (c - (char) '0')))
+        b.toString()
     }
 
     /** Path conditions (each {@code [Expression cond, Boolean positive]}) enclosing the current walk point —

@@ -7276,6 +7276,63 @@ now *skips* rather than wrongly verifying.
 
 ---
 
+## Phase 131 — JSR 385 dimensional analysis (C₀: dimension-only)  *(shipped — the units twin of `@Label`)*
+
+The second face of the `@Label` information-flow lattice: same shape — a label propagated through the program
+under an algebra, checked at a forbidden point — but the algebra is a **free abelian group ℤ³** (over
+`[Length, Mass, Time]`) rather than a join-semilattice. A `javax.measure.Quantity<Q>` carries its dimension in the
+generic type, and Groovy's static checker already rejects `mass.add(length)` — but `multiply`/`divide` return
+`Quantity<? extends Quantity>`, the result-kind the type system *can't* infer, so real JSR 385 code **casts** the
+result (`q.divide(t) as Quantity<Speed>`). That cast is unchecked. This pass computes the result's exponent vector
+from the operands' kinds (`×` adds, `/` subtracts; scalar `×`/`/` and `add`/`subtract`/`to` are dimension-neutral)
+and **refutes a cast whose declared kind disagrees** — so `q.divide(t) as Quantity<Speed>` verifies (`(1,0,0) −
+(0,0,1) = (1,0,-1)` ✓) while the `multiply` typo refutes (`(1,0,1) ≠` Speed).
+
+- **No SMT.** Dimensions are statically known, so it's compile-time vector arithmetic, not a Z3 query — the
+  group analogue of the lattice `leq`/`join` the Label pass discharges through Z3.
+- **Scoped to the reachable obligation.** Only the `as Quantity<K>` cast is checked; an *un-cast* `return
+  q.divide(t)` is rejected by STC's generics before this pass, so there's nothing to model there.
+- **No-op off JSR 385.** Gated on a `javax.measure.Quantity` parameter/return, so the 1247 non-units cases are
+  byte-identical. A `Quantity<K>` whose `K` isn't in the curated kind table skips.
+- **Reads by FQN**, like the Jakarta/`@NonNull` readers — `unit-api` is a test dependency only; the engine never
+  compiles against it, so the published POM stays clean.
+
+New cases live in a `P131 dimensions` group (the blog's `div` cast verifies; the `multiply` typo, and an Area-vs-Volume
+cast, refute). This is **C₀** of the units sketch; the value/scale layer is Phase 132.
+
+---
+
+## Phase 132 — JSR 385 value/scale (C₁: SI-normalized magnitudes)  *(shipped — the deeper Mars-orbiter bug)*
+
+Where C₀ checks *dimensions* (catching `length × time as Speed`), C₁ checks **values and scale** — the bug C₀
+can't see, because the original Mars Climate Orbiter failure mixed two quantities of the *same dimension*
+(impulse: lbf·s vs N·s), differing only in **scale**. A JSR 385 quantity built from known units has a definite
+**SI magnitude**, and this pass recovers it structurally — `Quantities.getQuantity(v, U)` is `v · scale(U)`,
+`to(U)` is magnitude-invariant, `add`/`subtract` combine same-dimension magnitudes, `multiply`/`divide` take a
+quantity or a scalar — so that a `getValue()` read *in a named unit* (`q.to(METRE).getValue()`) discharges to
+the Real `siMagnitude(q) / scale(U)`. The whole thing rides the existing exact-`BigDecimal`/Real (LRA) machinery,
+so `1 km + 50000 cm` read in metres **verifies** as exactly `1500`, read in kilometres as `1.5`, and **claiming
+the metre number while extracting in kilometres refutes** — the scale bug, caught.
+
+- **Magnitude, not sort.** A quantity isn't remodelled as a Real globally (that would collide with its
+  reference-nullability that C₀ relies on). Only `getValue()` is intercepted, recovering the magnitude from the
+  *construction* — so a quantity **built in scope from known units** is modelled, while a Quantity *parameter*
+  (unknown unit/magnitude) skips. An honest boundary: you reason about the units you construct.
+- **Unit resolution by name.** A curated base-unit table (`METRE`/`SECOND`/`KILOGRAM`/…) and metric-prefix table
+  (`KILO`=1000, `CENTI`=0.01, …) resolve `KILO(METRE)` → scale 1000 by *simple name*, robust to the resolved AST
+  shape (property vs static call). `getValue()` only on a `to(U)` or `getQuantity(_, U)` — a bare `getValue()`
+  (current unit unknown) skips, which is also good practice: name the unit you extract in.
+- **Exact rationals.** Scales are `BigDecimal`, magnitudes exact Reals (LRA) — not the bit-blasted FP path — so
+  conversions are exact and fast.
+
+New cases live in a `P132 unit scale` group; `indriya` joins `unit-api` as a test-only dependency (read by FQN /
+simple name, never compiled against). Out of this slice: **affine units** (°C/°F carry an *offset*, not a pure
+scale — `x·a + b`), bare `getValue()` on a parameter, value bounds on a *parameter* quantity (needs the magnitude
+threaded through binding), and rational exponents. Together with C₀ this is a usable two-layer JSR 385 reader:
+**dimensions** (the cast kind) and **value/scale** (the conversion magnitude).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -93,6 +93,16 @@ dependencies {
     // carry these annotations resolve at on-the-fly compile time.
     testImplementation 'jakarta.validation:jakarta.validation-api:3.1.1'
 
+    // Test-only: the JSR 385 Units of Measurement API (javax.measure.Quantity and the
+    // javax.measure.quantity.* kind interfaces). The engine reads a Quantity's dimension off the generic
+    // type and matches by fully-qualified name — it never compiles or runs against this jar — so it stays
+    // out of the published POM. Here only so snippet sources that carry these types resolve at compile time.
+    testImplementation 'javax.measure:unit-api:2.2'
+    // The JSR 385 reference implementation (Indriya) — brings `Quantities.getQuantity`, `Units.*` and
+    // `MetricPrefix.*` so the C₁ value/scale snippets resolve. Test-only, like unit-api; the engine reads
+    // these by FQN / simple name and never compiles against the jar.
+    testImplementation 'tech.units:indriya:2.2'
+
     // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
     // PurityChecker / ModifiesChecker). Test-only: a consumer supplies these themselves when they
     // combine checkers — groovy-verify neither compiles nor runs against them — so they never reach
