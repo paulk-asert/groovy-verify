@@ -574,6 +574,22 @@ class Encoder {
         }
     }
 
+    /** The String value of a {@code ConstantExpression}, or null if {@code e} isn't a compile-time string. */
+    private static String constStr(Expression e) {
+        (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof String) ?
+            (String) ((ConstantExpression) e).value : null
+    }
+
+    /**
+     * True when {@code p} is a regex with no metacharacters — i.e. it matches exactly itself, so a
+     * {@code replaceFirst}/{@code replaceAll} regex coincides with a literal-substring match and the
+     * string model is sound. Any of {@code \ . [ ] {@literal {} } ( ) * + ? ^ $ |} makes it a real regex.
+     */
+    private static boolean isPlainLiteralRegex(String p) {
+        for (char c : p.toCharArray()) if ('\\.[]{}()*+?^$|'.indexOf((int) c) >= 0) return false
+        true
+    }
+
     /**
      * Phase 47c — small recursive-descent regex parser. Builds a Z3 {@code ReExpr} bottom-up
      * via the {@link SmtSession} regex constructors. Grammar:
@@ -5236,15 +5252,38 @@ class Encoder {
                 Object t = translateInSort(args.get(0), strSort)
                 return t == null ? null : session.stringConcat(sH, t)
             }
-            // Phase 47b — {@code s.replace(old, new)} — first-occurrence replacement via
-            // Z3's {@code str.replace}. Groovy/Java define {@code replace} as replace-all; this
-            // is a known semantic gap until Z3 ships {@code mkReplaceAll}. Tests deliberately
-            // use single-occurrence patterns where first/all coincide.
-            if (m == 'replace' && args.size() == 2) {
+            // Phase 47b/47f — {@code replace} / {@code replaceFirst} / {@code replaceAll}. Sound by
+            // construction (the old {@code replace} path lowered replace-*all* to Z3's first-occurrence
+            // {@code str.replace}, which over-claimed whenever the target occurred twice):
+            //  (1) all-constant operands fold via the *real* Groovy/Java method → an exact literal. This
+            //      works for any regex (the JDK computes it); a malformed regex/replacement just skips.
+            //  (2) symbolic operands — {@code replace(CharSequence, CharSequence)} is literal replace-all,
+            //      so it lowers to the uninterpreted replace-all model (sound weak axioms: absent ⇒ no-op,
+            //      equal-length ⇒ length-preserving). {@code replaceFirst}/{@code replaceAll} take a *regex*:
+            //      only a *plain-literal* pattern (no metacharacters) with a {@code $}/{@code \}-free
+            //      replacement coincides with the string model — first-occurrence {@code str.replace} for
+            //      {@code replaceFirst}, the replace-all model for {@code replaceAll}. Any real regex skips
+            //      loudly rather than be mis-modelled as a literal substring.
+            if ((m == 'replace' || m == 'replaceFirst' || m == 'replaceAll') && args.size() == 2) {
+                String recvK = constStr(recv), oldK = constStr(args.get(0)), newK = constStr(args.get(1))
+                if (recvK != null && oldK != null && newK != null) {
+                    String folded
+                    try {
+                        folded = (m == 'replace')      ? recvK.replace(oldK, newK)
+                               : (m == 'replaceFirst') ? recvK.replaceFirst(oldK, newK)
+                               :                         recvK.replaceAll(oldK, newK)
+                    } catch (Exception ignored) { return null }   // bad regex / replacement → honest skip
+                    return session.litOfSort(strSort, folded)
+                }
                 Object oldSub = translateInSort(args.get(0), strSort)
                 Object newSub = translateInSort(args.get(1), strSort)
                 if (oldSub == null || newSub == null) return null
-                return session.stringReplace(sH, oldSub, newSub)
+                if (m == 'replace') return session.stringReplaceAll(sH, oldSub, newSub)   // literal replace-all
+                // replaceFirst / replaceAll: a plain-literal pattern + metachar-free replacement only.
+                if (oldK == null || !isPlainLiteralRegex(oldK)) return null
+                if (newK == null || newK.contains('$') || newK.contains('\\')) return null
+                return (m == 'replaceFirst') ? session.stringReplace(sH, oldSub, newSub)
+                                             : session.stringReplaceAll(sH, oldSub, newSub)
             }
             // Phase 47b — {@code s.indexOf(sub)} and {@code s.indexOf(sub, fromIndex)}.
             // Returns the leftmost position {@code i >= fromIndex} where {@code sub} occurs,
@@ -5269,15 +5308,6 @@ class Encoder {
                 Object re = parseRegexLiteral(args.get(0))
                 if (re == null) return null
                 return session.stringInRegex(sH, re)
-            }
-            // Phase 47f — {@code s.replaceAll(old, new)} as uninterpreted with weak axioms.
-            // The verifier knows non-occurrence is a no-op and same-length-replacement preserves
-            // length, nothing else. Sound under-approximation.
-            if (m == 'replaceAll' && args.size() == 2) {
-                Object oldSub = translateInSort(args.get(0), strSort)
-                Object newSub = translateInSort(args.get(1), strSort)
-                if (oldSub == null || newSub == null) return null
-                return session.stringReplaceAll(sH, oldSub, newSub)
             }
             // Phase 47f — {@code s.lastIndexOf(sub)} as uninterpreted with weak axioms.
             // Groovy's no-arg default for fromIndex is {@code length(s)} (search the whole string).

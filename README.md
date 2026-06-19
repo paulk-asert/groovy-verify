@@ -172,9 +172,11 @@ you write:
   dispatch to a dedicated solver. *Out:* floating-point loops & transcendentals.
 - **Text** — *querying / composing* a `String` reasons symbolically on Z3's native string theory: `length` /
   `charAt` / `substring` / `indexOf`, `startsWith` / `endsWith` / `contains`, `+` / `concat`, `matches` (regex),
-  and GString interpolation. *Rewriting* a string — `replace` / `replaceAll` / `toUpperCase` / `toLowerCase` /
-  `reverse` — folds on **literal** strings (plus a few weak axioms, e.g. length-preservation), with no general
-  symbolic algebra. *Out:* building a string char-by-char (use a `char[]`).
+  and GString interpolation. *Rewriting* a string — `replace` / `replaceFirst` / `replaceAll` / `toUpperCase` /
+  `toLowerCase` / `reverse` — folds **constant** operands through the real JDK method (so `replace` is replace-*all*
+  and a regex `replaceAll` resolves exactly), and keeps only sound weak axioms (e.g. length-preservation) on
+  symbolic ones; a real regex over a symbolic receiver skips. *Out:* building a string char-by-char (use a
+  `char[]`).
 - **Collections & data** — arrays and lists (read, update, bounds), finite `Set` and `Map` (membership, mutation,
   cardinality, the full set algebra `∪ ∩ − ^`), `Tuple` / `TupleN` and Groovy's map-as-named-tuple returns,
   immutable factories, and a `.limit(n)` / `.take(n)`-bounded `every` / `any` over an infinite `Stream.iterate`

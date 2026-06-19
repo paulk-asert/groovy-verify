@@ -61,10 +61,15 @@ a coverage metric. In expressions the fragment is:
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /
   regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion. The
   string-*rewriting* ops are uninterpreted (literal-pinned / weak-axiom) — `toUpperCase` / `toLowerCase` /
-  `replaceAll` / `reverse` (Phase 47i — `"abc".reverse() == "cba"` and literal involution fold; symbolic algebra
-  stays out), and `replace` (Phase 47b), which lowers to Z3's *first-occurrence* `str.replace` whereas Groovy's
-  `replace` is replace-*all* — a known semantic gap, so it is sound only where first and all coincide (e.g. a
-  single occurrence; the tests stay there) until Z3 ships a replace-all primitive;
+  `reverse` (Phase 47i — `"abc".reverse() == "cba"` and literal involution fold; symbolic algebra
+  stays out). The three substitution methods (Phase 47b/47f) are sound by construction: an **all-constant**
+  call folds through the *real* JDK method, so `"hello".replace("l","P") == "hePPo"` (replace-*all*) and
+  `"hello".replaceAll("[aeiou]","X") == "hXllX"` (the regex resolved exactly). A **symbolic** receiver keeps
+  only the facts the string theory can prove soundly: `replace` (literal replace-all) carries the weak axioms
+  *absent ⇒ no-op* and *equal-length ⇒ length-preserving*; `replaceFirst` with a **plain-literal** regex
+  lowers to Z3's first-occurrence `str.replace`; `replaceAll` with a plain-literal regex keeps the same weak
+  axioms. A *real* regex (metacharacters) over a symbolic receiver **skips loudly** rather than be mis-modelled
+  as a literal substring;
   plus **read-only per-character loops** — a quantified loop invariant over `s.charAt(i)` (the string analogue
   of the array ∀-element proofs), with the char literal spelled `('a' as char)` (Phase 105). *Building* a
   string char-by-char times out on the seq theory, so a constructed buffer goes through `char[]` (an

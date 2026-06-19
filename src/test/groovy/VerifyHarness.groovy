@@ -3076,11 +3076,33 @@ class Derived extends Base {
                     }''')],
 
         // ---------- Phase 47b: replace + indexOf ----------
-        // Literal replace folds.
-        [group: 'P47b replace/indexOf', name: 'literal replace folds (single occurrence)', ok: true,
+        // Literal replace folds via the *real* Groovy method — `replace` is replace-ALL, so both
+        // 'l's go: "hello".replace("l","P") == "hePPo" (NOT the first-occurrence "hePlo"; that's
+        // `replaceFirst`, below). Claiming "hePlo" now refutes — the Phase-47b soundness fix.
+        [group: 'P47b replace/indexOf', name: 'literal replace folds (replace-all, both occurrences)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "hePPo" })
+                        static String f() { "hello".replace("l", "P") }
+                    }''')],
+        [group: 'P47b replace/indexOf', name: 'replace-all over first-occurrence refutes (was the unsound case)',
+         expect: 'Cannot prove postcondition',
          src: tc('''class C {
                         @Ensures({ result == "hePlo" })
                         static String f() { "hello".replace("l", "P") }
+                    }''')],
+        // replaceFirst IS first-occurrence (regex, here a plain-literal pattern) — only the first 'l'.
+        [group: 'P47b replace/indexOf', name: 'literal replaceFirst folds (first occurrence only)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "hePlo" })
+                        static String f() { "hello".replaceFirst("l", "P") }
+                    }''')],
+        // Symbolic replaceFirst with a plain-literal pattern: first-occurrence model. With the target
+        // absent (guarded), the first-occurrence replace is a no-op, so the result is the input.
+        [group: 'P47b replace/indexOf', name: 'symbolic replaceFirst absent-pattern is a no-op', ok: true,
+         src: tc('''class C {
+                        @Requires({ s != null && !s.contains("XYZQ") })
+                        @Ensures({ result == s })
+                        static String f(String s) { s.replaceFirst("XYZQ", "A") }
                     }''')],
         // Replace identity: replacing a non-occurring substring is a no-op (requires a
         // {@code !contains} precondition so the verifier knows the substring isn't present).
@@ -3330,6 +3352,23 @@ class Derived extends Base {
                         @Requires({ s != null })
                         @Ensures({ result == s.length() })
                         static int f(String s) { s.replaceAll("a", "bc").length() }
+                    }''')],
+        // A *constant* replaceAll — even with a real regex pattern — folds via the actual JDK method,
+        // so the character class resolves exactly: "hello".replaceAll("[aeiou]","X") == "hXllX".
+        [group: 'P47f weak ops', name: 'constant regex replaceAll folds exactly', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == "hXllX" })
+                        static String f() { "hello".replaceAll("[aeiou]", "X") }
+                    }''')],
+        // Soundness: a *symbolic* receiver with a regex (metacharacter) pattern can't be modelled as a
+        // literal substring — it skips loudly instead of mis-firing the no-op axiom. (Before the fix
+        // the literal `contains(s, "[aeiou]")` was false, so `result == s` wrongly *verified*.)
+        [group: 'P47f weak ops', name: 'symbolic regex-pattern replaceAll skips (no literal-contains misfire)',
+         expect: 'Skipped verification of postcondition',
+         src: tc('''class C {
+                        @Requires({ s != null })
+                        @Ensures({ result == s })
+                        static String f(String s) { s.replaceAll("[aeiou]", "X") }
                     }''')],
         // lastIndexOf result is always >= -1.
         [group: 'P47f weak ops', name: 'lastIndexOf >= -1', ok: true,

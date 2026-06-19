@@ -7248,6 +7248,34 @@ New cases live in a `nonnull param` group (the unannotated twin's refutation is 
 
 ---
 
+## Phase 130 — `replace` / `replaceFirst` / `replaceAll` made sound (was: replace-all modelled as replace-first)  *(shipped — soundness fix)*
+
+A bmc4j-limits audit ([their stub channel](https://github.com/bmc4j/bmc4j/blob/main/docs/limits.md)) turned up a
+real unsoundness: `s.replace(old, new)` lowered *unconditionally* to Z3's **first-occurrence** `str.replace`,
+while Groovy/Java `replace` is replace-**all**. So `"hello".replace("l","P")` was *proven* `== "hePlo"` when the
+runtime value is `"hePPo"` — a green checkmark over a postcondition GContracts would throw on at runtime. There
+was even a test enshrining the wrong value (mislabelled "single occurrence", though `"hello"` has two `l`s). A
+sibling hole: `replaceAll` translated its **regex** first argument as a literal substring, so the *absent ⇒
+no-op* axiom misfired — `"hello".replaceAll("[aeiou]","X")` (runtime `"hXllX"`) would *prove* `== "hello"`.
+
+The fix routes all three substitution methods through one sound handler:
+
+- **All-constant operands fold through the real JDK method** → an exact literal. Works for any regex (the JDK
+  computes it; a malformed pattern/replacement just skips). `"hello".replace("l","P")` → `"hePPo"`,
+  `"hello".replaceFirst("l","P")` → `"hePlo"`, `"hello".replaceAll("[aeiou]","X")` → `"hXllX"`.
+- **Symbolic receiver, sound facts only**: `replace` (literal replace-all) keeps the weak axioms *absent ⇒
+  no-op* / *equal-length ⇒ length-preserving* (the uninterpreted `replaceAll$` model — first-occurrence
+  `str.replace` is gone from this path). `replaceFirst` with a **plain-literal** regex (no metacharacters) and a
+  `$`/`\`-free replacement uses first-occurrence `str.replace` — the one place it's correct, and `replaceFirst`'s
+  intended home. `replaceAll` with a plain-literal regex keeps the weak axioms.
+- **A real regex over a symbolic receiver skips loudly** instead of being mis-modelled as a literal substring.
+
+The corrected test asserts `"hePPo"`, with a refutation case for the old `"hePlo"` claim; `replaceFirst` is added
+(literal fold + symbolic absent-pattern no-op); and a soundness case pins that a symbolic `replaceAll("[aeiou]",…)`
+now *skips* rather than wrongly verifying.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

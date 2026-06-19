@@ -398,10 +398,11 @@ interface SmtSession extends AutoCloseable {
 
     /**
      * Phase 47b — {@code str.replace(s, src, dst)} — replace the *first* occurrence of
-     * {@code src} in {@code s} with {@code dst}. Z3's seq theory provides this directly; the
-     * encoder lowers Groovy's {@code s.replace(old, new)} (which Groovy and Java define as
-     * replace-all, *not* replace-first — TODO: an extra dispatch step or a {@code mkReplaceAll}
-     * when Z3 ships it). Returns a SeqExpr.
+     * {@code src} in {@code s} with {@code dst}. Z3's seq theory provides this directly. The
+     * encoder uses it for Groovy's {@code s.replaceFirst(regex, repl)} when the regex is a *plain
+     * literal* (so the first regex match is the first literal occurrence) and the replacement is
+     * metacharacter-free. Groovy's literal {@code replace} is replace-*all* and goes through
+     * {@link #stringReplaceAll} instead. Returns a SeqExpr.
      */
     Object stringReplace(Object s, Object oldSub, Object newSub)
 
