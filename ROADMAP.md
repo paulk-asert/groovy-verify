@@ -7405,6 +7405,120 @@ check it; and conversion/scale *inside* a bespoke record (today the scale layer 
 
 ---
 
+## Phase 142 — multi-component record as a one-constructor N-field datatype (the dimension-carrying Quantity)  *(shipped)*
+
+Phase 133 modelled a *single*-component record. This extends it to **N** components: a `record R(T1 f1, …, Tn fn)`
+with ≥2 final fields is a one-constructor immutable product, modelled as an N-field Z3 datatype (the record
+analogue of `TupleN`, reusing the `datatypeSort` / `datatypeConstruct` / `datatypeSelect` backend the
+`Some | None` carrier already uses). `new R(a, b).f` round-trips by datatype theory, and a wrong component
+refutes.
+
+The payoff is the units finale the whole arc pointed at — **one** type for every unit, instead of a record per
+unit: a `Quantity(BigDecimal value, int l, int m, int t)` carrying a value *and its `(L, M, T)` dimension vector*,
+whose `multiply` scales the value and **composes the exponents**:
+
+    Quantity(2.0, 1,0,0) * Quantity(3.0, 1,0,0)  ==  Quantity(6.0, 2,0,0)   // Length × Length = Area
+
+— the whole dimensional algebra (the Dafny dimension-ADT approach) in a single record, value and dimension both
+proved, a wrong exponent refuting. `/` subtracts exponents the same way; a derived unit needs no new type.
+
+- **Where**: `recordComponents` (≥2-field record oracle) folds into `isCarrier` / `carrierTypeOf` / `carrierByName`
+  / `isCarrierContentRead`; `sortFor` declares the N-field datatype; the `new R(…)` construct and `r.f` select
+  translations route to `datatypeConstruct` / `datatypeSelect`. Single-component records stay on the wrapper path.
+- **No regression**: the existing `P114 records` tests use a 2-component `Point` / `Box` as a *parameter* / receiver
+  read via instance fields (bare `p.x`, `this.lo`); those reads coexist — a record param now routes through the
+  datatype selector consistently, and a bare-field receiver read still uses the instance-field path. 1274 → 1278.
+
+Out of this slice: same-dimension **addition via `+`** (Phase 142b, below); deconstruction / pattern-matching and
+generated `equals` / `hashCode` (still not modelled); and **conversion/scale** inside the bespoke record (today
+Phase 132's JSR 385 reader). New cases: `P142 multi-record`.
+
+---
+
+## Phase 142b — guarded-operator routing (the dimension-checked `+`, soundly)  *(shipped)*
+
+Phase 133's operator routing was sound *by restriction*: `a + b` routed to `a.plus(b)` only when `plus` had no
+`@Requires`, because the operator site is a `BinaryExpression` (not a `MethodCall`), so the precondition hook
+never fired there. This lifts that restriction — and a probe first confirmed it was a real soundness wall:
+routing a guarded operator without checking the guard let a method "prove" `result.metres >= 0` for a value that
+was `-2`.
+
+The fix: `onMethodSelection` **does** fire for an operator (it resolves `+` to the `plus` method), so it now
+rewrites a carrier operator to the call shape (`a + b` → `a.plus(b)`) and runs the normal `verifyCallSite`
+precondition check on it. For that to handle a *record receiver*, `verifyCallSite` gained the same carrier-receiver
+binding `assumeCalleeEnsures` has — it binds `this` and each component field so a bare `metres` / `l` in the
+precondition resolves to the receiver's value, and registers the carrier formal types so an `o.l` read resolves.
+One follow-on: `replayPrefix` now threads a local's known nullity (a `new X(…)` local is non-null), so a common
+`@Requires({ o != null })` guard on an operator discharges instead of false-positiving.
+
+The payoff is the **addition half** of the dimensional algebra on the `Quantity(value, l, m, t)` record: a
+`plus` guarded `@Requires({ l == o.l && m == o.m && t == o.t })` makes `a + b` **require matching dimensions** —
+same-dimension addition verifies, and adding a Length `[1,0,0]` to a Mass `[0,1,0]` **refutes** (the units bug the
+type system can't catch, since every quantity is one `Quantity` type). With `×`/`/` composing exponents (Phase
+142) and `+`/`−` requiring them equal, the dimensional algebra is complete and machine-checked. New cases extend
+`P133 record ctor` (a guarded `plus` routes; a violated guard refutes) and `P142 multi-record` (dimensional add).
+1278 → 1281.
+
+Out of this slice: in-record conversion/scale (Phase 142c, below), and affine units.
+
+---
+
+## Phase 142c — in-record unit conversion (the construct-to-SI side)  *(shipped — mostly already worked)*
+
+A probe found that **in-record conversion is largely already there**: a `Length.km(v)` factory scales a value to
+SI (`new Length(v * 1000.0)`), and at a *use site* the converted value is verified — `Length.km(2).metres == 2000`
+— with a wrong value refuting, and two constructions of the same physical length comparing **equal**
+(`Length.km(1) == new Length(1000.0)`, by datatype equality). What was missing were two interprocedural edges,
+now closed:
+
+- **Cross-class static factory resolution.** `resolveContractedCallee` searched only the caller's class (and, from
+  Phase 142, an instance receiver's type); it now also searches a **static call's owner type**, so `Length.km(2)`
+  resolves from any class (`receiverCarrierType` ignores a `ClassExpression` receiver — that's a static call, not
+  an instance — and `ownerCarrierType` supplies the owner).
+- **Decimal arguments in interprocedural calls.** `assumeCalleeEnsures` bound formals with plain `translate`,
+  which is Int-oriented and returned null for a `BigDecimal` actual (the long-standing gap that also blocked
+  nested decimal calls); it now routes a Real-sorted formal through `asRealValue`. So `km(2.0)` substitutes.
+
+Honest limits, both pinned by tests: the **read-out** direction (divide back into a unit, `metres / 1000.0`)
+**skips** — bare `BigDecimal` division isn't modelled because Groovy's `/` rounds, so exact Real division would be
+unsound; and a record's **own** conversion methods are verified only if the record itself carries `@TypeChecked`
+(contracts aren't inherited) — which is why conversion is checked at the *use* site, where it matters. So the
+construct-to-SI / compare side is machine-checked; the divide-to-read-out side stays a loud skip. New cases:
+`P142c conversion`. 1281 → 1285.
+
+Out of this slice: `BigDecimal` division (read-out — Phase 143, below), and affine units (°C/°F offsets).
+
+---
+
+## Phase 143 — `BigDecimal` division modelled soundly (and a latent unsoundness fixed)  *(shipped)*
+
+A probe found a real **unsoundness**: decimal `/` was modelled as *exact* Real division unconditionally, but
+Groovy's `BigDecimal /` **rounds** a non-terminating quotient (to its `MathContext`). So `x = 1; y = x / 3;
+y * 3 == 1.0` *verified* — a fact that is **false at runtime** (`(1/3)·3 = 0.999…`). Modelling `1/3` as the exact
+rational let the checker prove things Groovy doesn't compute.
+
+The fix is the exact-division criterion: dividing any finite decimal by a constant terminates *exactly* iff the
+divisor's unscaled integer has only the prime factors **2 and 5** (a power of ten, or `/8`, `/0.25`, …). So:
+
+- **Terminating divisor → exact Real division** (sound — Groovy returns the exact quotient). `2000 / 1000 == 2`
+  verifies; the **unit-conversion read-out** (`metres / 1000` for "value in km") now verifies, and a wrong factor
+  refutes.
+- **Non-terminating divisor (a 3, a 7, a symbolic value) → loud skip**, instead of an exact-Real model that would
+  prove a runtime-false fact.
+
+Guarded at both decimal-division sites (`translateBinary` and `asReal`), with `isTerminatingDivisor` the predicate.
+Also fixed the **divide-by-zero check** for a decimal divisor — it translated the divisor on the Int path (null →
+"Skipped division safety check"); it now uses the Real sort against a Real zero, so a `/1000` divide *discharges*
+cleanly instead of skipping. One existing test (`BigDecimal avg wrong divisor refuted`) used `/3` as its wrong
+divisor and relied on the old exact-`/3` model to refute; it now uses the terminating `/4` (the `/3` form soundly
+*skips*). New cases: `P143 decimal div`. 1285 → 1289.
+
+Out of this slice: affine units (°C/°F offsets), and a non-terminating divisor still skips (correctly — Groovy's
+rounding `MathContext` could be modelled exactly with bit-precise scale tracking, but that's a separate, heavier
+arithmetic effort).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

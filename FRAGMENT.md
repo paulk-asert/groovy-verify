@@ -31,9 +31,12 @@ a coverage metric. In expressions the fragment is:
   closed subterms folded first; Phase 48 — and **`BigInteger`**, Groovy's arbitrary-precision integer, flows in
   this same unbounded Int sort, the *most* faithful integer type since Z3's `Int` has no width or overflow, modulo
   a literal wider than 64 bits which skips loudly; Phase 124), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
-  `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) so
-  `5 / 2 == 2.5` and `BigDecimal` contracts prove (int operands coerced; only `BigDecimal` is
-  exact-Real — `double`/`float` take the IEEE-754 FP path, below); divide-by-zero and
+  `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) **only when the divisor
+  terminates** — a constant whose unscaled integer has just the prime factors 2 and 5 (`/2`, `/1000`, `/0.25`), so
+  `5 / 2 == 2.5` and a `metres / 1000` unit conversion prove exactly; a non-terminating divisor (`/3`, `/7`, a
+  symbolic one) **skips loudly**, since Groovy rounds it and an exact-Real model would prove runtime-false facts
+  (Phase 143). Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
+  path, below; divide-by-zero and
   `.mod`-non-positive obligations fire; `**` lowers to an axiomatised `pow$` (Phase 93) — a literal
   exponent folds to a value (`(2 ** 3).intValue() == 8` proves) and the doubling recurrence
   `2 ** (n+1) == 2 * (2 ** n)` proves for *symbolic* `n`, though a false symbolic-exponent value claim
@@ -154,14 +157,21 @@ mutator's pre/post state, and a class `@Invariant` assumed-on-entry / checked-pr
 **record** (its components are final fields, so they read like any class field, and a record may carry its own
 contracts) — but it does *not* in general verify the definition itself: deconstruction / pattern matching and
 generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is understood only through
-the fields and finite domain its methods actually touch. A **single-component record** is the exception (Phase
-133): it is modelled as a one-constructor Z3 datatype, so its **canonical constructor round-trips** —
-`new R(v).f == v` holds by datatype theory, and a `result`-typed `new R(…)` with a contract over `.f` verifies —
-including through **carrier-typed locals** (`Length a = new Length(1000); … new Length(a.metres + b.metres)`) and
-the **`+` operator** when the record carries an instance `plus` with an `@Ensures` and no `@Requires` (`a + b` is
-routed to `a.plus(b)` and discharged via the cross-class instance contract). This is the basis for a bespoke,
-self-contained value type such as a units `Length`, operators and all. Multi-component records, and a *guarded*
-operator (`@Requires` on `plus`, whose precondition the operator site can't check), still skip loudly.
+the fields and finite domain its methods actually touch. A **record's canonical constructor is the exception** —
+it is modelled as a one-constructor Z3 datatype, so it **round-trips**: a single-component record (Phase 133)
+gives `new R(v).f == v`, and a **multi-component** record (Phase 142, ≥2 final fields — the `TupleN` analogue)
+gives `new R(a, b).f`, both by datatype theory; a wrong component refutes. A `result`-typed `new R(…)` with a
+contract over `.f` verifies — including through **carrier-typed locals** and the **`+` / `*` operators** when the
+record carries an instance `plus` / `multiply` with an `@Ensures` and no `@Requires` (`a + b` is routed to
+`a.plus(b)` and discharged via the cross-class instance contract; `*` may return a *different* record type, the
+type-changing `Length × Length → Area`). The fullest form is one **dimension-carrying** record —
+`Quantity(value, l, m, t)` — whose `multiply` scales the value and composes the `(L, M, T)` exponent vector
+(`Quantity(2,[1,0,0]) × Quantity(3,[1,0,0]) == Quantity(6,[2,0,0])`), the whole dimensional algebra in a single
+type. A **guarded** operator routes soundly too (Phase 142b): the precondition hook fires for `a + b` and checks
+`plus`'s `@Requires` at the site, so a `Quantity` `plus` guarded `@Requires({ l == o.l && … })` makes `a + b`
+require matching dimensions — same-dimension addition verifies, a Length-plus-Mass refutes — completing the
+algebra (`×`/`/` compose exponents, `+`/`−` require them equal). Still out: deconstruction / pattern-matching,
+generated `equals`/`hashCode`, and in-record conversion/scale.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its

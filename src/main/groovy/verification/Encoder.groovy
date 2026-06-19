@@ -853,7 +853,17 @@ class Encoder {
         if (cf != null) return session.wrapperSort(t.nameWithoutPackage, contentSortFor(cf))
         Object[] mc = multiCaseInfo(t)          // Phase M-C — a two-case carrier (Some|None) is a two-constructor datatype
         if (mc != null) return multiCaseSort(t, (FieldNode) mc[2])
+        List<FieldNode> rc = recordComponents(t) // Phase 142 — a multi-component record is a one-constructor N-field datatype
+        if (rc != null) return recordDatatypeSort(t, rc)
         session.intSort()   // default — preserves today's Int-only behaviour for unrecognised types
+    }
+
+    /** Phase 142 — declare/get the one-constructor N-field datatype sort for a multi-component record. */
+    private Object recordDatatypeSort(ClassNode cn, List<FieldNode> comps) {
+        String name = cn.nameWithoutPackage
+        List<Object[]> ctorFields = new ArrayList<Object[]>()
+        for (FieldNode f : comps) ctorFields.add([f.name, sortFor(f.type)] as Object[])
+        session.datatypeSort(name, [[name, ctorFields] as Object[]] as List<Object[]>)
     }
 
     /** Phase M-C — declare/get the {@code Some(content) | None} datatype sort for a recognised two-case carrier. */
@@ -903,7 +913,7 @@ class Encoder {
      *  used to recover a re-parsed contract's unresolved {@code new Res(a)} type. */
     private ClassNode carrierByName(String simpleName) {
         ClassNode cn = carrierTypes.get(simpleName)
-        cn != null && wrapperContentField(cn) != null ? cn : null
+        cn != null && (wrapperContentField(cn) != null || recordComponents(cn) != null) ? cn : null
     }
 
     /** The carrier ClassNode of a receiver expression: a carrier-typed variable, a freshly constructed carrier,
@@ -913,7 +923,7 @@ class Encoder {
     private ClassNode carrierTypeOf(Expression obj) {
         if (obj instanceof VariableExpression) {
             ClassNode t = scalarTypes.get(((VariableExpression) obj).name)
-            return (wrapperContentField(t) != null || multiCaseInfo(t) != null) ? t : null
+            return (wrapperContentField(t) != null || multiCaseInfo(t) != null || recordComponents(t) != null) ? t : null
         }
         if (obj instanceof ConstructorCallExpression && ((ConstructorCallExpression) obj).type != null)
             return carrierByName(((ConstructorCallExpression) obj).type.nameWithoutPackage)
@@ -942,7 +952,9 @@ class Encoder {
         FieldNode cf = wrapperContentField(ct)
         if (cf != null) return cf.name == pe.propertyAsString
         Object[] mc = multiCaseInfo(ct)
-        mc != null && ((FieldNode) mc[2]).name == pe.propertyAsString
+        if (mc != null) return ((FieldNode) mc[2]).name == pe.propertyAsString
+        List<FieldNode> rc = recordComponents(ct)   // Phase 142 — a multi-component record's `.field` read
+        rc != null && rc.any { it.name == pe.propertyAsString }
     }
 
     // ---- Phase M-C: recognise a tightly-scoped two-case carrier (Some(content) | None) ----
@@ -952,7 +964,23 @@ class Encoder {
      *  {@code boolean} discriminant + one content), a static 1-arg unit/some factory and a static 0-arg none
      *  factory, both returning the carrier. (A single-field wrapper is the Phase-B path and is excluded here.) */
     /** True if {@code cn} is a recognised carrier — a single-field wrapper (Phase B) or a two-case carrier (M-C). */
-    static boolean isCarrier(ClassNode cn) { wrapperContentField(cn) != null || multiCaseInfo(cn) != null }
+    static boolean isCarrier(ClassNode cn) { wrapperContentField(cn) != null || multiCaseInfo(cn) != null || recordComponents(cn) != null }
+
+    /**
+     * Phase 142 — the components of a MULTI-component record (a {@code record} with ≥2 non-static final fields):
+     * a one-constructor immutable product, modelled as an N-field Z3 datatype so {@code new R(a, b).f == a} holds
+     * by datatype theory. A single-component record stays on the wrapper path ({@link #wrapperContentField}); a
+     * non-record, or a record with fewer than two fields, returns null. This is the record analogue of TupleN.
+     */
+    static List<FieldNode> recordComponents(ClassNode cn) {
+        if (cn == null || !isRecordClass(cn)) return null
+        List<FieldNode> inst = new ArrayList<FieldNode>()
+        List<FieldNode> fs = cn.fields
+        if (fs != null) for (FieldNode f : fs) if (!f.isStatic()) inst.add(f)
+        if (inst.size() < 2) return null
+        for (FieldNode f : inst) if (!f.isFinal()) return null
+        inst
+    }
 
     static Object[] multiCaseInfo(ClassNode cn) {
         if (cn == null || wrapperContentField(cn) != null || monadicAnn(cn) == null) return null
@@ -3701,6 +3729,17 @@ class Encoder {
                     Object val = translateInSort(cargs.get(0), cSort)
                     if (val != null) return session.wrapperUnit(carrier.nameWithoutPackage, cSort, val)
                 }
+                List<FieldNode> rc = recordComponents(carrier)   // Phase 142 — `new R(a, b, …)` → N-field datatype ctor
+                if (rc != null && cargs.size() == rc.size()) {
+                    sortFor(carrier)                              // ensure the datatype is declared
+                    List<Object> vals = new ArrayList<Object>()
+                    for (int i = 0; i < rc.size(); i++) {
+                        Object v = translateInSort(cargs.get(i), sortFor(rc.get(i).type))
+                        if (v == null) { vals = null; break }
+                        vals.add(v)
+                    }
+                    if (vals != null) return session.datatypeConstruct(carrier.nameWithoutPackage, carrier.nameWithoutPackage, vals)
+                }
             }
         }
 
@@ -3722,6 +3761,12 @@ class Encoder {
                     sortFor(mt)
                     Object carrier = translate(obj)
                     if (carrier != null) return session.datatypeSelect(mt.nameWithoutPackage, 'Some', prop, carrier)
+                }
+                List<FieldNode> rc = recordComponents(mt)   // Phase 142 — `r.field` → N-field datatype selector
+                if (rc != null && rc.any { it.name == prop }) {
+                    sortFor(mt)
+                    Object carrier = translate(obj)
+                    if (carrier != null) return session.datatypeSelect(mt.nameWithoutPackage, mt.nameWithoutPackage, prop, carrier)
                 }
             }
             // Phase 44 polish — JDK boxed-numeric range constants fold to their literal values, so a
@@ -4064,6 +4109,29 @@ class Encoder {
     }
 
     /** True if {@code e} denotes a decimal (BigDecimal/Double/Float) value in Groovy's semantics. */
+    /**
+     * Phase 143 — true if dividing ANY finite-decimal value by {@code e} terminates *exactly* in Groovy (so
+     * `BigDecimal /` returns the exact quotient rather than rounding) — i.e. {@code e} is a non-zero literal whose
+     * unscaled integer has only the prime factors 2 and 5 (a power of ten, or any product of 2s and 5s: `/1000`,
+     * `/8`, `/0.25`, …). Division by such a constant is sound to model as exact Real division; any other divisor
+     * (a 3, a 7, a symbolic value) makes Groovy round to its `MathContext`, so the Real model would be unsound
+     * and the division must skip.
+     */
+    static boolean isTerminatingDivisor(Expression e) {
+        Expression c = (e instanceof UnaryMinusExpression) ? ((UnaryMinusExpression) e).expression : e
+        if (!(c instanceof ConstantExpression)) return false
+        Object v = ((ConstantExpression) c).value
+        if (!(v instanceof Number) || v instanceof Double || v instanceof Float) return false
+        BigDecimal bd
+        try { bd = new BigDecimal(v.toString()) } catch (Exception ignored) { return false }
+        if (bd.signum() == 0) return false
+        BigInteger u = bd.unscaledValue().abs()
+        BigInteger two = BigInteger.valueOf(2), five = BigInteger.valueOf(5)
+        while (u.mod(two).signum() == 0) u = u.divide(two)
+        while (u.mod(five).signum() == 0) u = u.divide(five)
+        u.equals(BigInteger.ONE)
+    }
+
     private boolean isDecimalExpr(Expression e) {
         if (e instanceof ConstantExpression) {
             return ((ConstantExpression) e).value instanceof BigDecimal   // not Double/Float (IEEE-754)
@@ -4114,7 +4182,10 @@ class Encoder {
                 Object L = asReal(((BinaryExpression) e).leftExpression)
                 Object R = asReal(((BinaryExpression) e).rightExpression)
                 if (L == null || R == null) return null
-                if (t == '/') return session.realDiv(L, R)
+                if (t == '/') {
+                    if (!isTerminatingDivisor(((BinaryExpression) e).rightExpression)) return null   // Phase 143 — sound exact-div only
+                    return session.realDiv(L, R)
+                }
                 if (t == '+') return session.plus(L, R)
                 if (t == '-') return session.minus(L, R)
                 return session.times(L, R)
@@ -4479,7 +4550,11 @@ class Encoder {
                 }
             }
             switch (be.operation.text) {
-                case '/': return session.realDiv(dl, dr)
+                case '/':
+                    // Phase 143 — exact Real division is sound only for a terminating divisor; Groovy rounds the
+                    // rest (`/3`, `/7`, a symbolic divisor), so skip those rather than prove a runtime-false fact.
+                    if (!isTerminatingDivisor(be.rightExpression)) return null
+                    return session.realDiv(dl, dr)
                 case '+': return session.plus(dl, dr)
                 case '-': return session.minus(dl, dr)
                 case '*': return session.times(dl, dr)

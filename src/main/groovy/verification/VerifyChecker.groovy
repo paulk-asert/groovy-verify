@@ -2983,22 +2983,26 @@ class VerifyChecker extends TypeCheckingExtension {
             // IEEE-754 division never throws (x / 0.0 == ±Inf/NaN), so an FP-valued divide carries no
             // divide-by-zero obligation — skip silently (the integer/decimal `b != 0` check doesn't apply).
             if (dv.node instanceof Expression && enc.isFpValued((Expression) dv.node)) return
-            Object divisor = enc.translate(dv.divisor)
+            // Phase 143 — a decimal (BigDecimal) divisor is checked in the Real sort (against a Real zero), so a
+            // `metres / 1000.0` divide discharges instead of skipping for an Int-only divisor translation.
+            boolean decimalDiv = dv.divisor != null && enc.isDecimalValued(dv.divisor)
+            Object divisor = decimalDiv ? enc.asRealValue(dv.divisor) : enc.translate(dv.divisor)
             if (divisor == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("division",
                     "divisor '${dv.divisor.text}' is outside fragment"), dv.node)
                 return
             }
+            Object zero = decimalDiv ? enc.asRealValue(new ConstantExpression(0.0G)) : s.intLit(0L)
             if (dv.requirePositive) {
                 // a.mod(b) throws ArithmeticException("BigInteger: modulus not positive") unless b > 0.
-                s.assertExpr(s.not(s.gt(divisor, s.intLit(0L))))   // negation of (divisor > 0)
+                s.assertExpr(s.not(s.gt(divisor, zero)))   // negation of (divisor > 0)
                 CheckResult r = shown(s.check())
                 if (r.status != CheckResult.Status.VERIFIED) {
                     addStaticTypeError(Reporter.formatModulusNotPositive(dv.divisor.text, r), dv.node)
                 }
                 return
             }
-            s.assertExpr(s.not(s.ne(divisor, s.intLit(0L))))   // negation of (divisor != 0)
+            s.assertExpr(s.not(s.ne(divisor, zero)))   // negation of (divisor != 0)
             CheckResult r = shown(s.check())
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatDivisionByZero(dv.divisor.text, r), r, 'ArithmeticException'), dv), dv.node)
@@ -7166,6 +7170,19 @@ class VerifyChecker extends TypeCheckingExtension {
 
     @Override
     void onMethodSelection(Expression expression, MethodNode target) {
+        // Phase 142b — a carrier operator (`a + b`) resolves to a method (`a.plus(b)`); rewrite it to that call
+        // shape so its precondition is checked here, exactly as for an explicit call. (The value-flow assumes the
+        // @Ensures separately.) Only when the left operand is carrier-typed, so a normal `int + int` is untouched.
+        if (expression instanceof BinaryExpression && target != null &&
+            carrierOperatorMethod(((BinaryExpression) expression).operation.text) == target.name &&
+            carrierTypeOfExpr(((BinaryExpression) expression).leftExpression) != null) {
+            BinaryExpression be = (BinaryExpression) expression
+            MethodCallExpression call = new MethodCallExpression(
+                be.leftExpression, target.name, new ArgumentListExpression(be.rightExpression))
+            call.setImplicitThis(false)
+            call.setSourcePosition(be)
+            expression = call
+        }
         // We only care about resolvable, method-call-shaped expressions.
         if (!(expression instanceof MethodCall)) return
         if (target == null) return
@@ -7345,9 +7362,36 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                 }
             }
-            Object contractSmt = crossClassRecv != null ?
-                enc.translateUnderReceiver(contractAst, crossClassRecv, crossClassFields) :
-                enc.translate(contractAst)
+            // Phase 142b — a CARRIER receiver (`a.plus(b)` from an operator, or an explicit instance call on a
+            // record): bind `this` and each component field so the callee's bare `field` / `this.field`
+            // precondition resolves to the receiver's value, and register the carrier types of `this` / the
+            // formals so an `o.field` read resolves. (Distinct from the object-param `crossClassRecv` path above.)
+            Map<String, ClassNode> typeReg = new LinkedHashMap<String, ClassNode>()
+            if (crossClassRecv == null && callExpr instanceof MethodCallExpression) {
+                Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
+                ClassNode rct = recvExpr != null ? carrierTypeOfExpr(recvExpr) : null
+                if (rct != null) {
+                    Object recvH = enc.translate(recvExpr)
+                    if (recvH != null) {
+                        enc.bind('this', recvH)
+                        typeReg.put('this', rct)
+                        for (FieldNode f : instanceFields(rct)) {
+                            Object fv = enc.translate(new PropertyExpression(recvExpr, f.name))
+                            if (fv != null) enc.bind(f.name, fv)
+                        }
+                    }
+                }
+            }
+            for (Parameter fp : formals) if (Encoder.isCarrier(fp.type)) typeReg.put(fp.name, fp.type)
+            Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
+            Object contractSmt
+            try {
+                contractSmt = crossClassRecv != null ?
+                    enc.translateUnderReceiver(contractAst, crossClassRecv, crossClassFields) :
+                    enc.translate(contractAst)
+            } finally {
+                enc.popScalarTypes(savedTypes)
+            }
             if (contractSmt == null) {
                 addStaticTypeError(
                     Reporter.formatSkipped(target.name,
@@ -7431,10 +7475,9 @@ class VerifyChecker extends TypeCheckingExtension {
     /**
      * Phase 133 — rewrite a carrier-operand arithmetic operator to its method-call form (`a + b` → `a.plus(b)`),
      * so the value-flow's interprocedural path discharges it via the operator method's contract — but ONLY when
-     * that method has no {@code @Requires}. The operator site is a {@link BinaryExpression}, not a {@link MethodCall},
-     * so {@code onMethodSelection} never checks a precondition there; assuming the {@code @Ensures} without checking
-     * the {@code @Requires} would be unsound, so an operator method with a guard stays a loud skip. Any non-carrier
-     * or non-arithmetic expression is returned unchanged.
+     * Phase 142b — a guarded operator IS routed now: {@code onMethodSelection} fires for the operator and checks
+     * the callee's {@code @Requires} at the site (rewriting it to the same call shape), so assuming the
+     * {@code @Ensures} here is sound. Any non-carrier or non-arithmetic expression is returned unchanged.
      */
     private static Expression carrierOperatorCall(Expression e, MethodNode caller) {
         if (!(e instanceof BinaryExpression)) return e
@@ -7443,7 +7486,7 @@ class VerifyChecker extends TypeCheckingExtension {
         ClassNode rt = (m == null) ? null : carrierTypeOfExpr(be.leftExpression)
         if (rt == null) return e
         MethodNode callee = resolveContractedCallee(caller, m, 1, true, rt)
-        if (callee == null || findRequires(callee) != null) return e   // unresolved or guarded → don't route (sound)
+        if (callee == null) return e
         MethodCallExpression call = new MethodCallExpression(
             be.leftExpression, m, new ArgumentListExpression(be.rightExpression))
         call.setImplicitThis(false)
@@ -7610,8 +7653,20 @@ class VerifyChecker extends TypeCheckingExtension {
         if (!(callExpr instanceof MethodCallExpression)) return null
         Expression recv = ((MethodCallExpression) callExpr).objectExpression
         if (recv == null || ((MethodCallExpression) callExpr).isImplicitThis()) return null
+        if (recv instanceof ClassExpression) return null   // `Length.km(…)` is a STATIC call, not an instance receiver
         ClassNode t = (recv instanceof ConstructorCallExpression) ? ((ConstructorCallExpression) recv).type : null
         if (t == null) { try { t = recv.getType() } catch (ignored) {} }
+        (t != null && Encoder.isCarrier(t)) ? t : null
+    }
+
+    /** Phase 142c — the carrier type a STATIC call's method lives on (`Length.km(…)` → `Length`), for resolution. */
+    private static ClassNode ownerCarrierType(Expression callExpr) {
+        ClassNode t = null
+        if (callExpr instanceof StaticMethodCallExpression) t = ((StaticMethodCallExpression) callExpr).ownerType
+        else if (callExpr instanceof MethodCallExpression) {
+            Expression recv = ((MethodCallExpression) callExpr).objectExpression
+            if (recv instanceof ClassExpression) t = recv.getType()
+        }
         (t != null && Encoder.isCarrier(t)) ? t : null
     }
 
@@ -7803,6 +7858,8 @@ class VerifyChecker extends TypeCheckingExtension {
                 String name = ((VariableExpression) de.leftExpression).name
                 Object rhs = enc.translate(de.rightExpression)
                 if (rhs != null) enc.bind(name, rhs) else havocLocation(enc, name)
+                Object kn = enc.nullityOfExpr(de.rightExpression)   // Phase 142b — thread known nullity (a `new X(…)` local is non-null)
+                if (kn != null) enc.bindNullity(name, kn)
                 return true
             }
             return false
@@ -7923,7 +7980,9 @@ class VerifyChecker extends TypeCheckingExtension {
         List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
         if (name == null || actuals == null) return false
         ClassNode receiverType = receiverCarrierType(callExpr)                 // Phase 133 — instance call on a carrier
-        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, receiverType)
+        // Resolve on the instance receiver's type, else a static call's owner type (`Length.km(…)` — Phase 142c).
+        ClassNode forResolve = receiverType != null ? receiverType : ownerCarrierType(callExpr)
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve)
         if (callee == null) return false
         Expression ensuresAst = contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
@@ -7933,7 +7992,10 @@ class VerifyChecker extends TypeCheckingExtension {
         Parameter[] formals = callee.parameters
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
         for (int i = 0; i < formals.length; i++) {
-            Object h = enc.translate(actuals.get(i))
+            // A decimal (BigDecimal) actual needs the Real path — plain translate is Int-oriented and returns null
+            // (this blocked a `km(2.0)`-style factory call with a decimal argument).
+            Object h = (enc.sortForType(formals[i].type) == s.realSort()) ?
+                enc.asRealValue(actuals.get(i)) : enc.translate(actuals.get(i))
             if (h == null) return false   // can't faithfully substitute → don't assume
             bindings.put(formals[i].name, h)
         }

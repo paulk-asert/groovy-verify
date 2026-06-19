@@ -272,12 +272,22 @@ class VerifyHarness {
               '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
         // Soundness: an operator method WITH a @Requires is NOT routed (the operator site has no precondition
         // check), so it stays a loud skip rather than assuming @Ensures with an unchecked guard.
-        [group: 'P133 record ctor', name: 'guarded operator stays a skip (sound)', expect: 'Skipped verification of postcondition',
+        // A GUARDED operator routes too (Phase 142b): `onMethodSelection` fires for `a + b` and checks plus's
+        // @Requires at the site (here `o != null`, discharged because the operand is non-null), so it's sound.
+        [group: 'P133 record ctor', name: 'guarded operator routes (precondition discharged)', ok: true,
          src: HDR + 'record Length(BigDecimal metres) {\n' +
               '  @Requires({ o != null }) @Ensures({ result.metres == metres + o.metres }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
               "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { @Ensures({ result.metres == 2609.344 }) static Length sum() {\n' +
               '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
+        // Soundness: a VIOLATED operator precondition refutes (plus's @Ensures holds only under its @Requires; a
+        // negative operand breaks the guard, so the proof is rejected rather than assumed).
+        [group: 'P133 record ctor', name: 'guarded operator: violated precondition refutes', expect: 'Cannot prove',
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Requires({ metres >= 0.0 && o.metres >= 0.0 }) @Ensures({ result.metres >= 0.0 }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres >= 0.0 }) static Length sum() {\n' +
+              '  Length a = new Length(-5.0); Length b = new Length(3.0); Length s = a + b; s } }'],
         // TYPE-CHANGING operator (Phase 133): `Length * Length -> Area` — `*` routes to a `multiply` returning a
         // *different* record type, the real dimensional algebra (rung two). Operands built body-local.
         [group: 'P133 record ctor', name: 'type-changing operator: Length * Length = Area', ok: true,
@@ -321,6 +331,135 @@ class VerifyHarness {
               'class C {\n' +
               '  @Requires({ s != null }) static int g(String s) { 0 }\n' +
               '  static int f() { g("ab") } }'],
+
+        // ---------- Phase 142: multi-component record as a one-constructor N-field datatype ----------
+        // `new R(a, b).f == a/b` round-trips for a record with several components (the TupleN analogue).
+        [group: 'P142 multi-record', name: 'construct then read (two components)', ok: true,
+         src: HDR + 'record V(int x, int y) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.x == 2 && result.y == 3 }) static V make() { new V(2, 3) } }'],
+        [group: 'P142 multi-record', name: 'wrong component refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record V(int x, int y) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.x == 2 && result.y == 99 }) static V make() { new V(2, 3) } }'],
+        // The dimension-carrying record — ONE type for every unit: a value plus its (L,M,T) exponent vector.
+        // `×` scales the value AND adds the exponents, so Length(2 m,[1,0,0]) × Length(3 m,[1,0,0]) is
+        // Area(6 m²,[2,0,0]) — the full dimensional algebra in a single record, value and dimension both proved.
+        [group: 'P142 multi-record', name: 'dimension-carrying Quantity: value and exponents compose', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == value * o.value && result.l == l + o.l && result.m == m + o.m && result.t == t + o.t })\n' +
+              '    Quantity multiply(Quantity o) { new Quantity(value * o.value, l + o.l, m + o.m, t + o.t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '    @Ensures({ result.value == 6.0 && result.l == 2 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity area() {\n' +
+              '        Quantity a = new Quantity(2.0, 1, 0, 0)\n' +
+              '        Quantity b = new Quantity(3.0, 1, 0, 0)\n' +
+              '        Quantity s = a * b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
+        // A wrong exponent refutes — the dimension composition is a real proof (L×L is exponent 2, not 1).
+        [group: 'P142 multi-record', name: 'dimension-carrying Quantity: wrong exponent refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == value * o.value && result.l == l + o.l && result.m == m + o.m && result.t == t + o.t })\n' +
+              '    Quantity multiply(Quantity o) { new Quantity(value * o.value, l + o.l, m + o.m, t + o.t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '    @Ensures({ result.l == 1 })\n' +
+              '    static Quantity area() {\n' +
+              '        Quantity a = new Quantity(2.0, 1, 0, 0)\n' +
+              '        Quantity b = new Quantity(3.0, 1, 0, 0)\n' +
+              '        Quantity s = a * b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
+        // The addition half of the algebra (Phase 142b): `+` on Quantity requires *matching* dimensions. A guarded
+        // `plus` (@Requires the exponents are equal) routes, the guard is checked at the `a + b` site — so same-
+        // dimension addition verifies, and adding a Length to a Mass REFUTES (the units bug the type system can't
+        // catch, since every quantity is one `Quantity` type).
+        [group: 'P142 multi-record', name: 'dimensional addition: same dimension verifies', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value && result.l == l })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '    @Ensures({ result.value == 5.0 && result.l == 1 })\n' +
+              '    static Quantity add() {\n' +
+              '        Quantity a = new Quantity(2.0, 1, 0, 0)\n' +
+              '        Quantity b = new Quantity(3.0, 1, 0, 0)\n' +
+              '        Quantity s = a + b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
+        [group: 'P142 multi-record', name: 'dimensional addition: mismatched dimensions refute', expect: 'Cannot prove precondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value && result.l == l })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '    @Ensures({ result.value == 5.0 })\n' +
+              '    static Quantity add() {\n' +
+              '        Quantity a = new Quantity(2.0, 1, 0, 0)\n' +
+              '        Quantity b = new Quantity(3.0, 0, 1, 0)\n' +
+              '        Quantity s = a + b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
+
+        // ---------- Phase 142c: in-record unit conversion (the construct-to-SI side, multiplicative) ----------
+        // A `km(v)` factory scales the value to SI (metres). A cross-class `Length.km(2)` resolves and pins the
+        // component to 2000 — so a value entered in km is verified in metres.
+        [group: 'P142c conversion', name: 'cross-class factory construction (km → metres)', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Ensures({ result.metres == v * 1000.0 }) static Length km(BigDecimal v) { new Length(v * 1000.0) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 2000.0 }) static BigDecimal m() { Length r = Length.km(2.0); r.metres } }'],
+        // A wrong constructed value refutes at the use site (1 km is 1000 m, not 999).
+        [group: 'P142c conversion', name: 'wrong converted value refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Ensures({ result.metres == v * 1000.0 }) static Length km(BigDecimal v) { new Length(v * 1000.0) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 999.0 }) static BigDecimal m() { Length r = Length.km(1.0); r.metres } }'],
+        // Two constructions of the same physical length are EQUAL (`1 km == 1000 m`) — record equality, the
+        // cleanest "same quantity, different unit" check, all multiplicative.
+        [group: 'P142c conversion', name: 'two constructions of one length are equal', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Ensures({ result.metres == v * 1000.0 }) static Length km(BigDecimal v) { new Length(v * 1000.0) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == true }) static boolean eq() { Length a = Length.km(1.0); Length b = new Length(1000.0); a == b } }'],
+        // ... and two DIFFERENT physical lengths are NOT equal (1 km ≠ 2000 m) — the equality is a real proof.
+        [group: 'P142c conversion', name: 'different lengths are not equal (refutes)', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Ensures({ result.metres == v * 1000.0 }) static Length km(BigDecimal v) { new Length(v * 1000.0) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == true }) static boolean eq() { Length a = Length.km(1.0); Length b = new Length(2000.0); a == b } }'],
+
+        // ---------- Phase 143: BigDecimal division modelled soundly (terminating divisors only) ----------
+        // A terminating divisor (`/1000` — only the prime factors 2 and 5) is EXACT in Groovy, so exact Real
+        // division is sound: `2000 / 1000 == 2` verifies (and the div-by-zero check discharges in the Real sort).
+        [group: 'P143 decimal div', name: 'terminating divisor verifies exactly', ok: true,
+         src: tc('''class C {
+                        @Requires({ x == 2000.0 })
+                        @Ensures({ result == 2.0 })
+                        static BigDecimal f(BigDecimal x) { x / 1000.0 }
+                    }''')],
+        // A NON-terminating divisor (`/3`) rounds in Groovy (0.333…), so exact Real division would prove false
+        // facts — it now SKIPS loudly instead. (Before the fix, `(x/3)*3 == 1.0` "verified", a runtime-false claim.)
+        [group: 'P143 decimal div', name: 'non-terminating divisor skips (sound)', expect: 'Skipped verification of postcondition',
+         src: tc('''class C {
+                        @Requires({ x == 1.0 })
+                        @Ensures({ result == 1.0 })
+                        static BigDecimal f(BigDecimal x) { BigDecimal y = x / 3.0; y * 3.0 }
+                    }''')],
+        // The unit-conversion read-out now verifies for a terminating factor: a length's value in km is
+        // metres / 1000, and a wrong factor refutes. (The record carries its own @TypeChecked so inKm is checked.)
+        [group: 'P143 decimal div', name: 'conversion read-out (/1000) verifies', ok: true,
+         src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'record Length(BigDecimal metres) { @Ensures({ result == metres / 1000.0 }) BigDecimal inKm() { metres / 1000.0 } }'],
+        [group: 'P143 decimal div', name: 'wrong conversion factor refutes', expect: 'Cannot prove postcondition',
+         src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'record Length(BigDecimal metres) { @Ensures({ result == metres / 100.0 }) BigDecimal inKm() { metres / 1000.0 } }'],
 
         // ---------- Phase 1: null dereference ----------
         [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',
@@ -8957,10 +9096,11 @@ class WrapCounter implements Counter { }
                         static BigDecimal avg(int a, int b) { (a + b) / 2 }
                     }''')],
         // Soundness anchor: claiming the average is (a + b) / 3 refutes.
+        // (A terminating wrong divisor /4 — `/3` is non-terminating, so it soundly *skips* rather than refutes; see P143.)
         [group: 'P61 decimal', name: 'BigDecimal avg wrong divisor refuted',
          expect: 'Cannot prove postcondition',
          src: tc('''class C {
-                        @Ensures({ result == (a + b) / 3 })
+                        @Ensures({ result == (a + b) / 4 })
                         static BigDecimal avg(int a, int b) { (a + b) / 2 }
                     }''')],
         // A BigDecimal-typed parameter compared against a decimal literal: price >= 10.0 ⇒ price > 9.99.

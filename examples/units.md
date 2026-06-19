@@ -99,9 +99,9 @@ static Length sum() {
 ```
 
 A kilometre plus a mile, both in metres, is exactly `2609.344` — operators and all, verified. Claim `2600.0` and
-it **refutes**. This is sound *by restriction*: the rewrite of `a + b` → `a.plus(b)` fires only when `plus` has no
-`@Requires` (the operator site is a `BinaryExpression`, so the precondition hook can't check a guard there), so a
-guarded operator stays a loud skip rather than an unchecked assumption.
+it **refutes**. A **guarded** operator routes too and stays sound: the precondition hook fires for `a + b`, checks
+`plus`'s `@Requires` at the site (a violated guard refutes), and only then is the `@Ensures` assumed — which is
+exactly what makes the dimension-checked addition below work.
 
 Be clear about what `plus` proves, though: the **value**. A `Length` is a `BigDecimal` in a wrapper — the
 verifier checks the magnitude arithmetic, and the only thing stopping you adding a `Length` to a `Mass` is
@@ -131,22 +131,69 @@ static Area area() {
 }
 ```
 
-`2 m × 3 m == 6 m²`, verified — and a wrong area refutes. What's still missing for a *full* units algebra is
-**multi-component** records — a dimension *vector* `(L, M, T)`, so derived units fall out automatically instead of
-each needing its own hand-written record + operator — and **conversion** inside the bespoke type (the scale layer,
-which today lives only in the JSR 385 reader above). So: a verified value type that already does same-dimension
-`+` and type-changing `×`, on the way to a dimension-carrying one.
+`2 m × 3 m == 6 m²`, verified — and a wrong area refutes. So far each unit has been its own record. The fullest
+form collapses them all into **one** type: a record carrying a value *and its dimension vector* `(L, M, T)`, where
+`×` scales the value and **composes the exponents**:
+
+<!-- doclint:case p142-multi-record/dimension-carrying-quantity-value-and-exponents-compose -->
+```groovy
+record Quantity(BigDecimal value, int l, int m, int t) {
+    @Ensures({ result.value == value * o.value && result.l == l + o.l && result.m == m + o.m && result.t == t + o.t })
+    Quantity multiply(Quantity o) { new Quantity(value * o.value, l + o.l, m + o.m, t + o.t) }
+}
+```
+
+<!-- doclint:case p142-multi-record/dimension-carrying-quantity-value-and-exponents-compose -->
+```groovy
+@Ensures({ result.value == 6.0 && result.l == 2 && result.m == 0 && result.t == 0 })
+static Quantity area() {
+    Quantity a = new Quantity(2.0, 1, 0, 0)
+    Quantity b = new Quantity(3.0, 1, 0, 0)
+    Quantity s = a * b
+    s
+}
+```
+
+`Length(2 m, [1,0,0]) × Length(3 m, [1,0,0])` is `Area(6 m², [2,0,0])` — the dimension *composes* under `×`, value
+and exponent vector both checked, a wrong exponent refuting. `/` subtracts exponents the same way. **Addition**
+completes the algebra, and it's where the dimension check earns its keep: `+` may only combine *matching*
+dimensions, so guard `plus` and the guard is checked at the `a + b` site:
+
+<!-- doclint:case p142-multi-record/dimensional-addition-same-dimension-verifies -->
+```groovy
+record Quantity(BigDecimal value, int l, int m, int t) {
+    @Requires({ l == o.l && m == o.m && t == o.t })
+    @Ensures({ result.value == value + o.value && result.l == l })
+    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }
+}
+```
+
+Same-dimension `a + b` verifies; add a Length `[1,0,0]` to a Mass `[0,1,0]` and the guard `l == o.l` fails, so
+`a + b` **refutes** — the units bug the *type* system can't catch, since every quantity is one `Quantity` type.
+That's the full Dafny dimension-ADT algebra reached from the bespoke-record side: `×`/`/` compose exponents,
+`+`/`−` require them equal, a derived unit needs no new type, and the whole thing is machine-checked.
+
+**Conversion** works on the construct-to-SI side: a `Length.km(v)` factory scales a value into metres
+(`new Length(v * 1000)`), and at the use site the converted value is verified — `Length.km(2).metres == 2000`, a
+wrong value refuting — with two constructions of the same physical length comparing **equal**
+(`Length.km(1) == new Length(1000)`, by datatype equality). The *read-out* direction (divide back into a unit,
+`metres / 1000`) now verifies too — `BigDecimal` division is modelled exactly **when the divisor terminates** (a
+power of ten, or any product of 2s and 5s), which covers metric read-outs; a *non-terminating* divisor (`/3`,
+`/60`, a mile) still skips loudly, because Groovy rounds it and exact rational division would be unsound. (A
+record's own conversion methods are verified only if the record itself carries `@TypeChecked`; at the *use* site
+they hold.)
 
 ## What is proven, and what isn't
 
 - **Exact, not floating-point** — magnitudes are exact `BigDecimal` / rationals, so `2609.344` means `2609.344`.
-- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (§1, the cast), a wrong
-  **scale** refutes (§2, the value over JSR 385), a wrong **total** refutes (§3, the operator); none passes by
-  being un-modelled. But these are *not* one guarantee on one artifact: only the JSR 385 layers reason about
-  dimension and scale — the bespoke record reasons about the *value* of a wrapped number, and its unit-safety
-  (no `Length + Mass`) is Groovy's static types, not the checker.
-- **Honest skips** — `Length × Length` (Area needs a multi-component record), a `@Requires`-guarded operator,
-  affine units (°C / °F carry an *offset*, not a pure scale), and any unit or kind outside the curated tables all
-  skip loudly rather than guess.
+- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (§1, at the cast; or §3, as an
+  explicit exponent vector in a `Quantity` record), a wrong **scale** refutes (§2, the value over JSR 385), a
+  wrong **value/total** refutes (§3, the operator); none passes by being un-modelled. The JSR 385 layers read the
+  dimension from the *type*; the bespoke record reasons about whatever you make *data* — a bare `Length` is just a
+  value (its `no Length + Mass` safety is Groovy's static types), while a `Quantity(value, L, M, T)` carries and
+  composes its dimension explicitly.
+- **Honest skips** — affine units (°C / °F carry an *offset*, not a pure scale), a read-out by a *non-terminating*
+  divisor (Groovy rounds it — unsound to model exactly), and any unit or kind outside the curated tables, all skip
+  loudly rather than guess.
 
-The full capability rows are in **[CAPABILITIES.md](../CAPABILITIES.md)** (Phases 131–133).
+The full capability rows are in **[CAPABILITIES.md](../CAPABILITIES.md)** (Phases 131–133, 142, 142b, 142c, 143).
