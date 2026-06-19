@@ -5530,6 +5530,11 @@ class VerifyChecker extends TypeCheckingExtension {
                     // @Ensures. No-op for everything else; the call paths still see `rhsE`.
                     Expression rhsE = carrierOperatorCall(a.rhs, node)
                     Object rhs = isDecimal ? enc.asRealValue(a.rhs) : enc.translate(a.rhs)
+                    // Phase 146 — a decimal local read out of a carrier chain (`BigDecimal v = km(1).plus(mile(1)).value`):
+                    // hoist the chain call to a temp carrier local so the `.value` read resolves, then retry the Real path.
+                    if (rhs == null && isDecimal) {
+                        rhs = enc.asRealValue(hoistCarrierCalls(a.rhs, enc, session, node))
+                    }
                     ClassNode declaredType = currentScalarTypes.get(a.name)
                     Object fresh
                     if (isDecimal) {
@@ -5700,10 +5705,15 @@ class VerifyChecker extends TypeCheckingExtension {
                     // bound through the Real path; `translate` alone leaves a decimal constant unmodelled
                     // (null) and a decimal variable an int shadow.
                     // Phase 73 — a double/float return is bound through the FP path (Z3 IEEE-754).
-                    Object resHandle = enc.isFpValued(p.result) ? enc.asFp(p.result)
-                                     : enc.isDecimalValued(p.result) ? enc.asRealValue(p.result)
-                                     : enc.translate(p.result)
-                    if (resHandle == null && !enc.isFpValued(p.result) && !enc.isDecimalValued(p.result)) {
+                    // Phase 145/146 — model carrier-returning calls in the return expression by hoisting each
+                    // maximal one to a temp local bound to its modelled value, so a chain that RETURNS the carrier
+                    // (`Quantity.km(1).plus(Quantity.mile(1))`) OR a READ-OUT in the same expression
+                    // (`…​.plus(…​).value`) both translate — the latter then an ordinary component read off the temp.
+                    Expression retExpr = hoistCarrierCalls(p.result, enc, session, node)
+                    Object resHandle = enc.isFpValued(retExpr) ? enc.asFp(retExpr)
+                                     : enc.isDecimalValued(retExpr) ? enc.asRealValue(retExpr)
+                                     : enc.translate(retExpr)
+                    if (resHandle == null && !enc.isFpValued(retExpr) && !enc.isDecimalValued(retExpr)) {
                         // A contracted/self call sitting in the return expression — `return f(args)` or
                         // `return n * f(args)` — isn't itself a fragment expression, so translate() bailed.
                         // Hoist each such call into an implicit single-assignment local bound by the
@@ -5729,7 +5739,7 @@ class VerifyChecker extends TypeCheckingExtension {
                             }
                             return e.transformExpression(tr)
                         } as ExpressionTransformer
-                        Expression rewritten = tr.transform(p.result)
+                        Expression rewritten = tr.transform(retExpr)
                         if (hoistedAny[0]) resHandle = enc.translate(rewritten)
                     }
                     if (resHandle == null) {
@@ -7311,6 +7321,11 @@ class VerifyChecker extends TypeCheckingExtension {
             //    the fresh symbol out of the displayed counterexample (which filters `#`).
             for (int i = 0; i < formals.length; i++) {
                 Object argHandle = enc.translate(argExprs[i])
+                // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))` in a chain):
+                // model it as a value, so the guarded operator's precondition discharges over the real argument.
+                if (argHandle == null && Encoder.isCarrier(formals[i].type)) {
+                    argHandle = carrierValueOf(session, enc, argExprs[i], currentMethod)
+                }
                 if (argHandle == null) {
                     addStaticTypeError(
                         Reporter.formatSkipped(target.name,
@@ -7370,13 +7385,17 @@ class VerifyChecker extends TypeCheckingExtension {
             if (crossClassRecv == null && callExpr instanceof MethodCallExpression) {
                 Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
                 ClassNode rct = recvExpr != null ? carrierTypeOfExpr(recvExpr) : null
+                // Phase 145 — the receiver may itself be a carrier-returning call (`a.f().g()`).
+                if (rct == null && recvExpr != null && !(recvExpr instanceof ClassExpression) && isCallExpr(recvExpr)) {
+                    rct = carrierValueExprType(recvExpr)
+                }
                 if (rct != null) {
-                    Object recvH = enc.translate(recvExpr)
+                    Object recvH = carrierValueOf(session, enc, recvExpr, currentMethod)
                     if (recvH != null) {
                         enc.bind('this', recvH)
                         typeReg.put('this', rct)
                         for (FieldNode f : instanceFields(rct)) {
-                            Object fv = enc.translate(new PropertyExpression(recvExpr, f.name))
+                            Object fv = enc.carrierField(rct, f.name, recvH)
                             if (fv != null) enc.bind(f.name, fv)
                         }
                     }
@@ -7470,6 +7489,73 @@ class VerifyChecker extends TypeCheckingExtension {
         ClassNode t = null
         try { t = e.getType() } catch (ignored) {}
         (t != null && Encoder.isCarrier(t)) ? t : null
+    }
+
+    /** Phase 145 — the carrier type an expression *evaluates to*: a carrier variable/constructor (via
+     *  {@link #carrierTypeOfExpr}), or a contracted call returning a carrier (resolved on its instance-receiver
+     *  or static-owner type, recursing through a chained call receiver so {@code a.f().g()} resolves). Null if not
+     *  a carrier value. Threads {@link #currentMethod} as the caller for callee resolution. */
+    private ClassNode carrierValueExprType(Expression e) {
+        if (e == null) return null
+        ClassNode direct = carrierTypeOfExpr(e)
+        if (direct != null) return direct
+        if (!isCallExpr(e)) return null
+        ClassNode forResolve = receiverCarrierType(e) ?: ownerCarrierType(e)
+        if (forResolve == null && e instanceof MethodCallExpression &&
+            !(((MethodCallExpression) e).objectExpression instanceof ClassExpression)) {
+            forResolve = carrierValueExprType(((MethodCallExpression) e).objectExpression)   // chained receiver
+        }
+        if (forResolve == null) return null
+        MethodNode callee = resolveContractedCallee(currentMethod, ((MethodCall) e).methodAsString,
+            collectArgumentExpressions((MethodCall) e).size(), true, forResolve)
+        (callee != null && Encoder.isCarrier(callee.returnType)) ? callee.returnType : null
+    }
+
+    /** Phase 145 — evaluate a carrier-valued expression to an SMT handle, modelling a nested contracted call (a
+     *  factory or instance call sitting as the receiver / argument of an outer call, or as a return value) by
+     *  minting a fresh carrier-sorted handle constrained by the callee's {@code @Ensures}. This is what makes a
+     *  *chain* — {@code Quantity.km(1).plus(Quantity.mile(1))} — resolve as a single expression: a carrier-returning
+     *  call is a value, not only a local-assignment RHS. Additive — a directly-translatable expression keeps its
+     *  existing handle; returns null (→ caller skips loudly) when the call isn't a modellable contracted carrier call. */
+    private Object carrierValueOf(SmtSession s, Encoder enc, Expression e, MethodNode caller) {
+        Object direct = enc.translate(e)
+        if (direct != null) return direct
+        ClassNode rt = carrierValueExprType(e)
+        if (rt == null) return null
+        Object fresh = s.varOfSort('chain#' + (havocCounter++), enc.sortForType(rt))
+        assumeCalleeEnsures(s, enc, e, caller, fresh, hasDecreases(caller)) ? fresh : null
+    }
+
+    /** Phase 146 — rewrite each maximal carrier-returning call in {@code e} to a fresh temp local bound to its
+     *  modelled value (via {@link #carrierValueOf}), registering the temp's carrier type so a subsequent
+     *  {@code .field} read resolves. This is what lets a **read-out in the same expression** translate:
+     *  {@code Quantity.km(1).plus(Quantity.mile(1)).value} — the chain call becomes a {@code Quantity} local and
+     *  {@code .value} is then an ordinary component read. A non-carrier call (an int/self call) is left untouched
+     *  for the existing Int-oriented hoist. Additive — an expression with no carrier call is returned unchanged. */
+    private Expression hoistCarrierCalls(Expression e, Encoder enc, SmtSession s, MethodNode node) {
+        if (e == null) return e
+        boolean[] changed = [false]
+        ExpressionTransformer tr = null
+        tr = { Expression x ->
+            ClassNode ct = isCallExpr(x) ? carrierValueExprType(x) : null
+            if (ct != null) {
+                // A maximal carrier call: model the WHOLE chain (carrierValueOf recurses into nested calls),
+                // so don't descend further into x.
+                Object h = carrierValueOf(s, enc, x, node)
+                if (h == null) return x
+                String nm = 'chain$local$' + (havocCounter++)
+                enc.bind(nm, h)
+                enc.registerScalarType(nm, ct)
+                changed[0] = true
+                return new VariableExpression(nm)
+            }
+            x.transformExpression(tr)
+        } as ExpressionTransformer
+        Expression out = tr.transform(e)
+        // Identity-preserving when nothing was hoisted — transformExpression rebuilds the tree even when
+        // unchanged, and handing a reconstructed copy to the encoder would perturb the SMT (and any
+        // counterexample model) for *every* method, carrier or not. Return the original unless we rewrote a call.
+        changed[0] ? out : e
     }
 
     /**
@@ -7856,8 +7942,10 @@ class VerifyChecker extends TypeCheckingExtension {
             DeclarationExpression de = (DeclarationExpression) e
             if (de.leftExpression instanceof VariableExpression) {
                 String name = ((VariableExpression) de.leftExpression).name
+                ClassNode declType = ((VariableExpression) de.leftExpression).originType ?: de.leftExpression.type
                 Object rhs = enc.translate(de.rightExpression)
-                if (rhs != null) enc.bind(name, rhs) else havocLocation(enc, name)
+                if (rhs != null) enc.bind(name, rhs)
+                else if (!replayCarrierCall(enc, s, name, de.rightExpression, declType)) havocLocation(enc, name)
                 Object kn = enc.nullityOfExpr(de.rightExpression)   // Phase 142b — thread known nullity (a `new X(…)` local is non-null)
                 if (kn != null) enc.bindNullity(name, kn)
                 return true
@@ -7873,7 +7961,8 @@ class VerifyChecker extends TypeCheckingExtension {
             if (lhs instanceof VariableExpression) {
                 String name = ((VariableExpression) lhs).name
                 Object rhs = enc.translate(be.rightExpression)
-                if (rhs != null) enc.bind(name, rhs) else havocLocation(enc, name)
+                if (rhs != null) enc.bind(name, rhs)
+                else if (!replayCarrierCall(enc, s, name, be.rightExpression, ((VariableExpression) lhs).originType ?: lhs.type)) havocLocation(enc, name)
                 return true
             }
             if (lhs instanceof PropertyExpression &&
@@ -7902,6 +7991,25 @@ class VerifyChecker extends TypeCheckingExtension {
             }
         }
         return false
+    }
+
+    /** Phase 144 — model a carrier-returning contracted call in the prefix replay, so a precondition check's
+     *  replayed prefix sees a factory-built local (`Q b = Q.mile(1.0)`) or a routed carrier operator
+     *  (`Q s = a + b`) as a real carrier value rather than an {@code Int} havoc. The Int havoc was unsound by
+     *  crash: a later same-sort equality (`eq(Q-formal, b)` at a guarded-operator site) mixed {@code Q} with
+     *  {@code Int}. Mirrors the main value-flow's carrier-call branch — mint a fresh carrier-sorted handle and
+     *  assume the callee's @Ensures (which binds `result` ↦ the handle). Returns false (→ havoc) when the local
+     *  is not a carrier or the call isn't a modellable contracted call. */
+    private boolean replayCarrierCall(Encoder enc, SmtSession s, String name, Expression rhs, ClassNode declType) {
+        if (declType == null || isIntElement(declType)) return false
+        Object carrierSort = enc.sortForType(declType)
+        if (carrierSort == null || carrierSort == s.intSort()) return false
+        Expression rhsE = carrierOperatorCall(rhs, currentMethod)   // `a + b` → `a.plus(b)`; otherwise unchanged
+        if (!isCallExpr(rhsE)) return false
+        Object fresh = s.varOfSort(name + '#replay' + (havocCounter++), carrierSort)
+        if (!assumeCalleeEnsures(s, enc, rhsE, currentMethod, fresh, hasDecreases(currentMethod))) return false
+        enc.bind(name, fresh)
+        return true
     }
 
     /** Havoc every representation a name might have (sound when its type is unknown at the havoc site). */
@@ -7980,6 +8088,11 @@ class VerifyChecker extends TypeCheckingExtension {
         List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
         if (name == null || actuals == null) return false
         ClassNode receiverType = receiverCarrierType(callExpr)                 // Phase 133 — instance call on a carrier
+        // Phase 145 — the receiver may itself be a carrier-returning call (`a.f().g()`); resolve its carrier type.
+        if (receiverType == null && callExpr instanceof MethodCallExpression) {
+            Expression rcv = ((MethodCallExpression) callExpr).objectExpression
+            if (rcv != null && !(rcv instanceof ClassExpression) && isCallExpr(rcv)) receiverType = carrierValueExprType(rcv)
+        }
         // Resolve on the instance receiver's type, else a static call's owner type (`Length.km(…)` — Phase 142c).
         ClassNode forResolve = receiverType != null ? receiverType : ownerCarrierType(callExpr)
         MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve)
@@ -7992,10 +8105,17 @@ class VerifyChecker extends TypeCheckingExtension {
         Parameter[] formals = callee.parameters
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
         for (int i = 0; i < formals.length; i++) {
+            ClassNode ft = formals[i].type
             // A decimal (BigDecimal) actual needs the Real path — plain translate is Int-oriented and returns null
             // (this blocked a `km(2.0)`-style factory call with a decimal argument).
-            Object h = (enc.sortForType(formals[i].type) == s.realSort()) ?
-                enc.asRealValue(actuals.get(i)) : enc.translate(actuals.get(i))
+            Object h
+            if (enc.sortForType(ft) == s.realSort()) {
+                h = enc.asRealValue(actuals.get(i))
+            } else {
+                h = enc.translate(actuals.get(i))
+                // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))`): model it.
+                if (h == null && Encoder.isCarrier(ft)) h = carrierValueOf(s, enc, actuals.get(i), caller)
+            }
             if (h == null) return false   // can't faithfully substitute → don't assume
             bindings.put(formals[i].name, h)
         }
@@ -8009,12 +8129,12 @@ class VerifyChecker extends TypeCheckingExtension {
         Map<String, ClassNode> typeReg = new LinkedHashMap<String, ClassNode>()
         if (receiverType != null && callExpr instanceof MethodCallExpression) {
             Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
-            Object recvH = enc.translate(recvExpr)
+            Object recvH = carrierValueOf(s, enc, recvExpr, caller)            // Phase 145 — receiver may itself be a call
             if (recvH == null) return false
             bindings.put('this', recvH)
             typeReg.put('this', receiverType)
             for (FieldNode f : instanceFields(receiverType)) {
-                Object fv = enc.translate(new PropertyExpression(recvExpr, f.name))
+                Object fv = enc.carrierField(receiverType, f.name, recvH)      // read each component off the handle
                 if (fv != null) bindings.put(f.name, fv)                       // bare `field` == this.field
             }
         }

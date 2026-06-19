@@ -514,27 +514,31 @@ class Z3Session implements SmtSession {
     }
 
     /** Z3's {@code getString()} renders non-ASCII as literal {@code \\u{HHHH}} escapes, and {@code mkString}
-     *  round-trips a supplementary character as a {@code [code-point, low-surrogate]} pair — so decode the
-     *  escapes and drop the artifact lone surrogates, recovering the real text (e.g. the actual emoji). */
+     *  round-trips a supplementary character as a {@code [code-point, low-surrogate]} pair (or, on the raw,
+     *  un-escaped path, a stray orphan surrogate). Canonicalise: decode escapes to code points, walk the rest by
+     *  code point, and drop EVERY lone/orphan surrogate — so the same logical text (e.g. an emoji) always yields
+     *  the identical Java String, whatever representation Z3's model happened to pick. Determinism matters: a
+     *  counterexample string is compared against an expected literal, and a stray surrogate makes that brittle. */
     private static String cleanZ3String(String s) {
-        if (s == null || s.indexOf('\\') < 0) return s
+        if (s == null) return s
         StringBuilder out = new StringBuilder()
         int i = 0
         while (i < s.length()) {
+            int cp
+            int next
             if (s.charAt(i) == '\\' && i + 2 < s.length() && s.charAt(i + 1) == 'u' && s.charAt(i + 2) == '{') {
                 int close = s.indexOf('}', i + 3)
+                int parsed = -1
                 if (close > i + 3) {
-                    try {
-                        int cp = Integer.parseInt(s.substring(i + 3, close), 16)
-                        if (cp < 0xD800 || cp > 0xDFFF) out.appendCodePoint(cp)   // skip lone surrogate artifacts
-                        i = close + 1
-                        continue
-                    } catch (NumberFormatException ignored) {
-                    }
+                    try { parsed = Integer.parseInt(s.substring(i + 3, close), 16) } catch (NumberFormatException ignored) { }
                 }
+                if (parsed >= 0) { cp = parsed; next = close + 1 }
+                else { cp = (int) s.charAt(i); next = i + 1 }
+            } else {
+                cp = s.codePointAt(i); next = i + Character.charCount(cp)
             }
-            out.append(s.charAt(i))
-            i++
+            if (cp < 0xD800 || cp > 0xDFFF) out.appendCodePoint(cp)   // drop lone/orphan surrogate artifacts
+            i = next
         }
         out.toString()
     }

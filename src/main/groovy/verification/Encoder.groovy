@@ -945,6 +945,26 @@ class Encoder {
         null
     }
 
+    /** Phase 145 — select a carrier's content/component field directly from an already-computed handle (the
+     *  handle analogue of the {@code r.field} PropertyExpression translation below). A chained call's result
+     *  (`a.f().g()`, where the receiver {@code a.f()} is a value with no nameable expression) needs its component
+     *  fields bound for the next call's contract; this reads them off the fresh handle. Mirrors the wrapper /
+     *  two-case / record cases of the property translation. Returns null if {@code prop} isn't a field of {@code mt}. */
+    Object carrierField(ClassNode mt, String prop, Object handle) {
+        if (mt == null || prop == null || handle == null) return null
+        FieldNode cf = wrapperContentField(mt)
+        if (cf != null && cf.name == prop) return session.wrapperContent(mt.nameWithoutPackage, contentSortFor(cf), handle)
+        Object[] mc = multiCaseInfo(mt)
+        if (mc != null && ((FieldNode) mc[2]).name == prop) {
+            sortFor(mt); return session.datatypeSelect(mt.nameWithoutPackage, 'Some', prop, handle)
+        }
+        List<FieldNode> rc = recordComponents(mt)
+        if (rc != null && rc.any { it.name == prop }) {
+            sortFor(mt); return session.datatypeSelect(mt.nameWithoutPackage, mt.nameWithoutPackage, prop, handle)
+        }
+        null
+    }
+
     /** True if {@code pe} reads a carrier's content field (`m.v` for a wrapper, `m.value` for a two-case carrier). */
     private boolean isCarrierContentRead(PropertyExpression pe) {
         ClassNode ct = carrierTypeOf(pe.objectExpression)
@@ -2289,6 +2309,11 @@ class Encoder {
     void popScalarTypes(Map<String, ClassNode> prev) {
         prev.each { String k, ClassNode v -> if (v == null) scalarTypes.remove(k) else scalarTypes.put(k, v) }
     }
+
+    /** Phase 146 — permanently register a (fresh temp) local's carrier type, so a later {@code name.field} read
+     *  resolves via {@link #carrierTypeOf}. Used when a chain's call result is hoisted to a temp local so a
+     *  read-out in the same expression (`…​.plus(…​).value`) becomes an ordinary component read off the temp. */
+    void registerScalarType(String name, ClassNode type) { scalarTypes.put(name, type) }
 
     /** The declared type of slot {@code i} of a {@code TupleN<...>} (from its generics), or null (→ Int). */
     private static ClassNode tupleSlotType(ClassNode t, int i) {

@@ -183,6 +183,71 @@ power of ten, or any product of 2s and 5s), which covers metric read-outs; a *no
 record's own conversion methods are verified only if the record itself carries `@TypeChecked`; at the *use* site
 they hold.)
 
+Factories and the guarded operator **compose**: build each operand with a named-unit factory and add them, and
+the whole `1 km + 1 mile` runs on the bespoke type — the same physical computation as the JSR 385 version in §2,
+with no library at all:
+
+<!-- doclint:case p144-carrier-replay/factory-operands-feed-a-guarded-operator -->
+```groovy
+record Quantity(BigDecimal value, int l, int m, int t) {
+    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })
+    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }
+    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })
+    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }
+    @Requires({ l == o.l && m == o.m && t == o.t })
+    @Ensures({ result.value == value + o.value })
+    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }
+}
+```
+
+<!-- doclint:case p144-carrier-replay/factory-operands-feed-a-guarded-operator -->
+```groovy
+@Ensures({ result.value == 2609.344 })
+static Quantity total() {
+    Quantity a = Quantity.km(1.0)
+    Quantity b = Quantity.mile(1.0)
+    Quantity s = a + b
+    s
+}
+```
+
+`Quantity.km(1) + Quantity.mile(1)`, in metres, is exactly `2609.344` — named-unit factories and a guarded
+operator, all checked. The dimension guard still fires across the factory boundary: build a length and a mass and
+the `l == o.l` precondition **refutes** at `a + b`. (This works because a factory call's result is modelled where
+the operator's precondition is checked, rather than treated as an opaque value — so the operands keep their real
+`Quantity` identity through the check.)
+
+And the operands need not be locals: a carrier-returning call is a value in expression position, so the whole
+thing collapses to a **single fluent chain** — the receiver *and* the argument are factory calls, the shape JSR 385
+itself uses:
+
+<!-- doclint:case p145-carrier-chain/single-expression-chain-verifies -->
+```groovy
+@Ensures({ result.value == 2609.344 })
+static Quantity total() {
+    Quantity.km(1.0).plus(Quantity.mile(1.0))
+}
+```
+
+Each nested call is modelled into a fresh `Quantity` constrained by its `@Ensures`, so `result.value` is exactly
+`2609.344` — a wrong total refutes the postcondition, and the guarded `.plus` still discharges over the real
+argument: chain a length and a mass and the `l == o.l` precondition **refutes**.
+
+And the read-out joins the chain: a component read on the result reads the SI magnitude straight off it — the
+terminal step of the JSR 385 shape (`…​.to(METRE).getValue()`), here a bare `.value`:
+
+<!-- doclint:case p146-chain-read-out/chain-read-out-value-verifies -->
+```groovy
+@Ensures({ result == 2609.344 })
+static BigDecimal total() {
+    Quantity.km(1.0).plus(Quantity.mile(1.0)).value
+}
+```
+
+The whole `1 km + 1 mile`, read back in metres, is exactly `2609.344` as a `BigDecimal` — no intermediate locals,
+a wrong magnitude refuting. (Each maximal carrier call is hoisted to a temporary so the `.value` read becomes an
+ordinary component read; it composes with further decimal arithmetic and works as a local RHS too.)
+
 ## What is proven, and what isn't
 
 - **Exact, not floating-point** — magnitudes are exact `BigDecimal` / rationals, so `2609.344` means `2609.344`.

@@ -461,6 +461,168 @@ class VerifyHarness {
          src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'record Length(BigDecimal metres) { @Ensures({ result == metres / 100.0 }) BigDecimal inKm() { metres / 1000.0 } }'],
 
+        // ---------- Phase 145: carrier-returning calls as values in expression position (chaining) ----------
+        // A carrier-returning call is now a value, not only a local-assignment RHS — so a single-expression
+        // CHAIN resolves: `Quantity.km(1).plus(Quantity.mile(1))` (receiver and argument are both factory calls)
+        // proves 2609.344 in metres, the fluent twin of the JSR 385 example. carrierValueOf models each nested
+        // call into a fresh carrier handle constrained by its @Ensures; the guarded `.plus` precondition still
+        // discharges over the real argument (mismatched dimensions refute).
+        [group: 'P145 carrier chain', name: 'single-expression chain verifies', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.value == 2609.344 }) static Quantity total() {\n' +
+              '    Quantity.km(1.0).plus(Quantity.mile(1.0)) } }'],
+        [group: 'P145 carrier chain', name: 'chain wrong total refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.value == 2600.0 }) static Quantity total() {\n' +
+              '    Quantity.km(1.0).plus(Quantity.mile(1.0)) } }'],
+        [group: 'P145 carrier chain', name: 'chain mismatched dimension refutes guard', expect: 'Cannot prove precondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v && result.l == 0 && result.m == 1 && result.t == 0 })\n' +
+              '    static Quantity gram(BigDecimal v) { new Quantity(v, 0, 1, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.value == 1001.0 }) static Quantity total() {\n' +
+              '    Quantity.km(1.0).plus(Quantity.gram(1.0)) } }'],
+        [group: 'P145 carrier chain', name: 'chain as local RHS', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.value == 2609.344 }) static Quantity total() {\n' +
+              '    Quantity s = Quantity.km(1.0).plus(Quantity.mile(1.0)); s } }'],
+
+        // ---------- Phase 146: read-out in the same expression (a component read on a chain result) ----------
+        // The terminal step of the JSR-385 shape: `Quantity.km(1).plus(Quantity.mile(1)).value` reads the SI
+        // magnitude straight off the chain result — proving 2609.344 as a BigDecimal, no intermediate locals.
+        // Each maximal carrier call in the expression is hoisted to a temp local bound to its modelled value, so
+        // `.value` becomes an ordinary component read; the read-out composes with decimal arithmetic and works as
+        // a local RHS too. A wrong magnitude refutes.
+        [group: 'P146 chain read-out', name: 'chain read-out .value verifies', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 2609.344 }) static BigDecimal total() {\n' +
+              '    Quantity.km(1.0).plus(Quantity.mile(1.0)).value } }'],
+        [group: 'P146 chain read-out', name: 'chain read-out wrong refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 2600.0 }) static BigDecimal total() {\n' +
+              '    Quantity.km(1.0).plus(Quantity.mile(1.0)).value } }'],
+        [group: 'P146 chain read-out', name: 'read-out with arithmetic', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 2610.344 }) static BigDecimal total() {\n' +
+              '    Quantity.km(1.0).plus(Quantity.mile(1.0)).value + 1.0 } }'],
+        [group: 'P146 chain read-out', name: 'read-out as local RHS', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 2609.344 }) static BigDecimal total() {\n' +
+              '    BigDecimal v = Quantity.km(1.0).plus(Quantity.mile(1.0)).value; v } }'],
+
+        // ---------- Phase 144: carrier-returning calls modelled in the precondition-check replay ----------
+        // The bespoke equivalent of the JSR 385 `1 km + 1 mile == 2609.344` example: factory-built operands
+        // (`Quantity.km(1)` / `Quantity.mile(1)`) feed a GUARDED `+`. The guard `l == o.l` is checked at the
+        // `a + b` site, whose precondition-check replays the prefix — so each factory call must be modelled
+        // there as a real Quantity (Phase 144), not havoced to an Int (which used to crash `eq(Q, Int)`).
+        [group: 'P144 carrier replay', name: 'factory operands feed a guarded operator', ok: true,
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '    @Ensures({ result.value == 2609.344 })\n' +
+              '    static Quantity total() {\n' +
+              '        Quantity a = Quantity.km(1.0)\n' +
+              '        Quantity b = Quantity.mile(1.0)\n' +
+              '        Quantity s = a + b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
+        // The total is genuinely computed (not skipped): a wrong total refutes the postcondition.
+        [group: 'P144 carrier replay', name: 'factory operands, wrong total refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v * 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity mile(BigDecimal v) { new Quantity(v * 1609.344, 1, 0, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.value == 2600.0 }) static Quantity total() {\n' +
+              '    Quantity a = Quantity.km(1.0); Quantity b = Quantity.mile(1.0); Quantity s = a + b; s } }'],
+        // The guard fires across the replay too: factory-built operands of DIFFERENT dimensions
+        // (a length + a mass) refute `plus`'s precondition `l == o.l` at the `a + b` site.
+        [group: 'P144 carrier replay', name: 'factory operands, mismatched dimension refutes the guard', expect: 'Cannot prove precondition',
+         src: HDR + 'record Quantity(BigDecimal value, int l, int m, int t) {\n' +
+              '    @Ensures({ result.value == v * 1000.0 && result.l == 1 && result.m == 0 && result.t == 0 })\n' +
+              '    static Quantity km(BigDecimal v) { new Quantity(v * 1000.0, 1, 0, 0) }\n' +
+              '    @Ensures({ result.value == v && result.l == 0 && result.m == 1 && result.t == 0 })\n' +
+              '    static Quantity gram(BigDecimal v) { new Quantity(v, 0, 1, 0) }\n' +
+              '    @Requires({ l == o.l && m == o.m && t == o.t })\n' +
+              '    @Ensures({ result.value == value + o.value })\n' +
+              '    Quantity plus(Quantity o) { new Quantity(value + o.value, l, m, t) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.value == 1001.0 }) static Quantity total() {\n' +
+              '    Quantity a = Quantity.km(1.0); Quantity b = Quantity.gram(1.0); Quantity s = a + b; s } }'],
+
         // ---------- Phase 1: null dereference ----------
         [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',
          src: tc('class C { static int n(String s) { s.length() } }')],
@@ -5903,7 +6065,11 @@ class WrapCounter implements Counter { }
         // The other-direction off-by-one (`spec(i)` not `spec(i+1)`): slot 0 gets spec(0) = FizzBuzz (0 is
         // divisible by everything), so the surfaced element renders the actual emoji — Z3 mangles a supplementary
         // char on the string round-trip; the renderer decodes the `\\u{…}` escapes and drops the artifact surrogates.
-        [group: 'P-fizzbuzz', name: 'off-by-one surfaces the emoji element value', ok: false, expect: 'r[0] = "🥤🐝" — the spec requires "1"',
+        [group: 'P-fizzbuzz', name: 'off-by-one surfaces the emoji element value', ok: false,
+         // Build the expected emoji from code points (not a source literal): a supplementary char in a Groovy
+         // string literal can carry a stray orphan surrogate, which made this assertion brittle against the
+         // (now canonicalised) Z3 counterexample rendering. U+1F964 🥤, U+1F41D 🐝.
+         expect: 'r[0] = "' + new String(Character.toChars(0x1F964)) + new String(Character.toChars(0x1F41D)) + '" — the spec requires "1"',
          src: tc('''class FizzBuzz {
                         @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString()))) })
                         static String spec(int n) { n % 15 == 0 ? '🥤🐝' : (n % 3 == 0 ? '🥤' : (n % 5 == 0 ? '🐝' : n.toString())) }

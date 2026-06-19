@@ -170,8 +170,23 @@ type-changing `Length × Length → Area`). The fullest form is one **dimension-
 type. A **guarded** operator routes soundly too (Phase 142b): the precondition hook fires for `a + b` and checks
 `plus`'s `@Requires` at the site, so a `Quantity` `plus` guarded `@Requires({ l == o.l && … })` makes `a + b`
 require matching dimensions — same-dimension addition verifies, a Length-plus-Mass refutes — completing the
-algebra (`×`/`/` compose exponents, `+`/`−` require them equal). Still out: deconstruction / pattern-matching,
-generated `equals`/`hashCode`, and in-record conversion/scale.
+algebra (`×`/`/` compose exponents, `+`/`−` require them equal). In-record **conversion/scale** is in too: a
+`Length.km(v)` factory scales to SI and the read-out divides back when the divisor terminates (Phases 142c/143).
+That precondition-check at the `a + b` site **replays the straight-line prefix**, and the replay now models a
+carrier-returning contracted call — a factory like `Quantity.km(1)`, or a routed operator — as a fresh
+carrier-sorted handle constrained by the callee's `@Ensures`, rather than havocing it to an `Int` (which crashed a
+later same-sort equality). So **factory-built operands feed a guarded operator**: `Quantity.km(1) + Quantity.mile(1)`
+proves `2609.344` in metres, the dimension guard firing across the factory boundary (Phase 144). A carrier-returning
+call is also a value **in expression position** (Phase 145), so the whole thing collapses to a single fluent
+**chain** — `Quantity.km(1).plus(Quantity.mile(1))`, receiver and argument both factory calls — modelled by one
+recursive primitive (`carrierValueOf`, minting a fresh carrier handle constrained by the callee's `@Ensures`) wired
+into the assume side, the precondition discharge (so the guarded `.plus` stays sound), and the return path. A
+**read-out in the same expression** works too (Phase 146): a component read on a chain result —
+`Quantity.km(1).plus(Quantity.mile(1)).value` (the bespoke `.to(METRE).getValue()`) — hoists each maximal carrier
+call to a temp local so the `.value` becomes an ordinary component read, proving `2609.344` as a `BigDecimal` with
+no intermediate locals (composes with decimal arithmetic and a local-RHS read-out). Still out: **units-as-data** (a
+`Unit(scale, dims)` record + `getQuantity(v, unit)`), deconstruction / pattern-matching, and generated
+`equals`/`hashCode`.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its

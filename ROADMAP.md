@@ -7519,6 +7519,111 @@ arithmetic effort).
 
 ---
 
+## Phase 144 — carrier-returning calls modelled in the precondition-check replay (Step 0 toward a fluent units API)  *(shipped)*
+
+A probe asked the obvious next question for the bespoke units type: does the *local* equivalent of the JSR 385
+`1 km + 1 mile == 2609.344` example verify — operands built by **named-unit factories**, added with a **guarded**
+operator? It didn't: it **crashed** with `Sorts Q and Int are incompatible` at `verifyCallSite`.
+
+Root cause: a guarded operator's precondition is checked at the `a + b` site, and that check **replays the
+straight-line prefix** to the call. The replay (`replayMutation`) modelled `new R(…)` directly but sent a
+*factory call* (`Quantity.km(1.0)` — which `translate` doesn't fold) to `havocLocation`, which mints an **`Int`**
+var. The factory-built local `b` thus became an `Int`; the guarded operator then equated it with the `Q`-sorted
+formal `o` (`eq(Q, Int)`) and Z3 threw. The main value-flow already modelled carrier-returning calls (as a
+local-assignment RHS, via `assumeCalleeEnsures` with a fresh carrier handle) — the *replay* was the one path that
+didn't.
+
+The fix (`replayCarrierCall`) mirrors the value-flow in the replay: when a declaration/assignment RHS is a
+carrier-returning contracted call and the local's declared type is a carrier, mint a fresh **carrier-sorted**
+handle and `assumeCalleeEnsures` (which binds `result` ↦ the handle and asserts the callee's `@Ensures`) instead
+of havocing to an `Int`. Routed carrier operators (`a + b` → `a.plus(b)`) go through `carrierOperatorCall` first,
+so a chain of them replays too.
+
+Result: the bespoke `Quantity.km(1) + Quantity.mile(1)` proves `2609.344` in metres — the same physical
+computation as the JSR 385 §2 example, no library — with the dimension guard firing across the factory boundary (a
+length + a mass refutes `l == o.l` at `a + b`) and a wrong total refuting the postcondition (so it is *computed*,
+not skipped). New cases: `P144 carrier replay` (+ a gallery example in `examples/units.md`). 1289 → 1292.
+
+This is **Step 0** of the path to a fluent units API: a carrier-returning call is now a first-class value in the
+replay, not an opaque one. Still ahead: true single-expression **chaining** (Phase 145, next), units-as-data
+(`Unit(scale, dims)` + `getQuantity(v, unit)`), and the `1.km` extension-method DSL (needs a registered
+`ExtensionModule`; `use()` categories are rejected by `@TypeChecked`).
+
+---
+
+## Phase 145 — carrier-returning calls as values in expression position (Step 1: chaining)  *(shipped)*
+
+Step 0 (Phase 144) made a carrier-returning call a value in the *replay*; the operands still had to be bound to
+locals. Step 1 makes a carrier-returning call a value **in expression position**, so the whole computation
+collapses to one fluent chain — the bespoke twin of JSR 385's own shape:
+
+```groovy
+@Ensures({ result.value == 2609.344 })
+static Quantity total() { Quantity.km(1.0).plus(Quantity.mile(1.0)) }
+```
+
+The receiver (`Quantity.km(1.0)`) *and* the argument (`Quantity.mile(1.0)`) are themselves factory calls, which
+`translate` doesn't fold — so every site that consumed them returned null and the chain skipped. The fix is one
+recursive primitive, `carrierValueOf(e)`: translate `e` directly if possible, else (when `e` is a contracted call
+returning a carrier) mint a fresh carrier-sorted handle, `assumeCalleeEnsures` it (binding `result` ↦ the handle),
+and return the handle. A companion `carrierValueExprType(e)` resolves the carrier type an expression evaluates to,
+recursing through a chained receiver. An `Encoder.carrierField(type, field, handle)` reads a component straight off
+a handle (the chain's receiver is a value, not a nameable expression).
+
+Wired into the three sites a chain flows through, each *additively* (only when the existing `translate` returns
+null and the expression is a carrier call):
+- **`assumeCalleeEnsures`** — the receiver and any carrier-typed argument are evaluated with `carrierValueOf`, and
+  the receiver's fields are bound via `carrierField`; a call-valued receiver resolves the callee's type too.
+- **`verifyCallSite`** — same for the *precondition discharge*, so the guarded `.plus`'s `@Requires({ l == o.l })`
+  is checked over the real (modelled) argument rather than skipping. This is what keeps chaining sound.
+- **the return-expression path** — a carrier-returning chain in return position is modelled via `carrierValueOf`
+  before the older Int-oriented self-call hoist (which would have bound an `Int` handle for a carrier result).
+
+Result: `Quantity.km(1).plus(Quantity.mile(1))` proves `2609.344` as a single expression (also as a local RHS); a
+wrong total refutes the postcondition; and a length-plus-mass chain refutes the guard's precondition — so the
+dimension check fires *through* the chain, not around it. New cases: `P145 carrier chain` (+ a gallery example).
+1292 → 1296.
+
+Still ahead: a **read-out in the same expression** (Phase 146, next), units-as-data (`Unit(scale, dims)` +
+`getQuantity(v, unit)`), and the `1.km` extension DSL.
+
+---
+
+## Phase 146 — read-out in the same expression (a component read on a chain result)  *(shipped)*
+
+Phase 145 made a chain *return* the carrier; the terminal step of the JSR 385 shape is to read a magnitude back
+*off* it — `Quantity.km(1).plus(Quantity.mile(1)).value` (the bespoke `.to(METRE).getValue()`). That skipped: the
+Encoder's `translate(chainCall.value)` needs `carrierTypeOf(chainCall)` to resolve the chain's type and
+`translate(chainCall)` to model it — neither of which the pure Encoder can do for a contracted call.
+
+The fix is a small pre-pass, `hoistCarrierCalls(e)`: rewrite each *maximal* carrier-returning call in `e` to a
+fresh temp local bound to its modelled value (via `carrierValueOf`), registered with its carrier type
+(`Encoder.registerScalarType`). After the rewrite, `chainCall.value` is `t.value` — an ordinary component read off
+a `Quantity` local — and translates by the existing record-field path. Applied to the **return expression** (before
+the resHandle computation, so it composes with the decimal/Real path) and, for a decimal read-out bound to a local,
+to the **assignment RHS** when the direct Real translation fails.
+
+Result: `Quantity.km(1).plus(Quantity.mile(1)).value` proves `2609.344` as a `BigDecimal` — no intermediate
+locals; it composes with further decimal arithmetic (`….value + 1.0`); it works as a local RHS; and a wrong
+magnitude refutes. New cases: `P146 chain read-out` (+ a gallery example). 1296 → 1300.
+
+Side-fix surfaced by this work: the new read-out paths perturbed Z3's model enough to flip an unrelated
+counterexample-string test (`P-fizzbuzz` emoji). Root cause was **non-deterministic surrogate rendering** in
+`Z3Backend.cleanZ3String` — it dropped orphan surrogates only on the `\u{…}`-escaped path, so a raw model string
+carrying a stray surrogate rendered differently run-to-run. Made it **canonical**: always walk by code point and
+drop every lone/orphan surrogate, so the same logical text (an emoji) always yields the identical Java String. The
+fizzbuzz expectation now also builds its emoji from code points (a supplementary char in a Groovy *source* literal
+can itself carry an orphan surrogate), so the assertion no longer depends on either rendering quirk.
+
+This completes the fluent read/compute/read-out arc on the bespoke type: `Quantity.km(1).plus(Quantity.mile(1)).value`
+is the bespoke twin of `getQuantity(1, KILO(METRE)).add(getQuantity(1, MILE)).to(METRE).getValue()`, machine-checked
+end to end. Still ahead: **units-as-data** (a `Unit(scale, dims)` record + `getQuantity(v, unit)` / prefix factories,
+so a unit is a *value* and `getQuantity` a factory over it — the last structural gap to the literal JSR 385 form on
+the bespoke type), and the `1.km` extension-method DSL (needs a registered `ExtensionModule`; `use()` categories are
+rejected by `@TypeChecked`).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
