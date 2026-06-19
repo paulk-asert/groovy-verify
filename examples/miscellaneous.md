@@ -23,26 +23,6 @@ its source), a Dafny-style element-wise array-fill (FizzBuzz), an algebraic law 
 is associative but not commutative), and a tour of verification across a Groovy type hierarchy — inheritance,
 behavioral subtyping, and traits.
 
-### Bean Validation constraints — preconditions you already wrote
-
-A `jakarta.validation` (or legacy `javax.validation`) numeric constraint on a parameter is read as a method-entry
-**precondition** — the same posture as `@Requires`: assumed in the body, the caller's obligation. So an annotation
-you wrote for *runtime* validation also discharges a *compile-time* obligation, for free:
-
-<!-- doclint:case jakarta-validation/positive-divisor-verifies -->
-```groovy
-class C { static int f(@Positive int x) { 100 % x } }
-```
-
-The `jakarta.validation.constraints.@Positive` gives `x > 0`, so the modulus divisor is non-zero and the implicit
-divide-by-zero obligation discharges. Drop the `@Positive` and the same body refutes with `fails on: f(0)`. The
-engine matches these by fully-qualified name — it carries no dependency on the validation API — and maps
-`@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` to the obvious bound on an
-`int` / `long`, and `@Size(min, max)` / `@NotEmpty` to the size of an array, `List`, or `String` (so a
-`@NotEmpty int[] a` discharges `a[0]`). `@NotNull` is already read by the null layer. Contradictory constraints
-(`@Positive @Negative`) are flagged as a vacuous precondition, not silently passed — and under `VERIFY_EXPLAIN` a
-proof that leaned on one prints `also leaned on: @Positive x`.
-
 ### Ring buffer — a verified mutable data structure
 
 [Toccata/Why3's `ring_buffer`](https://toccata.gitlabpages.inria.fr/toccata/gallery/ring_buffer.en.html) (after

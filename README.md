@@ -1389,7 +1389,8 @@ Beyond the Acts above, more worked-and-verified examples by domain:
 - **[OpenJML ports](examples/openjml.md)** — `Max by elimination` and `ChangeCase`, from the JVM's closest prior art (CC BY-NC).
 - **[Concurrency](examples/concurrency/examples.md)** — the *local* half of locks, agents, dataflow, channels, and rely/guarantee; the *structural* half (Lincheck / TLA+ TLC / Fray) is the [three rungs](examples/concurrency/README.md).
 - **[Units of measurement](examples/units.md)** — the Mars-orbiter bug, three ways: JSR 385 dimensions (the unchecked `as Quantity<K>` cast), JSR 385 value/scale, and a bespoke `record` units type with verified `+`.
-- **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, invariant inference, and Jakarta Bean Validation.
+- **[Bean Validation](examples/validation.md)** — `jakarta.validation` / `javax.validation` constraints (`@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty`) read as compile-time preconditions, discharged for free from annotations you already wrote.
+- **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, and invariant inference.
 - **[Thread-local IFC (Smith)](examples/smith.md)** — Graeme Smith's Dafny approach: information flow (a security lattice + noninterference) and rely/guarantee, combined in the §VII capstone.
 
 ## Relationship to Groovy's other checkers
