@@ -7333,6 +7333,39 @@ threaded through binding), and rational exponents. Together with C₀ this is a 
 
 ---
 
+## Phase 133 — single-component record as a one-constructor datatype (the canonical-constructor gap, closed)  *(shipped)*
+
+A freshly-constructed record was opaque: `new R(v)` then `.f` skipped, because the engine didn't model a
+record's canonical constructor (Tuple worked only because `Tuple.tuple` was special-cased). This closes that for
+the common case — a **single-component record** is exactly a one-constructor immutable value, so it's modelled as
+the same one-constructor Z3 datatype the `@Monadic` wrapper carriers use. `new R(v).f == v` now round-trips by
+datatype theory: a `result`-typed `new R(…)` with a contract over `.f` verifies, a wrong component refutes, a
+computed component (`new R(v*1000)`) verifies, and an instance method's own contract (reading `this.f`) verifies.
+
+This is the enabler the DSL analysis pointed at: a **bespoke, self-contained, statically-typed** value type — no
+JSR 385, no extension modules, no `use()` categories (which `@TypeChecked` rejects outright) — that the *general*
+contract machinery verifies. A units `record Length(BigDecimal metres)` with named factories proves a magnitude
+contract end-to-end.
+
+- **Where**: `wrapperContentField` (the carrier oracle) now also recognises a single-component record (detected
+  by its implicit `java.lang.Record` supertype), and `result`'s carrier type is registered alongside params /
+  fields. The construct (`wrapperUnit`) and read (`wrapperContent`) machinery was already in place.
+- **No regression**: gated on records (the 1257 prior cases mention none); the existing record tests use
+  *two*-component records, untouched. 1257 → 1265.
+- **Robustness (must-fix this slice)**: making records carriers exposed two crash paths the change newly reaches —
+  an arithmetic operator on a carrier operand (`a + b`) and a carrier-typed local. Both now **skip loudly**: the
+  binary path returns null for a carrier operand instead of casting a datatype to an arithmetic term, and
+  `verifyPostcondition` / `verifyLoop` are wrapped so any unexpected encoder error degrades to a positioned
+  "skipped" diagnostic rather than throwing out of the type checker (the "skip outside the fragment, don't crash"
+  contract — `verifyImplicitObligations` already had this guard; the postcondition path didn't).
+
+Out of this slice: **multi-component** records (need a general N-field datatype, the TupleN analogue), verifying
+*through* a carrier-typed **local** (the value-flow needs to sort the local as the carrier), and **operator
+routing** (`a + b` → `a.plus(b)` discharged via the carrier method's contract — the interprocedural instance-call
+plus a known-non-null `new R(…)`, both of which the probes showed are *close*). New cases: `P133 record ctor`.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

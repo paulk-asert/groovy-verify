@@ -87,6 +87,7 @@ class Harvester {
         'nonnull param'               : "A @NonNull-style annotation (NullChecker / Checker Framework / JSR-305 vocabulary) on a reference parameter is read as a non-null precondition, discharging a deref or apply the unannotated form could not.",
         'P131 dimensions'             : "JSR 385 dimensional analysis: a Quantity's kind (its [Length,Mass,Time] exponent vector) is propagated through multiply/divide and checked against the cast/return kind — the result-kind the generic type can't infer.",
         'P132 unit scale'             : "JSR 385 value/scale: a Quantity built from known units (getQuantity/prefixes/add/to) has its SI magnitude recovered, so getValue() in a named unit verifies exactly and a wrong-unit extraction refutes (the Mars scale bug).",
+        'P133 record ctor'            : "A single-component record is modelled as a one-constructor datatype, so `new R(v).f == v` round-trips (the canonical-constructor gap, closed for records) — enabling a bespoke, self-contained value type (e.g. a units Length) to verify; richer forms (operators, carrier locals) skip gracefully.",
         'P1 null'                     : "A dereference needs a non-null guard or @Requires; an unguarded deref refutes (NPE).",
         'P10 instance'                : "Instance methods with field reads/writes and parameter contracts verify (getter, mutator).",
         'P100 string next'            : "A user String.next() example over A..Z proves the letter-advance; stepping off the range refutes.",

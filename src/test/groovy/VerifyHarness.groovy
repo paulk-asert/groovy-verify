@@ -202,6 +202,43 @@ class VerifyHarness {
               'class C { @Ensures({ result == 5000.0 })\n' +
               '          static BigDecimal half() { Quantities.getQuantity(10, KILO(METRE)).divide(2).to(METRE).getValue() as BigDecimal } }'],
 
+        // ---------- Phase 133: single-component record modelled as a one-constructor datatype ----------
+        // `new R(v).f == v` round-trips by datatype theory — the canonical-constructor gap, closed for records.
+        [group: 'P133 record ctor', name: 'construct then read round-trips', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 1000.0 }) static Length oneKm() { new Length(1000.0) } }'],
+        [group: 'P133 record ctor', name: 'wrong component value refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 999.0 }) static Length oneKm() { new Length(1000.0) } }'],
+        [group: 'P133 record ctor', name: 'computed component verifies', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ v != null }) @Ensures({ result.metres == v * 1000.0 }) static Length km(BigDecimal v) { new Length(v * 1000.0) } }'],
+        // An instance method on the record — its own contract verifies (`this.metres` reads the component).
+        [group: 'P133 record ctor', name: 'instance method contract verifies (this.field)', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '  @Requires({ o != null }) @Ensures({ result.metres == metres + o.metres }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + 'class C { static int z() { 0 } }'],
+        // A bespoke units value type: a length built from a km + a metre magnitude, the SI total exact
+        // (1 km + 1609.344 m == 2609.344 m). Constructed value, read back through its component.
+        [group: 'P133 record ctor', name: 'bespoke units: length total verifies', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ km != null && m != null }) @Ensures({ result.metres == km * 1000.0 + m })\n' +
+              '          static Length total(BigDecimal km, BigDecimal m) { new Length(km * 1000.0 + m) } }'],
+        // And the bug refutes: a wrong magnitude claim.
+        [group: 'P133 record ctor', name: 'bespoke units: wrong magnitude refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ km != null && m != null }) @Ensures({ result.metres == km * 1000.0 })\n' +
+              '          static Length total(BigDecimal km, BigDecimal m) { new Length(km * 1000.0 + m) } }'],
+        // Robustness: an arithmetic operator on a record operand skips gracefully (no crash), not a wrong proof.
+        [group: 'P133 record ctor', name: 'operator on a record skips (no crash)', expect: 'Skipped verification of postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 2609.344 }) static Length s() { new Length(1000.0) + new Length(1609.344) } }'],
+        // Robustness: a carrier-typed local (not yet modelled end-to-end) skips loudly rather than crashing the
+        // compile — the internal-error safety net. (Verifying through carrier locals is a later slice.)
+        [group: 'P133 record ctor', name: 'carrier local skips (no crash)', expect: 'Skipped verification of postcondition',
+         src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.metres == 5.0 }) static Length f() { Length a = new Length(5.0); a } }'],
+
         // ---------- Phase 1: null dereference ----------
         [group: 'P1 null', name: 'unguarded deref refuted', expect: 'NullPointerException: Cannot invoke method length()',
          src: tc('class C { static int n(String s) { s.length() } }')],

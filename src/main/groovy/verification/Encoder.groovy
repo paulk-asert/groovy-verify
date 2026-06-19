@@ -872,20 +872,31 @@ class Encoder {
         (cf?.type != null && cf.type.name == 'java.lang.Object') ? session.declareSort('Object') : sortFor(cf.type)
     }
 
-    /** Phase B — the single content field of a recognised wrapper carrier (a {@code @Monadic}-annotated class
-     *  with exactly one non-static, final field), or null. Such a carrier is modelled as a one-constructor Z3
-     *  datatype so the unit/content round-trips hold by datatype theory. Static: reads only the ClassNode. */
+    /** Phase B / 133 — the single content field of a recognised wrapper carrier (one non-static, final field),
+     *  or null. Recognised either as a {@code @Monadic} carrier or as a single-component **record** (Phase 133):
+     *  both are exactly a one-constructor immutable value, modelled as a one-constructor Z3 datatype so the
+     *  construct/read round-trip (`new R(v).f == v`) holds by datatype theory. Static: reads only the ClassNode. */
     static FieldNode wrapperContentField(ClassNode cn) {
         if (cn == null) return null
         List<AnnotationNode> anns = cn.annotations
         boolean monadic = anns != null && anns.any { it?.classNode?.name?.endsWith('Monadic') }
-        if (!monadic) return null
+        if (!monadic && !isRecordClass(cn)) return null
         List<FieldNode> inst = new ArrayList<FieldNode>()
         List<FieldNode> fs = cn.fields
         if (fs != null) for (FieldNode f : fs) if (!f.isStatic()) inst.add(f)
         if (inst.size() != 1) return null
         FieldNode f = inst.get(0)
         f.isFinal() ? f : null
+    }
+
+    /** Phase 133 — true for a Groovy/Java {@code record} (its components are final, so a single-component record
+     *  is a one-constructor immutable value). Detected by its implicit {@code java.lang.Record} supertype. */
+    static boolean isRecordClass(ClassNode cn) {
+        if (cn == null) return false
+        ClassNode sc = cn.getUnresolvedSuperClass(false)
+        if (sc != null && sc.name == 'java.lang.Record') return true
+        sc = cn.superClass
+        sc != null && sc.name == 'java.lang.Record'
     }
 
     /** The resolved wrapper-carrier ClassNode for a simple name in scope (from {@link #carrierTypes}), or null —
@@ -4260,6 +4271,16 @@ class Encoder {
         if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
             Object te = translateTupleEquality(be, op == Types.COMPARE_EQUAL)
             if (te != null) return te
+        }
+
+        // Phase 133 — an arithmetic operator on a carrier (record / wrapper) operand has no numeric meaning
+        // in the encoder (Groovy dispatches `a + b` to `a.plus(b)`, etc.). Skip gracefully rather than feed a
+        // datatype term into the numeric path below, which would cast it to an arithmetic term and crash.
+        // (Routing the operator to its carrier method — so `a + b` verifies via the method's contract — is a
+        // future slice; for now an operator-on-carrier is an honest out-of-fragment skip.)
+        if ((op == Types.PLUS || op == Types.MINUS || op == Types.MULTIPLY || op == Types.DIVIDE) &&
+            (carrierTypeOf(be.leftExpression) != null || carrierTypeOf(be.rightExpression) != null)) {
+            return null
         }
 
         // Array subscript a[i] -> (select a i). The element value, modelled under

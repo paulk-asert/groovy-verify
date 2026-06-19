@@ -1049,7 +1049,7 @@ class VerifyChecker extends TypeCheckingExtension {
         // postcondition on a String-returning method would fall through {@link Encoder#isStringReceiver}
         // (not a parameter / field / typed local) and skip honestly.
         ClassNode retType = node.returnType
-        if (retType != null && isNonIntScalar(retType)) out.put('result', retType)
+        if (retType != null && (isNonIntScalar(retType) || Encoder.isCarrier(retType))) out.put('result', retType)   // Phase B/133 — carrier result
         // Phase 47h — typed locals like {@code String name = "world"} carry their type on the
         // DeclarationExpression's LHS. Without this, GString interpolation of a String local
         // falls into the int path and crashes Z3 with a sort mismatch. Scan the CLEAN
@@ -1913,8 +1913,18 @@ class VerifyChecker extends TypeCheckingExtension {
                 } catch (Throwable ignored) {
                 }
 
-                if (site != null) verifyLoop(node, site)
-                else verifyPostcondition(node)
+                try {
+                    if (site != null) verifyLoop(node, site)
+                    else verifyPostcondition(node)
+                } catch (Throwable t) {
+                    // An unexpected encoder error (e.g. a value shape the fragment doesn't yet model end-to-end)
+                    // must degrade to a loud skip, never crash the compile — the "skip outside the fragment,
+                    // don't throw" contract. Anchor on a positioned proxy at the method's location so the skip
+                    // surfaces (a MethodNode-anchored diagnostic is silently dropped by STC on this path).
+                    ConstantExpression at = new ConstantExpression(node.name)
+                    at.setSourcePosition((ASTNode) node)
+                    addStaticTypeError(Reporter.formatPostconditionSkipped(node.name, 'internal: ' + t.message), (ASTNode) at)
+                }
             } finally {
                 LoopEncoder.callHandler.set(prevHandler)
             }

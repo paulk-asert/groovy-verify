@@ -152,9 +152,13 @@ The unit of verification is a **method** (static or instance) carrying contracts
 mutator's pre/post state, and a class `@Invariant` assumed-on-entry / checked-preserved-on-exit), an **enum**
 (a finite uninterpreted sort with a known value-count, for membership / pigeonhole / cardinality), and a
 **record** (its components are final fields, so they read like any class field, and a record may carry its own
-contracts) — but it does *not* verify the definition itself: the canonical constructor, deconstruction /
-pattern matching, and generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is
-understood only through the fields and finite domain its methods actually touch.
+contracts) — but it does *not* in general verify the definition itself: deconstruction / pattern matching and
+generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is understood only through
+the fields and finite domain its methods actually touch. A **single-component record** is the exception (Phase
+133): it is modelled as a one-constructor Z3 datatype, so its **canonical constructor round-trips** —
+`new R(v).f == v` holds by datatype theory, and a `result`-typed `new R(…)` with a contract over `.f` verifies
+(the basis for a bespoke, self-contained value type such as a units `Length`). Multi-component records, and
+verifying *through* a carrier-typed local / `+`-operator, still skip loudly.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its
