@@ -4134,6 +4134,9 @@ class Encoder {
     private static final Map<String, BigDecimal> BASE_UNIT_SCALE = [
         'METRE': 1.0G, 'METER': 1.0G, 'SECOND': 1.0G, 'KILOGRAM': 1.0G, 'GRAM': 0.001G,
         'KELVIN': 1.0G, 'AMPERE': 1.0G, 'MOLE': 1.0G, 'CANDELA': 1.0G,
+        // Non-SI length units (scale to metres). The international mile is exactly 1609.344 m — pinned against
+        // the JSR 385 RI by UnitScaleTest, since these scales are trusted constants, not computed.
+        'MILE': 1609.344G, 'YARD': 0.9144G, 'FOOT': 0.3048G, 'INCH': 0.0254G,
     ]
 
     /** Metric prefixes → their multiplier, so {@code KILO(METRE)} resolves to scale 1000. */

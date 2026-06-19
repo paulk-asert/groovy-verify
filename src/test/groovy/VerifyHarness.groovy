@@ -186,6 +186,12 @@ class VerifyHarness {
          src: HDR + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { @Ensures({ result == 1500.0 })\n' +
               '          static BigDecimal total() { Quantities.getQuantity(1, KILO(METRE)).add(Quantities.getQuantity(50000, CENTI(METRE))).to(METRE).getValue() as BigDecimal } }'],
+        // The actual Mars mix: metric + US-customary. 1 km + 1 mile, normalized to metres, is exactly 2609.344.
+        // (USCustomary.MILE's scale is read from the engine's curated table, pinned to the RI by UnitScaleTest.)
+        [group: 'P132 unit scale', name: 'kilometre plus mile in metres is exact', ok: true,
+         src: HDR + UOM2 + 'import systems.uom.common.USCustomary\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result == 2609.344 })\n' +
+              '          static BigDecimal total() { Quantities.getQuantity(1, KILO(METRE)).add(Quantities.getQuantity(1, USCustomary.MILE)).to(METRE).getValue() as BigDecimal } }'],
         // The SAME sum read back in KILOMETRES is 1.5 — extracting in the right unit verifies.
         [group: 'P132 unit scale', name: 'same sum read in kilometres is 1.5', ok: true,
          src: HDR + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
@@ -242,11 +248,21 @@ class VerifyHarness {
         // OPERATOR routing (Phase 133): `a + b` over a record with an instance `plus` dispatches to `a.plus(b)`,
         // and the cross-class instance @Ensures is assumed at the call — so the pretty form verifies exactly.
         [group: 'P133 record ctor', name: 'pretty units: operator + verifies', ok: true,
-         src: HDR + 'record Length(BigDecimal metres) {\n' +
-              '  @Ensures({ result.metres == metres + o.metres }) Length plus(Length o) { new Length(metres + o.metres) } }\n' +
+         src: HDR +
+              'record Length(BigDecimal metres) {\n' +
+              '    @Ensures({ result.metres == metres + o.metres })\n' +
+              '    Length plus(Length o) { new Length(metres + o.metres) }\n' +
+              '}\n' +
               "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
-              'class C { @Ensures({ result.metres == 2609.344 }) static Length sum() {\n' +
-              '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
+              'class C {\n' +
+              '    @Ensures({ result.metres == 2609.344 })\n' +
+              '    static Length sum() {\n' +
+              '        Length a = new Length(1000.0)\n' +
+              '        Length b = new Length(1609.344)\n' +
+              '        Length s = a + b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
         // The same with a WRONG total refutes (operator routing is not vacuous).
         [group: 'P133 record ctor', name: 'pretty units: operator + wrong total refutes', expect: 'Cannot prove postcondition',
          src: HDR + 'record Length(BigDecimal metres) {\n' +

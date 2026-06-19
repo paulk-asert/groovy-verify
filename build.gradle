@@ -101,7 +101,10 @@ dependencies {
     // The JSR 385 reference implementation (Indriya) — brings `Quantities.getQuantity`, `Units.*` and
     // `MetricPrefix.*` so the C₁ value/scale snippets resolve. Test-only, like unit-api; the engine reads
     // these by FQN / simple name and never compiles against the jar.
-    testImplementation 'tech.units:indriya:2.2'
+    testImplementation 'tech.units:indriya:2.2.4'
+    // US-customary units (USCustomary.MILE, …) for the metric-vs-imperial scale examples. Test-only; the engine
+    // reads MILE's scale from its own curated table, and UnitScaleTest pins that table against this library.
+    testImplementation 'systems.uom:systems-common:2.2'
 
     // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
     // PurityChecker / ModifiesChecker). Test-only: a consumer supplies these themselves when they
