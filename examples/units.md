@@ -248,6 +248,47 @@ The whole `1 km + 1 mile`, read back in metres, is exactly `2609.344` as a `BigD
 a wrong magnitude refuting. (Each maximal carrier call is hoisted to a temporary so the `.value` read becomes an
 ordinary component read; it composes with further decimal arithmetic and works as a local RHS too.)
 
+The last step to JSR 385's *literal* shape is to make a **unit itself a value**: a second record carrying a scale
+and a dimension. Then `getQuantity(v, unit)` is just a factory that reads the unit's fields, and a metric prefix is
+a `Unit → Unit` factory — so `KILO(METRE)` is an ordinary nested call:
+
+<!-- doclint:case p147-units-as-data/full-jsr-385-shaped-expression -->
+```groovy
+record Unit(BigDecimal scale, int l, int m, int t) {
+    @Ensures({ result.scale == 1.0 && result.l == 1 && result.m == 0 && result.t == 0 })
+    static Unit metre() { new Unit(1.0, 1, 0, 0) }
+    @Ensures({ result.scale == 1609.344 && result.l == 1 && result.m == 0 && result.t == 0 })
+    static Unit mile() { new Unit(1609.344, 1, 0, 0) }
+    @Ensures({ result.scale == u.scale * 1000.0 && result.l == u.l && result.m == u.m && result.t == u.t })
+    static Unit kilo(Unit u) { new Unit(u.scale * 1000.0, u.l, u.m, u.t) }
+}
+```
+
+<!-- doclint:case p147-units-as-data/full-jsr-385-shaped-expression -->
+```groovy
+@Ensures({ result.value == v * u.scale && result.l == u.l && result.m == u.m && result.t == u.t })
+static Quantity of(BigDecimal v, Unit u) { new Quantity(v * u.scale, u.l, u.m, u.t) }
+```
+
+With that, the bespoke type expresses JSR 385's own sentence — `getQuantity`, a prefixed unit, `add`, a read-out —
+and it verifies end to end:
+
+<!-- doclint:case p147-units-as-data/full-jsr-385-shaped-expression -->
+```groovy
+@Ensures({ result == 2609.344 })
+static BigDecimal total() {
+    Quantity.of(1.0, Unit.kilo(Unit.metre())).plus(Quantity.of(1.0, Unit.mile())).value
+}
+```
+
+This is the bespoke twin of `getQuantity(1, KILO(METRE)).add(getQuantity(1, USCustomary.MILE)).to(METRE).getValue()`
+from §2 — but over a type *you* defined, with **no units library and no new engine support**: it falls straight
+out of the multi-component record, carrier-typed factory arguments, and the read-out. A wrong total refutes; and
+the dimension guard still bites — build one quantity in `metre` and another in `gram` and the `l == o.l`
+precondition **refutes**. (Reading back out in a *non-SI* named unit divides by the unit's scale, which is now a
+*symbolic* value rather than a literal — so that direction skips, like any non-terminating divisor; the SI `.value`
+read above is exact.)
+
 ## What is proven, and what isn't
 
 - **Exact, not floating-point** — magnitudes are exact `BigDecimal` / rationals, so `2609.344` means `2609.344`.
@@ -261,4 +302,5 @@ ordinary component read; it composes with further decimal arithmetic and works a
   divisor (Groovy rounds it — unsound to model exactly), and any unit or kind outside the curated tables, all skip
   loudly rather than guess.
 
-The full capability rows are in **[CAPABILITIES.md](../CAPABILITIES.md)** (Phases 131–133, 142, 142b, 142c, 143).
+The full capability rows are in **[CAPABILITIES.md](../CAPABILITIES.md)** (Phases 131–133, 142, 142b, 142c,
+143–147).

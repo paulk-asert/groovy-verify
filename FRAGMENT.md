@@ -184,9 +184,13 @@ into the assume side, the precondition discharge (so the guarded `.plus` stays s
 **read-out in the same expression** works too (Phase 146): a component read on a chain result —
 `Quantity.km(1).plus(Quantity.mile(1)).value` (the bespoke `.to(METRE).getValue()`) — hoists each maximal carrier
 call to a temp local so the `.value` becomes an ordinary component read, proving `2609.344` as a `BigDecimal` with
-no intermediate locals (composes with decimal arithmetic and a local-RHS read-out). Still out: **units-as-data** (a
-`Unit(scale, dims)` record + `getQuantity(v, unit)`), deconstruction / pattern-matching, and generated
-`equals`/`hashCode`.
+no intermediate locals (composes with decimal arithmetic and a local-RHS read-out). **Units-as-data** composes from
+these with no new support (Phase 147): a `Unit(scale, l, m, t)` is itself a record value, `Quantity.of(v, unit)` a
+factory reading the unit's fields off the carrier-typed formal, and a metric prefix a `Unit → Unit` factory — so the
+literal JSR 385 shape `Quantity.of(1, Unit.kilo(Unit.metre())).plus(Quantity.of(1, Unit.mile())).value == 2609.344`
+verifies (a read-out in a *non-SI* named unit divides by a symbolic scale and skips). Still out: the `1.km`
+extension-method DSL (surface syntax — a registered `ExtensionModule`), deconstruction / pattern-matching, and
+generated `equals`/`hashCode`.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its

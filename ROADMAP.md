@@ -7617,10 +7617,43 @@ can itself carry an orphan surrogate), so the assertion no longer depends on eit
 
 This completes the fluent read/compute/read-out arc on the bespoke type: `Quantity.km(1).plus(Quantity.mile(1)).value`
 is the bespoke twin of `getQuantity(1, KILO(METRE)).add(getQuantity(1, MILE)).to(METRE).getValue()`, machine-checked
-end to end. Still ahead: **units-as-data** (a `Unit(scale, dims)` record + `getQuantity(v, unit)` / prefix factories,
-so a unit is a *value* and `getQuantity` a factory over it — the last structural gap to the literal JSR 385 form on
-the bespoke type), and the `1.km` extension-method DSL (needs a registered `ExtensionModule`; `use()` categories are
-rejected by `@TypeChecked`).
+end to end. Still ahead: **units-as-data** (Phase 147, next), and the `1.km` extension-method DSL (needs a registered
+`ExtensionModule`; `use()` categories are rejected by `@TypeChecked`).
+
+---
+
+## Phase 147 — units-as-data: a `Unit(scale, dims)` value + a `getQuantity` factory over it  *(shipped — composes, no new engine code)*
+
+The last structural piece of JSR 385's *literal* shape is to make a **unit itself a value**, so `getQuantity(v, unit)`
+is a factory over it and `KILO(METRE)` an ordinary nested call. This turned out to need **no new engine code** — it
+falls straight out of the multi-component record (Phase 142), carrier-typed-argument chaining (Phase 145), and the
+read-out (Phase 146):
+
+- a `Unit(scale, l, m, t)` is a second multi-component record — a value;
+- `Quantity.of(BigDecimal v, Unit u)` is a factory whose `@Ensures` **reads the unit's fields** (`u.scale`, `u.l`) —
+  a carrier-typed *formal* whose components resolve via the registered carrier type;
+- a metric prefix `kilo(Unit u)` is a `Unit → Unit` factory, so `Unit.kilo(Unit.metre())` is a carrier chain modelled
+  by `carrierValueOf`;
+- `Quantity.of(1, Unit.kilo(Unit.metre()))` passes that chain as the carrier argument (Phase 145), and the whole
+  thing reads out via Phase 146.
+
+So the bespoke type now expresses JSR 385's own sentence and verifies end to end:
+
+```groovy
+@Ensures({ result == 2609.344 })
+static BigDecimal total() {
+    Quantity.of(1.0, Unit.kilo(Unit.metre())).plus(Quantity.of(1.0, Unit.mile())).value
+}
+```
+
+— the bespoke twin of `getQuantity(1, KILO(METRE)).add(getQuantity(1, USCustomary.MILE)).to(METRE).getValue()`, over a
+type *you* define, no units library. A wrong total refutes the postcondition; a `metre` + `gram` add refutes the
+dimension guard. New cases: `P147 units-as-data` (+ gallery example). 1300 → 1304.
+
+Honest boundary: reading back out in a *non-SI* named unit is `value / unit.scale` where `unit.scale` is now a
+**symbolic** carrier field, not a literal — so that direction **skips loudly** (only a constant terminating divisor is
+exact, Phase 143). The SI `.value` read-out is exact. Still ahead: the `1.km` extension-method DSL (a registered
+`ExtensionModule`; `use()` categories are rejected by `@TypeChecked`) — a *surface-syntax* gap, not a reasoning one.
 
 ---
 
