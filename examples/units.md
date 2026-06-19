@@ -103,11 +103,48 @@ it **refutes**. This is sound *by restriction*: the rewrite of `a + b` → `a.pl
 `@Requires` (the operator site is a `BinaryExpression`, so the precondition hook can't check a guard there), so a
 guarded operator stays a loud skip rather than an unchecked assumption.
 
+Be clear about what `plus` proves, though: the **value**. A `Length` is a `BigDecimal` in a wrapper — the
+verifier checks the magnitude arithmetic, and the only thing stopping you adding a `Length` to a `Mass` is
+Groovy's static `plus(Length)` signature, not the checker. There is no *dimension* and no *scale* inside the
+record — those are the JSR 385 sections above.
+
+It does go beyond a named number in one real way, though: a **type-changing** operator works. Give `Length` a
+`multiply` that returns a *different* record type (`record Area(BigDecimal squareMetres) {}`) and `*` routes to it
+— the actual dimensional algebra, `Length × Length → Area`, with the area's value proved:
+
+<!-- doclint:case p133-record-ctor/type-changing-operator-length-length-area -->
+```groovy
+record Length(BigDecimal metres) {
+    @Ensures({ result.squareMetres == metres * o.metres })
+    Area multiply(Length o) { new Area(metres * o.metres) }
+}
+```
+
+<!-- doclint:case p133-record-ctor/type-changing-operator-length-length-area -->
+```groovy
+@Ensures({ result.squareMetres == 6.0 })
+static Area area() {
+    Length a = new Length(2.0)
+    Length b = new Length(3.0)
+    Area s = a * b
+    s
+}
+```
+
+`2 m × 3 m == 6 m²`, verified — and a wrong area refutes. What's still missing for a *full* units algebra is
+**multi-component** records — a dimension *vector* `(L, M, T)`, so derived units fall out automatically instead of
+each needing its own hand-written record + operator — and **conversion** inside the bespoke type (the scale layer,
+which today lives only in the JSR 385 reader above). So: a verified value type that already does same-dimension
+`+` and type-changing `×`, on the way to a dimension-carrying one.
+
 ## What is proven, and what isn't
 
 - **Exact, not floating-point** — magnitudes are exact `BigDecimal` / rationals, so `2609.344` means `2609.344`.
-- **The cast / the value / the operator are real proofs** — a wrong dimension, a wrong scale, or a wrong total
-  each refutes; nothing passes by being un-modelled.
+- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (§1, the cast), a wrong
+  **scale** refutes (§2, the value over JSR 385), a wrong **total** refutes (§3, the operator); none passes by
+  being un-modelled. But these are *not* one guarantee on one artifact: only the JSR 385 layers reason about
+  dimension and scale — the bespoke record reasons about the *value* of a wrapped number, and its unit-safety
+  (no `Length + Mass`) is Groovy's static types, not the checker.
 - **Honest skips** — `Length × Length` (Area needs a multi-component record), a `@Requires`-guarded operator,
   affine units (°C / °F carry an *offset*, not a pure scale), and any unit or kind outside the curated tables all
   skip loudly rather than guess.

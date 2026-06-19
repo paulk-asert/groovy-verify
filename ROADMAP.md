@@ -7388,10 +7388,20 @@ landed too — the pretty `a + b` form now verifies:
   common record case); a guarded operator stays a loud skip. `Length s = a + b` over a `record Length` with an
   instance `plus` now proves a units conservation exactly, and a wrong total refutes.
 
-Still out: **multi-component** records (a general N-field datatype, the TupleN analogue); a guarded operator
-(`@Requires` on `plus`) — would need the precondition pass to recognise the operator site; and the carrier-result
-`@Ensures` assumption when the *caller's* signature doesn't mention the carrier (carrier types are registered from
-signatures, so a `new R(…)` whose type is body-only doesn't translate). New cases: `P133 record ctor`. 1257 → 1270.
+**Follow-up (this slice): body-local carrier types + type-changing operators.** The "carrier registered from
+signatures only" limit is closed — `collectCarrierTypes` now also scans the body for carrier-typed locals and
+`new R(…)` constructions, so a method can build a carrier it doesn't name in its signature. That unblocked the
+genuinely valuable rung: a **type-changing operator**. `Length × Length → Area` — `*` routes to a `multiply`
+that returns a *different* record type, and the area's value is proved (`2 m × 3 m == 6 m²`, a wrong area
+refutes). This is the actual dimensional algebra, not just same-dimension `+`. Static **factory methods**
+(`Length.km(1)` via a local) already worked through the interprocedural `@Ensures` path. New cases extend
+`P133 record ctor`.
+
+Still out: **multi-component** records (a general N-field datatype, the TupleN analogue — so a dimension *vector*
+`(L, M, T)` falls out automatically rather than one hand-written record per derived unit); a guarded operator
+(`@Requires` on the operator method) — the operator site is a `BinaryExpression`, so the precondition pass can't
+check it; and conversion/scale *inside* a bespoke record (today the scale layer is Phase 132's JSR 385 reader).
+1257 → 1274.
 
 ---
 

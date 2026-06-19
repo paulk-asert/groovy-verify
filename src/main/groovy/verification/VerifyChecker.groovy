@@ -308,6 +308,29 @@ class VerifyChecker extends TypeCheckingExtension {
         }
         ClassNode rt = node.returnType
         if (rt != null && Encoder.isCarrier(rt)) out.put(rt.nameWithoutPackage, rt)
+        // Phase 133 — carrier types that appear only in the BODY: a `Length a = …` local or a `new Length(…)`
+        // construction (e.g. `Area s = a * b`, where `Area` is the multiply result and `Length` only a local).
+        // Without these, carrierByName misses them and the `new` can't translate. Mirrors the scalar-local scan.
+        Statement cbody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cbody == null) cbody = node.code
+        if (cbody != null) try {
+            cbody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitClosureExpression(ClosureExpression ce) { /* skip contract closures */ }
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (t != null && Encoder.isCarrier(t)) out.put(t.nameWithoutPackage, t)
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+                @Override void visitConstructorCallExpression(ConstructorCallExpression cce) {
+                    if (cce.type != null && Encoder.isCarrier(cce.type)) out.put(cce.type.nameWithoutPackage, cce.type)
+                    super.visitConstructorCallExpression(cce)
+                }
+            })
+        } catch (Throwable ignored) {}
         out
     }
 

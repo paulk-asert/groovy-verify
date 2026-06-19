@@ -278,6 +278,37 @@ class VerifyHarness {
               "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { @Ensures({ result.metres == 2609.344 }) static Length sum() {\n' +
               '  Length a = new Length(1000.0); Length b = new Length(1609.344); Length s = a + b; s } }'],
+        // TYPE-CHANGING operator (Phase 133): `Length * Length -> Area` — `*` routes to a `multiply` returning a
+        // *different* record type, the real dimensional algebra (rung two). Operands built body-local.
+        [group: 'P133 record ctor', name: 'type-changing operator: Length * Length = Area', ok: true,
+         src: HDR + 'record Area(BigDecimal squareMetres) {}\n' +
+              'record Length(BigDecimal metres) {\n' +
+              '    @Ensures({ result.squareMetres == metres * o.metres })\n' +
+              '    Area multiply(Length o) { new Area(metres * o.metres) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C {\n' +
+              '    @Ensures({ result.squareMetres == 6.0 })\n' +
+              '    static Area area() {\n' +
+              '        Length a = new Length(2.0)\n' +
+              '        Length b = new Length(3.0)\n' +
+              '        Area s = a * b\n' +
+              '        s\n' +
+              '    }\n' +
+              '}'],
+        // ... and a wrong area refutes (the dimensional operator is a real proof, not vacuous).
+        [group: 'P133 record ctor', name: 'type-changing operator: wrong area refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'record Area(BigDecimal squareMetres) {}\n' +
+              'record Length(BigDecimal metres) {\n' +
+              '    @Ensures({ result.squareMetres == metres * o.metres }) Area multiply(Length o) { new Area(metres * o.metres) }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Ensures({ result.squareMetres == 5.0 })\n' +
+              '          static Area area() { Length a = new Length(2.0); Length b = new Length(3.0); Area s = a * b; s } }'],
+        // A static factory method's @Ensures is applied at the call (a `Length.km(1)` convenience constructor).
+        [group: 'P133 record ctor', name: 'static factory method pins the result', ok: true,
+         src: HDR + 'record Length(BigDecimal metres) {\n' +
+              '    @Ensures({ result.metres == v * 1000.0 }) static Length km(BigDecimal v) { new Length(v * 1000.0) }\n' +
+              '    @Ensures({ result.metres == 1000.0 }) static Length oneKm() { Length r = km(1.0); r }\n' +
+              '}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + 'class C { static int z() { 0 } }'],
         // A carrier local read back through its component (single binding).
         [group: 'P133 record ctor', name: 'carrier local round-trips', ok: true,
          src: HDR + 'record Length(BigDecimal metres) {}\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
