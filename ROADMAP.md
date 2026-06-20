@@ -7684,6 +7684,33 @@ from `examples/units.md` with a `doclint:ignore`. No regression to the existing 
 DSL vocabulary is deliberately tiny and experimental; the larger lesson is that the JSR 385 reader is *itself* a
 curated recogniser, and a future groovy-verify could let users register readers for their own units DSL.
 
+## Phase 150/151 — DSL multiplication (area) and quantity-to-quantity `==`  *(shipped — experimental, examples-dsl)*
+
+Two slices extending the Phase 148 reader, both about the trap the *type system can't catch* — an **area**. Erasure
+leaves `Quantity<?>` a single `multiply`, so `1.km * 1.km` (one km²) type-checks even when used as a length.
+
+**Phase 150** taught `siMagnitude`/`currentUnitScale` the DSL `*` operator: magnitudes multiply (`1.km * 1.km` →
+SI `1e6`), unit-scales multiply (km² → `1e6`), so `(1.km * 1.km).value == 1` verifies and a claim of the metre²
+number `1_000_000` **refutes** on the scale layer.
+
+**Phase 151** made the literal `@Ensures({ result == 1.km })` form — *no `.value`* — verify soundly, by joining a
+**dimension** layer to the magnitude one. A unit→exponent-vector table (`BASE_UNIT_DIM`/`DSL_SUFFIX_DIM` over the
+Phase 131 `[L,M,T]` base) decides each quantity-to-quantity `==`: **different dimensions are never equal** (so
+`1.m == 1.kg` — which *throws* `UnconvertibleException` at runtime, empirically pinned — folds to `false`); equal
+dimensions fall to the SI-magnitude equality. So `result == 1.km` over a `1000.m` body verifies (same Length), a
+`2000.m` body refutes on *magnitude*, and `Quantity squareKm() { 1.km * 1.km }` with `@Ensures({ result == 1.km })`
+refutes on *dimension* — the user's motivating example, an area-as-length the erased generics never see. This is
+exactly what the scale layer alone couldn't give: comparing `1.m` and `1.kg` on magnitude (both `1`) would wrongly
+prove them equal.
+
+Two enablers: a Quantity-returning method has no scalar handle, so `checkPath` aliases `result` to its return
+*expression* (`quantitySource`), which the readers resolve through; and the DSL recogniser gained a *structural*
+fallback (`isQuantityExpr` — a curated suffix on a numeric receiver) because an `@Ensures` closure is captured at
+CONVERSION, before STC, so its `1.km` carries no `INFERRED_TYPE`. A parameter quantity (unknown unit) still skips.
+3 new `examples-dsl` tests (verify across units / refute magnitude / refute dimension); root suite 1310/0, no
+regression. Sound posture throughout: the only unsound verdict would be proving a runtime-false `==` true, and
+different-dimension never reaches `true`.
+
 ---
 
 ## Definition of done, per increment

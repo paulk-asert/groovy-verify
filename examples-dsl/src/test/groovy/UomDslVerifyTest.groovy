@@ -105,4 +105,44 @@ class UomDslVerifyTest {
         String d = diagnostics(snippet('result == 0', 'BigDecimal', '(1.km + 1.kg).value as BigDecimal'))
         assertTrue(d != null, 'expected a compile error for length + mass, but it compiled')
     }
+
+    // ── Phase 151 — quantity-to-quantity `==` (the literal `result == 1.km` form, no `.value`) ──
+    // Sound now because the comparison consults BOTH the dimension (a compile-time exponent vector) and the SI
+    // magnitude: equal dimensions ⇒ magnitudes settle it; differing dimensions ⇒ never equal (`1.m == 1.kg`
+    // throws at runtime — never true). Empirically pinned: `1.km == 1000.m` is true, `1.km == 1.m` is false.
+
+    @Test
+    void quantityEqualsAcrossUnitsVerifies() {
+        // The literal blog form the user asked for: a Quantity-returning method whose `result` IS a quantity.
+        // `1000.m` and `1.km` are the same Length (both 1000 m), so `result == 1.km` holds — no `.value` needed.
+        assertNull(diagnostics(snippet('result == 1.km', 'javax.measure.Quantity', '1000.m')))
+    }
+
+    @Test
+    void quantityEqualsWrongMagnitudeRefutes() {
+        // Same dimension (Length), different magnitude: 2000 m is not 1 km, so the postcondition refutes.
+        String d = diagnostics(snippet('result == 1.km', 'javax.measure.Quantity', '2000.m'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
+
+    @Test
+    void quantityEqualsDimensionMismatchRefutes() {
+        // The user's `@Ensures({ result == 1.km }) Quantity squareKm() { 1.km * 1.km }`. `result` is an *area*
+        // (km², dimension [2,0,0]); `1.km` is a length ([1,0,0]). Different dimensions are never equal — so the
+        // contract refutes *on the dimension*, with no `.value` and no help from the (erased) generics. (At runtime
+        // the comparison throws `UnconvertibleException`; either way it can never be true, so the contract can't hold.)
+        String d = diagnostics(snippet('result == 1.km', 'javax.measure.Quantity', '1.km * 1.km'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
+
+    @Test
+    void quantityNotEqualsDimensionMismatchSkips() {
+        // Soundness guard for the `!=` direction: across different dimensions the runtime comparison THROWS, so it
+        // is neither true nor false. We must NOT *prove* `result != 1.km` (the method would throw at its own
+        // contract check) — so this skips loudly rather than verifying. (The `==` mirror above refutes; only `!=`
+        // would be the unsound "verified", so it's the one that must skip.)
+        String d = diagnostics(snippet('result != 1.km', 'javax.measure.Quantity', '1.km * 1.km'))
+        assertTrue(d?.contains('Skipped verification') || d?.contains('outside fragment'),
+            "expected a loud skip for a cross-dimension !=, got: $d")
+    }
 }

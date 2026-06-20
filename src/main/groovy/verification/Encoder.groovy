@@ -194,6 +194,15 @@ class Encoder {
      * trigger-cliff non-goal).
      */
     private final Map<String, Object> intSubsetBounds = new LinkedHashMap<String, Object>()
+    /**
+     * Phase 151 — a variable name → the JSR 385 Quantity *expression* it was bound from (e.g. {@code result}
+     * → the method's return expression {@code 1.km * 1.km}). The magnitude/dimension readers ({@link #siMagnitude},
+     * {@link #dimensionOf}, {@link #currentUnitScale}) resolve such a name back to its source expression, so a
+     * quantity-to-quantity {@code @Ensures({ result == 1.km })} can reason about the returned quantity's value and
+     * dimension. A quantity has no scalar Z3 handle (it's value × dimension), so this aliasing — not a handle bind —
+     * is how {@code result} participates.
+     */
+    private final Map<String, Expression> quantitySource = new LinkedHashMap<String, Expression>()
     /** Set handles whose {@code card >= 0} has already been asserted (mint-once, like the size oracle). */
     private final Set<Object> cardConstrained = new HashSet<Object>()
     /**
@@ -4259,6 +4268,117 @@ class Encoder {
         'm': 1.0G, 'km': 1000.0G, 'mile': 1609.344G, 'kg': 1.0G,
     ]
 
+    /**
+     * Phase 151 — the *dimension* twin of {@link #BASE_UNIT_SCALE}: a base unit's exponent vector over the
+     * {@code [Length, Mass, Time]} base (the same base as the Phase 131 cast-checker's {@code QUANTITY_KIND}).
+     * The scale layer alone can't compare quantities (`1.m` and `1.kg` both have SI magnitude 1), so a
+     * quantity-to-quantity {@code ==} consults this vector first: differing dimensions are never equal. Units
+     * outside {@code [L,M,T]} (KELVIN/AMPERE/MOLE/CANDELA) are intentionally absent → unknown dimension → skip.
+     */
+    private static final Map<String, int[]> BASE_UNIT_DIM = [
+        'METRE': [1, 0, 0] as int[], 'METER': [1, 0, 0] as int[],
+        'MILE': [1, 0, 0] as int[], 'YARD': [1, 0, 0] as int[], 'FOOT': [1, 0, 0] as int[], 'INCH': [1, 0, 0] as int[],
+        'KILOGRAM': [0, 1, 0] as int[], 'GRAM': [0, 1, 0] as int[],
+        'SECOND': [0, 0, 1] as int[],
+    ]
+
+    /** Phase 151 — the dimension twin of {@link #DSL_SUFFIX_SCALE} for the experimental unit-suffix sugar. */
+    private static final Map<String, int[]> DSL_SUFFIX_DIM = [
+        'm': [1, 0, 0] as int[], 'km': [1, 0, 0] as int[], 'mile': [1, 0, 0] as int[], 'kg': [0, 1, 0] as int[],
+    ]
+
+    /** Phase 151 — alias a (result/local) name to the JSR 385 Quantity expression it holds, so the magnitude /
+     *  dimension readers can resolve it. See {@link #quantitySource}. */
+    void registerQuantitySource(String name, Expression e) { if (name != null && e != null) quantitySource.put(name, e) }
+
+    /** True when {@code e} is a JSR 385 Quantity expression the readers can model both the dimension AND the
+     *  magnitude of — the gate {@code checkPath} uses before aliasing a Quantity-typed {@code result}. */
+    boolean isModellableQuantity(Expression e) { dimensionOf(e) != null && siMagnitude(e) != null }
+
+    /** The Quantity source expression a variable aliases (see {@link #quantitySource}), else null. Guards against
+     *  a self-alias so the readers' recursion terminates. */
+    private Expression quantitySourceOf(Expression e) {
+        if (!(e instanceof VariableExpression)) return null
+        Expression src = quantitySource.get(((VariableExpression) e).name)
+        return (src != null && !src.is(e)) ? src : null
+    }
+
+    private static int[] vadd(int[] a, int[] b) {
+        if (a == null || b == null) return null
+        int[] r = new int[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[i] + b[i]; r
+    }
+    private static int[] vsub(int[] a, int[] b) {
+        if (a == null || b == null) return null
+        int[] r = new int[a.length]; for (int i = 0; i < a.length; i++) r[i] = a[i] - b[i]; r
+    }
+
+    /** The dimension vector of a unit expression — a base-unit constant or a (nested) prefix application (a
+     *  metric prefix is dimension-neutral). Mirrors {@link #scaleOf}; null = outside the curated base → skip. */
+    private int[] dimVecOf(Expression u) {
+        if (u instanceof PropertyExpression) return BASE_UNIT_DIM.get(((PropertyExpression) u).propertyAsString)
+        if (u instanceof VariableExpression) return BASE_UNIT_DIM.get(((VariableExpression) u).name)
+        if (u instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) u
+            List<Expression> a = argList(mc)
+            if (PREFIX_SCALE.containsKey(mc.methodAsString) && a.size() == 1) return dimVecOf(a.get(0))
+        }
+        if (u instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression mc = (StaticMethodCallExpression) u
+            List<Expression> a = (mc.arguments instanceof org.codehaus.groovy.ast.expr.ArgumentListExpression) ?
+                ((org.codehaus.groovy.ast.expr.ArgumentListExpression) mc.arguments).expressions : []
+            if (PREFIX_SCALE.containsKey(mc.method) && a.size() == 1) return dimVecOf(a.get(0))
+        }
+        null
+    }
+
+    /**
+     * Phase 151 — the SI *dimension* (exponent vector over {@code [L,M,T]}) of a Quantity-valued expression,
+     * recovered structurally exactly as {@link #siMagnitude} recovers the magnitude: {@code getQuantity(v,U)} is
+     * {@code dim(U)}; {@code to}/{@code add}/{@code subtract} keep it; {@code multiply} adds vectors and
+     * {@code divide} subtracts; the DSL suffix/`+`/`-`/`*` mirror those. A scalar factor is dimension-neutral.
+     * null = unknown (a parameter quantity, an uncurated unit) → the {@code ==} caller skips, never guesses.
+     */
+    private int[] dimensionOf(Expression e) {
+        Expression src = quantitySourceOf(e)
+        if (src != null) return dimensionOf(src)
+        if (isGetQuantityCall(e)) {
+            List<Expression> a = callArgs(e)
+            return a.size() == 2 ? dimVecOf(a.get(1)) : null
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            String m = mc.methodAsString
+            List<Expression> a = argList(mc)
+            if (m == 'to' && a.size() == 1) return dimensionOf(mc.objectExpression)        // unit relabel: dimension invariant
+            if (m in ['add', 'subtract'] && a.size() == 1) return dimensionOf(mc.objectExpression)
+            if (m in ['multiply', 'divide'] && a.size() == 1) {
+                int[] dRecv = dimensionOf(mc.objectExpression)
+                if (dRecv == null) return null
+                Expression arg = a.get(0)
+                if (isNumericScalar(arg)) return dRecv                                       // scalar ×/÷ keeps dimension
+                int[] dArg = dimensionOf(arg)
+                return m == 'multiply' ? vadd(dRecv, dArg) : vsub(dRecv, dArg)
+            }
+        }
+        if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            int[] d = DSL_SUFFIX_DIM.get(pe.propertyAsString)
+            if (d != null && isQuantityExpr(pe)) return d
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            String op = be.operation.text
+            if (!isQuantityExpr(e)) return null
+            if (op == '+' || op == '-') return dimensionOf(be.leftExpression)               // same-dimension (STC-enforced)
+            if (op == '*') {
+                int[] l = isNumericScalar(be.leftExpression) ? ([0, 0, 0] as int[]) : dimensionOf(be.leftExpression)
+                int[] r = isNumericScalar(be.rightExpression) ? ([0, 0, 0] as int[]) : dimensionOf(be.rightExpression)
+                return vadd(l, r)
+            }
+        }
+        null
+    }
+
     /** The scale-to-SI of a unit expression — a base-unit constant or a (nested) prefix application — or null. */
     private BigDecimal scaleOf(Expression u) {
         if (u instanceof PropertyExpression) return BASE_UNIT_SCALE.get(((PropertyExpression) u).propertyAsString)
@@ -4313,6 +4433,8 @@ class Encoder {
      * visible (a parameter) → null, i.e. out of scope.
      */
     private Object siMagnitude(Expression e) {
+        Expression src = quantitySourceOf(e)
+        if (src != null) return siMagnitude(src)
         if (isGetQuantityCall(e)) {
             List<Expression> a = callArgs(e)
             if (a.size() != 2) return null
@@ -4350,7 +4472,7 @@ class Encoder {
         if (e instanceof PropertyExpression) {
             PropertyExpression pe = (PropertyExpression) e
             BigDecimal sc = DSL_SUFFIX_SCALE.get(pe.propertyAsString)
-            if (sc != null && isQuantityTyped(pe)) {
+            if (sc != null && isQuantityExpr(pe)) {
                 Object vR = asReal(pe.objectExpression)
                 if (vR == null) return null
                 return (sc.compareTo(BigDecimal.ONE) == 0) ? vR : session.times(vR, session.realLit(rationalOf(sc)))
@@ -4359,7 +4481,7 @@ class Encoder {
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             String op = be.operation.text
-            if ((op == '+' || op == '-') && isQuantityTyped(e)) {
+            if ((op == '+' || op == '-') && isQuantityExpr(e)) {
                 Object l = siMagnitude(be.leftExpression)
                 Object r = siMagnitude(be.rightExpression)
                 if (l == null || r == null) return null
@@ -4369,7 +4491,7 @@ class Encoder {
             // SI magnitude is 1000·1000 = 1e6 (m²). A scalar factor multiplies the magnitude by itself. (Only `*`:
             // it's enough for the area example and stays sound on the magnitude layer — the dimension it produces is
             // invisible here, which is exactly the gap the .value read-out below makes observable to the verifier.)
-            if (op == '*' && isQuantityTyped(e)) {
+            if (op == '*' && isQuantityExpr(e)) {
                 Object l = siMagnitude(be.leftExpression)
                 if (l == null && isNumericScalar(be.leftExpression)) l = asReal(be.leftExpression)
                 Object r = siMagnitude(be.rightExpression)
@@ -4391,10 +4513,43 @@ class Encoder {
         t != null && t.name == 'javax.measure.Quantity'
     }
 
+    /**
+     * Phase 151 — is {@code e} a JSR 385 Quantity expression, for the DSL readers' gate? Prefers STC's
+     * {@code INFERRED_TYPE} ({@link #isQuantityTyped}), but falls back to a *structural* recognition of the
+     * curated DSL shapes when that metadata is absent. The metadata IS absent inside an {@code @Ensures}
+     * closure — captured at CONVERSION, before type-checking — so `result == 1.km` needs this to see the `1.km`.
+     * The fallback is tight: a curated unit suffix on a numeric receiver ({@code 1.km}), or a {@code +}/{@code -}/
+     * {@code *} of such — never a bare `.m` on an arbitrary object.
+     */
+    private static boolean isQuantityExpr(Expression e) {
+        if (e == null) return false
+        if (isQuantityTyped(e)) return true
+        if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            return DSL_SUFFIX_SCALE.containsKey(pe.propertyAsString) && isNumericReceiver(pe.objectExpression)
+        }
+        if (e instanceof BinaryExpression) {
+            String op = ((BinaryExpression) e).operation.text
+            if (op == '+' || op == '-' || op == '*') {
+                return isQuantityExpr(((BinaryExpression) e).leftExpression) ||
+                       isQuantityExpr(((BinaryExpression) e).rightExpression)
+            }
+        }
+        false
+    }
+
+    /** A numeric receiver for a DSL unit suffix — a numeric literal ({@code 1.km}) or numeric-typed expression. */
+    private static boolean isNumericReceiver(Expression r) {
+        if (r instanceof ConstantExpression) return ((ConstantExpression) r).value instanceof Number
+        return isNumericScalar(r)
+    }
+
     /** Phase 148 — the scale of an expression's *current* unit, for a getValue read-out: a unit-suffix property's
      *  scale, a {@code to(U)} / {@code getQuantity(_, U)}'s unit, or (for the DSL `+`/`-` and `add`/`subtract`) the
      *  receiver's unit, which those keep. {@code value-in-unit = siMagnitude / currentUnitScale}. */
     private BigDecimal currentUnitScale(Expression e) {
+        Expression src = quantitySourceOf(e)
+        if (src != null) return currentUnitScale(src)
         if (e instanceof PropertyExpression) {
             BigDecimal sc = DSL_SUFFIX_SCALE.get(((PropertyExpression) e).propertyAsString)
             if (sc != null) return sc
@@ -4613,6 +4768,32 @@ class Encoder {
                     return op == Types.COMPARE_EQUAL ? isNull : session.not(isNull)
                 }
             }
+        }
+
+        // Phase 151 — quantity-to-quantity equality `a == b` (and `!=`) between two JSR 385 Quantity values.
+        // Sound only by consulting BOTH layers: the dimension (compile-time exponent vector) decides whether the
+        // comparison can be true at all, and only when dimensions agree does the SI magnitude (Z3 Real) settle the
+        // value. Different dimensions are NEVER equal — `1.m == 1.kg` THROWS UnconvertibleException at runtime (so
+        // `==` can't be true → refute; `!=` can't be proved true → skip). Equal dimensions fall to magnitude
+        // equality (`1.km == 1000.m` → true). A dimension or magnitude unknown (a parameter quantity) → skip loudly.
+        if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
+            int[] dL = dimensionOf(be.leftExpression)
+            int[] dR = dimensionOf(be.rightExpression)
+            if (dL != null && dR != null) {                           // both sides modellable Quantity expressions
+                if (!java.util.Arrays.equals(dL, dR)) {
+                    // Different dimension: at runtime the comparison THROWS UnconvertibleException — it is neither
+                    // true nor false (empirically pinned). So `==` can never hold → model `false` (it refutes,
+                    // which is sound: we never prove it true). But `!=` must NOT be proved *true* — the method would
+                    // throw at its own contract check, so a "verified" there would be unsound. Skip `!=` loudly.
+                    return op == Types.COMPARE_EQUAL ? session.boolLit(false) : null
+                }
+                Object mL = siMagnitude(be.leftExpression)
+                Object mR = siMagnitude(be.rightExpression)
+                if (mL == null || mR == null) return null             // dimension known but magnitude isn't → skip
+                Object eq = session.eq(mL, mR)                        // same dimension: magnitude settles it (runtime compareTo)
+                return op == Types.COMPARE_EQUAL ? eq : session.not(eq)
+            }
+            // a side's dimension is unknown (a parameter quantity) → out of fragment; fall through to a loud skip.
         }
 
         // Phase 47 — String concatenation via the {@code +} operator. When both operands are

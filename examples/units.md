@@ -115,8 +115,28 @@ static BigDecimal squareKm() {
 }
 ```
 
+You don't even need the `.value` detour: the verifier now compares **two quantities directly**, consulting *both*
+the dimension and the magnitude. So the contract can be written in the most natural form — and the wrong one still
+refutes, now on the **dimension**:
+
+<!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
+```groovy
+@Ensures({ result == 1.km })        // refutes — result is an area (km²), 1.km is a length; different dimensions
+static Quantity squareKm() {
+    1.km * 1.km
+}
+```
+
+`result == 1.km` is sound because the comparison checks the **dimension first** (a compile-time exponent vector):
+two quantities of different dimension are never equal — `1.m == 1.kg` *throws* at runtime — so the area-vs-length
+mismatch refutes without ever looking at the value. Only when dimensions *agree* does the magnitude settle it:
+`@Ensures({ result == 1.km })` over a body of `1000.m` **verifies** (same Length, both 1000 m), while `2000.m`
+refutes. This is the layer the scale reader alone couldn't give — comparing `1.m` and `1.kg` on magnitude alone
+would wrongly call them equal (both have SI magnitude 1).
+
 Note the difference from `1.kg`: that one is a *dimension* mismatch the JSR 385 generics reject before the verifier
-runs; this one type-checks cleanly and is caught only by proving the magnitude.
+runs; the area-vs-length case above type-checks cleanly (erasure hides it) and is caught only by the verifier
+tracking the dimension itself.
 
 Because it needs the extension module on the classpath, this lives in its own
 [`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a

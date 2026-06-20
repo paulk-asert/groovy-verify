@@ -5753,6 +5753,16 @@ class VerifyChecker extends TypeCheckingExtension {
                         resHandle = session.intVar('result$null$' + (++ssaVersion))
                         enc.bind('result', resHandle)
                         enc.bindNullity('result', session.boolLit(true))
+                    } else if (resHandle == null && enc.isModellableQuantity(p.result)) {
+                        // Phase 151 — a JSR 385 Quantity-returning method (e.g. `Quantity squareKm() { 1.km * 1.km }`).
+                        // A quantity has no scalar Z3 handle (it's a magnitude × a dimension), so instead of binding a
+                        // value we alias `result` to the return EXPRESSION: the dimension/magnitude readers resolve it,
+                        // letting a quantity-to-quantity `@Ensures({ result == 1.km })` reason about both. Bind a
+                        // placeholder handle marked non-null (a constructed quantity is never null).
+                        resHandle = session.intVar('result$qty$' + (++ssaVersion))
+                        enc.registerQuantitySource('result', p.result)
+                        enc.bind('result', resHandle)
+                        enc.bindNullity('result', session.boolLit(false))
                     } else {
                         if (resHandle == null) {
                             throw new UnsupportedConstructException(
