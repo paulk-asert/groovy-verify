@@ -23,13 +23,17 @@ import groovy.transform.stc.POJO
  * groovy-verify {@code Buffer} (verified sequentially) and {@code examples/concurrency/Buffer.tla} (model-checked).
  * Lincheck checks the ACTUAL bytecode across interleavings.
  *
- * <p><b>This is a facsimile, not a copy.</b> The three rungs share the SPSC publish-after-write *discipline*, not
- * one source: this is a real **circular** ring (`items[t % capacity]`, slots reused) with `offer`/`poll` and
- * {@code volatile} indices, whereas the verified {@code Buffer} is a **linear append** model
- * ({@code values[head]}, {@code tail <= values.length}, no wraparound) with {@code read}/{@code write} and explicit
- * {@code @Rely}/{@code @Guarantee} rely-step methods. The two tools need different code shapes — Lincheck needs
- * runnable bytecode, the verifier needs fragment-shaped contracts — so none of the rungs validates another's exact
- * code; each demonstrates the same algorithm at its own fidelity (README: "None subsumes the others").
+ * <p><b>This is a facsimile, not a copy</b> — but the boundary is narrower than "different code shapes". The
+ * <i>data structure</i> is not the divider: groovy-verify verifies this very circular shape — the
+ * {@code P107 ring-buffer} "circular (modulo) ring" case proves {@code items[t % capacity]} in bounds and the
+ * occupancy invariant preserved. The verified {@code Buffer} is a linear, non-wrapping model ({@code values[head]},
+ * {@code read}/{@code write}) only for clarity and to match its ported source, not because circular is out of reach. The real divider is the <b>concurrency representation</b>: groovy-verify reasons
+ * <i>above</i> the memory model — it abstracts the peer thread into empty {@code @Rely}/{@code @UnderRely}
+ * rely-step methods and never models the JMM, {@code volatile}, or the atomicity grain (that omission is precisely
+ * what this rung exists to cover). Those stubs are inert at runtime and the verified class carries no real
+ * synchronisation, so it is not a runnable thread-safe artifact; Lincheck instruments <i>real</i> bytecode, so it
+ * needs the actual {@code volatile} lock-free code here. None of the rungs validates another's exact code; each
+ * demonstrates the same algorithm at its own fidelity (README: "None subsumes the others").
  *
  * <p>{@code @CompileStatic} is load-bearing here: it makes {@code offer}/{@code poll} compile to direct
  * field and array bytecode (getfield/putfield, iaload/iastore) with no Groovy call-site caching or

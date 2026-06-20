@@ -11819,6 +11819,47 @@ class Maybe {                                              // a hand-rolled Some
                         @Ensures({ result >= 0 })
                         int size() { return n - m }
                     }''')],
+        // The WRAPPING (circular, modulo-indexed) ring also verifies — so the non-wrapping `Queue` above is a
+        // clarity/source-matching choice, NOT a fragment limit. `items[t % capacity]` is proven in bounds (Z3 knows
+        // `0 <= t % capacity < capacity` for `capacity > 0`, and the @Invariant pins `items.length == capacity`),
+        // and offer/poll preserve the bounded-occupancy invariant. This is the same circular shape that
+        // `src/concurrent/.../SpscBuffer` uses for Lincheck — confirming the two rungs diverge on the *concurrency
+        // model* (rely-steps above the JMM vs real `volatile`), not on the data structure.
+        [group: 'P107 ring-buffer', name: 'circular (modulo) ring: offer/poll bounds-safe, invariant preserved', ok: true,
+         src: tc('''@Invariant({ capacity > 0 && items.length == capacity && 0 <= head && head <= tail && tail - head <= capacity })
+                    class Ring {
+                        int[] items
+                        int capacity
+                        int head
+                        int tail
+                        @Requires({ tail - head < capacity })          // not full: room to write
+                        void offer(int x) {
+                            items[tail % capacity] = x                 // PROVEN in bounds: 0 <= tail % capacity < items.length
+                            tail = tail + 1
+                        }
+                        @Requires({ head < tail })                     // not empty
+                        int poll() {
+                            int v = items[head % capacity]             // PROVEN in bounds
+                            head = head + 1
+                            return v
+                        }
+                    }''')],
+        // Soundness control: drop the not-full guard and `offer` can overflow the logical buffer (`tail - head`
+        // exceeds capacity, overwriting the unread slot at `head`), so the bounded-occupancy invariant is no longer
+        // preserved at method exit → refutes. (Array bounds stay safe — modulo guarantees that; the guard protects
+        // *occupancy*, not the index.)
+        [group: 'P107 ring-buffer', name: 'circular ring without the not-full guard breaks the invariant', expect: 'Cannot prove class invariant',
+         src: tc('''@Invariant({ capacity > 0 && items.length == capacity && 0 <= head && head <= tail && tail - head <= capacity })
+                    class Ring {
+                        int[] items
+                        int capacity
+                        int head
+                        int tail
+                        void offer(int x) {                            // no @Requires: may write when full
+                            items[tail % capacity] = x
+                            tail = tail + 1
+                        }
+                    }''')],
         // ---------- P106 char-sequence: ChangeCase via the array theory (Slice 2) ----------
         // The spike showed string *construction*-content invariants time out on Z3's seq theory (`str.++`),
         // but the same content invariants discharge on the *array* theory. So model the char buffer as a
