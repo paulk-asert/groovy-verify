@@ -3794,6 +3794,13 @@ class Encoder {
                     if (carrier != null) return session.datatypeSelect(mt.nameWithoutPackage, mt.nameWithoutPackage, prop, carrier)
                 }
             }
+            // Phase 148 (experimental DSL) — `X.value` (the property form of getValue()) on a JSR 385 quantity:
+            // its SI magnitude read in X's current unit. After the carrier branches, so a bespoke record's own
+            // `.value` field still wins. Gated on a Quantity-typed receiver.
+            if (prop == 'value' && isQuantityTyped(obj)) {
+                Object v = quantityValueTerm(obj)
+                if (v != null) return v
+            }
             // Phase 44 polish — JDK boxed-numeric range constants fold to their literal values, so a
             // user can write {@code @Requires({ n < Integer.MAX_VALUE })} (or the {@code Long}
             // equivalents) and the verifier sees the same literal a tighter explicit bound would
@@ -4241,6 +4248,17 @@ class Encoder {
         'DECI': 0.1G, 'CENTI': 0.01G, 'MILLI': 0.001G, 'MICRO': 0.000001G, 'NANO': 0.000000001G,
     ]
 
+    /**
+     * Phase 148 — EXPERIMENTAL units DSL: a curated unit-suffix property (`1.km`, `1.mile`) → its scale-to-SI,
+     * the same trusted-constant posture as {@link #BASE_UNIT_SCALE} but for the Groovy extension-method sugar a
+     * consumer registers (`getKm(Number)` etc.). The verifier never compiles against the extension module — it
+     * recognises the sugar *by property name* and gated on a {@code javax.measure.Quantity}-typed receiver. A
+     * deliberately tiny, fixed vocabulary; anything outside it skips. See {@code examples-dsl}.
+     */
+    private static final Map<String, BigDecimal> DSL_SUFFIX_SCALE = [
+        'm': 1.0G, 'km': 1000.0G, 'mile': 1609.344G, 'kg': 1.0G,
+    ]
+
     /** The scale-to-SI of a unit expression — a base-unit constant or a (nested) prefix application — or null. */
     private BigDecimal scaleOf(Expression u) {
         if (u instanceof PropertyExpression) return BASE_UNIT_SCALE.get(((PropertyExpression) u).propertyAsString)
@@ -4326,29 +4344,74 @@ class Encoder {
                 return session.realDiv(recvM, other)                                          // divide
             }
         }
+        // Phase 148 (experimental DSL) — a curated unit-suffix property `v.km` is `v · scale`, and the DSL `+`/`-`
+        // (the registered `plus`/`minus` extension operators) combine same-dimension magnitudes. Gated on a
+        // javax.measure.Quantity-typed expression so a stray `.m` on a non-quantity can't be misread as a unit.
+        if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            BigDecimal sc = DSL_SUFFIX_SCALE.get(pe.propertyAsString)
+            if (sc != null && isQuantityTyped(pe)) {
+                Object vR = asReal(pe.objectExpression)
+                if (vR == null) return null
+                return (sc.compareTo(BigDecimal.ONE) == 0) ? vR : session.times(vR, session.realLit(rationalOf(sc)))
+            }
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            String op = be.operation.text
+            if ((op == '+' || op == '-') && isQuantityTyped(e)) {
+                Object l = siMagnitude(be.leftExpression)
+                Object r = siMagnitude(be.rightExpression)
+                if (l == null || r == null) return null
+                return op == '+' ? session.plus(l, r) : session.minus(l, r)
+            }
+        }
         null
     }
 
-    /** {@code X.getValue()} as a Real — only when X's *current unit* is syntactically known (a {@code to(U)} or a
-     *  {@code getQuantity(_, U)} at the top): the value in unit U is {@code siMagnitude(X) / scale(U)}. */
-    private Object quantityValueTerm(Expression recv) {
-        if (recv instanceof MethodCallExpression && ((MethodCallExpression) recv).methodAsString == 'to') {
-            MethodCallExpression toCall = (MethodCallExpression) recv
-            List<Expression> a = argList(toCall)
-            if (a.size() == 1) {
-                BigDecimal s = scaleOf(a.get(0))
-                Object mag = siMagnitude(toCall.objectExpression)
-                if (s != null && mag != null) {
-                    return (s.compareTo(BigDecimal.ONE) == 0) ? mag : session.realDiv(mag, session.realLit(rationalOf(s)))
-                }
-            }
-            return null
+    /** Phase 148 — true when {@code e}'s (STC-inferred) type is {@code javax.measure.Quantity} — the gate that
+     *  keeps the experimental DSL recognisers off non-quantity property reads / operators. The kind comes from
+     *  STC's {@code INFERRED_TYPE} node metadata (a `+`/property's syntactic {@code getType()} is just Object). */
+    private static boolean isQuantityTyped(Expression e) {
+        if (e == null) return false
+        ClassNode t = (ClassNode) e.getNodeMetaData(org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE)
+        if (t == null) { try { t = e.getType() } catch (ignored) {} }
+        t != null && t.name == 'javax.measure.Quantity'
+    }
+
+    /** Phase 148 — the scale of an expression's *current* unit, for a getValue read-out: a unit-suffix property's
+     *  scale, a {@code to(U)} / {@code getQuantity(_, U)}'s unit, or (for the DSL `+`/`-` and `add`/`subtract`) the
+     *  receiver's unit, which those keep. {@code value-in-unit = siMagnitude / currentUnitScale}. */
+    private BigDecimal currentUnitScale(Expression e) {
+        if (e instanceof PropertyExpression) {
+            BigDecimal sc = DSL_SUFFIX_SCALE.get(((PropertyExpression) e).propertyAsString)
+            if (sc != null) return sc
         }
-        if (isGetQuantityCall(recv)) {                       // getQuantity(v, U).getValue() reads back v (its own unit)
-            List<Expression> a = callArgs(recv)
-            return a.size() == 2 ? asReal(a.get(0)) : null
+        if (e instanceof BinaryExpression) {
+            String op = ((BinaryExpression) e).operation.text
+            if (op == '+' || op == '-') return currentUnitScale(((BinaryExpression) e).leftExpression)
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            List<Expression> a = argList(mc)
+            if (mc.methodAsString == 'to' && a.size() == 1) return scaleOf(a.get(0))
+            if (mc.methodAsString in ['add', 'subtract'] && a.size() == 1) return currentUnitScale(mc.objectExpression)
+        }
+        if (isGetQuantityCall(e)) {
+            List<Expression> a = callArgs(e)
+            if (a.size() == 2) return scaleOf(a.get(1))
         }
         null
+    }
+
+    /** {@code X.getValue()} (or the property `X.value`) as a Real — the SI magnitude read back in X's *current*
+     *  unit, i.e. {@code siMagnitude(X) / currentUnitScale(X)}. Modelled only when both are syntactically known
+     *  (a {@code to(U)} / {@code getQuantity(_, U)} top, or the experimental DSL forms); else null (skips). */
+    private Object quantityValueTerm(Expression recv) {
+        Object mag = siMagnitude(recv)
+        BigDecimal s = currentUnitScale(recv)
+        if (mag == null || s == null) return null
+        return (s.compareTo(BigDecimal.ONE) == 0) ? mag : session.realDiv(mag, session.realLit(rationalOf(s)))
     }
 
     /** A BigDecimal/Double/Float as a Z3 rational numeral string ("25/10" for 2.5G). */

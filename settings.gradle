@@ -15,3 +15,8 @@
  */
 
 rootProject.name = 'groovy-verify'
+
+// Experimental: a standalone demo that the JSR 385 DSL (`1.km + 1.mile`, via registered Groovy extension
+// methods) verifies under groovy-verify. Isolated as its own subproject so its extension module registers on a
+// dedicated classpath and never pollutes the main suite's snippet compilation.
+include 'examples-dsl'

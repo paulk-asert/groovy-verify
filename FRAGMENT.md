@@ -188,9 +188,12 @@ no intermediate locals (composes with decimal arithmetic and a local-RHS read-ou
 these with no new support (Phase 147): a `Unit(scale, l, m, t)` is itself a record value, `Quantity.of(v, unit)` a
 factory reading the unit's fields off the carrier-typed formal, and a metric prefix a `Unit → Unit` factory — so the
 literal JSR 385 shape `Quantity.of(1, Unit.kilo(Unit.metre())).plus(Quantity.of(1, Unit.mile())).value == 2609.344`
-verifies (a read-out in a *non-SI* named unit divides by a symbolic scale and skips). Still out: the `1.km`
-extension-method DSL (surface syntax — a registered `ExtensionModule`), deconstruction / pattern-matching, and
-generated `equals`/`hashCode`.
+verifies (a read-out in a *non-SI* named unit divides by a symbolic scale and skips). The `1.km + 1.mile` **DSL**
+verifies too, *experimentally* (Phase 148): registered Groovy extension methods build JSR 385 quantities, and the
+C₁ reader's curated by-name recogniser was extended to the unit-suffix sugar (`m`/`km`/`mile`/`kg`) and the `+`/`-`
+operators — soundly tracking the unit, so `(1.km + 1.mile).value == 2609.344` *refutes* (it is `2.609344` in km).
+It needs the extension module on the classpath, so it lives in the standalone `examples-dsl` subproject. Still out:
+deconstruction / pattern-matching, and generated `equals`/`hashCode`.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its

@@ -7652,8 +7652,37 @@ dimension guard. New cases: `P147 units-as-data` (+ gallery example). 1300 → 1
 
 Honest boundary: reading back out in a *non-SI* named unit is `value / unit.scale` where `unit.scale` is now a
 **symbolic** carrier field, not a literal — so that direction **skips loudly** (only a constant terminating divisor is
-exact, Phase 143). The SI `.value` read-out is exact. Still ahead: the `1.km` extension-method DSL (a registered
-`ExtensionModule`; `use()` categories are rejected by `@TypeChecked`) — a *surface-syntax* gap, not a reasoning one.
+exact, Phase 143). The SI `.value` read-out is exact. Still ahead: the `1.km` extension-method DSL — Phase 148, next.
+
+---
+
+## Phase 148 — the `1.km + 1.mile` DSL verifies (experimental JSR 385 reader extension)  *(shipped — standalone subproject)*
+
+The last surface-syntax rung: the blog-style DSL `(1.km + 1.mile).value`, where `1.km` is a registered Groovy
+**extension method**. An architectural finding reframed the approach. The roadmap had predicted "see-through
+inlining of the wrapper method", but a registered extension module is **necessarily precompiled** (it must be on
+the classpath for `1.km` to resolve) — so the verifier sees `UomExtensions.getKm` as *bytecode, not source AST*,
+and groovy-verify reads contracts and bodies from **source AST**. Neither contract-reading nor inlining works
+across that boundary.
+
+The viable path is the one the C₁ reader already uses for `Quantities.getQuantity(...)`: a **curated by-name
+recogniser**, not source-reading. So the JSR 385 value/scale reader (Phase 132) gained an *experimental* extension:
+a tiny `DSL_SUFFIX_SCALE` table (`m`, `km`, `mile`, `kg`), recognition of the unit-suffix property (`v.km` is
+`v · scale`) and the `+`/`-` extension operators in `siMagnitude`, a `currentUnitScale` helper, and the `.value`
+property form of `getValue()`. All gated on a `javax.measure.Quantity`-typed receiver (read from STC's
+`INFERRED_TYPE` node metadata — a `+`/property's syntactic `getType()` is just `Object`), so a stray `.m` on a
+non-quantity can't be misread.
+
+It works, and *soundly tracks the unit*: `(1000.m + 1.mile).value == 2609.344` verifies, but `(1.km + 1.mile).value`
+is a quantity **in kilometres**, so claiming the metre number `2609.344` there **refutes** (its value is `2.609344`)
+— the Mars unit-confusion bug, caught inside the pretty DSL. A wrong total refutes; `1.km + 1.kg` is rejected by the
+JSR 385 generics before the verifier runs (dimension is the type system's job, scale is the verifier's).
+
+Because it needs the extension module registered on the classpath, it lives in a standalone **`examples-dsl`**
+subproject (5 tests: verify / refute / unit-confusion / dimension-mismatch), not the inline CASES harness — linked
+from `examples/units.md` with a `doclint:ignore`. No regression to the existing readers (root suite 1304/0). The
+DSL vocabulary is deliberately tiny and experimental; the larger lesson is that the JSR 385 reader is *itself* a
+curated recogniser, and a future groovy-verify could let users register readers for their own units DSL.
 
 ---
 

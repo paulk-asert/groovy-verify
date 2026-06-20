@@ -82,6 +82,31 @@ them rather than running the conversion — so `UnitScaleTest` pins each one aga
 (the international mile is `1609.344 m`, not the US-survey `1609.347…`), failing loudly if a library ever
 redefines a unit out from under the table.
 
+## The same sum, as a DSL — experimental
+
+The JSR 385 calls above are explicit on purpose. But a handful of registered Groovy **extension methods** —
+`getKm(Number)`, `getMile(Number)`, … — turn `1.km` into that same `getQuantity(1, KILO(METRE))`, so the whole
+scale check reads as the blog-style DSL. groovy-verify proves it just the same: an *experimental* reader recognises
+the curated sugar by name (`m`, `km`, `mile`, `kg`), the same trusted-constant posture as the unit table above.
+
+<!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
+```groovy
+@Ensures({ result == 2609.344 })
+static BigDecimal total() {
+    (1000.m + 1.mile).value as BigDecimal
+}
+```
+
+`1 km + 1 mile`, worked in metres, is exactly `2609.344` — in the prettiest possible surface syntax. And it stays
+honest about the unit, which is the whole point: `(1.km + 1.mile)` is a quantity *in kilometres*, so its `.value` is
+`2.609344` — claim the metre number `2609.344` there and it **refutes**, the Mars bug caught *inside* the DSL.
+(Dimension is still the type system's job: `1.km + 1.kg` does not compile at all.)
+
+Because it needs the extension module on the classpath, this lives in its own
+[`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a
+deliberately tiny experiment; the larger point is that the JSR 385 reader is *itself* a curated recogniser, and a
+future groovy-verify could let users register readers for their own.
+
 ## A bespoke units type — from a wrapped number to JSR 385's own sentence
 
 If you don't want a units library at all, you can roll your own type — and groovy-verify reaches inside it. It
