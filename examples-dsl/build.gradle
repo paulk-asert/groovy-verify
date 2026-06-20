@@ -1,0 +1,50 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Experimental DSL demo: registered Groovy extension methods (`1.km`, `1.mile`, …) build JSR 385 quantities, and
+// groovy-verify's C₁ reader (extended to recognise the DSL sugar) proves the resulting expression at compile time.
+// Standalone so the extension module registers on its own classpath — the verified snippets live in the *test*
+// source set (a separate compilation, with the extension jar on its classpath), exactly as a consumer would use it.
+
+plugins { id 'groovy' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(25) }   // match the root project's JVM target
+}
+
+def groovyVersion = '6.0.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
+}
+
+dependencies {
+    // groovy-verify itself — VerifyChecker (the @TypeChecked extension), and Z3 via its `api` dependency.
+    implementation project(':')
+    implementation "org.apache.groovy:groovy:$groovyVersion"
+    implementation "org.apache.groovy:groovy-contracts:$groovyVersion"
+    // JSR 385: the API + Indriya reference impl + US-customary units (MILE), so the extension methods resolve.
+    implementation 'javax.measure:unit-api:2.2'
+    implementation 'tech.units:indriya:2.2.4'
+    implementation 'systems.uom:systems-common:2.2'
+
+    testImplementation platform('org.junit:junit-bom:6.1.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test { useJUnitPlatform() }
