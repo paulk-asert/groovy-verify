@@ -38,6 +38,7 @@ contracts. No new solver theory; the obligation is just a lattice formula. (The 
 rely/guarantee section — but the underlying concurrency/atomicity soundness, that threads truly interleave at the
 assumed grain, stays a deliberate non-goal.)
 
+> [NOTE]
 That label-propagate-check shape is not unique to security. [Units of measurement](units.md) run it over a **free
 abelian group** instead of a lattice: the label is a *dimension*, `×` adds its exponent vector and `/` subtracts,
 and the forbidden point is an unchecked `as Quantity<K>` cast — same engine, same obligation skeleton, only the
