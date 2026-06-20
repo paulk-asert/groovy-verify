@@ -190,10 +190,12 @@ factory reading the unit's fields off the carrier-typed formal, and a metric pre
 literal JSR 385 shape `Quantity.of(1, Unit.kilo(Unit.metre())).plus(Quantity.of(1, Unit.mile())).value == 2609.344`
 verifies (a read-out in a *non-SI* named unit divides by a symbolic scale and skips). The `1.km + 1.mile` **DSL**
 verifies too, *experimentally* (Phase 148): registered Groovy extension methods build JSR 385 quantities, and the
-C₁ reader's curated by-name recogniser was extended to the unit-suffix sugar (`m`/`km`/`mile`/`kg`) and the `+`/`-`
-operators — soundly tracking the unit, so `(1.km + 1.mile).value == 2609.344` *refutes* (it is `2.609344` in km).
-It needs the extension module on the classpath, so it lives in the standalone `examples-dsl` subproject. Still out:
-deconstruction / pattern-matching, and generated `equals`/`hashCode`.
+C₁ reader's curated by-name recogniser was extended to the unit-suffix sugar (`m`/`km`/`mile`/`kg`), the `+`/`-`
+operators, and `*` (`multiply`) — soundly tracking the unit, so `(1.km + 1.mile).value == 2609.344` *refutes* (it is
+`2.609344` in km), and `(1.km * 1.km).value == 1_000_000` *refutes* (it is one km², value `1`, not the metre² number
+— an area the erased `Quantity<?>` can't police). It needs the extension module on the classpath, so it lives in the
+standalone `examples-dsl` subproject. Still out: quantity-to-quantity `==` (the magnitude layer can't see dimension,
+so it would unsoundly equate `1.m == 1.kg`), deconstruction / pattern-matching, and generated `equals`/`hashCode`.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined
 class `@Invariant`s, a `super.m(…)` call composes with the parent's contract, an override that redeclares its

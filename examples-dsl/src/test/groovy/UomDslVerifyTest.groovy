@@ -83,6 +83,22 @@ class UomDslVerifyTest {
     }
 
     @Test
+    void squareKilometreVerifies() {
+        // `1.km * 1.km` is an *area* — one square kilometre — so its `.value` reads back 1, not 1000 or 1e6.
+        assertNull(diagnostics(snippet('result == 1.0', 'BigDecimal', '(1.km * 1.km).value as BigDecimal')))
+    }
+
+    @Test
+    void squareKilometreUnitConfusionRefutes() {
+        // The dimension trap a `Quantity<?>` can't catch (erasure leaves only one `multiply`): `1.km * 1.km` is
+        // 1 km², value 1 — NOT the metre² magnitude 1e6. There's no static error (it's a perfectly typed area);
+        // the verifier refutes it on the scale layer. A *value* refutation — unlike `1.kg`, a dimension the JSR 385
+        // generics reject outright before the verifier ever runs.
+        String d = diagnostics(snippet('result == 1000000.0', 'BigDecimal', '(1.km * 1.km).value as BigDecimal'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
+
+    @Test
     void dimensionMismatchRejectedByTheTypeSystem() {
         // A length plus a mass: the JSR 385 generics reject `plus(Quantity<Length>, Quantity<Mass>)` outright —
         // the dimension is caught by the type system before the verifier (the scale layer) ever runs.

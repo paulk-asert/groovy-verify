@@ -4365,6 +4365,18 @@ class Encoder {
                 if (l == null || r == null) return null
                 return op == '+' ? session.plus(l, r) : session.minus(l, r)
             }
+            // Phase 150 — the DSL `*` (Quantity.multiply): magnitudes multiply, so `1.km * 1.km` is an *area* whose
+            // SI magnitude is 1000·1000 = 1e6 (m²). A scalar factor multiplies the magnitude by itself. (Only `*`:
+            // it's enough for the area example and stays sound on the magnitude layer — the dimension it produces is
+            // invisible here, which is exactly the gap the .value read-out below makes observable to the verifier.)
+            if (op == '*' && isQuantityTyped(e)) {
+                Object l = siMagnitude(be.leftExpression)
+                if (l == null && isNumericScalar(be.leftExpression)) l = asReal(be.leftExpression)
+                Object r = siMagnitude(be.rightExpression)
+                if (r == null && isNumericScalar(be.rightExpression)) r = asReal(be.rightExpression)
+                if (l == null || r == null) return null
+                return session.times(l, r)
+            }
         }
         null
     }
@@ -4388,8 +4400,18 @@ class Encoder {
             if (sc != null) return sc
         }
         if (e instanceof BinaryExpression) {
-            String op = ((BinaryExpression) e).operation.text
-            if (op == '+' || op == '-') return currentUnitScale(((BinaryExpression) e).leftExpression)
+            BinaryExpression be = (BinaryExpression) e
+            String op = be.operation.text
+            if (op == '+' || op == '-') return currentUnitScale(be.leftExpression)
+            // Phase 150 — a product's current unit is the product of the operands' units (km · km = km², scale 1e6),
+            // so `(1.km * 1.km).value` reads back 1e6/1e6 = 1 (one km²). A scalar factor carries unit-scale 1.
+            if (op == '*') {
+                BigDecimal l = currentUnitScale(be.leftExpression)
+                if (l == null && isNumericScalar(be.leftExpression)) l = 1.0G
+                BigDecimal r = currentUnitScale(be.rightExpression)
+                if (r == null && isNumericScalar(be.rightExpression)) r = 1.0G
+                return (l == null || r == null) ? null : l * r
+            }
         }
         if (e instanceof MethodCallExpression) {
             MethodCallExpression mc = (MethodCallExpression) e

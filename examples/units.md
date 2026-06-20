@@ -102,6 +102,22 @@ honest about the unit, which is the whole point: `(1.km + 1.mile)` is a quantity
 `2.609344` — claim the metre number `2609.344` there and it **refutes**, the Mars bug caught *inside* the DSL.
 (Dimension is still the type system's job: `1.km + 1.kg` does not compile at all.)
 
+Multiplication makes a subtler trap, one the type system genuinely *cannot* catch. `1.km * 1.km` is an **area** —
+one square kilometre — but type erasure leaves `Quantity<?>` with a single `multiply`, so the compiler sees nothing
+wrong in treating that area as if it were a length. Its `.value` is `1` (one km²); reach for the metre² magnitude
+`1_000_000` and the verifier **refutes** it on the scale layer — a *value* error inside a perfectly typed program:
+
+<!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
+```groovy
+@Ensures({ result == 1_000_000 })   // refutes — (1.km * 1.km) is 1 km², its .value is 1, not the metre² number
+static BigDecimal squareKm() {
+    (1.km * 1.km).value as BigDecimal
+}
+```
+
+Note the difference from `1.kg`: that one is a *dimension* mismatch the JSR 385 generics reject before the verifier
+runs; this one type-checks cleanly and is caught only by proving the magnitude.
+
 Because it needs the extension module on the classpath, this lives in its own
 [`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a
 deliberately tiny experiment; the larger point is that the JSR 385 reader is *itself* a curated recogniser, and a
