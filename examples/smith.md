@@ -165,7 +165,9 @@ classification over a field, array element labels, and the predicate-gated (two-
 
 ## §IV — Rely/guarantee: the conditions compose, and the bodies uphold them
 
-The *rely/guarantee* story goes further than the four above — here we prove **both halves**. First, the
+The *rely/guarantee* story goes further than the four [concurrency-lite examples](concurrency/examples.md) — locks,
+agents, dataflow, channels, each proving its *local* obligation while **assuming** the structural half — here we
+prove **both halves**. First, the
 **compatibility lemmas** are pure logic: `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state,
 with the verifier auto-discharging that each rely is reflexive and transitive, each guarantee reflexive, and every
 thread's guarantee implies every *other* thread's rely (`G_i ⟹ R_j`) — certifying the rely/guarantee *conditions*
@@ -290,6 +292,10 @@ the assumed atomicity — a structural assumption, like the lock examples.
 > the environment could actually run. (Only the frameless hand-written `@UnderRely('someRelyStep')` shorthand,
 > with no `@Rely` predicate to read the frame from, falls back to a single rely-step at entry.)
 
+This same shape now runs inside the *full* §VII body, where each access also carries an information-flow
+obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) — and that
+intersection is **machine-checked**, both properties on one class.
+
 > [!NOTE]
 > **The atomicity grain — and where it bites.** Look at the desugaring above: the rely-steps sit *between*
 > statements, so a single statement like `head = head + 1` (or `head++`) is modeled as one **atomic**
@@ -302,10 +308,6 @@ the assumed atomicity — a structural assumption, like the lock examples.
 > read-modify-write really is atomic and the assumption holds, or apply finer-grained interleaving — hand-split the
 > statement into `t = head; head = t + 1` so a rely-step lands in the middle and the lost-update window is
 > *verified* rather than assumed.
-
-This same shape now runs inside the *full* §VII body, where each access also carries an information-flow
-obligation (the consumed element must be `Low`, the producer *declassifies* what it releases) — and that
-intersection is **machine-checked**, both properties on one class.
 
 
 ## §VII — The capstone: info-flow × rely/guarantee, verified together
