@@ -196,8 +196,12 @@ operators, and `*` (`multiply`) — soundly tracking the unit, so `(1.km + 1.mil
 — an area the erased `Quantity<?>` can't police). Quantity-to-quantity `==` is in too (Phase 151): a dimension
 table (`[L,M,T]` exponent vectors) joins the magnitude layer, so the literal `@Ensures({ result == 1.km })` verifies
 soundly — *different* dimensions are never equal (`1.m == 1.kg` throws at runtime; folded to `false`), *equal*
-dimensions compare magnitude — and the area-vs-length `Quantity squareKm() { 1.km * 1.km }` refutes on dimension. It
-needs the extension module on the classpath, so it lives in the standalone `examples-dsl` subproject. Still out: a
+dimensions compare magnitude — and the area-vs-length `Quantity squareKm() { 1.km * 1.km }` refutes on dimension.
+**Division and locals** (Phase 152): `/` subtracts the dimension exponents (Length−Time = Speed) and divides
+magnitudes, quantity-typed locals are aliased to their RHS, and `s` (seconds) joins the vocabulary — so
+`def s = 1.s; def d = 1.m; return d / s` with `@Ensures({ result == 1.m / 1.s })` verifies; a `quantity/quantity` is
+a Quantity op (no divide-by-zero obligation), and a non-terminating divisor (`1.m / 3.s`) skips (exact-Real soundness).
+It needs the extension module on the classpath, so it lives in the standalone `examples-dsl` subproject. Still out: a
 parameter quantity (unknown unit/dimension), deconstruction / pattern-matching, and generated `equals`/`hashCode`.
 
 Verification also follows the **type hierarchy**: a subclass method is proved against its ancestors' conjoined

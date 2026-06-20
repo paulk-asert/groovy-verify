@@ -4184,6 +4184,10 @@ class Encoder {
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             String t = be.operation.text
+            // Phase 152 — a JSR 385 `quantity * / + - quantity` is NOT a BigDecimal scalar: it dispatches to
+            // Quantity.multiply/divide/add/subtract, and is modelled by the dimension/magnitude reader, not the Real
+            // path. Without this guard a `1.m / 1.s` return is mis-flagged "BigDecimal but return type is not decimal".
+            if (isQuantityExpr(be)) return false
             if (t == '/') {
                 // Groovy `/` on int/BigDecimal operands is BigDecimal (Real) division. But `double`/`float`
                 // operands make it IEEE-754 FP division — defer to the FP branch, not the Real path.
@@ -4265,7 +4269,7 @@ class Encoder {
      * deliberately tiny, fixed vocabulary; anything outside it skips. See {@code examples-dsl}.
      */
     private static final Map<String, BigDecimal> DSL_SUFFIX_SCALE = [
-        'm': 1.0G, 'km': 1000.0G, 'mile': 1609.344G, 'kg': 1.0G,
+        'm': 1.0G, 'km': 1000.0G, 'mile': 1609.344G, 'kg': 1.0G, 's': 1.0G,
     ]
 
     /**
@@ -4285,6 +4289,7 @@ class Encoder {
     /** Phase 151 — the dimension twin of {@link #DSL_SUFFIX_SCALE} for the experimental unit-suffix sugar. */
     private static final Map<String, int[]> DSL_SUFFIX_DIM = [
         'm': [1, 0, 0] as int[], 'km': [1, 0, 0] as int[], 'mile': [1, 0, 0] as int[], 'kg': [0, 1, 0] as int[],
+        's': [0, 0, 1] as int[],
     ]
 
     /** Phase 151 — alias a (result/local) name to the JSR 385 Quantity expression it holds, so the magnitude /
@@ -4370,10 +4375,10 @@ class Encoder {
             String op = be.operation.text
             if (!isQuantityExpr(e)) return null
             if (op == '+' || op == '-') return dimensionOf(be.leftExpression)               // same-dimension (STC-enforced)
-            if (op == '*') {
+            if (op == '*' || op == '/') {
                 int[] l = isNumericScalar(be.leftExpression) ? ([0, 0, 0] as int[]) : dimensionOf(be.leftExpression)
                 int[] r = isNumericScalar(be.rightExpression) ? ([0, 0, 0] as int[]) : dimensionOf(be.rightExpression)
-                return vadd(l, r)
+                return op == '*' ? vadd(l, r) : vsub(l, r)                                   // Length/Time = Speed [1,0,-1]
             }
         }
         null
@@ -4487,20 +4492,86 @@ class Encoder {
                 if (l == null || r == null) return null
                 return op == '+' ? session.plus(l, r) : session.minus(l, r)
             }
-            // Phase 150 — the DSL `*` (Quantity.multiply): magnitudes multiply, so `1.km * 1.km` is an *area* whose
-            // SI magnitude is 1000·1000 = 1e6 (m²). A scalar factor multiplies the magnitude by itself. (Only `*`:
-            // it's enough for the area example and stays sound on the magnitude layer — the dimension it produces is
-            // invisible here, which is exactly the gap the .value read-out below makes observable to the verifier.)
-            if (op == '*' && isQuantityExpr(e)) {
+            // Phase 150/152 — the DSL `*` (Quantity.multiply) and `/` (Quantity.divide): magnitudes multiply/divide.
+            // `1.km * 1.km` is an *area* whose SI magnitude is 1000·1000 = 1e6 (m²); `1.m / 1.s` is a *speed* whose SI
+            // magnitude is 1 (m/s). A scalar factor multiplies/divides the magnitude. (The dimension the operator
+            // produces is invisible to the magnitude alone — the dimension reader / the .value read-out make it
+            // observable to the verifier.)
+            if ((op == '*' || op == '/') && isQuantityExpr(e)) {
                 Object l = siMagnitude(be.leftExpression)
                 if (l == null && isNumericScalar(be.leftExpression)) l = asReal(be.leftExpression)
                 Object r = siMagnitude(be.rightExpression)
                 if (r == null && isNumericScalar(be.rightExpression)) r = asReal(be.rightExpression)
                 if (l == null || r == null) return null
-                return session.times(l, r)
+                if (op == '*') return session.times(l, r)
+                // Phase 143 posture: exact Real division is sound only for a terminating divisor (Groovy rounds the
+                // rest, e.g. `/3`). The divisor here is a *quantity's magnitude*, not a syntactic literal, so guard on
+                // the right operand's scale being a terminating decimal — a unit scale (1, 1000, 1609.344) always is.
+                if (!isTerminatingQuantityDivisor(be.rightExpression)) return null
+                return session.realDiv(l, r)
             }
         }
         null
+    }
+
+    /** Phase 152 — true when the divisor {@code e}'s SI magnitude is a *closed terminating decimal*, so exact Real
+     *  division is sound (Groovy/indriya round a non-terminating quotient, which the exact Real model would not — and
+     *  a later multiply-back could then "verify" a runtime-false contract, the Phase 143 hazard). We compute the full
+     *  magnitude (value·scale, including the unit scale — so {@code 1.mile} = 1609.344, which has a factor of 3, is
+     *  correctly rejected) and test it has only the prime factors 2 and 5; a symbolic divisor (a parameter) → false. */
+    private boolean isTerminatingQuantityDivisor(Expression e) {
+        BigDecimal m = closedQuantityMagnitude(e)
+        return m != null && isTerminatingDecimal(m)
+    }
+
+    /** The SI magnitude of a Quantity (or scalar) expression as a literal {@link BigDecimal}, when it's fully closed
+     *  over numeric literals and curated units; null if anything is symbolic (a name, a parameter). The BigDecimal
+     *  twin of {@link #siMagnitude}, used only by the division soundness guard. */
+    private BigDecimal closedQuantityMagnitude(Expression e) {
+        if (e == null) return null
+        Expression src = quantitySourceOf(e)
+        if (src != null) return closedQuantityMagnitude(src)        // a quantity local resolves to its RHS
+        if (e instanceof UnaryMinusExpression) {
+            BigDecimal inner = closedQuantityMagnitude(((UnaryMinusExpression) e).expression)
+            return inner == null ? null : inner.negate()
+        }
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (!(v instanceof Number) || v instanceof Double || v instanceof Float) return null
+            try { return new BigDecimal(v.toString()) } catch (Exception ignored) { return null }
+        }
+        if (e instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) e
+            BigDecimal sc = DSL_SUFFIX_SCALE.get(pe.propertyAsString)
+            if (sc == null) return null
+            BigDecimal v = closedQuantityMagnitude(pe.objectExpression)
+            return v == null ? null : v.multiply(sc)
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            String op = be.operation.text
+            BigDecimal l = closedQuantityMagnitude(be.leftExpression)
+            BigDecimal r = closedQuantityMagnitude(be.rightExpression)
+            if (l == null || r == null) return null
+            switch (op) {
+                case '+': return l.add(r)
+                case '-': return l.subtract(r)
+                case '*': return l.multiply(r)
+                case '/': return (r.signum() == 0 || !isTerminatingDecimal(r)) ? null : l.divide(r)
+            }
+        }
+        null
+    }
+
+    /** A BigDecimal whose unscaled integer has only the prime factors 2 and 5 — i.e. a *terminating* decimal, safe
+     *  as an exact Real divisor (the value-level twin of {@link #isTerminatingDivisor}'s expression test). */
+    private static boolean isTerminatingDecimal(BigDecimal bd) {
+        if (bd == null || bd.signum() == 0) return false
+        BigInteger u = bd.unscaledValue().abs()
+        BigInteger two = BigInteger.valueOf(2), five = BigInteger.valueOf(5)
+        while (u.mod(two).signum() == 0) u = u.divide(two)
+        while (u.mod(five).signum() == 0) u = u.divide(five)
+        u.equals(BigInteger.ONE)
     }
 
     /** Phase 148 — true when {@code e}'s (STC-inferred) type is {@code javax.measure.Quantity} — the gate that
@@ -4521,7 +4592,7 @@ class Encoder {
      * The fallback is tight: a curated unit suffix on a numeric receiver ({@code 1.km}), or a {@code +}/{@code -}/
      * {@code *} of such — never a bare `.m` on an arbitrary object.
      */
-    private static boolean isQuantityExpr(Expression e) {
+    static boolean isQuantityExpr(Expression e) {
         if (e == null) return false
         if (isQuantityTyped(e)) return true
         if (e instanceof PropertyExpression) {
@@ -4530,7 +4601,7 @@ class Encoder {
         }
         if (e instanceof BinaryExpression) {
             String op = ((BinaryExpression) e).operation.text
-            if (op == '+' || op == '-' || op == '*') {
+            if (op == '+' || op == '-' || op == '*' || op == '/') {
                 return isQuantityExpr(((BinaryExpression) e).leftExpression) ||
                        isQuantityExpr(((BinaryExpression) e).rightExpression)
             }
@@ -4558,14 +4629,17 @@ class Encoder {
             BinaryExpression be = (BinaryExpression) e
             String op = be.operation.text
             if (op == '+' || op == '-') return currentUnitScale(be.leftExpression)
-            // Phase 150 — a product's current unit is the product of the operands' units (km · km = km², scale 1e6),
-            // so `(1.km * 1.km).value` reads back 1e6/1e6 = 1 (one km²). A scalar factor carries unit-scale 1.
-            if (op == '*') {
+            // Phase 150/152 — a product/quotient's current unit is the product/quotient of the operands' units
+            // (km · km = km², scale 1e6; m / s = m·s⁻¹, scale 1), so `(1.km * 1.km).value` reads back 1e6/1e6 = 1 and
+            // `(1.m / 1.s).value` reads back 1. A scalar factor carries unit-scale 1.
+            if (op == '*' || op == '/') {
                 BigDecimal l = currentUnitScale(be.leftExpression)
                 if (l == null && isNumericScalar(be.leftExpression)) l = 1.0G
                 BigDecimal r = currentUnitScale(be.rightExpression)
                 if (r == null && isNumericScalar(be.rightExpression)) r = 1.0G
-                return (l == null || r == null) ? null : l * r
+                if (l == null || r == null) return null
+                if (op == '*') return l * r
+                return (r.signum() == 0 || !isTerminatingDecimal(r)) ? null : l.divide(r)
             }
         }
         if (e instanceof MethodCallExpression) {

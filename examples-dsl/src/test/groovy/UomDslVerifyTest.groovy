@@ -145,4 +145,39 @@ class UomDslVerifyTest {
         assertTrue(d?.contains('Skipped verification') || d?.contains('outside fragment'),
             "expected a loud skip for a cross-dimension !=, got: $d")
     }
+
+    // ── Phase 152 — DSL division (Speed = Length/Time), and quantity-typed locals (`def d = 1.m; d / s`) ──
+
+    @Test
+    void speedFromDivisionVerifies() {
+        // The motivating example: `def s = 1.s; def d = 1.m; d / s` is 1 m/s. `result == 1.m / 1.s` holds — the
+        // locals are aliased to their RHS, the `/` operator subtracts the dimension exponents (Length−Time = Speed
+        // [1,0,-1]) and divides the magnitudes (1/1 = 1). No `.value`, no explicit `divide` call.
+        assertNull(diagnostics(snippet('result == 1.m / 1.s', 'javax.measure.Quantity', 'def s = 1.s; def d = 1.m; d / s')))
+    }
+
+    @Test
+    void speedFromDivisionWrongMagnitudeRefutes() {
+        // Same dimension (Speed), different magnitude: 2 m / 1 s is 2 m/s, not 1 m/s — refutes on magnitude.
+        String d = diagnostics(snippet('result == 1.m / 1.s', 'javax.measure.Quantity', 'def s = 1.s; def d = 2.m; d / s'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
+
+    @Test
+    void speedAsLengthDimensionRefutes() {
+        // A speed claimed as a length: `1.m / 1.s` is [1,0,-1], `1.m` is [1,0,0] — different dimensions, never equal,
+        // so the contract refutes *on the dimension*. The dual of the area case, via division.
+        String d = diagnostics(snippet('result == 1.m', 'javax.measure.Quantity', '1.m / 1.s'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
+
+    @Test
+    void nonTerminatingDivisorSkips() {
+        // Soundness boundary (Phase 143 posture): `1.m / 3.s` has SI magnitude 1/3, which Groovy/indriya *round* —
+        // the exact Real model would disagree (and a multiply-back could then "verify" a runtime-false fact). The
+        // dimension is fine (Speed), but the magnitude is non-terminating, so the comparison skips loudly.
+        String d = diagnostics(snippet('result == 1.m / 3.s', 'javax.measure.Quantity', '1.m / 3.s'))
+        assertTrue(d?.contains('Skipped verification') || d?.contains('outside fragment'),
+            "expected a loud skip for a non-terminating divisor, got: $d")
+    }
 }

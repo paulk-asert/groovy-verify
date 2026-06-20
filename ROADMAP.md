@@ -7711,6 +7711,28 @@ CONVERSION, before STC, so its `1.km` carries no `INFERRED_TYPE`. A parameter qu
 regression. Sound posture throughout: the only unsound verdict would be proving a runtime-false `==` true, and
 different-dimension never reaches `true`.
 
+## Phase 152 — DSL division (Speed = Length/Time) and quantity-typed locals  *(shipped — experimental, examples-dsl)*
+
+The reach-test the form `def s = 1.s; def d = 1.m; @Ensures({ result == 1.m / 1.s }) … return d / s` exposed three
+gaps, all closed in one slice:
+
+- **`/` operator** in the DSL reader — dimension exponents *subtract* (Length−Time = Speed `[1,0,-1]`), magnitudes
+  divide. Plus the `s` (seconds) suffix (`[0,0,1]`). The method-call form `q.divide(t)` was already modelled; this
+  adds the *operator* form that Groovy maps to the `div` extension.
+- **Quantity-typed locals** — `result` was aliased to its return expression in Phase 151; this generalises the same
+  `quantitySource` aliasing to `checkPath`'s Assign steps, so `def d = 1.m` lets a later `d / s` resolve. (The
+  bespoke-record path already did the analogue for carrier locals.)
+- **Two numeric-division assumptions** the `/` operator otherwise triggers, both made quantity-aware: a `quantity /
+  quantity` is no longer flagged a BigDecimal return (the `isDecimalExpr` guard) and raises no divide-by-zero
+  obligation (the `ObligationCollector` guard) — it dispatches to `Quantity.divide`, not numeric `/`.
+
+So the speed example verifies; `2.m / 1.s` refutes on magnitude; a speed asserted as a length refutes on dimension
+(the `as Quantity<Speed>` cast the erased generics never re-check). Soundness boundary kept: a *non-terminating*
+divisor (`1.m / 3.s`, SI magnitude ⅓ which indriya/Groovy round) **skips** rather than let exact Real division verify
+a runtime-false fact — gated on the divisor's full *closed magnitude* (value · unit scale, so `1.mile` = 1609.344,
+factor 3, is correctly rejected) having only the prime factors 2 and 5 (the Phase 143 posture). 4 new `examples-dsl`
+tests (verify / refute-magnitude / refute-dimension / non-terminating-skip); root suite 1310/0, no regression.
+
 ---
 
 ## Definition of done, per increment

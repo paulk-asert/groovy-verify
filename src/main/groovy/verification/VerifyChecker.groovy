@@ -3975,7 +3975,10 @@ class VerifyChecker extends TypeCheckingExtension {
                     receiver: ((VariableExpression) be.leftExpression).name,
                     index: be.rightExpression))
             } else if (sym == '/' || sym == '%') {
-                divideSites.add(new DivideSite(node: be, divisor: be.rightExpression))
+                // Phase 152 — a JSR 385 `quantity / quantity` dispatches to Quantity.divide, NOT numeric division, so
+                // the divisor is a quantity (not a number that could be 0): no divide-by-zero obligation. The exact-
+                // division soundness for the magnitude is handled by the reader's terminating-divisor guard instead.
+                if (!Encoder.isQuantityExpr(be)) divideSites.add(new DivideSite(node: be, divisor: be.rightExpression))
             }
             // Phase 44 — overflow check on +, -, * (only when enabled by @CheckOverflow). The
             // assignment operator '=' shares Types.PLUS via compound assignment in some forms, so
@@ -5508,6 +5511,14 @@ class VerifyChecker extends TypeCheckingExtension {
                     // later `x in u` folds inline (the materialised quantifier form needs a bound; this
                     // point-wise form doesn't).
                     if (enc.tryRecordSetBinopAssign(a.name, a.rhs)) {
+                        continue
+                    }
+                    // Phase 152 — a JSR 385 Quantity local (`def d = 1.m`, `def s = 1.s`): a quantity has no scalar
+                    // handle, so alias the local to its RHS *expression* (the same `quantitySource` mechanism `result`
+                    // uses), letting the dimension/magnitude readers resolve it inside a later `d / s`. Short-circuits
+                    // the int-SSA path, which would mis-model the quantity as an int shadow.
+                    if (enc.isModellableQuantity(a.rhs)) {
+                        enc.registerQuantitySource(a.name, a.rhs)
                         continue
                     }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated

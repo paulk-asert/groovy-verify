@@ -138,6 +138,27 @@ Note the difference from `1.kg`: that one is a *dimension* mismatch the JSR 385 
 runs; the area-vs-length case above type-checks cleanly (erasure hides it) and is caught only by the verifier
 tracking the dimension itself.
 
+Division closes the loop — it's the operator that makes a **speed**. With a `getS` (seconds) suffix and a
+`div(Quantity<Length>, Quantity<Time>) → Quantity<Speed>` extension, you can write the computation over named
+locals, and the verifier follows the unit through them:
+
+<!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
+```groovy
+@Ensures({ result == 1.m / 1.s })   // verifies — 1 m over 1 s is 1 m/s; the dimension is Length−Time = Speed
+static Quantity speed() {
+    def s = 1.s
+    def d = 1.m
+    return d / s
+}
+```
+
+The `/` subtracts the dimension exponents (`[1,0,0] − [0,0,1] = [1,0,-1]`, i.e. Speed) and divides the magnitudes;
+the locals `d` and `s` are tracked back to `1.m` and `1.s`. Claim a wrong speed (`2.m / 1.s`) and it refutes on the
+**magnitude**; claim the result is a plain length (`@Ensures({ result == 1.m })`) and it refutes on the
+**dimension** — the `Quantity<Speed>` cast inside `div` the erased generics never re-check. One honest boundary: a
+non-terminating divisor like `1.m / 3.s` (SI magnitude ⅓, which the runtime *rounds*) **skips** rather than risk an
+exact-arithmetic proof the runtime wouldn't honour.
+
 Because it needs the extension module on the classpath, this lives in its own
 [`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a
 deliberately tiny experiment; the larger point is that the JSR 385 reader is *itself* a curated recogniser, and a
