@@ -117,6 +117,35 @@ A runnable JVM-level companion lives in [`src/concurrent/groovy/concurrent/`](..
 | `Buffer.groovy` | The **full §VII capstone** buffer — the same source as the `class Buffer` in the rely/guarantee + information-flow examples — carrying not just the bounds `@Invariant` but the `@Rely`/`@Guarantee`/`@UnderRely` discipline and the `@Label`/`Declassify`/`deliver` no-leak argument. groovy-verify proves *all* of that (rung 1); Lincheck model-checks the same bytecode for linearizability (rung 3). |
 | `BufferLincheckTest.groovy` | Lincheck model-checks all three. The SPSC contract is pinned with `nonParallelGroup` (one producer, one consumer, free to interleave) — the exact rely/guarantee discipline the verified `Buffer` assumes. |
 
+**How `SpscBuffer` works — and why it's correct.** It's a fixed-capacity **ring**: a producer appends at `tail`, a
+consumer reads at `head`, both indices only ever advancing and wrapped onto the backing array by `% capacity`. The
+entire safety argument is one ordering rule in `offer` — write the slot *first*, publish *second*:
+
+<!-- doclint:ignore README illustration: SpscBuffer publish-after-write discipline (faithful excerpt of SpscBuffer.groovy) -->
+```groovy
+boolean offer(int x) {
+    int t = tail
+    if (t - head == capacity) return false      // full
+    items[t % capacity] = x                     // 1. write the value into the slot…
+    tail = t + 1                                // 2. …THEN publish it by advancing tail
+}
+```
+
+A consumer only ever reads indices `< tail`, so it can never observe a slot before its value has landed. That
+publish-after-write order is the **operational form of the §VII secure-update**: the datum becomes Low (consumable)
+*only* when `tail++` pulls its slot into the `[head, tail)` region. `poll()` is the mirror — read at `head`, *then*
+advance `head` to free the slot. `SpscBufferLeaky` swaps the two lines of `offer` (publish, then write), and that
+single inversion *is* the leak the trace below catches.
+
+**The SPSC contract — why it needs no lock.** Single-producer, single-consumer: `head` is advanced only by the
+consumer, `tail` only by the producer, both `volatile`. Each side relies on the other not to move *its* index — the
+rely/guarantee discipline of the §VII `Buffer`, made concrete. Lincheck pins exactly that shape with
+`nonParallelGroup` (at most one `offer` and one `poll` live at a time, free to interleave), and the class
+`@Invariant` — `0 <= head <= tail` and `tail - head <= capacity` — is what groovy-verify proves over the same two
+indices on the same source. The ring's wrap (`% capacity`) is the one structural difference from the linear,
+one-shot §VII `Buffer`: `SpscBuffer` refills indefinitely, so it exercises the wrap that the capstone deliberately
+omits.
+
 **The same source, both rungs. ** `SpscBuffer.groovy` carries the exact `@Invariant`/`@Requires`
 that groovy-verify proves: [`SpscBufferVerifyTest`](../../src/test/groovy/SpscBufferVerifyTest.groovy) reads *this
 file* and runs the checker on it (proving `items[t % capacity]` in bounds and the bounded-occupancy invariant

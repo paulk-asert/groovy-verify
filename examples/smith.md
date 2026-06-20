@@ -378,8 +378,8 @@ compatibility lemmas, and the rely-step framing — all composing on one class, 
 *assumes*, made runnable on this exact buffer by two complementary tools: a **TLA+** model (`Buffer.tla`)
 that TLC explores across *every* interleaving — where the rely stops being an assumption and becomes a checked
 theorem about the peer's action, and liveness is checkable too — and a **Lincheck** test
-(`src/concurrent/`) that model-checks the *real bytecode* of a lock-free `SpscBuffer`, catching the same leak as
-a linearizability violation. Three rungs — compile-time proof here, exhaustive model, tested bytecode — each
+(`src/concurrent/`) that model-checks the *real bytecode* of this exact `Buffer` — the same source this checker
+proves — confirming it linearizable across the interleavings the rely permits. Three rungs — compile-time proof here, exhaustive model, tested bytecode — each
 trading coverage for fidelity; see [`concurrency/README.md`](concurrency/README.md). Run them with `./gradlew tlcCheck` and
 `./gradlew concurrentTest`.
 
