@@ -23,6 +23,14 @@ import groovy.transform.stc.POJO
  * groovy-verify {@code Buffer} (verified sequentially) and {@code examples/concurrency/Buffer.tla} (model-checked).
  * Lincheck checks the ACTUAL bytecode across interleavings.
  *
+ * <p><b>This is a facsimile, not a copy.</b> The three rungs share the SPSC publish-after-write *discipline*, not
+ * one source: this is a real **circular** ring (`items[t % capacity]`, slots reused) with `offer`/`poll` and
+ * {@code volatile} indices, whereas the verified {@code Buffer} is a **linear append** model
+ * ({@code values[head]}, {@code tail <= values.length}, no wraparound) with {@code read}/{@code write} and explicit
+ * {@code @Rely}/{@code @Guarantee} rely-step methods. The two tools need different code shapes — Lincheck needs
+ * runnable bytecode, the verifier needs fragment-shaped contracts — so none of the rungs validates another's exact
+ * code; each demonstrates the same algorithm at its own fidelity (README: "None subsumes the others").
+ *
  * <p>{@code @CompileStatic} is load-bearing here: it makes {@code offer}/{@code poll} compile to direct
  * field and array bytecode (getfield/putfield, iaload/iastore) with no Groovy call-site caching or
  * dynamic dispatch — so the methods Lincheck instruments and explores are as clean as the Java original.

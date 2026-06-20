@@ -44,7 +44,7 @@ buffer that an exhaustive model checker (TLC) explores across *every* interleavi
 
 | File | What it is |
 |------|------------|
-| [`Buffer.tla`](Buffer.tla) | The §VII producer/consumer buffer as a state machine. Maps line-for-line to `class Buffer`: `head`/`tail`, `data[i]` = `values[i]`, `dlvl[i]` = each slot's true secrecy, `PosLabel(i)` = `level(i, head, tail)`. |
+| [`Buffer.tla`](Buffer.tla) | The §VII producer/consumer buffer as a state machine. Maps element-for-element to `class Buffer`: `head`/`tail`, `data[i]` = `values[i]`, `dlvl[i]` = each slot's true secrecy, `PosLabel(i)` = `level(i, head, tail)`. |
 | [`Buffer.cfg`](Buffer.cfg) | The **secure** spec: producer declassifies. All invariants hold, the relies are theorems, progress holds. |
 | [`BufferLeak.cfg`](BufferLeak.cfg) | The **leak** variant: producer skips `Declassify`. TLC reports `RegionSound`/`NoLeak` violated and prints the shortest interleaved trace that leaks. |
 
