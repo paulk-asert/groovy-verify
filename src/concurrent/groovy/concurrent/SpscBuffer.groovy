@@ -17,41 +17,53 @@ package concurrent
 
 import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
+import groovy.contracts.Invariant
+import groovy.contracts.Requires
 
 /**
- * A correct lock-free single-producer/single-consumer bounded buffer — the real-code rung under the
- * groovy-verify {@code Buffer} (verified sequentially) and {@code examples/concurrency/Buffer.tla} (model-checked).
- * Lincheck checks the ACTUAL bytecode across interleavings.
+ * A correct lock-free single-producer/single-consumer bounded buffer. <b>This one source is checked by two rungs at
+ * once — not a facsimile, the same code</b> (see {@code examples/concurrency/README.md}):
  *
- * <p><b>This is a facsimile, not a copy</b> — but the boundary is narrower than "different code shapes". The
- * <i>data structure</i> is not the divider: groovy-verify verifies this very circular shape — the
- * {@code P107 ring-buffer} "circular (modulo) ring" case proves {@code items[t % capacity]} in bounds and the
- * occupancy invariant preserved. The verified {@code Buffer} is a linear, non-wrapping model ({@code values[head]},
- * {@code read}/{@code write}) only for clarity and to match its ported source, not because circular is out of reach. The real divider is the <b>concurrency representation</b>: groovy-verify reasons
- * <i>above</i> the memory model — it abstracts the peer thread into empty {@code @Rely}/{@code @UnderRely}
- * rely-step methods and never models the JMM, {@code volatile}, or the atomicity grain (that omission is precisely
- * what this rung exists to cover). Those stubs are inert at runtime and the verified class carries no real
- * synchronisation, so it is not a runnable thread-safe artifact; Lincheck instruments <i>real</i> bytecode, so it
- * needs the actual {@code volatile} lock-free code here. None of the rungs validates another's exact code; each
- * demonstrates the same algorithm at its own fidelity (README: "None subsumes the others").
+ * <ul>
+ *   <li><b>groovy-verify</b> proves the {@code @Invariant} at compile time: {@code items[t % capacity]} is in
+ *       bounds and the bounded-occupancy invariant is preserved by {@code offer}/{@code poll}, established by the
+ *       constructor. Driven by a harness that compiles <i>this exact file</i> with the checker enabled — see
+ *       {@code SpscBufferVerifyTest}.</li>
+ *   <li><b>Lincheck</b> model-checks the ACTUAL bytecode of this file across interleavings (this source set).</li>
+ * </ul>
  *
- * <p>{@code @CompileStatic} is load-bearing here: it makes {@code offer}/{@code poll} compile to direct
- * field and array bytecode (getfield/putfield, iaload/iastore) with no Groovy call-site caching or
- * dynamic dispatch — so the methods Lincheck instruments and explores are as clean as the Java original.
+ * <p>The only difference between the two builds is a <b>compile knob</b>, not the source. The {@code @Invariant} /
+ * {@code @Requires} below are the very contracts groovy-verify proves; the Lincheck compile <i>disables
+ * groovy-contracts' AST transforms</i> (see {@code build.gradle}'s {@code compileConcurrentGroovy}), so the
+ * annotations resolve but inject nothing — leaving the bare lock-free bytecode Lincheck needs. (Just disabling
+ * assertions isn't enough: with the transforms on, an assertion compiles to Groovy power-assert plus shared
+ * static trackers and a per-call closure, all of which Lincheck would <i>explore</i> as concurrency surface
+ * unrelated to the algorithm — so the managed run hangs. Disabling the transforms is the one-move way to bare
+ * bytecode; see {@code build.gradle} for the full rationale and the {@code addGuarantee} alternative.)
  *
- * <p>The §VII discipline made concrete: write the (already-declassified) value into the slot, THEN
- * publish it by advancing {@code tail}. That publish-after-write order is the operational form of "the
- * slot's data is Low before {@code tail++} pulls it into the Low region". {@link SpscBufferLeaky} inverts
- * the order and Lincheck catches the leak.
+ * <p>So the two rungs do not differ in <i>code</i> — they differ in <b>level</b>: groovy-verify reasons <i>above</i>
+ * the memory model (it never models the JMM, {@code volatile}, or the atomicity grain — deliberately, that is rung
+ * 3's job), while Lincheck operates at it. Same source, same shape; complementary fidelity (README: "None subsumes
+ * the others").
+ *
+ * <p>{@code @CompileStatic} is load-bearing: it makes {@code offer}/{@code poll} compile to direct field and array
+ * bytecode (getfield/putfield, iaload/iastore) with no call-site caching — clean both for Lincheck to instrument
+ * and for groovy-verify to read.
+ *
+ * <p>The §VII discipline made concrete: write the (already-declassified) value into the slot, THEN publish it by
+ * advancing {@code tail}. That publish-after-write order is the operational form of "the slot's data is Low before
+ * {@code tail++} pulls it into the Low region". {@link SpscBufferLeaky} inverts the order and Lincheck catches the leak.
  */
 @CompileStatic
 @POJO
+@Invariant({ capacity > 0 && items.length == capacity && 0 <= head && head <= tail && tail - head <= capacity })
 class SpscBuffer {
     private final int[] items
     private final int capacity
     private volatile int head = 0   // consumer's read index (only the consumer advances it)
     private volatile int tail = 0   // producer's write index (only the producer advances it)
 
+    @Requires({ capacity > 0 })
     SpscBuffer(int capacity) {
         this.capacity = capacity
         this.items = new int[capacity]

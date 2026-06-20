@@ -291,8 +291,10 @@ tasks.named('check') {
 // The checker (rung 1) proves the sequential VC; examples/concurrency/Buffer.tla (rung 2) model-checks an abstract
 // state machine; this rung model-checks the ACTUAL bytecode of a lock-free buffer across interleavings,
 // discharging the atomicity/ordering assumption the other two leave open. Isolated in its own source
-// set + task on a Java 21 toolchain (Lincheck's well-supported LTS) so the JDK-25 main build and the
-// z3 suite are untouched. NOT wired into `check` — run explicitly:  ./gradlew concurrentTest
+// set + task (NOT wired into `check` — run explicitly: ./gradlew concurrentTest). Runs on the same JDK 25 as the
+// main build now that Lincheck 3.x (org.jetbrains.lincheck:lincheck) instruments via ASM 9.9 — the older 2.x line
+// (org.jetbrains.kotlinx:lincheck) bundled a byte-buddy that couldn't transform JDK 25 class files and silently
+// missed bugs, which is why this was pinned to Java 21 before.
 sourceSets {
     concurrent {
         groovy.srcDir 'src/concurrent/groovy'
@@ -303,22 +305,59 @@ dependencies {
     // The buffers + Lincheck operation holders are @CompileStatic Groovy -> clean, dispatch-free bytecode
     // for Lincheck to instrument (the reason these were Java originally; @CompileStatic removes the need).
     concurrentImplementation "org.apache.groovy:groovy:$groovyVersion"
-    concurrentImplementation 'org.jetbrains.kotlinx:lincheck:2.39'
+    // The engine, so the §VII `Buffer`'s verification.* annotations (@Rely/@Guarantee/@UnderRely/@Label, Declassify)
+    // RESOLVE here too — the same source groovy-verify proves (BufferVerifyTest). They're plain annotations with no
+    // AST transform (Declassify.to is an identity), so they inject nothing; like the contracts, they're inert at the
+    // Lincheck boundary. (Possible now that this source set is JDK 25, matching the engine.)
+    concurrentImplementation project(':')
+    // groovy-contracts only so SpscBuffer's @Invariant/@Requires *resolve* — the same source groovy-verify proves
+    // (SpscBufferVerifyTest). Its injected runtime assertions are gated on the JVM assertion flag, and concurrentTest
+    // runs with the default `-da`, so they stay INERT — Lincheck instruments clean bytecode. (Do NOT add -ea here.)
+    concurrentImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
+    concurrentImplementation 'org.jetbrains.lincheck:lincheck:3.6'
     concurrentImplementation platform('org.junit:junit-bom:6.1.0')
     concurrentImplementation 'org.junit.jupiter:junit-jupiter'
     concurrentRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-def jdk21Compiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(21) }
-def jdk21Launcher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+def jdk25Compiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(25) }
+def jdk25Launcher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
 
-tasks.named('compileConcurrentJava') { javaCompiler = jdk21Compiler }   // no Java sources now, but keep pinned
+tasks.named('compileConcurrentJava') { javaCompiler = jdk25Compiler }   // no Java sources now, but keep pinned
 tasks.named('compileConcurrentGroovy') {
-    javaLauncher = jdk21Launcher
+    javaLauncher = jdk25Launcher
     // Override the project-wide `parameters = true` (set for the checker): with parameter names present,
     // Lincheck reads `offer(int x)` as a reference to a *named* generator "x" and fails. Off -> it uses a
     // default type-based int generator, as the Java version did.
     groovyOptions.parameters = false
+    // THE compile knob. SpscBuffer / Buffer carry the SAME @Invariant/@Requires that groovy-verify proves
+    // (SpscBufferVerifyTest) — but here we DISABLE groovy-contracts' global AST transforms so nothing is injected:
+    // the annotations stay resolvable (the jar is on the classpath) yet inert, leaving bare lock-free bytecode for
+    // Lincheck.
+    //
+    // Why disable the *transforms* rather than just assertions, on Lincheck 3.6 (measured 2026-06):
+    //   - The old reason — Lincheck 2.39's SnapshotTracker.restoreValues threw ConcurrentModificationException over
+    //     groovy-contracts' static state — is GONE: 3.6 no longer trips the CME (we re-enabled transforms and
+    //     confirmed). That upstream bug is effectively fixed for us.
+    //   - The real reason now: with transforms ON, a contract-checked method is NOT bare bytecode. groovy-contracts
+    //     renders each assertion through Groovy power-assert (org.codehaus.groovy.runtime.powerassert.ValueRecorder),
+    //     shared static trackers (ViolationTracker.INSTANCE, ContractExecutionTracker), and a per-call $_gc_closure
+    //     allocation, plus generated precondition/$rely$ methods. Lincheck faithfully *explores* all of it, so the
+    //     managed run hangs / reports invalid results — concurrency surface that has nothing to do with the algorithm.
+    //   - 3.6 *does* expose a surgical alternative: opts().addGuarantee(forClasses(...).ignore()/.treatAsAtomic())
+    //     tells the managed strategy not to look inside named classes. It works for the simple bounds buffer
+    //     (SpscBuffer passes with contracts live), but fully covering the richer Buffer means guarantee-excluding an
+    //     open-ended, version-specific set of groovy-contracts/power-assert internals — whack-a-mole, and it still
+    //     hung on Buffer. Disabling the transforms gives genuinely bare bytecode in one move (the whole @POJO point),
+    //     so we keep it.
+    //   - And -da does NOT help: groovy-contracts 6.0.0-alpha-1 emits its invariant_*/precondition checks as plain
+    //     unconditional method calls, not `-ea`-guarded `assert` bytecode, so enableAssertions=false skips nothing
+    //     (measured: transforms ON + -da still hangs, ViolationTracker/ValueRecorder/$_gc_closure all execute).
+    groovyOptions.disabledGlobalASTTransformations = [
+        'org.apache.groovy.contracts.ast.GContractsASTTransformation',
+        'org.apache.groovy.contracts.ast.ClosureExpressionEvaluationASTTransformation',
+        'org.apache.groovy.contracts.ast.MethodVariantInheritanceASTTransformation',
+    ] as Set
 }
 
 tasks.register('concurrentTest', Test) {
@@ -327,7 +366,7 @@ tasks.register('concurrentTest', Test) {
     testClassesDirs = sourceSets.concurrent.output.classesDirs
     classpath = sourceSets.concurrent.runtimeClasspath
     useJUnitPlatform()
-    javaLauncher = jdk21Launcher
+    javaLauncher = jdk25Launcher
     // Lincheck's managed strategy instruments bytecode and reaches into java.base internals.
     jvmArgs = [
         '--add-opens', 'java.base/jdk.internal.misc=ALL-UNNAMED',

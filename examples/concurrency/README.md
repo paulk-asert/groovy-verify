@@ -112,9 +112,31 @@ A runnable JVM-level companion lives in [`src/concurrent/groovy/concurrent/`](..
 
 | File | What it is |
 |------|------------|
-| `SpscBuffer.groovy` | A correct lock-free single-producer/single-consumer buffer. The §VII discipline made real: write the value, **then** publish it by advancing `tail`. |
+| `SpscBuffer.groovy` | A correct lock-free single-producer/single-consumer buffer, carrying the `@Invariant`/`@Requires` that **groovy-verify proves** (rung 1). The §VII discipline made real: write the value, **then** publish it by advancing `tail`. |
 | `SpscBufferLeaky.groovy` | The same buffer with publish-**before**-write — the runtime analogue of the `BufferLeak.cfg` variant and the checker's refutation at `tail++`. |
-| `BufferLincheckTest.groovy` | Lincheck model-checks both. The SPSC contract is pinned with `nonParallelGroup` (one producer, one consumer, free to interleave) — the exact rely/guarantee discipline the verified `Buffer` assumes. |
+| `Buffer.groovy` | The **full §VII capstone** buffer — the same source as the `class Buffer` in the rely/guarantee + information-flow examples — carrying not just the bounds `@Invariant` but the `@Rely`/`@Guarantee`/`@UnderRely` discipline and the `@Label`/`Declassify`/`deliver` no-leak argument. groovy-verify proves *all* of that (rung 1); Lincheck model-checks the same bytecode for linearizability (rung 3). |
+| `BufferLincheckTest.groovy` | Lincheck model-checks all three. The SPSC contract is pinned with `nonParallelGroup` (one producer, one consumer, free to interleave) — the exact rely/guarantee discipline the verified `Buffer` assumes. |
+
+**The same source, both rungs. ** `SpscBuffer.groovy` carries the exact `@Invariant`/`@Requires`
+that groovy-verify proves: [`SpscBufferVerifyTest`](../../src/test/groovy/SpscBufferVerifyTest.groovy) reads *this
+file* and runs the checker on it (proving `items[t % capacity]` in bounds and the bounded-occupancy invariant
+preserved). The same test reads `Buffer.groovy` and proves the *whole* §VII argument over it — bounds under
+`@UnderRely` interference **and** the no-leak information-flow discipline — while `rgBufferIsLinearizable` Lincheck-checks
+that same file. One source carries the bounds buffer; one carries the full capstone; both run both rungs.
+For the Lincheck compile, groovy-contracts' AST transforms are **disabled** (see
+`compileConcurrentGroovy` in `build.gradle`), so the contracts resolve but inject nothing — leaving the bare
+lock-free bytecode Lincheck instruments. (Why disable the *transforms*, not just assertions? A contract-checked method
+isn't bare bytecode: groovy-contracts renders each assertion through Groovy power-assert (`ValueRecorder`), shared
+static trackers, and a per-call closure allocation. Lincheck faithfully *explores* all of that, so the managed run
+hangs on machinery unrelated to the algorithm. Lincheck 3.6 offers a surgical alternative —
+`opts().addGuarantee(forClasses(…).ignore())` to skip named classes, which suffices for the bounds buffer — but
+fully covering the richer `Buffer` means excluding an open-ended, version-specific set of internals, so disabling the
+transforms wins as the one-move way to get genuinely bare bytecode. Note 3.6 also *fixed* the old Lincheck 2.39
+`SnapshotTracker.restoreValues` `ConcurrentModificationException` that originally forced this — it's now a cleanliness
+choice, not a bug workaround.) So rung 1 and
+rung 3 run on **one source**, differing only in *what* they establish and at what *level*: groovy-verify proves the
+sequential invariant *above* the memory model (no JMM / `volatile` / atomicity — deliberately), Lincheck proves
+linearizability *at* it. "None subsumes the others" — but now they share the code.
 
 The buffers and the Lincheck operation-holder classes are **`@CompileStatic @POJO`** Groovy. `@CompileStatic`
 makes `offer`/`poll` compile to direct field/array bytecode (no call-site caching or dynamic dispatch);
@@ -133,9 +155,11 @@ reference to a named generator `"x"`. See `compileConcurrentGroovy` in `build.gr
 ./gradlew concurrentTest
 ```
 
-Isolated in its own source set on a **Java 21** toolchain (Lincheck's well-supported LTS), so the
-JDK-25 main build and the z3 suite are untouched; it is **not** wired into `check`. Two tests:
-`correctBufferIsLinearizable` passes (no interleaving breaks FIFO); `leakyBufferIsCaught` confirms
+Isolated in its own source set (**not** wired into `check`), on the same **JDK 25** as the main build —
+**Lincheck 3.6** (`org.jetbrains.lincheck:lincheck`) instruments via ASM 9.9, which handles JDK 25 class files.
+(The older 2.x line, `org.jetbrains.kotlinx:lincheck`, bundled a byte-buddy that couldn't transform JDK 25 and
+*silently* missed the planted bugs — which is why this was pinned to Java 21 before; 3.x removes the need.) Two
+tests: `correctBufferIsLinearizable` passes (no interleaving breaks FIFO); `leakyBufferIsCaught` confirms
 Lincheck reports the bug. Run the leaky one unwrapped and Lincheck prints the minimal trace:
 
 ```

@@ -5742,15 +5742,28 @@ class VerifyChecker extends TypeCheckingExtension {
                         Expression rewritten = tr.transform(retExpr)
                         if (hoistedAny[0]) resHandle = enc.translate(rewritten)
                     }
-                    if (resHandle == null) {
-                        throw new UnsupportedConstructException(
-                            "return expression '${p.result.text}' is outside fragment")
+                    if (resHandle == null && p.result instanceof ConstantExpression &&
+                        ((ConstantExpression) p.result).value == null) {
+                        // Phase 149 — `return null` from a reference-typed method (e.g. `Integer poll()` returning
+                        // null on the empty path). The value isn't an Int, but the method's @Invariant / @Ensures
+                        // over OTHER state (head/tail) is still checkable: bind `result` to a fresh unconstrained
+                        // handle with nullity = null, so any value-claim over result stays unprovable (sound),
+                        // `result == null` proves and `result != null` refutes — the method verifies instead of
+                        // skipping wholesale on the null path.
+                        resHandle = session.intVar('result$null$' + (++ssaVersion))
+                        enc.bind('result', resHandle)
+                        enc.bindNullity('result', session.boolLit(true))
+                    } else {
+                        if (resHandle == null) {
+                            throw new UnsupportedConstructException(
+                                "return expression '${p.result.text}' is outside fragment")
+                        }
+                        enc.bind('result', resHandle)
+                        // Phase 131 — flow the return value's nullity onto `result`, so an @Ensures({ result != null })
+                        // (or an implicit @NonNull-return obligation) can be *proven* — `return "x"`, `return new T()`,
+                        // `return x + y`, or `return x` for a @Requires-known-non-null `x` all establish non-nullness.
+                        enc.bindNullity('result', enc.nullityOfExpr(p.result))
                     }
-                    enc.bind('result', resHandle)
-                    // Phase 131 — flow the return value's nullity onto `result`, so an @Ensures({ result != null })
-                    // (or an implicit @NonNull-return obligation) can be *proven* — `return "x"`, `return new T()`,
-                    // `return x + y`, or `return x` for a @Requires-known-non-null `x` all establish non-nullness.
-                    enc.bindNullity('result', enc.nullityOfExpr(p.result))
                     // Phase 45b — when the return expression is a list-typed local, also alias the
                     // size/array oracles so {@code result.size()} and {@code result[i]} in @Ensures
                     // resolve to the same threaded state the local carries. Without this, the result

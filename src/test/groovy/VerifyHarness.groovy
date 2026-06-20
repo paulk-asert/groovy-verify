@@ -461,6 +461,73 @@ class VerifyHarness {
          src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'record Length(BigDecimal metres) { @Ensures({ result == metres / 100.0 }) BigDecimal inKm() { metres / 1000.0 } }'],
 
+        // The §VII capstone made Lincheck-ready, ONE source: keep the rely-stable @Requires preconditions (so the
+        // full R/G + info-flow proof still goes through — the runtime guard is provably DEAD under the
+        // precondition), AND add the runtime empty/full guard returning null/false. With groovy-contracts disabled
+        // at the Lincheck boundary the precondition isn't enforced, so the guard is LIVE and the buffer is
+        // thread-safe to call freely. (A bare runtime guard WITHOUT the precondition fails here: an in-body path
+        // fact isn't threaded through the @UnderRely rely-step's havoc, unlike a rely-stable precondition.)
+        [group: 'P-vii', name: 'capstone made Lincheck-ready: precondition + live runtime guard verifies', ok: true,
+         src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
+                    class Buffer {
+                        enum L { Low, High }
+                        static boolean leq(L a, L b) { a == L.Low || b == L.High }
+                        static L join(L a, L b) { leq(a, b) ? b : a }
+                        int head
+                        int tail
+                        @Label(by = 'level') int[] values
+                        static L level(int i, int head, int tail) { (head <= i && i < tail) ? L.Low : L.High }
+                        @Rely('Consumer')      static boolean rCons(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+                        @Guarantee('Producer') static boolean gProd(int oldHead, int oldTail, int head, int tail) { head == oldHead && oldTail <= tail }
+                        @Rely('Producer')      static boolean rProd(int oldHead, int oldTail, int head, int tail) { tail == oldTail }
+                        @Guarantee('Consumer') static boolean gCons(int oldHead, int oldTail, int head, int tail) { tail == oldTail && oldHead <= head }
+                        @Ensures({ true }) static void deliver(@Label('Low') int x) { }
+                        @Requires({ head < tail })
+                        @UnderRely('Consumer')
+                        Integer consume() {
+                            if (tail - head == 0) return null
+                            int v = values[head]
+                            deliver(v)
+                            head = head + 1
+                            return v
+                        }
+                        @Requires({ tail < values.length })
+                        @UnderRely('Producer')
+                        boolean produce(@Label('High') int secret) {
+                            if (tail - values.length == 0) return false
+                            int msg = Declassify.to('Low', secret)
+                            values[tail] = msg
+                            tail = tail + 1
+                            return true
+                        }
+                    }''')],
+
+        // ---------- Phase 149: `return null` from a reference-typed method ----------
+        // A method may return null on a path (e.g. a bounded queue's `Integer poll()` → null when empty). The value
+        // isn't an Int, but the method's @Invariant / @Ensures over OTHER state is still checkable: `result` binds as
+        // null. This is what lets the *exact* SpscBuffer.groovy source (Integer poll) verify — see SpscBufferVerifyTest.
+        [group: 'P149 null-return', name: 'Integer poll returns null on empty, invariant preserved', ok: true,
+         src: tc('''@Invariant({ capacity > 0 && items.length == capacity && 0 <= head && head <= tail && tail - head <= capacity })
+                    class Ring {
+                        int[] items
+                        int capacity
+                        int head
+                        int tail
+                        Integer poll() {
+                            int h = head
+                            if (tail - h == 0) return null
+                            int v = items[h % capacity]
+                            head = h + 1
+                            return v
+                        }
+                    }''')],
+        // Nullity is tracked: `return null` proves `result == null`…
+        [group: 'P149 null-return', name: 'return null proves result == null', ok: true,
+         src: tc('''class C { @Ensures({ result == null }) static Integer f() { return null } }''')],
+        // …and refutes a non-null postcondition (sound — it doesn't silently skip).
+        [group: 'P149 null-return', name: 'return null refutes result != null', expect: 'Cannot prove postcondition',
+         src: tc('''class C { @Ensures({ result != null }) static Integer f() { return null } }''')],
+
         // ---------- Phase 147: units-as-data — a Unit(scale, dims) value + a getQuantity factory over it ----------
         // The last structural piece of the literal JSR 385 form, reached with NO new engine code — it composes
         // from the multi-component record (142), carrier-typed-argument chaining (145), and read-out (146): a

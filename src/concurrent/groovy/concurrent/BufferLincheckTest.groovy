@@ -17,9 +17,8 @@ package concurrent
 
 import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
-import org.jetbrains.kotlinx.lincheck.LinChecker
-import org.jetbrains.kotlinx.lincheck.annotations.Operation
-import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.ModelCheckingOptions
+import org.jetbrains.lincheck.datastructures.Operation
+import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.junit.jupiter.api.Test
 
 import static org.junit.jupiter.api.Assertions.assertThrows
@@ -31,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows
  *
  * <p>The operation-holder classes are {@code @CompileStatic} (like the buffers): they are what Lincheck
  * instruments and replays, so their bytecode must be dispatch-free. The outer JUnit driver is ordinary
- * Groovy — it just calls {@code LinChecker.check} once and never takes part in the explored execution.
+ * Groovy — it just calls {@code opts().check} once and never takes part in the explored execution.
  *
  * <p>The SPSC contract is pinned with {@code nonParallelGroup}: at most one producer ({@code offer}) and
  * one consumer ({@code poll}) at a time, but a producer and a consumer may interleave freely — the exact
@@ -60,6 +59,16 @@ class BufferLincheckTest {
         @Operation(nonParallelGroup = 'consumer') Integer poll() { b.poll() }
     }
 
+    /** The §VII rely/guarantee + info-flow {@code Buffer} (the same source groovy-verify proves, BufferVerifyTest):
+     *  its produce/consume carry the runtime guard alongside the proof's @Requires, so it's safe to call freely. */
+    @CompileStatic
+    @POJO
+    static class RGBuffer {
+        private final Buffer b = new Buffer(3)
+        @Operation(nonParallelGroup = 'producer') boolean produce(int x) { b.produce(x) }
+        @Operation(nonParallelGroup = 'consumer') Integer consume() { b.consume() }
+    }
+
     private static ModelCheckingOptions opts() {
         new ModelCheckingOptions()
                 .iterations(30)
@@ -71,13 +80,20 @@ class BufferLincheckTest {
 
     @Test
     void correctBufferIsLinearizable() {
-        LinChecker.check(Correct, opts())        // passes: no interleaving breaks FIFO
+        opts().check(Correct)        // passes: no interleaving breaks FIFO
     }
 
     @Test
     void leakyBufferIsCaught() {
         // Lincheck finds the publish-before-write window and reports it as a linearizability violation
         // (a poll returns a value that was never offered) — the runtime form of the §VII leak.
-        assertThrows(AssertionError) { LinChecker.check(Leaky, opts()) }
+        assertThrows(AssertionError) { opts().check(Leaky) }
+    }
+
+    @Test
+    void rgBufferIsLinearizable() {
+        // The §VII rely/guarantee + info-flow Buffer — the SAME source groovy-verify proves — is also linearizable
+        // here. Two rungs, one file: rung 1 the sequential R/G + no-leak proof, rung 3 the real interleavings.
+        opts().check(RGBuffer)
     }
 }

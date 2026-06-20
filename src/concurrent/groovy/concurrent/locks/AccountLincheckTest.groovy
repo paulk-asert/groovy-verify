@@ -17,9 +17,8 @@ package concurrent.locks
 
 import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
-import org.jetbrains.kotlinx.lincheck.LinChecker
-import org.jetbrains.kotlinx.lincheck.annotations.Operation
-import org.jetbrains.kotlinx.lincheck.strategy.managed.modelchecking.ModelCheckingOptions
+import org.jetbrains.lincheck.datastructures.Operation
+import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.junit.jupiter.api.Test
 
 import static org.junit.jupiter.api.Assertions.assertThrows
@@ -81,13 +80,13 @@ class AccountLincheckTest {
 
     @Test
     void lockedAccountIsLinearizable() {
-        LinChecker.check(Correct, opts())        // mutual exclusion holds -> every history linearizes
+        opts().check(Correct)        // mutual exclusion holds -> every history linearizes
     }
 
     @Test
     void racyAccountIsCaught() {
         // No lock -> a read-modify-write race; Lincheck finds a history no sequential order explains.
-        assertThrows(AssertionError) { LinChecker.check(Racy, opts()) }
+        assertThrows(AssertionError) { opts().check(Racy) }
     }
 
     @Test
@@ -96,6 +95,6 @@ class AccountLincheckTest {
         // `balance >= 0`. Lincheck checks concurrency against the code's OWN sequential behaviour, so it is blind
         // to the logic bug. groovy-verify's monitor-invariant proof (rung 1) refutes exactly this shape — the
         // "unguarded withdraw breaks the lock invariant" case. Logic ⊥ concurrency, each tool sees one column.
-        LinChecker.check(Overdraft, opts())
+        opts().check(Overdraft)
     }
 }
