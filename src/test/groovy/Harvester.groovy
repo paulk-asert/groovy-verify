@@ -45,6 +45,7 @@ class Harvester {
         'HE013 gcd'                   : "HumanEval 013 — Euclid's gcd via the Gcd.of(a,b) recurrence helper; the iterative loop proves equal to the spec.",
         'HE045 triangle_area'         : "HumanEval 045 — triangle area a*h/2 in IEEE-754 FP: exact doctest, finiteness, and positive-sides ⇒ result >= 0.",
         'HE071 triangle_area'         : "HumanEval 071 — squared Heron area (sqrt-free, exact integers): the triangle inequality makes s-a non-negative, a valid triangle's squared area is non-negative or -1, an incomplete validity check refutes, and the int product overflows under @CheckOverflow.",
+        'HE072 will_it_fly'           : "HumanEval 072 — a list flies iff it is a palindrome and its sum <= w: a loop-built flag equals the content quantifier (0..<n).every { q[it]==q[n-1-it] }, an ends-only check refutes, the combined palindrome+sum proof, and forgetting the palindrome half refutes.",
         'HumanEval port'              : "Faithful Verus-HumanEval ports (strlen, get_positive, is_prime) with the functional @Ensures the originals omit.",
         'NNDOC'                       : "The README @NonNull lifecycle example, composed under NullChecker + VerifyChecker.",
         'NNFIELD'                     : "A class @Invariant that a field is non-null: established by the constructor, broken by an unguarded ctor or a nulling method (refutes).",

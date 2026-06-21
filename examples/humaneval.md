@@ -328,6 +328,41 @@ And the overflow the Verus suite *does* check for is real here: turn on `@CheckO
 sides make the squared-area product **overflow** 32-bit `int`. The value property holds in exact arithmetic; the
 machine-int width is a separate, genuine bug — both halves caught on the same six-line function.
 
+Task 072 (`will_it_fly`) — a list "flies" iff it is a **palindrome** *and* its sum is within a weight — is where the
+content quantifier meets the accumulator. The palindrome half is the new shape: a loop-built boolean flag that must
+equal `(0..<n).every { q[it] == q[n-1-it] }`. The trick is to scan the **full** range (as the original does), so the
+loop invariant at exit *is* the spec — no "checking the first half implies the whole" quantifier step — and the early
+`return false` witnesses the negation at the offending index:
+
+<!-- doclint:case he072-will-it-fly/palindrome-flag-equals-the-content-quantifier -->
+```groovy
+@Requires({ q != null })
+@Ensures({ result == (0..<q.size()).every { q[it] == q[q.size() - 1 - it] } })
+static boolean isPalindrome(List<Integer> q) {
+    int n = q.size()
+    int i = 0
+    @Invariant({ 0 <= i && i <= n && n == q.size() && (0..<i).every { q[it] == q[n - 1 - it] } })
+    @Decreases({ n - i })
+    while (i < n) {
+        if (q[i] != q[n - 1 - i]) return false
+        i = i + 1
+    }
+    return true
+}
+```
+
+The full `will_it_fly` then folds **two** quantified facts into one loop invariant — a prefix-sum accumulator
+(`sum == q[0..<i].sum(0)`, the `below_zero` aggregation) *and* the palindrome flag — and proves
+`result == (palindrome && sum <= w)`. That it verifies at all is the notable part: two array-content quantifiers,
+carried together through one loop, in the *prove* direction. (The Verus `break` once unbalanced is an optimisation
+only — the result short-circuits on a non-palindrome regardless of the sum — so the break-free form computes the same
+value.) An ends-only "palindrome" check (`q[0] == q[last]`) **refutes** — `[1,2,3,1]` passes the ends but isn't
+balanced. But the spec also marks a boundary: *refuting* the combined `will_it_fly` is the **refute-hostile**
+direction — finding a SAT model that violates a conjunction of two quantified aggregates (an `every` and a `sum`)
+defeats the solver, so a wrong body (forgetting the palindrome check) soft-fails to "could not decide" rather than a
+crisp counterexample. The verifier never *passes* it — soundness holds — exactly the prove-friendly / refute-hostile
+asymmetry the gcd and recurrence helpers show.
+
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
 positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
 in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
