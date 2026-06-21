@@ -202,6 +202,45 @@ The postcondition pins *each* component to its own aggregate — `result.v1` is 
 exactly the product — because a `Tuple2` return binds `result` as a fixed-arity product whose named slots
 fold (Phase 79).
 
+Tasks 085 / 121 are **conditional accumulators** — sum only a *selected* subset (085: the even-valued elements at
+odd indices; 121: the odd-valued elements at even indices). A subset sum has no clean `sum$` spelling, so instead of
+the exact total we prove the **invariant the selection preserves**: every element 085 adds is even, so the running
+sum stays even (`result % 2 == 0`); 121 adds only non-negative elements (under a non-negative precondition), so its
+sum stays `>= 0`. Claiming 085's total is *odd* refutes; a *strict* `> 0` for 121 refutes — the sum can be zero (an
+empty list, or no qualifying element).
+
+Task 043 (`pairs_sum_to_zero`) — does any pair of elements sum to zero — is the **nested-existential** one, and the
+result that most surprised us. The Verus original scans a growing `seen` accumulator with a nested loop and a `break`;
+rewritten with `seen.contains(-l[i])` (`break` is unsupported), it proves the full biconditional
+`result == (∃ i. ∃ j<i. l[i]+l[j]==0)`:
+
+<!-- doclint:case he043-pairs-sum-to-zero/a-pair-sums-to-zero-nested-existential -->
+```groovy
+@Requires({ l != null })
+@Ensures({ result == (0..<l.size()).any { i -> (0..<i).any { j -> l[i] + l[j] == 0 } } })
+static boolean pairsSumToZero(List<Integer> l) {
+    List<Integer> seen = []
+    int i = 0
+    @Invariant({ seen != null && 0 <= i && i <= l.size() && seen.size() == i &&
+                 (0..<i).every { seen[it] == l[it] } &&
+                 (0..<i).every { a -> (0..<a).every { b -> l[a] + l[b] != 0 } } })
+    @Decreases({ l.size() - i })
+    while (i < l.size()) {
+        if (seen.contains(-l[i])) return true
+        seen.add(l[i])
+        i = i + 1
+    }
+    return false
+}
+```
+
+Both directions go through: the early `return true` witnesses the existential (the `seen` set, pinned by the
+invariant `seen[k] == l[k]`, holds the negation of the current element), and the `return false` exit is carried by a
+**nested `every`** invariant — *no pair among the prefix sums to zero* — which is the converse. That a two-quantifier
+existential biconditional over a dynamically-built `seen` list verifies (stably, and refutes on the empty list via an
+always-true checker) sits past where we'd have drawn the line — a nice counterpoint to `will_it_fly`, whose
+*conjoined* quantifiers were refute-hostile.
+
 `Tuple2` is one of several **return shapes** that verify the same way. The positional form returns a list
 literal and reads elements by index — and this is exactly where a declared **`int[]`** return type works
 too, since the body's literal coerces to the array (or is written explicitly as `new int[]{…}`) and the

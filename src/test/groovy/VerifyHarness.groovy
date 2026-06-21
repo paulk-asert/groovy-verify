@@ -13191,6 +13191,121 @@ class Maybe {                                              // a hand-rolled Some
                             return numbers
                         }
                     }''')],
+
+        // ---------- 085 add / 121 solution (HumanEval) — a CONDITIONAL accumulator: sum a selected subset ----------
+        // 085 sums the EVEN-valued elements at ODD indices. A subset-sum has no clean `sum$` spelling, but the elements
+        // summed are all even, so the running sum stays even — a parity invariant the loop carries (sum % 2 == 0).
+        [group: 'HE085 add', name: 'sum of even elements is even', ok: true,
+         src: tc('''class C {
+                        @Requires({ lst != null })
+                        @Ensures({ result % 2 == 0 })
+                        static int add(List<Integer> lst) {
+                            int sum = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= lst.size() && sum % 2 == 0 })
+                            @Decreases({ lst.size() - i })
+                            while (i < lst.size()) {
+                                if (i % 2 == 1 && lst[i] % 2 == 0) {
+                                    sum = sum + lst[i]
+                                }
+                                i = i + 1
+                            }
+                            return sum
+                        }
+                    }''')],
+        // Soundness: claiming the sum is ODD contradicts the parity invariant — refutes.
+        [group: 'HE085 add', name: 'claiming the sum is odd refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ lst != null })
+                        @Ensures({ result % 2 == 1 })
+                        static int add(List<Integer> lst) {
+                            int sum = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= lst.size() && sum % 2 == 0 })
+                            @Decreases({ lst.size() - i })
+                            while (i < lst.size()) {
+                                if (i % 2 == 1 && lst[i] % 2 == 0) {
+                                    sum = sum + lst[i]
+                                }
+                                i = i + 1
+                            }
+                            return sum
+                        }
+                    }''')],
+
+        // 121 sums the ODD-valued elements at EVEN indices — the parity of THAT sum varies (it tracks how many odds were
+        // added), so the clean invariant here is a SIGN one: over a non-negative list, the conditional sum stays >= 0.
+        [group: 'HE121 solution', name: 'conditional sum over a non-negative list is non-negative', ok: true,
+         src: tc('''class C {
+                        @Requires({ lst != null && (0..<lst.size()).every { lst[it] >= 0 } })
+                        @Ensures({ result >= 0 })
+                        static int solution(List<Integer> lst) {
+                            int sum = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= lst.size() && sum >= 0 && (0..<lst.size()).every { lst[it] >= 0 } })
+                            @Decreases({ lst.size() - i })
+                            while (i < lst.size()) {
+                                if (i % 2 == 0 && lst[i] % 2 != 0) {
+                                    sum = sum + lst[i]
+                                }
+                                i = i + 1
+                            }
+                            return sum
+                        }
+                    }''')],
+        // Soundness: the sum can be exactly 0 (an empty list, or no odd element at an even index), so a STRICT `> 0`
+        // claim is not provable — refutes.
+        [group: 'HE121 solution', name: 'strict positivity refutes (the sum can be zero)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ lst != null && (0..<lst.size()).every { lst[it] >= 0 } })
+                        @Ensures({ result > 0 })
+                        static int solution(List<Integer> lst) {
+                            int sum = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= lst.size() && sum >= 0 && (0..<lst.size()).every { lst[it] >= 0 } })
+                            @Decreases({ lst.size() - i })
+                            while (i < lst.size()) {
+                                if (i % 2 == 0 && lst[i] % 2 != 0) {
+                                    sum = sum + lst[i]
+                                }
+                                i = i + 1
+                            }
+                            return sum
+                        }
+                    }''')],
+
+        // ---------- 043 pairs_sum_to_zero (HumanEval) — EXPERIMENT: is there a pair summing to zero? ----------
+        // The Verus original uses a nested loop with a `break` over a GROWING `seen` accumulator; rewritten here with
+        // `seen.contains(-l[i])` (break unsupported). The full spec is a nested existential, and proving the
+        // `return false` direction needs a nested "no pair so far" invariant. This is the edge of the fragment.
+        [group: 'HE043 pairs_sum_to_zero', name: 'a pair sums to zero (nested existential)', ok: true,
+         src: tc('''class C {
+                        @Requires({ l != null })
+                        @Ensures({ result == (0..<l.size()).any { i -> (0..<i).any { j -> l[i] + l[j] == 0 } } })
+                        static boolean pairsSumToZero(List<Integer> l) {
+                            List<Integer> seen = []
+                            int i = 0
+                            @Invariant({ seen != null && 0 <= i && i <= l.size() && seen.size() == i &&
+                                         (0..<i).every { seen[it] == l[it] } &&
+                                         (0..<i).every { a -> (0..<a).every { b -> l[a] + l[b] != 0 } } })
+                            @Decreases({ l.size() - i })
+                            while (i < l.size()) {
+                                if (seen.contains(-l[i])) return true
+                                seen.add(l[i])
+                                i = i + 1
+                            }
+                            return false
+                        }
+                    }''')],
+        // Non-vacuity: a checker that always answers "yes" is wrong on the empty list (no pair exists there) — refutes.
+        [group: 'HE043 pairs_sum_to_zero', name: 'always-true checker refutes (empty list has no pair)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ l != null })
+                        @Ensures({ result == (0..<l.size()).any { i -> (0..<i).any { j -> l[i] + l[j] == 0 } } })
+                        static boolean pairsSumToZero(List<Integer> l) {
+                            return true
+                        }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
