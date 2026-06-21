@@ -17,7 +17,7 @@
 # HumanEval examples
 
 
-The examples elsewhere are ours — chosen to showcase the fragment. To check the engine against problems
+The examples in the main README are ours — chosen to showcase the fragment. To check the engine against problems
 *we didn't pick*, it's also been run over an **external, real-world corpus**: Verus'
 [HumanEval suite](https://github.com/secure-foundations/human-eval-verus), the standard benchmark
 for auto-active verifiers on LeetCode-shape problems. Its entries are GPT-generated implementations
