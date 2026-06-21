@@ -12999,6 +12999,128 @@ class Maybe {                                              // a hand-rolled Some
                             return ((int) q.sum(0)) <= w
                         }
                     }''')],
+
+        // ---------- Element-wise list transforms (HumanEval 042 / 152 / 062) — build a list whose every element is a
+        // function of the input's; the post-condition is a per-element `every` over the RETURNED list. ----------
+        // 042 incr_list: each output is the input + 1.
+        [group: 'HE042 incr_list', name: 'every element is the input plus one', ok: true,
+         src: tc('''class C {
+                        @Requires({ l != null })
+                        @Ensures({ result.size() == l.size() && (0..<l.size()).every { result[it] == l[it] + 1 } })
+                        static List<Integer> incrList(List<Integer> l) {
+                            List<Integer> result = []
+                            int index = 0
+                            @Invariant({ result != null && 0 <= index && index <= l.size() && result.size() == index &&
+                                         (0..<index).every { result[it] == l[it] + 1 } })
+                            @Decreases({ l.size() - index })
+                            while (index < l.size()) {
+                                result.add(l[index] + 1)
+                                index = index + 1
+                            }
+                            return result
+                        }
+                    }''')],
+        // Soundness: claiming the element is the input unchanged (forgetting the +1) refutes.
+        [group: 'HE042 incr_list', name: 'forgetting the +1 refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ l != null })
+                        @Ensures({ result.size() == l.size() && (0..<l.size()).every { result[it] == l[it] } })
+                        static List<Integer> incrList(List<Integer> l) {
+                            List<Integer> result = []
+                            int index = 0
+                            @Invariant({ result != null && 0 <= index && index <= l.size() && result.size() == index &&
+                                         (0..<index).every { result[it] == l[it] + 1 } })
+                            @Decreases({ l.size() - index })
+                            while (index < l.size()) {
+                                result.add(l[index] + 1)
+                                index = index + 1
+                            }
+                            return result
+                        }
+                    }''')],
+
+        // 152 compare: each output is the absolute difference of the two inputs (abs spelled as the conditional the
+        // body uses — Math.abs is modelled for FP only, and this keeps spec and code identical).
+        [group: 'HE152 compare', name: 'every element is the absolute difference', ok: true,
+         src: tc('''class C {
+                        @Requires({ game != null && guess != null && game.size() == guess.size() })
+                        @Ensures({ result.size() == game.size() &&
+                                   (0..<game.size()).every { result[it] == (game[it] > guess[it] ? game[it] - guess[it] : guess[it] - game[it]) } })
+                        static List<Integer> compare(List<Integer> game, List<Integer> guess) {
+                            List<Integer> differences = []
+                            int i = 0
+                            @Invariant({ differences != null && 0 <= i && i <= game.size() && game.size() == guess.size() &&
+                                         differences.size() == i &&
+                                         (0..<i).every { differences[it] == (game[it] > guess[it] ? game[it] - guess[it] : guess[it] - game[it]) } })
+                            @Decreases({ game.size() - i })
+                            while (i < game.size()) {
+                                int diff = game[i] > guess[i] ? game[i] - guess[i] : guess[i] - game[i]
+                                differences.add(diff)
+                                i = i + 1
+                            }
+                            return differences
+                        }
+                    }''')],
+        // Soundness: the *signed* difference (forgetting the abs) refutes — it is negative when guess exceeds game.
+        [group: 'HE152 compare', name: 'signed difference (no abs) refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ game != null && guess != null && game.size() == guess.size() })
+                        @Ensures({ result.size() == game.size() &&
+                                   (0..<game.size()).every { result[it] == game[it] - guess[it] } })
+                        static List<Integer> compare(List<Integer> game, List<Integer> guess) {
+                            List<Integer> differences = []
+                            int i = 0
+                            @Invariant({ differences != null && 0 <= i && i <= game.size() && game.size() == guess.size() &&
+                                         differences.size() == i &&
+                                         (0..<i).every { differences[it] == (game[it] > guess[it] ? game[it] - guess[it] : guess[it] - game[it]) } })
+                            @Decreases({ game.size() - i })
+                            while (i < game.size()) {
+                                int diff = game[i] > guess[i] ? game[i] - guess[i] : guess[i] - game[i]
+                                differences.add(diff)
+                                i = i + 1
+                            }
+                            return differences
+                        }
+                    }''')],
+
+        // 062 derivative: a polynomial's coefficients [c0, c1, c2, ...] → [c1*1, c2*2, ...] (size n-1). Each output is
+        // the next coefficient times its power. Requires a non-empty coefficient list (a polynomial has a constant term).
+        [group: 'HE062 derivative', name: 'each output is the coefficient times its power', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 1 })
+                        @Ensures({ result.size() == xs.size() - 1 && (0..<result.size()).every { result[it] == xs[it + 1] * (it + 1) } })
+                        static List<Integer> derivative(List<Integer> xs) {
+                            List<Integer> result = []
+                            int i = 1
+                            @Invariant({ result != null && 1 <= i && i <= xs.size() && result.size() == i - 1 &&
+                                         (0..<result.size()).every { result[it] == xs[it + 1] * (it + 1) } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                result.add(xs[i] * i)
+                                i = i + 1
+                            }
+                            return result
+                        }
+                    }''')],
+        // Soundness: using the index instead of the power (xs[it+1]*it rather than *(it+1)) refutes — the first term
+        // would be multiplied by 0.
+        [group: 'HE062 derivative', name: 'wrong power (times index) refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() >= 1 })
+                        @Ensures({ result.size() == xs.size() - 1 && (0..<result.size()).every { result[it] == xs[it + 1] * it } })
+                        static List<Integer> derivative(List<Integer> xs) {
+                            List<Integer> result = []
+                            int i = 1
+                            @Invariant({ result != null && 1 <= i && i <= xs.size() && result.size() == i - 1 &&
+                                         (0..<result.size()).every { result[it] == xs[it + 1] * (it + 1) } })
+                            @Decreases({ xs.size() - i })
+                            while (i < xs.size()) {
+                                result.add(xs[i] * i)
+                                i = i + 1
+                            }
+                            return result
+                        }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

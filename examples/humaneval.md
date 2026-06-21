@@ -65,6 +65,38 @@ termination, and an `@Ensures` over the *returned list*'s size — the verifier 
 `result.size()` to the returned local's threaded size oracle so the postcondition resolves
 correctly. The Verus port of the same task has none of that — just the implementation.
 
+Tasks 042 / 152 / 062 are the **element-wise transforms** — the *map* counterpart to `get_positive`'s filter. Each
+builds a fresh list whose every element is a function of the input's, and the spec is a per-element `every` over the
+**returned** list — the verifier aliases `result[i]` to the built list's threaded element oracle, just as it aliases
+`result.size()`. `incr_list` (042) adds one to each element:
+
+<!-- doclint:case he042-incr-list/every-element-is-the-input-plus-one -->
+```groovy
+@Requires({ l != null })
+@Ensures({ result.size() == l.size() && (0..<l.size()).every { result[it] == l[it] + 1 } })
+static List<Integer> incrList(List<Integer> l) {
+    List<Integer> result = []
+    int index = 0
+    @Invariant({ result != null && 0 <= index && index <= l.size() && result.size() == index &&
+                 (0..<index).every { result[it] == l[it] + 1 } })
+    @Decreases({ l.size() - index })
+    while (index < l.size()) {
+        result.add(l[index] + 1)
+        index = index + 1
+    }
+    return result
+}
+```
+
+`compare` (152) is the two-list version — `result[i] == |game[i] - guess[i]|`, the absolute difference (spelled as
+the body's `game[i] > guess[i] ? … : …` conditional, since `Math.abs` is modelled for floating-point only).
+`derivative` (062) is the index-weighted version — a polynomial's coefficients `[c0, c1, c2, …]` become
+`[c1·1, c2·2, …]` (size `n−1`), each `result[i] == xs[i+1]·(i+1)`. All three verify, and each has a **clean** refute:
+forgetting the `+1`, using the signed difference instead of the absolute one, or multiplying by the index instead of
+the power. Unlike `will_it_fly`'s palindrome-and-sum spec, these refute crisply — a per-element claim is a direct
+function of the index, so a wrong spec's negation witnesses at a concrete element rather than asking the solver to
+satisfy a conjunction of aggregates.
+
 Task 035 (`max_element`) is the **witnessed extremum** — its spec is *both* universal and existential
 at once: the result is `>=` every element **and** is *equal to* one of them (without the second
 clause, a "max" that returned `Integer.MAX_VALUE` would pass). The loop invariant carries both as the
