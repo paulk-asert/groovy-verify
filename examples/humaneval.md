@@ -37,6 +37,37 @@ and roughly in that arc: **Act 1**'s loop invariants and `@Decreases` carry ever
 whose axioms come built in, the same inductive-lemma idiom you can hand-write yourself; and the list
 filters, return shapes, and string methods close on **Act 3** over un-curated input.
 
+## The tasks at a glance
+
+Each adds the functional `@Ensures` the Verus original omits (Verus checks only for overflow). All verify; the one
+documented boundary is `will_it_fly`'s *combined* spec, whose conjoined quantifiers are refute-hostile (sound — never
+a false pass — but no crisp counterexample). In source order below:
+
+| # | Function | What it shows |
+|---|---|---|
+| 003 | `below_zero` | running-sum **biconditional** — `result ⟺ (∃ prefix sum < 0)`, both directions |
+| 008 | `sum_product` | two aggregations at once (sum + product fold), returned as a typed pair |
+| 009 | `rolling_max` | running maximum into a returned list — the monotone + dominates characterisation |
+| 013 | `greatest_common_divisor` | Euclid's gcd proven against a recurrence-helper spec |
+| 023 | `strlen` | string length — the basic string-measure port |
+| 029 | `filter_by_prefix` | list filter with an in-body null guard threaded as a path fact |
+| 030 | `get_positive` | conditional list-build; `@Ensures` over the returned list's size |
+| 035 | `max_element` | **witnessed extremum** — `∀ ≤ result` *and* `∃ = result` |
+| 039 | `is_prime` | NIA bound `i*i <= num` + prefix/in-body early returns + divide-by-zero guards |
+| 042 | `incr_list` | element-wise **map** — `result[i] == l[i] + 1` |
+| 043 | `pairs_sum_to_zero` | **nested-existential** biconditional over a growing `seen` set |
+| 046 | `fib4` | tetranacci — a 4-term recurrence helper |
+| 052 | `below_threshold` | **universal** predicate — `result ⟺ every element < t` |
+| 055 | `fib` | iterative loop proven equal to the Fibonacci recurrence |
+| 057 | `monotonic` | **disjunctive ∀∀** — all-non-decreasing *or* all-non-increasing |
+| 062 | `derivative` | index-weighted map — `result[i] == xs[i+1] * (i+1)` |
+| 063 | `fibfib` | tribonacci — a 3-term recurrence helper |
+| 071 | `triangle_area` | a guard makes the squared-area factors non-negative; `@CheckOverflow` catches the int overflow |
+| 072 | `will_it_fly` | a flag equals a content quantifier; the *combined* palindrome-and-sum refute is refute-hostile |
+| 085 | `add` | conditional sum — **parity invariant** (a sum of even values stays even) |
+| 121 | `solution` | conditional sum — **sign invariant** (non-negative over a non-negative list) |
+| 152 | `compare` | two-list element-wise map — `result[i] == |game[i] - guess[i]|` |
+
 Task 030 — filter a list to its positive elements:
 
 <!-- doclint:case humaneval-port/get-positive-verus-030-result-size-xs-size -->
@@ -209,10 +240,9 @@ sum stays even (`result % 2 == 0`); 121 adds only non-negative elements (under a
 sum stays `>= 0`. Claiming 085's total is *odd* refutes; a *strict* `> 0` for 121 refutes — the sum can be zero (an
 empty list, or no qualifying element).
 
-Task 043 (`pairs_sum_to_zero`) — does any pair of elements sum to zero — is the **nested-existential** one, and the
-result that most surprised us. The Verus original scans a growing `seen` accumulator with a nested loop and a `break`;
-rewritten with `seen.contains(-l[i])` (`break` is unsupported), it proves the full biconditional
-`result == (∃ i. ∃ j<i. l[i]+l[j]==0)`:
+Task 043 (`pairs_sum_to_zero`) — does any pair of elements sum to zero — is the **nested-existential** one. The Verus
+original scans a growing `seen` accumulator with a nested loop and a `break`; rewritten with `seen.contains(-l[i])`
+(`break` is unsupported), it proves the full biconditional `result == (∃ i. ∃ j<i. l[i]+l[j]==0)`:
 
 <!-- doclint:case he043-pairs-sum-to-zero/a-pair-sums-to-zero-nested-existential -->
 ```groovy
@@ -236,10 +266,9 @@ static boolean pairsSumToZero(List<Integer> l) {
 
 Both directions go through: the early `return true` witnesses the existential (the `seen` set, pinned by the
 invariant `seen[k] == l[k]`, holds the negation of the current element), and the `return false` exit is carried by a
-**nested `every`** invariant — *no pair among the prefix sums to zero* — which is the converse. That a two-quantifier
-existential biconditional over a dynamically-built `seen` list verifies (stably, and refutes on the empty list via an
-always-true checker) sits past where we'd have drawn the line — a nice counterpoint to `will_it_fly`, whose
-*conjoined* quantifiers were refute-hostile.
+**nested `every`** invariant — *no pair among the prefix sums to zero* — which is the converse. A two-quantifier
+existential biconditional over a dynamically-built `seen` list verifies, and refutes on the empty list via an
+always-true checker — a counterpoint to `will_it_fly`, whose *conjoined* quantifiers are refute-hostile.
 
 `Tuple2` is one of several **return shapes** that verify the same way. The positional form returns a list
 literal and reads elements by index — and this is exactly where a declared **`int[]`** return type works
@@ -436,8 +465,8 @@ static boolean isPalindrome(List<Integer> q) {
 
 The full `will_it_fly` then folds **two** quantified facts into one loop invariant — a prefix-sum accumulator
 (`sum == q[0..<i].sum(0)`, the `below_zero` aggregation) *and* the palindrome flag — and proves
-`result == (palindrome && sum <= w)`. That it verifies at all is the notable part: two array-content quantifiers,
-carried together through one loop, in the *prove* direction. (The Verus `break` once unbalanced is an optimisation
+`result == (palindrome && sum <= w)` — two array-content quantifiers carried together through one loop, in the
+*prove* direction. (The Verus `break` once unbalanced is an optimisation
 only — the result short-circuits on a non-palindrome regardless of the sum — so the break-free form computes the same
 value.) An ends-only "palindrome" check (`q[0] == q[last]`) **refutes** — `[1,2,3,1]` passes the ends but isn't
 balanced. But the spec also marks a boundary: *refuting* the combined `will_it_fly` is the **refute-hostile**
@@ -452,13 +481,13 @@ in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d t
 short-circuit `&&` and any enclosing in-loop `if` as path facts during obligation discharge,
 so the inner deref obligation discharges under the guard the conjunction establishes — just
 like a straight-line method's `if (s != null) s.method()` shape. Reverse-style benchmarks
-port on the `List<Character>` API today; `String.reverse()` itself now verifies at the *literal*
+port on the `List<Character>` API; `String.reverse()` itself verifies at the *literal*
 level — `"abc".reverse() == "cba"`, literal involution and length — via an uninterpreted `reverse$`
 with bidirectional literal pinning (Z3 has no `str.reverse` primitive). *Symbolic* algebra
 (`s.reverse().reverse() == s` for a variable `s`) stays out, blocked by the same seq-universal refute
 hang as case folding.
 
-**The string methods you use every day — now provable, not just asserted.** Because they map to Z3's
+**The string methods you use every day — provable, not just asserted.** Because they map to Z3's
 built-in theory of strings (rather than being treated as opaque), a contract over them can be *proven*:
 predicates (`startsWith` / `endsWith` / `contains` / `isEmpty`), indexing (`length` / `charAt` /
 `substring` / `indexOf`), composition (`+` / `concat` / `replace` / regex `matches`), and
@@ -555,10 +584,21 @@ no `default`, so a no-match yields `null` (Groovy's actual behaviour, modelled a
 widening the guard to `i in 1..4` **refutes** with `i = 4` — the `4` case is uncovered. (Switch *expressions*
 with simple `int`/`String` labels; the statement form stays out of the fragment.)
 
-The remaining honest gaps: `split` (returns an array, structurally invasive) and symbolic
-algebra for `toUpperCase` / `reverse` (universal axioms over the seq sort cause Z3 to
-hang in the refute direction) remain deferred. The hard NIA corners (general polynomial identities,
-square-root / factoring shapes) may time out under Z3's solver — surfaces as "Could not
-decide," never silent. Sister task 023 (`strlen`) ports the same way — with the natural
-spec `result == xs.size()` added.
+The remaining honest gaps:
+
+- **`break` / unstructured control flow** isn't modelled — `pairs_sum_to_zero` and `will_it_fly` use a `break` in
+  their Verus originals, rewritten here to a structured equivalent (`seen.contains(…)`; a full-range scan).
+- **`split`** returns an array (structurally invasive), and **symbolic seq algebra** for `toUpperCase` / `reverse`
+  needs universal axioms over the seq sort that hang Z3 in the refute direction.
+- A **`HashMap` built from a scan** — a frequency histogram keyed by the elements seen (`histogram`, 111) — is
+  data-dependent map-building, out of the fragment; there's no integer/array core to isolate.
+- **Hard NIA corners** — general polynomial identities, and square/cube-root or factoring shapes (a perfect-cube test,
+  `iscube`/077, is an unbounded existential over a nonlinear term) — may time out, surfacing as "Could not decide,"
+  never silent.
+- A recurring **refute asymmetry**: a spec that *conjoins two quantified aggregates* (the palindrome-and-sum of
+  `will_it_fly`) verifies but is refute-hostile — a wrong body soft-fails to "Could not decide" rather than a crisp
+  counterexample, the same prove-friendly / refute-hostile shape as the recurrence helpers and the seq axioms.
+
+Sound throughout — a gap is a "Could not decide" or an honest decline, never a false *pass*. (Sister task 023,
+`strlen`, ports cleanly — with the natural spec `result == xs.size()` added.)
 
