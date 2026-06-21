@@ -5521,6 +5521,14 @@ class VerifyChecker extends TypeCheckingExtension {
                         enc.registerQuantitySource(a.name, a.rhs)
                         continue
                     }
+                    // Phase 153 — `def fa = async { e }` (lowered to AsyncSupport.async({ e })): alias the local to the
+                    // closure's value-expression `e`, so a later `await fa` reads it out (Encoder.awaitedBody). An
+                    // Awaitable has no scalar handle; this short-circuits the int-SSA path. Sound for a *safe* (pure
+                    // value) async closure — observationally just its value; a mutating closure is the structural case.
+                    if (Encoder.isAsyncCall(a.rhs) && Encoder.asyncBodyExpr(a.rhs) != null) {
+                        enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs))
+                        continue
+                    }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated
                     // against the current binding (the pre-assignment value), so a mutation like
                     // `count = count + 1` becomes `count#1 == count + 1` (not the false `count == count + 1`)

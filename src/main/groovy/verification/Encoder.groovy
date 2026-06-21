@@ -203,6 +203,15 @@ class Encoder {
      * is how {@code result} participates.
      */
     private final Map<String, Expression> quantitySource = new LinkedHashMap<String, Expression>()
+    /**
+     * Phase 153 — Groovy 6 async/await. A local name → the value-expression of the `async { e }` it was bound from.
+     * `async { e }` lowers (at parse time) to {@code AsyncSupport.async({ e })}, and `await x` to
+     * {@code AsyncSupport.await(x)}. A *safe* async closure — one that returns a pure value (the discipline the
+     * Groovy async docs prescribe) — is observationally just its value, driven synchronously, so a later `await fa`
+     * reads out `e`. This proves the functional contract while *assuming* the structural (scheduling) half — the same
+     * posture as the lock/agent examples. A closure that mutates shared state is the unsafe/structural case and skips.
+     */
+    private final Map<String, Expression> asyncSource = new LinkedHashMap<String, Expression>()
     /** Set handles whose {@code card >= 0} has already been asserted (mint-once, like the size oracle). */
     private final Set<Object> cardConstrained = new HashSet<Object>()
     /**
@@ -3924,6 +3933,8 @@ class Encoder {
         }
 
         if (expr instanceof MethodCallExpression) {
+            Object aw = tryTranslateAwait(expr)             // Phase 153 — await x → the safe async body's value
+            if (aw != null) return aw
             Object r = translateMethodCall((MethodCallExpression) expr)
             return r != null ? r : translateCall(expr)
         }
@@ -3931,6 +3942,8 @@ class Encoder {
         // Phase 8a — a resolved static call (e.g. `C.pow2(n)`) only reaches the verifier
         // already in this form; try the pure-function paths (closed eval / unfolding).
         if (expr instanceof StaticMethodCallExpression) {
+            Object aw = tryTranslateAwait(expr)             // Phase 153 — STC-resolved AsyncSupport.await(x)
+            if (aw != null) return aw
             return translateCall(expr)
         }
 
@@ -4297,6 +4310,86 @@ class Encoder {
     /** Phase 151 — alias a (result/local) name to the JSR 385 Quantity expression it holds, so the magnitude /
      *  dimension readers can resolve it. See {@link #quantitySource}. */
     void registerQuantitySource(String name, Expression e) { if (name != null && e != null) quantitySource.put(name, e) }
+
+    // ──────────────────────────── Phase 153 — Groovy 6 async/await ────────────────────────────
+    // `async`/`await` lower (at parse time) to AsyncSupport.async(closure) / AsyncSupport.await(arg). By the time
+    // the verifier runs, STC has resolved those static calls to StaticMethodCallExpression (the Phase 8a form), so
+    // the recognisers below accept *either* a MethodCallExpression (class-receiver) or a StaticMethodCallExpression.
+
+    private static final String ASYNC_SUPPORT_FQN = 'org.apache.groovy.runtime.async.AsyncSupport'
+
+    /** The args of an AsyncSupport call, whichever AST form it took. */
+    private static List<Expression> asyncCallArgs(Expression e) {
+        if (e instanceof MethodCallExpression) return argList((MethodCallExpression) e)
+        if (e instanceof StaticMethodCallExpression) {
+            Expression a = ((StaticMethodCallExpression) e).arguments
+            if (a instanceof org.codehaus.groovy.ast.expr.TupleExpression) return ((org.codehaus.groovy.ast.expr.TupleExpression) a).expressions
+        }
+        Collections.emptyList()
+    }
+
+    /** True when {@code e} is {@code AsyncSupport.<method>(…)} (either the class-receiver method call or the
+     *  STC-resolved static-call form). */
+    private static boolean isAsyncSupportCall(Expression e, String method) {
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression mc = (StaticMethodCallExpression) e
+            return mc.method == method && mc.ownerType?.name == ASYNC_SUPPORT_FQN
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            if (mc.methodAsString != method) return false
+            Expression obj = mc.objectExpression
+            if (obj instanceof ClassExpression) return ((ClassExpression) obj).type?.name == ASYNC_SUPPORT_FQN
+            return obj != null && String.valueOf(obj.text).endsWith('AsyncSupport')
+        }
+        false
+    }
+
+    /** True when {@code e} is the lowered form of `async { … }` — {@code AsyncSupport.async(closure)}. */
+    static boolean isAsyncCall(Expression e) {
+        List<Expression> a = asyncCallArgs(e)
+        return isAsyncSupportCall(e, 'async') && a.size() == 1 && a.get(0) instanceof ClosureExpression
+    }
+
+    /** The single value-expression of an `async { e }` closure (its sole expression / return), else null. A
+     *  multi-statement or side-effecting body falls outside this slice and skips. */
+    static Expression asyncBodyExpr(Expression e) {
+        if (!isAsyncCall(e)) return null
+        Statement code = ((ClosureExpression) asyncCallArgs(e).get(0)).code
+        if (code instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) code).statements
+            if (ss.size() != 1) return null
+            code = ss.get(0)
+        }
+        if (code instanceof ExpressionStatement) return ((ExpressionStatement) code).expression
+        if (code instanceof ReturnStatement) return ((ReturnStatement) code).expression
+        null
+    }
+
+    /** The value-expression an `await(arg)` reads out: the body of a direct `async { e }`, or the registered body
+     *  of a local bound to one (`def fa = async { e }; await fa`). Null when the awaited source isn't a modellable
+     *  safe async closure (a parameter Awaitable, a CompletableFuture from elsewhere, a racing combinator). */
+    private Expression awaitedBody(Expression arg) {
+        Expression a = arg
+        while (a instanceof CastExpression) a = ((CastExpression) a).expression    // STC inserts (Object) casts
+        if (isAsyncCall(a)) return asyncBodyExpr(a)
+        if (a instanceof VariableExpression) return asyncSource.get(((VariableExpression) a).name)
+        null
+    }
+
+    /** If {@code e} is {@code AsyncSupport.await(arg)} over a safe async source, the read-out value (its body,
+     *  translated); else null (skip). Called from both the method-call and static-call dispatch paths. */
+    private Object tryTranslateAwait(Expression e) {
+        if (!isAsyncSupportCall(e, 'await')) return null
+        List<Expression> a = asyncCallArgs(e)
+        if (a.size() != 1) return null
+        Expression body = awaitedBody(a.get(0))
+        return body != null ? translate(body) : null
+    }
+
+    /** Alias a local to the value-expression of the `async { e }` it holds (called from the body replay when an
+     *  assignment's RHS {@link #isAsyncCall}). A later `await` on the local resolves through {@link #awaitedBody}. */
+    void registerAsyncSource(String name, Expression e) { if (name != null && e != null) asyncSource.put(name, e) }
 
     /** True when {@code e} is a JSR 385 Quantity expression the readers can model both the dimension AND the
      *  magnitude of — the gate {@code checkPath} uses before aliasing a Quantity-typed {@code result}. */

@@ -24,7 +24,7 @@ groovy-verify is a *sequential* SMT-backed checker — it reasons about no threa
 deadlock. Yet a surprising amount of concurrent code's correctness factors into two halves: a **local,
 sequential obligation** the developer must get right, and a **structural guarantee** the runtime provides.
 *Assume* the structural half and the local half is an ordinary sequential proof — and that half is usually the
-one carrying the interesting bug. These examples prove the local half across four of Groovy's concurrency
+one carrying the interesting bug. These examples prove the local half across five of Groovy's concurrency
 features, each assuming a different structural guarantee:
 
 | Feature | Structural guarantee (assumed) | Local obligation (proven) |
@@ -33,6 +33,7 @@ features, each assuming a different structural guarantee:
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
 | Channels | FIFO delivery | each element gets the right per-element transform |
+| `async`/`await` | safe (pure-value) tasks complete without interfering | the value an awaited task computes |
 
 What we *never* prove is the structural half itself — no mutual exclusion, no deadlock-freedom, no delivery or
 termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
@@ -192,4 +193,34 @@ stages resolve lazily at the receive site, so a producer in a trailing `async {}
 value.) The functional transform `(x + 1) * 2` proves; claim `result == x + 1` instead and it refutes with a
 counterexample. As everywhere in this section, FIFO delivery is the assumed half — we prove *what each element
 becomes*, not that the channel delivers or terminates.
+
+### async/await — the value a task computes
+
+The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a
+first-class way to write concurrent code in a sequential style — and the same split applies in its purest form. A
+**safe** async closure — one that returns a *pure value*, the discipline the async guide prescribes
+(*"prefer returning values over mutating shared state"*) — is observationally just its value, driven to completion.
+So `await` reads that value out, and the functional contract proves by ordinary sequential reasoning:
+
+<!-- doclint:case p153-async-await/await-an-async-value-compute -->
+```groovy
+@Ensures({ result == (x + 1) * 2 })
+static int compute(int x) {
+    def fa = async { x + 1 }
+    int a = await fa
+    return a * 2
+}
+```
+
+`async { e }` lowers to `AsyncSupport.async({ e })` and `await x` to `AsyncSupport.await(x)`; the verifier
+recognises the pair and resolves `await fa` back to `fa`'s pure body `x + 1`, so `(x + 1) * 2` proves. The bug
+[bmc4j](https://github.com/bmc4j/bmc4j)'s `computeBuggy` plants — an off-by-one *after* the await
+(`return a * 2 + 1`) — refutes with a counterexample, and chained awaits thread the value through
+(`int a = await async { x + 1 }; int b = await async { a + 1 }` gives `x + 2`).
+
+The assumed structural half is exactly that safe discipline: the awaited tasks complete and don't interfere.
+Awaiting a task whose value the verifier can't see — an `Awaitable` *parameter*, a foreign `CompletableFuture`, a
+racing `Awaitable.any` — isn't a safe-value read-out, so it **skips loudly** rather than guess. And a closure that
+*mutates shared state* (the unsafe pattern the docs warn against) is the genuine race — the structural half,
+Lincheck/Fray territory, not this proof.
 

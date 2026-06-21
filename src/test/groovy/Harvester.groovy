@@ -54,6 +54,7 @@ class Harvester {
         'HE085 add'                   : "HumanEval 085 — conditional accumulator: summing the even-valued elements at odd indices keeps the running sum even (a parity invariant); claiming the sum is odd refutes.",
         'HE121 solution'              : "HumanEval 121 — conditional accumulator: summing the odd-valued elements at even indices over a non-negative list stays >= 0 (a sign invariant); a strict > 0 claim refutes since the sum can be zero.",
         'HE043 pairs_sum_to_zero'     : "HumanEval 043 — is there a pair summing to zero: the nested-existential biconditional verifies via a seen.contains rewrite (the Verus break is unsupported) and a 'no pair so far' invariant; an always-true checker refutes on the empty list.",
+        'P153 async-await'            : "Groovy 6 async/await: a safe async closure (a pure value) is driven synchronously, so `await (async { e })` reads out `e` and the functional contract proves (compute), a bug after the await refutes (computeBuggy), chained awaits thread the value (computeTwice), and an opaque parameter Awaitable skips.",
         'HumanEval port'              : "Faithful Verus-HumanEval ports (strlen, get_positive, is_prime) with the functional @Ensures the originals omit.",
         'NNDOC'                       : "The README @NonNull lifecycle example, composed under NullChecker + VerifyChecker.",
         'NNFIELD'                     : "A class @Invariant that a field is non-null: established by the constructor, broken by an unguarded ctor or a nulling method (refutes).",

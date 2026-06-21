@@ -13306,6 +13306,64 @@ class Maybe {                                              // a hand-rolled Some
                             return true
                         }
                     }''')],
+
+        // ---------- Groovy 6 async/await (the bmc4j Work.kt approach, native syntax) ----------
+        // A *safe* async closure (one that returns a pure value, the discipline the async docs prescribe) is
+        // observationally just its value driven synchronously, so `await (async { e })` reads out `e`. We prove the
+        // functional contract and *assume* the structural (scheduling) half — the async sibling of the lock/agent
+        // examples. `async`/`await` lower to AsyncSupport.async/await calls the reader recognises.
+        [group: 'P153 async-await', name: 'await an async value (compute)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == (x + 1) * 2 })
+                        static int compute(int x) {
+                            def fa = async { x + 1 }
+                            int a = await fa
+                            return a * 2
+                        }
+                    }''')],
+        // Soundness: a logic bug AFTER the await (off by one) is caught — the bmc4j computeBuggy.
+        [group: 'P153 async-await', name: 'a bug after the await refutes (computeBuggy)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == (x + 1) * 2 })
+                        static int compute(int x) {
+                            def fa = async { x + 1 }
+                            int a = await fa
+                            return a * 2 + 1
+                        }
+                    }''')],
+        // Inline: `await async { e }` with no intermediate local.
+        [group: 'P153 async-await', name: 'inline await of a fresh async', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == x + 2 })
+                        static int incTwice(int x) {
+                            int a = await async { x + 1 }
+                            return a + 1
+                        }
+                    }''')],
+        // Two awaits in sequence — the value threads through (computeTwice).
+        [group: 'P153 async-await', name: 'two awaits in sequence (computeTwice)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == x + 2 })
+                        static int computeTwice(int x) {
+                            def fa = async { x + 1 }
+                            int a = await fa
+                            def fb = async { a + 1 }
+                            int b = await fb
+                            return b
+                        }
+                    }''')],
+        // Boundary: awaiting a *parameter* Awaitable (no visible async source) isn't a safe-value read-out — the
+        // verifier can't see what it resolves to, so it skips loudly rather than guess.
+        [group: 'P153 async-await', name: 'awaiting an opaque parameter skips', expect: 'outside fragment',
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == 42 })
+                     static int run(Awaitable<Integer> task) {
+                         int a = await task
+                         return a
+                     }
+                 }'''],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
