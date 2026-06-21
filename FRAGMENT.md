@@ -201,6 +201,9 @@ dimensions compare magnitude — and the area-vs-length `Quantity squareKm() { 1
 magnitudes, quantity-typed locals are aliased to their RHS, and `s` (seconds) joins the vocabulary — so
 `def s = 1.s; def d = 1.m; return d / s` with `@Ensures({ result == 1.m / 1.s })` verifies; a `quantity/quantity` is
 a Quantity op (no divide-by-zero obligation), and a non-terminating divisor (`1.m / 3.s`) skips (exact-Real soundness).
+A coherent-derived-unit suffix `mps` (Speed, scale 1) lets a contract name a speed directly — `@Ensures({ result ==
+1.mps })` over `d / s` verifies — the statically-checkable form, since `1.m/s` referencing the body local is rejected
+by `@TypeChecked` first (the contract closure is checked in signature scope, not body scope — upstream, not a verifier gap).
 It needs the extension module on the classpath, so it lives in the standalone `examples-dsl` subproject. Still out: a
 parameter quantity (unknown unit/dimension), deconstruction / pattern-matching, and generated `equals`/`hashCode`.
 

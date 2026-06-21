@@ -4270,6 +4270,8 @@ class Encoder {
      */
     private static final Map<String, BigDecimal> DSL_SUFFIX_SCALE = [
         'm': 1.0G, 'km': 1000.0G, 'mile': 1609.344G, 'kg': 1.0G, 's': 1.0G,
+        // `mps` is the *coherent SI derived unit* metre-per-second — a Speed literal whose SI magnitude IS its value.
+        'mps': 1.0G,
     ]
 
     /**
@@ -4289,7 +4291,7 @@ class Encoder {
     /** Phase 151 — the dimension twin of {@link #DSL_SUFFIX_SCALE} for the experimental unit-suffix sugar. */
     private static final Map<String, int[]> DSL_SUFFIX_DIM = [
         'm': [1, 0, 0] as int[], 'km': [1, 0, 0] as int[], 'mile': [1, 0, 0] as int[], 'kg': [0, 1, 0] as int[],
-        's': [0, 0, 1] as int[],
+        's': [0, 0, 1] as int[], 'mps': [1, 0, -1] as int[],     // Speed = Length·Time⁻¹
     ]
 
     /** Phase 151 — alias a (result/local) name to the JSR 385 Quantity expression it holds, so the magnitude /

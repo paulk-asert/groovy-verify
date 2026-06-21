@@ -87,7 +87,8 @@ redefines a unit out from under the table.
 The JSR 385 calls above are explicit on purpose. But a handful of registered Groovy **extension methods** —
 `getKm(Number)`, `getMile(Number)`, … — turn `1.km` into that same `getQuantity(1, KILO(METRE))`, so the whole
 scale check reads as the blog-style DSL. groovy-verify proves it just the same: an *experimental* reader recognises
-the curated sugar by name (`m`, `km`, `mile`, `kg`), the same trusted-constant posture as the unit table above.
+the curated sugar by name (`m`, `km`, `mile`, `s`, `kg`, the derived `mps`), the same trusted-constant posture as
+the unit table above.
 
 <!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
 ```groovy
@@ -98,53 +99,32 @@ static BigDecimal total() {
 ```
 
 `1 km + 1 mile`, worked in metres, is exactly `2609.344` — in the prettiest possible surface syntax. And it stays
-honest about the unit, which is the whole point: `(1.km + 1.mile)` is a quantity *in kilometres*, so its `.value` is
-`2.609344` — claim the metre number `2609.344` there and it **refutes**, the Mars bug caught *inside* the DSL.
-(Dimension is still the type system's job: `1.km + 1.kg` does not compile at all.)
+honest about the unit: `(1.km + 1.mile)` is a quantity *in kilometres*, so its `.value` is `2.609344` — claim the
+metre number `2609.344` there and it **refutes**, the Mars bug caught *inside* the DSL.
 
-Multiplication makes a subtler trap, one the type system genuinely *cannot* catch. `1.km * 1.km` is an **area** —
-one square kilometre — but type erasure leaves `Quantity<?>` with a single `multiply`, so the compiler sees nothing
-wrong in treating that area as if it were a length. Its `.value` is `1` (one km²); reach for the metre² magnitude
-`1_000_000` and the verifier **refutes** it on the scale layer — a *value* error inside a perfectly typed program:
+The verifier also compares two quantities **directly** — no `.value` — checking *both* the dimension and the
+magnitude. The type system already rejects a *mismatched* dimension (`1.km + 1.kg` won't compile), but
+`multiply`/`divide` erase their result to `Quantity<?>`, so it can't catch an **area** used as a length:
 
 <!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
 ```groovy
-@Ensures({ result == 1_000_000 })   // refutes — (1.km * 1.km) is 1 km², its .value is 1, not the metre² number
-static BigDecimal squareKm() {
-    (1.km * 1.km).value as BigDecimal
-}
-```
-
-You don't even need the `.value` detour: the verifier now compares **two quantities directly**, consulting *both*
-the dimension and the magnitude. So the contract can be written in the most natural form — and the wrong one still
-refutes, now on the **dimension**:
-
-<!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
-```groovy
-@Ensures({ result == 1.km })        // refutes — result is an area (km²), 1.km is a length; different dimensions
+@Ensures({ result == 1.km })        // refutes — result is an area (km²), 1.km is a length: different dimensions
 static Quantity squareKm() {
     1.km * 1.km
 }
 ```
 
-`result == 1.km` is sound because the comparison checks the **dimension first** (a compile-time exponent vector):
-two quantities of different dimension are never equal — `1.m == 1.kg` *throws* at runtime — so the area-vs-length
-mismatch refutes without ever looking at the value. Only when dimensions *agree* does the magnitude settle it:
-`@Ensures({ result == 1.km })` over a body of `1000.m` **verifies** (same Length, both 1000 m), while `2000.m`
-refutes. This is the layer the scale reader alone couldn't give — comparing `1.m` and `1.kg` on magnitude alone
-would wrongly call them equal (both have SI magnitude 1).
+Different dimensions are never equal (`1.m == 1.kg` *throws* at runtime), so this refutes on the **dimension**,
+before any value is compared; only when dimensions agree does the magnitude settle it (`result == 1.km` over a
+`1000.m` body verifies, `2000.m` refutes). That ordering is what the scale layer alone couldn't give — on magnitude
+alone, `1.m` and `1.kg` would wrongly compare equal (both are SI magnitude 1).
 
-Note the difference from `1.kg`: that one is a *dimension* mismatch the JSR 385 generics reject before the verifier
-runs; the area-vs-length case above type-checks cleanly (erasure hides it) and is caught only by the verifier
-tracking the dimension itself.
-
-Division closes the loop — it's the operator that makes a **speed**. With a `getS` (seconds) suffix and a
-`div(Quantity<Length>, Quantity<Time>) → Quantity<Speed>` extension, you can write the computation over named
-locals, and the verifier follows the unit through them:
+Division makes the point sharpest, because it *creates* a dimension. The body divides a length by a time, and
+`1.mps` — one metre-per-second, a `Quantity<Speed>` of its own — names the result in the contract:
 
 <!-- doclint:ignore experimental DSL — verified in the examples-dsl subproject, which registers the extension module; not an inline CASES snippet -->
 ```groovy
-@Ensures({ result == 1.m / 1.s })   // verifies — 1 m over 1 s is 1 m/s; the dimension is Length−Time = Speed
+@Ensures({ result == 1.mps })       // verifies — d / s is 1 m/s, and 1.mps names that same Speed
 static Quantity speed() {
     def s = 1.s
     def d = 1.m
@@ -152,12 +132,11 @@ static Quantity speed() {
 }
 ```
 
-The `/` subtracts the dimension exponents (`[1,0,0] − [0,0,1] = [1,0,-1]`, i.e. Speed) and divides the magnitudes;
-the locals `d` and `s` are tracked back to `1.m` and `1.s`. Claim a wrong speed (`2.m / 1.s`) and it refutes on the
-**magnitude**; claim the result is a plain length (`@Ensures({ result == 1.m })`) and it refutes on the
-**dimension** — the `Quantity<Speed>` cast inside `div` the erased generics never re-check. One honest boundary: a
-non-terminating divisor like `1.m / 3.s` (SI magnitude ⅓, which the runtime *rounds*) **skips** rather than risk an
-exact-arithmetic proof the runtime wouldn't honour.
+The `/` subtracts the dimension exponents (Length − Time = Speed) and divides the magnitudes, threading through the
+locals `d` and `s`; the verifier confirms the computed speed *is* the `1.mps` literal, on both layers. A wrong speed
+(`2.mps`) refutes on magnitude; a plain length (`result == 1.m`) refutes on dimension — the `Quantity<Speed>` cast
+the erased generics never re-check. (Honest boundary: a non-terminating divisor like `1.m / 3.s`, SI magnitude ⅓
+which the runtime *rounds*, skips rather than risk an exact-arithmetic proof the runtime wouldn't honour.)
 
 Because it needs the extension module on the classpath, this lives in its own
 [`examples-dsl`](../examples-dsl) subproject — verified there. The vocabulary is a
@@ -308,9 +287,10 @@ named unit divides by a now-*symbolic* scale, so that direction skips — like a
 ## What is proven, and what isn't
 
 - **Exact, not floating-point** — magnitudes are exact `BigDecimal` / rationals, so `2609.344` means `2609.344`.
-- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (at the JSR 385 cast, or as an
-  explicit exponent vector in a bespoke `Quantity`), a wrong **scale** refutes (the value, over JSR 385), a wrong
-  **value/total** refutes (the bespoke operator and read-out); none passes by being un-modelled. And once the unit
+- **Each is a real proof — of a *different* thing** — a wrong **dimension** refutes (at the JSR 385 cast, comparing
+  two JSR 385 quantities in the DSL, or as an explicit exponent vector in a bespoke `Quantity`), a wrong **scale**
+  refutes (the value, over JSR 385), a wrong **value/total** refutes (the bespoke operator and read-out); none passes
+  by being un-modelled. And once the unit
   itself is *data*, that bespoke record expresses JSR 385's own `getQuantity(…).add(…).getValue()` sentence over a
   type you defined.
 - **Same reasoning, different carrier** — the label lives somewhere different each time: an `@Label` annotation in
@@ -323,4 +303,4 @@ named unit divides by a now-*symbolic* scale, so that direction skips — like a
   loudly rather than guess.
 
 The full capability rows are in **[CAPABILITIES.md](../CAPABILITIES.md)** (Phases 131–133, 142, 142b, 142c,
-143–147).
+143–148, 151, 152 — the last three the experimental DSL).

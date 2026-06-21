@@ -25,6 +25,7 @@ import static javax.measure.MetricPrefix.KILO
 import static tech.units.indriya.unit.Units.GRAM
 import static tech.units.indriya.unit.Units.METRE
 import static tech.units.indriya.unit.Units.SECOND
+import static tech.units.indriya.unit.Units.METRE_PER_SECOND
 import static systems.uom.common.USCustomary.MILE
 
 /**
@@ -39,6 +40,7 @@ class UomExtensions {
     static Quantity<Length> getMile(Number n) { Quantities.getQuantity(n, MILE) }
     static Quantity<Mass>    getKg(Number n)   { Quantities.getQuantity(n, KILO(GRAM)) }
     static Quantity<Time>    getS(Number n)    { Quantities.getQuantity(n, SECOND) }
+    static Quantity<Speed>   getMps(Number n)   { Quantities.getQuantity(n, METRE_PER_SECOND) }   // a Speed literal: 1.mps
 
     static <Q extends Quantity<Q>> Quantity<Q> plus(Quantity<Q> a, Quantity<Q> b)  { a.add(b) }
     static <Q extends Quantity<Q>> Quantity<Q> minus(Quantity<Q> a, Quantity<Q> b) { a.subtract(b) }

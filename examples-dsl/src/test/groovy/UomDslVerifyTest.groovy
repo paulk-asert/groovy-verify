@@ -180,4 +180,28 @@ class UomDslVerifyTest {
         assertTrue(d?.contains('Skipped verification') || d?.contains('outside fragment'),
             "expected a loud skip for a non-terminating divisor, got: $d")
     }
+
+    // ── `mps` — a coherent Speed *suffix*, the clean way to state a speed in a contract (no `1.m/s` body-local) ──
+
+    @Test
+    void speedAsMpsLiteralVerifies() {
+        // `1.mps` is one metre-per-second as a single suffix — so the contract needs no division and no in-scope
+        // local: `@Ensures({ result == 1.mps })` over `1.m / 1.s` verifies (both Speed [1,0,-1], magnitude 1). This
+        // is the static-checkable form of the `1.m/s` idea — a property, not an expression referencing the body's `s`.
+        assertNull(diagnostics(snippet('result == 1.mps', 'javax.measure.Quantity', 'def s = 1.s; def d = 1.m; d / s')))
+    }
+
+    @Test
+    void speedAsMpsWrongMagnitudeRefutes() {
+        // `1.m / 1.s` is 1 m/s, not 2 — `result == 2.mps` refutes on magnitude (same Speed dimension).
+        String d = diagnostics(snippet('result == 2.mps', 'javax.measure.Quantity', '1.m / 1.s'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
+
+    @Test
+    void lengthAsMpsDimensionRefutes() {
+        // A length asserted as a speed: `1.m` is [1,0,0], `1.mps` is [1,0,-1] — different dimensions, refutes.
+        String d = diagnostics(snippet('result == 1.mps', 'javax.measure.Quantity', '1.m'))
+        assertTrue(d?.contains('Cannot prove postcondition'), "expected refutation, got: $d")
+    }
 }

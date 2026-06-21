@@ -7733,6 +7733,18 @@ a runtime-false fact — gated on the divisor's full *closed magnitude* (value �
 factor 3, is correctly rejected) having only the prime factors 2 and 5 (the Phase 143 posture). 4 new `examples-dsl`
 tests (verify / refute-magnitude / refute-dimension / non-terminating-skip); root suite 1310/0, no regression.
 
+A follow-on added a **coherent-derived-unit suffix** `mps` (`getMps` over `METRE_PER_SECOND`; scale 1, dimension
+Speed `[1,0,-1]`) — so a contract can name a speed as a one-word literal, `@Ensures({ result == 1.mps })` over a
+`d / s` body, verifying on both layers (`2.mps` refutes on magnitude, `1.m` on dimension). This is the
+*statically-checkable* answer to "why not `1.m/s` in the contract?": a contract closure that references the body
+local `s` directly (`1.m/s`) is rejected by `@TypeChecked` with "variable [s] is undeclared" — the `@Ensures` closure
+is type-checked in the method's *signature* scope (result/old/fields/params), not its *body* scope, **before** the
+verifier runs. (Dynamic groovy-contracts inlines the assert into body scope, so plain Groovy resolves `s` at runtime;
+static checking does not.) That scoping is an upstream groovy-contracts/STC matter, not a verifier gap — and the
+verifier is already *ready* for it, since `quantitySource` is keyed by name and would resolve a contract `s` the same
+way it resolves the body's. The `mps` suffix sidesteps it on the surface (a property, not a local reference). 3 more
+`examples-dsl` tests (18 total); root suite 1310/0.
+
 ---
 
 ## Definition of done, per increment
