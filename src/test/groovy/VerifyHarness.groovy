@@ -13121,6 +13121,76 @@ class Maybe {                                              // a hand-rolled Some
                             return result
                         }
                     }''')],
+
+        // ---------- 052 below_threshold (HumanEval) — a boolean predicate over a list: are ALL elements below t ----------
+        // The early `return false` witnesses the negation of the `every` at the offending index (the 072 palindrome shape,
+        // with the simpler element predicate `l[it] < t`).
+        [group: 'HE052 below_threshold', name: 'true iff every element is below the threshold', ok: true,
+         src: tc('''class C {
+                        @Requires({ l != null })
+                        @Ensures({ result == (0..<l.size()).every { l[it] < t } })
+                        static boolean belowThreshold(List<Integer> l, int t) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= l.size() && (0..<i).every { l[it] < t } })
+                            @Decreases({ l.size() - i })
+                            while (i < l.size()) {
+                                if (l[i] >= t) return false
+                                i = i + 1
+                            }
+                            return true
+                        }
+                    }''')],
+        // Soundness: an off-by-one using `<= t` instead of `< t` admits an element equal to t — refutes (kept straight-
+        // line so the refutation lands cleanly).
+        [group: 'HE052 below_threshold', name: 'off-by-one (<= t) refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ l != null })
+                        @Ensures({ result == (0..<l.size()).every { l[it] < t } })
+                        static boolean belowThreshold(List<Integer> l, int t) {
+                            return (0..<l.size()).every { l[it] <= t }
+                        }
+                    }''')],
+
+        // ---------- 009 rolling_max (HumanEval) — the running maximum at each position, as a returned list ----------
+        // The full spec (each output is the exact prefix maximum) is a nested forall/exists; here we prove the clean,
+        // faithful characterisation it implies — the running max DOMINATES each element and is NON-DECREASING — which
+        // the loop invariant carries directly (max_so_far is tied to the last pushed element).
+        [group: 'HE009 rolling_max', name: 'running max dominates each element and is non-decreasing', ok: true,
+         src: tc('''class C {
+                        @Requires({ numbers != null })
+                        @Ensures({ result.size() == numbers.size() &&
+                                   (0..<numbers.size()).every { numbers[it] <= result[it] } &&
+                                   (0..<numbers.size()).every { it == 0 || result[it - 1] <= result[it] } })
+                        static List<Integer> rollingMax(List<Integer> numbers) {
+                            int maxSoFar = Integer.MIN_VALUE
+                            List<Integer> result = []
+                            int i = 0
+                            @Invariant({ result != null && 0 <= i && i <= numbers.size() && result.size() == i &&
+                                         (i == 0 || maxSoFar == result[i - 1]) &&
+                                         (0..<i).every { numbers[it] <= result[it] } &&
+                                         (0..<i).every { it == 0 || result[it - 1] <= result[it] } })
+                            @Decreases({ numbers.size() - i })
+                            while (i < numbers.size()) {
+                                int number = numbers[i]
+                                if (number > maxSoFar) maxSoFar = number
+                                result.add(maxSoFar)
+                                i = i + 1
+                            }
+                            return result
+                        }
+                    }''')],
+        // Soundness: returning the input unchanged is not a running max — it fails the non-decreasing clause on any
+        // descending input (e.g. [2, 1]). Straight-line, so the refutation is a clean counterexample.
+        [group: 'HE009 rolling_max', name: 'returning the input unchanged refutes (not monotone)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ numbers != null })
+                        @Ensures({ result.size() == numbers.size() &&
+                                   (0..<numbers.size()).every { numbers[it] <= result[it] } &&
+                                   (0..<numbers.size()).every { it == 0 || result[it - 1] <= result[it] } })
+                        static List<Integer> rollingMax(List<Integer> numbers) {
+                            return numbers
+                        }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

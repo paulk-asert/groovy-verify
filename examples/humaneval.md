@@ -123,6 +123,18 @@ a ground witness rather than asking Z3 to invent one. `min` is symmetric, and a 
 `a[0]` correctly refutes (the universal clause fails — a later element can exceed it; the existential
 witness alone isn't enough). No new machinery — just `every`/`any` (Phase 9) inside a loop.
 
+Task 009 (`rolling_max`) is the **running** extremum — it returns a list whose `i`-th element is the max of the input
+prefix. The full spec (each output is *exactly* the prefix maximum) is a nested ∀/∃; we prove the clean
+characterisation it implies and that the loop invariant carries directly — the running max **dominates** each element
+(`numbers[i] <= result[i]`) and is **non-decreasing** (`result[i-1] <= result[i]`), with the tracker tied to the last
+pushed element (`max_so_far == result[i-1]`). It's an honest partial spec — like `get_positive`'s size bound — but a
+real one: returning the input unchanged **refutes** on any descending list (`[2,1]` breaks non-decreasing).
+
+Task 052 (`below_threshold`) is the plainest **universal** — *every* element is below `t` — and the cleanest example
+of the early-exit-witnesses-the-negation shape: the loop carries `(0..<i).every { l[it] < t }`, the early
+`return false` at an over-threshold element witnesses `¬every`, and the fall-through `return true` closes the invariant
+as the spec. An off-by-one (`<= t` admitting an element equal to `t`) refutes.
+
 Task 057 (`monotonic`) — is a list all-non-decreasing **or** all-non-increasing — takes that one step further
 into a **disjunctive ∀∀ spec**: `result == ((∀ pair: l[j] <= l[j+1]) || (∀ pair: l[j] >= l[j+1]))`. The scan
 keeps two boolean flags, and each is a bounded *existential* over the prefix — `increasing == (∃ j < i. l[j] <

@@ -49,6 +49,8 @@ class Harvester {
         'HE042 incr_list'             : "HumanEval 042 — element-wise map: build a list whose every element is the input + 1, with a per-element @Ensures over the returned list; forgetting the +1 refutes.",
         'HE152 compare'               : "HumanEval 152 — element-wise over two lists: each output is the absolute difference |game[i]-guess[i]| (abs as the body's conditional); the signed difference (no abs) refutes.",
         'HE062 derivative'            : "HumanEval 062 — index-weighted map: a polynomial's coefficients become [c1*1, c2*2, ...] (size n-1), each output the next coefficient times its power; using the index instead of the power refutes.",
+        'HE052 below_threshold'       : "HumanEval 052 — boolean predicate over a list: true iff every element is below t; the early return-false witnesses the negated quantifier, and an off-by-one (<= t) refutes.",
+        'HE009 rolling_max'           : "HumanEval 009 — running maximum into a returned list: the implied monotone+dominates characterisation (each output >= its element and non-decreasing) verifies; returning the input unchanged refutes on a descending list.",
         'HumanEval port'              : "Faithful Verus-HumanEval ports (strlen, get_positive, is_prime) with the functional @Ensures the originals omit.",
         'NNDOC'                       : "The README @NonNull lifecycle example, composed under NullChecker + VerifyChecker.",
         'NNFIELD'                     : "A class @Invariant that a field is non-null: established by the constructor, broken by an unguarded ctor or a nulling method (refutes).",
