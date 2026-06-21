@@ -44,6 +44,7 @@ class Harvester {
         'GROOVY-12071'                : "Generic-typed tuple slots / map values / list elements keep their declared type in a contract, so arithmetic on them needs no cast (GROOVY-12071).",
         'HE013 gcd'                   : "HumanEval 013 — Euclid's gcd via the Gcd.of(a,b) recurrence helper; the iterative loop proves equal to the spec.",
         'HE045 triangle_area'         : "HumanEval 045 — triangle area a*h/2 in IEEE-754 FP: exact doctest, finiteness, and positive-sides ⇒ result >= 0.",
+        'HE071 triangle_area'         : "HumanEval 071 — squared Heron area (sqrt-free, exact integers): the triangle inequality makes s-a non-negative, a valid triangle's squared area is non-negative or -1, an incomplete validity check refutes, and the int product overflows under @CheckOverflow.",
         'HumanEval port'              : "Faithful Verus-HumanEval ports (strlen, get_positive, is_prime) with the functional @Ensures the originals omit.",
         'NNDOC'                       : "The README @NonNull lifecycle example, composed under NullChecker + VerifyChecker.",
         'NNFIELD'                     : "A class @Invariant that a field is non-null: established by the constructor, broken by an unguarded ctor or a nulling method (refutes).",

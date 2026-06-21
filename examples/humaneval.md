@@ -298,6 +298,36 @@ infinitely-instantiable recurrence axiom defeats MBQI (model-based quantifier in
 for *building* a model when quantifiers are present). The verifier still rejects it (soundness holds — it
 is never a false *pass*); it just can't hand back a counterexample the way a bounds or null violation can.
 
+Task 071 (`triangle_area`) is a neat case of staying inside a decidable fragment by *reformulating*. The original
+returns the triangle's area — Heron's `√(s·(s−a)·(s−b)·(s−c))` — or `-1` when the sides can't form a triangle. That
+square root is irrational, out of reach for exact arithmetic; the Verus port sidesteps it by returning the
+**squared** area, keeping everything in exact integers. groovy-verify then proves the spec the overflow-only
+original omits — *a valid triangle's squared area is non-negative, an invalid one is `-1`*:
+
+<!-- doclint:case he071-triangle-area/squared-area-is-non-negative-or-1 -->
+```groovy
+@Requires({ a >= 0 && b >= 0 && c >= 0 })
+@Ensures({ result == -1 || result >= 0 })
+static int triangleAreaSquared(int a, int b, int c) {
+    if (a + b > c && a + c > b && b + c > a) {
+        int s = (a + b + c).intdiv(2)
+        return s * (s - a) * (s - b) * (s - c)
+    }
+    return -1
+}
+```
+
+The proof leans entirely on the **validity guard**. The triangle inequality `b + c > a` forces the half-perimeter
+`s = ⌊(a+b+c)/2⌋ ≥ a` (and `≥ b`, `≥ c`) — pure linear reasoning over floor division (`intdiv`) — so each of the
+four factors `s`, `s−a`, `s−b`, `s−c` is non-negative, and so is their product (the same *product-of-non-negatives*
+monotonicity lemmas that close the flat-matrix store bound). Drop two of the three inequalities and the guard no
+longer protects the subtractions: `a=10, b=1, c=1` passes `a+b>c` alone yet gives `6·(−4)·5·5 = −600`, a negative
+"area" — so the postcondition **refutes**, the bug an incomplete validity check hides.
+
+And the overflow the Verus suite *does* check for is real here: turn on `@CheckOverflow` and even modestly-bounded
+sides make the squared-area product **overflow** 32-bit `int`. The value property holds in exact arithmetic; the
+machine-int width is a separate, genuine bug — both halves caught on the same six-line function.
+
 Task 029 (`filter_by_prefix`) — same shape, with `s.startsWith(p)` substituted for the
 positivity check — ports with the same `result.size() <= xs.size()` spec and the natural
 in-body null guard `if (xs[i] != null && xs[i].startsWith(prefix))`. Phase 46d threads the
