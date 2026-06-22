@@ -1084,14 +1084,14 @@ invariant, and the **nonlinear bound** on the flat read index `a[k]` where `k ==
 <!-- doclint:ignore README illustration: matrix sum (nested loop) -->
 ```groovy
 @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
-@Ensures({ result == a[0..<n * m].sum() })
+@Ensures({ result == a[0..<n * m].sum(0) })
 static int matrixSum(int n, int m, int[] a) {
     int sum = 0, i = 0, k = 0
-    @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum() })
+    @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum(0) })
     @Decreases({ n - i })
     while (i < n) {
         int j = 0
-        @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j && sum == a[0..<k].sum() })
+        @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j && sum == a[0..<k].sum(0) })
         @Decreases({ m - j })
         while (j < m) { sum += a[k]; k += 1; j += 1 }
         i += 1
@@ -1100,7 +1100,8 @@ static int matrixSum(int n, int m, int[] a) {
 }
 ```
 
-The running `sum == a[0..<k].sum()` extends one element per inner step (the `sum$` base/step axioms), the
+The running `sum == a[0..<k].sum(0)` extends one element per inner step (the `sum$` base/step axioms; the `0`
+seeds the fold so the empty case is `[].sum(0) == 0` rather than Groovy's duck-typed `[].sum() == null`), the
 inner loop is summarised as a cut for the outer, and the `a[k]` read needs `k == i·m + j < n·m ≤ a.length` —
 which Z3's nonlinear solver won't derive alone, so the verifier supplies the monotonicity lemma `(i < n ∧ 0 ≤
 m) ⟹ i·m + m ≤ n·m` as a sound ground fact (a flat `a[i*m + j] = 0` matrix *fill* verifies the same way).
