@@ -103,8 +103,9 @@ but:
 
 ## Rung 3 — Tested real bytecode
 
-The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — three ways: the
-lock-free §VII buffer and the lock-based accounts (both via **Lincheck**), and deadlock / lock-ordering (via **Fray**).
+The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — several ways: the
+lock-free §VII buffer, the lock-based accounts, and Groovy 6 async/await (all via **Lincheck**), and deadlock /
+lock-ordering (via **Fray**).
 
 ### The Lincheck buffer examples
 
@@ -208,6 +209,27 @@ What this still does **not** cover: Lincheck's managed strategy explores interle
 thread switches at shared accesses — it is essentially sequentially-consistent and catches *ordering/
 logic* bugs (like publish-before-write), not pure *memory-visibility* bugs (a missing `volatile`). For
 that last layer you need a weak-memory checker (GenMC, herd7) or jcstress on real hardware.
+
+### async/await — the safe pattern holds, the unsafe one races
+
+The [async/await examples](examples.md) prove the *functional* half — `await(async { e })` is `e`, gathered tasks
+combine to the right value — *assuming* the safe discipline: pure-value tasks that complete and don't interfere.
+[`AsyncLincheckTest`](../../src/concurrent/groovy/concurrent/AsyncLincheckTest.groovy) (`./gradlew concurrentTest`)
+checks that assumption on the real bytecode.
+
+One wrinkle: async runs on its own executor — threads Lincheck's *managed* strategy doesn't control — so this uses
+the **stress** strategy (many real concurrent executions) rather than model-checking. That's the right fit for code
+with genuine *internal* parallelism: each operation fans out real tasks, and a result that's deterministic across
+every run is the linearizability witness.
+
+| Holder | Pattern | Lincheck |
+|---|---|---|
+| `SafeGather` | fan out three pure-value tasks, gather, combine | **linearizable** — always `9`, the proven value |
+| `RacyGather` | three tasks read-modify-write a shared field | **caught** — lost updates yield a value no sequential history explains |
+
+`SafeGather` confirms the structural half groovy-verify *assumes* genuinely holds when the tasks run for real.
+`RacyGather` is the counterpoint: the unsafe pattern the safe-value discipline excludes is a real race, and the
+runtime checker catches it — the same safe-vs-unsafe split as the lock-guarded vs racy accounts below.
 
 ### The locks example — both disclaimed halves
 

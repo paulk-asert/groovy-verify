@@ -271,5 +271,7 @@ The assumed structural half is exactly that safe discipline: the awaited tasks c
 Awaiting a task whose *value* the verifier can't see — an `Awaitable` *parameter*, a foreign `CompletableFuture`, a
 value-or-fallback `completeOnTimeoutMillis` — isn't a determinate read-out, so it skips rather than guess. And a
 closure that *mutates shared state* (the unsafe pattern the docs warn against) is the genuine race — the structural
-half, Lincheck/Fray territory, not this proof.
+half, Lincheck/Fray territory, not this proof. That half is exercised for real in [the structural rungs](README.md):
+a Lincheck stress test confirms the safe fan-out/gather is deterministic on actual threads, and catches the
+shared-mutation race on the unsafe twin.
 
