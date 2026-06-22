@@ -200,6 +200,7 @@ class Harvester {
         'P49b in-body exits'          : "An if(cond) return e at the top of a loop body is verified on its own path; preservation holds on the no-exit path.",
         'P50 groovy div/mod'          : "Groovy-faithful % (sign of dividend) and intdiv (truncate toward zero); a claim that % is always non-negative refutes.",
         'P51 sum'                     : "A list sum aggregation carried by a loop invariant (s == xs[0..<i].sum()), via base/step axioms.",
+        'P51b sum-empty'              : "Groovy's duck-typed .sum() empty edge by receiver kind: a primitive array's [].sum() is 0 (empty-safe), but a List/sublist's is null — so a bare a[0..<k].sum() refuses at empty (a statically-empty range crisply) while the seeded .sum(0) and the int[]-returning Arrays.copyOf(a, len).sum() are empty-safe.",
         'P52 below_zero'              : "HumanEval 003 below_zero — the full biconditional: result iff some prefix sum is negative.",
         'P53 product'                 : "A product aggregation via the inject(1){a,x->a*x} fold (and the inject(0) sum fold).",
         'P54 int-string signs'        : "A negative Integer.toString is non-empty (a claim that it isEmpty refutes).",

@@ -3034,6 +3034,9 @@ class Encoder {
     /** Array handles whose sum base/step axioms have been asserted (mint-once, per array). */
     private final Set<Object> sumConstrained = new HashSet<Object>()
 
+    /** Fresh "null" value standing in for the empty fold of a List/sublist {@code .sum()}, mint-once per receiver. */
+    private final Map<String, Object> nullableSumCache = new HashMap<String, Object>()
+
     /**
      * The bounded sum {@code sum(arr, lo, hi) = Σ_{lo<=i<hi} arr[i]}, asserting its two defining axioms
      * the first time each array handle is seen (quantified over all ranges, so once per array suffices):
@@ -3155,7 +3158,73 @@ class Encoder {
             String prop = ((PropertyExpression) recv).propertyAsString
             return ['old$' + prop, arrayFor('old$' + prop), session.intLit(0L), sizeOf(prop)] as Object[]
         }
+        // Arrays.copyOf(a, len) — a fresh int[] (so its `.sum()` keeps *array* semantics: empty is 0, not null,
+        // unlike a `a[0..<len]` sublist), summed over `[0, len)`. When `len <= a.length` (the slicing use) this is
+        // exact; a `len > a.length` *growth* copy pads with 0, which we don't model — so such a call fails to prove
+        // (conservative) rather than mis-proving, since the out-of-bounds reads stay unconstrained.
+        Object[] cof = copyOfArrayLen(recv)
+        if (cof != null) {
+            String xs = (String) cof[0]
+            Object len = translate((Expression) cof[1])
+            if (len == null) return null
+            return [xs, arrayFor(xs), session.intLit(0L), len] as Object[]
+        }
         null
+    }
+
+    /** {@code Arrays.copyOf(a, len)} (static or re-parsed instance form) → {@code [arrayVarName, lenExpr]}, else null. */
+    private Object[] copyOfArrayLen(Expression recv) {
+        if (callName(recv) != 'copyOf') return null
+        List<Expression> ca = callArgs(recv)
+        if (ca.size() != 2 || !(ca.get(0) instanceof VariableExpression)) return null
+        boolean isArrays
+        if (recv instanceof StaticMethodCallExpression) {
+            ClassNode owner = ((StaticMethodCallExpression) recv).ownerType
+            isArrays = owner != null && owner.name == 'java.util.Arrays'
+        } else if (recv instanceof MethodCallExpression) {
+            String objText = ((MethodCallExpression) recv).objectExpression.text
+            isArrays = objText == 'Arrays' || objText == 'java.util.Arrays' || objText.endsWith('.Arrays')
+        } else {
+            isArrays = false
+        }
+        isArrays ? [((VariableExpression) ca.get(0)).name, ca.get(1)] as Object[] : null
+    }
+
+    /** A range subscript {@code a[from..&lt;to]} whose bounds are constant, non-negative, and empty — so its
+     *  List {@code .sum()} is provably {@code null} and needs no {@code sum$} axioms (a crisp refutation). */
+    private boolean isStaticEmptyRangeSubscript(Expression recv) {
+        if (!(recv instanceof BinaryExpression)) return false
+        BinaryExpression be = (BinaryExpression) recv
+        if (be.operation.type != Types.LEFT_SQUARE_BRACKET || !(be.rightExpression instanceof RangeExpression)) return false
+        RangeExpression re = (RangeExpression) be.rightExpression
+        Integer from = constNonNegInt(re.from), to = constNonNegInt(re.to)
+        if (from == null || to == null) return false        // a negative bound wraps in Groovy — not statically empty
+        re.inclusive ? from > to : from >= to
+    }
+    private Integer constNonNegInt(Expression e) {
+        if (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number) {
+            int v = ((Number) ((ConstantExpression) e).value).intValue()
+            return v >= 0 ? v : null
+        }
+        null
+    }
+
+    /**
+     * True when {@code recv.sum()} yields a Groovy <em>List</em> (so an empty fold is {@code null}, not 0) rather
+     * than a primitive numeric array (empty {@code int[].sum()} <em>is</em> 0). A range subscript
+     * {@code a[lo..&lt;hi]} is always a sublist List; a bare variable is a List unless its static type is an array.
+     * Conservatively, an unresolved type is treated as an array — keeping the {@code empty == 0} model — so this
+     * never newly rejects an already-passing case.
+     */
+    private boolean isListSemanticsSum(Expression recv) {
+        if (recv instanceof BinaryExpression &&
+            ((BinaryExpression) recv).operation.type == Types.LEFT_SQUARE_BRACKET &&
+            ((BinaryExpression) recv).rightExpression instanceof RangeExpression) return true
+        if (recv instanceof VariableExpression) {
+            ClassNode t = recv.getType()
+            return t != null && !t.isArray() && t.name != 'java.lang.Object'
+        }
+        false
     }
 
     /** Cache of minted {@code max()}/{@code min()} extremum constants, keyed by receiver-text + op. */
@@ -5723,11 +5792,26 @@ class Encoder {
             String aggName = (String) r[0]
             String elemKey = aggName.startsWith('old$') ? aggName.substring('old$'.length()) : aggName
             ClassNode et = listElementTypes.get(elemKey)
-            if (et == null) {                          // Int list → numeric sum
-                Object init = args.isEmpty() ? session.intLit(0L) : translate(args.get(0))
+            if (et == null) {                          // Int list/array → numeric sum
+                if (args.isEmpty()) {
+                    // Groovy's List/sublist `[].sum()` is *null*, not 0 — the no-arg fold is duck-typed and has no
+                    // zero element; only a numeric *array* empties to 0. So for a List receiver the empty fold is an
+                    // unconstrained value (mint-once per receiver, like maxMinOf's extremum): `int == xs.sum()` then
+                    // can't be proven when xs may be empty (it refutes), while `xs.sum() == xs.sum()` stays
+                    // reflexive. `xs.sum(0)` and an array `xs.sum()` keep the exact `0` base.
+                    if (isListSemanticsSum(recv)) {
+                        Object fresh = nullableSumCache.get(recv.text)
+                        if (fresh == null) { fresh = session.intVar('sumNull$' + (quantCounter++)); nullableSumCache.put(recv.text, fresh) }
+                        // A *statically* empty sublist is provably null with no sum$ axioms at all — keeping the
+                        // refutation crisp instead of timing out on the recursive aggregation axioms.
+                        if (isStaticEmptyRangeSubscript(recv)) return fresh
+                        return session.ite(session.lt(r[2], r[3]), sumOf(r[1], r[2], r[3]), fresh)
+                    }
+                    return sumOf(r[1], r[2], r[3])
+                }
+                Object init = translate(args.get(0))
                 if (init == null) return null
-                Object base = sumOf(r[1], r[2], r[3])
-                return args.isEmpty() ? base : session.plus(init, base)
+                return session.plus(init, sumOf(r[1], r[2], r[3]))
             }
             if (isDecimalElementType(et)) {             // List<BigDecimal> → Real sum (Phase 70)
                 Object init = args.isEmpty() ? session.realLit('0') : asReal(args.get(0))

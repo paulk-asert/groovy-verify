@@ -5156,8 +5156,13 @@ class Derived extends Base {
                         }
                     }''')],
         // Matrix sum — nested loops + array-range `.sum()` aggregation + the NIA monotonicity lemma (the
-        // flat-index `a[k]` read bound `i*m+j < n*m`). README "Examples" carries this one.
-        [group: 'P91 nested', name: 'matrix sum (nested + aggregation)', ok: true,
+        // flat-index `a[k]` read bound `i*m+j < n*m`). The bare `.sum()` form is NOT empty-safe: a range subscript
+        // `a[0..<k]` is a Groovy *sublist* (a List), and `[].sum()` is *null*, not 0 — so at the `n == 0` entry the
+        // invariant `sum == a[0..<0].sum()` is `0 == null`. The verifier now models the empty List fold as
+        // unconstrained (only a numeric *array*'s `.sum()` empties to 0), so it can no longer establish it — a
+        // refute-hostile boundary that soft-fails to "could not decide" on this heavy nested VC. The `.sum(0)`
+        // variant below is the empty-safe workaround (and the form the README "Examples" now shows).
+        [group: 'P91 nested', name: 'matrix sum: bare .sum() refused at the empty edge', expect: 'Could not decide',
          src: tc('''class C {
                         @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
                         @Ensures({ result == a[0..<n * m].sum() })
@@ -5208,6 +5213,49 @@ class Derived extends Base {
                             sum
                         }
                     }''')],
+
+        // The `.sum()` empty edge, by receiver kind (Groovy duck-types the no-arg fold). A primitive *array*'s
+        // `[].sum()` is 0, so a whole-array `a.sum()` is empty-safe and verifies. A *List* / sublist's `[].sum()`
+        // is null — `a[0..<k]` is `getAt(Range)`, which returns a List — so the bare `a[0..<k].sum()` refuses at
+        // the empty edge (see the matrix-sum case above); the seeded `.sum(0)` supplies the zero and is empty-safe.
+        // (`Arrays.copyOf(a, n)` is also empty-safe at runtime — it returns an int[] — but a method-call receiver
+        // is outside the modelled list/array forms, so the verifier skips it; `.sum(0)` is the verified workaround.)
+        [group: 'P51b sum-empty', name: 'whole int[] .sum() is empty-safe (array → 0)', ok: true,
+         src: tc('class C { @Requires({ a != null && a.length == 0 }) @Ensures({ a.sum() == 0 }) static void f(int[] a) {} }')],
+        [group: 'P51b sum-empty', name: 'sublist .sum(0) is empty-safe (seeded → 0)', ok: true,
+         src: tc('class C { @Requires({ a != null && a.length >= 0 }) @Ensures({ a[0..<0].sum(0) == 0 }) static void f(int[] a) {} }')],
+        // A *statically* empty sublist `.sum()` is provably null — a crisp refutation (no sum$ axioms, no timeout).
+        [group: 'P51b sum-empty', name: 'statically-empty sublist .sum() refuses (crisp)', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Requires({ a != null }) @Ensures({ a[0..<0].sum() == 0 }) static void f(int[] a) {} }')],
+        // Arrays.copyOf(a, len) is a fresh int[] → array semantics (empty .sum() is 0), so it's empty-safe.
+        [group: 'P51b sum-empty', name: 'Arrays.copyOf(a, 0).sum() is empty-safe (array → 0)', ok: true,
+         src: HDR + 'import java.util.Arrays\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              'class C { @Requires({ a != null && a.length == 0 }) @Ensures({ Arrays.copyOf(a, 0).sum() == 0 }) static void f(int[] a) {} }'],
+        // The matrix sum, made empty-safe with Arrays.copyOf instead of slicing (the int[]-returning workaround):
+        // copyOf keeps array semantics, so the n == 0 edge is `0 == copyOf(a, 0).sum() == 0` — and it verifies.
+        [group: 'P91 nested', name: 'matrix sum via Arrays.copyOf (empty-safe array slice)', ok: true,
+         src: HDR + 'import java.util.Arrays\n' + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + '''class C {
+                        @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
+                        @Ensures({ result == Arrays.copyOf(a, n * m).sum() })
+                        static int matrixSum(int n, int m, int[] a) {
+                            int sum = 0; int i = 0; int k = 0
+                            @Invariant({ 0 <= i && i <= n && k == i * m && sum == Arrays.copyOf(a, k).sum() })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j &&
+                                             sum == Arrays.copyOf(a, k).sum() })
+                                @Decreases({ m - j })
+                                while (j < m) {
+                                    sum += a[k]
+                                    k += 1
+                                    j += 1
+                                }
+                                i += 1
+                            }
+                            sum
+                        }
+                    }'''.stripIndent()],
 
         // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).
         [group: 'P33 union/intersect', name: 'inline intersection in  (a & b)', ok: true,

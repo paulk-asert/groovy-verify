@@ -159,8 +159,8 @@ class RuntimeRung {
 
     /** Known, triaged proof-vs-runtime divergences (group::name → reason). A NEW confirmed one fails the run. */
     static final Map<String, String> KNOWN_DIVERGENCES = [
-        'P91 nested::matrix sum (nested + aggregation)':
-            'Groovy [].sum() is null, not 0 — the verifier models the empty sum as 0, so the spec diverges only at the n=0 empty edge (documented Groovy wart)',
+        // (the matrix-sum [].sum()==null divergence is now caught by the verifier itself — it refuses the bare
+        //  `.sum()` empty edge — so it is no longer an ok:true case the rung sees)
         'P expr inc/dec::a[i] = i++ stores old value at old index':
             'eval order: Groovy evaluates the a[i] subscript AFTER the increment; the verifier models Java\'s snapshot-before order — triage: Groovy semantics vs verifier model',
         'P expr inc/dec::dst[i] = src[++i] (read before pre) snapshots and verifies':

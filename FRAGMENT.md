@@ -58,7 +58,12 @@ a coverage metric. In expressions the fragment is:
   stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
 - aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold
   (Phases 51/52) over Int and `String` (concatenation on the `str.++` monoid), and `List<BigDecimal>` decimal
-  sums with N-account *conservation* (`bal.sum() == old.bal.sum()`; Phases 68–70); the recurrence spec helpers
+  sums with N-account *conservation* (`bal.sum() == old.bal.sum()`; Phases 68–70) — with Groovy's duck-typed
+  empty-fold honoured: a numeric **array**'s `[].sum()` is `0`, but a **List**/sublist's `[].sum()` is *`null`*
+  (the no-arg fold has no zero element, the way `['', 1, 2, 3].sum() == '123'`), so a bare `a[0..<k].sum()` over a
+  possibly-empty sublist is modelled as unconstrained at empty and a spec like `int == a[0..<k].sum()` *refuses*
+  to prove at the empty edge — the seeded `a[0..<k].sum(0)`, a guaranteed-non-empty range, or the int[]-returning
+  `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms; the recurrence spec helpers
   `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/63/87);
 - `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /
