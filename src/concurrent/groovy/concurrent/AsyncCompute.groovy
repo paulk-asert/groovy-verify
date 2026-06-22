@@ -20,7 +20,7 @@ import groovy.transform.stc.POJO
 
 /**
  * Groovy 6 async/await, the *safe* (pure-value) pattern groovy-verify proves sequentially — here run for real so
- * Lincheck can exercise the structural half the proof <i>assumes</i> (rung 3 of {@code examples/concurrency/README.md}).
+ * Lincheck can exercise the structural half the proof <i>assumes</i> (rung 3 of {@code CONCURRENCY.md}).
  * Each {@code async { … }} closure returns a value and touches no shared state, so the result is deterministic
  * regardless of how the tasks are scheduled — which is exactly what the stress test below confirms on real threads.
  */

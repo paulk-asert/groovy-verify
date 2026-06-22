@@ -17,7 +17,7 @@
 # Concurrency "lite" examples
 
 > The **structural** half these proofs *assume* — mutual exclusion, interleaving-freedom, deadlock-freedom,
-> delivery — is checked separately by Lincheck / TLA+ TLC / Fray. See **[README.md](README.md)**.
+> delivery — is checked separately by Lincheck / TLA+ TLC / Fray. See **[README.md](../CONCURRENCY.md)**.
 
 
 groovy-verify is a *sequential* SMT-backed checker — it reasons about no thread interleavings, races, or
@@ -41,7 +41,7 @@ termination; that needs concurrent separation logic, out of scope for a sequenti
 
 Groovy's **rely/guarantee** support goes further than the four above — proving *both* halves on a concurrent
 buffer, and combining with an information-flow lattice (Graeme Smith's Dafny approach):
-**[Thread-local information flow & rely/guarantee (Smith)](../smith.md)**.
+**[Thread-local information flow & rely/guarantee (Smith)](smith.md)**.
 
 ### Locks — the monitor invariant
 
@@ -87,11 +87,11 @@ no deadlock, no lock-ordering); that needs concurrent separation logic with frac
 Verus / Viper / VerCors machinery — which is out of scope for an SMT-backed sequential checker.
 So this is an honest *monitor-invariant* proof, not a from-scratch proof of thread safety.
 
-Those two disclaimed halves are exercised on this exact example by the runtime checkers in [the structural rungs](README.md): a
+Those two disclaimed halves are exercised on this exact example by the runtime checkers in [the structural rungs](../CONCURRENCY.md): a
 **Lincheck** spike (`./gradlew lincheckTest`) shows a `synchronized` `Account` is linearizable while an
 unlocked one races, and a **Fray** spike (`./gradlew frayCheck`) drives the JVM scheduler over a two-account
 bank transfer to confirm ordered locking is deadlock-free — and to catch the lock-ordering deadlock when it
-isn't. Same boundary, made concrete; see [`README.md`](README.md).
+isn't. Same boundary, made concrete; see [`README.md`](../CONCURRENCY.md).
 
 ### Agents & actors — the same invariant, a different paradigm
 
@@ -271,7 +271,7 @@ The assumed structural half is exactly that safe discipline: the awaited tasks c
 Awaiting a task whose *value* the verifier can't see — an `Awaitable` *parameter*, a foreign `CompletableFuture`, a
 value-or-fallback `completeOnTimeoutMillis` — isn't a determinate read-out, so it skips rather than guess. And a
 closure that *mutates shared state* (the unsafe pattern the docs warn against) is the genuine race — the structural
-half, Lincheck/Fray territory, not this proof. That half is exercised for real in [the structural rungs](README.md):
+half, Lincheck/Fray territory, not this proof. That half is exercised for real in [the structural rungs](../CONCURRENCY.md):
 a Lincheck stress test confirms the safe fan-out/gather is deterministic on actual threads, and catches the
 shared-mutation race on the unsafe twin.
 

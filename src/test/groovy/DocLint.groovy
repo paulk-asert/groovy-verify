@@ -62,7 +62,7 @@ class DocLint {
         Map<String, String> byId = caseSourcesById()
         int blocks = 0, unmatched = 0, exempt = 0, quoted = 0, linked = 0, linkBroken = 0
         def examples = [], broken = []
-        def docFiles = ['README.md', 'FRAGMENT.md', 'CAPABILITIES.md', 'ARCHITECTURE.md']
+        def docFiles = ['README.md', 'FRAGMENT.md', 'CAPABILITIES.md', 'ARCHITECTURE.md', 'CONCURRENCY.md']
         File examplesDir = new File('examples')   // the split-out galleries (examples/*.md, examples/**/examples.md)
         if (examplesDir.isDirectory()) examplesDir.eachFileRecurse { File ff -> if (ff.name.endsWith('.md')) docFiles << ff.path }
         docFiles.each { String f ->

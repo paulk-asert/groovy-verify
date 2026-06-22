@@ -22,7 +22,7 @@ information-flow control via rely/guarantee. **§III** is an information-flow
 lattice with a noninterference obligation; **§IV** is rely/guarantee for reasoning under a concurrent peer; the
 **§VII** capstone combines them (info-flow × rely/guarantee) on one bounded buffer. The buffer's *structural*
 half — that the threads truly interleave at the assumed grain — is the deliberate non-goal, validated separately
-by the [three structural rungs](concurrency/README.md).
+by the [three structural rungs](../CONCURRENCY.md).
 
 ## §III — Information flow: noninterference over a lattice
 
@@ -165,7 +165,7 @@ classification over a field, array element labels, and the predicate-gated (two-
 
 ## §IV — Rely/guarantee: the conditions compose, and the bodies uphold them
 
-The *rely/guarantee* story goes further than the four [concurrency-lite examples](concurrency/examples.md) — locks,
+The *rely/guarantee* story goes further than the four [concurrency-lite examples](concurrency.md) — locks,
 agents, dataflow, channels, each proving its *local* obligation while **assuming** the structural half — here we
 prove **both halves**. First, the
 **compatibility lemmas** are pure logic: `@Rely('T')` / `@Guarantee('T')` two-state predicates over shared state,
@@ -255,7 +255,7 @@ refutes — each with an out-of-bounds counterexample.
 > (every access in bounds) — and, in the §VII capstone below, *information flow* (no leak) — but **not functional
 > correctness**. There is deliberately no `@Ensures` relating a read to a prior write. That property — every value
 > read was previously written, in order — is **linearizability**, and it is checked at a different tier: the
-> Lincheck spike in [the structural rungs](concurrency/README.md) exercises it on the real bytecode. Three rungs, three jobs: this checker
+> Lincheck spike in [the structural rungs](../CONCURRENCY.md) exercises it on the real bytecode. Three rungs, three jobs: this checker
 > proves bounds (and info-flow), Lincheck tests value-correctness, and neither subsumes the other.
 
 So the whole loop closes on one buffer: **write the `@Rely` / `@Guarantee` predicates once, tag the methods,
@@ -377,13 +377,13 @@ a machine-checked concurrency proof: that the threads genuinely interleave with 
 decomposition — value-dependent `@Label(by = …)`, the secure-update on `tail`, `Declassify.to`, the four
 compatibility lemmas, and the rely-step framing — all composing on one class, both properties at once.
 
-**The other half — the structural guarantee — lives in [the structural rungs](concurrency/README.md).** That is the part this checker
+**The other half — the structural guarantee — lives in [the structural rungs](../CONCURRENCY.md).** That is the part this checker
 *assumes*, made runnable on this exact buffer by two complementary tools: a **TLA+** model (`Buffer.tla`)
 that TLC explores across *every* interleaving — where the rely stops being an assumption and becomes a checked
 theorem about the peer's action, and liveness is checkable too — and a **Lincheck** test
 (`src/concurrent/`) that model-checks the *real bytecode* of this exact `Buffer` — the same source this checker
 proves — confirming it linearizable across the interleavings the rely permits. Three rungs — compile-time proof here, exhaustive model, tested bytecode — each
-trading coverage for fidelity; see [`concurrency/README.md`](concurrency/README.md). Run them with `./gradlew tlcCheck` and
+trading coverage for fidelity; see [`CONCURRENCY.md`](../CONCURRENCY.md). Run them with `./gradlew tlcCheck` and
 `./gradlew lincheckTest`.
 
 The machinery isn't specific to the buffer's two pointers. A different shape — a shared scalar with a

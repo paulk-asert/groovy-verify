@@ -28,7 +28,7 @@ import verification.Declassify
 
 /**
  * The §VII capstone buffer — information flow × rely/guarantee — as a <b>single shared source</b> checked by two
- * rungs at once (see {@code examples/concurrency/README.md}), exactly like {@link SpscBuffer} but carrying the
+ * rungs at once (see {@code CONCURRENCY.md}), exactly like {@link SpscBuffer} but carrying the
  * <i>whole</i> §VII argument, not just the bounds:
  *
  * <ul>

@@ -22,7 +22,7 @@ import groovy.contracts.Requires
 
 /**
  * A correct lock-free single-producer/single-consumer bounded buffer. <b>This one source is checked by two rungs at
- * once — not a facsimile, the same code</b> (see {@code examples/concurrency/README.md}):
+ * once — not a facsimile, the same code</b> (see {@code CONCURRENCY.md}):
  *
  * <ul>
  *   <li><b>groovy-verify</b> proves the {@code @Invariant} at compile time: {@code items[t % capacity]} is in

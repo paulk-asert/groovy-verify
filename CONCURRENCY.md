@@ -30,7 +30,7 @@ Each rung trades coverage for fidelity to the running system. None subsumes the 
 ## Rung 1 — Proof
 
 `groovy-verify` proves the **local, sequential** obligations of a rely/guarantee argument: each
-thread, run under an *assumed* rely, stays in bounds and leaks nothing (the [§VII capstone](../smith.md)).
+thread, run under an *assumed* rely, stays in bounds and leaks nothing (the [§VII capstone](examples/smith.md)).
 What it deliberately does **not** do is establish that the rely/guarantee abstraction is faithful to a
 real interleaved execution — the scheduler, the atomicity grain, and liveness. That is a different
 class of tool.
@@ -42,13 +42,13 @@ buffer that an exhaustive model checker (TLC) explores across *every* interleavi
 
 ### Files
 
-The model + configs live in [`src/tlc/`](../../src/tlc) (alongside the other rung sources — `src/lincheck`, `src/fray`):
+The model + configs live in [`src/tlc/`](src/tlc) (alongside the other rung sources — `src/lincheck`, `src/fray`):
 
 | File | What it is |
 |------|------------|
-| [`Buffer.tla`](../../src/tlc/Buffer.tla) | The §VII producer/consumer buffer as a state machine. Maps element-for-element to `class Buffer`: `head`/`tail`, `data[i]` = `values[i]`, `dlvl[i]` = each slot's true secrecy, `PosLabel(i)` = `level(i, head, tail)`. |
-| [`Buffer.cfg`](../../src/tlc/Buffer.cfg) | The **secure** spec: producer declassifies. All invariants hold, the relies are theorems, progress holds. |
-| [`BufferLeak.cfg`](../../src/tlc/BufferLeak.cfg) | The **leak** variant: producer skips `Declassify`. TLC reports `RegionSound`/`NoLeak` violated and prints the shortest interleaved trace that leaks. |
+| [`Buffer.tla`](src/tlc/Buffer.tla) | The §VII producer/consumer buffer as a state machine. Maps element-for-element to `class Buffer`: `head`/`tail`, `data[i]` = `values[i]`, `dlvl[i]` = each slot's true secrecy, `PosLabel(i)` = `level(i, head, tail)`. |
+| [`Buffer.cfg`](src/tlc/Buffer.cfg) | The **secure** spec: producer declassifies. All invariants hold, the relies are theorems, progress holds. |
+| [`BufferLeak.cfg`](src/tlc/BufferLeak.cfg) | The **leak** variant: producer skips `Declassify`. TLC reports `RegionSound`/`NoLeak` violated and prints the shortest interleaved trace that leaks. |
 
 ### Running it
 
@@ -59,7 +59,7 @@ TLC in `build/tlc`, fails the build on any invariant/property violation):
 ./gradlew tlcCheck     # "Model checking completed. No error has been found."
 ```
 
-Or directly from [`src/tlc/`](../../src/tlc), with
+Or directly from [`src/tlc/`](src/tlc), with
 [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar) and any JDK:
 
 ```sh
@@ -111,9 +111,9 @@ lock-ordering (via **Fray**).
 
 ### The Lincheck buffer examples
 
-The **domain** buffers live in [`src/concurrent/groovy/concurrent/`](../../src/concurrent/groovy/concurrent) (the
+The **domain** buffers live in [`src/concurrent/groovy/concurrent/`](src/concurrent/groovy/concurrent) (the
 same source the verifier consumes), and the Lincheck **test** in
-[`src/lincheck/groovy/lincheck/`](../../src/lincheck/groovy/lincheck):
+[`src/lincheck/groovy/lincheck/`](src/lincheck/groovy/lincheck):
 
 | File | What it is |
 |------|------------|
@@ -152,7 +152,7 @@ one-shot §VII `Buffer`: `SpscBuffer` refills indefinitely, so it exercises the 
 omits.
 
 **The same source, both rungs. ** `SpscBuffer.groovy` carries the exact `@Invariant`/`@Requires`
-that groovy-verify proves: [`SpscBufferVerifyTest`](../../src/test/groovy/SpscBufferVerifyTest.groovy) reads *this
+that groovy-verify proves: [`SpscBufferVerifyTest`](src/test/groovy/SpscBufferVerifyTest.groovy) reads *this
 file* and runs the checker on it (proving `items[t % capacity]` in bounds and the bounded-occupancy invariant
 preserved). The same test reads `Buffer.groovy` and proves the *whole* §VII argument over it — bounds under
 `@UnderRely` interference **and** the no-leak information-flow discipline — while `rgBufferIsLinearizable` Lincheck-checks
@@ -216,9 +216,9 @@ that last layer you need a weak-memory checker (GenMC, herd7) or jcstress on rea
 
 ### async/await — the safe pattern holds, the unsafe one races
 
-The [async/await examples](examples.md) prove the *functional* half — `await(async { e })` is `e`, gathered tasks
+The [async/await examples](examples/concurrency.md) prove the *functional* half — `await(async { e })` is `e`, gathered tasks
 combine to the right value — *assuming* the safe discipline: pure-value tasks that complete and don't interfere.
-[`AsyncLincheckTest`](../../src/lincheck/groovy/lincheck/AsyncLincheckTest.groovy) (`./gradlew lincheckTest`)
+[`AsyncLincheckTest`](src/lincheck/groovy/lincheck/AsyncLincheckTest.groovy) (`./gradlew lincheckTest`)
 checks that assumption on the real bytecode.
 
 One wrinkle: async runs on its own executor — threads Lincheck's *managed* strategy doesn't control — so this uses
@@ -237,7 +237,7 @@ runtime checker catches it — the same safe-vs-unsafe split as the lock-guarded
 
 ### The locks example — both disclaimed halves
 
-The [*Locks — the monitor invariant*](examples.md) example proves each critical section preserves `balance >= 0`
+The [*Locks — the monitor invariant*](examples/concurrency.md) example proves each critical section preserves `balance >= 0`
 *given* mutual exclusion, and explicitly disclaims two things: "no race on unlocked access, no deadlock,
 no lock-ordering." Each disclaimed half gets the tool that fits it.
 

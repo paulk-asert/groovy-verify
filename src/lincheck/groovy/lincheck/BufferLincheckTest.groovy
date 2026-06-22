@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test
 import static org.junit.jupiter.api.Assertions.assertThrows
 
 /**
- * Rung 3 of the three-rung story (see {@code examples/concurrency/README.md}): Lincheck model-checks the ACTUAL bytecode
+ * Rung 3 of the three-rung story (see {@code CONCURRENCY.md}): Lincheck model-checks the ACTUAL bytecode
  * of a lock-free buffer across interleavings, discharging the atomicity/ordering assumption the
  * compile-time checker (rung 1) and the TLA+ model (rung 2) leave open.
  *

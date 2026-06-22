@@ -287,7 +287,7 @@ tasks.named('check') {
     dependsOn 'test'   // JUnit dynamic-test run of the suite (verify remains the console runner)
 }
 
-// ---- Concurrency spike: Lincheck on a real SpscBuffer (rung 3 of examples/concurrency/README.md) ----------------
+// ---- Concurrency spike: Lincheck on a real SpscBuffer (rung 3 of CONCURRENCY.md) ----------------
 // The checker (rung 1) proves the sequential VC; src/tlc/Buffer.tla (rung 2) model-checks an abstract
 // state machine; this rung model-checks the ACTUAL bytecode of a lock-free buffer across interleavings,
 // discharging the atomicity/ordering assumption the other two leave open. Isolated in its own source
@@ -385,7 +385,7 @@ tasks.named('compileConcurrentGroovy') {
 
 tasks.register('lincheckTest', Test) {
     group = 'verification'
-    description = 'Lincheck linearizability tests over the concurrent domain classes (rung 3 of examples/concurrency/README.md)'
+    description = 'Lincheck linearizability tests over the concurrent domain classes (rung 3 of CONCURRENCY.md)'
     testClassesDirs = sourceSets.lincheck.output.classesDirs
     classpath = sourceSets.lincheck.runtimeClasspath
     useJUnitPlatform()
@@ -400,7 +400,7 @@ tasks.register('lincheckTest', Test) {
     testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
 }
 
-// ---- TLA+ model check: TLC on src/tlc/Buffer.tla (rung 2 of examples/concurrency/README.md) ------------------------
+// ---- TLA+ model check: TLC on src/tlc/Buffer.tla (rung 2 of CONCURRENCY.md) ------------------------
 // Model-checks the §VII buffer across EVERY interleaving (the rely becomes a checked theorem about the
 // peer; liveness too) — the exhaustive-model rung the compile-time checker leaves open. tla2tools isn't
 // on Maven Central, so resolve the pinned release jar from GitHub releases via an Ivy repo, scoped to
@@ -432,7 +432,7 @@ def tlcPrepare = tasks.register('tlcPrepare', Sync) {
 
 tasks.register('tlcCheck', JavaExec) {
     group = 'verification'
-    description = 'Model-check src/tlc/Buffer.tla (secure spec) with TLA+ TLC — rung 2 of examples/concurrency/README.md'
+    description = 'Model-check src/tlc/Buffer.tla (secure spec) with TLA+ TLC — rung 2 of CONCURRENCY.md'
     dependsOn tlcPrepare
     classpath = configurations.tlc
     mainClass = 'tlc2.TLC'

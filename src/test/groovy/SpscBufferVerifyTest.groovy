@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.fail
  * {@code @CompileStatic} already present (the Lincheck build leaves it plain; here we add the checker). The class's
  * {@code @Invariant} is then proved at compile time (`items[t % capacity]` in bounds, the occupancy invariant
  * preserved by offer/poll, established by the constructor). The Lincheck build instruments the same file with
- * groovy-contracts' assertions disabled ({@code -da}); see {@code examples/concurrency/README.md}.
+ * groovy-contracts' assertions disabled ({@code -da}); see {@code CONCURRENCY.md}.
  */
 class SpscBufferVerifyTest {
 
