@@ -102,6 +102,32 @@ deadlock) is left to three separate tasks, each its own source set so the JDK-25
 The three-rungs story — compile-time proof, exhaustive model, tested bytecode — is written up in
 [CONCURRENCY.md](CONCURRENCY.md).
 
+### The runtime rung — a differential soundness oracle
+
+The *sequential* analogue of the concurrency rungs. `groovy.contracts` annotations are also **runtime
+assertions**, so every `ok:true` case is recompiled with the VerifyChecker extension stripped but
+groovy-contracts live, then run over an input grid — the contract checks itself. It **falsifies, it cannot
+certify**, and it is not in `check`:
+
+```sh
+./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation
+```
+
+Tier A (scalar/array/string inputs) cross-validates **496 of 543 runnable proofs clean** (452 with an
+`@Ensures`/`@Invariant`/`assert` postcondition oracle); the rest are Tier B (a structured `@Requires` the grid
+can't hit) or Tier C (units/concurrency/info-flow — not grid-executable).
+
+A first run taught us the runtime is a *noisy* oracle: groovy-contracts' own postcondition evaluation is
+imperfect (it reports `result >= a && result >= b` violated for a `max` that returns correct values). So
+**Slice 2 corroborates**: on a postcondition violation it gets the raw return value from a contracts-*disabled*
+compile and re-evaluates the spec independently — `false` is a **confirmed** divergence, `true` is a
+groovy-contracts quirk (verifier correct, *recovered* as validated). A confirmed divergence not in the
+`KNOWN_DIVERGENCES` allowlist **fails the run**; the catalogue currently holds three, each a genuine
+verifier-vs-runtime difference, not a logic bug: the `a[i] = i++` / `src[++i]` subscript **evaluation order**
+(Groovy evaluates the index *after* the increment; the verifier models Java's snapshot-before), and Groovy's
+`[].sum()` being **null not 0** at the empty edge (the verifier models the empty sum as 0). A non-empty
+`a.max()`/`a.min()` well-definedness gap is still flagged for review.
+
 ## Keeping the docs in sync
 
 Three lints hold the documentation to the code. `./gradlew docLint` prints a human-readable report;

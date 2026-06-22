@@ -5180,6 +5180,34 @@ class Derived extends Base {
                             sum
                         }
                     }''')],
+        // The empty-safe workaround for the same proof: Groovy's no-arg `.sum()` is duck-typed (it folds with
+        // `+`, so `['', 1, 2, 3].sum() == '123'`) and therefore has no zero element — `[].sum()` is *null*, not 0.
+        // Seeding the fold with `.sum(0)` supplies the zero, so `[].sum(0) == 0` and the `n == 0` edge of this
+        // proof matches the runtime exactly (see the runtime rung: the `.sum()` form is a known empty-edge
+        // divergence, this one cross-validates clean).
+        [group: 'P91 nested', name: 'matrix sum with sum(0) seed (empty-safe)', ok: true,
+         src: tc('''class C {
+                        @Requires({ n >= 0 && m >= 0 && a != null && a.length >= n * m })
+                        @Ensures({ result == a[0..<n * m].sum(0) })
+                        static int matrixSum(int n, int m, int[] a) {
+                            int sum = 0; int i = 0; int k = 0
+                            @Invariant({ 0 <= i && i <= n && k == i * m && sum == a[0..<k].sum(0) })
+                            @Decreases({ n - i })
+                            while (i < n) {
+                                int j = 0
+                                @Invariant({ 0 <= i && i < n && 0 <= j && j <= m && k == i * m + j &&
+                                             sum == a[0..<k].sum(0) })
+                                @Decreases({ m - j })
+                                while (j < m) {
+                                    sum += a[k]
+                                    k += 1
+                                    j += 1
+                                }
+                                i += 1
+                            }
+                            sum
+                        }
+                    }''')],
 
         // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).
         [group: 'P33 union/intersect', name: 'inline intersection in  (a & b)', ok: true,

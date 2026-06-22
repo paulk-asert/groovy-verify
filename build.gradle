@@ -249,6 +249,18 @@ tasks.register('docLint', JavaExec) {
     mainClass = 'DocLint'
 }
 
+// Runtime rung (Slice 1): differential soundness oracle — recompile each ok:true case verifier-off with
+// groovy-contracts live, run it over an input grid, and fail if a proved contract is refuted at runtime.
+//   ./gradlew runtimeRung
+tasks.register('runtimeRung', JavaExec) {
+    group = 'verification'
+    description = 'Cross-validate every proved contract against runtime execution of the same annotation'
+    dependsOn 'compileGroovy', 'compileTestGroovy'
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'RuntimeRung'
+    jvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
 tasks.register('explainProbe', JavaExec) {
     group = 'verification'
     description = 'Prototype: explain a positive verification via Z3 unsat cores (which contract clauses the proof used)'

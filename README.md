@@ -204,6 +204,18 @@ code already annotated for *runtime* validation verifies as-is.
 The full itemised enumeration — every operator, type, theory, phase, and honest boundary — is in
 **[FRAGMENT.md](FRAGMENT.md)**. The worked examples below put it through its paces.
 
+The *"sound within it"* half of that claim is itself cross-checked. Because `groovy.contracts` annotations are
+also *runtime* assertions, a differential **runtime rung** (`./gradlew runtimeRung`) recompiles each proved
+contract with the verifier off, runs it over an input grid, and confirms the proof holds when the same
+annotation actually executes — corroborating any disagreement against the real returned value, so a genuine
+verifier-vs-runtime divergence is *caught* rather than assumed (the few that exist, like `a[i] = ++i`
+evaluation order, are catalogued semantic differences, not logic bugs). See
+**[BUILD.md](BUILD.md#the-runtime-rung--a-differential-soundness-oracle)**.
+
+That stance — a compile-time proof is *one rung*, only as good as what it assumes — carries over to concurrency,
+where the thread-local proof is the first of **[three rungs](CONCURRENCY.md)**: the proof, an exhaustive TLA+/TLC
+model of every interleaving, and Lincheck / Fray exercising the real bytecode.
+
 ## Examples
 
 Each snippet below is compiled under `@TypeChecked(extensions = 'verification.VerifyChecker')`,
