@@ -19,9 +19,9 @@
 
 Examples that don't belong to one of the per-source galleries: a verified mutable data structure, a
 fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
-its source), a Dafny-style element-wise array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat
-is associative but not commutative), and a tour of verification across a Groovy type hierarchy — inheritance,
-behavioral subtyping, and traits.
+its source), an integer square root proven exactly through a quadratic invariant, a Dafny-style element-wise
+array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat is associative but not commutative), and
+a tour of verification across a Groovy type hierarchy — inheritance, behavioral subtyping, and traits.
 
 ### Ring buffer — a verified mutable data structure
 
@@ -127,6 +127,41 @@ with value ≠ the first exists* — follows from the two-distinct-duplets preco
 of the two known duplicates differs from `a[r1.v1]`). The result: two pairs with provably different values.
 Nothing here is a special case — the nested witness search, the tuple returns, and binding a local to a
 tuple-returning call are all general capabilities; Duplets just needs all three at once.
+
+### Integer square root — a quadratic invariant, no multiply
+
+[Toccata/Why3's `isqrt`](https://toccata.gitlabpages.inria.fr/toccata/gallery/isqrt.en.html) computes the
+**floor** integer square root — `result` with `result² ≤ x < (result+1)²` — and the elegant part is that it
+*never multiplies*. It walks the odd numbers `1, 3, 5, …`, whose running sum is the successive perfect squares
+(the sum of the first *n* odd numbers is *n²*), and stops once that sum overshoots `x`:
+
+<!-- doclint:case p154-isqrt/isqrt-floor-square-root-via-the-odd-number-sum -->
+```groovy
+@Requires({ x >= 0 })
+@Ensures({ result >= 0 && result * result <= x && x < (result + 1) * (result + 1) })
+static int isqrt(int x) {
+    int count = 0
+    int sum = 1
+    @Invariant({ count >= 0 && x >= count * count && sum == (count + 1) * (count + 1) })
+    @Decreases({ x - count })
+    while (sum <= x) {
+        count = count + 1
+        sum = sum + 2 * count + 1
+    }
+    return count
+}
+```
+
+The whole proof rests on one **quadratic equality** invariant: `sum == (count+1)²`. It survives the
+multiply-free update `count += 1; sum += 2*count + 1` because `(c+1)² + 2(c+1) + 1 == (c+2)²` — a degree-2
+polynomial identity Z3's nonlinear-integer solver (NIA) closes directly. That invariant is what ties the loop
+guard to the answer: paired with `x >= count²`, the exit condition `sum > x` together with `sum == (count+1)²`
+delivers the strict upper bound `x < (result+1)²`, while `x >= count²` gives the lower — so `count` is exactly
+the floor. Drop the quadratic invariant and the proof collapses at invariant preservation (`x >= count²` can no
+longer be re-established): *the odd-number sum is the entire trick, and the quadratic invariant is how the
+solver sees it.* This is the exact-integer counterpart to `Math.sqrt`, which rides Z3's **floating-point**
+theory and proves only the approximate, no-NaN facts — here the number model is unbounded `Int` and the floor
+spec is proven on the nose.
 
 ### FizzBuzz — element-wise array correctness
 
