@@ -19,19 +19,27 @@ import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
 
 /**
- * The README "Locks — the monitor invariant" {@code Account}, made into real concurrent code. The checker
- * (rung 1) proves each critical section preserves {@code balance >= 0} <em>given</em> mutual exclusion;
- * it explicitly does NOT verify the mutual exclusion itself ("no race on unlocked access"). This rung
- * tests exactly that assumed half: every method is a {@code synchronized} critical section (modelling what
- * {@code @WithWriteLock}/{@code @WithReadLock} weave), so the guard-and-update in {@code withdraw} is one
- * atomic step. {@link RacyAccount} drops the locks; Lincheck shows the difference.
+ * A thread-safe bank account — one shared domain class for two structural tests. The checker (rung 1) proves each
+ * critical section preserves {@code balance >= 0} <em>given</em> mutual exclusion; it explicitly does NOT verify the
+ * mutual exclusion itself ("no race on unlocked access"). Two rung-3 tests cover that assumed half on real bytecode:
+ * <ul>
+ *   <li><b>Lincheck</b> ({@code AccountLincheckTest}) — every method is a {@code synchronized} critical section
+ *       (what {@code @WithWriteLock}/{@code @WithReadLock} weave), so {@code withdraw}'s guard-and-update is one
+ *       atomic step. {@link RacyAccount} drops the locks; Lincheck shows the difference.</li>
+ *   <li><b>Fray</b> ({@code BankTransferFrayTest}) — uses the {@code id} for a global lock order across two
+ *       accounts, so an ordered transfer is deadlock-free while the naive one (lock in argument order) can
+ *       deadlock.</li>
+ * </ul>
  */
 @CompileStatic
 @POJO
 class Account {
+    /** A stable identity for lock ordering (the Fray transfer test); the monitor tests don't need it. */
+    final int id
     private int balance
 
-    Account(int initial) { balance = initial }
+    Account(int id, int initial) { this.id = id; this.balance = initial }
+    Account(int initial) { this(0, initial) }
 
     synchronized void deposit(int amount) { balance += amount }
 

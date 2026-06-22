@@ -13,8 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package concurrent
+package lincheck
 
+import concurrent.AsyncCompute
 import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
 import org.jetbrains.lincheck.datastructures.Operation

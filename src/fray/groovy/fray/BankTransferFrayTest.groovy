@@ -15,8 +15,8 @@
  */
 package fray
 
+import concurrent.locks.Account
 import groovy.transform.CompileStatic
-import groovy.transform.stc.POJO
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.extension.ExtendWith
 import org.pastalab.fray.junit.junit5.FrayTestExtension
@@ -48,20 +48,16 @@ import org.pastalab.fray.junit.junit5.annotations.FrayTest
 @ExtendWith(FrayTestExtension)
 class BankTransferFrayTest {
 
-    @CompileStatic
-    @POJO
-    static class Account {
-        final int id
-        int balance
-        Account(int id, int balance) { this.id = id; this.balance = balance }
-    }
+    // The bank account is the shared domain class (`concurrent.locks.Account`) — the same one the Lincheck
+    // monitor-invariant test uses — with its `id` driving the lock order here. The transfer holds each account's
+    // monitor (synchronized(account)) and moves money via the account's own synchronized debit/credit (reentrant).
 
     /** Lock `from` then `to` — opposite-direction transfers can deadlock (the lock-ordering bug). */
     private static void naiveTransfer(Account from, Account to, int amt) {
         synchronized (from) {
             synchronized (to) {
-                from.balance -= amt
-                to.balance += amt
+                from.withdraw(amt)
+                to.deposit(amt)
             }
         }
     }
@@ -72,8 +68,8 @@ class BankTransferFrayTest {
         Account second = from.id <= to.id ? to : from
         synchronized (first) {
             synchronized (second) {
-                from.balance -= amt
-                to.balance += amt
+                from.withdraw(amt)
+                to.deposit(amt)
             }
         }
     }

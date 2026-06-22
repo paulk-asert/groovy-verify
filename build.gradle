@@ -295,41 +295,64 @@ tasks.named('check') {
 // main build now that Lincheck 3.x (org.jetbrains.lincheck:lincheck) instruments via ASM 9.9 — the older 2.x line
 // (org.jetbrains.kotlinx:lincheck) bundled a byte-buddy that couldn't transform JDK 25 class files and silently
 // missed bugs, which is why this was pinned to Java 21 before.
+// Two source sets, split by role (assessed 2026-06): `concurrent` holds the DOMAIN classes under test — the buffers,
+// the §VII Buffer, the bank Account — which the verifier (rung 1, by file) and these runtime checkers (rung 3) both
+// consume. `lincheck` holds the Lincheck operation-holder TESTS. The split scopes each compile knob to exactly where
+// it belongs (the contracts-disable to the domain, `parameters=false` to the @Operation holders), and lets the Fray
+// test share the same domain Account instead of duplicating it.
 sourceSets {
     concurrent {
         groovy.srcDir 'src/concurrent/groovy'
     }
+    lincheck {
+        groovy.srcDir 'src/lincheck/groovy'
+    }
+}
+
+// The lincheck tests instantiate the compiled domain classes, so they need everything the domain needs (the engine
+// for the §VII Buffer's verification.* annotations, groovy-contracts for the buffers' @Invariant) plus the domain's
+// own compiled output.
+configurations {
+    lincheckImplementation.extendsFrom concurrentImplementation
 }
 
 dependencies {
-    // The buffers + Lincheck operation holders are @CompileStatic Groovy -> clean, dispatch-free bytecode
-    // for Lincheck to instrument (the reason these were Java originally; @CompileStatic removes the need).
+    // ---- concurrent = the DOMAIN under test (@CompileStatic Groovy -> clean, dispatch-free bytecode) ----
     concurrentImplementation "org.apache.groovy:groovy:$groovyVersion"
     // The engine, so the §VII `Buffer`'s verification.* annotations (@Rely/@Guarantee/@UnderRely/@Label, Declassify)
     // RESOLVE here too — the same source groovy-verify proves (BufferVerifyTest). They're plain annotations with no
     // AST transform (Declassify.to is an identity), so they inject nothing; like the contracts, they're inert at the
-    // Lincheck boundary. (Possible now that this source set is JDK 25, matching the engine.)
+    // Lincheck boundary.
     concurrentImplementation project(':')
-    // groovy-contracts only so SpscBuffer's @Invariant/@Requires *resolve* — the same source groovy-verify proves
-    // (SpscBufferVerifyTest). Its injected runtime assertions are gated on the JVM assertion flag, and concurrentTest
-    // runs with the default `-da`, so they stay INERT — Lincheck instruments clean bytecode. (Do NOT add -ea here.)
+    // groovy-contracts only so SpscBuffer / Buffer's @Invariant/@Requires *resolve* — the same source groovy-verify
+    // proves (SpscBufferVerifyTest). Their injected runtime assertions are disabled at the compile knob below, so the
+    // bytecode is bare; the annotations only need to be on the classpath.
     concurrentImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
-    concurrentImplementation 'org.jetbrains.lincheck:lincheck:3.6'
-    concurrentImplementation platform('org.junit:junit-bom:6.1.0')
-    concurrentImplementation 'org.junit.jupiter:junit-jupiter'
-    concurrentRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // ---- lincheck = the Lincheck TESTS (depend on the compiled domain + the domain's deps via extendsFrom) ----
+    lincheckImplementation sourceSets.concurrent.output
+    lincheckImplementation 'org.jetbrains.lincheck:lincheck:3.6'
+    lincheckImplementation platform('org.junit:junit-bom:6.1.0')
+    lincheckImplementation 'org.junit.jupiter:junit-jupiter'
+    lincheckRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 def jdk25Compiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(25) }
 def jdk25Launcher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
 
+// The Lincheck operation holders read @Operation parameter names for generators: with the project-wide
+// `parameters = true` present, Lincheck reads `offer(int x)` as a reference to a *named* generator "x" and fails.
+// Off -> it uses a default type-based generator, as the Java version did. (This knob belongs to the TEST holders,
+// hence on the lincheck compile, not the domain.)
+tasks.named('compileLincheckJava') { javaCompiler = jdk25Compiler }     // no Java sources, but keep pinned
+tasks.named('compileLincheckGroovy') {
+    javaLauncher = jdk25Launcher
+    groovyOptions.parameters = false
+}
+
 tasks.named('compileConcurrentJava') { javaCompiler = jdk25Compiler }   // no Java sources now, but keep pinned
 tasks.named('compileConcurrentGroovy') {
     javaLauncher = jdk25Launcher
-    // Override the project-wide `parameters = true` (set for the checker): with parameter names present,
-    // Lincheck reads `offer(int x)` as a reference to a *named* generator "x" and fails. Off -> it uses a
-    // default type-based int generator, as the Java version did.
-    groovyOptions.parameters = false
     // THE compile knob. SpscBuffer / Buffer carry the SAME @Invariant/@Requires that groovy-verify proves
     // (SpscBufferVerifyTest) — but here we DISABLE groovy-contracts' global AST transforms so nothing is injected:
     // the annotations stay resolvable (the jar is on the classpath) yet inert, leaving bare lock-free bytecode for
@@ -360,11 +383,11 @@ tasks.named('compileConcurrentGroovy') {
     ] as Set
 }
 
-tasks.register('concurrentTest', Test) {
+tasks.register('lincheckTest', Test) {
     group = 'verification'
-    description = 'Lincheck linearizability test of a real lock-free SpscBuffer (rung 3 of examples/concurrency/README.md)'
-    testClassesDirs = sourceSets.concurrent.output.classesDirs
-    classpath = sourceSets.concurrent.runtimeClasspath
+    description = 'Lincheck linearizability tests over the concurrent domain classes (rung 3 of examples/concurrency/README.md)'
+    testClassesDirs = sourceSets.lincheck.output.classesDirs
+    classpath = sourceSets.lincheck.runtimeClasspath
     useJUnitPlatform()
     javaLauncher = jdk25Launcher
     // Lincheck's managed strategy instruments bytecode and reaches into java.base internals.
@@ -432,6 +455,9 @@ sourceSets {
 
 dependencies {
     frayCheckImplementation "org.apache.groovy:groovy:$groovyVersion"
+    // The shared domain `Account` (plain @CompileStatic @POJO) — Fray uses its `id` for a global lock order instead
+    // of redefining a bank account inline. Just the compiled output; Account pulls in nothing exotic.
+    frayCheckImplementation sourceSets.concurrent.output
     frayCheckImplementation platform('org.junit:junit-bom:6.1.0')
     frayCheckImplementation 'org.junit.jupiter:junit-jupiter'
     frayCheckRuntimeOnly 'org.junit.platform:junit-platform-launcher'

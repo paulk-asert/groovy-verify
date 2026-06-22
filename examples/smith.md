@@ -384,7 +384,7 @@ theorem about the peer's action, and liveness is checkable too — and a **Linch
 (`src/concurrent/`) that model-checks the *real bytecode* of this exact `Buffer` — the same source this checker
 proves — confirming it linearizable across the interleavings the rely permits. Three rungs — compile-time proof here, exhaustive model, tested bytecode — each
 trading coverage for fidelity; see [`concurrency/README.md`](concurrency/README.md). Run them with `./gradlew tlcCheck` and
-`./gradlew concurrentTest`.
+`./gradlew lincheckTest`.
 
 The machinery isn't specific to the buffer's two pointers. A different shape — a shared scalar with a
 **monotonicity** rely — works the same way: two threads only ever increment a `count`, each relying on the other

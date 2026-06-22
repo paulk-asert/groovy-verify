@@ -109,14 +109,16 @@ lock-ordering (via **Fray**).
 
 ### The Lincheck buffer examples
 
-A runnable JVM-level companion lives in [`src/concurrent/groovy/concurrent/`](../../src/concurrent/groovy/concurrent):
+The **domain** buffers live in [`src/concurrent/groovy/concurrent/`](../../src/concurrent/groovy/concurrent) (the
+same source the verifier consumes), and the Lincheck **test** in
+[`src/lincheck/groovy/lincheck/`](../../src/lincheck/groovy/lincheck):
 
 | File | What it is |
 |------|------------|
-| `SpscBuffer.groovy` | A correct lock-free single-producer/single-consumer buffer, carrying the `@Invariant`/`@Requires` that **groovy-verify proves** (rung 1). The §VII discipline made real: write the value, **then** publish it by advancing `tail`. |
-| `SpscBufferLeaky.groovy` | The same buffer with publish-**before**-write — the runtime analogue of the `BufferLeak.cfg` variant and the checker's refutation at `tail++`. |
-| `Buffer.groovy` | The **full §VII capstone** buffer — the same source as the `class Buffer` in the rely/guarantee + information-flow examples — carrying not just the bounds `@Invariant` but the `@Rely`/`@Guarantee`/`@UnderRely` discipline and the `@Label`/`Declassify`/`deliver` no-leak argument. groovy-verify proves *all* of that (rung 1); Lincheck model-checks the same bytecode for linearizability (rung 3). |
-| `BufferLincheckTest.groovy` | Lincheck model-checks all three. The SPSC contract is pinned with `nonParallelGroup` (one producer, one consumer, free to interleave) — the exact rely/guarantee discipline the verified `Buffer` assumes. |
+| `concurrent/SpscBuffer.groovy` | A correct lock-free single-producer/single-consumer buffer, carrying the `@Invariant`/`@Requires` that **groovy-verify proves** (rung 1). The §VII discipline made real: write the value, **then** publish it by advancing `tail`. |
+| `concurrent/SpscBufferLeaky.groovy` | The same buffer with publish-**before**-write — the runtime analogue of the `BufferLeak.cfg` variant and the checker's refutation at `tail++`. |
+| `concurrent/Buffer.groovy` | The **full §VII capstone** buffer — the same source as the `class Buffer` in the rely/guarantee + information-flow examples — carrying not just the bounds `@Invariant` but the `@Rely`/`@Guarantee`/`@UnderRely` discipline and the `@Label`/`Declassify`/`deliver` no-leak argument. groovy-verify proves *all* of that (rung 1); Lincheck model-checks the same bytecode for linearizability (rung 3). |
+| `lincheck/BufferLincheckTest.groovy` | Lincheck model-checks all three. The SPSC contract is pinned with `nonParallelGroup` (one producer, one consumer, free to interleave) — the exact rely/guarantee discipline the verified `Buffer` assumes. |
 
 **How `SpscBuffer` works — and why it's correct.** It's a fixed-capacity **ring**: a producer appends at `tail`, a
 consumer reads at `head`, both indices only ever advancing and wrapped onto the backing array by `% capacity`. The
@@ -182,7 +184,7 @@ reference to a named generator `"x"`. See `compileConcurrentGroovy` in `build.gr
 > `@CompileStatic @POJO` is what makes Groovy a clean fit for a Lincheck-instrumented data structure.
 
 ```sh
-./gradlew concurrentTest
+./gradlew lincheckTest
 ```
 
 Isolated in its own source set (**not** wired into `check`), on the same **JDK 25** as the main build —
@@ -214,7 +216,7 @@ that last layer you need a weak-memory checker (GenMC, herd7) or jcstress on rea
 
 The [async/await examples](examples.md) prove the *functional* half — `await(async { e })` is `e`, gathered tasks
 combine to the right value — *assuming* the safe discipline: pure-value tasks that complete and don't interfere.
-[`AsyncLincheckTest`](../../src/concurrent/groovy/concurrent/AsyncLincheckTest.groovy) (`./gradlew concurrentTest`)
+[`AsyncLincheckTest`](../../src/lincheck/groovy/lincheck/AsyncLincheckTest.groovy) (`./gradlew lincheckTest`)
 checks that assumption on the real bytecode.
 
 One wrinkle: async runs on its own executor — threads Lincheck's *managed* strategy doesn't control — so this uses
@@ -237,8 +239,8 @@ The [*Locks — the monitor invariant*](examples.md) example proves each critica
 *given* mutual exclusion, and explicitly disclaims two things: "no race on unlocked access, no deadlock,
 no lock-ordering." Each disclaimed half gets the tool that fits it.
 
-**Race / atomicity, and logic ⊥ concurrency — Lincheck** (`src/concurrent/groovy/concurrent/locks/`, in
-`./gradlew concurrentTest`). Three accounts make the division of labour concrete — the same truth table as
+**Race / atomicity, and logic ⊥ concurrency — Lincheck** (`AccountLincheckTest` in `src/lincheck/`, over the
+`concurrent.locks` accounts, run via `./gradlew lincheckTest`). Three accounts make the division of labour concrete — the same truth table as
 [bmc4j](https://github.com/bmc4j/bmc4j)'s *coroutines-and-Lincheck* example, on plain `synchronized` Groovy:
 
 | account | logic (the checker, rung 1) | thread-safe (Lincheck) |

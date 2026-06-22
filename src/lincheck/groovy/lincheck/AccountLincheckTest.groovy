@@ -13,8 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package concurrent.locks
+package lincheck
 
+import concurrent.locks.Account
+import concurrent.locks.RacyAccount
+import concurrent.locks.OverdraftAccount
 import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
 import org.jetbrains.lincheck.datastructures.Operation
