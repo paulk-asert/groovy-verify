@@ -18,22 +18,36 @@
 
 ## The three rungs
 
-1. **Proof** (`groovy-verify`) — the local sequential VC, discharged at compile time by Z3. Decidable,
-   compositional, but assumes the interleaving model.
-2. **Exhaustive model** (`Buffer.tla` + TLC) — every interleaving of an *abstract* state machine.
-   Confirms the relies compose and the system makes progress; still SC, action-grained.
-3. **Tested real bytecode** (Lincheck on an actual `SpscBuffer` — see below) — bounded search over
-   schedules of the *real* code, discharging the atomicity/ordering assumption against an implementation.
+groovy-verify takes the stance that a compile-time proof is *one rung* of a concurrency argument, not the
+whole of it: the proof is local and sequential, and trusting it against a real running system means
+climbing two further rungs. Each trades coverage for fidelity; none subsumes the others.
 
-Each rung trades coverage for fidelity to the running system. None subsumes the others.
+1. **Proof** (`groovy-verify`) — the local, sequential VC, discharged at compile time by Z3. Decidable,
+   compositional, but *assumes* the interleaving model: that its local, sequential view of the code is
+   faithful to real concurrent execution — whatever tames the interleaving (a *rely*/*guarantee* discipline,
+   a lock, an await resuming with a ready value) actually holds — and that the steps it treats as atomic
+   really are.
+2. **Exhaustive model** (TLA+ / TLC) — every interleaving of an *abstract* state machine. Confirms the
+   interference assumptions actually compose and the system makes progress; still sequentially consistent
+   and action-grained.
+3. **Tested real bytecode** (Lincheck, Fray) — bounded search over schedules of the *real* code. Lincheck
+   model-checks an implementation's operations for linearizability; Fray drives the JVM scheduler over a
+   hand-threaded scenario for deadlock / lock-ordering. Either way the atomicity/ordering assumption is
+   discharged against an actual implementation, not a model.
+
+The rest of this doc climbs the rungs in turn. The running example throughout is the **Smith/Dafny §VII**
+information-flow buffer — the [§VII capstone](examples/smith.md) the checker proves at rung 1, modelled in
+TLA+ at rung 2, and Lincheck-tested at rung 3. Rung 3 also explores a few more
+concurrency examples with different shapes to the buffer:
+lock-based bank accounts, Groovy 6 async/await, and a deadlocking transfer (the Fray case).
 
 ## Rung 1 — Proof
 
-`groovy-verify` proves the **local, sequential** obligations of a rely/guarantee argument: each
-thread, run under an *assumed* rely, stays in bounds and leaks nothing (the [§VII capstone](examples/smith.md)).
-What it deliberately does **not** do is establish that the rely/guarantee abstraction is faithful to a
-real interleaved execution — the scheduler, the atomicity grain, and liveness. That is a different
-class of tool.
+On the **§VII buffer**, `groovy-verify` proves the **local, sequential** obligations of its rely/guarantee
+argument: each thread, run under an *assumed* rely, stays in bounds and leaks nothing (the
+[§VII capstone](examples/smith.md)). What it deliberately does **not** do is establish that the
+rely/guarantee abstraction is faithful to a real interleaved execution — the scheduler, the atomicity grain,
+and liveness. That is a different class of tool.
 
 ## Rung 2 — Exhaustive model
 
@@ -294,7 +308,10 @@ time), and the controlled-schedule run with per-iteration classloader reset is ~
 (the default is 1000). Lincheck and TLC are seconds. So Fray earns its place only where it's *distinct* —
 deadlock / lock-ordering on hand-threaded code, which Lincheck-on-operations doesn't exercise.
 
-> **Note.** The Smith/Dafny paper this work follows sits at rung 1 too: Dafny's core is sequential, and
-> the paper gets thread-local IFC by *encoding* rely/guarantee as the same havoc-between-steps trick we
-> use. So the gap from rung 1 to a memory-model-sound system is the same gap in both — the three rungs above
-> are where it is made explicit.
+## Lineage — the same gap in Dafny
+
+The Smith/Dafny paper this work follows sits at rung 1 too: Dafny's core is sequential, and it gets
+thread-local IFC by *encoding* rely/guarantee as the same havoc-between-steps trick `groovy-verify` uses. So
+the gap from a rung-1 proof to a memory-model-sound system is the same in both — what's different here is that
+rungs 2 and 3 above make that gap explicit and discharge it on the *concrete* §VII buffer, rather than leaving
+it as an assumption.
