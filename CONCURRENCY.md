@@ -20,7 +20,7 @@
 
 1. **Proof** (`groovy-verify`) — the local sequential VC, discharged at compile time by Z3. Decidable,
    compositional, but assumes the interleaving model.
-2. **Exhaustive model** (`Buffer.tla` + TLC, here) — every interleaving of an *abstract* state machine.
+2. **Exhaustive model** (`Buffer.tla` + TLC) — every interleaving of an *abstract* state machine.
    Confirms the relies compose and the system makes progress; still SC, action-grained.
 3. **Tested real bytecode** (Lincheck on an actual `SpscBuffer` — see below) — bounded search over
    schedules of the *real* code, discharging the atomicity/ordering assumption against an implementation.
@@ -37,8 +37,8 @@ class of tool.
 
 ## Rung 2 — Exhaustive model
 
-This directory holds the smallest honest artifact for that other half: a **TLA+** model of the §VII
-buffer that an exhaustive model checker (TLC) explores across *every* interleaving.
+The smallest honest artifact for that other half is a **TLA+** model of the §VII buffer that an exhaustive
+model checker (TLC) explores across *every* interleaving.
 
 ### Files
 
@@ -259,10 +259,11 @@ the proof assumed away. Only `Account` clears both. That is the whole "we prove 
 structural half" story in one example — **logic correctness and thread-safety are different properties, and you
 need a tool for each.**
 
-The one thing this *doesn't* mirror from bmc4j's example is its coroutine-runtime modeling — verifying a `suspend`
-function's logic across a suspension point. An async / coroutine runtime is outside our SMT fragment, so it
-loud-skips; our accounts are plain `synchronized` methods and the concurrency lives entirely in Lincheck's
-interleavings. (bmc4j's accounts are `@Synchronized` too — the coroutine part is a separate aspect of that example.)
+bmc4j's example has a second aspect: coroutine-runtime modeling — verifying a `suspend` function's logic across a
+suspension point. We mirror that too, on Groovy 6's `async`/`await` (the async/await section above): the post-`await`
+logic is proven, and a bug after the suspension point refutes. Here, though, the accounts are plain `synchronized`
+methods, so their concurrency lives entirely in Lincheck's interleavings — the suspend-logic half is the
+async/await section's job. (bmc4j's accounts are `@Synchronized` too.)
 
 ### Deadlock / lock-ordering — Fray
 
@@ -274,9 +275,9 @@ across every explored schedule; enable the disabled `naiveTransfer` test and Fra
 `DeadlockException`, both threads' stacks pointing at the nested `synchronized`:
 
 ```
-Thread-31  monitorEnter  naiveTransfer(BankTransferFrayTest.groovy:57)   ← holds A, waits B
-Thread-32  monitorEnter  naiveTransfer(BankTransferFrayTest.groovy:57)   ← holds B, waits A
-Thread-30  Thread.join   naiveTransferCanDeadlock(...:93)
+Thread-31  monitorEnter  naiveTransfer(BankTransferFrayTest.groovy:58)   ← holds A, waits B
+Thread-32  monitorEnter  naiveTransfer(BankTransferFrayTest.groovy:58)   ← holds B, waits A
+Thread-30  Thread.join   naiveTransferCanDeadlock(...:95)
 ```
 
 Two Groovy-specific gotchas were needed (both in `build.gradle` / the test):
@@ -295,5 +296,5 @@ deadlock / lock-ordering on hand-threaded code, which Lincheck-on-operations doe
 
 > **Note.** The Smith/Dafny paper this work follows sits at rung 1 too: Dafny's core is sequential, and
 > the paper gets thread-local IFC by *encoding* rely/guarantee as the same havoc-between-steps trick we
-> use. So the gap from rung 1 to a memory-model-sound system is the same gap in both — this directory is
-> where it is made explicit.
+> use. So the gap from rung 1 to a memory-model-sound system is the same gap in both — the three rungs above
+> are where it is made explicit.

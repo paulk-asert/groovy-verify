@@ -291,7 +291,7 @@ tasks.named('check') {
 // The checker (rung 1) proves the sequential VC; src/tlc/Buffer.tla (rung 2) model-checks an abstract
 // state machine; this rung model-checks the ACTUAL bytecode of a lock-free buffer across interleavings,
 // discharging the atomicity/ordering assumption the other two leave open. Isolated in its own source
-// set + task (NOT wired into `check` — run explicitly: ./gradlew concurrentTest). Runs on the same JDK 25 as the
+// set + task (NOT wired into `check` — run explicitly: ./gradlew lincheckTest). Runs on the same JDK 25 as the
 // main build now that Lincheck 3.x (org.jetbrains.lincheck:lincheck) instruments via ASM 9.9 — the older 2.x line
 // (org.jetbrains.kotlinx:lincheck) bundled a byte-buddy that couldn't transform JDK 25 class files and silently
 // missed bugs, which is why this was pinned to Java 21 before.

@@ -17,7 +17,7 @@
 # Concurrency "lite" examples
 
 > The **structural** half these proofs *assume* — mutual exclusion, interleaving-freedom, deadlock-freedom,
-> delivery — is checked separately by Lincheck / TLA+ TLC / Fray. See **[README.md](../CONCURRENCY.md)**.
+> delivery — is checked separately by Lincheck / TLA+ TLC / Fray. See **[CONCURRENCY.md](../CONCURRENCY.md)**.
 
 
 groovy-verify is a *sequential* SMT-backed checker — it reasons about no thread interleavings, races, or
@@ -91,7 +91,7 @@ Those two disclaimed halves are exercised on this exact example by the runtime c
 **Lincheck** spike (`./gradlew lincheckTest`) shows a `synchronized` `Account` is linearizable while an
 unlocked one races, and a **Fray** spike (`./gradlew frayCheck`) drives the JVM scheduler over a two-account
 bank transfer to confirm ordered locking is deadlock-free — and to catch the lock-ordering deadlock when it
-isn't. Same boundary, made concrete; see [`README.md`](../CONCURRENCY.md).
+isn't. Same boundary, made concrete; see [`CONCURRENCY.md`](../CONCURRENCY.md).
 
 ### Agents & actors — the same invariant, a different paradigm
 
