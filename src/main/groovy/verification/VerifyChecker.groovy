@@ -2509,6 +2509,7 @@ class VerifyChecker extends TypeCheckingExtension {
                         enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs)); continue
                     }
                     if (enc.tryRecordAwaitAll(a.name, a.rhs)) continue
+                    if (enc.tryBindAwaitAny(a.name, a.rhs)) continue
                     // Phase 113 — a tuple-returning call (`r = callee(...)`): constrain r's slots by the
                     // callee's @Ensures so a downstream `a[r.vN]` / call-arg obligation sees the slot bounds.
                     // Mirrors checkPath; without it r$vN is unconstrained here and the bound can't discharge.
@@ -5541,6 +5542,12 @@ class VerifyChecker extends TypeCheckingExtension {
                     // because `all` waits for every task. Register r as that list factory so r[i]/r.size() fold; the
                     // racing any/first combinators aren't safe values and fall through to a loud skip.
                     if (enc.tryRecordAwaitAll(a.name, a.rhs)) {
+                        continue
+                    }
+                    // Phase 155 — `a = await Awaitable.any(t1, t2)` / first(...): the racing winner is one of the task
+                    // values, nondeterministically — an if/else over an unknown selector. Bind a to a fresh value
+                    // disjoined over the winners, so the postcondition must hold for EVERY one (prove all branches).
+                    if (enc.tryBindAwaitAny(a.name, a.rhs)) {
                         continue
                     }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated

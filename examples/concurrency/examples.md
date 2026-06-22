@@ -232,9 +232,13 @@ static int sumThree() {
 ```
 
 A wrong total refutes. (The `def` and element casts are a surface wart — multi-arg `await` is typed `List<Object>` —
-not a verifier limit.) Determinism is the dividing line: `Awaitable.all` waits for everyone, so its result is fixed;
-the **racing** combinators `Awaitable.any` / `Awaitable.first` return whichever task *wins*, a scheduler-dependent
-result with no sequential value — so they are the deliberate non-goal and **skip loudly**.
+not a verifier limit.) `Awaitable.all` waits for everyone, so its result is fixed. The **racing** combinators
+`Awaitable.any` / `Awaitable.first` return whichever task *wins* — but that's just an **if/else over an unknown
+selector**: the result is one of the task values, so the verifier binds it to a nondeterministic choice and proves
+the postcondition holds for *every possible winner*. `await Awaitable.any(async { 1 }, async { 2 })` satisfies
+`result == 1 || result == 2` (whichever wins), but a spec of `result == 1` **refutes** (the other task might win) —
+exactly how an if/else discharges all its branches. When the tasks compute the *same* value, the race is determinate
+(`Awaitable.first(async { 42 }, async { 42 })` gives `42`), so no scheduler assumption is even needed.
 
 The **timing** combinators split the same way, on whether timing changes the *value*. `Awaitable.delay(ms)` is a
 non-blocking pause — no value, no state effect — a **no-op** for a logic proof. `orTimeoutMillis` is **transparent**:
@@ -243,9 +247,29 @@ under the completion assumption (the deadline is the structural half we assume a
 `completeOnTimeoutMillis(task, fallback, ms)` returns the value *or* the fallback — genuinely nondeterministic — so it
 **skips**, exactly like a race.
 
+Put together, the pieces compose — fan out independent tasks, pause, gather, combine — and the gather threads the
+*symbolic* task values, not just constants:
+
+<!-- doclint:case p153-async-await/fan-out-delay-gather-combine -->
+```groovy
+@Ensures({ result == (a + 1) + (b + 1) + (c + 1) })
+static int gather(int a, int b, int c) {
+    def t1 = async { a + 1 }
+    def t2 = async { b + 1 }
+    def t3 = async { c + 1 }
+    await Awaitable.delay(5)
+    def r = await(t1, t2, t3)
+    return ((int) r[0]) + ((int) r[1]) + ((int) r[2])
+}
+```
+
+The three tasks run independently over the inputs, the `delay` drops out (a no-op), and `all` gathers them into the
+value list `[a+1, b+1, c+1]` — so `(a + 1) + (b + 1) + (c + 1)` proves over symbolic `a, b, c`. Drop one task's
+`+ 1` from the contract and it refutes.
+
 The assumed structural half is exactly that safe discipline: the awaited tasks complete and don't interfere.
-Awaiting a task whose value the verifier can't see — an `Awaitable` *parameter*, a foreign `CompletableFuture`, a
-racing `any`/`first` — isn't a safe-value read-out, so it skips rather than guess. And a closure that
-*mutates shared state* (the unsafe pattern the docs warn against) is the genuine race — the structural half,
-Lincheck/Fray territory, not this proof.
+Awaiting a task whose *value* the verifier can't see — an `Awaitable` *parameter*, a foreign `CompletableFuture`, a
+value-or-fallback `completeOnTimeoutMillis` — isn't a determinate read-out, so it skips rather than guess. And a
+closure that *mutates shared state* (the unsafe pattern the docs warn against) is the genuine race — the structural
+half, Lincheck/Fray territory, not this proof.
 

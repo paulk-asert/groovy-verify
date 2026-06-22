@@ -4474,6 +4474,44 @@ class Encoder {
         return list != null && tryRecordFactoryAssign(name, list)
     }
 
+    /** For {@code await(Awaitable.any(t1, …))} / {@code first(...)} over safe tasks, the Z3 terms of the task values
+     *  (the possible winners), else null. The awaited result is nondeterministically ONE of these — which the
+     *  scheduler picks — so it's an if/else over an unknown selector, not a skip. */
+    private List<Object> awaitAnyValues(Expression e) {
+        if (!isAsyncSupportCall(e, 'await')) return null
+        List<Expression> aw = asyncCallArgs(e)
+        if (aw.size() != 1) return null
+        Expression arg = aw.get(0)
+        while (arg instanceof CastExpression) arg = ((CastExpression) arg).expression
+        if (!isAwaitableCall(arg, 'any') && !isAwaitableCall(arg, 'first')) return null
+        List<Object> vals = new ArrayList<Object>()
+        for (Expression el : asyncCallArgs(arg)) {
+            Expression b = awaitedBody(el)
+            if (b == null) return null
+            Object t = translate(b)
+            if (t == null) return null
+            vals.add(t)
+        }
+        return vals.isEmpty() ? null : vals
+    }
+
+    private int asyncAnyCounter = 0
+    /** `name = await Awaitable.any(t1, …)` (or {@code first}): bind {@code name} to a fresh value constrained to be
+     *  ONE of the task values ({@code fresh == v1 ∨ fresh == v2 ∨ …}). A postcondition over {@code name} is then
+     *  provable only if it holds for *every* possible winner — the racing combinator modelled as a nondeterministic
+     *  choice, exactly like an if/else proving all its branches (no scheduler assumption needed). False → not an
+     *  await-any/first (caller falls through). */
+    boolean tryBindAwaitAny(String name, Expression rhs) {
+        List<Object> vals = awaitAnyValues(rhs)
+        if (vals == null) return false
+        Object fresh = session.intVar(name + '#any#' + (++asyncAnyCounter))
+        List<Object> disj = new ArrayList<Object>()
+        for (Object v : vals) disj.add(session.eq(fresh, v))
+        session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
+        bind(name, fresh)
+        return true
+    }
+
     /** True when {@code e} is a JSR 385 Quantity expression the readers can model both the dimension AND the
      *  magnitude of — the gate {@code checkPath} uses before aliasing a Quantity-typed {@code result}. */
     boolean isModellableQuantity(Expression e) { dimensionOf(e) != null && siMagnitude(e) != null }

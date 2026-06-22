@@ -13421,9 +13421,20 @@ class Maybe {                                              // a hand-rolled Some
                          return a * 2
                      }
                  }'''],
-        // Boundary: the racing combinators (Awaitable.any / first) have a SCHEDULER-dependent result — no
-        // determinate value — so they are deliberately not modelled and skip loudly (a race is the structural half).
-        [group: 'P153 async-await', name: 'racing Awaitable.any skips (no determinate value)', expect: 'outside fragment',
+        // Awaitable.any / first race: the winner is one of the task values (nondeterministic) — an if/else over an
+        // unknown selector. A spec that holds for EVERY possible winner verifies (here 1 or 2, whichever wins).
+        [group: 'P153 async-await', name: 'racing any verifies when the spec covers every winner', ok: true,
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == 1 || result == 2 })
+                     static int race() {
+                         def x = await Awaitable.any(async { 1 }, async { 2 })
+                         return (int) x
+                     }
+                 }'''],
+        // Soundness: a spec that only holds for ONE winner refutes — the other task might win (the scheduler picks).
+        [group: 'P153 async-await', name: 'racing any refutes a spec that misses a winner', expect: 'Cannot prove postcondition',
          src: HDR + 'import groovy.concurrent.Awaitable\n' +
               "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               '''class C {
@@ -13431,6 +13442,48 @@ class Maybe {                                              // a hand-rolled Some
                      static int race() {
                          def x = await Awaitable.any(async { 1 }, async { 2 })
                          return (int) x
+                     }
+                 }'''],
+        // Hedged: when every task computes the SAME value, the winner is irrelevant — the result is determinate.
+        [group: 'P153 async-await', name: 'hedged first (same value) is determinate', ok: true,
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == 42 })
+                     static int hedged(int x) {
+                         def y = await Awaitable.first(async { 42 }, async { 42 })
+                         return (int) y
+                     }
+                 }'''],
+        // Putting it together: fan out independent tasks over the inputs, a no-op delay, gather with `all`, combine —
+        // the gather threads the SYMBOLIC task values (a+1, b+1, c+1), not just constants.
+        [group: 'P153 async-await', name: 'fan out, delay, gather, combine', ok: true,
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == (a + 1) + (b + 1) + (c + 1) })
+                     static int gather(int a, int b, int c) {
+                         def t1 = async { a + 1 }
+                         def t2 = async { b + 1 }
+                         def t3 = async { c + 1 }
+                         await Awaitable.delay(5)
+                         def r = await(t1, t2, t3)
+                         return ((int) r[0]) + ((int) r[1]) + ((int) r[2])
+                     }
+                 }'''],
+        // Soundness: a wrong combination (dropping one task's +1) refutes.
+        [group: 'P153 async-await', name: 'wrong combination of gathered tasks refutes', expect: 'Cannot prove postcondition',
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == (a + 1) + (b + 1) + c })
+                     static int gather(int a, int b, int c) {
+                         def t1 = async { a + 1 }
+                         def t2 = async { b + 1 }
+                         def t3 = async { c + 1 }
+                         await Awaitable.delay(5)
+                         def r = await(t1, t2, t3)
+                         return ((int) r[0]) + ((int) r[1]) + ((int) r[2])
                      }
                  }'''],
     ] }
