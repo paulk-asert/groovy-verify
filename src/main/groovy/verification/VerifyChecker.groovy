@@ -2502,6 +2502,13 @@ class VerifyChecker extends TypeCheckingExtension {
                     Assign a = (Assign) step
                     if (enc.tryMaterialiseSetBinopAssign(a.name, a.rhs)) continue
                     if (enc.tryRecordFactoryAssign(a.name, a.rhs)) continue
+                    // Phase 153/154 — async/await replay must match checkPath, or a downstream `r[i]` bounds / await
+                    // read-out can't discharge in this seeded session: `def fa = async { e }` aliases fa to e, and
+                    // `r = await(a,b,c)` records r as the gathered value-list factory.
+                    if (Encoder.isAsyncCall(a.rhs) && Encoder.asyncBodyExpr(a.rhs) != null) {
+                        enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs)); continue
+                    }
+                    if (enc.tryRecordAwaitAll(a.name, a.rhs)) continue
                     // Phase 113 — a tuple-returning call (`r = callee(...)`): constrain r's slots by the
                     // callee's @Ensures so a downstream `a[r.vN]` / call-arg obligation sees the slot bounds.
                     // Mirrors checkPath; without it r$vN is unconstrained here and the bound can't discharge.
@@ -5529,6 +5536,13 @@ class VerifyChecker extends TypeCheckingExtension {
                         enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs))
                         continue
                     }
+                    // Phase 154 — `r = await(a, b, c)` (lowered to AsyncSupport.await(Awaitable.all(a,b,c))): the
+                    // gather-all over safe async tasks is the value LIST [a-body, b-body, c-body], order-independent
+                    // because `all` waits for every task. Register r as that list factory so r[i]/r.size() fold; the
+                    // racing any/first combinators aren't safe values and fall through to a loud skip.
+                    if (enc.tryRecordAwaitAll(a.name, a.rhs)) {
+                        continue
+                    }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated
                     // against the current binding (the pre-assignment value), so a mutation like
                     // `count = count + 1` becomes `count#1 == count + 1` (not the false `count == count + 1`)
@@ -5691,7 +5705,10 @@ class VerifyChecker extends TypeCheckingExtension {
                     // call: assume the callee's @Ensures (a self-call is the inductive hypothesis,
                     // enabled by @Decreases). An unmodelled effect with no usable @Ensures is outside
                     // the fragment.
-                    if (!applySetMutation(session, enc, call) &&
+                    if (Encoder.isAwaitDelayCall(call)) {
+                        // Phase 153 — `await Awaitable.delay(ms)` is a non-blocking pause: no value, no state effect,
+                        // a no-op for a logic proof (timing isn't modelled). Ignore the statement.
+                    } else if (!applySetMutation(session, enc, call) &&
                         !applyMapPut(session, enc, call) &&
                         !applyListMutation(session, enc, call, countVals) &&
                         !applyCrossClassCall(session, enc, call) &&

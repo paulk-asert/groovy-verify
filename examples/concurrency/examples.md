@@ -218,9 +218,34 @@ recognises the pair and resolves `await fa` back to `fa`'s pure body `x + 1`, so
 (`return a * 2 + 1`) — refutes with a counterexample, and chained awaits thread the value through
 (`int a = await async { x + 1 }; int b = await async { a + 1 }` gives `x + 2`).
 
+Beyond chaining, **`Awaitable.all`** (and its multi-arg `await(a, b, c)` sugar) *gathers* independent tasks — and
+because `all` waits for *every* task, the gathered result is order-independent, so the verifier models it as the
+value **list** and folds element access:
+
+<!-- doclint:case p153-async-await/gather-all-then-combine-await-all -->
+```groovy
+@Ensures({ result == 6 })
+static int sumThree() {
+    def r = await(async { 1 }, async { 2 }, async { 3 })
+    return ((int) r[0]) + ((int) r[1]) + ((int) r[2])
+}
+```
+
+A wrong total refutes. (The `def` and element casts are a surface wart — multi-arg `await` is typed `List<Object>` —
+not a verifier limit.) Determinism is the dividing line: `Awaitable.all` waits for everyone, so its result is fixed;
+the **racing** combinators `Awaitable.any` / `Awaitable.first` return whichever task *wins*, a scheduler-dependent
+result with no sequential value — so they are the deliberate non-goal and **skip loudly**.
+
+The **timing** combinators split the same way, on whether timing changes the *value*. `Awaitable.delay(ms)` is a
+non-blocking pause — no value, no state effect — a **no-op** for a logic proof. `orTimeoutMillis` is **transparent**:
+under the completion assumption (the deadline is the structural half we assume away, like mutual exclusion for locks)
+`await(task.orTimeoutMillis(ms))` reads out the task's value. But its fallback sibling
+`completeOnTimeoutMillis(task, fallback, ms)` returns the value *or* the fallback — genuinely nondeterministic — so it
+**skips**, exactly like a race.
+
 The assumed structural half is exactly that safe discipline: the awaited tasks complete and don't interfere.
 Awaiting a task whose value the verifier can't see — an `Awaitable` *parameter*, a foreign `CompletableFuture`, a
-racing `Awaitable.any` — isn't a safe-value read-out, so it **skips loudly** rather than guess. And a closure that
+racing `any`/`first` — isn't a safe-value read-out, so it skips rather than guess. And a closure that
 *mutates shared state* (the unsafe pattern the docs warn against) is the genuine race — the structural half,
 Lincheck/Fray territory, not this proof.
 

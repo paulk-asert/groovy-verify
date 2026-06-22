@@ -13364,6 +13364,75 @@ class Maybe {                                              // a hand-rolled Some
                          return a
                      }
                  }'''],
+        // Awaitable.all (multi-arg await) — gather independent tasks into a value list, then combine. Sound because
+        // `all` waits for every task, so the gathered list is order-independent. (`def r` + element casts because the
+        // multi-arg await is typed List<Object>; the verifier folds r[i] to the i-th task's value via the list factory.)
+        [group: 'P153 async-await', name: 'gather all then combine (await all)', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 6 })
+                        static int sumThree() {
+                            def r = await(async { 1 }, async { 2 }, async { 3 })
+                            return ((int) r[0]) + ((int) r[1]) + ((int) r[2])
+                        }
+                    }''')],
+        // Soundness: a wrong total over the gathered values refutes.
+        [group: 'P153 async-await', name: 'wrong gathered total refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 7 })
+                        static int sumThree() {
+                            def r = await(async { 1 }, async { 2 }, async { 3 })
+                            return ((int) r[0]) + ((int) r[1]) + ((int) r[2])
+                        }
+                    }''')],
+        // delay is a non-blocking pause: no value, no state effect — a no-op for a logic proof (timing isn't modelled).
+        [group: 'P153 async-await', name: 'await delay is a no-op', ok: true,
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == x + 1 })
+                     static int f(int x) {
+                         await Awaitable.delay(10)
+                         return x + 1
+                     }
+                 }'''],
+        // orTimeoutMillis is transparent under the *completion* assumption — the deadline is the structural half we
+        // assume away (like mutual exclusion for locks), so the awaited value is the task's value.
+        [group: 'P153 async-await', name: 'orTimeoutMillis is transparent (completion assumed)', ok: true,
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == (x + 1) * 2 })
+                     static int g(int x) {
+                         def fa = async { x + 1 }
+                         int a = await Awaitable.orTimeoutMillis(fa, 1000)
+                         return a * 2
+                     }
+                 }'''],
+        // Boundary: the FALLBACK form completeOnTimeoutMillis(task, fallback, ms) returns the value OR the fallback —
+        // genuinely nondeterministic (did it beat the clock?) — so it is NOT unwrapped and skips loudly.
+        [group: 'P153 async-await', name: 'completeOnTimeoutMillis (value-or-fallback) skips', expect: 'outside fragment',
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == (x + 1) * 2 })
+                     static int h(int x) {
+                         def fa = async { x + 1 }
+                         int a = await Awaitable.completeOnTimeoutMillis(fa, 0, 1000)
+                         return a * 2
+                     }
+                 }'''],
+        // Boundary: the racing combinators (Awaitable.any / first) have a SCHEDULER-dependent result — no
+        // determinate value — so they are deliberately not modelled and skip loudly (a race is the structural half).
+        [group: 'P153 async-await', name: 'racing Awaitable.any skips (no determinate value)', expect: 'outside fragment',
+         src: HDR + 'import groovy.concurrent.Awaitable\n' +
+              "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
+              '''class C {
+                     @Ensures({ result == 1 })
+                     static int race() {
+                         def x = await Awaitable.any(async { 1 }, async { 2 })
+                         return (int) x
+                     }
+                 }'''],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

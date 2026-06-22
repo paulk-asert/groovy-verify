@@ -4372,9 +4372,46 @@ class Encoder {
     private Expression awaitedBody(Expression arg) {
         Expression a = arg
         while (a instanceof CastExpression) a = ((CastExpression) a).expression    // STC inserts (Object) casts
+        // Phase 153 — a timeout wrapper is transparent under the *completion* assumption (the deadline is the
+        // structural half we assume away, like mutual exclusion for locks): `await(task.orTimeoutMillis(ms))` /
+        // `await(Awaitable.orTimeoutMillis(task, ms))` reads out the same value as `await(task)`. (The fallback
+        // form `completeOnTimeoutMillis` is *not* unwrapped — value-or-fallback is genuinely nondeterministic.)
+        Expression untimed = unwrapTimeout(a)
+        if (untimed != null) return awaitedBody(untimed)
         if (isAsyncCall(a)) return asyncBodyExpr(a)
         if (a instanceof VariableExpression) return asyncSource.get(((VariableExpression) a).name)
         null
+    }
+
+    /** Peel a `…orTimeoutMillis(ms)` / `…orTimeout(ms, unit)` deadline wrapper to the task it guards (instance or
+     *  static {@code Awaitable.orTimeout*} form), else null. */
+    private static Expression unwrapTimeout(Expression e) {
+        // static: Awaitable.orTimeoutMillis(task, ms) / Awaitable.orTimeout(task, ms, unit) — the task is the FIRST ARG.
+        if (isAwaitableCall(e, 'orTimeoutMillis') || isAwaitableCall(e, 'orTimeout')) {
+            List<Expression> a = asyncCallArgs(e)
+            if (!a.isEmpty()) return a.get(0)
+        }
+        // instance: task.orTimeoutMillis(ms) / task.orTimeout(ms, unit) — the task is the RECEIVER (not the class,
+        // which the static branch above already handled).
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            if ((mc.methodAsString == 'orTimeoutMillis' || mc.methodAsString == 'orTimeout') &&
+                !(mc.objectExpression instanceof ClassExpression)) {
+                return mc.objectExpression
+            }
+        }
+        null
+    }
+
+    /** True when {@code e} is `await Awaitable.delay(ms)` — a non-blocking pause with no value and no state effect,
+     *  a no-op for a logic proof (timing isn't modelled). */
+    static boolean isAwaitDelayCall(Expression e) {
+        if (!isAsyncSupportCall(e, 'await')) return false
+        List<Expression> aw = asyncCallArgs(e)
+        if (aw.size() != 1) return false
+        Expression arg = aw.get(0)
+        while (arg instanceof CastExpression) arg = ((CastExpression) arg).expression
+        return isAwaitableCall(arg, 'delay')
     }
 
     /** If {@code e} is {@code AsyncSupport.await(arg)} over a safe async source, the read-out value (its body,
@@ -4390,6 +4427,52 @@ class Encoder {
     /** Alias a local to the value-expression of the `async { e }` it holds (called from the body replay when an
      *  assignment's RHS {@link #isAsyncCall}). A later `await` on the local resolves through {@link #awaitedBody}. */
     void registerAsyncSource(String name, Expression e) { if (name != null && e != null) asyncSource.put(name, e) }
+
+    /** True when {@code e} is {@code Awaitable.all(...)} — the gather-all combinator (multi-arg `await(a,b,c)`
+     *  lowers to {@code AsyncSupport.await(Awaitable.all(a,b,c))}). The racing {@code any}/{@code first}
+     *  combinators are deliberately NOT recognised — their result is scheduler-dependent, not a determinate value. */
+    private static boolean isAwaitableCall(Expression e, String method) {
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression mc = (StaticMethodCallExpression) e
+            return mc.method == method && mc.ownerType?.name == 'groovy.concurrent.Awaitable'
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            if (mc.methodAsString != method) return false
+            Expression obj = mc.objectExpression
+            if (obj instanceof ClassExpression) return ((ClassExpression) obj).type?.name == 'groovy.concurrent.Awaitable'
+            return obj != null && String.valueOf(obj.text).endsWith('Awaitable')
+        }
+        false
+    }
+    private static boolean isAwaitableAllCall(Expression e) { isAwaitableCall(e, 'all') }
+
+    /** For {@code await(Awaitable.all(t1, t2, …))} over *safe* async tasks, the value LIST {@code [body1, …]} as a
+     *  synthesised {@link ListExpression} — sound because {@code all} waits for every task, so the gathered list is
+     *  order-independent. Null when the await arg isn't {@code Awaitable.all} over resolvable safe async sources
+     *  (a racing {@code any}/{@code first}, or a task whose body the verifier can't see) → the caller skips loudly. */
+    private Expression awaitAllList(Expression rhs) {
+        if (!isAsyncSupportCall(rhs, 'await')) return null
+        List<Expression> aw = asyncCallArgs(rhs)
+        if (aw.size() != 1) return null
+        Expression arg = aw.get(0)
+        while (arg instanceof CastExpression) arg = ((CastExpression) arg).expression
+        if (!isAwaitableAllCall(arg)) return null
+        List<Expression> bodies = new ArrayList<Expression>()
+        for (Expression el : asyncCallArgs(arg)) {
+            Expression b = awaitedBody(el)
+            if (b == null) return null      // a non-safe element → the whole gather is out of fragment
+            bodies.add(b)
+        }
+        return new ListExpression(bodies)
+    }
+
+    /** `r = await(t1, t2, …)`: register {@code r} as the value-list factory {@code [body1, body2, …]} so
+     *  {@code r[i]} / {@code r.size()} fold (riding the Phase 38 list-factory machinery). False → loud skip. */
+    boolean tryRecordAwaitAll(String name, Expression rhs) {
+        Expression list = awaitAllList(rhs)
+        return list != null && tryRecordFactoryAssign(name, list)
+    }
 
     /** True when {@code e} is a JSR 385 Quantity expression the readers can model both the dimension AND the
      *  magnitude of — the gate {@code checkPath} uses before aliasing a Quantity-typed {@code result}. */
