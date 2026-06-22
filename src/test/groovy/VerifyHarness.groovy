@@ -7939,6 +7939,48 @@ class WrapCounter implements Counter { }
                         @Requires({ n < Integer.MAX_VALUE })
                         static int incr(int n) { n + 1 }
                     }''')],
+        // ---------- Joshua Bloch's binary-search / mergesort midpoint overflow (a JDK bug ~9 years hidden) ----------
+        // "Nearly All Binary Searches and Mergesorts are Broken" (2006): `int mid = (low + high) / 2` overflows
+        // once `low + high` exceeds Integer.MAX_VALUE, yielding a *negative* index. @CheckOverflow catches it at
+        // compile time with the exact counterexample (a large array searched near the top); Bloch's one-line fix
+        // `low + (high - low) / 2` stays within [low, high] ⊆ [0, MAX] and verifies. (Groovy spelling: `.intdiv(2)`
+        // is Java's integer `/`; the overflow is in the `low + high` addition, before any division.)
+        [group: 'P-bloch binsearch', name: 'buggy midpoint (low + high).intdiv(2) overflows',
+         expect: 'addition overflows 32-bit signed range',
+         src: tc('''class BinarySearch {
+                        @CheckOverflow
+                        @Requires({ 0 <= low && low <= high })          // a valid index window
+                        @Ensures({ low <= result && result <= high })   // the midpoint lies within it
+                        static int mid(int low, int high) { (low + high).intdiv(2) }
+                    }''')],
+        [group: 'P-bloch binsearch', name: 'fixed midpoint low + (high - low).intdiv(2) verifies', ok: true,
+         src: tc('''class BinarySearch {
+                        @CheckOverflow
+                        @Requires({ 0 <= low && low <= high })
+                        @Ensures({ low <= result && result <= high })
+                        static int mid(int low, int high) { low + (high - low).intdiv(2) }
+                    }''')],
+
+        // ---------- The Math.abs(Integer.MIN_VALUE) gotcha — "absolute value is non-negative" is false ----------
+        // The JDK's `Math.abs(int)` is `n < 0 ? -n : n`, and `-Integer.MIN_VALUE` overflows (there is no
+        // +2^31 in a signed int), so `Math.abs(Integer.MIN_VALUE) == Integer.MIN_VALUE` — negative. Under
+        // @CheckOverflow the `result >= 0` claim refutes with the one counterexample, n = Integer.MIN_VALUE;
+        // excluding it (`n > Integer.MIN_VALUE`, the honest precondition) verifies.
+        [group: 'P-abs minvalue', name: 'abs claims non-negative but overflows at MIN_VALUE',
+         expect: 'negation overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Ensures({ result >= 0 })          // "the absolute value is non-negative" — false at MIN_VALUE
+                        static int abs(int n) { n < 0 ? -n : n }
+                    }''')],
+        [group: 'P-abs minvalue', name: 'abs verifies once MIN_VALUE is excluded', ok: true,
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Requires({ n > Integer.MIN_VALUE })   // the one input where -n overflows
+                        @Ensures({ result >= 0 })
+                        static int abs(int n) { n < 0 ? -n : n }
+                    }''')],
+
         // Same for Integer.MIN_VALUE on the negation side.
         [group: 'P44 overflow', name: 'subtraction with Integer.MIN_VALUE bound verifies', ok: true,
          src: tc('''class C {

@@ -490,6 +490,62 @@ generates an obligation for the inner add and one for the outer multiply, so an 
 square-of-successor refutes at the multiplication step with a sqrt(INT_MAX)-territory
 counterexample.
 
+**Not a toy — this is [Joshua Bloch's binary-search bug](https://research.google/blog/extra-extra-read-all-about-it-nearly-all-binary-searches-and-mergesorts-are-broken/).**
+For nine years `java.util.Arrays.binarySearch` — and every mergesort written the same way — computed its
+midpoint as `(low + high) / 2`, which overflows once the array is large enough that `low + high` exceeds
+`Integer.MAX_VALUE`, returning a *negative* index. Bloch noted the bug "probably would have been caught by
+formal verification." Here it is, caught at compile time (Groovy's `.intdiv(2)` is Java's integer `/`; the
+overflow is in the `low + high` addition, before any division):
+
+<!-- doclint:case p-bloch-binsearch/buggy-midpoint-low-high-intdiv-2-overflows -->
+```groovy
+@CheckOverflow
+@Requires({ 0 <= low && low <= high })          // a valid index window
+@Ensures({ low <= result && result <= high })   // the midpoint lies within it
+static int mid(int low, int high) { (low + high).intdiv(2) }
+```
+
+```
+Possible ArithmeticException: addition overflows 32-bit signed range
+    obligation: Integer.MIN_VALUE <= (low + high) && (low + high) <= Integer.MAX_VALUE
+    counterexample: high = 2147483647, low = 1
+    fails on: mid(1, 2147483647)
+```
+
+The counterexample *is* the failing scenario: a midpoint near the top of a two-billion-element array. Bloch's
+one-line fix verifies — `low + (high - low) / 2` stays within `[low, high] ⊆ [0, Integer.MAX_VALUE]`, so no
+addition can overflow:
+
+<!-- doclint:case p-bloch-binsearch/fixed-midpoint-low-high-low-intdiv-2-verifies -->
+```groovy
+@CheckOverflow
+@Requires({ 0 <= low && low <= high })
+@Ensures({ low <= result && result <= high })
+static int mid(int low, int high) { low + (high - low).intdiv(2) }
+```
+
+The same machinery catches the **`Math.abs(Integer.MIN_VALUE)` gotcha**. The JDK's `Math.abs(int)` is
+`n < 0 ? -n : n`, and `-Integer.MIN_VALUE` overflows — there is no `+2³¹` in a signed `int` — so
+`Math.abs(Integer.MIN_VALUE)` is *itself* `Integer.MIN_VALUE`, a negative result. The natural claim "absolute
+value is non-negative" therefore refutes, at exactly that one input:
+
+<!-- doclint:case p-abs-minvalue/abs-claims-non-negative-but-overflows-at-min-value -->
+```groovy
+@CheckOverflow
+@Ensures({ result >= 0 })          // "the absolute value is non-negative" — false at MIN_VALUE
+static int abs(int n) { n < 0 ? -n : n }
+```
+
+```
+Possible ArithmeticException: negation overflows 32-bit signed range
+    obligation: Integer.MIN_VALUE <= -n && -n <= Integer.MAX_VALUE
+    counterexample: n = -2147483648
+    fails on: abs(-2147483648)
+```
+
+Excluding the single offending input — `@Requires({ n > Integer.MIN_VALUE })`, which is the honest precondition
+`Math.abs` carries in its own Javadoc — verifies.
+
 The bound is **width-aware**: it follows Java binary numeric promotion of the operands, so a
 `long`/`Long` operand widens the check to `[Long.MIN_VALUE, Long.MAX_VALUE]`. `@CheckOverflow long f(long n) { n + 1 }`
 refutes only at the true 64-bit boundary (`n == Long.MAX_VALUE`) and verifies under `n < Long.MAX_VALUE` —
