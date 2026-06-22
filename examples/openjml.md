@@ -19,12 +19,13 @@
 
 [OpenJML](https://www.openjml.org/) is the JML verifier for Java — the closest existing tool to
 this one on the JVM. Its [examples page](https://www.openjml.org/examples/)
-collects small, self-contained proofs chosen to each show *one* idea. Two of them have been ported here.
-Examples ported from openjml.org are © their authors, used under the page's **CC BY-NC** terms.
+collects small, self-contained proofs chosen to each show *one* idea. Several have been ported.
+Example OpenJML snippets from openjml.org, shown for comparison purposes,
+are © their authors, used under the page's **CC BY-NC** terms.
 
-The first appears in the README **[Act 3](../README.md)**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
+One appears in the README **[Act 3](../README.md)**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
 — round a number up to the next multiple of a power of two with `(n + 0xF) & ~0xF`, proven against the
-arithmetic spec it's meant to implement, counterexample at `Integer.MIN_VALUE` and all. The second is here.
+arithmetic spec it's meant to implement, counterexample at `Integer.MIN_VALUE` and all. The rest are here.
 
 ### Max by elimination — a disjunctive loop invariant
 
@@ -111,4 +112,40 @@ left" — and dropping the lowercase guard from the spec refutes. Two Groovy spe
 the char literal (no primitive char syntax exists, and `char >= String` doesn't type-check), and the
 arithmetic is `(char)((int) a[i] - 32)` because `char[]` subscripts box to `Number`. The seq-vs-array split is
 the real lesson — *the same proof, opposite tractability, decided by which theory you hand Z3.*
+
+### Invert injection — a scatter proven *correct*, not just in bounds
+
+OpenJML's `InvertInjection` takes an array `a` that injects `[0, n)` into itself and builds its inverse `b`
+by the scatter `b[a[k]] = k`, then proves the round-trip `∀i. b[a[i]] == i`. Trimmed here to the square
+permutation case (the original also carries a `-1` sentinel and a biconditional for the `M > N` shape):
+
+<!-- doclint:case p104-openjml/invert-injection-scatter-builds-the-inverse-under-injectivity -->
+```groovy
+@Requires({ a != null && b != null && n >= 0 && a.length == n && b.length == n &&
+    Forall.range(0, n) { int i -> 0 <= a[i] && a[i] < n } &&
+    Forall.range(0, n) { int i -> Forall.range(i + 1, n) { int j -> a[i] != a[j] } } })
+@Ensures({ Forall.range(0, n) { int i -> b[a[i]] == i } })
+static int[] invert(int[] a, int[] b, int n) {
+    int k = 0
+    @Invariant({ 0 <= k && k <= n &&
+        Forall.range(0, n) { int q -> 0 <= a[q] && a[q] < n } &&
+        Forall.range(0, k) { int i -> b[a[i]] == i } })
+    @Decreases({ n - k })
+    while (k < n) { b[a[k]] = k; k = k + 1 }
+    return b
+}
+```
+
+The engine already proves a scatter stays *in bounds* — a content-dependent store `count[a[k]] = …` under a
+value-range invariant (the [histogram example](../CAPABILITIES.md)). What's new here is proving the scatter is
+*functionally correct*. The whole proof turns on one move at invariant preservation: re-establishing
+`∀i<k. b[a[i]] == i` after writing `b[a[k]] = k` requires knowing the new write didn't land on an
+already-filled slot — i.e. `a[i] ≠ a[k]` for every `i < k`. That fact lives only in the **injectivity**
+precondition `∀i<j. a[i] ≠ a[j]`, and Z3 has to instantiate it at `(i, k)` to discharge the non-aliasing. It
+does: the array-store term `a[k]` and the invariant's `a[i]` give the e-matcher its trigger.
+
+Injectivity is load-bearing, not decoration. Drop that one clause from the precondition and the *same* proof
+fails right at invariant preservation — `a = [1, 1]` scatters two indices to the same slot, the second write
+clobbers the first, and `b[a[0]] == 0` no longer holds. *The hypothesis that makes a function invertible is
+exactly the hypothesis the proof consumes.*
 

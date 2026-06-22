@@ -12083,6 +12083,48 @@ class Maybe {                                              // a hand-rolled Some
                             return x
                         }
                     }''')],
+        // "Invert injection" — `a` is an injection of [0,n) into [0,n); build its inverse `b` by the scatter
+        // `b[a[k]] = k`, proving the round-trip `∀i. b[a[i]] == i`. The new obligation over Phase 108 (which
+        // bounds a content-dependent store) is *functional correctness* of the scatter: preserving
+        // `∀i<k. b[a[i]] == i` across `b[a[k]] = k` needs the new write not to clobber an earlier slot — i.e.
+        // `a[i] != a[k]` for every i < k — which comes only from instantiating the nested-quantifier injectivity
+        // precondition at (i, k). First case where a quantified loop invariant survives a scatter store by
+        // e-matching an injectivity hypothesis to defeat aliasing. (OpenJML's full version also carries a `-1`
+        // sentinel + biconditional for the M>N case; trimmed here to the square permutation-inverse.)
+        [group: 'P104 OpenJML', name: 'invert-injection: scatter builds the inverse under injectivity', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && b != null && n >= 0 && a.length == n && b.length == n &&
+                            Forall.range(0, n) { int i -> 0 <= a[i] && a[i] < n } &&
+                            Forall.range(0, n) { int i -> Forall.range(i + 1, n) { int j -> a[i] != a[j] } } })
+                        @Ensures({ Forall.range(0, n) { int i -> b[a[i]] == i } })
+                        static int[] invert(int[] a, int[] b, int n) {
+                            int k = 0
+                            @Invariant({ 0 <= k && k <= n &&
+                                Forall.range(0, n) { int q -> 0 <= a[q] && a[q] < n } &&
+                                Forall.range(0, k) { int i -> b[a[i]] == i } })
+                            @Decreases({ n - k })
+                            while (k < n) { b[a[k]] = k; k = k + 1 }
+                            return b
+                        }
+                    }''')],
+        // Soundness control: drop the injectivity clause from @Requires. Now two distinct indices i < k may share
+        // a[i] == a[k], so the scatter at a[k] can clobber b[a[i]] and the invariant `b[a[i]] == i` is no longer
+        // preserved — the proof fails right at invariant preservation. (Injectivity is the load-bearing hypothesis.)
+        [group: 'P104 OpenJML', name: 'invert-injection: without injectivity, aliasing refutes', expect: 'Cannot prove loop invariant',
+         src: tc('''class C {
+                        @Requires({ a != null && b != null && n >= 0 && a.length == n && b.length == n &&
+                            Forall.range(0, n) { int i -> 0 <= a[i] && a[i] < n } })
+                        @Ensures({ Forall.range(0, n) { int i -> b[a[i]] == i } })
+                        static int[] invert(int[] a, int[] b, int n) {
+                            int k = 0
+                            @Invariant({ 0 <= k && k <= n &&
+                                Forall.range(0, n) { int q -> 0 <= a[q] && a[q] < n } &&
+                                Forall.range(0, k) { int i -> b[a[i]] == i } })
+                            @Decreases({ n - k })
+                            while (k < n) { b[a[k]] = k; k = k + 1 }
+                            return b
+                        }
+                    }''')],
 
         // ---------- Phase L0 — security lattice + well-formedness laws (Smith, "A Dafny-based approach to
         //            thread-local information flow analysis", §III) ----------

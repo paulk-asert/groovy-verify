@@ -112,7 +112,7 @@ class Harvester {
         'P101 range non-null'         : "A range-membership fact implies non-null (deref ok with no guard); the same under || does not, so an NPE is still flagged.",
         'P102 switch expr'            : "A switch expression (arrow form, int/String/range labels) folds to an ite-chain; an unmatched case or a false branch claim refutes.",
         'P103 mask-as-mod'            : "Bit-masking modelled as modular arithmetic (round-up-to-16 via &; parity x & 1 in {0,1}); a soundness boundary at INT_MIN refutes.",
-        'P104 OpenJML'                : "OpenJML's max-by-elimination: the result indexes a maximum; a false min-claim refutes.",
+        'P104 OpenJML'                : "OpenJML's max-by-elimination (the result indexes a maximum; a false min-claim refutes) and invert-injection (a scatter b[a[k]]=k builds a correct inverse under injectivity; dropping injectivity refutes at invariant preservation).",
         'P105 string-seq'             : "A read-only per-character loop with a quantified invariant over s.charAt(i) (e.g. all-lowercase); a too-strong char bound refutes.",
         'P106 char-seq'               : "Building a char[] buffer char-by-char (the Int-element-array route for string construction), e.g. functional ChangeCase; a wrong-char claim refutes.",
         'P107 ring-buffer'            : "A ring buffer as a mutable data structure: enqueue/dequeue preserve the class @Invariant under @Modifies framing; an over-strong frame refutes. Both the non-wrapping bounded queue and the WRAPPING circular (modulo) ring verify — `items[t % capacity]` is proven in bounds — so the circular shape is no harder for the fragment.",
