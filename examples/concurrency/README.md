@@ -42,11 +42,13 @@ buffer that an exhaustive model checker (TLC) explores across *every* interleavi
 
 ### Files
 
+The model + configs live in [`src/tlc/`](../../src/tlc) (alongside the other rung sources — `src/lincheck`, `src/fray`):
+
 | File | What it is |
 |------|------------|
-| [`Buffer.tla`](Buffer.tla) | The §VII producer/consumer buffer as a state machine. Maps element-for-element to `class Buffer`: `head`/`tail`, `data[i]` = `values[i]`, `dlvl[i]` = each slot's true secrecy, `PosLabel(i)` = `level(i, head, tail)`. |
-| [`Buffer.cfg`](Buffer.cfg) | The **secure** spec: producer declassifies. All invariants hold, the relies are theorems, progress holds. |
-| [`BufferLeak.cfg`](BufferLeak.cfg) | The **leak** variant: producer skips `Declassify`. TLC reports `RegionSound`/`NoLeak` violated and prints the shortest interleaved trace that leaks. |
+| [`Buffer.tla`](../../src/tlc/Buffer.tla) | The §VII producer/consumer buffer as a state machine. Maps element-for-element to `class Buffer`: `head`/`tail`, `data[i]` = `values[i]`, `dlvl[i]` = each slot's true secrecy, `PosLabel(i)` = `level(i, head, tail)`. |
+| [`Buffer.cfg`](../../src/tlc/Buffer.cfg) | The **secure** spec: producer declassifies. All invariants hold, the relies are theorems, progress holds. |
+| [`BufferLeak.cfg`](../../src/tlc/BufferLeak.cfg) | The **leak** variant: producer skips `Declassify`. TLC reports `RegionSound`/`NoLeak` violated and prints the shortest interleaved trace that leaks. |
 
 ### Running it
 
@@ -57,8 +59,8 @@ TLC in `build/tlc`, fails the build on any invariant/property violation):
 ./gradlew tlcCheck     # "Model checking completed. No error has been found."
 ```
 
-Or directly, with [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar)
-and any JDK:
+Or directly from [`src/tlc/`](../../src/tlc), with
+[`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar) and any JDK:
 
 ```sh
 # secure: all invariants + relies + Progress hold

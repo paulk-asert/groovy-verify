@@ -288,7 +288,7 @@ tasks.named('check') {
 }
 
 // ---- Concurrency spike: Lincheck on a real SpscBuffer (rung 3 of examples/concurrency/README.md) ----------------
-// The checker (rung 1) proves the sequential VC; examples/concurrency/Buffer.tla (rung 2) model-checks an abstract
+// The checker (rung 1) proves the sequential VC; src/tlc/Buffer.tla (rung 2) model-checks an abstract
 // state machine; this rung model-checks the ACTUAL bytecode of a lock-free buffer across interleavings,
 // discharging the atomicity/ordering assumption the other two leave open. Isolated in its own source
 // set + task (NOT wired into `check` — run explicitly: ./gradlew concurrentTest). Runs on the same JDK 25 as the
@@ -400,14 +400,14 @@ tasks.register('lincheckTest', Test) {
     testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
 }
 
-// ---- TLA+ model check: TLC on examples/concurrency/Buffer.tla (rung 2 of examples/concurrency/README.md) ------------------------
+// ---- TLA+ model check: TLC on src/tlc/Buffer.tla (rung 2 of examples/concurrency/README.md) ------------------------
 // Model-checks the §VII buffer across EVERY interleaving (the rely becomes a checked theorem about the
 // peer; liveness too) — the exhaustive-model rung the compile-time checker leaves open. tla2tools isn't
 // on Maven Central, so resolve the pinned release jar from GitHub releases via an Ivy repo, scoped to
 // just that one artifact (Gradle caches it; no download script). NOT wired into `check` — run with:
 //   ./gradlew tlcCheck                 (secure spec: expects "No error has been found")
 // The leak variant is a one-liner demo (TLC exits non-zero on the violation it is meant to find):
-//   java -cp <jar> tlc2.TLC -config BufferLeak.cfg examples/concurrency/Buffer.tla
+//   java -cp <jar> tlc2.TLC -config BufferLeak.cfg src/tlc/Buffer.tla
 repositories {
     ivy {
         name = 'tlaplus-github-releases'
@@ -422,17 +422,17 @@ configurations { tlc }
 dependencies { tlc 'tlaplus:tla2tools:v1.7.4@jar' }          // -> .../download/v1.7.4/tla2tools.jar (TLC 2.19)
 
 // TLC writes scratch (states/, metadata) into its working dir, so run it in build/ — never the source
-// tree. Sync the model + configs there first; `examples/concurrency/` stays clean.
+// tree. Sync the model + configs there first; `src/tlc/` stays clean.
 def tlcWorkDir = layout.buildDirectory.dir('tlc').get().asFile
 
 def tlcPrepare = tasks.register('tlcPrepare', Sync) {
-    from('examples/concurrency') { include '*.tla', '*.cfg' }
+    from('src/tlc') { include '*.tla', '*.cfg' }
     into tlcWorkDir
 }
 
 tasks.register('tlcCheck', JavaExec) {
     group = 'verification'
-    description = 'Model-check examples/concurrency/Buffer.tla (secure spec) with TLA+ TLC — rung 2 of examples/concurrency/README.md'
+    description = 'Model-check src/tlc/Buffer.tla (secure spec) with TLA+ TLC — rung 2 of examples/concurrency/README.md'
     dependsOn tlcPrepare
     classpath = configurations.tlc
     mainClass = 'tlc2.TLC'
