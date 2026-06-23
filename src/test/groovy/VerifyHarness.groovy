@@ -9521,9 +9521,18 @@ class WrapCounter implements Counter { }
                         @Ensures({ result == a.max() })
                         static int firstOf(int[] a) { a[0] }
                     }''')],
-        // Mint-once: two `a.max()` occurrences are the same term, so reflexive equality holds.
+        // Mint-once: two `a.max()` occurrences are the same term, so reflexive equality holds. Non-empty is
+        // required because `[].max()` throws — without the guard the contract isn't even runtime-evaluable.
         [group: 'P60 max/min', name: 'a.max() == a.max() (mint-once)', ok: true,
-         src: tc('class C { @Requires({ a != null }) @Ensures({ a.max() == a.max() }) static int f(int[] a) { 0 } }')],
+         src: tc('class C { @Requires({ a != null && a.length > 0 }) @Ensures({ a.max() == a.max() }) static int f(int[] a) { 0 } }')],
+        // max()/min() throw UnsupportedOperationException on an empty receiver, so the verifier requires the
+        // receiver be provably non-empty — the same `0 < size` obligation as a `[0]` read (like first()/pop()).
+        [group: 'P60 max/min', name: 'max() on a possibly-empty array is refused (non-empty obligation)', expect: 'IndexOutOfBoundsException',
+         src: tc('class C { @Requires({ a != null }) @Ensures({ result == a.max() }) static int f(int[] a) { a.max() } }')],
+        [group: 'P60 max/min', name: 'max() over a guaranteed-non-empty array verifies', ok: true,
+         src: tc('class C { @Requires({ a != null && a.length > 0 }) @Ensures({ result == a.max() }) static int f(int[] a) { a.max() } }')],
+        [group: 'P60 max/min', name: 'min() on a possibly-empty array is refused', expect: 'IndexOutOfBoundsException',
+         src: tc('class C { @Requires({ a != null }) @Ensures({ result == a.min() }) static int f(int[] a) { a.min() } }')],
         // Vacuity guard: on an empty array the extremum is unconstrained (Groovy's [].max() is
         // undefined), so a claim about it is NOT provable — the existential can't fire vacuously.
         [group: 'P60 max/min', name: 'empty-range max claim refuted (no vacuous pass)',

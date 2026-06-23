@@ -4100,7 +4100,11 @@ class VerifyChecker extends TypeCheckingExtension {
             if (mName == 'get' && margs.size() == 1) {
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
             } else if ((mName == 'first' || mName == 'head' ||
-                        mName == 'removeLast' || mName == 'pop') && margs.isEmpty()) {
+                        mName == 'removeLast' || mName == 'pop' ||
+                        mName == 'max' || mName == 'min') && margs.isEmpty()) {
+                // first/head/pop and the witnessed extrema max()/min() all throw on an empty receiver
+                // (UnsupportedOperationException for max/min), so the receiver must be provably non-empty —
+                // the same `0 < size` obligation as a `[0]` read, synthesised as IndexSite(name, 0).
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: new ConstantExpression(0)))
             } else if (mName == 'charAt' && margs.size() == 1) {
                 // Phase 46e — {@code s.charAt(i)} on a parameter / field. String vs list

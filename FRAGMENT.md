@@ -53,7 +53,10 @@ a coverage metric. In expressions the fragment is:
   skip;
 - `xs.max()` / `xs.min()` as the witnessed-extremum spec — `r` bounds every element and is achieved by one
   of them, so `result == a.max()` means what you'd write by hand — over Int (Phase 60), `BigDecimal`/Real
-  (Phase 76) **and** `double` lists/arrays (Phase 77, guarded all-non-NaN since FP isn't totally ordered);
+  (Phase 76) **and** `double` lists/arrays (Phase 77, guarded all-non-NaN since FP isn't totally ordered); a
+  body `a.max()`/`a.min()` carries an implicit **non-empty obligation** (`[].max()` throws
+  `UnsupportedOperationException`, the same `0 < size` shape as `first()`/`pop()`), so it's refused unless the
+  receiver is provably non-empty — *in the body; the same call inside a contract isn't yet well-definedness-checked*;
   `double[]` / `List<Double>` element predicates ride the same FP theory (a hand-written extremum *loop*
   stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
 - aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold
