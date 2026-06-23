@@ -1499,6 +1499,69 @@ mutations before a callee's precondition, so a naive closure-threading DFS passe
 **every correctness property of DFS** — termination, soundness, unconditional coverage, and completeness — is
 machine-checked, over a cyclic graph, by induction (no loops). See the roadmap.
 
+## Verifying Java fragments
+
+The algorithms above are written in Groovy, but **Java is largely a syntactic subset of Groovy** — so you can
+often verify *a Java algorithm* by treating it as Groovy source. This is **not** a Java verifier: the proof is over
+**Groovy semantics** (see Groovy's own [Differences with Java](https://groovy-lang.org/differences.html)), which for
+a typical integer/array algorithm overlap almost entirely. The everyday Java idioms carry over **unchanged** —
+semicolons, the C-style `for (int i = …; …; i++)`, typed local declarations, `return`, casts, `new int[]{…}` array
+initializers — and the loop carries the same statement-level `@Invariant` / `@Decreases`. A full Java-style `max`
+verifies as-is once the contract annotations are added:
+
+<!-- doclint:case p-java-fragment/java-style-max-algorithm-verifies -->
+```groovy
+@Requires({ a != null && a.length > 0 })
+@Ensures({ result >= a[0] })
+static int max(int[] a) {
+    int m = a[0];
+    @Invariant({ m >= a[0] && i >= 1 && i <= a.length })
+    @Decreases({ a.length - i })
+    for (int i = 1; i < a.length; i++) {
+        if (a[i] > m) {
+            m = a[i];
+        }
+    }
+    return m;
+}
+```
+
+Be clear about what this *can't* do for you: **every proof is over Groovy semantics, and the tool has no model of
+what a Java author intended** — so where your Java reading and the Groovy reading differ, it does not (and cannot)
+flag it. It just proves the Groovy meaning. The discipline is to read the pasted code **as Groovy**. What helps in
+practice is that the most dangerous divergence trips Groovy's *own* type system before it ever reaches a proof:
+
+- **Integer division.** Groovy's `/` is **`BigDecimal` ("true") division**, not Java's integer division — `7 / 2`
+  is `3.5`, not `3`. Because `@TypeChecked` won't put a `BigDecimal` in an `int` slot, the everyday shapes —
+  `int m = (lo + hi) / 2`, a `return x / 2`, an index `a[(lo + hi) / 2]` — are a hard **compile error**
+  (*"Cannot assign BigDecimal to int"*), so the commonest Java-paste trap can't slip through as a wrong proof. Note
+  this is *Groovy's typing* catching it, not the tool reasoning about Java: in a context Groovy tolerates — a bare
+  `BigDecimal` comparison — the verifier proves the Groovy meaning, or loud-skips it as outside the modelled fragment,
+  but never re-reads it as Java. The fix is Groovy's `.intdiv()` (the call Bloch's binary-search example uses).
+- **Array initializers.** `new int[]{1, 2, 3}` works; the **brace-only** `int[] a = {1, 2, 3}` does **not parse** (in
+  Groovy `{…}` is a closure) — use a Groovy list `[1, 2, 3]` (it coerces to the array) or `new int[]{…}`. This is a
+  parse error, again Groovy's syntax talking, not a divergence check.
+
+Divergences Groovy's typing *doesn't* object to are simply **proved with Groovy semantics, silently** — no error, no
+skip. The cleanest example is `==`: it's Groovy **value**-equality (`.equals`), so `a == b` on two equal `String`s
+verifies `result == true`, and a Java author who meant reference-equality has proved a different thing. (`char`
+arithmetic is only weakly modelled, so it loud-skips rather than misproves.) For `int` / array algorithms these
+rarely bite — but the rule is unconditional: **it's a Groovy proof; read your fragment as Groovy.**
+
+**Two ways to drive it, and why the contracts must compile as Groovy.** The natural idea — leave the contract
+annotations on a `.java` file, let `javac` ignore them, and verify the same file as Groovy — **doesn't work**: a
+contract is a *closure* (`@Requires({ x > 0 })`), and `javac` rejects that outright (*"annotation value not of an
+allowable type"* — an annotation element must be a constant, not an expression over a parameter). So the verified
+source is always compiled **as Groovy**. Two practical recipes:
+
+1. **Java-subset source, compiled as Groovy.** Keep the method in Java syntax, add the `@TypeChecked(extensions =
+   'verification.VerifyChecker')` and the contracts, and compile it with `groovyc`. Because the closure contracts
+   live in a Groovy compile, groovy-contracts also injects the **runtime** checks — so you *keep* the runtime backup
+   (the [runtime rung](BUILD.md)), you don't lose it. The trade is that this unit is Groovy-compiled (bytecode-compatible
+   from Java), not `javac`-compiled.
+2. **Body transplant.** Paste the Java method body into a small Groovy skeleton carrying the signature + contracts.
+   The most robust option when the surrounding file isn't in the overlap — the body just has to be in the fragment.
+
 ## Other Examples
 
 Beyond the Acts above, more worked-and-verified examples by domain:
