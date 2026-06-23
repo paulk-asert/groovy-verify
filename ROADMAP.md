@@ -7747,6 +7747,35 @@ way it resolves the body's. The `mps` suffix sidesteps it on the surface (a prop
 
 ---
 
+## Phase 161 — `xs.each { x -> … }` as iteration (safety-only, via the for-in desugar)  *(shipped)*
+
+A `.each` over a named collection is the idiomatic Groovy loop, but it was outside the fragment (a loud skip). This
+slice models `xs.each { x -> body }` as the for-in `for (x in xs) { body }` already supported (Phases 63/65) — and
+relaxes that machinery so a loop carrying **only** the auto bounds invariant verifies, two changes in concert:
+
+- **Recognition** (`ContractExpansionTransform`) — `captureLoopsStmt` spots an `ExpressionStatement` whose call is
+  `<var>.each { <oneParam> -> … }`, synthesises a `ForStatement(param, receiver, closureBody)`, builds its
+  `LoopSpec`, and stashes it on the `.each` node's metadata. **Non-destructive**: the AST still compiles to a real
+  `.each` at runtime — the verifier finds the loop by `LOOP_SPEC_KEY`, not by node type, so no verifier change was
+  needed to *locate* it. (groovy-contracts still checks the method's `@Ensures` at runtime; the synthetic invariant
+  is verifier-only, so there's no runtime mismatch.)
+- **Relaxation** (`buildLoopSpec`) — a for-in / `.each` with no user (or inferred) `@Invariant` previously returned
+  null (→ skip). Now it proceeds on its auto bounds invariant (`0 <= idx <= size`) + `size - idx` variant alone,
+  which already prove **safety and termination**. So a body asserting a **per-element property** verifies with no
+  hand-written contract (the headline), and the same relaxation lets a plain safety `for (x in xs)` verify too.
+
+**Honest boundary** — the auto invariant frames neither the loop variable's value across iterations nor any variable
+the body *accumulates*, so an accumulating body (e.g. `int c = 0; a.each { c += 1 }` with `@Ensures result == …`)
+would leave the accumulator havoc'd and the postcondition would **spuriously refute**. A new `autoInvariantOnly` flag
+on `LoopSpec` plus `autoOnlyBodyAccumulates` detects exactly this — an auto-bounds-only loop whose body writes
+anything beyond the loop variable / synthetic index — and **loud-skips the postcondition use check** instead of
+emitting a false counterexample. Such a body genuinely needs an `@Invariant`, which **can't be attached to a `.each`
+statement** (a statement-level annotation on a method call is a Groovy parse error) — so accumulation stays an honest
+skip, the documented limitation. 4 new `P161 each` cases (per-element verifies / unguarded refutes / for-in
+relaxation / accumulation loud-skips); root suite 1379/0, full `check` (incl. runtimeRung) green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

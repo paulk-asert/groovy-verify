@@ -296,7 +296,9 @@ tasks.named('test', Test) {
 }
 
 tasks.named('check') {
-    dependsOn 'test'   // JUnit dynamic-test run of the suite (verify remains the console runner)
+    dependsOn 'test'         // JUnit dynamic-test run of the suite (verify remains the console runner)
+    dependsOn 'runtimeRung'  // the sequential differential-soundness oracle: every proved contract is cross-validated
+                             // against runtime execution of the same annotation (fails on a new confirmed divergence)
 }
 
 // ---- Concurrency spike: Lincheck on a real SpscBuffer (rung 3 of CONCURRENCY.md) ----------------

@@ -6500,7 +6500,15 @@ class VerifyChecker extends TypeCheckingExtension {
             // it; now discharge its own establish/preserve/progress (without which the summary is unsound).
             verifyNestedLoops(node, site, reqAst, postAst)
             if (!perElement.isEmpty()) checkForInElement(node, site, perElement, stableReqs)
-            if (postAst != null) checkUse(node, site, reqAst, postAst)
+            // A for-in / `.each` standing on the auto bounds invariant alone can prove the postcondition only
+            // when the body accumulates nothing — `0 <= idx <= size` doesn't frame a variable the body writes,
+            // so an accumulating body leaves it havoc'd and the postcondition would *spuriously* refute. Loud-skip
+            // it instead (honest: such a loop needs an @Invariant, which `.each` can't carry — a parse error).
+            if (postAst != null && autoOnlyBodyAccumulates(site)) {
+                addStaticTypeError(Reporter.formatLoopSkipped(node.name,
+                    'an auto-bounds-only for-in/.each whose body writes a variable the postcondition depends on ' +
+                    'needs an @Invariant to frame it (not attachable to a `.each` statement)'), site.loopStmt)
+            } else if (postAst != null) checkUse(node, site, reqAst, postAst)
             // Phase 49 — discharge each early-exit's @Ensures on its own path (only relevant
             // when the method has an @Ensures to prove).
             if (postAst != null) {
@@ -6640,6 +6648,23 @@ class VerifyChecker extends TypeCheckingExtension {
      * effects can't be bounded (→ the caller assumes no precondition, the always-sound default). A
      * sound over-approximation: surplus names only drop more conjuncts.
      */
+    /**
+     * True for an auto-bounds-only for-in / {@code .each} whose body writes a variable other than the loop
+     * variable and the synthetic index — i.e. it accumulates. The auto invariant ({@code 0 <= idx <= size})
+     * frames neither, so the post-loop value is havoc and any postcondition over it would spuriously refute;
+     * the caller loud-skips the use check instead. A body whose writes can't be bounded (unknown call) is
+     * treated as accumulating too — the sound default. The loop variable's {@code x = xs[idx]} binding and the
+     * {@code idx = idx + 1} update (both synthetic) are excluded so a pure per-element body counts as empty.
+     */
+    private static boolean autoOnlyBodyAccumulates(LoopSite site) {
+        if (!site.spec.autoInvariantOnly) return false
+        Set<String> writes = new HashSet<String>()
+        if (!collectWritesStmts(site.spec.body, writes)) return true   // unbounded body effect → treat as accumulating
+        writes.remove(site.spec.forInVar)
+        writes.remove(ContractExpansionTransform.FOR_IN_INDEX)
+        return !writes.isEmpty()
+    }
+
     private static Set<String> loopWriteSet(LoopSite site) {
         Set<String> ws = new HashSet<String>()
         if (!collectWritesStmts(site.prefix, ws)) return null

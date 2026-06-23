@@ -107,7 +107,8 @@ The three-rungs story — compile-time proof, exhaustive model, tested bytecode 
 The *sequential* analogue of the concurrency rungs. `groovy.contracts` annotations are also **runtime
 assertions**, so every `ok:true` case is recompiled with the VerifyChecker extension stripped but
 groovy-contracts live, then run over an input grid — the contract checks itself. It **falsifies, it cannot
-certify**, and it is not in `check`:
+certify**, and (since the corroboration step made it deterministic and the verifier soundness gaps it found are
+closed) it is **wired into `check`** — a new confirmed proof-vs-runtime divergence fails the build:
 
 ```sh
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation

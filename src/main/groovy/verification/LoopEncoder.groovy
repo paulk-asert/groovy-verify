@@ -63,6 +63,12 @@ class LoopSpec {
     // hold AFTER that first iteration, not at loop entry. Preservation/progress/use (the residual while)
     // are identical to a plain while. (Treating do-while as while was silently unsound — see Phase 88.)
     boolean isDoWhile = false
+    // A for-in / `.each` that carries ONLY the auto bounds invariant (no user or inferred @Invariant): its
+    // `0 <= idx <= size` proves SAFETY (per-element properties, bounded reads) and `size - idx` proves
+    // termination, but it can't frame a variable the body *accumulates* — so the postcondition use check
+    // loud-skips when the body writes anything beyond the loop variable / synthetic index (an accumulating
+    // `.each` would need an @Invariant, which is a Groovy parse error on a method-call statement).
+    boolean autoInvariantOnly = false
 }
 
 /**

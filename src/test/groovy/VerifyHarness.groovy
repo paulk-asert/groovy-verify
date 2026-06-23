@@ -5285,6 +5285,17 @@ class Derived extends Base {
          src: tc('class C { @Ensures({ result == -1 }) static int f() { def r = 4..8; r[2] = -1; r[2] } }')],
 
         // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).
+        [group: 'P161 each', name: 'D each accumulation skips loudly', expect: 'Skipped loop verification',
+         src: tc('''class C { @Ensures({ result == a.length })
+                        static int f(int[] a) { int c = 0; a.each { int x -> c += 1 }; c } }''')],
+        [group: 'P161 each', name: 'A each per-element property verifies', ok: true,
+         src: tc('''class C { @Requires({ a != null && (0..<a.length).every { a[it] >= 0 } })
+                        static void f(int[] a) { a.each { int x -> assert x >= 0 } } }''')],
+        [group: 'P161 each', name: 'B each per-element refutes without guard', expect: 'Assertion',
+         src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.each { int x -> assert x >= 0 } } }')],
+        [group: 'P161 each', name: 'C for-in no-invariant now verifies (relaxation)', ok: true,
+         src: tc('''class C { @Requires({ a != null && (0..<a.length).every { a[it] >= 0 } })
+                        static void f(int[] a) { for (int x in a) { assert x >= 0 } } }''')],
         [group: 'P33 union/intersect', name: 'inline intersection in  (a & b)', ok: true,
          src: tc('''class C {
                         @Requires({ a != null && b != null })

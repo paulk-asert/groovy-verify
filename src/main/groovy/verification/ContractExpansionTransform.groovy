@@ -730,8 +730,33 @@ class ContractExpansionTransform implements ASTTransformation {
         } else if (st instanceof IfStatement) {
             found |= captureLoopsStmt(((IfStatement) st).ifBlock, source, inferLoops)
             found |= captureLoopsStmt(((IfStatement) st).elseBlock, source, inferLoops)
+        } else if (st instanceof ExpressionStatement) {
+            // `xs.each { x -> body }` as an iteration — stash a for-in LoopSpec on the call statement (the verifier
+            // finds a loop by this metadata, not by node type), non-destructively (the AST still compiles to `.each`).
+            LoopSpec spec = eachLoopSpec((ExpressionStatement) st, source, inferLoops)
+            if (spec != null) { st.setNodeMetaData(LOOP_SPEC_KEY, spec); found = true }
         }
         found
+    }
+
+    /** {@code xs.each { x -> body }} modelled as the for-in {@code for (x in xs) { body }}: build that loop's
+     *  {@link LoopSpec} (auto bounds invariant + {@code size - idx} variant — safety + termination, no user
+     *  invariant needed) and return it, or null if it isn't an each-over-a-named-collection with one element
+     *  param. `.each` can't carry an {@code @Invariant} (a statement annotation on a method call is a Groovy
+     *  parse error), so an *accumulating* body that needs one stays a loud skip — exactly the for-in story. */
+    private static LoopSpec eachLoopSpec(ExpressionStatement st, SourceUnit source, boolean inferLoops) {
+        if (!(st.expression instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) st.expression
+        if (mce.methodAsString != 'each' || !(mce.objectExpression instanceof VariableExpression)) return null
+        if (!(mce.arguments instanceof ArgumentListExpression)) return null
+        List<Expression> args = ((ArgumentListExpression) mce.arguments).expressions
+        if (args.size() != 1 || !(args.get(0) instanceof ClosureExpression)) return null
+        ClosureExpression cl = (ClosureExpression) args.get(0)
+        Parameter[] ps = cl.parameters
+        if (ps == null || ps.length != 1) return null     // a single explicit element param (implicit `it` deferred)
+        ForStatement forIn = new ForStatement(ps[0], mce.objectExpression, cl.code)
+        forIn.setSourcePosition(st)
+        buildLoopSpec(forIn, source, inferLoops)
     }
 
     /** True iff the class is checked by VerifyChecker with the {@code inferLoops: true} option, i.e.
@@ -780,6 +805,7 @@ class ContractExpansionTransform implements ASTTransformation {
         List<Statement> bodyPrefix = null
         Expression autoInvariant = null
         Expression autoVariant = null
+        boolean autoInvariantOnly = false
         Expression inferredInvariant = null    // loop-invariant inference (opt-in -Dverify.inferLoops) for a bare counter loop
         String forInVarName = null
         Statement forInBindStmt = null
@@ -855,11 +881,14 @@ class ContractExpansionTransform implements ASTTransformation {
             // Z3 proof on top.
         }
         if (invariants.isEmpty()) {
-            // No user @Invariant. Use an inferred one if available (opt-in counter-loop inference); else loud-skip.
-            // Invariant only — no inferred variant: this proves loop SAFETY (e.g. array bounds), not termination,
-            // matching how a hand-written safety loop verifies with @Invariant and no @Decreases.
+            // No user @Invariant. Use an inferred one if available (opt-in counter-loop inference); else, for a
+            // for-in / `.each` the auto bounds invariant (`0 <= idx <= size`, added below — inductive by
+            // construction) plus the `size - idx` variant already prove SAFETY and termination, so per-element
+            // property bodies verify with no hand-written invariant. A while / do-while / classic-for still
+            // loud-skips without a user (or inferred) invariant — it has no auto invariant to stand on.
             if (inferredInvariant != null) invariants.add(inferredInvariant)
-            else return null   // a loop needs a user (or inferred) @Invariant to be verified
+            else if (autoInvariant == null) return null
+            else autoInvariantOnly = true   // for-in / `.each` standing on the auto bounds invariant alone → safety-only
         }
         // Phase 63 — the for-in index-bounds invariant is added *after* the user's (so its synthetic
         // name trails the user-facing clauses in any diagnostic), and `size - idx` is the variant
@@ -878,6 +907,7 @@ class ContractExpansionTransform implements ASTTransformation {
         spec.forInVar = forInVarName
         spec.forInBind = forInBindStmt
         spec.isDoWhile = loop instanceof DoWhileStatement   // Phase 88 — body runs once before the first guard
+        spec.autoInvariantOnly = autoInvariantOnly
         return spec
     }
 

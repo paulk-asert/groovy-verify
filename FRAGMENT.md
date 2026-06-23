@@ -256,9 +256,13 @@ loop `while (i < n) a[i++] = 0` verifies and an out-of-bounds `a[i++]` refutes; 
 assignment — both the declaration `def (a, b) = [1, 2]` and the bare parallel **swap** `(a, b) = [b, a]`
 (the right-hand side is snapshotted before any target is written; Phases 79 / 90), and an
 annotated loop — `while`, `do … while` (Phase 88), a classic
-`for (init; cond; update)`, or `for (x in xs)` over a named collection, all desugaring to the same machinery
-(Phases 59 & 63; the for-in's index is synthesised and hidden, the loop variable keeps its name; `.each` stays
-outside the fragment and skips loudly), **optionally with a second loop nested inside it** (Phase 91, two
+`for (init; cond; update)`, `for (x in xs)` over a named collection, or `xs.each { x -> … }` (Phase 161,
+modelled as that same for-in), all desugaring to the same machinery (Phases 59 & 63; the for-in's index is
+synthesised and hidden, the loop variable keeps its name). A for-in / `.each` carries an auto **bounds
+invariant** (`0 <= idx <= size`) and a `size - idx` **variant**, so a body asserting a **per-element property**
+(or reading bounded slots) verifies with no hand-written `@Invariant` — only an *accumulating* body needs one,
+and since a statement-level `@Invariant` is a Groovy parse error on a `.each` call, such a body **loud-skips**
+(honest, not silently passed). The for-in / `.each` may have **a second loop nested inside it** (Phase 91, two
 levels, scalar accumulators or array-filling inner bodies — and the inner loop may **`return` a witness** on a
 match, so a doubly-nested search verifies, Phase 109 — see below). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
