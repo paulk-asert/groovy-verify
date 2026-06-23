@@ -107,7 +107,8 @@ a coverage metric. In expressions the fragment is:
   **immutability**: a bare range is read-only, so an element write `(4..8)[2] = -1` is *refused* (it throws
   `UnsupportedOperationException` at runtime), while the mutable copies `[*lo..hi]` (spread) and
   `(lo..hi).toList()` bind the same contents into a writable array, so a store threads through and the
-  other elements keep their range values; whole-list `== [literal]` on a returned mutated copy stays out;
+  other elements keep their range values — and a whole-list `result == [a, b, c]` against a list literal folds
+  to size-equality ∧ element-wise equality (so the returned mutated copy compares against the literal);
 - `switch` *expressions* — the arrow form `switch (x) { case 1 -> …; default -> … }` with simple `int`/`String`
   literal (and integer-range) labels folds to an `ite`-chain; the statement form and pattern/guarded cases
   stay out (Phase 102);

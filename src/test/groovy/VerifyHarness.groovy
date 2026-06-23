@@ -5273,10 +5273,13 @@ class Derived extends Base {
          src: tc('class C { @Ensures({ result == 6 }) static int f() { def r = 4..8; r[2] } }')],
         [group: 'P-range as-list', name: 'exclusive range ..< drops the upper bound', ok: true,
          src: tc('class C { @Ensures({ result == 7 }) static int f() { def r = (4..<8).toList(); r[3] } }')],
-        // Honest boundary: the whole-list `result == [4, 5, -1, 7, 8]` form (returning the mutated copy and
-        // comparing to a list literal) is a separate gap — element-wise `result[k]` contracts are the supported way.
-        [group: 'P-range as-list', name: 'whole-list == literal on a returned copy skips (use element-wise)', expect: 'outside fragment',
+        // Whole-list equality against a list literal: `result == [4, 5, -1, 7, 8]` folds to size-equality ∧
+        // element-wise equality, so returning the mutated copy and comparing to the literal verifies.
+        [group: 'P-range as-list', name: 'whole-list == literal on a returned copy verifies', ok: true,
          src: tc('class C { @Ensures({ result == [4, 5, -1, 7, 8] }) static List<Integer> f() { def r = (4..8).toList(); r[2] = -1; r } }')],
+        // Soundness control: a wrong element in the claimed list must refute.
+        [group: 'P-range as-list', name: 'whole-list == with a wrong element refutes', expect: 'Cannot prove postcondition',
+         src: tc('class C { @Ensures({ result == [4, 5, 99, 7, 8] }) static List<Integer> f() { def r = (4..8).toList(); r[2] = -1; r } }')],
         // Immutability: a bare range write throws UnsupportedOperationException, so the verifier refuses it.
         [group: 'P-range as-list', name: 'bare range element write is refused (immutable)', expect: 'ranges are immutable',
          src: tc('class C { @Ensures({ result == -1 }) static int f() { def r = 4..8; r[2] = -1; r[2] } }')],

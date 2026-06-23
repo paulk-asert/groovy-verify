@@ -2454,6 +2454,36 @@ class Encoder {
      * list/tuple equality). Each pairwise {@code eq} is in the component's sort; a sort mismatch (comparing
      * unlike tuple types) is a clean skip. Returns null unless <em>both</em> sides are products.
      */
+    /**
+     * Whole-list equality {@code xs == [a, b, c]} where one side is a list literal (its components translate
+     * via {@link #tupleComponents}) and the other is a sized list-local — a variable with a size oracle and a
+     * contents array, e.g. the {@code result} of a method that returns a range copy after a store. Folds to
+     * {@code size(xs) == n ∧ ∀k. xs[k] == lit[k]} (and its negation for {@code !=}). Returns null otherwise.
+     */
+    private Object translateListLiteralEquality(BinaryExpression be, boolean isEq) {
+        Expression arrE
+        List<Object> comps = tupleComponents(be.leftExpression)
+        if (comps != null && isSizedListLocal(be.rightExpression)) arrE = be.rightExpression
+        else {
+            comps = tupleComponents(be.rightExpression)
+            if (comps != null && isSizedListLocal(be.leftExpression)) arrE = be.leftExpression
+            else return null
+        }
+        String name = ((VariableExpression) arrE).name
+        Object arr = arrayFor(name), sz = sizeOf(name)
+        List<Object> conj = new ArrayList<Object>()
+        conj.add(session.eq(sz, session.intLit((long) comps.size())))
+        for (int k = 0; k < comps.size(); k++) {
+            conj.add(session.eq(session.select(arr, session.intLit((long) k)), comps.get(k)))
+        }
+        Object c = conj.size() == 1 ? conj.get(0) : session.and(conj)
+        isEq ? c : session.not(c)
+    }
+    private boolean isSizedListLocal(Expression e) {
+        e instanceof VariableExpression && hasSizeOracle(((VariableExpression) e).name) &&
+            peekArray(((VariableExpression) e).name) != null
+    }
+
     private Object translateTupleEquality(BinaryExpression be, boolean isEq) {
         List<Object> lc = tupleComponents(be.leftExpression)
         if (lc == null) return null
@@ -5047,6 +5077,10 @@ class Encoder {
         if (op == Types.COMPARE_EQUAL || op == Types.COMPARE_NOT_EQUAL) {
             Object te = translateTupleEquality(be, op == Types.COMPARE_EQUAL)
             if (te != null) return te
+            // … and a whole-list `xs == [a, b, c]` where xs is a sized list-local (size oracle + contents
+            // array) and the other side is a list literal: size-equality ∧ element-wise equality.
+            Object le = translateListLiteralEquality(be, op == Types.COMPARE_EQUAL)
+            if (le != null) return le
         }
 
         // Phase 133 — an arithmetic operator on a carrier (record / wrapper) operand has no numeric meaning
