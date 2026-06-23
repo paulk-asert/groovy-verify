@@ -115,6 +115,10 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private static final ClassNode REQUIRES_TYPE = ClassHelper.make(Requires)
     private static final ClassNode ENSURES_TYPE = ClassHelper.make(Ensures)
+    // This project's String-valued twins (the Java-friendly form). Their condition text is captured into the
+    // same @ContractSource as a closure's, so only the find* presence-gates need to recognise them too.
+    private static final ClassNode VERIFY_REQUIRES_TYPE = ClassHelper.make(verification.Requires)
+    private static final ClassNode VERIFY_ENSURES_TYPE = ClassHelper.make(verification.Ensures)
     private static final ClassNode LABEL_TYPE = ClassHelper.make(Label)   // Phase L1 — security classification
     private static final ClassNode RELY_TYPE = ClassHelper.make(Rely)         // Phase L1 — rely/guarantee well-formedness
     private static final ClassNode GUARANTEE_TYPE = ClassHelper.make(Guarantee)
@@ -6193,7 +6197,9 @@ class VerifyChecker extends TypeCheckingExtension {
 
     private static AnnotationNode findEnsures(MethodNode m) {
         List<AnnotationNode> direct = m.getAnnotations(ENSURES_TYPE)
-        return (direct != null && !direct.isEmpty()) ? direct[0] : null
+        if (direct != null && !direct.isEmpty()) return direct[0]
+        List<AnnotationNode> str = m.getAnnotations(VERIFY_ENSURES_TYPE)
+        return (str != null && !str.isEmpty()) ? str[0] : null
     }
 
     // ---- Loops (@Invariant / @Decreases) ----
@@ -8334,6 +8340,8 @@ class VerifyChecker extends TypeCheckingExtension {
     private static AnnotationNode findRequires(MethodNode m) {
         List<AnnotationNode> direct = m.getAnnotations(REQUIRES_TYPE)
         if (direct != null && !direct.isEmpty()) return direct[0]
+        List<AnnotationNode> str = m.getAnnotations(VERIFY_REQUIRES_TYPE)
+        if (str != null && !str.isEmpty()) return str[0]
         for (MethodNode inherited : superAndInterfaceDecls(m)) {
             AnnotationNode a = findRequires(inherited)
             if (a != null) return a

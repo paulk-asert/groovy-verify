@@ -42,6 +42,7 @@ class RuntimeRung {
         src =~ /javax\.measure|tech\.units|systems\.uom|\bQuantity\b|\brecord\s/ ||   // units / records
         src =~ /\basync\b|\bawait\b|Awaitable|@Rely|@Guarantee|@UnderRely/ ||         // concurrency
         src =~ /@Label|Declassify\.to|\bLabel\(/ ||                                    // info-flow (not a runtime contract)
+        src =~ /import\s+verification\.(Requires|Ensures|Decreases)\b/ ||             // String-form contracts: verify-only, no groovy-contracts runtime arm to cross-validate against
         src =~ /@Monadic|@Reducer|@Associative|java\.util\.function|\.apply\(/        // abstract-carrier laws
     }
 

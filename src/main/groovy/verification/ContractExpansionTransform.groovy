@@ -92,6 +92,8 @@ import org.codehaus.groovy.transform.GroovyASTTransformation
 class ContractExpansionTransform implements ASTTransformation {
 
     private static final String CONTRACTS_PKG = 'groovy.contracts.'
+    /** This project's own String-valued contract annotations (the Java-friendly twins) live here. */
+    private static final String VERIFY_PKG = 'verification.'
 
     /**
      * Node-metadata key under which a clean snapshot of a postcondition method's
@@ -1115,12 +1117,14 @@ class ContractExpansionTransform implements ASTTransformation {
         if (name == 'RequiresConditions' || name == CONTRACTS_PKG + 'RequiresConditions') return 'requiresContainer'
         if (name == 'EnsuresConditions'  || name == CONTRACTS_PKG + 'EnsuresConditions')  return 'ensuresContainer'
         if (name == 'ModifiesConditions' || name == CONTRACTS_PKG + 'ModifiesConditions') return 'modifiesContainer'
-        if (name == CONTRACTS_PKG + 'Requires') return 'requires'
-        if (name == CONTRACTS_PKG + 'Ensures') return 'ensures'
-        if (name == CONTRACTS_PKG + 'Decreases') return 'decreases'
+        // groovy-contracts (closure) and this project's verification.* (String) contracts map to the same kinds;
+        // they're distinguished only by closure-vs-String, which closureText() handles transparently downstream.
+        if (name == CONTRACTS_PKG + 'Requires' || name == VERIFY_PKG + 'Requires') return 'requires'
+        if (name == CONTRACTS_PKG + 'Ensures'  || name == VERIFY_PKG + 'Ensures')  return 'ensures'
+        if (name == CONTRACTS_PKG + 'Decreases' || name == VERIFY_PKG + 'Decreases') return 'decreases'
         if (name == CONTRACTS_PKG + 'Modifies') return 'modifies'
         if ((name == 'Requires' || name == 'Ensures' || name == 'Decreases' || name == 'Modifies') &&
-            importedFromContracts(name, module)) {
+            (importedFromContracts(name, module) || importedFromPackage(name, VERIFY_PKG, module))) {
             switch (name) {
                 case 'Requires': return 'requires'
                 case 'Ensures':  return 'ensures'
@@ -1137,9 +1141,15 @@ class ContractExpansionTransform implements ASTTransformation {
         if (t) out.add(t)
     }
 
-    /** The verbatim source of an annotation's {@code value} closure condition, or null. */
+    /** The verbatim source of an annotation's {@code value} condition, or null. A closure carries it as
+     *  source text ({@code @Requires({ x >= 0 })}); a String-valued annotation (the Java-friendly
+     *  {@code verification.@Requires('x >= 0')}) carries it directly — the String *is* the source, fed into
+     *  the same reparse pipeline, so a closure and a String contract are indistinguishable downstream. */
     private static String closureText(AnnotationNode an, SourceUnit source) {
         Expression value = an.getMember('value')
+        if (value instanceof ConstantExpression && ((ConstantExpression) value).value instanceof String) {
+            return (String) ((ConstantExpression) value).value
+        }
         if (!(value instanceof ClosureExpression)) return null
         captureSource((ClosureExpression) value, source)
     }
@@ -1186,11 +1196,16 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     private static boolean importedFromContracts(String simpleName, ModuleNode module) {
+        importedFromPackage(simpleName, CONTRACTS_PKG, module)
+    }
+
+    /** True if {@code simpleName} is imported (explicitly or via a star-import) from {@code pkg}. */
+    private static boolean importedFromPackage(String simpleName, String pkg, ModuleNode module) {
         for (ImportNode imp : module.imports) {
-            if (imp.alias == simpleName && imp.className == CONTRACTS_PKG + simpleName) return true
+            if (imp.alias == simpleName && imp.className == pkg + simpleName) return true
         }
         for (ImportNode imp : module.starImports) {
-            if (imp.packageName == CONTRACTS_PKG) return true
+            if (imp.packageName == pkg) return true
         }
         return false
     }

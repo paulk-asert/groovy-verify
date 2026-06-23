@@ -1562,6 +1562,29 @@ source is always compiled **as Groovy**. Two practical recipes:
 2. **Body transplant.** Paste the Java method body into a small Groovy skeleton carrying the signature + contracts.
    The most robust option when the surrounding file isn't in the overlap — the body just has to be in the fragment.
 
+**Closing the gap: String-valued contracts (prototype).** What blocks recipe 0 — keeping the contracts on a real
+`.java` file — is only that a *closure* isn't a legal Java annotation value. A `String` is. So this project ships
+Java-friendly twins, `verification.@Requires` / `@Ensures` / `@Decreases`, whose condition is a `String`:
+
+<!-- doclint:case p-string-contract/recursive-count-verifies-from-string-contracts -->
+```groovy
+@Requires('n >= 0')
+@Ensures('result == n')
+@Decreases('n')
+static int count(int n) {
+    if (n == 0) return 0;
+    return 1 + count(n - 1);
+}
+```
+
+That exact method compiles under `javac` (the annotations become inert metadata) **and** verifies under
+`VerifyChecker` when the same source is read as Groovy — the condition text is captured into the identical
+reparse→prove pipeline a closure uses (so it's still parsed with Groovy semantics; a recursive method proves by
+induction off the method-level `@Decreases`, and a wrong `@Ensures` refutes on the base case). It reaches **loop-free
+and recursive** methods only: Java forbids annotating a statement, so a per-loop `@Invariant` has nowhere to live —
+for an iterative loop you still drop to recipe 1 or 2. And being verify-only on the `javac` side, the runtime backup
+is regained only by compiling as Groovy. A prototype, but it makes "annotate Java, verify it" a single source file.
+
 ## Other Examples
 
 Beyond the Acts above, more worked-and-verified examples by domain:

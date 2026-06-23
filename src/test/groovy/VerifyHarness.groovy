@@ -5321,6 +5321,33 @@ class Derived extends Base {
         // Java author meaning reference-equality would have meant something else. The lesson is to read it as Groovy.
         [group: 'P-java-fragment', name: 'object == is Groovy value-equality, proved silently (not Java ==)', ok: true,
          src: tc('class C { @Requires({ a == "x" && b == "x" }) @Ensures({ result == true }) static boolean eq(String a, String b) { return a == b; } }')],
+        // String-contract prototype: the Java-friendly `verification.@Requires/@Ensures/@Decreases('…')` (a String
+        // is a legal Java annotation value where a closure is not), captured into the SAME reparse→prove pipeline.
+        // A recursive Java-style method verifies inductively from String contracts, and a wrong @Ensures refutes.
+        [group: 'P-string-contract', name: 'recursive count verifies from String contracts', ok: true,
+         src: tcStr('''class C {
+             @Requires('n >= 0')
+             @Ensures('result == n')
+             @Decreases('n')
+             static int count(int n) {
+                 if (n == 0) return 0;
+                 return 1 + count(n - 1);
+             }
+         }''')],
+        [group: 'P-string-contract', name: 'recursive count wrong String @Ensures refutes', expect: 'postcondition',
+         src: tcStr('''class C {
+             @Requires('n >= 0')
+             @Ensures('result == n + 1')
+             @Decreases('n')
+             static int count(int n) {
+                 if (n == 0) return 0
+                 return 1 + count(n - 1)
+             }
+         }''')],
+        [group: 'P-string-contract', name: 'straight-line square verifies from String contracts', ok: true,
+         src: tcStr("class C { @Requires('x >= 0 && x < 1000') @Ensures('result == x * x') static int sq(int x) { x * x } }")],
+        [group: 'P-string-contract', name: 'String @Requires discharges a division-by-zero obligation', ok: true,
+         src: tcStr("class C { @Requires('y != 0') static int div(int x, int y) { x.intdiv(y) } }")],
         [group: 'P-java-fragment', name: 'java-style max algorithm verifies', ok: true,
          src: tc('''class C {
              @Requires({ a != null && a.length > 0 })
@@ -13834,6 +13861,15 @@ class Maybe {                                              // a hand-rolled Some
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
     static String tc(String classText) {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
+    }
+
+    /** Like {@link #tc} but with this project's String-valued contract annotations (the Java-friendly
+     *  {@code verification.Requires}/{@code Ensures}/{@code Decreases}, e.g. {@code @Requires('n >= 0')})
+     *  instead of groovy-contracts' closures — so the header deliberately does NOT pull in groovy.contracts. */
+    static String tcStr(String classText) {
+        'import groovy.transform.TypeChecked\n' +
+            'import verification.Requires\nimport verification.Ensures\nimport verification.Decreases\n' +
+            "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
     }
 
     /** Like {@link #tc} but opts into loop-invariant inference via the parameterised extension syntax
