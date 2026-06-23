@@ -59,6 +59,8 @@ class RuntimeRung {
     static List makeIntArr() { [new int[0], [0] as int[], [1, 2, 3] as int[], [3, 1, 2] as int[], [-1, 0, 5] as int[]] }
     static List makeIntList() { [[], [0], [1, 2, 3], [3, 1, 2], [-1, 0, 5]] }
     static List makeIntSet() { [[] as Set, [1] as Set, [0, 1, 2] as Set] }
+    // Map<Integer,Integer> family — keys overlap the int grid (0,1,2,3,5) so `m.containsKey(k)` lands both ways.
+    static List makeIntMap() { [[:], [0: 0], [1: 2, 3: 4], [0: 1, 2: 3, 5: 7], [1: 1, 2: 2]] }
 
     static List valuesFor(Class t, java.lang.reflect.Type generic) {
         if (t == int || t == Integer) return new ArrayList(ints)
@@ -72,10 +74,14 @@ class RuntimeRung {
         if (t == int[]) return makeIntArr()
         if (List.isAssignableFrom(t)) return (elementIsInteger(generic) || rawOrObject(generic)) ? makeIntList() : null
         if (Set.isAssignableFrom(t)) return (elementIsInteger(generic) || rawOrObject(generic)) ? makeIntSet() : null
-        return null   // Map, Tuple, enum, custom class, double[] … — deferred past Slice 1
+        if (Map.isAssignableFrom(t)) return (mapIsIntInt(generic) || rawOrObject(generic)) ? makeIntMap() : null   // Map<Integer,Integer> only; String/Enum-keyed & nested deferred
+        return null   // Tuple, enum, custom class, double[] … — deferred past Slice 1
     }
     static boolean elementIsInteger(java.lang.reflect.Type g) {
         (g instanceof ParameterizedType) && ((ParameterizedType) g).actualTypeArguments.toList() == [Integer]
+    }
+    static boolean mapIsIntInt(java.lang.reflect.Type g) {
+        (g instanceof ParameterizedType) && ((ParameterizedType) g).actualTypeArguments.toList() == [Integer, Integer]
     }
     static boolean rawOrObject(java.lang.reflect.Type g) { !(g instanceof ParameterizedType) }
 
@@ -140,7 +146,10 @@ class RuntimeRung {
         int inDomain = 0
         for (args in combos) {
             try {
-                m.invoke(null, args as Object[]); inDomain++
+                // Fresh map per combo: a mutating `put` must not leak into the next combo's grid value (arrays/
+                // lists reuse their objects too, but corroborate relies on in-place mutation for post-state, so we
+                // clone only here in `exercise`, and pass the pristine originals to corroborate via argsList).
+                m.invoke(null, freshCombo(args)); inDomain++
             } catch (java.lang.reflect.InvocationTargetException ite) {
                 Throwable cause = ite.cause ?: ite
                 if (isPrecondition(cause)) continue
@@ -151,6 +160,9 @@ class RuntimeRung {
         }
         inDomain > 0 ? [kind: 'validated'] : [kind: 'needseed']
     }
+
+    /** Clone mutable map args so a per-combo invocation can't mutate the shared grid value. */
+    static Object[] freshCombo(List args) { args.collect { it instanceof Map ? new LinkedHashMap((Map) it) : it } as Object[] }
 
     static String render(List args) {
         '(' + args.collect { it == null ? 'null' : (it.getClass().isArray() ? (it as List).toString() : it.toString()) }.join(', ') + ')'
@@ -202,7 +214,21 @@ class RuntimeRung {
         def m = (src =~ /(?:static\s+)[\w\[\]<>.,?\s]+?\b${java.util.regex.Pattern.quote(method)}\s*\(([^)]*)\)/)
         if (!m.find()) return null
         String p = ((String) m.group(1)).trim()
-        p ? p.split(',').collect { it.trim().split(/\s+/)[-1].replaceAll(/\W/, '') } : []
+        p ? splitTopLevel(p).collect { it.trim().split(/\s+/)[-1].replaceAll(/\W/, '') } : []
+    }
+
+    /** Split a parameter list on top-level commas only — a `Map<Integer, Integer>`'s inner comma must not split it. */
+    static List<String> splitTopLevel(String p) {
+        List<String> out = []; int depth = 0; StringBuilder cur = new StringBuilder()
+        for (int i = 0; i < p.length(); i++) {
+            char c = p.charAt(i)
+            if (c == '<' as char) depth++
+            else if (c == '>' as char) depth--
+            if (c == ',' as char && depth == 0) { out << cur.toString(); cur = new StringBuilder() }
+            else cur.append(c)
+        }
+        if (cur.length()) out << cur.toString()
+        out
     }
     static String ensuresBodyFor(String src, String method) {
         int mi = methodDeclIndex(src, method); if (mi < 0) return null
