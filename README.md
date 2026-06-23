@@ -650,10 +650,16 @@ static int[] copy(int[] src, int[] dst) {
 
 The store's bounds discharge from the invariant and `src.length <= dst.length`, and both cursors advance each
 pass. The single-index form `dst[i] = src[i++]` verifies too: `i` appears twice, but the verifier checks
-**evaluation order** — Java evaluates the LHS index before the right-hand side, so the `i` in `dst[i]` reads
-the *old* value just as the hoisted-after `i++` does. What it refuses is a variable read *after* its own
-increment — `x = i++ + i`, where Java advances `i` mid-statement so the second `i` is the new value — which
-skips loudly rather than risk mis-modeling.
+**evaluation order** — the JLS's left-to-right rule evaluates the LHS index before the right-hand side, so the
+`i` in `dst[i]` reads the *old* value just as the hoisted-after `i++` does. What it refuses is a variable read
+*after* its own increment — `x = i++ + i`, where the second `i` is the new value — which skips loudly rather
+than risk mis-modeling.
+
+> **Note.** The verifier models the *documented* left-to-right order. A current Groovy bug —
+> [GROOVY-12097](https://issues.apache.org/jira/browse/GROOVY-12097) — evaluates the subscript *after* the
+> increment for the single-index form, so on today's runtime `dst[i] = src[i++]` lands one slot past where this
+> model (and the JLS) puts it; the two-cursor copy above is unaffected. (The runtime rung flags the single-index
+> forms as a known proof-vs-runtime divergence until that's fixed.)
 
 **Lists and boxed types — same reasoning, same syntax.** The encoder never inspects whether a value
 is `int` or `Integer`, or whether a sequence is an `int[]` or a `List` — it models every integer type

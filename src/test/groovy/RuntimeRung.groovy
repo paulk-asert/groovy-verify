@@ -162,9 +162,9 @@ class RuntimeRung {
         // (the matrix-sum [].sum()==null divergence is now caught by the verifier itself — it refuses the bare
         //  `.sum()` empty edge — so it is no longer an ok:true case the rung sees)
         'P expr inc/dec::a[i] = i++ stores old value at old index':
-            'eval order: Groovy evaluates the a[i] subscript AFTER the increment; the verifier models Java\'s snapshot-before order — triage: Groovy semantics vs verifier model',
+            'eval order (GROOVY-12097): Groovy evaluates the a[i] subscript AFTER the increment; the verifier models the documented JLS left-to-right order — a known Groovy runtime bug, not a verifier flaw',
         'P expr inc/dec::dst[i] = src[++i] (read before pre) snapshots and verifies':
-            'eval order: Groovy evaluates the subscript AFTER the pre-increment; the verifier models snapshot-before — same root cause as a[i]=i++',
+            'eval order (GROOVY-12097): Groovy evaluates the subscript AFTER the pre-increment; the verifier models the JLS left-to-right order — same root cause as a[i]=i++',
     ]
 
     static boolean isPostOrInvariant(Throwable t) {
