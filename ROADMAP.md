@@ -7759,7 +7759,12 @@ relaxes that machinery so a loop carrying **only** the auto bounds invariant ver
   closureBody)`, its `LoopSpec`, and stashes it on the `.each` node's metadata. **Non-destructive**: the AST still compiles to a real
   `.each` at runtime — the verifier finds the loop by `LOOP_SPEC_KEY`, not by node type, so no verifier change was
   needed to *locate* it. (groovy-contracts still checks the method's `@Ensures` at runtime; the synthetic invariant
-  is verifier-only, so there's no runtime mismatch.)
+  is verifier-only, so there's no runtime mismatch.) The same recogniser handles **`xs.eachWithIndex { x, i -> … }`**:
+  its closure's *second* param is the loop's index, so rather than a hidden synthetic one, `buildLoopSpec` drives the
+  loop with that **user-named** index (`int i = 0; … i = i + 1`, invariant `0 <= i <= size`, variant `size - i`) and
+  binds `x = xs[i]` — so `i` reads in contracts, asserts and counterexamples exactly as the developer wrote it. Its
+  two-param closure also infers cleanly on a primitive array even *untyped*, where `.each`'s implicit `it` hits the
+  GROOVY-12100 STC gap.
 - **Relaxation** (`buildLoopSpec`) — a for-in / `.each` with no user (or inferred) `@Invariant` previously returned
   null (→ skip). Now it proceeds on its auto bounds invariant (`0 <= idx <= size`) + `size - idx` variant alone,
   which already prove **safety and termination**. So a body asserting a **per-element property** verifies with no
@@ -7777,9 +7782,10 @@ skip, the documented limitation. A second boundary is upstream, not the verifier
 the implicit closure param, so `it >= 0` can't resolve `compareTo` before the verifier runs. Name the element type
 (`{ int x -> }`) or iterate a generic `List<Integer>` (where STC infers `it`). That STC gap is tracked upstream as
 **GROOVY-12100**; the verifier side is already built (the implicit-`it` path), so when the fix lands `int[].each { it }`
-verifies with no change here — the boundary case is pinned to its pre-fix error so it FLIPS on that release. 7 new `P161 each` cases (per-element
-verifies / unguarded refutes / for-in relaxation / accumulation loud-skips / implicit-`it` over a list verifies &
-refutes / primitive-array implicit-`it` is a stock STC error); root suite 1382/0, full `check` (incl. runtimeRung) green.
+verifies with no change here — the boundary case is pinned to its pre-fix error so it FLIPS on that release. 11 `P161 each`
+cases (per-element verifies / unguarded refutes / for-in relaxation / accumulation loud-skips / implicit-`it` over a
+list verifies & refutes / primitive-array implicit-`it` is a stock STC error / eachWithIndex element+index verifies,
+element refutes, binds `x = a[i]`, and untyped params infer on `int[]`); root suite 1386/0, full `check` (incl. runtimeRung) green.
 
 ---
 

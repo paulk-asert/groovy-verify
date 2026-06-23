@@ -5298,6 +5298,19 @@ class Derived extends Base {
         // with no change here. Pinned to the current (pre-fix) error so this case FLIPS the moment it ships.
         [group: 'P161 each', name: 'H array implicit `it` is a stock STC type error (GROOVY-12100)', expect: 'compareTo',
          src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.each { assert it >= 0 } } }')],
+        [group: 'P161 each', name: 'I eachWithIndex element+index property verifies', ok: true,
+         src: tc('''class C { @Requires({ a != null && (0..<a.length).every { a[it] >= 0 } })
+                        static void f(int[] a) { a.eachWithIndex { int x, int i -> assert x >= 0 && i >= 0 } } }''')],
+        [group: 'P161 each', name: 'J eachWithIndex element refutes without guard', expect: 'Assertion',
+         src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.eachWithIndex { int x, int i -> assert x >= 0 } } }')],
+        // The user-named index drives the loop, so the element binds to a[i] and a false claim about the index
+        // refutes against its 0 <= i < size bound — both read in counterexamples exactly as the developer wrote them.
+        [group: 'P161 each', name: 'K eachWithIndex binds element to a[i]', ok: true,
+         src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.eachWithIndex { int x, int i -> assert x == a[i] } } }')],
+        // Unlike `.each`'s implicit `it` (GROOVY-12100), eachWithIndex's two-param closure infers cleanly on a
+        // primitive array even *untyped* — STC types the element from the eachWithIndex signature, no annotation needed.
+        [group: 'P161 each', name: 'L eachWithIndex untyped params on int[] refute (no GROOVY-12100)', expect: 'Assertion',
+         src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.eachWithIndex { x, i -> assert x >= 0 } } }')],
         [group: 'P161 each', name: 'D each accumulation skips loudly', expect: 'Skipped loop verification',
          src: tc('''class C { @Ensures({ result == a.length })
                         static int f(int[] a) { int c = 0; a.each { int x -> c += 1 }; c } }''')],

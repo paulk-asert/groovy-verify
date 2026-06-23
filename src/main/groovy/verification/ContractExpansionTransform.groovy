@@ -739,35 +739,43 @@ class ContractExpansionTransform implements ASTTransformation {
         found
     }
 
-    /** {@code xs.each { x -> body }} modelled as the for-in {@code for (x in xs) { body }}: build that loop's
-     *  {@link LoopSpec} (auto bounds invariant + {@code size - idx} variant — safety + termination, no user
-     *  invariant needed) and return it, or null if it isn't an each-over-a-named-collection with one element
-     *  param. `.each` can't carry an {@code @Invariant} (a statement annotation on a method call is a Groovy
-     *  parse error), so an *accumulating* body that needs one stays a loud skip — exactly the for-in story. */
+    /** {@code xs.each { x -> body }} (or {@code xs.eachWithIndex { x, i -> body }}) modelled as the for-in
+     *  {@code for (x in xs) { body }}: build that loop's {@link LoopSpec} (auto bounds invariant + {@code size - idx}
+     *  variant — safety + termination, no user invariant needed) and return it, or null if it isn't an
+     *  each-over-a-named-collection. `.each` can't carry an {@code @Invariant} (a statement annotation on a method
+     *  call is a Groovy parse error), so an *accumulating* body that needs one stays a loud skip — the for-in story.
+     *  For {@code eachWithIndex} the closure's second param is the user-named index, which drives the loop directly
+     *  (so it reads in contracts/asserts/counterexamples as written) with the first param bound to {@code xs[i]}. */
     private static LoopSpec eachLoopSpec(ExpressionStatement st, SourceUnit source, boolean inferLoops) {
         if (!(st.expression instanceof MethodCallExpression)) return null
         MethodCallExpression mce = (MethodCallExpression) st.expression
-        if (mce.methodAsString != 'each' || !(mce.objectExpression instanceof VariableExpression)) return null
+        String method = mce.methodAsString
+        if ((method != 'each' && method != 'eachWithIndex') || !(mce.objectExpression instanceof VariableExpression)) return null
         if (!(mce.arguments instanceof ArgumentListExpression)) return null
         List<Expression> args = ((ArgumentListExpression) mce.arguments).expressions
         if (args.size() != 1 || !(args.get(0) instanceof ClosureExpression)) return null
         ClosureExpression cl = (ClosureExpression) args.get(0)
         Parameter[] ps = cl.parameters
-        // A single element binding: an explicit `{ x -> … }` (one param) or the implicit `{ … it … }` (params
-        // null — Groovy's marker for an implicit `it`, which we synthesise as the loop variable; the encoder
-        // takes the element type from the collection, so a `def`/Object type here is immaterial). An explicit
-        // empty `{ -> … }` (length 0) or a multi-param closure isn't an each-over-one-element → loud skip.
         Parameter elem
-        // A single element binding: an explicit `{ x -> … }` (one param) or the implicit `{ … it … }` — which
-        // this Groovy parser represents as an EMPTY parameter array (the implicit `it` is materialised later),
-        // so synthesise the loop variable named `it`. The encoder takes the element type from the collection,
-        // so the synthetic type is immaterial. A multi-param closure isn't an each-over-one-element → skip.
-        if (ps == null || ps.length == 0) elem = new Parameter(ClassHelper.int_TYPE, 'it')
-        else if (ps.length == 1) elem = ps[0]
-        else return null
+        String idxName = null
+        if (method == 'eachWithIndex') {
+            // `{ element, index -> … }` — two explicit params (no implicit form, so the GROOVY-12100 implicit-`it`
+            // inference gap doesn't apply here). The index is user-named and drives the loop (see buildLoopSpec).
+            if (ps == null || ps.length != 2) return null
+            elem = ps[0]
+            idxName = ps[1].name
+        } else {
+            // `.each`: an explicit `{ x -> … }` (one param) or the implicit `{ … it … }` — which this Groovy parser
+            // represents as an EMPTY parameter array (the implicit `it` is materialised later), so synthesise the
+            // loop variable named `it`. The encoder takes the element type from the collection, so the synthetic
+            // type is immaterial. An explicit multi-param `.each` closure isn't an each-over-one-element → skip.
+            if (ps == null || ps.length == 0) elem = new Parameter(ClassHelper.int_TYPE, 'it')
+            else if (ps.length == 1) elem = ps[0]
+            else return null
+        }
         ForStatement forIn = new ForStatement(elem, mce.objectExpression, cl.code)
         forIn.setSourcePosition(st)
-        buildLoopSpec(forIn, source, inferLoops)
+        buildLoopSpec(forIn, source, inferLoops, idxName)
     }
 
     /** True iff the class is checked by VerifyChecker with the {@code inferLoops: true} option, i.e.
@@ -803,7 +811,8 @@ class ContractExpansionTransform implements ASTTransformation {
         out
     }
 
-    private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source, boolean inferLoops) {
+    private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source, boolean inferLoops,
+                                          String explicitIndexName = null) {
         // Phase 59 — a classic for-loop is desugared to while-shape: its condition is the guard, its
         // init becomes a prefix statement, and its update is normalised to a plain assignment and
         // appended to the loop body. Phase 63 — a for-in loop `for (x in xs)` desugars to an *indexed*
@@ -848,7 +857,10 @@ class ContractExpansionTransform implements ASTTransformation {
                 String xs = ((VariableExpression) f.collectionExpression).name
                 String x = f.variable?.name
                 if (x == null) return null
-                String idx = FOR_IN_INDEX
+                // The index is normally a hidden synthetic name; for `.eachWithIndex { x, i -> … }` the user
+                // *named* it (`i`), so we drive the loop with that name — it then reads in contracts, asserts
+                // and counterexamples exactly as the developer wrote it, and `x = xs[i]` binds the element.
+                String idx = explicitIndexName != null ? explicitIndexName : FOR_IN_INDEX
                 guard       = reparse("${idx} < ${xs}.size()")
                 Statement initS = assignStmt("int ${idx} = 0")
                 Statement bindX = assignStmt("${x} = ${xs}[${idx}]")
