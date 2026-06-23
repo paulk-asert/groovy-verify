@@ -5314,6 +5314,33 @@ class Derived extends Base {
         [group: 'P161 each', name: 'D each accumulation skips loudly', expect: 'Skipped loop verification',
          src: tc('''class C { @Ensures({ result == a.length })
                         static int f(int[] a) { int c = 0; a.each { int x -> c += 1 }; c } }''')],
+        // Companion to D: the SAME accumulation the `.each` can't prove is provable as a classic `for`, because
+        // its in-scope index lets you attach the inductive @Invariant (c == i) that frames the accumulator —
+        // establishment/preservation/use close the postcondition, @Decreases adds termination. This is the edge
+        // of internal iteration: per-element safety is free, but a functional/accumulation result needs an
+        // @Invariant, which a `.each` statement can't carry (a statement annotation on a method call won't parse).
+        [group: 'P161 each', name: 'D2 same accumulation proven as a for-loop', ok: true,
+         src: tc('''class C {
+             @Ensures({ result == a.length })
+             static int count(int[] a) {
+                 int c = 0
+                 @Invariant({ c == i && i <= a.length })
+                 @Decreases({ a.length - i })
+                 for (int i = 0; i < a.length; i++) { c += 1 }
+                 c
+             }
+         }''')],
+        [group: 'P161 each', name: 'D3 for-loop accumulation wrong @Ensures refutes', expect: 'postcondition',
+         src: tc('''class C {
+             @Ensures({ result == a.length + 1 })
+             static int count(int[] a) {
+                 int c = 0
+                 @Invariant({ c == i && i <= a.length })
+                 @Decreases({ a.length - i })
+                 for (int i = 0; i < a.length; i++) { c += 1 }
+                 c
+             }
+         }''')],
         [group: 'P161 each', name: 'A each per-element property verifies', ok: true,
          src: tc('''class C { @Requires({ a != null && (0..<a.length).every { a[it] >= 0 } })
                         static void f(int[] a) { a.each { int x -> assert x >= 0 } } }''')],

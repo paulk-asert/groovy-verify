@@ -191,9 +191,11 @@ you write:
   quantifiers that nest. *Out:* `.keySet()` / `.values()` projection, nested-set mutation, and that same infinite stream
   `every` / `any` with no `.limit` (it never returns).
 - **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
-  nested) with `@Invariant` / `@Decreases`; early `return`; and `switch` *expressions* — the arrow form
-  (`case 1 -> …`) with literal / range labels; plus side-effecting assignment, `++` / `--`, and parallel swap.
-  *Out:* `try` / `catch`, `.each`, the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  nested) with `@Invariant` / `@Decreases`; the `xs.each { x -> … }` / `xs.eachWithIndex { x, i -> … }` iteration
+  forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant); early
+  `return`; and `switch` *expressions* — the arrow form (`case 1 -> …`) with literal / range labels; plus
+  side-effecting assignment, `++` / `--`, and parallel swap.
+  *Out:* `try` / `catch`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 
@@ -395,6 +397,48 @@ false positive the old loop-head check hit on the never-iterated case). Classic 
 the Java-style `for (int x : xs)` lower through the same machinery. (For *index*-arithmetic invariants like the
 prefix-sum `xs[0..<i].sum()` above, reach for `while`/`for(;;)` — the for-in's iteration index is synthesised
 and not in scope; for-in's strength is exactly this **per-element** reasoning.)
+
+**The closure-style iterations too: `.each` and `.eachWithIndex`.** `xs.each { x -> … }` — and the implicit
+`xs.each { … it … }` — model as that *same* for-in, but **safety-only**: the auto bounds invariant proves
+per-element properties and bounded reads with no hand-written `@Invariant`, which a `.each` statement can't carry
+anyway (a statement-level `@Invariant` on a method call is a Groovy parse error). So an *accumulating* `.each`
+stays an honest loud-skip — reach for `for`/`while` there. `xs.eachWithIndex { x, i -> … }` adds the index as a
+first-class, **user-named** loop variable, so `x` binds to `xs[i]` and `i` reads in contracts and counterexamples
+exactly as you wrote it:
+
+<!-- doclint:case p161-each/i-eachwithindex-element-index-property-verifies -->
+```groovy
+@Requires({ a != null && (0..<a.length).every { a[it] >= 0 } })
+static void f(int[] a) {
+    a.eachWithIndex { int x, int i -> assert x >= 0 && i >= 0 }
+}
+```
+
+**Where `.each` stops, a loop invariant begins — the edge of internal iteration.** The per-element auto-invariant
+that makes `.each` free for safety is also its ceiling. The moment a loop *accumulates* a result, the postcondition
+needs an inductive `@Invariant` relating the accumulator to the iteration — and a `.each` statement has nowhere to
+hang one (a statement-level annotation on a method call won't parse). A `for` / `while` / for-in *does*: its index is
+a real, in-scope variable, and the loop can carry `@Invariant` / `@Decreases` — the **extra information that internal
+iteration trades away**. So `a.each { c += 1 }` trying to prove `result == a.length` loud-skips, while the *identical*
+accumulation written as a `for` proves it outright:
+
+<!-- doclint:case p161-each/d2-same-accumulation-proven-as-a-for-loop -->
+```groovy
+@Ensures({ result == a.length })
+static int count(int[] a) {
+    int c = 0
+    @Invariant({ c == i && i <= a.length })
+    @Decreases({ a.length - i })
+    for (int i = 0; i < a.length; i++) { c += 1 }
+    c
+}
+```
+
+The `@Invariant` frames the accumulator — `c` tracks the index — so establishment (`c == i` at `i = 0`), preservation
+(`c+1 == i+1`), and use (`i == a.length` at exit, hence `c == a.length`) discharge the postcondition, and `@Decreases`
+adds termination; flip the spec to `a.length + 1` and it refutes with `count(new int[0])`. The rule of thumb:
+**reach for internal iteration (`.each`) for per-element safety; reach for a loop with an `@Invariant` the moment you
+need to prove what the loop *computes*.**
 
 **A property you can't even test — proven anyway.** `Stream.iterate(seed, f)` is *infinite*: a true
 `.every { … }` over it never returns, so this is a contract you fundamentally cannot unit-test. Because the
