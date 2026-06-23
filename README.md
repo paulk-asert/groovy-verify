@@ -675,7 +675,7 @@ static int diff(List<Integer> xs, int k) { xs[k] - xs[k + 1] }
 ```
 
 A `List<String>` index is bounds-checked the same way — the element type is irrelevant to the access.
-And the *element* itself is now nullity-checked: calling a method on `xs[i]` (or `xs.get(i)`) raises
+And the *element* itself is nullity-checked: calling a method on `xs[i]` (or `xs.get(i)`) raises
 an obligation to prove the element non-null — the verifier tracks a per-element nullity flag — which
 an `@Requires` or an `if` guard discharges, and which is otherwise refuted with a `fails on: f([null])`
 repro (the input that triggers the NPE):
@@ -799,7 +799,7 @@ pigeonhole + full-coverage iff into a single proof.
 First, **`/` on integers is `BigDecimal` division in Groovy** — `5 / 2 == 2.5`, not `2` — so the
 verifier models it that way and won't pretend a spec assuming `5 / 2 == 2` is correct (integer
 division is `a.intdiv(b)` or `(int)(a / b)`). Second, *variable* multiplication (`a * b` where
-neither side is a constant) is now handled by Z3's non-linear integer arithmetic (NIA), so sign facts
+neither side is a constant) is handled by Z3's non-linear integer arithmetic (NIA), so sign facts
 (`i * i >= 0`), divisibility (`n % 2 == 0`), and bounded products verify directly:
 
 <!-- doclint:ignore README illustration: square-in-bounds + div/mod round-trip -->
@@ -817,7 +817,7 @@ static int divModRoundTrip(int a, int b) { a.intdiv(b) * b + (a % b) }
 ```
 
 The division/modulo handling follows **Groovy**, not Java (they differ): `/` on integers is
-*`BigDecimal`* division (`5 / 2 == 2.5G`), now modelled with Z3's exact-real arithmetic so a spec
+*`BigDecimal`* division (`5 / 2 == 2.5G`), modelled with Z3's exact-real arithmetic so a spec
 over it is *proven* — `a / 2 == 2.5` verifies and `a / 2 == 2` refutes, and a `BigDecimal` average is
 provably `(a + b) / 2` (genuine integer division is `a.intdiv(b)` or `(int)(a / b)`, truncating toward
 zero, modelled distinctly). `%` and `.remainder(b)` are the
@@ -1069,7 +1069,7 @@ you don't mutate it, you don't need it. The `(a, b) = [b, a]` is itself a swap �
 which snapshots the right-hand side before writing any target, so a *sequential* `a = b; b = a` (which would
 lose `a`) is provably different and refutes if you claim its outcome. Referring to `old` of a **parameter** —
 not just a field — became an *executable* contract in GROOVY-12078; the verifier already modelled it through
-its entry-snapshot machinery, so now the proof and the runtime check agree. A wrong relation (`result.a ==
+its entry-snapshot machinery, so the proof and the runtime check agree. A wrong relation (`result.a ==
 old.a`) refutes either way.
 
 **Lists — mutation under a sound `@Modifies`, with count preservation faithful to Groovy's runtime.**
@@ -1520,7 +1520,7 @@ class C {
 
 Drop the `xs[0] != null` premise and groovy-verify **disproves** the assumption — `Possible
 NullPointerException`, counterexample `firstLen([null])` — while strict NullChecker stays silent, its flow
-model having no handle on the element. The annotation-driven direction now **composes** too. A `@NonNull`
+model having no handle on the element. The annotation-driven direction **composes** too. A `@NonNull`
 return is read as an implicit `result != null` postcondition groovy-verify **proves** at the value level —
 catching a nullable value that reaches the return through reasoning (arithmetic, contracts, a `@Requires`-only
 guarantee) NullChecker's flow model passes over. A `@NonNull` *field* becomes an implicit object invariant
@@ -1614,7 +1614,7 @@ reduction that **calls `Sum.add`** gives exactly `xs.sum()` (`Largest.max` does 
 a `sumParallel(Largest.&max)` call site).
 
 **The laws come for free from the annotation.** `@Reducer` and `@Associative` don't merely *assert* a monoid —
-their own javadoc says *"this annotation asserts the laws; it [checks nothing]"*. groovy-verify now reads the
+their own javadoc says *"this annotation asserts the laws; it [checks nothing]"*. groovy-verify reads the
 annotation directly: for any `@Associative`/`@Reducer` combiner with an equational `@Ensures({ result == E })`, it
 synthesises and discharges the very laws the annotation claims — associativity for both, plus identity over the
 declared `zero` for `@Reducer`. So the hand-written `associative` lemma above is **redundant**; delete it and the
@@ -1624,7 +1624,7 @@ proof still holds, because `@Reducer(zero = '0')` already obliges it:
 ```groovy
 @TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])
 class Sum {
-    @Reducer(zero = '0')                              // asserts a monoid — and groovy-verify now *proves* it:
+    @Reducer(zero = '0')                              // asserts a monoid — and groovy-verify *proves* it:
     @Ensures({ result == a + b })                     // associativity AND identity (a+0 == 0+a == a) discharged
     static int add(int a, int b) { a + b }            // from the annotation, no lemma method required
 
@@ -1642,7 +1642,7 @@ class Sum {
 }
 ```
 
-A bad annotation now fails loudly: `@Associative` on subtraction refutes with `Cannot prove @Reducer
+A bad annotation fails loudly: `@Associative` on subtraction refutes with `Cannot prove @Reducer
 associativity for combiner sub` (`(a-b)-c ≠ a-(b-c)`), and a wrong `zero` — say `@Reducer(zero = '1')` on a sum —
 refutes with `Cannot prove @Reducer identity`. `sumParallel` is the seedless reduction — the simplest call form — and
 both the `::` method reference and Groovy's `.&` method pointer work (`Foo::bar` parses to a
@@ -1783,7 +1783,7 @@ class C {
 }
 ```
 
-Both pass — and `f`'s proof now rests on *checked* purity, not trusted purity. Give `triple` a side
+Both pass — and `f`'s proof rests on *checked* purity, not trusted purity. Give `triple` a side
 effect (`counter += 1`) and `PurityChecker` names the exact violation (`@Pure violation: field
 assignment to 'counter'`) where groovy-verify — unable to evaluate the impure body — would only shrug a
 vague `Cannot prove`. This is the deepest of the pairings: one checker underwrites a premise the other

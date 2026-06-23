@@ -35,7 +35,7 @@ a coverage metric. In expressions the fragment is:
   terminates** — a constant whose unscaled integer has just the prime factors 2 and 5 (`/2`, `/1000`, `/0.25`), so
   `5 / 2 == 2.5` and a `metres / 1000` unit conversion prove exactly; a non-terminating divisor (`/3`, `/7`, a
   symbolic one) **skips loudly**, since Groovy rounds it and an exact-Real model would prove runtime-false facts
-  (Phase 143). Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
+  (Phase 152). Int operands are coerced; only `BigDecimal` is exact-Real — `double`/`float` take the IEEE-754 FP
   path, below; divide-by-zero and
   `.mod`-non-positive obligations fire; `**` lowers to an axiomatised `pow$` (Phase 93) — a literal
   exponent folds to a value (`(2 ** 3).intValue() == 8` proves) and the doubling recurrence
@@ -67,7 +67,7 @@ a coverage metric. In expressions the fragment is:
   possibly-empty sublist is modelled as unconstrained at empty and a spec like `int == a[0..<k].sum()` *refuses*
   to prove at the empty edge — the seeded `a[0..<k].sum(0)`, a guaranteed-non-empty range, or the int[]-returning
   `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms; the recurrence spec helpers
-  `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/63/87);
+  `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/56/87);
 - `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /
   regex `matches`) and GString interpolation, plus `Integer.toString` / `parseInt` conversion. The
@@ -173,8 +173,8 @@ mutator's pre/post state, and a class `@Invariant` assumed-on-entry / checked-pr
 contracts) — but it does *not* in general verify the definition itself: deconstruction / pattern matching and
 generated `equals`/`toString`/`hashCode` aren't modelled, and an `enum` or `record` is understood only through
 the fields and finite domain its methods actually touch. A **record's canonical constructor is the exception** —
-it is modelled as a one-constructor Z3 datatype, so it **round-trips**: a single-component record (Phase 133)
-gives `new R(v).f == v`, and a **multi-component** record (Phase 142, ≥2 final fields — the `TupleN` analogue)
+it is modelled as a one-constructor Z3 datatype, so it **round-trips**: a single-component record (Phase 150)
+gives `new R(v).f == v`, and a **multi-component** record (Phase 151, ≥2 final fields — the `TupleN` analogue)
 gives `new R(a, b).f`, both by datatype theory; a wrong component refutes. A `result`-typed `new R(…)` with a
 contract over `.f` verifies — including through **carrier-typed locals** and the **`+` / `*` operators** when the
 record carries an instance `plus` / `multiply` with an `@Ensures` and no `@Requires` (`a + b` is routed to
@@ -182,37 +182,36 @@ record carries an instance `plus` / `multiply` with an `@Ensures` and no `@Requi
 type-changing `Length × Length → Area`). The fullest form is one **dimension-carrying** record —
 `Quantity(value, l, m, t)` — whose `multiply` scales the value and composes the `(L, M, T)` exponent vector
 (`Quantity(2,[1,0,0]) × Quantity(3,[1,0,0]) == Quantity(6,[2,0,0])`), the whole dimensional algebra in a single
-type. A **guarded** operator routes soundly too (Phase 142b): the precondition hook fires for `a + b` and checks
+type. A **guarded** operator routes soundly too (Phase 151b): the precondition hook fires for `a + b` and checks
 `plus`'s `@Requires` at the site, so a `Quantity` `plus` guarded `@Requires({ l == o.l && … })` makes `a + b`
 require matching dimensions — same-dimension addition verifies, a Length-plus-Mass refutes — completing the
 algebra (`×`/`/` compose exponents, `+`/`−` require them equal). In-record **conversion/scale** is in too: a
 `Length.km(v)` factory scales to SI and the read-out divides back when the divisor terminates (Phases 142c/143).
-That precondition-check at the `a + b` site **replays the straight-line prefix**, and the replay now models a
+That precondition-check at the `a + b` site **replays the straight-line prefix**, and the replay models a
 carrier-returning contracted call — a factory like `Quantity.km(1)`, or a routed operator — as a fresh
-carrier-sorted handle constrained by the callee's `@Ensures`, rather than havocing it to an `Int` (which crashed a
-later same-sort equality). So **factory-built operands feed a guarded operator**: `Quantity.km(1) + Quantity.mile(1)`
-proves `2609.344` in metres, the dimension guard firing across the factory boundary (Phase 144). A carrier-returning
-call is also a value **in expression position** (Phase 145), so the whole thing collapses to a single fluent
+carrier-sorted handle constrained by the callee's `@Ensures` (not havoced to an `Int`). So **factory-built operands feed a guarded operator**: `Quantity.km(1) + Quantity.mile(1)`
+proves `2609.344` in metres, the dimension guard firing across the factory boundary (Phase 153). A carrier-returning
+call is also a value **in expression position** (Phase 154), so the whole thing collapses to a single fluent
 **chain** — `Quantity.km(1).plus(Quantity.mile(1))`, receiver and argument both factory calls — modelled by one
 recursive primitive (`carrierValueOf`, minting a fresh carrier handle constrained by the callee's `@Ensures`) wired
 into the assume side, the precondition discharge (so the guarded `.plus` stays sound), and the return path. A
-**read-out in the same expression** works too (Phase 146): a component read on a chain result —
+**read-out in the same expression** works too (Phase 155): a component read on a chain result —
 `Quantity.km(1).plus(Quantity.mile(1)).value` (the bespoke `.to(METRE).getValue()`) — hoists each maximal carrier
 call to a temp local so the `.value` becomes an ordinary component read, proving `2609.344` as a `BigDecimal` with
 no intermediate locals (composes with decimal arithmetic and a local-RHS read-out). **Units-as-data** composes from
-these with no new support (Phase 147): a `Unit(scale, l, m, t)` is itself a record value, `Quantity.of(v, unit)` a
+these with no new support (Phase 156): a `Unit(scale, l, m, t)` is itself a record value, `Quantity.of(v, unit)` a
 factory reading the unit's fields off the carrier-typed formal, and a metric prefix a `Unit → Unit` factory — so the
 literal JSR 385 shape `Quantity.of(1, Unit.kilo(Unit.metre())).plus(Quantity.of(1, Unit.mile())).value == 2609.344`
 verifies (a read-out in a *non-SI* named unit divides by a symbolic scale and skips). The `1.km + 1.mile` **DSL**
-verifies too, *experimentally* (Phase 148): registered Groovy extension methods build JSR 385 quantities, and the
+verifies too, *experimentally* (Phase 157): registered Groovy extension methods build JSR 385 quantities, and the
 C₁ reader's curated by-name recogniser was extended to the unit-suffix sugar (`m`/`km`/`mile`/`kg`), the `+`/`-`
 operators, and `*` (`multiply`) — soundly tracking the unit, so `(1.km + 1.mile).value == 2609.344` *refutes* (it is
 `2.609344` in km), and `(1.km * 1.km).value == 1_000_000` *refutes* (it is one km², value `1`, not the metre² number
-— an area the erased `Quantity<?>` can't police). Quantity-to-quantity `==` is in too (Phase 151): a dimension
+— an area the erased `Quantity<?>` can't police). Quantity-to-quantity `==` is in too (Phase 159): a dimension
 table (`[L,M,T]` exponent vectors) joins the magnitude layer, so the literal `@Ensures({ result == 1.km })` verifies
 soundly — *different* dimensions are never equal (`1.m == 1.kg` throws at runtime; folded to `false`), *equal*
 dimensions compare magnitude — and the area-vs-length `Quantity squareKm() { 1.km * 1.km }` refutes on dimension.
-**Division and locals** (Phase 152): `/` subtracts the dimension exponents (Length−Time = Speed) and divides
+**Division and locals** (Phase 160): `/` subtracts the dimension exponents (Length−Time = Speed) and divides
 magnitudes, quantity-typed locals are aliased to their RHS, and `s` (seconds) joins the vocabulary — so
 `def s = 1.s; def d = 1.m; return d / s` with `@Ensures({ result == 1.m / 1.s })` verifies; a `quantity/quantity` is
 a Quantity op (no divide-by-zero obligation), and a non-terminating divisor (`1.m / 3.s`) skips (exact-Real soundness).
@@ -240,14 +239,14 @@ a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@Negat
 `int` / `long`, and `@Size(min, max)` / `@NotEmpty` on an array / `List` / `String` — read as the obvious bound and
 assumed like a precondition (matched by fully-qualified name, so no dependency on the validation API; `@NotEmpty`
 also implies non-null, `@Size` does not; a contradictory pair is flagged vacuous). So an annotation written for
-runtime validation also discharges the compile-time obligation (Phase 128). *Out of this slice:* `Set`/`Map`
+runtime validation also discharges the compile-time obligation (Phase 145). *Out of this slice:* `Set`/`Map`
 `@Size`, `@DecimalMin`/`@DecimalMax`, and call-site enforcement of the constraint (it's assumed, like `@NonNull`).
 
 In the same vein, a **`@NonNull`-style annotation** (the NullChecker / Checker Framework / JSR-305 vocabulary —
 `@NonNull` / `@NotNull` / `@Nonnull`, matched by *simple* name) on a reference parameter or field is read as a
 `!= null` precondition, assumed in the body the same way `@Requires({ x != null })` would be — so `@NonNull String s`
 discharges `s.length()` and `@NonNull Function g` discharges `g.apply(x)`, with NullChecker still enforcing it at
-call sites (Phase 129). It does not replace `@Requires`, which additionally emits a GContracts *runtime* check.
+call sites (Phase 146). It does not replace `@Requires`, which additionally emits a GContracts *runtime* check.
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
 tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post

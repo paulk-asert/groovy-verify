@@ -184,7 +184,7 @@ static int countUp(int n) {
 
 All four VCs discharge clean; mutate an increment or the invariant and the
 diagnostic names exactly which obligation fails. **Caveat:** the havoc set is
-currently *every* in-scope variable rather than the loop's live-modified set —
+*every* in-scope variable rather than the loop's live-modified set —
 sound but loose, so non-trivial loops will draw more "could not decide" answers
 than a tighter modified-set analysis would. Loop contracts are never read across
 a module boundary, so the rebuild discipline below does not apply to them.
@@ -441,7 +441,7 @@ push-button, no-language-change identity.
 computations* that need no solver at all — you just run them. Groovy, unlike a
 paper proof language, already ships an interpreter, so this is unusually cheap
 to reach. A normalisation pre-pass slots in exactly where `Encoder.translate`
-currently returns `null`:
+returns `null`:
 
 - **Constant folding (closed sub-terms) — shipped.** A closed numeric sub-expression —
   `(2 + 2) * (2 + 2)`, a folded array index `a[(1 + 1) * 2]` — is reduced to a literal via
@@ -2013,7 +2013,7 @@ the annotations, this slice picks them up without further changes.
   consistently there. Out of our hands until Groovy preserves type-use annotations on generic
   type arguments at the StaticTypeChecking phase.
 - **No nullity tracking through writes.** {@code xs[i] = null} / {@code xs[i] = something} does
-  not currently update the per-element nullity array — the oracle is read-only in this slice.
+  not update the per-element nullity array — the oracle is read-only in this slice.
   Practical impact: a body that *assigns* into the list and then dereferences would still flag
   the dereference. Adding the write-side is a follow-up paralleling the existing per-store
   {@code count} law.
@@ -2785,7 +2785,7 @@ the assumption the rest of the project already lives under. With aliasing, `b$co
   collect/dispatch wiring doesn't yet.
 - **Multi-level dereferencing.** `c.next.count` (a Counter with a `next: Counter` field, walked
   one further step) skips. One level only.
-- **Same-class `b.method()` calls** (where `b` is also of the declaring class) currently
+- **Same-class `b.method()` calls** (where `b` is also of the declaring class)
   *don't* trigger cross-class machinery — they remain in the Phase 7 same-class call path,
   which doesn't apply the receiver-qualified rewrite. Edge case; the typical use is foreign
   receivers, which work.
@@ -3182,7 +3182,7 @@ contract." A program that benefits from both stacks both extensions in its
 - ~~Limited parser grammar~~ — *most common features closed by Phase 47d below.*
 - Dynamic regex strings (`s.matches(variableRegex)`) skip — translation requires the regex
   text be statically known. A field with a `final String PATTERN = "…"` could in principle
-  be const-folded, but the encoder's pure-fold path doesn't currently reach into static
+  be const-folded, but the encoder's pure-fold path doesn't reach into static
   field initialisers.
 
 ## Phase 47d — Regex feature expansion  *(shipped)*
@@ -3896,7 +3896,7 @@ generation it rests on verifies; the search does not, and saying so cleanly is t
 
 ---
 
-## Phase 63 — Tribonacci generation: the `Trib.of(i)` helper (HumanEval 063 `fibfib`)  *(shipped)*
+## Phase 56 — Tribonacci generation: the `Trib.of(i)` helper (HumanEval 063 `fibfib`)  *(shipped)*
 
 The three-term sibling of Phase 55, and HumanEval task **063** (`fibfib`): the recurrence
 `fibfib(n) = fibfib(n-1) + fibfib(n-2) + fibfib(n-3)` with base `0, 0, 1`. It shows the recurrence
@@ -4777,7 +4777,7 @@ verifies, a sequence threads the index, and an out-of-bounds `a[i++]` refutes. L
 
 ## Phase 87 — Euclid's gcd via the `Gcd.of(a, b)` helper (HumanEval 013)  *(shipped)*
 
-The two-*argument* sibling of the Phase 55/63 recurrence helpers (`Fib.of`/`Trib.of`). A new `verification.Gcd`
+The two-*argument* sibling of the Phase 55/56 recurrence helpers (`Fib.of`/`Trib.of`). A new `verification.Gcd`
 spec helper (executable Euclid, so the groovy-contracts runtime check still works) is recognised by `Encoder`
 from the `Gcd.of(a, b)` shape and lowered to an uninterpreted `gcd$ : (Int, Int) -> Int`, constrained
 mint-once by Euclid's defining axioms:
@@ -6585,7 +6585,7 @@ extension syntax — `VerifyChecker(inferLoops: true)` — so VerifyChecker read
 
 ## Phase 143 — fib4 / tetranacci via `Tetra.of(i)` (HumanEval 046)  *(shipped — a mechanical recurrence extension)*
 
-The four-term sibling of `Fib` (2-term, Phase 55), `Trib` (3-term, Phase 63) and `Gcd` (2-arg, Phase 87) — and a
+The four-term sibling of `Fib` (2-term, Phase 55), `Trib` (3-term, Phase 56) and `Gcd` (2-arg, Phase 87) — and a
 demonstration that the recurrence-helper machinery extends *purely mechanically* one term wider. New `Tetra.of(i)`
 helper, recognised by the `Encoder` and lowered to an uninterpreted `tetra$ : Int -> Int` constrained by base
 (`tetra(0)==0, tetra(1)==0, tetra(2)==2, tetra(3)==0`) and step (`∀k. k>=4 ⟹ tetra(k)==tetra(k-1)+…+tetra(k-4)`)
@@ -7166,7 +7166,7 @@ rely/guarantee tooling, straight-line, branching, and loop bodies (read and writ
 
 ---
 
-## Phase 127 — diagnostic knobs: counterexample→test, suggested contract, proof explanation, SMT dump  *(shipped — four opt-in env vars, OFF byte-identical)*
+## Phase 144 — diagnostic knobs: counterexample→test, suggested contract, proof explanation, SMT dump  *(shipped — four opt-in env vars, OFF byte-identical)*
 
 Four transient-tooling environment variables that change what the checker *reports*, never what it proves; each
 leaves the default path **byte-identical** when unset (the full suite is unchanged under all four off), so they
@@ -7188,7 +7188,7 @@ carry zero regression risk. They form a small family around one diagnostic:
   the proof. A pure downstream read-out in a fresh solver — it cannot change a verify/refute, and incomplete
   capture fails *closed* ("no explanation", never a wrong one). It also attributes **structural** facts the proof
   leaned on but the author didn't write — a class `@Invariant`, a JVM integer bound, and Bean Validation
-  constraints (Phase 128) — printed as `also leaned on` only when load-bearing, so a hidden dependency surfaces
+  constraints (Phase 145) — printed as `also leaned on` only when load-bearing, so a hidden dependency surfaces
   without noise. Capture is centralised in one hook (`captureExplain` / `explainNoteFact`) so a new assume path
   can't silently lose the read-out.
 - **`VERIFY_DUMP_SMT`** — prints every solver query as a self-contained SMT-LIB2 benchmark (declarations,
@@ -7199,7 +7199,7 @@ carry zero regression risk. They form a small family around one diagnostic:
 
 The recurring pattern: an opt-in flag gating a reporting-layer transform keeps the OFF path byte-identical.
 
-## Phase 128 — Bean Validation constraints read as preconditions  *(shipped — jakarta/javax, numeric + size)*
+## Phase 145 — Bean Validation constraints read as preconditions  *(shipped — jakarta/javax, numeric + size)*
 
 A `jakarta.validation` / legacy `javax.validation` constraint annotation on a parameter or field is read as a
 method-entry **precondition** — the same posture as `@Requires` / `@NonNull` (assumed in the body, the caller's
@@ -7224,7 +7224,7 @@ interprocedural call-site obligation (inherits `@NonNull`'s assume-only posture)
 
 ---
 
-## Phase 129 — `@NonNull`-style annotation on a parameter read as a non-null precondition  *(shipped — same hook as Phase 128)*
+## Phase 146 — `@NonNull`-style annotation on a parameter read as a non-null precondition  *(shipped — same hook as Phase 145)*
 
 A `@NonNull`-style annotation (the NullChecker / Checker Framework / JSR-305 vocabulary — matched by *simple*
 name via `NON_NULL_ANNOTATION_NAMES`, since the same idea is spelled `@NonNull` / `@NotNull` / `@Nonnull` across
@@ -7236,7 +7236,7 @@ Maybe / functor shape, where the closure parameter was previously guarded only b
 - **Where**: a guard at the top of `assumeConstraintsFor` (before the numeric / size early-return, so it covers
   *any* non-primitive type), asserting `not(nullityOf(name))` when the annotation is present. One place, folded
   into the same `assumeIntJvmBounds` method-entry hook as the Jakarta reader — every discharge path, no scatter.
-- **Soundness**: monotonic, like Phase 128 — an added non-null assumption only ever proves *more*, so the OFF
+- **Soundness**: monotonic, like Phase 145 — an added non-null assumption only ever proves *more*, so the OFF
   path and every existing case stay byte-identical (1240 → still green). The fact auto-attributes under
   `VERIFY_EXPLAIN` (`also leaned on: @NonNull s`).
 - **Not a replacement for `@Requires`**: `@NonNull` is compile-time only (NullChecker), whereas `@Requires`
@@ -7244,11 +7244,11 @@ Maybe / functor shape, where the closure parameter was previously guarded only b
   rather than swapping in `@NonNull`, which would lose the runtime guard for callers outside the checked compile.
 
 New cases live in a `nonnull param` group (the unannotated twin's refutation is already covered by `P1 null` /
-`P9 repro`). Out of this slice: the same call-site obligation deferred from Phase 128.
+`P9 repro`). Out of this slice: the same call-site obligation deferred from Phase 145.
 
 ---
 
-## Phase 130 — `replace` / `replaceFirst` / `replaceAll` made sound (was: replace-all modelled as replace-first)  *(shipped — soundness fix)*
+## Phase 147 — `replace` / `replaceFirst` / `replaceAll` made sound (was: replace-all modelled as replace-first)  *(shipped — soundness fix)*
 
 A bmc4j-limits audit ([their stub channel](https://github.com/bmc4j/bmc4j/blob/main/docs/limits.md)) turned up a
 real unsoundness: `s.replace(old, new)` lowered *unconditionally* to Z3's **first-occurrence** `str.replace`,
@@ -7276,7 +7276,7 @@ now *skips* rather than wrongly verifying.
 
 ---
 
-## Phase 131 — JSR 385 dimensional analysis (C₀: dimension-only)  *(shipped — the units twin of `@Label`)*
+## Phase 148 — JSR 385 dimensional analysis (C₀: dimension-only)  *(shipped — the units twin of `@Label`)*
 
 The second face of the `@Label` information-flow lattice: same shape — a label propagated through the program
 under an algebra, checked at a forbidden point — but the algebra is a **free abelian group ℤ³** (over
@@ -7298,11 +7298,11 @@ and **refutes a cast whose declared kind disagrees** — so `q.divide(t) as Quan
   compiles against it, so the published POM stays clean.
 
 New cases live in a `P131 dimensions` group (the blog's `div` cast verifies; the `multiply` typo, and an Area-vs-Volume
-cast, refute). This is **C₀** of the units sketch; the value/scale layer is Phase 132.
+cast, refute). This is **C₀** of the units sketch; the value/scale layer is Phase 149.
 
 ---
 
-## Phase 132 — JSR 385 value/scale (C₁: SI-normalized magnitudes)  *(shipped — the deeper Mars-orbiter bug)*
+## Phase 149 — JSR 385 value/scale (C₁: SI-normalized magnitudes)  *(shipped — the deeper Mars-orbiter bug)*
 
 Where C₀ checks *dimensions* (catching `length × time as Speed`), C₁ checks **values and scale** — the bug C₀
 can't see, because the original Mars Climate Orbiter failure mixed two quantities of the *same dimension*
@@ -7333,7 +7333,7 @@ threaded through binding), and rational exponents. Together with C₀ this is a 
 
 ---
 
-## Phase 133 — single-component record as a one-constructor datatype (the canonical-constructor gap, closed)  *(shipped)*
+## Phase 150 — single-component record as a one-constructor datatype (the canonical-constructor gap, closed)  *(shipped)*
 
 A freshly-constructed record was opaque: `new R(v)` then `.f` skipped, because the engine didn't model a
 record's canonical constructor (Tuple worked only because `Tuple.tuple` was special-cased). This closes that for
@@ -7400,14 +7400,14 @@ refutes). This is the actual dimensional algebra, not just same-dimension `+`. S
 Still out: **multi-component** records (a general N-field datatype, the TupleN analogue — so a dimension *vector*
 `(L, M, T)` falls out automatically rather than one hand-written record per derived unit); a guarded operator
 (`@Requires` on the operator method) — the operator site is a `BinaryExpression`, so the precondition pass can't
-check it; and conversion/scale *inside* a bespoke record (today the scale layer is Phase 132's JSR 385 reader).
+check it; and conversion/scale *inside* a bespoke record (today the scale layer is Phase 149's JSR 385 reader).
 1257 → 1274.
 
 ---
 
-## Phase 142 — multi-component record as a one-constructor N-field datatype (the dimension-carrying Quantity)  *(shipped)*
+## Phase 151 — multi-component record as a one-constructor N-field datatype (the dimension-carrying Quantity)  *(shipped)*
 
-Phase 133 modelled a *single*-component record. This extends it to **N** components: a `record R(T1 f1, …, Tn fn)`
+Phase 150 modelled a *single*-component record. This extends it to **N** components: a `record R(T1 f1, …, Tn fn)`
 with ≥2 final fields is a one-constructor immutable product, modelled as an N-field Z3 datatype (the record
 analogue of `TupleN`, reusing the `datatypeSort` / `datatypeConstruct` / `datatypeSelect` backend the
 `Some | None` carrier already uses). `new R(a, b).f` round-trips by datatype theory, and a wrong component
@@ -7429,15 +7429,15 @@ proved, a wrong exponent refuting. `/` subtracts exponents the same way; a deriv
   read via instance fields (bare `p.x`, `this.lo`); those reads coexist — a record param now routes through the
   datatype selector consistently, and a bare-field receiver read still uses the instance-field path. 1274 → 1278.
 
-Out of this slice: same-dimension **addition via `+`** (Phase 142b, below); deconstruction / pattern-matching and
+Out of this slice: same-dimension **addition via `+`** (Phase 151b, below); deconstruction / pattern-matching and
 generated `equals` / `hashCode` (still not modelled); and **conversion/scale** inside the bespoke record (today
-Phase 132's JSR 385 reader). New cases: `P142 multi-record`.
+Phase 149's JSR 385 reader). New cases: `P142 multi-record`.
 
 ---
 
-## Phase 142b — guarded-operator routing (the dimension-checked `+`, soundly)  *(shipped)*
+## Phase 151b — guarded-operator routing (the dimension-checked `+`, soundly)  *(shipped)*
 
-Phase 133's operator routing was sound *by restriction*: `a + b` routed to `a.plus(b)` only when `plus` had no
+Phase 150's operator routing was sound *by restriction*: `a + b` routed to `a.plus(b)` only when `plus` had no
 `@Requires`, because the operator site is a `BinaryExpression` (not a `MethodCall`), so the precondition hook
 never fired there. This lifts that restriction — and a probe first confirmed it was a real soundness wall:
 routing a guarded operator without checking the guard let a method "prove" `result.metres >= 0` for a value that
@@ -7459,11 +7459,11 @@ type system can't catch, since every quantity is one `Quantity` type). With `×`
 `P133 record ctor` (a guarded `plus` routes; a violated guard refutes) and `P142 multi-record` (dimensional add).
 1278 → 1281.
 
-Out of this slice: in-record conversion/scale (Phase 142c, below), and affine units.
+Out of this slice: in-record conversion/scale (Phase 151c, below), and affine units.
 
 ---
 
-## Phase 142c — in-record unit conversion (the construct-to-SI side)  *(shipped — mostly already worked)*
+## Phase 151c — in-record unit conversion (the construct-to-SI side)  *(shipped — mostly already worked)*
 
 A probe found that **in-record conversion is largely already there**: a `Length.km(v)` factory scales a value to
 SI (`new Length(v * 1000.0)`), and at a *use site* the converted value is verified — `Length.km(2).metres == 2000`
@@ -7472,7 +7472,7 @@ SI (`new Length(v * 1000.0)`), and at a *use site* the converted value is verifi
 now closed:
 
 - **Cross-class static factory resolution.** `resolveContractedCallee` searched only the caller's class (and, from
-  Phase 142, an instance receiver's type); it now also searches a **static call's owner type**, so `Length.km(2)`
+  Phase 151, an instance receiver's type); it now also searches a **static call's owner type**, so `Length.km(2)`
   resolves from any class (`receiverCarrierType` ignores a `ClassExpression` receiver — that's a static call, not
   an instance — and `ownerCarrierType` supplies the owner).
 - **Decimal arguments in interprocedural calls.** `assumeCalleeEnsures` bound formals with plain `translate`,
@@ -7486,11 +7486,11 @@ unsound; and a record's **own** conversion methods are verified only if the reco
 construct-to-SI / compare side is machine-checked; the divide-to-read-out side stays a loud skip. New cases:
 `P142c conversion`. 1281 → 1285.
 
-Out of this slice: `BigDecimal` division (read-out — Phase 143, below), and affine units (°C/°F offsets).
+Out of this slice: `BigDecimal` division (read-out — Phase 152, below), and affine units (°C/°F offsets).
 
 ---
 
-## Phase 143 — `BigDecimal` division modelled soundly (and a latent unsoundness fixed)  *(shipped)*
+## Phase 152 — `BigDecimal` division modelled soundly (and a latent unsoundness fixed)  *(shipped)*
 
 A probe found a real **unsoundness**: decimal `/` was modelled as *exact* Real division unconditionally, but
 Groovy's `BigDecimal /` **rounds** a non-terminating quotient (to its `MathContext`). So `x = 1; y = x / 3;
@@ -7519,7 +7519,7 @@ arithmetic effort).
 
 ---
 
-## Phase 144 — carrier-returning calls modelled in the precondition-check replay (Step 0 toward a fluent units API)  *(shipped)*
+## Phase 153 — carrier-returning calls modelled in the precondition-check replay (Step 0 toward a fluent units API)  *(shipped)*
 
 A probe asked the obvious next question for the bespoke units type: does the *local* equivalent of the JSR 385
 `1 km + 1 mile == 2609.344` example verify — operands built by **named-unit factories**, added with a **guarded**
@@ -7545,15 +7545,15 @@ length + a mass refutes `l == o.l` at `a + b`) and a wrong total refuting the po
 not skipped). New cases: `P144 carrier replay` (+ a gallery example in `examples/units.md`). 1289 → 1292.
 
 This is **Step 0** of the path to a fluent units API: a carrier-returning call is now a first-class value in the
-replay, not an opaque one. Still ahead: true single-expression **chaining** (Phase 145, next), units-as-data
+replay, not an opaque one. Still ahead: true single-expression **chaining** (Phase 154, next), units-as-data
 (`Unit(scale, dims)` + `getQuantity(v, unit)`), and the `1.km` extension-method DSL (needs a registered
 `ExtensionModule`; `use()` categories are rejected by `@TypeChecked`).
 
 ---
 
-## Phase 145 — carrier-returning calls as values in expression position (Step 1: chaining)  *(shipped)*
+## Phase 154 — carrier-returning calls as values in expression position (Step 1: chaining)  *(shipped)*
 
-Step 0 (Phase 144) made a carrier-returning call a value in the *replay*; the operands still had to be bound to
+Step 0 (Phase 153) made a carrier-returning call a value in the *replay*; the operands still had to be bound to
 locals. Step 1 makes a carrier-returning call a value **in expression position**, so the whole computation
 collapses to one fluent chain — the bespoke twin of JSR 385's own shape:
 
@@ -7584,14 +7584,14 @@ wrong total refutes the postcondition; and a length-plus-mass chain refutes the 
 dimension check fires *through* the chain, not around it. New cases: `P145 carrier chain` (+ a gallery example).
 1292 → 1296.
 
-Still ahead: a **read-out in the same expression** (Phase 146, next), units-as-data (`Unit(scale, dims)` +
+Still ahead: a **read-out in the same expression** (Phase 155, next), units-as-data (`Unit(scale, dims)` +
 `getQuantity(v, unit)`), and the `1.km` extension DSL.
 
 ---
 
-## Phase 146 — read-out in the same expression (a component read on a chain result)  *(shipped)*
+## Phase 155 — read-out in the same expression (a component read on a chain result)  *(shipped)*
 
-Phase 145 made a chain *return* the carrier; the terminal step of the JSR 385 shape is to read a magnitude back
+Phase 154 made a chain *return* the carrier; the terminal step of the JSR 385 shape is to read a magnitude back
 *off* it — `Quantity.km(1).plus(Quantity.mile(1)).value` (the bespoke `.to(METRE).getValue()`). That skipped: the
 Encoder's `translate(chainCall.value)` needs `carrierTypeOf(chainCall)` to resolve the chain's type and
 `translate(chainCall)` to model it — neither of which the pure Encoder can do for a contracted call.
@@ -7617,25 +7617,25 @@ can itself carry an orphan surrogate), so the assertion no longer depends on eit
 
 This completes the fluent read/compute/read-out arc on the bespoke type: `Quantity.km(1).plus(Quantity.mile(1)).value`
 is the bespoke twin of `getQuantity(1, KILO(METRE)).add(getQuantity(1, MILE)).to(METRE).getValue()`, machine-checked
-end to end. Still ahead: **units-as-data** (Phase 147, next), and the `1.km` extension-method DSL (needs a registered
+end to end. Still ahead: **units-as-data** (Phase 156, next), and the `1.km` extension-method DSL (needs a registered
 `ExtensionModule`; `use()` categories are rejected by `@TypeChecked`).
 
 ---
 
-## Phase 147 — units-as-data: a `Unit(scale, dims)` value + a `getQuantity` factory over it  *(shipped — composes, no new engine code)*
+## Phase 156 — units-as-data: a `Unit(scale, dims)` value + a `getQuantity` factory over it  *(shipped — composes, no new engine code)*
 
 The last structural piece of JSR 385's *literal* shape is to make a **unit itself a value**, so `getQuantity(v, unit)`
 is a factory over it and `KILO(METRE)` an ordinary nested call. This turned out to need **no new engine code** — it
-falls straight out of the multi-component record (Phase 142), carrier-typed-argument chaining (Phase 145), and the
-read-out (Phase 146):
+falls straight out of the multi-component record (Phase 151), carrier-typed-argument chaining (Phase 154), and the
+read-out (Phase 155):
 
 - a `Unit(scale, l, m, t)` is a second multi-component record — a value;
 - `Quantity.of(BigDecimal v, Unit u)` is a factory whose `@Ensures` **reads the unit's fields** (`u.scale`, `u.l`) —
   a carrier-typed *formal* whose components resolve via the registered carrier type;
 - a metric prefix `kilo(Unit u)` is a `Unit → Unit` factory, so `Unit.kilo(Unit.metre())` is a carrier chain modelled
   by `carrierValueOf`;
-- `Quantity.of(1, Unit.kilo(Unit.metre()))` passes that chain as the carrier argument (Phase 145), and the whole
-  thing reads out via Phase 146.
+- `Quantity.of(1, Unit.kilo(Unit.metre()))` passes that chain as the carrier argument (Phase 154), and the whole
+  thing reads out via Phase 155.
 
 So the bespoke type now expresses JSR 385's own sentence and verifies end to end:
 
@@ -7652,11 +7652,11 @@ dimension guard. New cases: `P147 units-as-data` (+ gallery example). 1300 → 1
 
 Honest boundary: reading back out in a *non-SI* named unit is `value / unit.scale` where `unit.scale` is now a
 **symbolic** carrier field, not a literal — so that direction **skips loudly** (only a constant terminating divisor is
-exact, Phase 143). The SI `.value` read-out is exact. Still ahead: the `1.km` extension-method DSL — Phase 148, next.
+exact, Phase 152). The SI `.value` read-out is exact. Still ahead: the `1.km` extension-method DSL — Phase 157, next.
 
 ---
 
-## Phase 148 — the `1.km + 1.mile` DSL verifies (experimental JSR 385 reader extension)  *(shipped — standalone subproject)*
+## Phase 157 — the `1.km + 1.mile` DSL verifies (experimental JSR 385 reader extension)  *(shipped — standalone subproject)*
 
 The last surface-syntax rung: the blog-style DSL `(1.km + 1.mile).value`, where `1.km` is a registered Groovy
 **extension method**. An architectural finding reframed the approach. The roadmap had predicted "see-through
@@ -7666,7 +7666,7 @@ and groovy-verify reads contracts and bodies from **source AST**. Neither contra
 across that boundary.
 
 The viable path is the one the C₁ reader already uses for `Quantities.getQuantity(...)`: a **curated by-name
-recogniser**, not source-reading. So the JSR 385 value/scale reader (Phase 132) gained an *experimental* extension:
+recogniser**, not source-reading. So the JSR 385 value/scale reader (Phase 149) gained an *experimental* extension:
 a tiny `DSL_SUFFIX_SCALE` table (`m`, `km`, `mile`, `kg`), recognition of the unit-suffix property (`v.km` is
 `v · scale`) and the `+`/`-` extension operators in `siMagnitude`, a `currentUnitScale` helper, and the `.value`
 property form of `getValue()`. All gated on a `javax.measure.Quantity`-typed receiver (read from STC's
@@ -7684,18 +7684,18 @@ from `examples/units.md` with a `doclint:ignore`. No regression to the existing 
 DSL vocabulary is deliberately tiny and experimental; the larger lesson is that the JSR 385 reader is *itself* a
 curated recogniser, and a future groovy-verify could let users register readers for their own units DSL.
 
-## Phase 150/151 — DSL multiplication (area) and quantity-to-quantity `==`  *(shipped — experimental, examples-dsl)*
+## Phase 158/159 — DSL multiplication (area) and quantity-to-quantity `==`  *(shipped — experimental, examples-dsl)*
 
-Two slices extending the Phase 148 reader, both about the trap the *type system can't catch* — an **area**. Erasure
+Two slices extending the Phase 157 reader, both about the trap the *type system can't catch* — an **area**. Erasure
 leaves `Quantity<?>` a single `multiply`, so `1.km * 1.km` (one km²) type-checks even when used as a length.
 
-**Phase 150** taught `siMagnitude`/`currentUnitScale` the DSL `*` operator: magnitudes multiply (`1.km * 1.km` →
+**Phase 158** taught `siMagnitude`/`currentUnitScale` the DSL `*` operator: magnitudes multiply (`1.km * 1.km` →
 SI `1e6`), unit-scales multiply (km² → `1e6`), so `(1.km * 1.km).value == 1` verifies and a claim of the metre²
 number `1_000_000` **refutes** on the scale layer.
 
-**Phase 151** made the literal `@Ensures({ result == 1.km })` form — *no `.value`* — verify soundly, by joining a
+**Phase 159** made the literal `@Ensures({ result == 1.km })` form — *no `.value`* — verify soundly, by joining a
 **dimension** layer to the magnitude one. A unit→exponent-vector table (`BASE_UNIT_DIM`/`DSL_SUFFIX_DIM` over the
-Phase 131 `[L,M,T]` base) decides each quantity-to-quantity `==`: **different dimensions are never equal** (so
+Phase 148 `[L,M,T]` base) decides each quantity-to-quantity `==`: **different dimensions are never equal** (so
 `1.m == 1.kg` — which *throws* `UnconvertibleException` at runtime, empirically pinned — folds to `false`); equal
 dimensions fall to the SI-magnitude equality. So `result == 1.km` over a `1000.m` body verifies (same Length), a
 `2000.m` body refutes on *magnitude*, and `Quantity squareKm() { 1.km * 1.km }` with `@Ensures({ result == 1.km })`
@@ -7711,7 +7711,7 @@ CONVERSION, before STC, so its `1.km` carries no `INFERRED_TYPE`. A parameter qu
 regression. Sound posture throughout: the only unsound verdict would be proving a runtime-false `==` true, and
 different-dimension never reaches `true`.
 
-## Phase 152 — DSL division (Speed = Length/Time) and quantity-typed locals  *(shipped — experimental, examples-dsl)*
+## Phase 160 — DSL division (Speed = Length/Time) and quantity-typed locals  *(shipped — experimental, examples-dsl)*
 
 The reach-test the form `def s = 1.s; def d = 1.m; @Ensures({ result == 1.m / 1.s }) … return d / s` exposed three
 gaps, all closed in one slice:
@@ -7719,7 +7719,7 @@ gaps, all closed in one slice:
 - **`/` operator** in the DSL reader — dimension exponents *subtract* (Length−Time = Speed `[1,0,-1]`), magnitudes
   divide. Plus the `s` (seconds) suffix (`[0,0,1]`). The method-call form `q.divide(t)` was already modelled; this
   adds the *operator* form that Groovy maps to the `div` extension.
-- **Quantity-typed locals** — `result` was aliased to its return expression in Phase 151; this generalises the same
+- **Quantity-typed locals** — `result` was aliased to its return expression in Phase 159; this generalises the same
   `quantitySource` aliasing to `checkPath`'s Assign steps, so `def d = 1.m` lets a later `d / s` resolve. (The
   bespoke-record path already did the analogue for carrier locals.)
 - **Two numeric-division assumptions** the `/` operator otherwise triggers, both made quantity-aware: a `quantity /
@@ -7730,7 +7730,7 @@ So the speed example verifies; `2.m / 1.s` refutes on magnitude; a speed asserte
 (the `as Quantity<Speed>` cast the erased generics never re-check). Soundness boundary kept: a *non-terminating*
 divisor (`1.m / 3.s`, SI magnitude ⅓ which indriya/Groovy round) **skips** rather than let exact Real division verify
 a runtime-false fact — gated on the divisor's full *closed magnitude* (value · unit scale, so `1.mile` = 1609.344,
-factor 3, is correctly rejected) having only the prime factors 2 and 5 (the Phase 143 posture). 4 new `examples-dsl`
+factor 3, is correctly rejected) having only the prime factors 2 and 5 (the Phase 152 posture). 4 new `examples-dsl`
 tests (verify / refute-magnitude / refute-dimension / non-terminating-skip); root suite 1310/0, no regression.
 
 A follow-on added a **coherent-derived-unit suffix** `mps` (`getMps` over `METRE_PER_SECOND`; scale 1, dimension
