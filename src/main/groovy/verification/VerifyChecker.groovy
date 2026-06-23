@@ -5639,6 +5639,14 @@ class VerifyChecker extends TypeCheckingExtension {
                     }
                 } else if (step instanceof ArrayStore) {
                     ArrayStore st = (ArrayStore) step
+                    // A Groovy Range is immutable: `(4..8)[2] = -1` throws UnsupportedOperationException at
+                    // runtime, so the verifier refuses the store rather than modelling a successful mutation
+                    // (the mutable copies `[*range]` / `range.toList()` are fine — they aren't ranges).
+                    if (enc.isImmutableRange(st.arr)) {
+                        throw new UnsupportedConstructException(
+                            "element assignment '${st.arr}[${st.index.text}] = ${st.value.text}' to a range — " +
+                            "ranges are immutable (UnsupportedOperationException at runtime); use [*range] or range.toList()")
+                    }
                     // Phase 27 — index/value sorts depend on the receiver kind: map key/value
                     // sorts for a map put, or Int-index + list-element sort for a list/array
                     // store. Routing the translations through translateInSort lets a

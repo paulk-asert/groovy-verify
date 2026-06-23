@@ -49,6 +49,7 @@ import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
+import org.codehaus.groovy.ast.expr.SpreadExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
@@ -1668,6 +1669,7 @@ class Encoder {
         Map<String, Object> setEnv
         Map<String, Object> nullEnv
         Map<String, FactoryContainer> localFactories
+        Set<String> immutableRangeLocals
     }
 
     EncoderSnapshot snapshotState() {
@@ -1678,6 +1680,7 @@ class Encoder {
         snap.setEnv = new LinkedHashMap<String, Object>(setEnv)
         snap.nullEnv = new LinkedHashMap<String, Object>(nullEnv)
         snap.localFactories = new LinkedHashMap<String, FactoryContainer>(localFactories)
+        snap.immutableRangeLocals = new HashSet<String>(immutableRangeLocals)
         snap
     }
 
@@ -1688,7 +1691,12 @@ class Encoder {
         setEnv.clear(); setEnv.putAll(snap.setEnv)
         nullEnv.clear(); nullEnv.putAll(snap.nullEnv)
         localFactories.clear(); localFactories.putAll(snap.localFactories)
+        immutableRangeLocals.clear(); immutableRangeLocals.addAll(snap.immutableRangeLocals)
     }
+
+    /** Locals bound from a *bare* range literal `lo..hi` — immutable, so an element write throws at runtime. */
+    private final Set<String> immutableRangeLocals = new HashSet<String>()
+    boolean isImmutableRange(String name) { immutableRangeLocals.contains(name) }
 
     /**
      * Translate {@code expr} with {@code bindings} (source-name → handle) applied
@@ -2652,6 +2660,9 @@ class Encoder {
      * nothing to bind via the size oracle — the factory's size is the literal entry count).
      */
     boolean tryRecordFactoryAssign(String name, Expression rhs) {
+        // Ranges & their spread/toList copies first: `[*4..8]` is a ListExpression too, so the generic
+        // list-factory below would otherwise count the single spread element as size 1.
+        if (tryRecordRangeAssign(name, rhs)) return true
         FactoryContainer f = factoryContainerFor(rhs)
         if (f == null) return tryRecordSizedArrayAssign(name, rhs)
         localFactories.put(name, f)
@@ -2668,6 +2679,57 @@ class Encoder {
             session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
         }
         true
+    }
+
+    /**
+     * A range-derived collection assignment. A Groovy {@code Range} is immutable — `(4..8)[2] = -1` throws
+     * {@code UnsupportedOperationException} — but its copies are mutable: {@code [*4..8]} (spread) and
+     * {@code (4..8).toList()}. All three are bound as a sized array whose contents are the range elements
+     * (so {@code r[k]} reads {@code lo + k}); the bare range is additionally marked immutable so a later
+     * {@code r[k] = v} store is refused. Constant bounds only (the user-facing forms); a symbolic range falls
+     * through to a sized-array/honest skip.
+     */
+    boolean tryRecordRangeAssign(String name, Expression rhs) {
+        Expression e = rhs
+        if (e instanceof CastExpression) e = ((CastExpression) e).expression
+        boolean immutable
+        RangeExpression re
+        if (e instanceof RangeExpression) {
+            re = (RangeExpression) e; immutable = true                                   // bare range — immutable
+        } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'toList'
+                   && ((MethodCallExpression) e).objectExpression instanceof RangeExpression) {
+            re = (RangeExpression) ((MethodCallExpression) e).objectExpression; immutable = false   // (lo..hi).toList()
+        } else if (e instanceof ListExpression && ((ListExpression) e).expressions.size() == 1
+                   && ((ListExpression) e).expressions.get(0) instanceof SpreadExpression
+                   && ((SpreadExpression) ((ListExpression) e).expressions.get(0)).expression instanceof RangeExpression) {
+            re = (RangeExpression) ((SpreadExpression) ((ListExpression) e).expressions.get(0)).expression; immutable = false  // [*lo..hi]
+        } else {
+            return false
+        }
+        Integer lo = constIntOrNull(re.from), hi = constIntOrNull(re.to)
+        if (lo == null || hi == null) return false                                       // symbolic bounds → fall through
+        int size = re.inclusive ? (hi - lo + 1) : (hi - lo)
+        if (size < 0) size = 0
+        Object arr = session.constIntArray(session.intLit(0L))
+        for (int i = 0; i < size; i++) {
+            arr = session.store(arr, session.intLit((long) i), session.intLit((long) (lo + i)))
+        }
+        localFactories.remove(name)
+        bindArray(name, arr)
+        bindSize(name, session.intLit((long) size))
+        session.assertExpr(session.not(nullityOf(name)))
+        if (immutable) immutableRangeLocals.add(name) else immutableRangeLocals.remove(name)
+        true
+    }
+    private Integer constIntOrNull(Expression e) {
+        if (e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Number) {
+            return ((Number) ((ConstantExpression) e).value).intValue()
+        }
+        if (e instanceof UnaryMinusExpression) {
+            Integer v = constIntOrNull(((UnaryMinusExpression) e).expression)
+            return v == null ? null : -v
+        }
+        null
     }
 
     /**

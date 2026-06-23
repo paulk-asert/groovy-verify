@@ -5257,6 +5257,30 @@ class Derived extends Base {
                         }
                     }'''.stripIndent()],
 
+        // ---------- Range as a list: contents modelled, immutability enforced (Groovy `[].sum()`-style honesty) ----------
+        // A Groovy Range `lo..hi` is an immutable List of `lo, lo+1, …, hi`. The verifier models the contents
+        // (so `r[k]` reads `lo + k`) and pins the size, but keeps the range *immutable*: an element write throws
+        // UnsupportedOperationException at runtime, so the store is refused. The mutable copies — `[*lo..hi]`
+        // (spread) and `(lo..hi).toList()` — bind the same contents into a writable array, so a store threads
+        // through and other elements stay intact. Constant bounds; `..` inclusive and `..<` exclusive.
+        [group: 'P-range as-list', name: 'toList copy: write threads, other elements intact', ok: true,
+         src: tc('class C { @Ensures({ result == -1 }) static int f() { def r = (4..8).toList(); r[2] = -1; r[2] } }')],
+        [group: 'P-range as-list', name: 'toList copy: untouched element keeps range value', ok: true,
+         src: tc('class C { @Ensures({ result == 4 }) static int f() { def r = (4..8).toList(); r[2] = -1; r[0] } }')],
+        [group: 'P-range as-list', name: 'spread copy [*4..8]: write threads', ok: true,
+         src: tc('class C { @Ensures({ result == -1 }) static int f() { def r = [*4..8]; r[2] = -1; r[2] } }')],
+        [group: 'P-range as-list', name: 'bare range read is the range element', ok: true,
+         src: tc('class C { @Ensures({ result == 6 }) static int f() { def r = 4..8; r[2] } }')],
+        [group: 'P-range as-list', name: 'exclusive range ..< drops the upper bound', ok: true,
+         src: tc('class C { @Ensures({ result == 7 }) static int f() { def r = (4..<8).toList(); r[3] } }')],
+        // Honest boundary: the whole-list `result == [4, 5, -1, 7, 8]` form (returning the mutated copy and
+        // comparing to a list literal) is a separate gap — element-wise `result[k]` contracts are the supported way.
+        [group: 'P-range as-list', name: 'whole-list == literal on a returned copy skips (use element-wise)', expect: 'outside fragment',
+         src: tc('class C { @Ensures({ result == [4, 5, -1, 7, 8] }) static List<Integer> f() { def r = (4..8).toList(); r[2] = -1; r } }')],
+        // Immutability: a bare range write throws UnsupportedOperationException, so the verifier refuses it.
+        [group: 'P-range as-list', name: 'bare range element write is refused (immutable)', expect: 'ranges are immutable',
+         src: tc('class C { @Ensures({ result == -1 }) static int f() { def r = 4..8; r[2] = -1; r[2] } }')],
+
         // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).
         [group: 'P33 union/intersect', name: 'inline intersection in  (a & b)', ok: true,
          src: tc('''class C {

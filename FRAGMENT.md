@@ -102,6 +102,12 @@ a coverage metric. In expressions the fragment is:
   (Phase 74), and the `in` operator (and `.contains`) over an **integer** range `i in lo..hi` and a
   **single-character `String`** range `c in 'a'..'z'` (Phases 99 / 99b), the spelling a `switch`/`case` range
   label desugars to;
+- a **range as a list** — a constant integer range `lo..hi` (`..` inclusive / `..<` exclusive) assigned to a
+  local is modelled element-for-element (`r[k]` reads `lo + k`, size pinned), and it honours Groovy's
+  **immutability**: a bare range is read-only, so an element write `(4..8)[2] = -1` is *refused* (it throws
+  `UnsupportedOperationException` at runtime), while the mutable copies `[*lo..hi]` (spread) and
+  `(lo..hi).toList()` bind the same contents into a writable array, so a store threads through and the
+  other elements keep their range values; whole-list `== [literal]` on a returned mutated copy stays out;
 - `switch` *expressions* — the arrow form `switch (x) { case 1 -> …; default -> … }` with simple `int`/`String`
   literal (and integer-range) labels folds to an `ite`-chain; the statement form and pattern/guarded cases
   stay out (Phase 102);
