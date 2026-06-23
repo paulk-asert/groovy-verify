@@ -5285,6 +5285,19 @@ class Derived extends Base {
          src: tc('class C { @Ensures({ result == -1 }) static int f() { def r = 4..8; r[2] = -1; r[2] } }')],
 
         // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).
+        [group: 'P161 each', name: 'F each implicit `it` over a list verifies', ok: true,
+         src: tc('''class C { @Requires({ a != null && (0..<a.size()).every { a[it] >= 0 } })
+                        static void f(java.util.List<Integer> a) { a.each { assert it >= 0 } } }''')],
+        [group: 'P161 each', name: 'G each implicit `it` over a list refutes without guard', expect: 'Assertion',
+         src: tc('class C { @Requires({ a != null }) static void f(java.util.List<Integer> a) { a.each { assert it >= 0 } } }')],
+        // A primitive array's `.each` doesn't propagate its element type to an *implicit* `it` (or an explicit
+        // untyped `it ->`) — stock @TypeChecked infers `it` as Object, so `it >= 0` fails to resolve `compareTo`
+        // before the verifier runs. Not a verifier boundary: name the element type (`{ int x -> … }`, case A) or
+        // iterate a generic `List<Integer>` (case F). Tracked upstream as GROOVY-12100 — the verifier side is
+        // already built (the implicit-`it` path above), so when that STC fix lands `int[].each { it }` verifies
+        // with no change here. Pinned to the current (pre-fix) error so this case FLIPS the moment it ships.
+        [group: 'P161 each', name: 'H array implicit `it` is a stock STC type error (GROOVY-12100)', expect: 'compareTo',
+         src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.each { assert it >= 0 } } }')],
         [group: 'P161 each', name: 'D each accumulation skips loudly', expect: 'Skipped loop verification',
          src: tc('''class C { @Ensures({ result == a.length })
                         static int f(int[] a) { int c = 0; a.each { int x -> c += 1 }; c } }''')],

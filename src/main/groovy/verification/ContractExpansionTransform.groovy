@@ -753,8 +753,19 @@ class ContractExpansionTransform implements ASTTransformation {
         if (args.size() != 1 || !(args.get(0) instanceof ClosureExpression)) return null
         ClosureExpression cl = (ClosureExpression) args.get(0)
         Parameter[] ps = cl.parameters
-        if (ps == null || ps.length != 1) return null     // a single explicit element param (implicit `it` deferred)
-        ForStatement forIn = new ForStatement(ps[0], mce.objectExpression, cl.code)
+        // A single element binding: an explicit `{ x -> … }` (one param) or the implicit `{ … it … }` (params
+        // null — Groovy's marker for an implicit `it`, which we synthesise as the loop variable; the encoder
+        // takes the element type from the collection, so a `def`/Object type here is immaterial). An explicit
+        // empty `{ -> … }` (length 0) or a multi-param closure isn't an each-over-one-element → loud skip.
+        Parameter elem
+        // A single element binding: an explicit `{ x -> … }` (one param) or the implicit `{ … it … }` — which
+        // this Groovy parser represents as an EMPTY parameter array (the implicit `it` is materialised later),
+        // so synthesise the loop variable named `it`. The encoder takes the element type from the collection,
+        // so the synthetic type is immaterial. A multi-param closure isn't an each-over-one-element → skip.
+        if (ps == null || ps.length == 0) elem = new Parameter(ClassHelper.int_TYPE, 'it')
+        else if (ps.length == 1) elem = ps[0]
+        else return null
+        ForStatement forIn = new ForStatement(elem, mce.objectExpression, cl.code)
         forIn.setSourcePosition(st)
         buildLoopSpec(forIn, source, inferLoops)
     }

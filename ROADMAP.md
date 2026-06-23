@@ -7754,8 +7754,9 @@ slice models `xs.each { x -> body }` as the for-in `for (x in xs) { body }` alre
 relaxes that machinery so a loop carrying **only** the auto bounds invariant verifies, two changes in concert:
 
 - **Recognition** (`ContractExpansionTransform`) — `captureLoopsStmt` spots an `ExpressionStatement` whose call is
-  `<var>.each { <oneParam> -> … }`, synthesises a `ForStatement(param, receiver, closureBody)`, builds its
-  `LoopSpec`, and stashes it on the `.each` node's metadata. **Non-destructive**: the AST still compiles to a real
+  `<var>.each { … }` — an explicit `{ x -> … }` param *or* the implicit `{ … it … }` (the parser represents that
+  as an *empty* param list, so the loop variable `it` is synthesised) — builds a `ForStatement(param, receiver,
+  closureBody)`, its `LoopSpec`, and stashes it on the `.each` node's metadata. **Non-destructive**: the AST still compiles to a real
   `.each` at runtime — the verifier finds the loop by `LOOP_SPEC_KEY`, not by node type, so no verifier change was
   needed to *locate* it. (groovy-contracts still checks the method's `@Ensures` at runtime; the synthetic invariant
   is verifier-only, so there's no runtime mismatch.)
@@ -7771,8 +7772,14 @@ on `LoopSpec` plus `autoOnlyBodyAccumulates` detects exactly this — an auto-bo
 anything beyond the loop variable / synthetic index — and **loud-skips the postcondition use check** instead of
 emitting a false counterexample. Such a body genuinely needs an `@Invariant`, which **can't be attached to a `.each`
 statement** (a statement-level annotation on a method call is a Groovy parse error) — so accumulation stays an honest
-skip, the documented limitation. 4 new `P161 each` cases (per-element verifies / unguarded refutes / for-in
-relaxation / accumulation loud-skips); root suite 1379/0, full `check` (incl. runtimeRung) green.
+skip, the documented limitation. A second boundary is upstream, not the verifier's: a *primitive array's* implicit
+`it` (`int[].each { assert it >= 0 }`) is a stock `@TypeChecked` error — STC doesn't propagate the element type to
+the implicit closure param, so `it >= 0` can't resolve `compareTo` before the verifier runs. Name the element type
+(`{ int x -> }`) or iterate a generic `List<Integer>` (where STC infers `it`). That STC gap is tracked upstream as
+**GROOVY-12100**; the verifier side is already built (the implicit-`it` path), so when the fix lands `int[].each { it }`
+verifies with no change here — the boundary case is pinned to its pre-fix error so it FLIPS on that release. 7 new `P161 each` cases (per-element
+verifies / unguarded refutes / for-in relaxation / accumulation loud-skips / implicit-`it` over a list verifies &
+refutes / primitive-array implicit-`it` is a stock STC error); root suite 1382/0, full `check` (incl. runtimeRung) green.
 
 ---
 
