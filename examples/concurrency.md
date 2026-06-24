@@ -17,7 +17,7 @@
 # Concurrency "lite" examples
 
 > The **structural** half these proofs *assume* — mutual exclusion, interleaving-freedom, deadlock-freedom,
-> delivery — is checked separately by Lincheck / TLA+ TLC / Fray. See **[CONCURRENCY.md](../CONCURRENCY.md)**.
+> delivery — is checked separately by Lincheck / TLA+ TLC / Fray / jcstress. See **[CONCURRENCY.md](../CONCURRENCY.md)**.
 
 
 groovy-verify is a *sequential* SMT-backed checker — it reasons about no thread interleavings, races, or
