@@ -123,7 +123,8 @@ but:
 The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — several ways: the
 lock-free §VII buffer, the lock-based accounts, and Groovy 6 async/await (all via **Lincheck**), deadlock /
 lock-ordering (via **Fray**), and the memory-model publication grain (via **jcstress**). Three tools, three methods —
-model-checking, controlled scheduling, empirical stress — *none subsumes the others*.
+model-checking, controlled scheduling, empirical stress — *none subsumes the others*. The **seqlock** (below) is the
+example where all three — rung 1 included — do *distinct* work, on the torn-read bug class.
 
 ### The Lincheck buffer examples
 
@@ -375,6 +376,54 @@ refutes at `<= 0` — pinned by `SpscBufferVerifyTest.atomicInteger_checkThenAct
 `P-check-then-act` cases. (The plain-`int` counter's `5-in-7-billion` rarity is why the default, not `quick`, budget is
 used.) Run `./gradlew jcstressCheck` (JDK 25; not in `check`). Inspired by jcstress's samples, written ourselves —
 theirs is GPL, this repo Apache.
+
+### Seqlock — the torn read, where all three rungs share the work
+
+The buffer and the counter both lean hardest on the runtime rungs — the verifier proves their `@Invariant`, but it's a
+bounds check it would prove for the safe and unsafe versions alike (the lock is transparent to it). The **seqlock**
+(sequence lock) is the example where rung 1 has *characteristic, non-transparent* work, paired with a runtime bug class
+none of the others reach — the **torn read**. `SpscBuffer` is a publication race (writer ordering); `BoundedCounter` a
+check-then-act (read-modify-write atomicity); the seqlock is **read-side snapshot atomicity** — a reader observing a
+multi-field record that was never written together.
+
+`SeqLock` protects two fields `x`, `y` that are one logical record (always `x == y`) behind a sequence counter whose
+*parity* is the protocol: **even = unlocked / consistent, odd = a write in progress**. Its **thread-local half** — the
+verifier proving the *implication-guarded* class `@Invariant({ seq % 2 == 0 ==> x == y })`: that `write` re-establishes
+`x == y` before it republishes, and that a validated `tryRead` returns a consistent snapshot, with both refuting when
+the protocol is broken — is [the rung-1 example](examples/concurrency.md#seqlock--snapshot-consistency-by-a-parity-protocol).
+Unlike the counter, this is a protocol proof that *discriminates* the correct shape from the broken one. A real reader
+*spins* until the guard passes, and a spin loop is outside the straight-line fragment (like the atomic counter's CAS
+loop), so the verified unit is the single-attempt `tryRead` (snapshot or `null` = "retry") and the **spin is lifted to
+the caller** — which is exactly how the runtime rungs use it. Here are those **structural halves**:
+
+**Rung 3a — Lincheck** (`SeqLockLincheckTest`, `./gradlew lincheckTest`) model-checks the operations. The exposed `read`
+is the spin-in-the-caller (loop `tryRead` to a consistent snapshot), so it is linearizable — `correctSeqLockIsLinearizable`
+passes; `SeqLockLeaky`'s unguarded read returns a torn pair (`[1, 0]`) that no sequential history of `{write, read}`
+explains, caught as a linearizability violation (`leakySeqLockIsCaught`). A single-attempt `tryRead` returning `null` on
+contention is deliberately *not* exposed to Lincheck — `null` has no sequential explanation either, so it isn't
+linearizable as a standalone op (the caller's retry is what makes it one).
+
+**Rung 3b — jcstress** (`SeqLockJCStress`, `./gradlew jcstressCheck`) stress-runs a writer (`write(1)`) against a reader
+on real hardware and tallies the observed `(x, y)` pair via `II_Result`. The record's default is `(0, 0)`, so the pair
+separates the worlds — and the torn `1, 0` / `0, 1` is **forbidden for the validating reader (never observed)** but
+**observed for the leaky one**:
+
+```
+RESULT    SAMPLES     FREQ       EXPECT  DESCRIPTION  (SeqLockJCStress.Leaky, one fork)
+  0, 0  32,472,120   66.41%   Acceptable  Reader ran before the write committed.
+  0, 1         291   <0.01%  Interesting  THE TORN READ: saw the old x but the new y.
+  1, 0       1,095   <0.01%  Interesting  THE TORN READ: saw the new x but the old y.
+  1, 1  16,420,465   33.58%   Acceptable  Reader saw the fully published, consistent record.
+```
+
+The validating `Correct` actor only ever lands on `0,0` / `1,1` / `-1,-1` (contended → `tryRead` returned `null`, where
+a real reader retries); its torn outcome is `FORBIDDEN` and lands in "No matches". Same source, three rungs, each doing
+distinct work: rung 1 proves the parity protocol *above* the memory model, Lincheck catches the *logic* torn read (the
+reader skipping its validation) under its sequentially-consistent model-check, and jcstress reaches the *empirical*
+grain on real JIT/hardware. **Why no Fray?** A seqlock is lock-free — the writer never blocks and the reader spins
+without acquiring a blocking lock — so there is no lock graph to deadlock; Fray's specialty (deadlock / lock-ordering)
+finds nothing here, which is why the bank-transfer and dining-philosophers got Fray and the buffer and seqlock do not.
+Inspired by jcstress's samples, written ourselves — theirs is GPL, this repo Apache.
 
 ## Lineage — the same gap in Dafny
 

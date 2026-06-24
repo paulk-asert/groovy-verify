@@ -440,7 +440,7 @@ tasks.named('compileJcstressJava') { javaCompiler = jdk25Compiler }
 
 tasks.register('jcstressCheck', JavaExec) {
     group = 'verification'
-    description = 'jcstress empirical stress: SPSC buffer publication + check-then-act counter race (rung 3c of CONCURRENCY.md)'
+    description = 'jcstress empirical stress: SPSC buffer publication + check-then-act counter race + seqlock torn read (rung 3c of CONCURRENCY.md)'
     classpath = sourceSets.jcstress.runtimeClasspath
     mainClass = 'org.openjdk.jcstress.Main'
     javaLauncher = jdk25Launcher

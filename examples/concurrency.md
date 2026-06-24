@@ -24,7 +24,7 @@ groovy-verify is a *sequential* SMT-backed checker — it reasons about no threa
 deadlock. Yet a surprising amount of concurrent code's correctness factors into two halves: a **local,
 sequential obligation** the developer must get right, and a **structural guarantee** the runtime provides.
 *Assume* the structural half and the local half is an ordinary sequential proof — and that half is usually the
-one carrying the interesting bug. These examples prove the local half across seven of Groovy's concurrency
+one carrying the interesting bug. These examples prove the local half across eight of Groovy's concurrency
 features, each assuming a different structural guarantee:
 
 | Feature | Structural guarantee (assumed) | Local obligation (proven) |
@@ -32,6 +32,7 @@ features, each assuming a different structural guarantee:
 | Locks (`@WithWriteLock` / `@Synchronized`) | mutual exclusion | each critical section preserves the monitor invariant |
 | Lock ordering (dining philosophers) | deadlock-freedom over all interleavings | each agent acquires its forks in one fixed global order (lower-index-first) |
 | Check-then-act (naive `AtomicInteger` use) | atomicity of the *composite* read-then-act (which no single atomic op provides) | the sequential bounded-counter invariant (`count <= 1`) |
+| Seqlock (optimistic read) | read-side snapshot atomicity (a validated read reflects a real consistent state under the JMM) | the parity protocol: a write restores `x == y` before republishing, a validated read returns a consistent snapshot |
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
 | Channels | FIFO delivery | each element gets the right per-element transform |
@@ -41,7 +42,7 @@ What we *never* prove is the structural half itself — no mutual exclusion, no 
 termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
 "prove half the property" results: the half SMT can discharge, which is usually the functional one.
 
-Groovy's **rely/guarantee** support goes further than the seven above — proving *both* halves on a concurrent
+Groovy's **rely/guarantee** support goes further than the eight above — proving *both* halves on a concurrent
 buffer, and combining with an information-flow lattice (Graeme Smith's Dafny approach):
 **[Thread-local information flow & rely/guarantee (Smith)](smith.md)**.
 
@@ -180,6 +181,52 @@ is (and refutes at `<= 0`), atomicity being rung-1-transparent. `AtomicBoundedCo
 because its `casIncrement` retry-loop is outside the straight-line fragment; the verifiable half of the same shape is
 pinned by the `P-check-then-act` cases and `SpscBufferVerifyTest`. So the atomic counter, like the plain one, is proved
 sequentially safe and shown concurrently broken — the rung-1 boundary, twice.
+
+### Seqlock — snapshot consistency by a parity protocol
+
+Where the check-then-act counter's rung-1 proof is a *transparent* bounds check — the verifier proves the identical
+`@Invariant` for the broken and the fixed version — the **seqlock** is the example where rung 1 has *characteristic,
+non-transparent* work: a small two-state protocol the sequential checker is uniquely good at, that **discriminates the
+correct shape from the broken one**. A `SeqLock` protects two fields `x`, `y` that are one logical record (always
+`x == y`) behind a sequence counter whose *parity* is the protocol — **even = unlocked / consistent, odd = a write in
+progress** — and that is exactly an *implication-guarded* class invariant:
+
+<!-- doclint:ignore README illustration: SeqLock parity protocol (faithful excerpt of SeqLock.groovy) -->
+```groovy
+@Invariant({ seq % 2 == 0 ==> x == y })          // unlocked (even) ⟹ the record is consistent
+void write(int v) {
+    seq = seq + 1      // odd: write in progress — the invariant's guard is now false, x/y may diverge
+    x = v
+    y = v
+    seq = seq + 1      // even: publish — x == y restored, the guarded invariant holds again
+}
+```
+
+The odd state is a *token that licenses breaking* `x == y`: the verifier proves `write` restores the relation before it
+republishes (drops `seq` back to even), and that a successful reader — `tryRead`, whose guard `s1 == s2 && s1 % 2 == 0`
+held — returns a consistent snapshot, because under that guard the entry invariant yields `x == y` so
+`result[0] == result[1]`. Both halves have teeth (`SeqLockVerifyTest`): a writer that republishes **without** restoring
+consistency refutes —
+
+```
+Cannot prove class invariant — counterexample: seq = 0, x = 7, y = 5   (republished torn)
+```
+
+— and a reader that drops the parity check (`if (s1 == s2)`, forgetting `s1 % 2 == 0`) refutes its
+consistent-snapshot `@Ensures`, because it can hand back a snapshot taken while a write was in progress (`seq` odd),
+where `x` and `y` need not agree.
+
+**The fragment, honestly.** A real reader *spins* until the guard passes, and a spin loop has no well-founded measure,
+so it is outside the straight-line fragment (like the [atomic counter's CAS loop](#check-then-act--a-verified-invariant-that-concurrency-breaks)).
+The verified unit is therefore the single-attempt `tryRead` (snapshot or `null` = "retry") and the **spin is lifted to
+the caller** — which is also how the runtime rungs use it (their actors loop on `tryRead`).
+
+**What this is, and isn't.** We prove the parity protocol — the writer re-establishes consistency, a validated read
+sees it — *above* the memory model. That a torn read is genuinely impossible on real bytecode across real schedules is
+the structural half: **Lincheck** model-checks it (the validating read is linearizable; the unguarded read is caught)
+and **jcstress** observes the torn `(1, 0)` / `(0, 1)` empirically on the leaky reader and never on the validating one
+(`./gradlew lincheckTest jcstressCheck`). There is **no Fray** rung: a seqlock is lock-free, so there is no lock graph
+to deadlock. The full three-rung writeup is in [`CONCURRENCY.md`](../CONCURRENCY.md#seqlock--the-torn-read-where-all-three-rungs-share-the-work).
 
 ### Agents & actors — the same invariant, a different paradigm
 

@@ -7823,6 +7823,45 @@ bound `<= 0` refutes / `set` write tracked / `compareAndSet(0,1)` preserves / `a
 
 ---
 
+## Phase 163 — the seqlock: a torn-read example where all three rungs do distinct work  *(shipped)*
+
+The jcstress ports so far (`SpscBuffer` publication race, `BoundedCounter` check-then-act) lean hardest on the runtime
+rungs: the verifier proves their `@Invariant`, but it's a bounds check it proves *identically* for the safe and unsafe
+versions — the lock is transparent to it. The **seqlock** is the example where rung 1 has *characteristic,
+non-transparent* work, paired with a runtime bug class none of the others reach — the **torn read** (read-side snapshot
+atomicity, vs the buffer's publication ordering and the counter's read-modify-write). `SeqLock` protects two fields
+`x`, `y` that are one logical record (`x == y`) behind a sequence counter whose *parity* is the protocol: even =
+unlocked/consistent, odd = write in progress. The rung-1 example lives in `examples/concurrency.md` (next to
+check-then-act, the verifier-showcase convention); `CONCURRENCY.md` carries the structural halves + the full three-rung
+writeup.
+
+- **The novel verifier piece** — an **implication-guarded class `@Invariant({ seq % 2 == 0 ==> x == y })`** (the first
+  guarded invariant in the concurrent sources; `==>` was already supported by both the Z3 encoder and the runtime
+  evaluator). The odd state is a token that *licenses* breaking `x == y`; the verifier proves `write` re-establishes the
+  relation before it republishes (bumps `seq` back to even), and that a successful `tryRead` (guard `s1 == s2 && s1 % 2
+  == 0` held) returns a consistent snapshot — under the guard the entry invariant yields `x == y`, so `result[0] ==
+  result[1]`. This is a protocol proof, not a transparent bounds check: the verifier *discriminates* the correct shape
+  from the broken one.
+- **The fragment, honestly** — a real reader spins until the guard passes; a spin loop has no well-founded measure, so
+  it is out of the straight-line fragment (like the atomic counter's CAS loop). The verified unit is the single-attempt
+  `tryRead` (returns the snapshot or `null` = "retry"), and the spin is lifted to the caller — which is also how the
+  runtime rungs use it (their actors loop on `tryRead`). The result-bearing `@Ensures` lives in `SeqLockVerifyTest`, not
+  on the shared file, because the runtime build compiles that source with groovy-contracts' transforms off and a
+  `result` closure won't type-check under the bare `@CompileStatic` (same reason `AtomicBoundedCounter` carries no
+  contract); the `@Invariant` does ride the shared file.
+- **Three rungs, one source** — rung 1 (`SeqLockVerifyTest`: source `@Invariant` verifies, reader `@Ensures` verifies,
+  un-restored writer refutes, parity-skipping reader refutes), rung 3a Lincheck (`SeqLockLincheckTest`: correct `read`
+  spin-to-consistent is linearizable, leaky unguarded read caught as a torn pair), rung 3b jcstress (`SeqLockJCStress`:
+  the torn `1,0`/`0,1` is `FORBIDDEN` for the validating reader — never observed — and `ACCEPTABLE_INTERESTING` for
+  `SeqLockLeaky`, observed empirically). **No Fray**: a seqlock is lock-free, so there is no lock graph to deadlock.
+
+4 `SeqLockVerifyTest` cases (source invariant verifies / reader snapshot verifies / un-restored writer refutes /
+parity-skipping reader refutes); root suite 1410/0 unchanged (these are a separate JUnit class, not harness CASES —
+as the `SpscBufferVerifyTest` cases are counted), full `check` green. Lincheck and jcstress wiring confirmed
+(`SeqLockLincheckTest` both pass; a `quick` `jcstressCheck` observes the leaky torn read and never the correct one).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
