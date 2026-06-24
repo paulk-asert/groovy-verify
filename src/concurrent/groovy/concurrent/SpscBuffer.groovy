@@ -21,8 +21,8 @@ import groovy.contracts.Invariant
 import groovy.contracts.Requires
 
 /**
- * A correct lock-free single-producer/single-consumer bounded buffer. <b>This one source is checked by two rungs at
- * once — not a facsimile, the same code</b> (see {@code CONCURRENCY.md}):
+ * A correct lock-free single-producer/single-consumer bounded buffer. <b>This one source is checked by three rungs
+ * at once — not a facsimile, the same code</b> (see {@code CONCURRENCY.md}):
  *
  * <ul>
  *   <li><b>groovy-verify</b> proves the {@code @Invariant} at compile time: {@code items[t % capacity]} is in
@@ -30,29 +30,34 @@ import groovy.contracts.Requires
  *       constructor. Driven by a harness that compiles <i>this exact file</i> with the checker enabled — see
  *       {@code SpscBufferVerifyTest}.</li>
  *   <li><b>Lincheck</b> model-checks the ACTUAL bytecode of this file across interleavings (this source set).</li>
+ *   <li><b>jcstress</b> stress-runs that same compiled bytecode — {@code offer}/{@code poll} as two actors, billions
+ *       of times on real JIT/hardware — and tallies the publication outcome (the JMM grain; see
+ *       {@code SpscBufferJCStress}).</li>
  * </ul>
  *
- * <p>The only difference between the two builds is a <b>compile knob</b>, not the source. The {@code @Invariant} /
- * {@code @Requires} below are the very contracts groovy-verify proves; the Lincheck compile <i>disables
- * groovy-contracts' AST transforms</i> (see {@code build.gradle}'s {@code compileConcurrentGroovy}), so the
- * annotations resolve but inject nothing — leaving the bare lock-free bytecode Lincheck needs. (Just disabling
+ * <p>The only difference between the proof build and the runtime build is a <b>compile knob</b>, not the source. The
+ * {@code @Invariant} / {@code @Requires} below are the very contracts groovy-verify proves; the runtime compile
+ * (which Lincheck and jcstress share) <i>disables groovy-contracts' AST transforms</i> (see {@code build.gradle}'s
+ * {@code compileConcurrentGroovy}), so the annotations resolve but inject nothing — leaving the bare lock-free
+ * bytecode Lincheck and jcstress need. (Just disabling
  * assertions isn't enough: with the transforms on, an assertion compiles to Groovy power-assert plus shared
  * static trackers and a per-call closure, all of which Lincheck would <i>explore</i> as concurrency surface
  * unrelated to the algorithm — so the managed run hangs. Disabling the transforms is the one-move way to bare
  * bytecode; see {@code build.gradle} for the full rationale and the {@code addGuarantee} alternative.)
  *
- * <p>So the two rungs do not differ in <i>code</i> — they differ in <b>level</b>: groovy-verify reasons <i>above</i>
- * the memory model (it never models the JMM, {@code volatile}, or the atomicity grain — deliberately, that is rung
- * 3's job), while Lincheck operates at it. Same source, same shape; complementary fidelity (README: "None subsumes
- * the others").
+ * <p>So the rungs do not differ in <i>code</i> — they differ in <b>level</b>: groovy-verify reasons <i>above</i> the
+ * memory model (it never models the JMM, {@code volatile}, or the atomicity grain — deliberately, that is rung 3's
+ * job), while Lincheck and jcstress operate at it — one model-checking the interleavings, the other stress-tallying
+ * the real outcomes. Same source, same shape; complementary fidelity (README: "None subsumes the others").
  *
  * <p>{@code @CompileStatic} is load-bearing: it makes {@code offer}/{@code poll} compile to direct field and array
- * bytecode (getfield/putfield, iaload/iastore) with no call-site caching — clean both for Lincheck to instrument
- * and for groovy-verify to read.
+ * bytecode (getfield/putfield, iaload/iastore) with no call-site caching — clean for Lincheck/jcstress to run and
+ * for groovy-verify to read.
  *
  * <p>The §VII discipline made concrete: write the (already-declassified) value into the slot, THEN publish it by
  * advancing {@code tail}. That publish-after-write order is the operational form of "the slot's data is Low before
- * {@code tail++} pulls it into the Low region". {@link SpscBufferLeaky} inverts the order and Lincheck catches the leak.
+ * {@code tail++} pulls it into the Low region". {@link SpscBufferLeaky} inverts the order: Lincheck catches it as a
+ * linearizability violation, and jcstress observes it empirically — the consumer reads the un-written {@code 0}.
  */
 @CompileStatic
 @POJO

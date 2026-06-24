@@ -90,13 +90,14 @@ Z3 results on the canonicalised asserted-set so suite-wide duplicates skip the s
 ### The other half — concurrency rungs
 
 groovy-verify proves the *thread-local* half of the concurrency-lite examples; the structural half (interleavings,
-deadlock) is left to three separate tasks, each its own source set so the JDK-25 z3 suite is untouched. They are
-**not** wired into `check` (different toolchains, heavyweight) — run on demand:
+deadlock, memory-model publication) is left to four separate tasks, each its own source set so the JDK-25 z3 suite is
+untouched. They are **not** wired into `check` (different toolchains, heavyweight) — run on demand:
 
 ```sh
 ./gradlew tlcCheck         # rung 2: model-check src/tlc/Buffer.tla (every interleaving) with TLA+ TLC
 ./gradlew lincheckTest     # rung 3a: Lincheck linearizability on a real SpscBuffer (Java 21 toolchain)
 ./gradlew frayCheck        # rung 3b: Fray controlled-schedule deadlock check (downloads Corretto JDK 25)
+./gradlew jcstressCheck    # rung 3c: jcstress empirical JMM-publication stress on the SpscBuffer (JDK 25)
 ```
 
 The three-rungs story — compile-time proof, exhaustive model, tested bytecode — is written up in

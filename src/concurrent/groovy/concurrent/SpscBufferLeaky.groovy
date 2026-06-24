@@ -23,8 +23,9 @@ import groovy.transform.stc.POJO
  * The runtime analogue of the {@code BufferLeak.cfg} TLA+ variant and of the checker's refutation at
  * {@code tail++}: it advances {@code tail} (pulls the slot into the consumable region) BEFORE the value
  * is written, so a consumer can read the slot in that window and observe an un-finalized value. Lincheck
- * finds the exact interleaving and reports it as a linearizability violation. {@code @CompileStatic} for
- * the same reason as {@link SpscBuffer} — clean, dispatch-free bytecode for Lincheck to instrument.
+ * finds the exact interleaving and reports it as a linearizability violation; jcstress observes it empirically —
+ * the un-written {@code 0} surfaces across millions of stress runs (see {@code SpscBufferJCStress}). {@code @CompileStatic}
+ * for the same reason as {@link SpscBuffer} — clean, dispatch-free bytecode for Lincheck and jcstress to run.
  */
 @CompileStatic
 @POJO

@@ -414,6 +414,40 @@ tasks.register('lincheckTest', Test) {
     testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
 }
 
+// ---- jcstress: empirical memory-model stress on the SPSC buffer (rung 3c — the publication grain) ----------
+// jcstress generates its harness via a *javac annotation processor*, so the @JCStressTest holder is Java
+// (src/jcstress/java) — but it wraps the same Groovy @CompileStatic @POJO buffer the other rungs use. Where
+// Lincheck model-checks the operations and Fray drives the scheduler, jcstress runs the actors billions of times
+// on real JIT/hardware and tallies the outcomes — the canonical JMM publication test. NOT wired into `check`
+// (heavyweight, forks JVMs) — run: ./gradlew jcstressCheck
+sourceSets {
+    jcstress {
+        java.srcDir 'src/jcstress/java'
+    }
+}
+
+configurations {
+    jcstressImplementation.extendsFrom concurrentImplementation      // the buffer's runtime deps
+}
+
+dependencies {
+    jcstressImplementation sourceSets.concurrent.output              // the SpscBuffer / SpscBufferLeaky domain
+    jcstressImplementation 'org.openjdk.jcstress:jcstress-core:0.16'
+    jcstressAnnotationProcessor 'org.openjdk.jcstress:jcstress-core:0.16'   // generates the @JCStressTest runner
+}
+
+tasks.named('compileJcstressJava') { javaCompiler = jdk25Compiler }
+
+tasks.register('jcstressCheck', JavaExec) {
+    group = 'verification'
+    description = 'jcstress empirical memory-model stress on the SPSC buffer publication (rung 3c of CONCURRENCY.md)'
+    classpath = sourceSets.jcstress.runtimeClasspath
+    mainClass = 'org.openjdk.jcstress.Main'
+    javaLauncher = jdk25Launcher
+    workingDir = buildDir                                    // jcstress drops a jcstress-results-*.bin.gz in the CWD — keep it out of the repo root
+    args '-m', 'quick', '-r', "$buildDir/jcstress-results"   // quick mode; the publication race is a program-order interleaving, reliably hit
+}
+
 // ---- TLA+ model check: TLC on src/tlc/Buffer.tla (rung 2 of CONCURRENCY.md) ------------------------
 // Model-checks the §VII buffer across EVERY interleaving (the rely becomes a checked theorem about the
 // peer; liveness too) — the exhaustive-model rung the compile-time checker leaves open. tla2tools isn't

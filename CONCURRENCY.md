@@ -30,10 +30,11 @@ climbing two further rungs. Each trades coverage for fidelity; none subsumes the
 2. **Exhaustive model** (TLA+ / TLC) — every interleaving of an *abstract* state machine. Confirms the
    interference assumptions actually compose and the system makes progress; still sequentially consistent
    and action-grained.
-3. **Tested real bytecode** (Lincheck, Fray) — bounded search over schedules of the *real* code. Lincheck
-   model-checks an implementation's operations for linearizability; Fray drives the JVM scheduler over a
-   hand-threaded scenario for deadlock / lock-ordering. Either way the atomicity/ordering assumption is
-   discharged against an actual implementation, not a model.
+3. **Tested real bytecode** (Lincheck, Fray, jcstress) — bounded or empirical search over schedules of the *real*
+   code. Lincheck model-checks an implementation's operations for linearizability; Fray drives the JVM scheduler over
+   a hand-threaded scenario for deadlock / lock-ordering; jcstress stress-runs the actors billions of times on real
+   JIT/hardware and tallies the *outcomes* — the Java-Memory-Model publication grain. Either way the atomicity /
+   ordering assumption is discharged against an actual implementation, not a model.
 
 The rest of this doc climbs the rungs in turn. The running example throughout is the **Smith/Dafny §VII**
 information-flow buffer — the [§VII capstone](examples/smith.md) the checker proves at rung 1, modelled in
@@ -120,8 +121,9 @@ but:
 ## Rung 3 — Tested real bytecode
 
 The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — several ways: the
-lock-free §VII buffer, the lock-based accounts, and Groovy 6 async/await (all via **Lincheck**), and deadlock /
-lock-ordering (via **Fray**).
+lock-free §VII buffer, the lock-based accounts, and Groovy 6 async/await (all via **Lincheck**), deadlock /
+lock-ordering (via **Fray**), and the memory-model publication grain (via **jcstress**). Three tools, three methods —
+model-checking, controlled scheduling, empirical stress — *none subsumes the others*.
 
 ### The Lincheck buffer examples
 
@@ -325,6 +327,40 @@ increasing acquisition ⇒ no cycle" is the *same* well-foundedness argument run
 `@Decreases` ("strictly decreasing measure ⇒ no infinite descent"). Deadlock-freedom-by-ordering is termination,
 lifted to the resource graph. *(Dining philosophers is one of [jcstress](https://github.com/openjdk/jcstress)'s own
 classic samples — credited as the source of the problem; the code here is our own.)*
+
+### Empirical stress — jcstress
+
+The third tested-bytecode sibling, and a *different method* from the other two. Where Lincheck model-checks the
+operations for linearizability and Fray drives the scheduler for deadlock, [jcstress](https://github.com/openjdk/jcstress)
+(OpenJDK's Java Concurrency Stress harness) runs the actors **billions of times on real JIT and hardware** and tallies
+which *outcomes* occur — the canonical Java-Memory-Model test, reaching the **publication grain** the others approach
+differently. It runs on the *same* `SpscBuffer` the checker proves and Lincheck checks (the `Correct` / `Leaky` pair,
+named for `BufferLincheckTest`).
+
+The test is two actors on a capacity-1 buffer: a producer `offer(1)`, a consumer `poll()`. The slot's array default
+is `0`, so the observed value separates three worlds — `-1` (consumer first, empty), `1` (saw the published value),
+and `0` (saw `tail` advanced but read the slot *before the value was written*: the publication race). The correct
+buffer writes the slot then publishes via the `volatile tail`, so `0` is **forbidden — and never observed**; the leaky
+one publishes first, so jcstress **observes** it:
+
+```
+RESULT      SAMPLES     FREQ       EXPECT  DESCRIPTION
+    -1  154,926,095   51.23%   Acceptable  Consumer ran first — buffer empty.
+     0       58,179    0.02%  Interesting  THE LEAK: tail advanced before the slot was written…
+     1  147,415,480   48.75%   Acceptable  Consumer saw the fully published value.
+```
+
+58,179 hits in ~300 M runs — the leak, caught **empirically**. (The leaky `0` is marked `ACCEPTABLE_INTERESTING` so
+`jcstressCheck` stays green while *reporting* the race; the correct buffer's `0` is `FORBIDDEN` and lands in "Failed
+tests: No matches".) This overlaps Lincheck — both catch the leaky buffer — but by a different route: Lincheck
+*model-checks* the interleaving space against a sequential spec, while jcstress *stress-tests* raw outcomes on real
+hardware, where a JIT or weak-memory reordering the model abstracts away would surface. Same buffer, complementary
+fidelity.
+
+**The Java wrinkle.** jcstress generates its harness from `@JCStressTest` / `@Actor` / `@Outcome` via a **javac
+annotation processor**, which won't fire on Groovy — so the test holder is Java (`src/jcstress/java`, like jcstress's
+own samples), wrapping the same Groovy `@CompileStatic @POJO` buffer. Run `./gradlew jcstressCheck` (`-m quick`, JDK 25,
+~13 s; not in `check`). Inspired by jcstress's samples, written ourselves — theirs is GPL, this repo Apache.
 
 ## Lineage — the same gap in Dafny
 

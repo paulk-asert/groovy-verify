@@ -28,8 +28,9 @@ import verification.Declassify
 
 /**
  * The §VII capstone buffer — information flow × rely/guarantee — as a <b>single shared source</b> checked by two
- * rungs at once (see {@code CONCURRENCY.md}), exactly like {@link SpscBuffer} but carrying the
- * <i>whole</i> §VII argument, not just the bounds:
+ * rungs at once (see {@code CONCURRENCY.md}) — groovy-verify and Lincheck, like {@link SpscBuffer}'s first two (the
+ * plain {@code SpscBuffer} adds a third, jcstress, for the publication grain) — but carrying the <i>whole</i> §VII
+ * argument, not just the bounds:
  *
  * <ul>
  *   <li><b>groovy-verify</b> (rung 1) proves the bounds @Invariant under each thread's @UnderRely interference AND
