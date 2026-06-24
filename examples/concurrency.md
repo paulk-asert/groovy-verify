@@ -320,13 +320,25 @@ static int sumThree() {
 ```
 
 A wrong total refutes. (The `def` and element casts are a surface wart — multi-arg `await` is typed `List<Object>` —
-not a verifier limit.) `Awaitable.all` waits for everyone, so its result is fixed. The **racing** combinators
-`Awaitable.any` / `Awaitable.first` return whichever task *wins* — but that's just an **if/else over an unknown
-selector**: the result is one of the task values, so the verifier binds it to a nondeterministic choice and proves
-the postcondition holds for *every possible winner*. `await Awaitable.any(async { 1 }, async { 2 })` satisfies
-`result == 1 || result == 2` (whichever wins), but a spec of `result == 1` **refutes** (the other task might win) —
-exactly how an if/else discharges all its branches. When the tasks compute the *same* value, the race is determinate
-(`Awaitable.first(async { 42 }, async { 42 })` gives `42`), so no scheduler assumption is even needed.
+not a verifier limit.) `Awaitable.all` waits for everyone, so its result is fixed.
+
+The **racing** combinators `Awaitable.any` / `Awaitable.first` instead return whichever task *wins* — but that's just
+an **if/else over an unknown selector**: the result is one of the task values, so the verifier binds it to a
+nondeterministic choice and proves the postcondition holds for *every possible winner*:
+
+<!-- doclint:case p153-async-await/racing-any-verifies-when-the-spec-covers-every-winner -->
+```groovy
+@Ensures({ result == 1 || result == 2 })
+static int race() {
+    def x = await Awaitable.any(async { 1 }, async { 2 })
+    return (int) x
+}
+```
+
+Whichever task wins, the result is `1` or `2`, so the disjunction proves; tighten the spec to `result == 1` and it
+**refutes** (the other task might win) — exactly how an if/else discharges all its branches. When the tasks compute
+the *same* value, the race is determinate (`Awaitable.first(async { 42 }, async { 42 })` gives `42`), so no scheduler
+assumption is even needed.
 
 The **timing** combinators split the same way, on whether timing changes the *value*. `Awaitable.delay(ms)` is a
 non-blocking pause — no value, no state effect — a **no-op** for a logic proof. `orTimeoutMillis` is **transparent**:
