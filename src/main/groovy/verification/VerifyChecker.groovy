@@ -7426,6 +7426,51 @@ class VerifyChecker extends TypeCheckingExtension {
         verifyCallSite(target, formals, argExprs, contractAst, expression)
     }
 
+    /**
+     * The innermost annotated loop ({@code LOOP_SPEC_KEY} present) whose body lexically contains {@code callExpr},
+     * or null if the call isn't inside one. Lets {@link #verifyCallSite} discharge an in-loop call's precondition
+     * against an *arbitrary* iteration — under the loop invariant + guard, the loop variables symbolic — instead of
+     * the loop-entry / havoc'd state the straight-line prefix replay leaves them in. Matches the call by identity.
+     */
+    private LoopingStatement enclosingAnnotatedLoop(Expression callExpr) {
+        if (currentMethod == null) return null
+        Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = currentMethod.code
+        if (body == null) return null
+        final LoopingStatement[] found = new LoopingStatement[1]
+        final List<LoopingStatement> stack = new ArrayList<LoopingStatement>()
+        body.visit(new CodeVisitorSupport() {
+            private boolean annotated(LoopingStatement ls) {
+                ((Statement) ls).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null
+            }
+            private void record(Expression call) {
+                if (found[0] == null && call.is(callExpr) && !stack.isEmpty()) found[0] = stack.get(stack.size() - 1)
+            }
+            @Override void visitWhileLoop(WhileStatement loop) {
+                boolean a = annotated(loop); if (a) stack.add(loop)
+                super.visitWhileLoop(loop)
+                if (a) stack.remove(stack.size() - 1)
+            }
+            @Override void visitForLoop(ForStatement loop) {
+                boolean a = annotated(loop); if (a) stack.add(loop)
+                super.visitForLoop(loop)
+                if (a) stack.remove(stack.size() - 1)
+            }
+            @Override void visitDoWhileLoop(DoWhileStatement loop) {
+                boolean a = annotated(loop); if (a) stack.add(loop)
+                super.visitDoWhileLoop(loop)
+                if (a) stack.remove(stack.size() - 1)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                record(call); super.visitMethodCallExpression(call)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+                record(call); super.visitStaticMethodCallExpression(call)
+            }
+        })
+        found[0]
+    }
+
     private void verifyCallSite(MethodNode target,
                                 Parameter[] formals,
                                 List<Expression> argExprs,
@@ -7487,7 +7532,44 @@ class VerifyChecker extends TypeCheckingExtension {
             //     PathFacts misses it — yet it is a definite fact (e.g. `sumUp(n-1)` after `if (n==0) return 0`
             //     needs ¬(n==0) to show `n-1 >= 0`). Without it, fresh formals would leave these recursive
             //     preconditions unprovable (they pass vacuously today only via the name-conflation above).
-            if (currentMethod != null && callExpr.lineNumber > 0) {
+            // 2e. The call lies inside an annotated loop body. Discharge its precondition against an ARBITRARY
+            //     iteration, not the loop-entry state: seed the loop invariant + guard (the loop variables stay
+            //     symbolic, constrained only by the invariant — not pinned to their pre-loop init values the way the
+            //     straight-line prefix replay would leave them), then thread the IN-LOOP preceding statements to the
+            //     call. This is the same context the loop's implicit obligations use (dischargeSeeded); without it,
+            //     an in-loop call's precondition was checked with the loop variables havoc'd (so a `swap(lo, mid)`
+            //     inside the loop saw `mid = -1` and spuriously refuted). The in-loop prefix is taken from the CLEAN
+            //     loop body (`spec.body`, captured pre-instrumentation): the live body carries groovy-contracts'
+            //     try/catch wrappers that symExec can't model, and the clean nodes aren't the live `callExpr` so they
+            //     are located by source position (preserved through instrumentation), not identity. Only when the
+            //     call is actually located do we seed the loop context; otherwise fall through to the straight-line
+            //     path (no worse than before), so we never assume the invariant without the matching body replay.
+            boolean handledInLoop = false
+            LoopingStatement encLoop = (currentMethod != null && callExpr.lineNumber > 0) ?
+                enclosingAnnotatedLoop(callExpr) : null
+            if (encLoop != null) {
+                LoopSpec spec = (LoopSpec) ((Statement) encLoop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                if (spec != null) {
+                    List<Statement> inLoopPrefix = new ArrayList<Statement>()
+                    if (collectPrefix(new BlockStatement(spec.body, null),
+                            callExpr.lineNumber, callExpr.columnNumber, inLoopPrefix)) {
+                        for (Expression inv : spec.invariants) {
+                            Object h = enc.translate(inv)
+                            if (h != null) session.assertExpr(h)
+                        }
+                        if (spec.guard != null) {
+                            Object g = enc.translate(spec.guard)
+                            if (g != null) session.assertExpr(g)
+                        }
+                        try {
+                            LoopEncoder.symExec(inLoopPrefix, enc, session)
+                        } catch (Throwable ignored) {
+                        }
+                        handledInLoop = true
+                    }
+                }
+            }
+            if (!handledInLoop && currentMethod != null && callExpr.lineNumber > 0) {
                 Statement encBody = (Statement) currentMethod.getNodeMetaData(
                     ContractExpansionTransform.ORIGINAL_BODY_KEY)
                 if (encBody == null) encBody = currentMethod.code

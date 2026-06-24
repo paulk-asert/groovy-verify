@@ -7884,8 +7884,9 @@ classic), `doclint:case`-linked to the harness.
   the method-body store executor (so the Phase-12 swap and the Phase-14 insertion sort prove `sorted ∧ permutation`)
   but **not** the loop-body executor. Phase 165 closes that, so the example now proves **`sorted ∧ permutation`**
   with the natural inline swaps and no auxiliary method. (A second, independent gap also surfaced — a count-preserving
-  swap *helper* can't be discharged when *called from* a loop body, its precondition not checked under the loop
-  invariant, e.g. `mid = -1` — but the inline route makes it moot for DNF; it remains a candidate follow-up.)
+  swap *helper* couldn't be discharged when *called from* a loop body, its precondition not checked under the loop
+  invariant, e.g. `mid = -1`. The inline route made it moot for DNF, but it is now **closed in Phase 166**, so the
+  helper-based DNF verifies too.)
 
 Root suite 1410 → **1413/0** (+3 harness cases: sorted ∧ permutation verifies; the `mid++`-after-blue-swap off-by-one
 refutes the sorted invariant; a clobbering loop refutes the permutation invariant), full `check` green.
@@ -7915,8 +7916,38 @@ one of them silently missing the law.
   permutation"). Whole-array `sum` law in loop bodies is the obvious sibling, deferred.
 
 Root suite **1413/0**, full `check` green; no regression (the change only *adds* sound assertions, gated to `.count`
-contracts). The companion gap — in-loop method-call preconditions discharged without the loop invariant — remains open
-as a candidate phase (general "call a proven lemma/helper from inside a loop").
+contracts). The companion gap — in-loop method-call preconditions discharged without the loop invariant — is closed in
+**Phase 166**.
+
+---
+
+## Phase 166 — a contracted call inside a loop body: precondition under the loop invariant  *(shipped)*
+
+The second gap Phase 164 surfaced — "call a proven lemma/helper from inside a loop body." A method call's precondition
+is discharged by the STC `onMethodSelection` → `verifyCallSite` pass, which built its assumption context from the
+enclosing method `@Requires`, path facts, early-return guards, and a *straight-line* prefix replay — but **never the
+loop invariant or guard**, and the prefix collector (`collectPrefix`) is loop-opaque. So a call inside a loop body had
+its loop variables left havoc'd (or pinned to pre-loop init values): `swap(lo, mid)` in the Dutch National Flag loop
+saw `mid = -1` and spuriously refuted, even though the invariant gives `0 <= lo <= mid <= hi <= a.length`.
+
+- **`verifyCallSite` is now loop-aware.** `enclosingAnnotatedLoop(callExpr)` finds (by node identity) the innermost
+  annotated loop whose body contains the call. When found, the precondition is discharged against an **arbitrary
+  iteration**: assert the loop invariant + guard (loop variables symbolic), then replay the **in-loop preceding**
+  statements to the call — the same seeding the loop's implicit obligations use (`dischargeSeeded`). This is the single
+  discharge path (no double-reporting, no suppression needed); non-loop calls are entirely unaffected.
+- **Clean body vs instrumented body.** The in-loop prefix is taken from the loop's **clean** body (`LoopSpec.body`,
+  captured pre-instrumentation): the live STC body carries groovy-contracts' `try/catch` wrappers that `symExec` can't
+  model. The clean nodes aren't the live `callExpr`, so the prefix is located by **source position** (preserved through
+  instrumentation), and only when the call is actually located do we seed the loop context — otherwise we fall through
+  to the straight-line path, so the invariant is never assumed without the matching body replay (soundness).
+- **Result:** a swap-**helper**-based Dutch National Flag verifies (each `swap(...)` precondition discharged from the
+  invariant + the replayed `hi = hi - 1`), and an in-loop call whose precondition the invariant doesn't establish —
+  `swap(mid, hi)` *without* decrementing `hi`, so `hi` can equal `a.length` — correctly refutes. 2 `P166 in-loop-call`
+  cases.
+
+Root suite 1413 → **1415/0** (+2 cases), full `check` green; **no regression** — the new context only applies to
+contracted calls lexically inside an annotated loop (rare), and only *adds* the (sound) invariant/guard/replay, so a
+previously-provable precondition stays provable.
 
 ---
 
