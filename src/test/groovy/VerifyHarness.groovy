@@ -5297,13 +5297,13 @@ class Derived extends Base {
                         static void f(java.util.List<Integer> a) { a.each { assert it >= 0 } } }''')],
         [group: 'P161 each', name: 'G each implicit `it` over a list refutes without guard', expect: 'Assertion',
          src: tc('class C { @Requires({ a != null }) static void f(java.util.List<Integer> a) { a.each { assert it >= 0 } } }')],
-        // A primitive array's `.each` doesn't propagate its element type to an *implicit* `it` (or an explicit
-        // untyped `it ->`) — stock @TypeChecked infers `it` as Object, so `it >= 0` fails to resolve `compareTo`
-        // before the verifier runs. Not a verifier boundary: name the element type (`{ int x -> … }`, case A) or
-        // iterate a generic `List<Integer>` (case F). Tracked upstream as GROOVY-12100 — the verifier side is
-        // already built (the implicit-`it` path above), so when that STC fix lands `int[].each { it }` verifies
-        // with no change here. Pinned to the current (pre-fix) error so this case FLIPS the moment it ships.
-        [group: 'P161 each', name: 'H array implicit `it` is a stock STC type error (GROOVY-12100)', expect: 'compareTo',
+        // GROOVY-12100 has LANDED (in the 6.0.0-SNAPSHOT this builds against): a *primitive array's* `.each` now
+        // propagates its element type to the *implicit* `it`, so `int[].each { it >= 0 }` type-checks and the
+        // verifier's implicit-`it` path (cases F/G) applies to arrays too — no verifier change was needed. Unguarded,
+        // this refutes exactly like the list case G: `it` resolves to int, the auto bounds loop proves safety, and the
+        // missing element guard yields a counterexample (a.size() = 1, a[0] = -1). Before the fix this was a stock
+        // @TypeChecked `compareTo` error (`it` inferred as Object), pre-pinned so the case would flip the moment it shipped.
+        [group: 'P161 each', name: 'H array implicit `it` refutes without guard (GROOVY-12100 fixed)', expect: 'Assertion',
          src: tc('class C { @Requires({ a != null }) static void f(int[] a) { a.each { assert it >= 0 } } }')],
         [group: 'P161 each', name: 'I eachWithIndex element+index property verifies', ok: true,
          src: tc('''class C { @Requires({ a != null && (0..<a.length).every { a[it] >= 0 } })

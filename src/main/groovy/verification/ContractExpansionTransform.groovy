@@ -761,8 +761,9 @@ class ContractExpansionTransform implements ASTTransformation {
         Parameter elem
         String idxName = null
         if (method == 'eachWithIndex') {
-            // `{ element, index -> … }` — two explicit params (no implicit form, so the GROOVY-12100 implicit-`it`
-            // inference gap doesn't apply here). The index is user-named and drives the loop (see buildLoopSpec).
+            // `{ element, index -> … }` — two explicit params (no implicit form; STC has always inferred both from
+            // the eachWithIndex signature, even on a primitive array). The index is user-named and drives the loop
+            // (see buildLoopSpec). (`.each`'s implicit `it` on a primitive array was the GROOVY-12100 STC gap, now fixed.)
             if (ps == null || ps.length != 2) return null
             elem = ps[0]
             idxName = ps[1].name

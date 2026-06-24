@@ -7763,8 +7763,8 @@ relaxes that machinery so a loop carrying **only** the auto bounds invariant ver
   its closure's *second* param is the loop's index, so rather than a hidden synthetic one, `buildLoopSpec` drives the
   loop with that **user-named** index (`int i = 0; … i = i + 1`, invariant `0 <= i <= size`, variant `size - i`) and
   binds `x = xs[i]` — so `i` reads in contracts, asserts and counterexamples exactly as the developer wrote it. Its
-  two-param closure also infers cleanly on a primitive array even *untyped*, where `.each`'s implicit `it` hits the
-  GROOVY-12100 STC gap.
+  two-param closure also infers cleanly on a primitive array even *untyped*, just as `.each`'s implicit `it` now does
+  since GROOVY-12100 landed (see boundary note below).
 - **Relaxation** (`buildLoopSpec`) — a for-in / `.each` with no user (or inferred) `@Invariant` previously returned
   null (→ skip). Now it proceeds on its auto bounds invariant (`0 <= idx <= size`) + `size - idx` variant alone,
   which already prove **safety and termination**. So a body asserting a **per-element property** verifies with no
@@ -7777,15 +7777,16 @@ on `LoopSpec` plus `autoOnlyBodyAccumulates` detects exactly this — an auto-bo
 anything beyond the loop variable / synthetic index — and **loud-skips the postcondition use check** instead of
 emitting a false counterexample. Such a body genuinely needs an `@Invariant`, which **can't be attached to a `.each`
 statement** (a statement-level annotation on a method call is a Groovy parse error) — so accumulation stays an honest
-skip, the documented limitation. A second boundary is upstream, not the verifier's: a *primitive array's* implicit
-`it` (`int[].each { assert it >= 0 }`) is a stock `@TypeChecked` error — STC doesn't propagate the element type to
-the implicit closure param, so `it >= 0` can't resolve `compareTo` before the verifier runs. Name the element type
-(`{ int x -> }`) or iterate a generic `List<Integer>` (where STC infers `it`). That STC gap is tracked upstream as
-**GROOVY-12100**; the verifier side is already built (the implicit-`it` path), so when the fix lands `int[].each { it }`
-verifies with no change here — the boundary case is pinned to its pre-fix error so it FLIPS on that release. 11 `P161 each`
-cases (per-element verifies / unguarded refutes / for-in relaxation / accumulation loud-skips / implicit-`it` over a
-list verifies & refutes / primitive-array implicit-`it` is a stock STC error / eachWithIndex element+index verifies,
-element refutes, binds `x = a[i]`, and untyped params infer on `int[]`); root suite 1386/0, full `check` (incl. runtimeRung) green.
+skip, the documented limitation. A second boundary *was* upstream, not the verifier's: a *primitive array's* implicit
+`it` (`int[].each { assert it >= 0 }`) used to be a stock `@TypeChecked` error — STC didn't propagate the element type
+to the implicit closure param, so `it >= 0` couldn't resolve `compareTo` before the verifier ran. That gap was tracked
+upstream as **GROOVY-12100 and has since been fixed** (present in the 6.0.0-SNAPSHOT this builds against): `int[].each`
+now hands its element type to the implicit `it`, so the verifier's implicit-`it` path applies to primitive arrays too
+with no change on this side — the pre-pinned boundary case duly flipped, now refuting (unguarded) exactly like the list
+form. (For older Groovy, the workaround was still to name the element type `{ int x -> }` or iterate a `List<Integer>`.)
+11 `P161 each` cases (per-element verifies / unguarded refutes / for-in relaxation / accumulation loud-skips /
+implicit-`it` over a list verifies & refutes / primitive-array implicit-`it` refutes post-GROOVY-12100 / eachWithIndex
+element+index verifies, element refutes, binds `x = a[i]`, and untyped params infer on `int[]`); root suite 1386/0, full `check` (incl. runtimeRung) green.
 
 ---
 
