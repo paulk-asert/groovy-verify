@@ -308,6 +308,24 @@ time), and the controlled-schedule run with per-iteration classloader reset is ~
 (the default is 1000). Lincheck and TLC are seconds. So Fray earns its place only where it's *distinct* —
 deadlock / lock-ordering on hand-threaded code, which Lincheck-on-operations doesn't exercise.
 
+### Dining philosophers — the N-fork generalisation
+
+The bank transfer is the two-resource case of a pattern that scales: **dining philosophers** is its N-fork
+generalisation. Its *thread-local* half — the verifier proving each philosopher acquires its lower-indexed fork
+first, and refuting the naive scheme at the wrap-around philosopher `i = n-1` — is [the lock-ordering
+example](examples/concurrency.md#dining-philosophers--deadlock-freedom-by-resource-ordering). Here is the **structural**
+half: `DiningPhilosophersFrayTest`, the N-fork twin of the bank test. `resourceHierarchyIsDeadlockFree` — three
+philosophers locking lower-fork-first — completes across every explored schedule; the disabled
+`naiveAcquisitionCanDeadlock` deadlocks the three-way cycle (enable it to watch Fray report it). Same two
+Groovy/Fray gotchas as the bank; the 3-thread schedule search needs a little more heap (`maxHeapSize = '2g'`, 50
+iterations rather than 200).
+
+A pleasing footnote spanning the rungs: a resource hierarchy is a **well-founded order on the locks**, and "strictly
+increasing acquisition ⇒ no cycle" is the *same* well-foundedness argument rung 1 uses for loop **termination** via
+`@Decreases` ("strictly decreasing measure ⇒ no infinite descent"). Deadlock-freedom-by-ordering is termination,
+lifted to the resource graph. *(Dining philosophers is one of [jcstress](https://github.com/openjdk/jcstress)'s own
+classic samples — credited as the source of the problem; the code here is our own.)*
+
 ## Lineage — the same gap in Dafny
 
 The Smith/Dafny paper this work follows sits at rung 1 too: Dafny's core is sequential, and it gets

@@ -484,6 +484,7 @@ tasks.register('frayCheck', Test) {
     testClassesDirs = sourceSets.frayCheck.output.classesDirs
     classpath = sourceSets.frayCheck.runtimeClasspath
     useJUnitPlatform()                          // the plugin re-applies this with includeTags('FrayTest')
+    maxHeapSize = '2g'                          // 3-thread schedule search (dining philosophers) outgrows the default heap
     // Fray seizes every JVM thread, so Groovy's PIC-Cleaner daemon (CacheableCallSite) — which parks
     // forever on a queue — reads as a false deadlock. `inline = true` cleans call sites inline instead of on
     // a background thread (the static initializer then skips Thread.start()), so the only threads Fray sees

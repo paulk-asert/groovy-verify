@@ -93,6 +93,45 @@ unlocked one races, and a **Fray** spike (`./gradlew frayCheck`) drives the JVM 
 bank transfer to confirm ordered locking is deadlock-free — and to catch the lock-ordering deadlock when it
 isn't. Same boundary, made concrete; see [`CONCURRENCY.md`](../CONCURRENCY.md).
 
+### Dining philosophers — deadlock-freedom by resource ordering
+
+The bank's two-account lock ordering scales: **dining philosophers** is the N-fork case — and here the verifier
+proves the *ordering discipline itself*, not a data invariant. The **resource-hierarchy theorem**: if every agent
+acquires its locks in one fixed global order, the wait-for graph is acyclic, so no deadlock. That order is a
+thread-local discipline — "philosopher *i* takes the lower-indexed of its two forks first" — and it's pure integer
+arithmetic, so the verifier proves it:
+
+<!-- doclint:case p-philosophers/resource-hierarchy-lower-fork-first-is-deadlock-free -->
+```groovy
+@Requires({ n >= 2 && i >= 0 && i < n })
+@Ensures({ result })
+static boolean hierarchy(int i, int n) {
+    int left = i
+    int right = (i + 1) % n
+    int first = left < right ? left : right
+    int second = left < right ? right : left
+    return first < second
+}
+```
+
+Every philosopher provably acquires its forks low-index-first (`result` — that `first < second` — holds for all
+`i`). The **naive** left-then-right scheme — `i < (i + 1) % n` — *refutes*, and the counterexample is the punchline:
+
+```
+counterexample: i = 2, n = 3       fails on: naive(2, 3)
+```
+
+`i = n-1` is the **wrap-around philosopher**, the one that grabs fork `n-1` then fork `0`, closing the cycle. The
+verifier doesn't just flag "deadlock possible" — it names the exact philosopher whose acquisition order is the
+local root cause.
+
+**What this is, and isn't.** We prove the *local* ordering discipline; the *global* deadlock-freedom it implies
+(the resource-hierarchy theorem's consequence over all interleavings) is the structural half — exercised for real
+by **Fray** (`./gradlew frayCheck`), which drives the JVM scheduler over three hand-threaded philosophers and
+confirms the ordered version never deadlocks while the naive one does. See [`CONCURRENCY.md`](../CONCURRENCY.md).
+*(Dining philosophers is one of [jcstress](https://github.com/openjdk/jcstress)'s classic samples — credited as the
+source of the problem; the code here is our own.)*
+
 ### Agents & actors — the same invariant, a different paradigm
 
 The lock trick isn't really about locks; it's "prove the local obligation, assume the structural guarantee."

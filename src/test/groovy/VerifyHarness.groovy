@@ -5331,6 +5331,35 @@ class Derived extends Base {
         // String-contract prototype: the Java-friendly `verification.@Requires/@Ensures/@Decreases('…')` (a String
         // is a legal Java annotation value where a closure is not), captured into the SAME reparse→prove pipeline.
         // A recursive Java-style method verifies inductively from String contracts, and a wrong @Ensures refutes.
+        // Dining philosophers, the thread-local half (the structural half is the Fray rung — see CONCURRENCY.md).
+        // Deadlock-freedom by *resource hierarchy*: if every philosopher acquires its two forks in increasing
+        // global index order, the wait-for graph is acyclic ⇒ no deadlock. groovy-verify proves that LOCAL
+        // ordering discipline (pure int arithmetic, fully in-fragment) and pinpoints exactly which philosopher
+        // breaks it under the naive scheme.
+        [group: 'P-philosophers', name: 'naive left-then-right deadlocks: order violated at the wrap-around philosopher', expect: 'postcondition',
+         src: tc("class C { @Requires({ n >= 2 && i >= 0 && i < n }) @Ensures({ result }) static boolean naive(int i, int n) { i < (i + 1) % n } }")],
+        [group: 'P-philosophers', name: 'resource hierarchy (lower fork first) is deadlock-free', ok: true,
+         src: tc('''class C {
+             @Requires({ n >= 2 && i >= 0 && i < n })
+             @Ensures({ result })
+             static boolean hierarchy(int i, int n) {
+                 int left = i
+                 int right = (i + 1) % n
+                 int first = left < right ? left : right
+                 int second = left < right ? right : left
+                 return first < second
+             }
+         }''')],
+        [group: 'P-philosophers', name: 'the ordering discipline holds for any two distinct forks', ok: true,
+         src: tc('''class C {
+             @Requires({ a != b })
+             @Ensures({ result })
+             static boolean lowFirst(int a, int b) {
+                 int first = a < b ? a : b
+                 int second = a < b ? b : a
+                 return first < second
+             }
+         }''')],
         [group: 'P-string-contract', name: 'recursive count verifies from String contracts', ok: true,
          src: tcStr('''class C {
              @Requires('n >= 0')
