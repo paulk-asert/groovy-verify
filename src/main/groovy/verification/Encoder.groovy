@@ -1878,6 +1878,35 @@ class Encoder {
     }
 
     /**
+     * Per-store count law — the multiset bookkeeping that makes a swap (two compensating stores) preserve every
+     * value's count, so a permutation property survives it: {@code count(newA, v) = count(oldA, v) -
+     * [oldA[idx]==v] + [val==v]} for each tracked {@code v}. Int-element arrays use {@code count}; List receivers
+     * the bounded {@code bcount} over {@code [0, size)} (Phase 41). A no-op when {@code countVals} is empty or the
+     * element sort isn't Int, so ordinary stores pay nothing. Shared by the method-body store executor
+     * ({@link VerifyChecker}) and the loop-body one ({@link LoopEncoder}) so the two can't drift — one law, both
+     * passes (the loop pass previously omitted it, which left a permutation invariant unprovable across a loop body).
+     */
+    void emitStoreCountLaw(String arr, Object oldA, Object newA, Object idx, Object val,
+                           Object valSort, List<Object> countVals) {
+        if (countVals == null || countVals.isEmpty() || valSort != session.intSort()) return
+        Object one = session.intLit(1L), zero = session.intLit(0L)
+        boolean isList = isListName(arr)
+        Object size = isList ? sizeOf(arr) : null
+        for (Object v : countVals) {
+            Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
+            Object added = session.ite(session.eq(val, v), one, zero)
+            if (isList) {
+                Object oldBc = session.bcount(oldA, v, zero, size)
+                Object newBc = session.bcount(newA, v, zero, size)
+                session.assertExpr(session.eq(newBc, session.plus(session.minus(oldBc, removed), added)))
+            } else {
+                Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
+                session.assertExpr(session.eq(session.count(newA, v), rhs))
+            }
+        }
+    }
+
+    /**
      * Get-or-declare the set handle for a name / {@code old$name} — a characteristic
      * {@code Array <elem-sort> -> Int}. Element sort comes from the receiver type collected by
      * {@link VerifyChecker}: Int-element sets keep the existing {@link SmtSession#setVar} storage

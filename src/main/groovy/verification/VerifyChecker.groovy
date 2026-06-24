@@ -5724,23 +5724,7 @@ class VerifyChecker extends TypeCheckingExtension {
                         // instead of count: the runtime's xs.count(v) is bounded, and the unbounded
                         // count would conflict with the bcount-based @Ensures translation. Arrays
                         // keep using count (fixed size, no semantic mismatch).
-                        if (valSort == session.intSort()) {
-                            Object one = session.intLit(1L), zero = session.intLit(0L)
-                            boolean isList = enc.isListName(st.arr)
-                            Object size = isList ? enc.sizeOf(st.arr) : null
-                            for (Object v : countVals) {
-                                Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
-                                Object added = session.ite(session.eq(val, v), one, zero)
-                                if (isList) {
-                                    Object oldBc = session.bcount(oldA, v, zero, size)
-                                    Object newBc = session.bcount(newA, v, zero, size)
-                                    session.assertExpr(session.eq(newBc, session.plus(session.minus(oldBc, removed), added)))
-                                } else {
-                                    Object rhs = session.plus(session.minus(session.count(oldA, v), removed), added)
-                                    session.assertExpr(session.eq(session.count(newA, v), rhs))
-                                }
-                            }
-                        }
+                        enc.emitStoreCountLaw(st.arr, oldA, newA, idx, val, valSort, countVals)
                         // Phase 69/70 — per-store SUM law (the additive analogue of the count law): for
                         // the array's whole-range sum, 0 <= idx < N ⟹ sum(newA,0,N) == sum(oldA,0,N) -
                         // oldA[idx] + val (== sum(oldA) otherwise). Int elements use `sum`, decimal (Real)
@@ -6586,6 +6570,15 @@ class VerifyChecker extends TypeCheckingExtension {
         // Phase 64 — the precondition conjuncts the loop body provably can't invalidate, sound to
         // assume in preservation/progress (computed once; establishment/use already see the full reqAst).
         List<Expression> stableReqs = loopStableRequires(reqAst, site)
+        // The `.count(v)` values the loop tracks — from its @Invariant (where a permutation property lives) and
+        // the method @Requires/@Ensures — so an inline array store in the body emits the per-store count law
+        // (LoopEncoder reads this thread-local; held as AST since each VC translates in its own session).
+        List<Expression> loopCountVals = new ArrayList<Expression>()
+        loopCountVals.addAll(countValueArgs(postAst))
+        loopCountVals.addAll(countValueArgs(reqAst))
+        for (Expression inv : site.spec.invariants) loopCountVals.addAll(countValueArgs(inv))
+        List<Expression> prevCountVals = LoopEncoder.countVals.get()
+        LoopEncoder.countVals.set(loopCountVals)
         try {
             checkEstablishment(node, site, reqAst)
             checkPreservation(node, site, stableReqs)
@@ -6612,6 +6605,8 @@ class VerifyChecker extends TypeCheckingExtension {
             }
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), site.loopStmt)
+        } finally {
+            LoopEncoder.countVals.set(prevCountVals)
         }
     }
 

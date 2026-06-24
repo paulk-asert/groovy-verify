@@ -95,6 +95,23 @@ class LoopEncoder {
      *  Thread-local + set/restore, so concurrent compilations (parallel builds) don't collide. */
     static final ThreadLocal<LoopCallHandler> callHandler = new ThreadLocal<LoopCallHandler>()
 
+    /** The {@code .count(v)} value expressions the enclosing loop's invariant / contract tracks (the {@code v}
+     *  in {@code a.count(v)}). Set/restored by {@link VerifyChecker#verifyLoop}, read by {@link #applyAssign} so an
+     *  inline array store in the loop body emits the same per-store count law the method-body executor does — without
+     *  it, {@code count(a)} is unconstrained across the body and a permutation invariant can't be preserved. Held as
+     *  AST (not Z3 terms) because each loop VC translates against its own fresh session. Empty ⇒ ordinary loops pay
+     *  nothing. Thread-local for the same parallel-build reason as {@link #callHandler}. */
+    static final ThreadLocal<List<Expression>> countVals = new ThreadLocal<List<Expression>>()
+
+    /** Translate the enclosing loop's tracked {@code .count(v)} value expressions against the live encoder/session. */
+    private static List<Object> translatedCountVals(Encoder enc) {
+        List<Expression> exprs = countVals.get()
+        if (exprs == null || exprs.isEmpty()) return Collections.<Object> emptyList()
+        List<Object> out = new ArrayList<Object>()
+        for (Expression ve : exprs) { Object h = enc.translate(ve); if (h != null) out.add(h) }
+        out
+    }
+
     /** Translate, raising a "skipped" rather than returning null. */
     static Object tr(Encoder enc, Expression e, String what) {
         Object h = enc.translate(e)
@@ -372,7 +389,15 @@ class LoopEncoder {
                 Object idx = enc.translate(sub.rightExpression)
                 Object val = enc.translate(be.rightExpression)
                 if (idx == null || val == null) enc.havocArray(arr)   // unmodelable update → contents unknown (sound)
-                else enc.bindArray(arr, s.store(enc.arrayFor(arr), idx, val))
+                else {
+                    Object oldA = enc.arrayFor(arr)
+                    Object newA = s.store(oldA, idx, val)
+                    enc.bindArray(arr, newA)
+                    // Maintain count(a, v) for the loop's tracked values, so a swap's two stores conserve every
+                    // count and a permutation invariant is preserved across the body (shared with the method-body
+                    // executor; the loop pass previously omitted this).
+                    enc.emitStoreCountLaw(arr, oldA, newA, idx, val, enc.listElementSort(arr), translatedCountVals(enc))
+                }
                 return
             }
             throw new UnsupportedConstructException(

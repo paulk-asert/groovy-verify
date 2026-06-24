@@ -1971,13 +1971,13 @@ class VerifyHarness {
         // blues [hi,n)) with three moving indices, in-place swaps, and @Decreases (hi - mid). Z3 derives the
         // GLOBAL adjacent-sortedness postcondition from the three region facts at loop exit (mid == hi). The
         // method returns the array so the loop carries a post-loop value (the loop-checker's anchor).
-        [group: 'P164 dutch-flag', name: 'three-way partition is sorted', ok: true,
+        [group: 'P164 dutch-flag', name: 'three-way partition is sorted AND a permutation', ok: true,
          src: tc('''class C {
                        int[] a
-                       @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } })
+                       @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } && a.count(v) == c })
                        @Modifies({ this.a })
-                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } })
-                       int[] flag() {
+                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+                       int[] flag(int v, int c) {
                            int lo = 0
                            int mid = 0
                            int hi = a.length
@@ -1985,7 +1985,8 @@ class VerifyHarness {
                                         (0..<lo).every { a[it] == 0 } &&
                                         (lo..<mid).every { a[it] == 1 } &&
                                         (hi..<a.length).every { a[it] == 2 } &&
-                                        (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } })
+                                        (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } &&
+                                        a.count(v) == c })
                            @Decreases({ hi - mid })
                            while (mid < hi) {
                                if (a[mid] == 0) {
@@ -2032,6 +2033,26 @@ class VerifyHarness {
                                    int t = a[mid]; a[mid] = a[hi]; a[hi] = t
                                    mid = mid + 1
                                }
+                           }
+                           return a
+                       }
+                   }''')],
+        // Permutation has teeth in the loop body too: a CLOBBERING loop (overwrite each slot with 0, dropping the
+        // old value) is not a permutation, so the in-loop per-store count law correctly refutes the `a.count(v) == c`
+        // invariant — the loop-body analogue of the Phase-12 "copy is not a permutation" soundness anchor.
+        [group: 'P164 dutch-flag', name: 'clobbering loop is not a permutation', expect: 'Cannot prove loop invariant',
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } && a.count(v) == c })
+                       @Modifies({ this.a })
+                       @Ensures({ a.count(v) == c })
+                       int[] flag(int v, int c) {
+                           int i = 0
+                           @Invariant({ 0 <= i && i <= a.length && a.count(v) == c })
+                           @Decreases({ a.length - i })
+                           while (i < a.length) {
+                               a[i] = 0          // clobbers a[i] — drops its old value, so count(v) is not preserved
+                               i = i + 1
                            }
                            return a
                        }

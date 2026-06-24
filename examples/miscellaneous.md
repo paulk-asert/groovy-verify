@@ -20,7 +20,7 @@
 Examples that don't belong to one of the per-source galleries: a verified mutable data structure, a
 fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
 its source), an integer square root proven exactly through a quadratic invariant, Dijkstra's Dutch National Flag
-(the iconic in-place three-way partition, proven sorted from a four-region loop invariant), a Dafny-style
+(the iconic in-place three-way partition, proven sorted *and* a permutation from a four-region loop invariant), a Dafny-style
 element-wise array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat is associative but not
 commutative), and a tour of verification across a Groovy type hierarchy — inheritance, behavioral subtyping, and
 traits.
@@ -169,16 +169,18 @@ spec is proven on the nose.
 
 Dijkstra's **Dutch National Flag** (*A Discipline of Programming*, 1976) is the textbook loop-invariant exercise —
 a staple of the Dafny tutorials and the VerifyThis competitions. Given an array of values in `{0, 1, 2}` (red,
-white, blue), partition it **in place** to all 0s, then all 1s, then all 2s, in a single pass. The whole proof is
-one **four-region invariant** over three moving indices — reds `[0, lo)`, whites `[lo, mid)`, the still-unknown
-`[mid, hi)`, and blues `[hi, n)` — and it verifies, written in the native `.every`-over-a-range idiom:
+white, blue), partition it **in place** to all 0s, then all 1s, then all 2s, in a single pass. It verifies for
+**both** halves at once — *sorted* **and** a *permutation* of the input — on a single **four-region invariant**
+over three moving indices (reds `[0, lo)`, whites `[lo, mid)`, the still-unknown `[mid, hi)`, blues `[hi, n)`),
+written in the native `.every`-over-a-range idiom. The ghost `v`/`c` carry the permutation: for an arbitrary value
+`v` whose entry count is `c`, the result still has `c` of them, so no element was invented or lost:
 
-<!-- doclint:case p164-dutch-flag/three-way-partition-is-sorted -->
+<!-- doclint:case p164-dutch-flag/three-way-partition-is-sorted-and-a-permutation -->
 ```groovy
-@Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } })
+@Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } && a.count(v) == c })
 @Modifies({ this.a })
-@Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } })
-int[] flag() {
+@Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+int[] flag(int v, int c) {
     int lo = 0
     int mid = 0
     int hi = a.length
@@ -186,7 +188,8 @@ int[] flag() {
                  (0..<lo).every { a[it] == 0 } &&
                  (lo..<mid).every { a[it] == 1 } &&
                  (hi..<a.length).every { a[it] == 2 } &&
-                 (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } })
+                 (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } &&
+                 a.count(v) == c })
     @Decreases({ hi - mid })
     while (mid < hi) {
         if (a[mid] == 0) {
@@ -204,28 +207,29 @@ int[] flag() {
 }
 ```
 
-The pleasing part is what the engine does at the **boundary**. The `@Ensures` is global adjacent-sortedness
+The pleasing part is what the engine does at the **boundary**. The sortedness `@Ensures` is global adjacent-order
 (`a[it] <= a[it + 1]` everywhere), but the invariant only knows the array *region by region*. At loop exit
 `mid == hi`, so the unknown region is empty and the three region facts tile `[0, n)` as `0…0 1…1 2…2` — and Z3
 derives the cross-boundary `a[it] <= a[it + 1]` (at `lo-1 → lo` and `mid-1 → mid`) by instantiating the right
 region predicate on each side. The `(mid..<hi).every { 0 <= a[it] && a[it] <= 2 }` clause is load-bearing: it
-keeps the value swapped down from `hi` inside `{0, 1, 2}` so the blue region stays well-typed. Two authoring
-notes: the method **returns the array** so the loop has a post-loop value to anchor on (a void method with a
-trailing loop is skipped), and the swaps are written inline as a temp-and-two-stores.
+keeps the value swapped down from `hi` inside `{0, 1, 2}` so the blue region stays well-typed. The permutation
+`a.count(v) == c` rides the **per-store count law**: each inline swap is two stores whose count deltas cancel
+(`count` drops by `[old==v]`, rises by `[new==v]`, and they're equal across a swap), so every value's count is
+conserved across the body. Two authoring notes: the method **returns the array** so the loop has a post-loop value
+to anchor on (a void method with a trailing loop is skipped), and the swaps are written inline as a
+temp-and-two-stores.
 
-The proof has teeth at exactly the place this algorithm is famous for getting wrong: the off-by-one is advancing
-`mid` after the **blue** swap. The value swapped down from `hi` is *unexamined*, so `mid++` can pull a 2 into the
-white region — add that one line and preservation refutes (`Cannot prove loop invariant`), naming the broken
-region. (The mirror mistake on the red branch — *not* advancing `mid` — is the same boundary from the other side.)
+The proof has teeth on both halves. The off-by-one this algorithm is famous for getting wrong — advancing `mid`
+after the **blue** swap, where the value swapped down from `hi` is *unexamined* — pulls a 2 into the white region,
+and preservation refutes the sortedness invariant (`Cannot prove loop invariant`), naming the broken region. And a
+*clobbering* loop (overwrite each slot, dropping its old value) is not a permutation, so the same count law refutes
+the `a.count(v) == c` invariant — the loop-body twin of the Phase-12 "copy is not a permutation" anchor.
 
-**What this proves, and what it doesn't.** This is the *sortedness* half. The companion property — that the result
-is a **permutation** of the input (the multiset is preserved) — is provable here for the swap primitive in
-isolation (a swap preserves `a.count(v)` for every value `v`, the Phase-12 building block) and for straight-line
-recursive sorts (the insertion sort proves `sorted ∧ permutation` at once). Threading it through *this* loop,
-though, hits two current fragment limits: the inline-swap count law isn't carried by loop-body invariant
-preservation, and a count-preserving swap *helper* can't be discharged when called from the loop body (its
-precondition isn't checked under the loop invariant). So Dutch National Flag lands here as a clean sortedness
-proof, with permutation-through-a-loop a noted boundary rather than a claim.
+**A note on what made permutation land.** Until recently this example proved only sortedness: the per-store count
+law that conserves the multiset was emitted by the *method-body* store executor (so the swap primitive and the
+recursive insertion sort both prove `sorted ∧ permutation`) but **not** by the separate *loop-body* executor, so a
+permutation invariant couldn't survive a loop. Closing that — one shared count-law helper called by both executors
+— is what lets Dutch National Flag prove both halves here, with the natural inline swaps and no auxiliary method.
 
 ### FizzBuzz — element-wise array correctness
 

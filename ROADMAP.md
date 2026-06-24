@@ -7879,16 +7879,44 @@ classic), `doclint:case`-linked to the harness.
   (`Cannot prove loop invariant`). Two authoring notes baked in: the method **returns the array** so the trailing
   loop has a post-loop value to anchor on (a void method with a final loop is loud-skipped — "no return value after
   loop"), and the `(mid..<hi).every { 0 <= a[it] && a[it] <= 2 }` clause keeps the swapped-down value well-typed.
-- **Honest boundary — permutation through a loop.** The companion multiset/permutation half is *not* claimed here.
-  It is provable for the swap primitive in isolation (Phase 12: a swap preserves `a.count(v)` for every `v`) and for
-  straight-line recursive sorts (Phase 14 insertion sort proves `sorted ∧ permutation`), but threading `a.count(v)`
-  through *this* loop hit two real fragment limits, both surfaced and recorded: (1) the inline-swap count law isn't
-  carried by loop-body invariant **preservation** (a spurious negative-count model slips through), and (2) a
-  count-preserving swap **helper** can't be discharged when called from the loop body — its precondition isn't
-  checked under the loop invariant (counterexamples violate the invariant itself, e.g. `mid = -1`). Both are
-  candidate follow-up phases (loop-body call-site contexts; count-law in loop preservation), not spec tweaks.
+- **Permutation through the loop — landed in Phase 165.** Originally shipped as sortedness-only, because the
+  multiset/permutation half (`a.count(v) == c`) couldn't survive the loop: the per-store count law was emitted by
+  the method-body store executor (so the Phase-12 swap and the Phase-14 insertion sort prove `sorted ∧ permutation`)
+  but **not** the loop-body executor. Phase 165 closes that, so the example now proves **`sorted ∧ permutation`**
+  with the natural inline swaps and no auxiliary method. (A second, independent gap also surfaced — a count-preserving
+  swap *helper* can't be discharged when *called from* a loop body, its precondition not checked under the loop
+  invariant, e.g. `mid = -1` — but the inline route makes it moot for DNF; it remains a candidate follow-up.)
 
-Root suite 1410 → **1412/0** (+2 harness cases), full `check` green.
+Root suite 1410 → **1413/0** (+3 harness cases: sorted ∧ permutation verifies; the `mid++`-after-blue-swap off-by-one
+refutes the sorted invariant; a clobbering loop refutes the permutation invariant), full `check` green.
+
+---
+
+## Phase 165 — the per-store count law, threaded through loop bodies  *(shipped)*
+
+The first of the two gaps Phase 164 surfaced. The multiset-conservation law that makes a swap's two stores preserve
+every value's count — `count(a', v) = count(a, v) − [a[idx]==v] + [val==v]` — was emitted only by the **method-body**
+array-store executor (`VerifyChecker`, the `ArrayStore` step), not the **loop-body** one (`LoopEncoder.applyAssign`,
+which did a bare `store`). So a permutation invariant `a.count(v) == c` over a loop whose body swaps elements left
+`count(a)` unconstrained across the body — preservation refuted with a spurious *negative-count* model. Two executors,
+one of them silently missing the law.
+
+- **One shared law, both passes.** Factored the per-store count law into `Encoder.emitStoreCountLaw(arr, oldA, newA,
+  idx, val, valSort, countVals)` — Int arrays use `count`, List receivers the bounded `bcount` (Phase 41) — and called
+  it from **both** the method-body executor and `LoopEncoder.applyAssign` (the "same source over facsimiles" tenet, so
+  the two can't drift again).
+- **Threading the tracked values into the loop pass.** `LoopEncoder.countVals` (a thread-local, mirroring `callHandler`)
+  carries the `.count(v)` value *expressions* the loop tracks — harvested in `verifyLoop` from the loop `@Invariant`
+  (where a permutation property lives) plus the method `@Requires`/`@Ensures` via `countValueArgs`, set/restored around
+  the loop VCs. AST, not Z3 terms, because each VC translates in its own fresh session; `applyAssign` translates them
+  against the live encoder per store. Empty when no `.count` appears, so ordinary loops pay nothing (perf unchanged).
+- **Result:** the Phase-164 DNF now proves `sorted ∧ permutation` with inline swaps; a clobbering loop refutes the
+  permutation invariant (the law has teeth in the loop too, the loop-body twin of Phase-12's "copy is not a
+  permutation"). Whole-array `sum` law in loop bodies is the obvious sibling, deferred.
+
+Root suite **1413/0**, full `check` green; no regression (the change only *adds* sound assertions, gated to `.count`
+contracts). The companion gap — in-loop method-call preconditions discharged without the loop invariant — remains open
+as a candidate phase (general "call a proven lemma/helper from inside a loop").
 
 ---
 
