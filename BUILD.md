@@ -114,9 +114,16 @@ closed) it is **wired into `check`** — a new confirmed proof-vs-runtime diverg
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation
 ```
 
-Tier A (scalar/array/string inputs) cross-validates **496 of 543 runnable proofs clean** (452 with an
+Tier A (scalar/array/string inputs) cross-validates **543 of 566 runnable proofs clean** (496 with an
 `@Ensures`/`@Invariant`/`assert` postcondition oracle); the rest are Tier B (a structured `@Requires` the grid
-can't hit) or Tier C (units/concurrency/info-flow — not grid-executable).
+can't hit) or Tier C (units/concurrency/info-flow — not grid-executable). The grid is also **seeded from the
+`@Requires`**: rather than only generate-and-discard, the rung parses the precondition and synthesises an
+in-domain *witness* for the simple structural shapes (`s.startsWith("foo")`, `a.length > 5`, `n == -7`,
+`s in 'A'..'Z'`) — the jqwik-#486 idea scoped to our own contracts — which pulled 25 cases out of Tier B. A seed
+is only a candidate (a wrong one is discarded as a `PreconditionViolation`, just like a grid value), so seeding
+can never manufacture a divergence — *provided the seed is type-faithful*: an element-type gate stops a
+`List<String>` being seeded with an Integer list (a structural `size() > 0` would accept it, then run with the
+wrong element semantics — caught, once, as a confirmed divergence before the gate was added).
 
 A first run taught us the runtime is a *noisy* oracle: groovy-contracts' own postcondition evaluation is
 imperfect (it reports `result >= a && result >= b` violated for a `max` that returns correct values). So

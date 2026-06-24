@@ -132,13 +132,18 @@ class RuntimeRung {
         }
     }
 
-    static Map exercise(Method m) {
+    static Map exercise(Method m, String src) {
         def perParam = []
         boolean ungen = false
+        def seeds = seedGrids(src, m)   // #1 — contract-derived in-domain seeds, by param index
         m.parameterTypes.eachWithIndex { Class t, int i ->
             def vals = valuesFor(t, m.genericParameterTypes[i])
-            if (vals == null) { ungen = true; return }
-            perParam << filterByAnnotations(vals, m.parameterAnnotations[i])
+            if (vals == null) {
+                if (seeds[i]) { perParam << seeds[i]; return }   // ungeneratable type, but the @Requires pins a witness
+                ungen = true; return
+            }
+            def list = filterByAnnotations(vals, m.parameterAnnotations[i])
+            perParam << (seeds[i] ? (seeds[i] + list) : list)    // prepend the seed so it's tried within MAX_COMBOS
         }
         if (ungen) return [kind: 'excluded-type', detail: m.parameterTypes.find { valuesFor(it, null) == null }?.simpleName]
         List<List> combos = perParam.isEmpty() ? [[]] : perParam.combinations()
@@ -163,6 +168,120 @@ class RuntimeRung {
 
     /** Clone mutable map args so a per-combo invocation can't mutate the shared grid value. */
     static Object[] freshCombo(List args) { args.collect { it instanceof Map ? new LinkedHashMap((Map) it) : it } as Object[] }
+
+    // ---- #1: contract-derived seeds (the jqwik-#486 idea, scoped) -----------------------------------------------
+    // The fixed grid never lands in-domain for a structural precondition (`s.startsWith("foo")`, `a.length > 5`,
+    // `n == -7`, `s in 'A'..'Z'`). Parse the @Requires and synthesise a *witness* input for the simple shapes, so
+    // the contract finally runs. SAFETY: a seed is only a candidate — if it's wrong, groovy-contracts throws a
+    // PreconditionViolation and it's discarded, exactly like a grid value. A seeder can never manufacture a
+    // divergence; the worst case is the case stays `needseed`, as it is today. So this is strictly additive.
+
+    /** Every @Requires closure body in the source, conjoined (loose: not method-anchored — a mismatched seed is
+     *  matched by param name+type per method and, if it doesn't fit, is harmlessly discarded). */
+    static String allRequires(String src) {
+        List<String> parts = []; int from = 0
+        while (true) {
+            int idx = src.indexOf('@Requires', from); if (idx < 0) break
+            int brace = src.indexOf('{', idx); if (brace < 0) break
+            parts << braceBody(src, brace).trim(); from = brace + 1
+        }
+        parts.join(' && ')
+    }
+
+    /** Split a predicate into top-level `&&` conjuncts (ignoring `&&` nested in (), {}, []). */
+    static List<String> splitConj(String text) {
+        List<String> out = []; int d = 0; StringBuilder cur = new StringBuilder()
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i)
+            if (ch == '(' as char || ch == '{' as char || ch == '[' as char) d++
+            else if (ch == ')' as char || ch == '}' as char || ch == ']' as char) d--
+            if (d == 0 && ch == '&' as char && i + 1 < text.length() && text.charAt(i + 1) == ('&' as char)) {
+                String s = cur.toString().trim(); if (s) out << s; cur = new StringBuilder(); i++; continue
+            }
+            cur.append(ch)
+        }
+        String last = cur.toString().trim(); if (last) out << last
+        out
+    }
+
+    static Map<Integer, List> seedGrids(String src, Method m) {
+        Map<Integer, List> out = [:]
+        String req = allRequires(src); if (!req) return out
+        def names = paramNamesFor(src, m.name); if (names == null || names.size() != m.parameterCount) return out
+        List<String> conj = splitConj(req)
+        names.eachWithIndex { String nm, int i ->
+            def seed = seedForParam((String) nm, m.parameterTypes[i], m.genericParameterTypes[i], conj)
+            if (seed != null) out[i] = [seed]
+        }
+        out
+    }
+
+    static Object coerceNum(BigDecimal v, Class t) {
+        if (t == int || t == Integer) return v.intValue()
+        if (t == long || t == Long) return v.longValue()
+        if (t == double || t == Double) return v.doubleValue()
+        if (t == float || t == Float) return v.floatValue()
+        v
+    }
+
+    /** A witness value for {@code name} of type {@code t} satisfying the recognised conjuncts, or null. The
+     *  {@code generic} type gates element-typed seeds: a {@code List<String>} must NOT be seeded with an Integer
+     *  list (that would satisfy a structural `size() > 0` precondition but run with wrong-typed elements). */
+    static Object seedForParam(String name, Class t, java.lang.reflect.Type generic, List<String> conj) {
+        String q = java.util.regex.Pattern.quote(name)
+        // ---- scalar numerics: `name <op> literal` ----
+        if (t in [int, Integer, long, Long, double, Double, float, Float, BigDecimal]) {
+            for (String c : conj) {
+                def mt = (c =~ /^\s*${q}\s*(==|>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$/)
+                if (mt.find()) {
+                    BigDecimal k = new BigDecimal(mt.group(2)); String op = mt.group(1)
+                    BigDecimal v = op == '>' ? k + 1 : (op == '<' ? k - 1 : k)
+                    return coerceNum(v, t)
+                }
+            }
+            return null
+        }
+        // ---- String ----
+        if (t == String) {
+            for (String c : conj) {                                            // range: `s in 'A'..'Z'`
+                def r = (c =~ /\b${q}\s+in\s+'(.)'\s*\.\.\s*'(.)'/); if (r.find()) return r.group(1)
+                def eq = (c =~ /\b${q}\s*==\s*"([^"]*)"/);            if (eq.find()) return eq.group(1)
+            }
+            String prefix = '', suffix = '', contains = ''; int minLen = 0; Map<Integer, Character> chars = [:]; boolean any = false
+            for (String c : conj) {
+                def sw = (c =~ /\b${q}\??\.startsWith\(\s*"([^"]*)"/); if (sw.find()) { prefix = sw.group(1); any = true }
+                def ew = (c =~ /\b${q}\??\.endsWith\(\s*"([^"]*)"/);   if (ew.find()) { suffix = ew.group(1); any = true }
+                def ct = (c =~ /\b${q}\??\.contains\(\s*"([^"]*)"/);   if (ct.find()) { contains = ct.group(1); any = true }
+                def ln = (c =~ /\b${q}\??\.length\(\)\s*(==|>=|>|<=|<)\s*(\d+)/)
+                if (ln.find()) { int k = ln.group(2) as int; minLen = Math.max(minLen, ln.group(1) == '>' ? k + 1 : k); any = true }
+                def ca = (c =~ /\b${q}\??\.charAt\(\s*(\d+)\s*\)\s*==\s*(\d+)/)
+                if (ca.find()) { chars[ca.group(1) as int] = (char) (ca.group(2) as int); any = true }
+            }
+            if (!any) return null
+            StringBuilder sb = new StringBuilder(prefix)
+            if (contains && sb.indexOf(contains) < 0) sb.append(contains)
+            if (suffix && !sb.toString().endsWith(suffix)) sb.append(suffix)
+            while (sb.length() < minLen) sb.append('x' as char)
+            chars.each { Integer idx, Character ch -> while (sb.length() <= idx) sb.append('x' as char); sb.setCharAt(idx, ch) }
+            return sb.toString()
+        }
+        // ---- int[] / List<Integer>: length + element-pin constraints (Integer-element only — see generic gate) ----
+        if (t == int[] || (List.isAssignableFrom(t) && (elementIsInteger(generic) || rawOrObject(generic)))) {
+            int minLen = 0; Map<Integer, Integer> elems = [:]; boolean any = false
+            for (String c : conj) {
+                def ln = (c =~ /\b${q}\.(?:length|size\(\))\s*(==|>=|>|<=|<)\s*(\d+)/)
+                if (ln.find()) { int k = ln.group(2) as int; minLen = Math.max(minLen, ln.group(1) == '>' ? k + 1 : k); any = true }
+                def el = (c =~ /\b${q}\[\s*(\d+)\s*\]\s*==\s*(-?\d+)/)
+                if (el.find()) { elems[el.group(1) as int] = el.group(2) as int; any = true }
+            }
+            if (!any) return null
+            int len = Math.max(minLen, elems.keySet().isEmpty() ? 0 : (elems.keySet().max() + 1))
+            if (len == 0) return null
+            int[] arr = new int[len]; elems.each { Integer idx, Integer v -> arr[idx] = v }
+            return (t == int[]) ? arr : (arr as List)
+        }
+        null
+    }
 
     static String render(List args) {
         '(' + args.collect { it == null ? 'null' : (it.getClass().isArray() ? (it as List).toString() : it.toString()) }.join(', ') + ')'
@@ -346,7 +465,7 @@ class RuntimeRung {
 
             boolean anyValidated = false, anySeed = false, anyType = false, signalled = false
             for (Method m : methods) {
-                def r = exercise(m)
+                def r = exercise(m, src)
                 if (r.kind == 'signal') {
                     Throwable cause = (Throwable) r.cause
                     String label = "[${c.group}] ${c.name} · ${m.name}${r.args}"
