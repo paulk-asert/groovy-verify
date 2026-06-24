@@ -41,7 +41,7 @@ What we *never* prove is the structural half itself — no mutual exclusion, no 
 termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
 "prove half the property" results: the half SMT can discharge, which is usually the functional one.
 
-Groovy's **rely/guarantee** support goes further than the four above — proving *both* halves on a concurrent
+Groovy's **rely/guarantee** support goes further than the seven above — proving *both* halves on a concurrent
 buffer, and combining with an information-flow lattice (Graeme Smith's Dafny approach):
 **[Thread-local information flow & rely/guarantee (Smith)](smith.md)**.
 
