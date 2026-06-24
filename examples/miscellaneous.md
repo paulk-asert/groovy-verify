@@ -19,9 +19,11 @@
 
 Examples that don't belong to one of the per-source galleries: a verified mutable data structure, a
 fully-verified classic challenge from the verification-competition literature (ported faithfully and credited to
-its source), an integer square root proven exactly through a quadratic invariant, a Dafny-style element-wise
-array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat is associative but not commutative), and
-a tour of verification across a Groovy type hierarchy — inheritance, behavioral subtyping, and traits.
+its source), an integer square root proven exactly through a quadratic invariant, Dijkstra's Dutch National Flag
+(the iconic in-place three-way partition, proven sorted from a four-region loop invariant), a Dafny-style
+element-wise array-fill (FizzBuzz), an algebraic law over arbitrary strings (concat is associative but not
+commutative), and a tour of verification across a Groovy type hierarchy — inheritance, behavioral subtyping, and
+traits.
 
 ### Ring buffer — a verified mutable data structure
 
@@ -162,6 +164,68 @@ longer be re-established): *the odd-number sum is the entire trick, and the quad
 solver sees it.* This is the exact-integer counterpart to `Math.sqrt`, which rides Z3's **floating-point**
 theory and proves only the approximate, no-NaN facts — here the number model is unbounded `Int` and the floor
 spec is proven on the nose.
+
+### Dutch National Flag — the iconic in-place three-way partition
+
+Dijkstra's **Dutch National Flag** (*A Discipline of Programming*, 1976) is the textbook loop-invariant exercise —
+a staple of the Dafny tutorials and the VerifyThis competitions. Given an array of values in `{0, 1, 2}` (red,
+white, blue), partition it **in place** to all 0s, then all 1s, then all 2s, in a single pass. The whole proof is
+one **four-region invariant** over three moving indices — reds `[0, lo)`, whites `[lo, mid)`, the still-unknown
+`[mid, hi)`, and blues `[hi, n)` — and it verifies, written in the native `.every`-over-a-range idiom:
+
+<!-- doclint:case p164-dutch-flag/three-way-partition-is-sorted -->
+```groovy
+@Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } })
+@Modifies({ this.a })
+@Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } })
+int[] flag() {
+    int lo = 0
+    int mid = 0
+    int hi = a.length
+    @Invariant({ 0 <= lo && lo <= mid && mid <= hi && hi <= a.length &&
+                 (0..<lo).every { a[it] == 0 } &&
+                 (lo..<mid).every { a[it] == 1 } &&
+                 (hi..<a.length).every { a[it] == 2 } &&
+                 (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } })
+    @Decreases({ hi - mid })
+    while (mid < hi) {
+        if (a[mid] == 0) {
+            int t = a[lo]; a[lo] = a[mid]; a[mid] = t
+            lo = lo + 1
+            mid = mid + 1
+        } else if (a[mid] == 1) {
+            mid = mid + 1
+        } else {
+            hi = hi - 1
+            int t = a[mid]; a[mid] = a[hi]; a[hi] = t
+        }
+    }
+    return a
+}
+```
+
+The pleasing part is what the engine does at the **boundary**. The `@Ensures` is global adjacent-sortedness
+(`a[it] <= a[it + 1]` everywhere), but the invariant only knows the array *region by region*. At loop exit
+`mid == hi`, so the unknown region is empty and the three region facts tile `[0, n)` as `0…0 1…1 2…2` — and Z3
+derives the cross-boundary `a[it] <= a[it + 1]` (at `lo-1 → lo` and `mid-1 → mid`) by instantiating the right
+region predicate on each side. The `(mid..<hi).every { 0 <= a[it] && a[it] <= 2 }` clause is load-bearing: it
+keeps the value swapped down from `hi` inside `{0, 1, 2}` so the blue region stays well-typed. Two authoring
+notes: the method **returns the array** so the loop has a post-loop value to anchor on (a void method with a
+trailing loop is skipped), and the swaps are written inline as a temp-and-two-stores.
+
+The proof has teeth at exactly the place this algorithm is famous for getting wrong: the off-by-one is advancing
+`mid` after the **blue** swap. The value swapped down from `hi` is *unexamined*, so `mid++` can pull a 2 into the
+white region — add that one line and preservation refutes (`Cannot prove loop invariant`), naming the broken
+region. (The mirror mistake on the red branch — *not* advancing `mid` — is the same boundary from the other side.)
+
+**What this proves, and what it doesn't.** This is the *sortedness* half. The companion property — that the result
+is a **permutation** of the input (the multiset is preserved) — is provable here for the swap primitive in
+isolation (a swap preserves `a.count(v)` for every value `v`, the Phase-12 building block) and for straight-line
+recursive sorts (the insertion sort proves `sorted ∧ permutation` at once). Threading it through *this* loop,
+though, hits two current fragment limits: the inline-swap count law isn't carried by loop-body invariant
+preservation, and a count-preserving swap *helper* can't be discharged when called from the loop body (its
+precondition isn't checked under the loop invariant). So Dutch National Flag lands here as a clean sortedness
+proof, with permutation-through-a-loop a noted boundary rather than a claim.
 
 ### FizzBuzz — element-wise array correctness
 

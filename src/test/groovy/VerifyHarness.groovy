@@ -1965,6 +1965,78 @@ class VerifyHarness {
                        void sort(int n) { }
                    }''')],
 
+        // ---------- Phase 164: Dijkstra's Dutch National Flag — in-place three-way partition ----------
+        // The iconic loop-invariant exercise. Values in {0,1,2}; partition in place to all 0s, then 1s, then 2s.
+        // The proof rests on a four-region @Invariant (reds [0,lo) | whites [lo,mid) | unknown [mid,hi) |
+        // blues [hi,n)) with three moving indices, in-place swaps, and @Decreases (hi - mid). Z3 derives the
+        // GLOBAL adjacent-sortedness postcondition from the three region facts at loop exit (mid == hi). The
+        // method returns the array so the loop carries a post-loop value (the loop-checker's anchor).
+        [group: 'P164 dutch-flag', name: 'three-way partition is sorted', ok: true,
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } })
+                       @Modifies({ this.a })
+                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } })
+                       int[] flag() {
+                           int lo = 0
+                           int mid = 0
+                           int hi = a.length
+                           @Invariant({ 0 <= lo && lo <= mid && mid <= hi && hi <= a.length &&
+                                        (0..<lo).every { a[it] == 0 } &&
+                                        (lo..<mid).every { a[it] == 1 } &&
+                                        (hi..<a.length).every { a[it] == 2 } &&
+                                        (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } })
+                           @Decreases({ hi - mid })
+                           while (mid < hi) {
+                               if (a[mid] == 0) {
+                                   int t = a[lo]; a[lo] = a[mid]; a[mid] = t
+                                   lo = lo + 1
+                                   mid = mid + 1
+                               } else if (a[mid] == 1) {
+                                   mid = mid + 1
+                               } else {
+                                   hi = hi - 1
+                                   int t = a[mid]; a[mid] = a[hi]; a[hi] = t
+                               }
+                           }
+                           return a
+                       }
+                   }''')],
+        // The classic off-by-one: advancing `mid` after the BLUE swap. The value swapped down from `hi` is
+        // unexamined, so `mid++` can pull a 2 into the white region — the region invariant no longer holds.
+        [group: 'P164 dutch-flag', name: 'mid++ after the blue swap refutes', expect: 'Cannot prove loop invariant',
+         src: tc('''class C {
+                       int[] a
+                       @Requires({ (0..<a.length).every { 0 <= a[it] && a[it] <= 2 } })
+                       @Modifies({ this.a })
+                       @Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } })
+                       int[] flag() {
+                           int lo = 0
+                           int mid = 0
+                           int hi = a.length
+                           @Invariant({ 0 <= lo && lo <= mid && mid <= hi && hi <= a.length &&
+                                        (0..<lo).every { a[it] == 0 } &&
+                                        (lo..<mid).every { a[it] == 1 } &&
+                                        (hi..<a.length).every { a[it] == 2 } &&
+                                        (mid..<hi).every { 0 <= a[it] && a[it] <= 2 } })
+                           @Decreases({ hi - mid })
+                           while (mid < hi) {
+                               if (a[mid] == 0) {
+                                   int t = a[lo]; a[lo] = a[mid]; a[mid] = t
+                                   lo = lo + 1
+                                   mid = mid + 1
+                               } else if (a[mid] == 1) {
+                                   mid = mid + 1
+                               } else {
+                                   hi = hi - 1
+                                   int t = a[mid]; a[mid] = a[hi]; a[hi] = t
+                                   mid = mid + 1
+                               }
+                           }
+                           return a
+                       }
+                   }''')],
+
         // ---------- Phase 13 (frame-check): a method writes only what its @Modifies declares ----------
         // Honest: inc declares it modifies count and writes only count → frame-check passes.
         [group: 'P13 frame', name: 'honest modifies verified', ok: true,

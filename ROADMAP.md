@@ -7862,6 +7862,36 @@ as the `SpscBufferVerifyTest` cases are counted), full `check` green. Lincheck a
 
 ---
 
+## Phase 164 — Dijkstra's Dutch National Flag (in-place three-way partition)  *(shipped)*
+
+The iconic loop-invariant exercise (Dijkstra, *A Discipline of Programming*; a Dafny-tutorial / VerifyThis staple),
+ported faithfully in the native `.every`-over-a-range idiom and verified for **sortedness**. The proof is one
+four-region loop `@Invariant` over three moving indices — reds `[0, lo)`, whites `[lo, mid)`, unknown `[mid, hi)`,
+blues `[hi, n)` — with in-place swaps and `@Decreases({ hi - mid })`. The headline is the *boundary* reasoning:
+the `@Ensures` is global adjacent-sortedness (`a[it] <= a[it + 1]`), and the engine derives it at loop exit
+(`mid == hi`, unknown region empty) by instantiating the right region predicate on each side of the `lo` and `mid`
+seams — the regions are *not* stated as a sortedness chain, Z3 tiles them into one. Lives in
+`examples/miscellaneous.md` (the competition-challenge gallery, next to the FoVeOOS Duplets and the integer-sqrt
+classic), `doclint:case`-linked to the harness.
+
+- **2 `P164 dutch-flag` harness cases** — the partition verifies; the classic off-by-one (advancing `mid` after the
+  **blue** swap, where the value swapped down from `hi` is unexamined) refutes at invariant preservation
+  (`Cannot prove loop invariant`). Two authoring notes baked in: the method **returns the array** so the trailing
+  loop has a post-loop value to anchor on (a void method with a final loop is loud-skipped — "no return value after
+  loop"), and the `(mid..<hi).every { 0 <= a[it] && a[it] <= 2 }` clause keeps the swapped-down value well-typed.
+- **Honest boundary — permutation through a loop.** The companion multiset/permutation half is *not* claimed here.
+  It is provable for the swap primitive in isolation (Phase 12: a swap preserves `a.count(v)` for every `v`) and for
+  straight-line recursive sorts (Phase 14 insertion sort proves `sorted ∧ permutation`), but threading `a.count(v)`
+  through *this* loop hit two real fragment limits, both surfaced and recorded: (1) the inline-swap count law isn't
+  carried by loop-body invariant **preservation** (a spurious negative-count model slips through), and (2) a
+  count-preserving swap **helper** can't be discharged when called from the loop body — its precondition isn't
+  checked under the loop invariant (counterexamples violate the invariant itself, e.g. `mid = -1`). Both are
+  candidate follow-up phases (loop-body call-site contexts; count-law in loop preservation), not spec tweaks.
+
+Root suite 1410 → **1412/0** (+2 harness cases), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
