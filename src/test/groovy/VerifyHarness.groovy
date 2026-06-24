@@ -5336,6 +5336,30 @@ class Derived extends Base {
         // global index order, the wait-for graph is acyclic ⇒ no deadlock. groovy-verify proves that LOCAL
         // ordering discipline (pure int arithmetic, fully in-fragment) and pinpoints exactly which philosopher
         // breaks it under the naive scheme.
+        // Check-then-act, the rung-1 boundary: a bounded counter whose `if (count < 1) count = count + 1` is
+        // SEQUENTIALLY correct — groovy-verify proves `@Invariant({ count <= 1 })` is preserved — yet not thread-safe
+        // (two threads can both pass the guard → count == 2, which BoundedCounterJCStress observes). The verifier
+        // reasons above the JMM, so it proves the SAME invariant for the racy and the @WithWriteLock-fixed version;
+        // only the structural rung tells them apart. (See concurrent/BoundedCounter, examples/concurrency.md.)
+        [group: 'P-check-then-act', name: 'bounded counter: sequential invariant verifies', ok: true,
+         src: tc('''@Invariant({ count <= 1 })
+             class C {
+                 int count = 0
+                 void tryIncrement() { if (count < 1) count = count + 1 }
+             }''')],
+        [group: 'P-check-then-act', name: 'wrong bound (count <= 0) refutes', expect: 'invariant',
+         src: tc('''@Invariant({ count <= 0 })
+             class C {
+                 int count = 0
+                 void tryIncrement() { if (count < 1) count = count + 1 }
+             }''')],
+        [group: 'P-check-then-act', name: 'the @WithWriteLock fix proves the SAME invariant (lock transparent)', ok: true,
+         src: tc('''@Invariant({ count <= 1 })
+             class C {
+                 int count = 0
+                 @groovy.transform.WithWriteLock
+                 void tryIncrement() { if (count < 1) count = count + 1 }
+             }''')],
         [group: 'P-philosophers', name: 'naive left-then-right deadlocks: order violated at the wrap-around philosopher', expect: 'postcondition',
          src: tc("class C { @Requires({ n >= 2 && i >= 0 && i < n }) @Ensures({ result }) static boolean naive(int i, int n) { i < (i + 1) % n } }")],
         [group: 'P-philosophers', name: 'resource hierarchy (lower fork first) is deadlock-free', ok: true,

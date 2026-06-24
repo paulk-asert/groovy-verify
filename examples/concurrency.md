@@ -132,6 +132,37 @@ confirms the ordered version never deadlocks while the naive one does. See [`CON
 *(Dining philosophers is one of [jcstress](https://github.com/openjdk/jcstress)'s classic samples — credited as the
 source of the problem; the code here is our own.)*
 
+### Check-then-act — a verified invariant that concurrency breaks
+
+The sharpest illustration of the boundary. A bounded counter: increment only while below the limit. Sequentially
+it is bulletproof — `if (count < 1) count = count + 1` can only ever leave `count` at 0 or 1 — and the verifier
+**proves** exactly that (drop the bound to `<= 0` and it refutes, so the checker really ran):
+
+<!-- doclint:case p-check-then-act/bounded-counter-sequential-invariant-verifies -->
+```groovy
+@Invariant({ count <= 1 })
+class C {
+    int count = 0
+    void tryIncrement() { if (count < 1) count = count + 1 }
+}
+```
+
+And yet it is **not thread-safe**: two threads can both read `count == 0`, both pass the guard, and both
+increment — leaving `count == 2`, violating the very invariant just proved. That is **not unsoundness**:
+groovy-verify reasons *above* the memory model (rung 1), so the invariant it proves is a *per-thread* property;
+whether it composes into a concurrent guarantee is the structural rung's question, and a non-atomic check-then-act
+doesn't compose. The killer detail: the verifier proves the **identical** invariant for the racy version and for
+a `@WithWriteLock`-fixed `SafeBoundedCounter` (the lock is transparent to it) — **the proof cannot tell the broken
+code from the fixed code.** Only the rung can.
+
+**What this is, and isn't.** We prove the sequential invariant — true of any single thread. The concurrent
+guarantee needs atomicity the verifier deliberately doesn't model, so it's exercised by **jcstress**
+(`./gradlew jcstressCheck`): `BoundedCounterJCStress` runs the two actors billions of times and observes
+`count == 2` on `BoundedCounter`, **never** on the locked one. The race is staggeringly rare — about **5 in 7
+billion** runs — which is the whole point: a bug that testing would almost never surface, that a sequential proof
+cannot see at all, is exactly the gap the rung closes. The inverse of [the buffer](#locks--the-monitor-invariant),
+where the thread-local proof *does* compose; see [`CONCURRENCY.md`](../CONCURRENCY.md).
+
 ### Agents & actors — the same invariant, a different paradigm
 
 The lock trick isn't really about locks; it's "prove the local obligation, assume the structural guarantee."

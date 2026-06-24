@@ -440,12 +440,12 @@ tasks.named('compileJcstressJava') { javaCompiler = jdk25Compiler }
 
 tasks.register('jcstressCheck', JavaExec) {
     group = 'verification'
-    description = 'jcstress empirical memory-model stress on the SPSC buffer publication (rung 3c of CONCURRENCY.md)'
+    description = 'jcstress empirical stress: SPSC buffer publication + check-then-act counter race (rung 3c of CONCURRENCY.md)'
     classpath = sourceSets.jcstress.runtimeClasspath
     mainClass = 'org.openjdk.jcstress.Main'
     javaLauncher = jdk25Launcher
     workingDir = buildDir                                    // jcstress drops a jcstress-results-*.bin.gz in the CWD — keep it out of the repo root
-    args '-m', 'quick', '-r', "$buildDir/jcstress-results"   // quick mode; the publication race is a program-order interleaving, reliably hit
+    args '-r', "$buildDir/jcstress-results"   // default mode (not quick): the check-then-act race is ~5-in-7-billion rare, so it needs the fuller budget
 }
 
 // ---- TLA+ model check: TLC on src/tlc/Buffer.tla (rung 2 of CONCURRENCY.md) ------------------------

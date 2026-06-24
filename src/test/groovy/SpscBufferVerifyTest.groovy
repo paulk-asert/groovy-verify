@@ -68,6 +68,22 @@ class SpscBufferVerifyTest {
     }
 
     @Test
+    void theActualBoundedCounterSourcesVerify() {
+        // The check-then-act counter jcstress catches racing (BoundedCounterJCStress): the EXACT source verifies the
+        // SEQUENTIAL @Invariant({ count <= 1 }) here — both the racy and the @WithWriteLock-fixed version, identically
+        // (the lock is transparent to the proof). Only the rung tells them apart; see CONCURRENCY.md / examples.
+        for (String name : ['BoundedCounter', 'SafeBoundedCounter']) {
+            File f = new File("src/concurrent/groovy/concurrent/${name}.groovy")
+            assertTrue(f.exists(), "expected $f to exist")
+            try {
+                compile(withChecker(f.getText('UTF-8')), "${name}.groovy")
+            } catch (MultipleCompilationErrorsException e) {
+                fail("${name}.groovy did not verify under groovy-verify:\n" + e.message)
+            }
+        }
+    }
+
+    @Test
     void refuteControl_brokenInvariantIsRejected() {
         // Same annotations/shape, but an unguarded mutator overflows the occupancy invariant — must refute, proving
         // the checker really ran on this @CompileStatic class (a clean compile would mean it silently did nothing).

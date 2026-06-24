@@ -359,8 +359,14 @@ fidelity.
 
 **The Java wrinkle.** jcstress generates its harness from `@JCStressTest` / `@Actor` / `@Outcome` via a **javac
 annotation processor**, which won't fire on Groovy — so the test holder is Java (`src/jcstress/java`, like jcstress's
-own samples), wrapping the same Groovy `@CompileStatic @POJO` buffer. Run `./gradlew jcstressCheck` (`-m quick`, JDK 25,
-~13 s; not in `check`). Inspired by jcstress's samples, written ourselves — theirs is GPL, this repo Apache.
+own samples), wrapping the same Groovy `@CompileStatic @POJO` buffer. A **second** test, `BoundedCounterJCStress`,
+covers a different bug class — the **check-then-act** race ([the verified-invariant-that-concurrency-breaks
+example](examples/concurrency.md#check-then-act--a-verified-invariant-that-concurrency-breaks)): `BoundedCounter`'s
+`if (count < 1) count = count + 1` produces `count == 2` about **5 in 7 billion** runs, while the `@WithWriteLock`
+`SafeBoundedCounter` never does — and groovy-verify proves the *identical* invariant for both, so only this rung
+separates them. That `5-in-7-billion` rarity is why the default (not `quick`) budget is used. Run
+`./gradlew jcstressCheck` (JDK 25; not in `check`). Inspired by jcstress's samples, written ourselves — theirs is
+GPL, this repo Apache.
 
 ## Lineage — the same gap in Dafny
 
