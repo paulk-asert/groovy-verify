@@ -24,12 +24,14 @@ groovy-verify is a *sequential* SMT-backed checker — it reasons about no threa
 deadlock. Yet a surprising amount of concurrent code's correctness factors into two halves: a **local,
 sequential obligation** the developer must get right, and a **structural guarantee** the runtime provides.
 *Assume* the structural half and the local half is an ordinary sequential proof — and that half is usually the
-one carrying the interesting bug. These examples prove the local half across five of Groovy's concurrency
+one carrying the interesting bug. These examples prove the local half across seven of Groovy's concurrency
 features, each assuming a different structural guarantee:
 
 | Feature | Structural guarantee (assumed) | Local obligation (proven) |
 | --- | --- | --- |
 | Locks (`@WithWriteLock` / `@Synchronized`) | mutual exclusion | each critical section preserves the monitor invariant |
+| Lock ordering (dining philosophers) | deadlock-freedom over all interleavings | each agent acquires its forks in one fixed global order (lower-index-first) |
+| Check-then-act (`AtomicInteger`) | atomicity of the read-then-write | the sequential bounded-counter invariant (`count <= 1`) |
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
 | Channels | FIFO delivery | each element gets the right per-element transform |
