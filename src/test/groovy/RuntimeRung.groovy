@@ -206,12 +206,33 @@ class RuntimeRung {
 
     static Map<Integer, List> seedGrids(String src, Method m) {
         Map<Integer, List> out = [:]
-        String req = allRequires(src); if (!req) return out
         def names = paramNamesFor(src, m.name); if (names == null || names.size() != m.parameterCount) return out
-        List<String> conj = splitConj(req)
+        List<String> conj = splitConj(allRequires(src))   // [] when there's no @Requires (e.g. a jakarta-only case)
         names.eachWithIndex { String nm, int i ->
-            def seed = seedForParam((String) nm, m.parameterTypes[i], m.genericParameterTypes[i], conj)
+            // Unify: jakarta constraints become synthetic conjuncts, so the SAME seedForParam handles them — the
+            // seed twin of filterByAnnotations. Filtering alone empties the grid for an out-of-grid bound
+            // (@Min(1_000_000), @Size(min = 20)); the seed supplies the witness, exactly as for a structural @Requires.
+            List<String> pc = conj + jakartaConjuncts((String) nm, m.parameterTypes[i], m.parameterAnnotations[i])
+            if (pc.isEmpty()) return
+            def seed = seedForParam((String) nm, m.parameterTypes[i], m.genericParameterTypes[i], pc)
             if (seed != null) out[i] = [seed]
+        }
+        out
+    }
+
+    /** Seed-worthy jakarta constraints as synthetic @Requires conjuncts (numeric bound / collection length). */
+    static List<String> jakartaConjuncts(String name, Class t, java.lang.annotation.Annotation[] anns) {
+        List<String> out = []
+        anns.each { a ->
+            switch (a.annotationType().simpleName) {
+                case 'Min': out << "${name} >= ${attr(a, 'value')}".toString(); break
+                case 'Max': out << "${name} <= ${attr(a, 'value')}".toString(); break
+                case 'Size':
+                    long mn = attr(a, 'min') as long
+                    if (mn > 0) out << (t == String ? "${name}.length() >= ${mn}".toString() : "${name}.length >= ${mn}".toString())
+                    break
+                case 'NotEmpty': out << (t == String ? "${name}.length() >= 1".toString() : "${name}.length >= 1".toString()); break
+            }
         }
         out
     }
@@ -336,13 +357,14 @@ class RuntimeRung {
         p ? splitTopLevel(p).collect { it.trim().split(/\s+/)[-1].replaceAll(/\W/, '') } : []
     }
 
-    /** Split a parameter list on top-level commas only — a `Map<Integer, Integer>`'s inner comma must not split it. */
+    /** Split a parameter list on top-level commas only — an inner comma in `Map<Integer, Integer>` or an
+     *  annotation like `@Size(min = 1, max = 5)` must not split it (track `<>`, `()`, `[]`, `{}` depth). */
     static List<String> splitTopLevel(String p) {
         List<String> out = []; int depth = 0; StringBuilder cur = new StringBuilder()
         for (int i = 0; i < p.length(); i++) {
             char c = p.charAt(i)
-            if (c == '<' as char) depth++
-            else if (c == '>' as char) depth--
+            if (c == '<' as char || c == '(' as char || c == '[' as char || c == '{' as char) depth++
+            else if (c == '>' as char || c == ')' as char || c == ']' as char || c == '}' as char) depth--
             if (c == ',' as char && depth == 0) { out << cur.toString(); cur = new StringBuilder() }
             else cur.append(c)
         }

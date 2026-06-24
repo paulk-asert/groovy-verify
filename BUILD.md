@@ -114,16 +114,19 @@ closed) it is **wired into `check`** — a new confirmed proof-vs-runtime diverg
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation
 ```
 
-Tier A (scalar/array/string inputs) cross-validates **543 of 566 runnable proofs clean** (496 with an
+Tier A (scalar/array/string inputs) cross-validates **545 of 568 runnable proofs clean** (498 with an
 `@Ensures`/`@Invariant`/`assert` postcondition oracle); the rest are Tier B (a structured `@Requires` the grid
 can't hit) or Tier C (units/concurrency/info-flow — not grid-executable). The grid is also **seeded from the
-`@Requires`**: rather than only generate-and-discard, the rung parses the precondition and synthesises an
-in-domain *witness* for the simple structural shapes (`s.startsWith("foo")`, `a.length > 5`, `n == -7`,
-`s in 'A'..'Z'`) — the jqwik-#486 idea scoped to our own contracts — which pulled 25 cases out of Tier B. A seed
-is only a candidate (a wrong one is discarded as a `PreconditionViolation`, just like a grid value), so seeding
-can never manufacture a divergence — *provided the seed is type-faithful*: an element-type gate stops a
-`List<String>` being seeded with an Integer list (a structural `size() > 0` would accept it, then run with the
-wrong element semantics — caught, once, as a confirmed divergence before the gate was added).
+spec**: rather than only generate-and-discard, the rung parses the precondition and synthesises an in-domain
+*witness* for the simple structural shapes (`s.startsWith("foo")`, `a.length > 5`, `n == -7`, `s in 'A'..'Z'`) —
+the jqwik-#486 idea scoped to our own contracts — which pulled 25 cases out of Tier B. The **jakarta** constraints
+ride the same path: `@Min(k)` / `@Max(k)` / `@Size(min = k)` become synthetic conjuncts fed to the same seeder, so
+an *out-of-grid* bound (`@Min(1_000_000)`, `@Size(min = 20)`) is seeded rather than left in Tier B — unifying the
+filter (`filterByAnnotations`) and seed paths on one spec-derivation. A seed is only a candidate (a wrong one is
+discarded as a `PreconditionViolation`, just like a grid value), so seeding can never manufacture a divergence —
+*provided the seed is type-faithful*: an element-type gate stops a `List<String>` being seeded with an Integer
+list (a structural `size() > 0` would accept it, then run with the wrong element semantics — caught, once, as a
+confirmed divergence before the gate was added).
 
 A first run taught us the runtime is a *noisy* oracle: groovy-contracts' own postcondition evaluation is
 imperfect (it reports `result >= a && result >= b` violated for a `max` that returns correct values). So
