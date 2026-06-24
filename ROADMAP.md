@@ -7789,6 +7789,39 @@ element refutes, binds `x = a[i]`, and untyped params infer on `int[]`); root su
 
 ---
 
+## Phase 162 — `AtomicInteger` / `AtomicLong` as an int cell (the wrapped-integer view)  *(shipped)*
+
+The check-then-act concurrency example (`AtomicBoundedCounter`, jcstress rung 3c) raised the obvious question: the
+verifier modelled the plain-`int` `BoundedCounter`'s `@Invariant({ count <= 1 })` but **loud-skipped** the same
+invariant phrased over an `AtomicInteger` (`count.get() <= 1` was "outside fragment"). Yet for the operations a
+contract or body actually uses, an `AtomicInteger` *is* a wrapped integer — so this slice models it as a plain int
+**cell**, and the sequential invariant proves identically (atomicity is rung-1-transparent — see `CONCURRENCY.md`).
+
+- **Detection** (`VerifyChecker.collectAtomicNames`) — fields, params and explicitly-typed locals of
+  `java.util.concurrent.atomic.AtomicInteger` / `AtomicLong` are collected per method into `currentAtomicNames` and
+  handed to the encoder (`Encoder.atomicNames`). These types are *not* registered as scalar/object types, so the cell
+  defaults to the int SSA path already used by plain-`int` fields — the key is simply the field name.
+- **Read** (`Encoder.translateMethodCall`) — `a.get()` on a known atomic receiver (a bare field/var or `this.field`)
+  translates to `varForRaw(name)`: the raw int cell, the very handle the write path rebinds. A 0-arg `.get()` on
+  anything else stays an honest skip.
+- **Write** (`VerifyChecker.atomicCellUpdate`, applied where the mutator call lands as a `LemmaCall` in the step
+  replay) — `incrementAndGet`/`getAndIncrement` → cell + 1, `decrementAndGet`/`getAndDecrement` → cell − 1,
+  `addAndGet(d)`/`getAndAdd(d)` → cell + d, `set`/`getAndSet`/`lazySet` → x, `compareAndSet(e, n)` → `(cell == e ? n :
+  cell)`. Each rebinds a fresh SSA version of the cell — the same discipline `count = count + 1` uses — so the exit
+  `@Invariant` sees the updated value. Reads and writes funnel through the **same** `name`-keyed env entry, so they
+  agree by construction.
+
+**Honest boundary** — partial by design. The cell tracks the *value*, not the memory model (the whole rung-1 point).
+`getAndIncrement` used as an *expression* (`int x = c.getAndIncrement()`, where the OLD value is read) is not modelled
+and loud-skips the assignment; a `compareAndSet` in expression position (its boolean success flag) likewise skips. And
+a retry **loop** (`AtomicBoundedCounter.casIncrement`'s `while`) is outside the straight-line fragment as any loop is —
+which is why that class carries no `@Invariant` of its own, leaning on the jcstress rung while the verifiable
+get()/incrementAndGet() half is proved in the harness. 5 `P-check-then-act` cases (atomic invariant verifies / wrong
+bound `<= 0` refutes / `set` write tracked / `compareAndSet(0,1)` preserves / `addAndGet` over-shoots) plus 2
+`SpscBufferVerifyTest` cases (verifies + refutes); root suite 1410/0, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

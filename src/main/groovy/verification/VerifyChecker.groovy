@@ -225,6 +225,9 @@ class VerifyChecker extends TypeCheckingExtension {
      * the default Int. Without this, `s == "admin"` would mismatch (Int s vs String!Sort literal).
      */
     private Map<String, ClassNode> currentScalarTypes = new HashMap<String, ClassNode>()
+    /** Names of {@code AtomicInteger}/{@code AtomicLong} fields/params/locals — modelled as int cells
+     *  ({@code a.get()} reads, {@code a.incrementAndGet()}/{@code set}/{@code compareAndSet} write). */
+    private Set<String> currentAtomicNames = new HashSet<String>()
     /** Phase 113 — tuple-typed locals (`Tuple2<…> r = callee(…)`), name → the {@code TupleN} type. */
     private Map<String, ClassNode> currentTupleTypes = new HashMap<String, ClassNode>()
     /** Phase 116 — equational combiners in scope: `name/arity` → `[formalNames, ensuresRhs]` (see Encoder). */
@@ -266,11 +269,13 @@ class VerifyChecker extends TypeCheckingExtension {
         // preceding `r = callee(...)` assignment is replayed (it asserts the callee's @Ensures).
         Map<String, ClassNode> tuples = new LinkedHashMap<String, ClassNode>(currentTupleParams)
         tuples.putAll(currentTupleTypes)
-        new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
+        Encoder e = new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
                     currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
                     currentNestedSetValueTypes, currentListNames, currentObjectParams,
                     currentBooleanLocals, currentDecimalNames, currentFpNames, tuples, currentCombiners,
                     currentCarrierTypes, currentFunctionReturnTypes)
+        e.atomicNames = currentAtomicNames
+        e
     }
 
     /**
@@ -1110,6 +1115,40 @@ class VerifyChecker extends TypeCheckingExtension {
         out
     }
 
+    /** True if {@code t} is {@code java.util.concurrent.atomic.AtomicInteger} or {@code AtomicLong} — the two
+     *  atomics modelled as int cells (both are a single mutable integer behind get/set/CAS). */
+    private static boolean isAtomicIntType(ClassNode t) {
+        String n = t?.name
+        n == 'java.util.concurrent.atomic.AtomicInteger' || n == 'java.util.concurrent.atomic.AtomicLong'
+    }
+
+    /** Names visible to {@code node} of {@code AtomicInteger}/{@code AtomicLong} type — fields, parameters and
+     *  explicitly-typed locals. The verifier models each as an int cell (see {@link Encoder#atomicNames}). */
+    private static Set<String> collectAtomicNames(MethodNode node) {
+        Set<String> out = new HashSet<String>()
+        for (Parameter p : node.parameters) if (isAtomicIntType(p.type)) out.add(p.name)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) if (isAtomicIntType(f.type)) out.add(f.name)
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitClosureExpression(ClosureExpression ce) { }
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        ClassNode t = ((VariableExpression) de.leftExpression).originType
+                        if (t == null) t = de.leftExpression.type
+                        if (isAtomicIntType(t)) out.add(((VariableExpression) de.leftExpression).name)
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
+        out
+    }
+
     /** True if {@code t} is a decimal type Groovy models with exact reals: BigDecimal/Double/Float. */
     private static boolean isDecimalType(ClassNode t) {
         if (t == null) return false
@@ -1812,6 +1851,7 @@ class VerifyChecker extends TypeCheckingExtension {
         currentListNames = collectListNames(node)
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
+        currentAtomicNames = collectAtomicNames(node)
         currentTupleTypes = collectTupleTypes(node)
         currentCombiners = collectCombiners(node)
         currentCarrierTypes = collectCarrierTypes(node)
@@ -2023,6 +2063,7 @@ class VerifyChecker extends TypeCheckingExtension {
             currentListNames = new HashSet<String>()
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
+            currentAtomicNames = new HashSet<String>()
             currentTupleTypes = new HashMap<String, ClassNode>()
             currentCombiners = new HashMap<String, Object[]>()
             currentCarrierTypes = new HashMap<String, ClassNode>()
@@ -5728,7 +5769,15 @@ class VerifyChecker extends TypeCheckingExtension {
                     // call: assume the callee's @Ensures (a self-call is the inductive hypothesis,
                     // enabled by @Decreases). An unmodelled effect with no usable @Ensures is outside
                     // the fragment.
-                    if (Encoder.isAwaitDelayCall(call)) {
+                    Object[] atom = atomicCellUpdate(enc, session, call)
+                    if (atom != null) {
+                        // AtomicInteger/AtomicLong mutator on a known cell: rebind the cell to its post-mutation
+                        // value via the same SSA discipline a plain `count = count + 1` field write uses, so the
+                        // exit @Invariant sees the updated value. (See Encoder.atomicNames / CONCURRENCY.md.)
+                        Object fresh = session.intVar(((String) atom[0]) + '#' + (++ssaVersion))
+                        session.assertExpr(session.eq(fresh, atom[1]))
+                        enc.bind((String) atom[0], fresh)
+                    } else if (Encoder.isAwaitDelayCall(call)) {
                         // Phase 153 — `await Awaitable.delay(ms)` is a non-blocking pause: no value, no state effect,
                         // a no-op for a logic proof (timing isn't modelled). Ignore the statement.
                     } else if (!applySetMutation(session, enc, call) &&
@@ -5967,6 +6016,45 @@ class VerifyChecker extends TypeCheckingExtension {
      * Membership reads of the post-state ride Z3's array theory directly. Returns false (so the caller
      * falls through to lemma handling) when this is not a recognised set mutation.
      */
+    /**
+     * If {@code call} is a modelled mutator on an {@code AtomicInteger}/{@code AtomicLong} cell, returns
+     * {@code [cellName, newValueTerm]} (the post-mutation value as an SMT int term); else null. The caller
+     * performs the SSA rebind. The atomics are treated as a single mutable int — exactly the wrapped-integer
+     * view that holds at rung 1, where atomicity is transparent (see CONCURRENCY.md):
+     * <ul>
+     *   <li>{@code incrementAndGet}/{@code getAndIncrement} → cell + 1; {@code decrementAndGet}/{@code getAndDecrement} → cell − 1</li>
+     *   <li>{@code addAndGet(d)}/{@code getAndAdd(d)} → cell + d</li>
+     *   <li>{@code set(x)}/{@code getAndSet(x)}/{@code lazySet(x)} → x</li>
+     *   <li>{@code compareAndSet(e, n)}/{@code weakCompareAndSet(e, n)} → (cell == e ? n : cell) — as a statement, the success flag is dropped</li>
+     * </ul>
+     */
+    private static Object[] atomicCellUpdate(Encoder enc, SmtSession s, Expression call) {
+        if (!(call instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) call
+        String cell = enc.atomicCellNameOf(mce.objectExpression)
+        if (cell == null) return null
+        String m = mce.methodAsString
+        List<Expression> args = (mce.arguments instanceof ArgumentListExpression) ?
+            ((ArgumentListExpression) mce.arguments).expressions : Collections.<Expression>emptyList()
+        Object cur = enc.atomicCellRead(cell)
+        Object nv
+        if (args.isEmpty() && (m == 'incrementAndGet' || m == 'getAndIncrement')) {
+            nv = s.plus(cur, s.intLit(1L))
+        } else if (args.isEmpty() && (m == 'decrementAndGet' || m == 'getAndDecrement')) {
+            nv = s.minus(cur, s.intLit(1L))
+        } else if (args.size() == 1 && (m == 'addAndGet' || m == 'getAndAdd')) {
+            Object d = enc.translate(args.get(0)); nv = (d == null) ? null : s.plus(cur, d)
+        } else if (args.size() == 1 && (m == 'set' || m == 'getAndSet' || m == 'lazySet')) {
+            nv = enc.translate(args.get(0))
+        } else if (args.size() == 2 && (m == 'compareAndSet' || m == 'weakCompareAndSet' || m == 'weakCompareAndSetPlain')) {
+            Object e0 = enc.translate(args.get(0)); Object n0 = enc.translate(args.get(1))
+            nv = (e0 == null || n0 == null) ? null : s.ite(s.eq(cur, e0), n0, cur)
+        } else {
+            return null
+        }
+        return (nv == null) ? null : ([cell, nv] as Object[])
+    }
+
     private boolean applySetMutation(SmtSession s, Encoder enc, Expression call) {
         if (!(call instanceof MethodCallExpression)) return false
         MethodCallExpression mce = (MethodCallExpression) call

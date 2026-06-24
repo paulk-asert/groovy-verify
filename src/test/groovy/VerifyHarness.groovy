@@ -5360,6 +5360,38 @@ class Derived extends Base {
                  @groovy.transform.WithWriteLock
                  void tryIncrement() { if (count < 1) count = count + 1 }
              }''')],
+        // AtomicInteger modelled as an int cell: get() reads, incrementAndGet() writes — the SAME sequential
+        // invariant proof as the plain-int counter (atomicity is rung-1-transparent).
+        [group: 'P-check-then-act', name: 'AtomicInteger: get()/incrementAndGet() invariant verifies', ok: true,
+         src: tc('''@Invariant({ count.get() <= 1 })
+             class C {
+                 private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0)
+                 void tryIncrement() { if (count.get() < 1) count.incrementAndGet() }
+             }''')],
+        [group: 'P-check-then-act', name: 'AtomicInteger: wrong bound (get() <= 0) refutes', expect: 'invariant',
+         src: tc('''@Invariant({ count.get() <= 0 })
+             class C {
+                 private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0)
+                 void tryIncrement() { if (count.get() < 1) count.incrementAndGet() }
+             }''')],
+        [group: 'P-check-then-act', name: 'AtomicInteger: set(x) write tracked by the invariant', expect: 'invariant',
+         src: tc('''@Invariant({ count.get() <= 1 })
+             class C {
+                 private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0)
+                 void bump() { count.set(2) }
+             }''')],
+        [group: 'P-check-then-act', name: 'AtomicInteger: compareAndSet(0,1) preserves the bound', ok: true,
+         src: tc('''@Invariant({ count.get() <= 1 })
+             class C {
+                 private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0)
+                 void tryIncrement() { if (count.get() < 1) count.compareAndSet(0, 1) }
+             }''')],
+        [group: 'P-check-then-act', name: 'AtomicInteger: addAndGet over-shoots the bound (refutes)', expect: 'invariant',
+         src: tc('''@Invariant({ count.get() <= 1 })
+             class C {
+                 private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0)
+                 void tryIncrement() { if (count.get() < 1) count.addAndGet(5) }
+             }''')],
         [group: 'P-philosophers', name: 'naive left-then-right deadlocks: order violated at the wrap-around philosopher', expect: 'postcondition',
          src: tc("class C { @Requires({ n >= 2 && i >= 0 && i < n }) @Ensures({ result }) static boolean naive(int i, int n) { i < (i + 1) % n } }")],
         [group: 'P-philosophers', name: 'resource hierarchy (lower fork first) is deadlock-free', ok: true,

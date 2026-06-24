@@ -333,6 +333,33 @@ class Encoder {
     private final Map<String, Boolean> fpNames
 
     /**
+     * Names (fields / params / typed locals) of {@code AtomicInteger} / {@code AtomicLong} type, modelled as
+     * plain int <i>cells</i> for the operations a contract/body actually uses: {@code a.get()} reads the cell,
+     * and {@code a.incrementAndGet()} / {@code set} / {@code compareAndSet} / … write it (the write side lives in
+     * VerifyChecker's step replay). Partial by design — atomicity itself is rung-1-transparent (see CONCURRENCY.md),
+     * so this proves the same <i>sequential</i> invariant an {@code int} field would. Set by VerifyChecker per method.
+     */
+    Set<String> atomicNames = new HashSet<String>()
+
+    /** If {@code recv} names an atomic cell (a bare field/var or {@code this.field} in {@link #atomicNames}), its
+     *  simple name — the int-cell key shared with the SSA write path; else null. */
+    String atomicCellNameOf(Expression recv) {
+        if (recv instanceof VariableExpression) {
+            String n = ((VariableExpression) recv).name
+            return atomicNames.contains(n) ? n : null
+        }
+        if (recv instanceof PropertyExpression && isThisExpr(((PropertyExpression) recv).objectExpression)) {
+            String n = ((PropertyExpression) recv).propertyAsString
+            return atomicNames.contains(n) ? n : null
+        }
+        null
+    }
+
+    /** Current SMT value of an atomic cell — the raw int handle the SSA write path rebinds, so a read after a
+     *  modelled mutation sees the updated value (exactly as a plain int field's reads track its writes). */
+    Object atomicCellRead(String name) { varForRaw(name) }
+
+    /**
      * Phase 45 — run a translation under a foreign-receiver context: bare {@code field} references
      * that name a field of the receiver's class are rewritten to {@code recv$field}. Used when
      * assuming foreign-class invariants, asserting a callee's @Ensures across classes, or
@@ -5623,6 +5650,14 @@ class Encoder {
         // dispatch sees the inner expression directly. Idempotent for non-wrapper receivers.
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
+
+        // AtomicInteger/AtomicLong as an int cell: `a.get()` is the cell's current value (the same raw int handle
+        // the SSA write path rebinds on a modelled mutation). Only fires for a receiver known to be atomic, so a
+        // 0-arg `.get()` on anything else stays an honest skip.
+        if (m == 'get' && args.isEmpty()) {
+            String cell = atomicCellNameOf(recv)
+            if (cell != null) return atomicCellRead(cell)
+        }
 
         // Phase 132 — JSR 385 value/scale (C₁): a Quantity's `getValue()` read *in a named unit* is its
         // SI magnitude divided by that unit's scale. The magnitude is recovered structurally from the

@@ -84,6 +84,51 @@ class SpscBufferVerifyTest {
     }
 
     @Test
+    void atomicInteger_checkThenActInvariantVerifies() {
+        // The verifier models AtomicInteger as an int cell — get() reads it, incrementAndGet() writes it — so the
+        // check-then-act's SEQUENTIAL @Invariant({ count.get() <= 1 }) is PROVED, identically to the plain-int
+        // BoundedCounter (atomicity is rung-1-transparent). The companion refute below shows the proof has teeth.
+        String atomic = '''
+            import groovy.transform.CompileStatic
+            import groovy.contracts.Invariant
+            import java.util.concurrent.atomic.AtomicInteger
+            @CompileStatic(extensions = 'verification.VerifyChecker')
+            @Invariant({ count.get() <= 1 })
+            class AtomicProbe {
+                private final AtomicInteger count = new AtomicInteger(0)
+                void tryIncrement() { if (count.get() < 1) count.incrementAndGet() }
+            }'''
+        try {
+            compile(atomic, 'AtomicProbe.groovy')
+        } catch (MultipleCompilationErrorsException e) {
+            fail("AtomicInteger check-then-act invariant did not verify:\n" + e.message)
+        }
+    }
+
+    @Test
+    void atomicInteger_wrongBoundRefutes() {
+        // Proof has teeth: drop the bound to <= 0 and the same modelled get()/incrementAndGet() must REFUTE
+        // (a clean compile here would mean the cell write was silently ignored — the unsound failure mode).
+        String atomic = '''
+            import groovy.transform.CompileStatic
+            import groovy.contracts.Invariant
+            import java.util.concurrent.atomic.AtomicInteger
+            @CompileStatic(extensions = 'verification.VerifyChecker')
+            @Invariant({ count.get() <= 0 })
+            class AtomicProbe {
+                private final AtomicInteger count = new AtomicInteger(0)
+                void tryIncrement() { if (count.get() < 1) count.incrementAndGet() }
+            }'''
+        try {
+            compile(atomic, 'AtomicProbe.groovy')
+            fail('expected the wrong bound (<= 0) to refute, but it compiled cleanly (cell write ignored?)')
+        } catch (MultipleCompilationErrorsException e) {
+            assertTrue(e.message.contains('Cannot prove class invariant'),
+                "expected a class-invariant refutation, got:\n" + e.message)
+        }
+    }
+
+    @Test
     void refuteControl_brokenInvariantIsRejected() {
         // Same annotations/shape, but an unguarded mutator overflows the occupancy invariant — must refute, proving
         // the checker really ran on this @CompileStatic class (a clean compile would mean it silently did nothing).

@@ -163,6 +163,22 @@ billion** runs — which is the whole point: a bug that testing would almost nev
 cannot see at all, is exactly the gap the rung closes. The inverse of [the buffer](#locks--the-monitor-invariant),
 where the thread-local proof *does* compose; see [`CONCURRENCY.md`](../CONCURRENCY.md).
 
+**"But I used an atomic class."** The reflex fix is to make `count` an `AtomicInteger` — and it *doesn't help*, because
+`if (count.get() < 1) count.incrementAndGet()` still composes **two** atomic operations with a gap between them, so two
+threads can both read 0 and both increment. `AtomicBoundedCounter` is exactly this, and `AtomicBoundedCounterJCStress`
+observes `count == 2` — but with a counter-intuitive sting in the tail: it races **far more readily** than the plain-`int`
+version, not less. Measured here, the atomic check-then-act hits 2 in **~5–6% of samples** (millions of observations),
+where the plain-`int` race is about **5 in 7 billion**. Two barriered atomic operations open a much wider interleaving
+window than a single volatile read-then-write, so the *more* atomic-looking code is *more* exposed — the "I used an
+atomic, so I'm safe" instinct gets it exactly backwards. The real fix is a single `compareAndSet` (its `casIncrement`),
+one atomic transition, which is `FORBIDDEN` from reaching 2. On the verifier side, the atomic is **modelled as a wrapped
+int** — `count.get()` reads a cell, `count.incrementAndGet()` / `set` / `addAndGet` / `compareAndSet` write it — so the
+*sequential* `@Invariant({ count.get() <= 1 })` is **proved** for the check-then-act exactly as the plain-`int` version
+is (and refutes at `<= 0`), atomicity being rung-1-transparent. `AtomicBoundedCounter` itself carries no annotation only
+because its `casIncrement` retry-loop is outside the straight-line fragment; the verifiable half of the same shape is
+pinned by the `P-check-then-act` cases and `SpscBufferVerifyTest`. So the atomic counter, like the plain one, is proved
+sequentially safe and shown concurrently broken — the rung-1 boundary, twice.
+
 ### Agents & actors — the same invariant, a different paradigm
 
 The lock trick isn't really about locks; it's "prove the local obligation, assume the structural guarantee."

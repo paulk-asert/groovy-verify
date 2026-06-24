@@ -5,3 +5,4 @@ build/
 out/
 .claude/
 .DS_Store
+jcstress-results-*.bin.gz

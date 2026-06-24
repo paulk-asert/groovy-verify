@@ -364,9 +364,17 @@ covers a different bug class — the **check-then-act** race ([the verified-inva
 example](examples/concurrency.md#check-then-act--a-verified-invariant-that-concurrency-breaks)): `BoundedCounter`'s
 `if (count < 1) count = count + 1` produces `count == 2` about **5 in 7 billion** runs, while the `@WithWriteLock`
 `SafeBoundedCounter` never does — and groovy-verify proves the *identical* invariant for both, so only this rung
-separates them. That `5-in-7-billion` rarity is why the default (not `quick`) budget is used. Run
-`./gradlew jcstressCheck` (JDK 25; not in `check`). Inspired by jcstress's samples, written ourselves — theirs is
-GPL, this repo Apache.
+separates them. A **third** test, `AtomicBoundedCounterJCStress`, answers the obvious objection — *"use an
+`AtomicInteger`"* — and shows it doesn't help: `if (count.get() < 1) count.incrementAndGet()` composes two atomic
+ops with a gap, so it still reaches `2`, while a single `compareAndSet` (`casIncrement`) is `FORBIDDEN` from doing
+so. The sting: it races *more* readily, not less — measured at **~5–6%** of samples (millions of hits), because two
+barriered atomic ops open a wider window than one volatile read-then-write, so even `quick` mode surfaces it at once.
+On the verifier side the atomic is **modelled as a wrapped int** (`get()` reads a cell; `incrementAndGet`/`set`/`addAndGet`/`compareAndSet`
+write it), so the *sequential* `@Invariant({ count.get() <= 1 })` is **proved** just like the plain-`int` one and
+refutes at `<= 0` — pinned by `SpscBufferVerifyTest.atomicInteger_checkThenActInvariantVerifies` and the
+`P-check-then-act` cases. (The plain-`int` counter's `5-in-7-billion` rarity is why the default, not `quick`, budget is
+used.) Run `./gradlew jcstressCheck` (JDK 25; not in `check`). Inspired by jcstress's samples, written ourselves —
+theirs is GPL, this repo Apache.
 
 ## Lineage — the same gap in Dafny
 
