@@ -31,7 +31,7 @@ features, each assuming a different structural guarantee:
 | --- | --- | --- |
 | Locks (`@WithWriteLock` / `@Synchronized`) | mutual exclusion | each critical section preserves the monitor invariant |
 | Lock ordering (dining philosophers) | deadlock-freedom over all interleavings | each agent acquires its forks in one fixed global order (lower-index-first) |
-| Check-then-act (`AtomicInteger`) | atomicity of the read-then-write | the sequential bounded-counter invariant (`count <= 1`) |
+| Check-then-act (naive `AtomicInteger` use) | atomicity of the *composite* read-then-act (which no single atomic op provides) | the sequential bounded-counter invariant (`count <= 1`) |
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
 | Channels | FIFO delivery | each element gets the right per-element transform |
@@ -165,9 +165,9 @@ billion** runs — which is the whole point: a bug that testing would almost nev
 cannot see at all, is exactly the gap the rung closes. The inverse of [the buffer](#locks--the-monitor-invariant),
 where the thread-local proof *does* compose; see [`CONCURRENCY.md`](../CONCURRENCY.md).
 
-**"But I used an atomic class."** The reflex fix is to make `count` an `AtomicInteger` — and it *doesn't help*, because
-`if (count.get() < 1) count.incrementAndGet()` still composes **two** atomic operations with a gap between them, so two
-threads can both read 0 and both increment. `AtomicBoundedCounter` is exactly this, and `AtomicBoundedCounterJCStress`
+**"But I used an atomic class."** The reflex fix is to make `count` an `AtomicInteger` — and it *doesn't help*, not because
+the type is at fault but because *using it naively* — `if (count.get() < 1) count.incrementAndGet()` — still composes
+**two** atomic operations with a gap between them, so two threads can both read 0 and both increment. `AtomicBoundedCounter` is exactly this, and `AtomicBoundedCounterJCStress`
 observes `count == 2` — but with a counter-intuitive sting in the tail: it races **far more readily** than the plain-`int`
 version, not less. Measured here, the atomic check-then-act hits 2 in **~5–6% of samples** (millions of observations),
 where the plain-`int` race is about **5 in 7 billion**. Two barriered atomic operations open a much wider interleaving
