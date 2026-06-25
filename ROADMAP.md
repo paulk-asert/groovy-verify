@@ -7951,6 +7951,46 @@ previously-provable precondition stays provable.
 
 ---
 
+## Phase 167 — in-place array reverse (a swap helper called from a loop)  *(shipped)*
+
+The first example Phase 166 opens up: a loop-based array algorithm that **calls a contracted helper** each iteration.
+`reverse` walks two indices inward, `swap(lo, hi, v)` at each step, and proves the **full reversal** (`a[k] ==
+orig[n-1-k]`) **and** that the result is a **permutation** — the swap's `@Ensures` carries both the element exchange
+and count preservation, the precondition discharges from the loop invariant (Phase 166).
+
+- **Ghost `orig` for the reversal.** The reversal relates each element to its mirror in the *entry* array, but `old.a`
+  isn't bound in loop-invariant position (the element-access analogue of the Phase-165 `old.a.count` gap). So a ghost
+  parameter `orig`, pinned `a == orig` at entry by `@Requires`, stands in throughout — the same move the `c` ghost
+  makes for the count. (`old.a` works fine in the *swap*'s own `@Ensures`, a plain method postcondition.)
+- **`@Decreases({ hi - lo + 1 })`**, not `hi - lo`: the two indices cross on the last step, so `hi - lo` would dip to
+  `-1`; the `+1` keeps the measure `>= 0`.
+- 2 `P167 reverse` cases (reversal ∧ permutation verifies; a reverse that forgets to swap refutes). Documented in
+  `examples/miscellaneous.md`.
+
+---
+
+## Phase 168 — iterative selection sort (`sorted ∧ permutation`)  *(shipped)*
+
+The loop-form sort that pairs with the recursive insertion sort (`P14`), and the fullest payoff of Phase 166: **nested
+loops** with a helper call between them. The outer loop places the minimum of `a[i..n)` at `i` via `swap(i, m, v)`; the
+inner loop finds `m`. Proven sorted **and** a permutation.
+
+- **One nested-quantifier invariant carries it** — `(0..<i).every { k -> (k+1..<n).every { l -> a[k] <= a[l] } }`
+  ("each placed element ≤ everything after it") — which yields the global adjacent-sortedness `@Ensures` at exit, with
+  **no hand-written lemma**: Z3 maintains the nested quantifier across the swap on its own.
+- **The swap call is discharged across a summarised nested loop.** `swap(i, m, v)` sits in the outer body *after* the
+  inner loop; its `0 <= m < n` precondition comes from the inner loop's exit summary (`i <= m < n`) — the Phase-166
+  in-loop preceding replay *summarises* the nested loop (`LoopEncoder.summarizeInner`) rather than stepping into it,
+  so `m`'s bound reaches the call.
+- **A nested loop's obligations don't see the outer invariant**, so the inner invariant repeats `0 <= i` to bound its
+  own `a[m]` / `a[j]` accesses (an honest authoring note, baked into the example).
+- 2 `P168 selection-sort` cases (sorted ∧ permutation verifies; a sort that finds the min but forgets to place it
+  refutes). Documented in `examples/miscellaneous.md`.
+
+Root suite **1419/0** (+4 cases across P167/P168), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

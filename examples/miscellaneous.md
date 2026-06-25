@@ -231,6 +231,97 @@ recursive insertion sort both prove `sorted ∧ permutation`) but **not** by the
 permutation invariant couldn't survive a loop. Closing that — one shared count-law helper called by both executors
 — is what lets Dutch National Flag prove both halves here, with the natural inline swaps and no auxiliary method.
 
+### Reverse & selection sort — a helper called from inside a loop
+
+The Dutch National Flag above swaps *inline*. The next step is to **call a contracted helper from inside the loop**
+and have its precondition discharged against an arbitrary iteration — under the loop invariant + guard, with the loop
+variables symbolic and the in-loop preceding statements replayed. A single `swap` method, carrying the element
+exchange and count preservation in its `@Ensures`, is now reusable across loop-based array algorithms:
+
+<!-- doclint:case p167-reverse/in-place-reverse-reversal-and-permutation -->
+```groovy
+@Requires({ 0 <= i && i < a.length && 0 <= j && j < a.length })
+@Modifies({ this.a })
+@Ensures({ a[i] == old.a[j] && a[j] == old.a[i] &&
+           (0..<a.length).every { it == i || it == j || a[it] == old.a[it] } &&
+           a.count(w) == old.a.count(w) })
+void swap(int i, int j, int w) { int t = a[i]; a[i] = a[j]; a[j] = t }
+```
+
+**In-place reverse** walks two indices inward, swapping at each step — and proves the full reversal **and** that the
+result is a permutation. The reversal is stated against a ghost `orig` capturing the entry array (`a == orig` at
+entry): the loop invariant can't reference `old.a` — `old` isn't bound in loop-invariant position — so a ghost
+parameter stands in, the same trick the `c` ghost plays for the count:
+
+<!-- doclint:case p167-reverse/in-place-reverse-reversal-and-permutation -->
+```groovy
+@Requires({ orig.length == a.length && (0..<a.length).every { a[it] == orig[it] } && a.count(v) == c })
+@Modifies({ this.a })
+@Ensures({ (0..<a.length).every { a[it] == orig[a.length - 1 - it] } && a.count(v) == c })
+int[] reverse(int[] orig, int v, int c) {
+    int lo = 0
+    int hi = a.length - 1
+    @Invariant({ 0 <= lo && lo + hi == a.length - 1 && lo <= hi + 1 &&
+                 (0..<lo).every { a[it] == orig[a.length - 1 - it] } &&
+                 (0..<lo).every { a[a.length - 1 - it] == orig[it] } &&
+                 (lo..<a.length - lo).every { a[it] == orig[it] } &&
+                 a.count(v) == c })
+    @Decreases({ hi - lo + 1 })
+    while (lo < hi) {
+        swap(lo, hi, v)
+        lo = lo + 1
+        hi = hi - 1
+    }
+    return a
+}
+```
+
+The `swap(lo, hi, v)` call's bounds precondition discharges from the invariant (`lo <= hi + 1` and the index
+arithmetic), its `@Ensures` supplies the element exchange that advances the reversal, and the `@Decreases` is
+`hi - lo + 1` rather than `hi - lo` because the two indices *cross* on the final step (so `hi - lo` would dip to
+`-1`). A reverse that walks the indices but forgets to swap refutes — the swapped-prefix invariant can't be
+re-established.
+
+**Selection sort** is the loop-form sort that pairs with the recursive insertion sort (the `P14 sort` harness case;
+both prove `sorted ∧ permutation`). The outer loop places the minimum of `a[i..n)` at position `i` with the same
+`swap` helper; the inner loop finds that minimum. The whole proof rides one **nested-quantifier** invariant — *each
+placed element is ≤ everything after it* — which yields global sortedness at exit, with no hand-written lemma:
+
+<!-- doclint:case p168-selection-sort/selection-sort-sorted-and-a-permutation -->
+```groovy
+@Requires({ a.count(v) == c })
+@Modifies({ this.a })
+@Ensures({ (0..<a.length - 1).every { a[it] <= a[it + 1] } && a.count(v) == c })
+int[] sort(int v, int c) {
+    int i = 0
+    @Invariant({ 0 <= i && i <= a.length &&
+                 (0..<i).every { int k -> (k + 1..<a.length).every { int l -> a[k] <= a[l] } } &&
+                 a.count(v) == c })
+    @Decreases({ a.length - i })
+    while (i < a.length) {
+        int m = i
+        int j = i + 1
+        @Invariant({ 0 <= i && i <= m && m < a.length && i < j && j <= a.length &&
+                     (i..<j).every { a[m] <= a[it] } })
+        @Decreases({ a.length - j })
+        while (j < a.length) {
+            if (a[j] < a[m]) m = j
+            j = j + 1
+        }
+        swap(i, m, v)
+        i = i + 1
+    }
+    return a
+}
+```
+
+The `swap(i, m, v)` call sits in the **outer** loop body *after* the inner loop, and its precondition `0 <= m <
+a.length` is discharged from the inner loop's summarised result (`i <= m < n`) threaded alongside the outer
+invariant — the in-loop preceding replay summarises the nested loop rather than stepping into it. The inner
+invariant repeats `0 <= i` because a nested loop's obligations are discharged under its *own* invariant, not the
+outer one, so it must carry enough to bound its own `a[m]` / `a[j]` accesses. Selection sort that finds the minimum
+but forgets to place it refutes.
+
 ### FizzBuzz — element-wise array correctness
 
 A small array-fill in the style Dafny tutorials use to teach element-wise verification — a pure specification
