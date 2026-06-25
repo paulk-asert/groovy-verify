@@ -30,7 +30,7 @@ returns, conditional list/string mutation, NIA bounds), and porting them is what
 the later phases (49a/b early-returns, 48 NIA, 46d in-loop path facts). Where the algorithms are
 list / map / loop-shaped, the engine matches or exceeds Verus on what it proves.
 
-Read against the five Acts of the [README](../README.md), the corpus re-runs the same machinery on problems we didn't pick —
+Read against the [five-act tour](tour.md), the corpus re-runs the same machinery on problems we didn't pick —
 and roughly in that arc: **Act 1**'s loop invariants and `@Decreases` carry every example below;
 **Act 2**'s NIA bound and divide-by-zero obligations land in `is_prime`; the recurrence tasks extend
 **Act 1**'s proof-by-induction — `Fib`/`Trib`/`Gcd`/`Lcm` package common recurrences as named helpers

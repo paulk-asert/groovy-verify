@@ -23,7 +23,7 @@ collects small, self-contained proofs chosen to each show *one* idea. Several ha
 Example OpenJML snippets from openjml.org, shown for comparison purposes,
 are © their authors, used under the page's **CC BY-NC** terms.
 
-One appears in the README **[Act 3](../README.md)**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
+One appears in the tour's **[Act 3](tour.md#act-3--whatever-your-data-is)**: the [BitVectors tutorial](https://www.openjml.org/tutorial/BitVectors)
 — round a number up to the next multiple of a power of two with `(n + 0xF) & ~0xF`, proven against the
 arithmetic spec it's meant to implement, counterexample at `Integer.MIN_VALUE` and all. The rest are here.
 

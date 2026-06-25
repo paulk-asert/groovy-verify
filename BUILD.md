@@ -115,8 +115,8 @@ closed) it is **wired into `check`** — a new confirmed proof-vs-runtime diverg
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation
 ```
 
-Tier A (scalar/array/string inputs) cross-validates **545 of 568 runnable proofs clean** (498 with an
-`@Ensures`/`@Invariant`/`assert` postcondition oracle); the rest are Tier B (a structured `@Requires` the grid
+Tier A (scalar/array/string inputs) cross-validates **547 of 570 runnable proofs clean** (500 with an
+`@Ensures`/`@Invariant`/`assert` postcondition oracle) as of Phase 168; the rest are Tier B (a structured `@Requires` the grid
 can't hit) or Tier C (units/concurrency/info-flow — not grid-executable). The grid is also **seeded from the
 spec**: rather than only generate-and-discard, the rung parses the precondition and synthesises an in-domain
 *witness* for the simple structural shapes (`s.startsWith("foo")`, `a.length > 5`, `n == -7`, `s in 'A'..'Z'`) —

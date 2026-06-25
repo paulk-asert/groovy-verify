@@ -29,7 +29,7 @@ and none overlaps the examples elsewhere in these docs: the existing set has a *
 aggregates, or sorted binary search. All three verify — including Dafny's single most iconic
 example, binary search.
 
-In the five-act framing these sit with **Act 5** — full-algorithm depth rather than single-property
+In the [five-act framing](tour.md) these sit with **[Act 5](tour.md#act-5--all-the-way-to-a-real-algorithm)** — full-algorithm depth rather than single-property
 checks — but measured against the proofs the Dafny/Verus community recognises rather than ones we chose.
 
 ### SumMax — `sum ≤ N · max` (VSComp 2010, Problem 1)
