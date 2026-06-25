@@ -7991,6 +7991,37 @@ Root suite **1419/0** (+4 cases across P167/P168), full `check` green.
 
 ---
 
+## Phase 169 — GROOVY-12097 landed: retire the inc/dec subscript eval-order divergence  *(shipped — cleanup)*
+
+A maintenance slice, the counterpart to the Phase-127 inc/dec subscript work. The verifier has always modelled the
+**documented** JLS left-to-right order for a single-index store whose RHS increments the index var — `a[i] = i++`,
+`dst[i] = src[i++]`, `dst[i] = src[++i]` — proving `a[old] = …` (the LHS subscript reads the *old* value). Stock Groovy
+*used to* evaluate that subscript **after** the increment, so on the real runtime the store landed one slot past the
+verifier's (and the JLS's) model. The runtime rung (`RuntimeRung`, Slice 2) caught this honestly: it flagged those two
+cases as a triaged, allowlisted **proof-vs-runtime divergence** (`KNOWN_DIVERGENCES`) with GROOVY-12097 as the reason —
+a known Groovy runtime bug, explicitly *not* a verifier flaw.
+
+**GROOVY-12097 has now landed** (present in the `6.0.0-SNAPSHOT` this builds against): Groovy evaluates the LHS
+subscript *before* the RHS increment, matching the order the verifier models. Confirmed by re-pulling the snapshot
+(`--refresh-dependencies`) and re-running the rung — both cases now **cross-validate clean** rather than landing in the
+allowlist bucket. The cleanup retires the now-stale ephemera:
+
+- **`KNOWN_DIVERGENCES`** — both inc/dec eval-order entries removed (the map is now empty, a left-behind note records
+  why); the cases pass through as ordinary clean cross-validations, no allowlisting needed.
+- **`category()`** — the `incDec` fallback bucket that pre-triaged any inc/dec-subscript divergence as "eval order …
+  (REVIEW with Paul)" is removed. Its premise is gone, and removing it means a *future* inc/dec mismatch surfaces
+  loudly as `OTHER`/uncategorised (failing the run) instead of being silently pre-explained-away.
+- **`examples/tour.md`** — the GROOVY-12097 caveat note is dropped entirely; the surrounding prose already describes
+  the verifier's (now runtime-faithful) eval-order behaviour with no need to mention a fixed bug. (Per the house rule:
+  the tour and `CAPABILITIES.md` carry current behaviour, not ephemeral bug history — that lives here.)
+
+The Phase-127 `P expr inc/dec` cases (`a[i] = i++`, `dst[i] = src[i++]`, `dst[i] = src[++i]`, all `ok:true`) are
+**unchanged** — they prove the verifier's model, which the runtime now also satisfies, so they are *more* corroborated
+than before, not less. Runtime rung **552/570** clean (0 need review, no eval-order bucket); root suite **1419/0**,
+full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

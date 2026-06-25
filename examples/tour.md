@@ -495,12 +495,6 @@ pass. The single-index form `dst[i] = src[i++]` verifies too: `i` appears twice,
 *after* its own increment — `x = i++ + i`, where the second `i` is the new value — which skips loudly rather
 than risk mis-modeling.
 
-> **Note.** The verifier models the *documented* left-to-right order. A current Groovy bug —
-> [GROOVY-12097](https://issues.apache.org/jira/browse/GROOVY-12097) — evaluates the subscript *after* the
-> increment for the single-index form, so on today's runtime `dst[i] = src[i++]` lands one slot past where this
-> model (and the JLS) puts it; the two-cursor copy above is unaffected. (The runtime rung flags the single-index
-> forms as a known proof-vs-runtime divergence until that's fixed.)
-
 **Lists and boxed types — same reasoning, same syntax.** The encoder never inspects whether a value
 is `int` or `Integer`, or whether a sequence is an `int[]` or a `List` — it models every integer type
 as a mathematical integer and any subscripted, sized receiver as its contents. So `max` above proves

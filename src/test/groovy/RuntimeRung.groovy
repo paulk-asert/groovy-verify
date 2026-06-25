@@ -311,13 +311,12 @@ class RuntimeRung {
     // ---- Slice 2: corroboration — don't trust groovy-contracts' eval; re-check the spec on the real value -----
 
     /** Known, triaged proof-vs-runtime divergences (group::name → reason). A NEW confirmed one fails the run. */
-    static final Map<String, String> KNOWN_DIVERGENCES = [
+    static final Map<String, String> KNOWN_DIVERGENCES = [:
         // (the matrix-sum [].sum()==null divergence is now caught by the verifier itself — it refuses the bare
         //  `.sum()` empty edge — so it is no longer an ok:true case the rung sees)
-        'P expr inc/dec::a[i] = i++ stores old value at old index':
-            'eval order (GROOVY-12097): Groovy evaluates the a[i] subscript AFTER the increment; the verifier models the documented JLS left-to-right order — a known Groovy runtime bug, not a verifier flaw',
-        'P expr inc/dec::dst[i] = src[++i] (read before pre) snapshots and verifies':
-            'eval order (GROOVY-12097): Groovy evaluates the subscript AFTER the pre-increment; the verifier models the JLS left-to-right order — same root cause as a[i]=i++',
+        // (the inc/dec subscript eval-order entries — `a[i] = i++`, `dst[i] = src[++i]` — were removed once
+        //  GROOVY-12097 landed: Groovy now evaluates the LHS subscript *before* the RHS increment, matching the
+        //  JLS order the verifier models, so those cases cross-validate clean and no longer diverge.)
     ]
 
     static boolean isPostOrInvariant(Throwable t) {
@@ -406,15 +405,15 @@ class RuntimeRung {
         def names = []
         for (Throwable c = cause; c != null; c = c.cause) names << c.getClass().simpleName
         def has = { String s -> names.contains(s) }
-        boolean incDec = (src =~ /\+\+|--/) && (src =~ /\[/)        // inc/dec used with an array subscript
         if (cause instanceof StackOverflowError || has('StackOverflowError'))
             return [cat: 'helper-depth: uncontracted recursion called out of its domain (harness limit, not a proof)', review: false]
         if (has('MissingPropertyException') || has('MissingMethodException'))
             return [cat: 'verifier-DSL helper not runtime-evaluable (e.g. Sets.boundedBy in a @Requires) — contract cannot be run, not a proof gap', review: false]
         if (has('LoopVariantViolation') || has('LoopInvariantViolation'))
             return [cat: 'gc-loop-check: groovy-contracts runtime @Decreases/@Invariant mechanism (separate from the verifier)', review: false]
-        if (incDec)
-            return [cat: 'increment-subscript eval order: Groovy evaluates a[i]=++i AFTER the increment, verifier snapshots before — a genuine verifier-vs-Groovy divergence (REVIEW with Paul)', review: true]
+        // (an inc/dec-subscript eval-order bucket used to live here — Groovy once evaluated `a[i]=++i` AFTER the
+        //  increment — but GROOVY-12097 fixed that to the JLS left-to-right order the verifier models, so such a
+        //  divergence no longer arises; a future inc/dec mismatch now surfaces as OTHER/uncategorised, not pre-triaged.)
         if (has('PostconditionViolation') || has('ClassInvariantViolation')) {
             if (src =~ /\.sum\(\)/)
                 return [cat: 'empty-aggregate: Groovy [].sum() is null (not 0) at the empty edge — verifier models it 0; documented Groovy quirk', review: false]
