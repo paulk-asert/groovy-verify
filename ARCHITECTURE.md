@@ -60,7 +60,7 @@ groovy-contracts-rewritten forms. (Verbatim text comes from power-assert's
 | File | Role |
 |---|---|
 | `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, annotation-law synthesis (`@Reducer` / `@Monadic`), the information-flow noninterference walk (`@Label`), and Bean Validation (`jakarta` / `javax.validation`) constraints read as preconditions (Phase 128) |
-| `Encoder` | Groovy expression → SMT (the fragment lives here) |
+| `Encoder` | Groovy expression → SMT (the fragment lives here); method-call translation dispatches through an ordered registry of ~30 per-domain `tmc*` handlers (see the `NO_MATCH` convention at `translateMethodCall`) — a new call recognizer is one handler + one registry line |
 | `TypeEnvironment` | the per-method name → type scope the `Encoder` translates under (set/list/map element types; enum/decimal/FP/boolean/tuple/carrier/`Function`/atomic names), built by `VerifyChecker` per verification context and passed whole — named fields in place of the historical ~17 positional constructor parameters |
 | `ContractNormalizer` | canonicalises a freshly re-parsed contract expression against the owning method's signature before the encoder sees it — the one home for pre-resolution parse shapes (currently: the SAM call-operator shorthand `f(x)` → `f.apply(x)`, including inside quantifier closure bodies); wired into `VerifyChecker.contractAstFor`, and also the shared derivation of `Function`-formal return types |
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |

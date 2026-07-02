@@ -8594,6 +8594,35 @@ docLint **0 drift**.
 
 ---
 
+## Phase 184 — the `translateMethodCall` dispatch registry  *(shipped — refactoring, no behavior change)*
+
+Stage two of the Encoder evolution plan (Phase 178; stage one was `TypeEnvironment`). The method-call
+translator had grown to an **~840-line if-chain** — every phase appended a recognizer, and reviewing a change
+meant scrolling a monolith. It is now an ordered **registry of 30 per-domain handlers** (`tmcAtomicCellRead`,
+`tmcSamApply`, `tmcAggregations`, `tmcMapReceiver`, `tmcStringOps`, …), with `translateMethodCall` reduced to
+the shared preamble plus a one-line-per-domain dispatch table. A new call recognizer is now one handler + one
+registry line, and each domain is independently readable.
+
+**The load-bearing subtlety — `NO_MATCH`, not null.** The obvious registry convention (handler returns null →
+try the next) would have been **wrong**: the audit found 40+ in-branch `return null`s that mean "matched, but
+honestly untranslatable — **abort the whole dispatch**", several deliberately so (an unsupported op on a
+String receiver must *not* fall through to the list/array oracle and mis-translate). So handlers return a
+distinct `NO_MATCH` sentinel only where the old chain fell through; anything else — including null — is
+final. That made the extraction purely mechanical (verbatim contiguous slices + a trailing `return NO_MATCH`),
+which is what kept it safe: a conservation-checked splitter (826/826 body lines), first-compile success (no
+hidden cross-segment locals — `@CompileStatic` would have caught any), and byte-identical dispatch order.
+
+Order remains load-bearing and is now *visible*: the registry table reads top-to-bottom as the precedence list
+(e.g. String receivers before the named-collection oracle), with the convention documented at the sentinel.
+
+- No new cases (pure refactoring). Root suite **1457/0**, runtime rung **553/571** clean, docLint **0 drift**,
+  standalone verify tests green. `ARCHITECTURE.md`'s Encoder row now names the registry.
+- Not attempted (deliberately): per-domain *files*. The handlers lean on dozens of private Encoder helpers and
+  fields; extracting them to separate classes means widening visibility wholesale — a stage-three decision to
+  take only if the single file's size itself becomes the bottleneck, now that its *structure* no longer is.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

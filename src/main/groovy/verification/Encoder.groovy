@@ -5651,6 +5651,15 @@ class Encoder {
         translateWith(ensuresExpr, bindings)
     }
 
+    /**
+     * The translateMethodCall registry's "this handler's guard did not fire" sentinel. Distinct from
+     * {@code null}, which the branches use to mean "matched, but honestly untranslatable — abort the
+     * whole dispatch" (e.g. an unsupported op on a String receiver must NOT fall through to the
+     * list/array oracle). A handler ends with {@code return NO_MATCH} so control moves to the next
+     * handler exactly where the old if-chain fell through.
+     */
+    private static final Object NO_MATCH = new Object()
+
     private Object translateMethodCall(MethodCallExpression mce) {
         String m = mce.methodAsString
         if (m == null) return null
@@ -5669,6 +5678,47 @@ class Encoder {
         Expression recv = unwrapImmutableWrap(mce.objectExpression)
         List<Expression> args = argList(mce)
 
+        // ── The dispatch registry ─────────────────────────────────────────────────────────────
+        // One ordered handler per method-call domain (order is load-bearing: earlier handlers take
+        // precedence, e.g. String receivers before the list/array oracle). NO_MATCH → try the next
+        // handler; anything else — including null, a matched branch's "honest skip, do NOT fall
+        // through" abort — is the final answer.
+        Object r
+        r = tmcAtomicCellRead     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcQuantityValueRead  (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcCarrierFactory     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcSamApply           (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcCarrierBindMap     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcInlineCombiner     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcIntegralNarrow     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcReferenceIdentity  (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcTupleAccessors     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcFpPredicates       (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcForallRange        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcSortedness         (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcRangeMembership    (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcStaticConversions  (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcIntDivMod          (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcImplies            (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcAggregations       (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcMaxMin             (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcSpecHelpers        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcEveryAny           (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcEnumValuesSize     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcMapReceiver        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcSetReceiver        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcFactoryFold        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcNestedMapSet       (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcInlineSetOp        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcCountOccurrences   (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcStringOps          (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcNamedReceiverOracle(mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcEqualsNumeric      (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        return null
+    }
+
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcAtomicCellRead(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // AtomicInteger/AtomicLong as an int cell: `a.get()` is the cell's current value (the same raw int handle
         // the SSA write path rebinds on a modelled mutation). Only fires for a receiver known to be atomic, so a
         // 0-arg `.get()` on anything else stays an honest skip.
@@ -5676,7 +5726,11 @@ class Encoder {
             String cell = atomicCellNameOf(recv)
             if (cell != null) return atomicCellRead(cell)
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcQuantityValueRead(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 132 — JSR 385 value/scale (C₁): a Quantity's `getValue()` read *in a named unit* is its
         // SI magnitude divided by that unit's scale. The magnitude is recovered structurally from the
         // construction (`getQuantity`/`to`/`add`/…), so only quantities *built in scope from known units* are
@@ -5685,7 +5739,11 @@ class Encoder {
             Object v = quantityValueTerm(recv)
             if (v != null) return v
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcCarrierFactory(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase M-C — `some(v)` / `none()` factory call of a two-case carrier → the datatype constructor.
         Object[] fac = carrierFactoryMatch(m, args.size())
         if (fac != null) {
@@ -5696,7 +5754,11 @@ class Encoder {
             Object val = translateInSort(args.get(0), contentSortFor((FieldNode) fac[2]))
             if (val != null) return session.datatypeConstruct(cn.nameWithoutPackage, 'Some', [val])
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcSamApply(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase A (higher-order) — `f.apply(x)` on a stable named reference (a parameter/field/local `f`):
         // model `f` as an uninterpreted function over an uninterpreted value sort. We know nothing about what
         // `f` computes, only that it is a function (equal arguments → equal results), which is exactly an
@@ -5730,7 +5792,11 @@ class Encoder {
         // (The SAM call-operator shorthand `f(x)` in a re-parsed CONTRACT no longer reaches here: it is
         // canonicalised to `f.apply(x)` by ContractNormalizer before translation. The resolved BODY-side
         // spelling `f.call(x)` is handled in the apply branch above.)
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcCarrierBindMap(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase C — `m.bind(f)` / `m.map(p)` on a recognised wrapper carrier whose bind/map *bodies* are the
         // Identity-wrapper shape (verified, not assumed): model them by their definitions, so the monad/functor
         // laws compose with f.apply (Phase A) and the carrier datatype (Phase B).
@@ -5786,13 +5852,21 @@ class Encoder {
                 }
             }
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcInlineCombiner(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 116 — equational combiner inlining: a call to a registered combiner `f(args)` (no `@Requires`,
         // `@Ensures({ result == E })`) is translated as `E[formals := args]`, so a reduction `acc = f(acc, x)`
         // matches the inline aggregation/extremum patterns instead of havocking `acc`. Sound — see {@link #combiners}.
         Object combined = inlineCombiner(m, args)
         if (combined != null) return combined
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcIntegralNarrow(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 93 — `.intValue()` / `.longValue()` on an integral value is identity in the math-int model.
         // The motivating case is exponentiation: Groovy's `**` returns Number, so `(base ** exp).intValue()`
         // is how a power reaches an int context; translating the receiver yields the `pow$` term directly.
@@ -5805,14 +5879,22 @@ class Encoder {
             Object r = translate(recv)
             if (r != null) return r
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcReferenceIdentity(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 89 — `a.is(b)` reference identity (the method form of `a === b`): identity equality
         // when both receiver and argument are object-parameter references.
         if (m == 'is' && args.size() == 1) {
             Object idEq = refIdentityEq(recv, args.get(0))
             if (idEq != null) return idEq
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcTupleAccessors(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 80 — t.size() / t.getVN() / t.second() on a tuple parameter. `.size()` → arity (a literal);
         // the slot accessors mint the k-th slot's typed entity. (Constructed/returned tuples fold via the
         // factory container instead — that path is checked downstream.)
@@ -5824,7 +5906,11 @@ class Encoder {
                 if (te != null) return te
             }
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcFpPredicates(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 73 — Double.isNaN(x) / isInfinite(x) / isFinite(x) over an FP argument → IEEE predicates.
         if ((m == 'isNaN' || m == 'isInfinite' || m == 'isFinite') && args.size() == 1 &&
             isFpClassReceiver(recv) && isFpValued(args.get(0))) {
@@ -5834,7 +5920,11 @@ class Encoder {
             if (m == 'isInfinite') return session.fpIsInfinite(x)
             return session.and([session.not(session.fpIsNaN(x)), session.not(session.fpIsInfinite(x))])  // isFinite
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcForallRange(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Forall.range(lo, hi, { i -> body }) -> bounded universal quantifier.
         // Accept both the imported `Forall` (a VariableExpression) and the
         // fully-qualified `verification.Forall` (a PropertyExpression) — the
@@ -5846,7 +5936,11 @@ class Encoder {
             args.size() == 3 && args.get(2) instanceof ClosureExpression) {
             return translateForallRange(args.get(0), args.get(1), (ClosureExpression) args.get(2))
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcSortedness(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Sorted.ascending(a) / descending / strictlyAscending / strictlyDescending — the canonical
         // sortedness precondition, emitted as a FLAT 2-D axiom ∀ j,k. 0<=j<k<n ⟹ a[j] R a[k] with an
         // explicit multi-pattern trigger {a[j], a[k]} (see Sorted / forallMultiPattern). Reaches us the
@@ -5865,7 +5959,11 @@ class Encoder {
             Object q = translateSorted('ascending', recv)
             if (q != null) return q
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcRangeMembership(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 74 — Range.containsWithinBounds(v): Groovy's *bounds-only* range membership (it ignores
         // the step — that is exactly what separates it from `contains`). Lowers to the inclusive interval
         // predicate min(lo,hi) <= v <= max(lo,hi) in v's sort — exact, symbolic, no enumeration.
@@ -5883,7 +5981,11 @@ class Encoder {
             if (q == null) q = translateStringRangeContains(recv, args.get(0))
             if (q != null) return q
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcStaticConversions(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Sets.boundedBy(s, n) — the cardinality axiom (Phase 19): a set bounded by the domain [0, n).
         // Lowered to card(s) <= n ∧ (card(s) < n ∨ ∀ i ∈ [0,n)· i ∈ s), a faithful boolean definition.
         // `Sets` reaches us three ways: a bare import (VariableExpression) and FQN `verification.Sets`
@@ -5921,7 +6023,11 @@ class Encoder {
             Object h = translate(recv)
             if (h != null && session.isInt(h)) return session.stringFromInt(h)
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcIntDivMod(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Groovy's integer-division / modulo *method* forms (the `/` and `%` operators are handled in
         // translateBinary). Receiver and divisor are integer expressions; translate() yields a non-null
         // Int handle only for the integral types the fragment models (else honest skip).
@@ -5937,7 +6043,11 @@ class Encoder {
             if (m == 'mod')       return session.intMod(a, b)
             return truncDiv(a, b)   // intdiv
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcImplies(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Groovy's `a.implies(b)` (DGM `Boolean.implies` = `!a || b`) — the method twin of the `==>`
         // operator (translateBinary). Both reduce to the backend's `implies`.
         if (m == 'implies' && args.size() == 1) {
@@ -5945,7 +6055,11 @@ class Encoder {
             Object b = translate(args.get(0))
             return (a == null || b == null) ? null : session.implies(a, b)
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcAggregations(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Numeric sum/product aggregation over an *Int* list/array — the Groovy-idiomatic spellings:
         //   xs[lo..<hi].sum() / xs.sum() / xs.sum(init)        → init + sum$(arr,lo,hi)   (sum)
         //   xs.inject(1){ a,x -> a*x } / xs[lo..<hi].inject…   → init * prod$(arr,lo,hi)  (product fold)
@@ -6011,7 +6125,11 @@ class Encoder {
                 }
             }
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcMaxMin(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // xs.max() / xs.min() over an Int *or* BigDecimal list/array — the witnessed-extremum spec a
         // Groovy developer writes as `result == a.max()` instead of spelling the every/any by hand.
         // Int contents (Phase 60) and Real contents (`List<BigDecimal>`, Phase 76) share the sort-generic
@@ -6033,7 +6151,11 @@ class Encoder {
             }
             return null                                    // String / enum element → skip
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcSpecHelpers(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Fib.of(i) — the Fibonacci spec helper (Phase 55), lowered to the axiomatised fib$ primitive.
         boolean isFib = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Fib') ||
                         (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Fib') ||
@@ -6116,7 +6238,11 @@ class Encoder {
             }
             return null   // non-matching k or unsupported element sort — honest skip
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcEveryAny(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Native GDK quantifier idioms (Phase 9) — the universal a Groovy developer would
         // actually write, mapped to the same bounded `forall`. Only the recognised
         // range/indices/collection shapes become quantifiers; any other `every` returns
@@ -6130,14 +6256,22 @@ class Encoder {
             Object q = translateBoundedQuantifier(recv, (ClosureExpression) args.get(0), m == 'any')
             if (q != null) return q
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcEnumValuesSize(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 28 — `Color.values().size()` (the method-form of `.length`) folds to the literal
         // enum-constant count, same as the property form above.
         if (m == 'size' && args.isEmpty()) {
             Integer cnt = enumValuesCountFor(recv)
             if (cnt != null) return session.intLit(cnt.longValue())
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcMapReceiver(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Map receivers: m.get(k) / m[k] read the value array; containsKey/size/isEmpty go through the
         // key-set (a set, so size is its cardinality and the membership/law machinery is shared). The
         // key argument is translated in the map's key sort (Phase 27 — Int by default, String/Enum
@@ -6180,7 +6314,11 @@ class Encoder {
             // out of fragment: null so it surfaces as a loud "skipped", never a silent pass.
             return null
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcSetReceiver(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Set receivers (s.contains(x) / s.size() / s.isEmpty()) take precedence over the list/array
         // oracles below: a set is a characteristic array, its size is the uninterpreted cardinality.
         // The element is translated in the set's element sort (Phase 27).
@@ -6211,7 +6349,11 @@ class Encoder {
             }
             return null
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcFactoryFold(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 38 — factory receiver (List.of / Set.of / Map.of / Groovy literals): peephole-fold
         // .size / .isEmpty / .contains / .containsKey / .containsValue / .get to ground SMT terms
         // when the receiver is a recognised immutable-container literal. Composes with other
@@ -6223,7 +6365,11 @@ class Encoder {
             // Not a recognised op on this kind — fall through to honest skip rather than masking.
             return null
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcNestedMapSet(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 36 — `m[k].contains(x)` / `m[k].containsAll(s)` on a Map<K, Set<V>>: lower through
         // the inner set as a transient SMT array term, never minted as a named handle. .size() and
         // mutations on the inner set are out of scope (would need to mint a handle and update law).
@@ -6239,7 +6385,11 @@ class Encoder {
             }
             return null
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcInlineSetOp(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 33 — inline set union / intersection on the receiver side: (s + t).contains(x)
         // and s.intersect(t).contains(x) lower lazily without minting a new set handle. The
         // operands must both be known sets with matching element sort; otherwise skip.
@@ -6259,7 +6409,11 @@ class Encoder {
             // .size() on a binop needs inclusion-exclusion (out of scope); other ops skip too.
             return null
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcCountOccurrences(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // xs.count(v) / old.a.count(v) -> the occurrence-count term. Lists route through bcount
         // bounded by [0, sizeOf) (Phase 41 — faithful to Groovy's GDK list count semantics under
         // size-changing mutations); arrays keep the unbounded count (Phase 12, permutation — fixed
@@ -6277,7 +6431,11 @@ class Encoder {
                 return session.count(arr, v)
             }
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcStringOps(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // Phase 46a — String-typed receivers route to the string-predicate translations
         // (startsWith/endsWith/contains/isEmpty) before the list-style named-receiver dispatch
         // below: the latter would mistakenly interpret {@code s.contains(p)} on a String as a
@@ -6439,7 +6597,11 @@ class Encoder {
             }
             return null   // unsupported op on a String receiver — honest skip, don't fall through to list dispatch
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcNamedReceiverOracle(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // size() / isEmpty() / contains() need a named receiver for their oracle. The receiver
         // can be a bare {@code xs} (VariableExpression) or {@code old.xs} (PropertyExpression with
         // an old receiver) — the old form maps to the entry-snapshot key {@code old$xs}, which
@@ -6487,16 +6649,20 @@ class Encoder {
                 return session.select(arrayFor(rn), lastIdx)
             }
         }
+        return NO_MATCH
+    }
 
+    /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
+    private Object tmcEqualsNumeric(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         // equals(): accept the method form of numeric equality, x.equals(y) === x == y.
         if (m == 'equals' && args.size() == 1) {
             Object l = translate(recv)
             Object r = translate(args.get(0))
             return (l == null || r == null) ? null : session.eq(l, r)
         }
-
-        return null
+        return NO_MATCH
     }
+
 
     /**
      * Phase 8a — pure same-class function calls. Three cases, in order:
