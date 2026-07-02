@@ -5732,6 +5732,24 @@ class Encoder {
             if (arg != null) return session.applyUF('apply$' + rn, [arg], range)
         }
 
+        // SAM call-operator shorthand `f(x)` for a Function-typed formal. Groovy's `v(args)` -> `v.call(args)`
+        // rewrite (which dispatches to the SAM `apply`) is a resolution-phase step; contracts are re-parsed at
+        // CONVERSION (ContractExpansionTransform), which is pre-resolution, so `f(x)` reaches the encoder as an
+        // implicit-`this` call `this.f(x)` with method name `f`. When `f` is a known Function-typed formal, that IS
+        // the SAM application — model it as the SAME `apply$f` UF as `f.apply(x)` above, so the two spellings unify.
+        boolean implicitThisCall = mce.isImplicitThis() ||
+            (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')
+        if (implicitThisCall && args.size() == 1 && functionReturnTypes.containsKey(m)) {
+            ClassNode frt = functionReturnTypes.get(m)
+            if (frt != null && isIntLikeType(frt)) {
+                Object narg = translate(args.get(0))
+                if (narg != null) return session.applyUF('apply$' + m, [narg], sortFor(frt))
+            }
+            Object vSort = session.declareSort('Object')
+            Object arg = translateInSort(args.get(0), vSort)
+            if (arg != null) return session.applyUF('apply$' + m, [arg], functionRange(m, vSort))
+        }
+
         // Phase C — `m.bind(f)` / `m.map(p)` on a recognised wrapper carrier whose bind/map *bodies* are the
         // Identity-wrapper shape (verified, not assumed): model them by their definitions, so the monad/functor
         // laws compose with f.apply (Phase A) and the carrier datatype (Phase B).

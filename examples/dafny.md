@@ -310,27 +310,24 @@ static void leaveDecreasesMeasure(int ticket, int serving, Map<Phil,CS> cs, Map<
 
 These are the *ingredients* — a well-founded, monotonically-falling measure with an available step and a base
 case. Composing them into an **eventually-eats** means reasoning about the system state *over time*, which Leino
-models as functions `serving`, `t[p]`, `cs[p] : nat → …`. groovy-verify can model those as uninterpreted functions
-(`Function`-typed, `f.apply(i)`), and a small **engine fix** was needed to make it work here: a numeric-returning
-`Function`'s application now mints a stable, shared Int-sorted term that partakes in integer arithmetic (before, the
-`int` time index was coerced into the `Object` value sort and `f.apply(i)` fell through unmodelled — a fresh opaque
-value per occurrence, so nothing over the trace composed). With that, per-step trace reasoning composes, and — using
-bounded bypass to pin the horizon at a *constant* — a **bounded eventually-eats verifies**: a Hungry process at
+models as functions `serving`, `t[p]`, `cs[p] : nat → …`. groovy-verify models those as uninterpreted functions
+(`Function`-typed, applied as `f.apply(i)` — which the lemmas below write with Groovy's call-operator shorthand
+`f(i)`, sugar for the same SAM `apply`): a numeric-returning `Function`'s application is a stable, shared Int-sorted
+term that partakes in integer arithmetic, so per-step reasoning over the trace composes. Using bounded bypass to pin
+the horizon at a *constant*, a **bounded eventually-eats verifies**: a Hungry process at
 measure one has the served process leave (`serving` advances, so the waiter's measure hits zero — *derived*, not
 assumed), then its `Enter` fires, and it is Eating two trace steps later. Drop the `Enter` step and it refutes.
 
-The **fair-schedule** eventually-eats then follows — and it needed no further engine work. The apply fix also
-unblocked **recursive-lemma induction** over trace functions (a recursive call's `@Ensures` serves as the induction
-hypothesis) — earlier probing had reported "no usable @Ensures" on the self-recursive call, but that turned out to
-be a *downstream symptom* of apply-terms not composing, gone once they do. That is exactly how Dafny discharges the
-loop: not by proving the closed form (the direct telescoping `serving(k) == serving(0) + k` still won't close), but
-by a recursion the solver checks one step at a time. With it, Leino's `GetNextStep` frame argument is expressible —
-a trace value frozen step-by-step across a window is unchanged end-to-end, by a recursive lemma over the window:
+The **fair-schedule** eventually-eats rests on **recursive-lemma induction** over trace functions: a recursive
+call's `@Ensures` serves as the induction hypothesis — exactly how Dafny discharges the loop, not by proving the
+closed form (the direct telescoping `serving(k) == serving(0) + k` does not close) but by a recursion the solver
+checks one step at a time. Leino's `GetNextStep` frame argument is then expressible — a trace value frozen
+step-by-step across a window is unchanged end-to-end, by a recursive lemma over the window:
 
 <!-- doclint:case p174-fair-liveness/windowed-frame-lemma-via-recursive-induction -->
 ```groovy
-@Requires({ n <= u && (n..<u).every { int i -> csF.apply(i + 1) == csF.apply(i) } })
-@Ensures({ csF.apply(u) == csF.apply(n) })
+@Requires({ n <= u && (n..<u).every { int i -> csF(i + 1) == csF(i) } })
+@Ensures({ csF(u) == csF(n) })
 @Decreases({ u - n })
 static void frame(Function<Integer,Integer> csF, int n, int u) {
     if (n < u) frame(csF, n + 1, u)
@@ -347,7 +344,7 @@ lemmas with that step drops the waiter's measure to zero (`reduceMeasure1`), red
 (`overtakenEats`). Bounded bypass caps the measure at ≤ 1, so those two cases are **exhaustive** and the two-process
 `eventually-eats` is **complete** — mirroring Leino's loop (base case = exit, reduction = one body iteration, ≤ 1
 bound = at most one iteration), so no unbounded trace loop is needed. The general any-N case would want the trace
-loop itself (recursion over a symbolic number of reductions — now expressible) plus an unbounded `∀i:nat` `IsTrace`
+loop itself (recursion over a symbolic number of reductions) plus an unbounded `∀i:nat` `IsTrace`
 hypothesis; that generalisation is the remaining frontier, and the two-process theorem is closed.
 
 What *does* ship is the finiteness that underwrites liveness, as a **state invariant** — no trace needed. Add the

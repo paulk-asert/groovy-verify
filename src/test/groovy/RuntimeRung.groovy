@@ -43,7 +43,7 @@ class RuntimeRung {
         src =~ /\basync\b|\bawait\b|Awaitable|@Rely|@Guarantee|@UnderRely/ ||         // concurrency
         src =~ /@Label|Declassify\.to|\bLabel\(/ ||                                    // info-flow (not a runtime contract)
         src =~ /import\s+verification\.(Requires|Ensures|Decreases)\b/ ||             // String-form contracts: verify-only, no groovy-contracts runtime arm to cross-validate against
-        src =~ /@Monadic|@Reducer|@Associative|java\.util\.function|\.apply\(/        // abstract-carrier laws
+        src =~ /@Monadic|@Reducer|@Associative|\.apply\(/                             // abstract-carrier laws (NB: not `java.util.function` — now a shared HDR import, so it no longer discriminates; `.apply(`/`@Monadic` are the case-specific signals)
     }
 
     /** Drop the VerifyChecker @TypeChecked extension — compile verifier-off, groovy-contracts still fires. */

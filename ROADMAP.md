@@ -8349,6 +8349,43 @@ full `check` green.
 
 ---
 
+## Phase 177 — SAM call-operator shorthand `f(x)` in contracts  *(shipped — engine fix)*
+
+A small ergonomics fix with a diagnosis worth recording. Groovy lets you call a `Function`-typed value with the
+call operator — `twice(3)` rather than `twice.apply(3)` — so it was natural to ask whether contracts could write
+`csF(i)` instead of `csF.apply(i)`. They couldn't, and pinning down *why* was instructive:
+
+- **Not Groovy, not groovy-contracts.** Probed both: plain Groovy (dynamic *and* `@TypeChecked`) resolves the SAM
+  call operator fine inside closures and over parameters, and groovy-contracts evaluates `@Requires({ f(n) == 4 })`
+  correctly at runtime (n=2 holds, n=3 throws `PreconditionViolation`). So the shorthand works everywhere except…
+- **…the verifier's contract re-parse.** `ContractExpansionTransform.reparse` rebuilds contract source with
+  `AstBuilder.buildFromString(CompilePhase.CONVERSION, …)` — *pre-resolution*. The `v(args)` → `v.call(args)` →
+  `apply` rewrite is a later resolution-phase step, so it never runs; `f(x)` reaches the encoder as an implicit-`this`
+  call `this.f(x)`, which isn't the SAM application (and isn't a real method). That is the same "re-parsed contracts
+  are unresolved" property the codebase already special-cases for enum constants, `new Res(a)`, and
+  `Color.values().length`.
+
+**The fix** (`Encoder.translateMethodCall`): recognise an implicit-`this` one-arg call whose method name is a
+known `Function`-typed formal, and route it to the *same* `apply$f` uninterpreted function as `f.apply(x)` — so the
+two spellings unify (a contract may assume via `f.apply(n)` and conclude via `f(n)`). Numeric-returning functions
+use the Int-sorted path (Phase 173), carriers the Object value-sort path — mirroring the existing `apply` dispatch.
+
+- 2 `P177 sam-shorthand` cases (the shorthand unifies with `.apply`; a false claim over it refutes — so it's
+  genuinely modelled, not skipped). The ticket-lock examples keep the explicit `.apply(i)` spelling (clearer in a
+  spec); the shorthand is now simply *also* accepted.
+
+**A regression caught in passing.** Adding `import java.util.function.Function` to the harness `HDR` (a prior
+cleanup) had silently broken the runtime rung: its `tierC` census classifier matched `java.util.function`, which —
+once in the shared header — put *every* case in the "abstract-carrier laws" exclusion bucket, so the differential
+soundness oracle dropped from 552/570 cross-validated to **0/570**. Fixed by dropping the now-non-discriminating
+`java.util.function` token from `tierC` (the case-specific `@Monadic`/`@Reducer`/`@Associative`/`.apply(` signals
+still catch the genuine higher-order cases; bare-`Function`-param cases fall out via `excluded-type`). Rung back to
+**552/570** clean, 0 need review. (Lesson: run the rung after any `HDR`/engine change, not just the harness.)
+
+Root suite **1448/0** (+2), runtime rung **552/570** clean, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
