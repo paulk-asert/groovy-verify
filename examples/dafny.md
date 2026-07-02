@@ -286,9 +286,10 @@ actually ran.
 Leino's second half is **liveness** — *a hungry process eventually eats* (Section 7.6). It is genuinely
 surprising that an SMT-backed *sequential* checker can touch it at all, and the reason is Leino's: the liveness
 proof **is an algorithm** — a proof-loop that walks a well-founded measure down to zero — so it needs no
-temporal-logic engine, only a ranking function and `@Decreases`. That measure is **`t[p] - serving`**: the
-number of "serving"-display turns between a waiter `p` and its ticket. Its properties verify as the same kind of
-empty-bodied lemma — bounded below, strictly decreased by `Leave` and unchanged by the other events, always with
+temporal-logic engine: a ranking function, and ordinary recursion with a `@Decreases` measure to walk it down
+(the recursion comes further below, once there is a trace to walk). The ranking function is **`t[p] - serving`**:
+the number of "serving"-display turns between a waiter `p` and its ticket, and its properties verify as
+empty-bodied lemmas — bounded below, strictly decreased by `Leave` and unchanged by the other events, always with
 a served process to follow out of the kitchen, and zero enabling entry:
 
 <!-- doclint:ignore illustration: KRML260 §7.6 liveness ranking function (the real cases are P171 in VerifyHarness) -->
@@ -324,8 +325,20 @@ hypothesis) — earlier probing had reported "no usable @Ensures" on the self-re
 be a *downstream symptom* of apply-terms not composing, gone once they do. That is exactly how Dafny discharges the
 loop: not by proving the closed form (the direct telescoping `serving(k) == serving(0) + k` still won't close), but
 by a recursion the solver checks one step at a time. With it, Leino's `GetNextStep` frame argument is expressible —
-a trace value frozen step-by-step across a window is unchanged end-to-end, by recursion over the window — and the
-**`Liveness` verifies with progress derived from fairness, not assumed.** The base case is the waiter already
+a trace value frozen step-by-step across a window is unchanged end-to-end, by a recursive lemma over the window:
+
+<!-- doclint:case p174-fair-liveness/windowed-frame-lemma-via-recursive-induction -->
+```groovy
+@Requires({ n <= u && (n..<u).every { int i -> csF.apply(i + 1) == csF.apply(i) } })
+@Ensures({ csF.apply(u) == csF.apply(n) })
+@Decreases({ u - n })
+static void frame(Function<Integer,Integer> csF, int n, int u) {
+    if (n < u) frame(csF, n + 1, u)
+}
+```
+
+That frame lemma — with a stability twin for `serving` — is what makes
+**`Liveness` verify with progress derived from fairness, not assumed.** The base case is the waiter already
 holding the served ticket: given a fairness witness `u` (a later time it is scheduled), it stays ready across
 `[n, u)` (the frame lemma for its state, a stability lemma for `serving`), so its `Enter` fires at `u` and it is
 `Eating` at `u + 1`. The other case — the **overtaken** waiter (measure 1) — is Leino's loop body: it first follows

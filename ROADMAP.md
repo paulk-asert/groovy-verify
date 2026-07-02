@@ -8294,10 +8294,11 @@ the reduction's postcondition refutes — the `serving`-advance is exactly what 
 - 2 `P175 liveness-complete` cases (the full `overtakenEats` composition; the reduction's refutation when `Leave`
   doesn't advance `serving`). No new engine code.
 
-**Authoring note.** The frame/stability lemma parameters are named to match their callers' (`csAF`/`tAF`/`servingF`):
-a `Forall.range(...)` precondition at a call site is discharged by *syntactic* match against a `Forall.range(...)`
-the caller holds, so aligned closure text (hence aligned parameter names) is what makes the call typecheck. A latent
-sharpening — matching quantified preconditions up to α-renaming / argument substitution — would remove that footgun.
+**Authoring note.** The window quantifiers are the native `(lo..<hi).every { … }` idiom (not the `Forall.range`
+helper), and the frame/stability lemma parameters are named to match their callers' (`csAF`/`tAF`/`servingF`):
+a `.every` precondition at a call site is discharged by *syntactic* match against a `.every` the caller holds, so
+aligned closure text (hence aligned parameter names) is what makes the call typecheck. A latent sharpening —
+matching quantified preconditions up to α-renaming / argument substitution — would remove that footgun.
 
 **KRML260, done.** The ticket lock now carries Leino's entire development: **safety / mutual exclusion** (170),
 **invariant strengthening + the ranking function** (171), **bounded bypass** (172), **trace-level composition via

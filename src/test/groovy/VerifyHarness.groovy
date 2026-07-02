@@ -61,6 +61,7 @@ class VerifyHarness {
         import verification.Rely
         import verification.Guarantee
         import verification.UnderRely
+        import java.util.function.Function
     '''.stripIndent()
 
     /** A contracted producer reused by the cross-call precondition cases. */
@@ -11465,7 +11466,7 @@ class Buffer {
     }
 }''')],
         [group: 'P-fourchecker', name: 'README: Maybe under four checkers + DO', ok: true,
-         src: HDR + 'import groovy.transform.Monadic\nimport java.util.function.Function\n' + '''@Monadic(bind = 'flatMap', map = 'map')
+         src: HDR + 'import groovy.transform.Monadic\n' + '''@Monadic(bind = 'flatMap', map = 'map')
 @TypeChecked(extensions = ['groovy.typecheckers.NullChecker', 'groovy.typecheckers.MonadicChecker',
                            'groovy.typecheckers.PurityChecker', 'verification.VerifyChecker'])
 class Maybe {                                              // a hand-rolled Some(value) | None
@@ -14676,9 +14677,9 @@ class Maybe {                                              // a hand-rolled Some
          src: tc('''class TraceCompose {
                         @Requires({ f.apply(n) == g.apply(n) && (f.apply(n) == g.apply(n) ==> h.apply(n) == 2) })
                         @Ensures({ h.apply(n) == 2 })
-                        static void compose(java.util.function.Function<Integer,Integer> f,
-                                            java.util.function.Function<Integer,Integer> g,
-                                            java.util.function.Function<Integer,Integer> h, int n) {}
+                        static void compose(Function<Integer,Integer> f,
+                                            Function<Integer,Integer> g,
+                                            Function<Integer,Integer> h, int n) {}
                     }''')],
         // The headline: a bounded eventually-eats STEP over the trace. A (Hungry, measure 1) at time n; the served
         // process leaves at step n (serving advances by one, A untouched), which makes A's measure zero; A's Enter
@@ -14692,9 +14693,9 @@ class Maybe {                                              // a hand-rolled Some
                             ((csAF.apply(n + 1) == 1 && tAF.apply(n + 1) == servingF.apply(n + 1)) ==> csAF.apply(n + 2) == 2)
                         })
                         @Ensures({ csAF.apply(n + 2) == 2 })
-                        static void eats(java.util.function.Function<Integer,Integer> csAF,
-                                         java.util.function.Function<Integer,Integer> servingF,
-                                         java.util.function.Function<Integer,Integer> tAF, int n) {}
+                        static void eats(Function<Integer,Integer> csAF,
+                                         Function<Integer,Integer> servingF,
+                                         Function<Integer,Integer> tAF, int n) {}
                     }''')],
         // Teeth: drop the Enter step and A need not reach Eating — the trace composition is doing real work.
         [group: 'P173 trace-liveness', name: 'eventually-eats refutes without the Enter step', expect: 'Cannot prove postcondition',
@@ -14704,9 +14705,9 @@ class Maybe {                                              // a hand-rolled Some
                             servingF.apply(n + 1) == servingF.apply(n) + 1 && csAF.apply(n + 1) == 1 && tAF.apply(n + 1) == tAF.apply(n)
                         })
                         @Ensures({ csAF.apply(n + 2) == 2 })
-                        static void eats(java.util.function.Function<Integer,Integer> csAF,
-                                         java.util.function.Function<Integer,Integer> servingF,
-                                         java.util.function.Function<Integer,Integer> tAF, int n) {}
+                        static void eats(Function<Integer,Integer> csAF,
+                                         Function<Integer,Integer> servingF,
+                                         Function<Integer,Integer> tAF, int n) {}
                     }''')],
         // The base case: a waiter whose ticket is already up (measure zero) eats at its next scheduled step (Enter).
         [group: 'P173 trace-liveness', name: 'base case: a served waiter eats in one step', ok: true,
@@ -14716,9 +14717,9 @@ class Maybe {                                              // a hand-rolled Some
                             ((csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n)) ==> csAF.apply(n + 1) == 2)
                         })
                         @Ensures({ csAF.apply(n + 1) == 2 })
-                        static void eats(java.util.function.Function<Integer,Integer> csAF,
-                                         java.util.function.Function<Integer,Integer> servingF,
-                                         java.util.function.Function<Integer,Integer> tAF, int n) {}
+                        static void eats(Function<Integer,Integer> csAF,
+                                         Function<Integer,Integer> servingF,
+                                         Function<Integer,Integer> tAF, int n) {}
                     }''')],
 
         // ---------- Phase 174: Leino's ticket lock — FAIR-SCHEDULE eventually-eats (base case), progress DERIVED ----------
@@ -14733,10 +14734,10 @@ class Maybe {                                              // a hand-rolled Some
         // recursive induction over the window (the direct closed form does NOT close; the recursion is what carries it).
         [group: 'P174 fair-liveness', name: 'windowed frame lemma via recursive induction', ok: true,
          src: tc('''class FairFrame {
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> csF.apply(i + 1) == csF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> csF.apply(i + 1) == csF.apply(i) } })
                         @Ensures({ csF.apply(u) == csF.apply(n) })
                         @Decreases({ u - n })
-                        static void frame(java.util.function.Function<Integer,Integer> csF, int n, int u) {
+                        static void frame(Function<Integer,Integer> csF, int n, int u) {
                             if (n < u) frame(csF, n + 1, u)
                         }
                     }''')],
@@ -14748,29 +14749,29 @@ class Maybe {                                              // a hand-rolled Some
         [group: 'P174 fair-liveness', name: 'fair-schedule eventually-eats (base case)', ok: true,
          src: tc('''class FairLive {
                         @Requires({ n <= u &&
-                            Forall.range(n, u, { int i -> schedF.apply(i) != 0 }) &&
-                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) })
+                            (n..<u).every { int i -> schedF.apply(i) != 0 } &&
+                            (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } })
                         @Ensures({ csAF.apply(u) == csAF.apply(n) && tAF.apply(u) == tAF.apply(n) })
                         @Decreases({ u - n })
-                        static void frameA(java.util.function.Function<Integer,Integer> schedF, java.util.function.Function<Integer,Integer> csAF,
-                                           java.util.function.Function<Integer,Integer> tAF, int n, int u) {
+                        static void frameA(Function<Integer,Integer> schedF, Function<Integer,Integer> csAF,
+                                           Function<Integer,Integer> tAF, int n, int u) {
                             if (n < u) frameA(schedF, csAF, tAF, n + 1, u)
                         }
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } })
                         @Ensures({ servingF.apply(u) == servingF.apply(n) })
                         @Decreases({ u - n })
-                        static void stableServing(java.util.function.Function<Integer,Integer> servingF, int n, int u) {
+                        static void stableServing(Function<Integer,Integer> servingF, int n, int u) {
                             if (n < u) stableServing(servingF, n + 1, u)
                         }
                         @Requires({ n <= u && schedF.apply(u) == 0 &&
                             csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) &&
-                            Forall.range(n, u, { int i -> schedF.apply(i) != 0 }) &&
-                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            (n..<u).every { int i -> schedF.apply(i) != 0 } &&
+                            (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } &&
                             ((csAF.apply(u) == 1 && tAF.apply(u) == servingF.apply(u)) ==> csAF.apply(u + 1) == 2) })
                         @Ensures({ csAF.apply(u + 1) == 2 })
-                        static void eventuallyEats(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
-                                                   java.util.function.Function<Integer,Integer> servingF, java.util.function.Function<Integer,Integer> schedF, int n, int u) {
+                        static void eventuallyEats(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF,
+                                                   Function<Integer,Integer> servingF, Function<Integer,Integer> schedF, int n, int u) {
                             frameA(schedF, csAF, tAF, n, u)
                             stableServing(servingF, n, u)
                         }
@@ -14780,26 +14781,26 @@ class Maybe {                                              // a hand-rolled Some
         [group: 'P174 fair-liveness', name: 'eventually-eats refutes without the Enter step', expect: 'Cannot prove postcondition',
          src: tc('''class FairLiveBroken {
                         @Requires({ n <= u &&
-                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) })
+                            (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } })
                         @Ensures({ csAF.apply(u) == csAF.apply(n) && tAF.apply(u) == tAF.apply(n) })
                         @Decreases({ u - n })
-                        static void frameA(java.util.function.Function<Integer,Integer> csAF,
-                                           java.util.function.Function<Integer,Integer> tAF, int n, int u) {
+                        static void frameA(Function<Integer,Integer> csAF,
+                                           Function<Integer,Integer> tAF, int n, int u) {
                             if (n < u) frameA(csAF, tAF, n + 1, u)
                         }
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } })
                         @Ensures({ servingF.apply(u) == servingF.apply(n) })
                         @Decreases({ u - n })
-                        static void stableServing(java.util.function.Function<Integer,Integer> servingF, int n, int u) {
+                        static void stableServing(Function<Integer,Integer> servingF, int n, int u) {
                             if (n < u) stableServing(servingF, n + 1, u)
                         }
                         @Requires({ n <= u && schedF.apply(u) == 0 &&
                             csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) &&
-                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                            (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } })
                         @Ensures({ csAF.apply(u + 1) == 2 })
-                        static void eventuallyEats(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
-                                                   java.util.function.Function<Integer,Integer> servingF, java.util.function.Function<Integer,Integer> schedF, int n, int u) {
+                        static void eventuallyEats(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF,
+                                                   Function<Integer,Integer> servingF, Function<Integer,Integer> schedF, int n, int u) {
                             frameA(csAF, tAF, n, u)
                             stableServing(servingF, n, u)
                         }
@@ -14814,54 +14815,54 @@ class Maybe {                                              // a hand-rolled Some
         // a waiter's measure at 1, so measure-0 (Phase 174) and measure-1 (here) are EXHAUSTIVE: the two-process
         // fair-schedule eventually-eats is complete. All progress derived from fairness + framing, none assumed.
         // NB: the frame/stability lemma parameters are named to match the callers' (`csAF`/`tAF`/`servingF`) — the
-        // `Forall.range` precondition at a call site is discharged by syntactic match, so aligned names matter.
+        // `(lo..<hi).every` precondition at a call site is discharged by syntactic match, so aligned names matter.
         [group: 'P175 liveness-complete', name: 'overtaken (measure-1) waiter eats: reduction + base case', ok: true,
          src: tc('''class OvertakeEats {
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } })
                         @Ensures({ csAF.apply(u) == csAF.apply(n) && tAF.apply(u) == tAF.apply(n) })
                         @Decreases({ u - n })
-                        static void frame(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF, int n, int u) {
+                        static void frame(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF, int n, int u) {
                             if (n < u) frame(csAF, tAF, n + 1, u)
                         }
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } })
                         @Ensures({ servingF.apply(u) == servingF.apply(n) })
                         @Decreases({ u - n })
-                        static void stableServing(java.util.function.Function<Integer,Integer> servingF, int n, int u) {
+                        static void stableServing(Function<Integer,Integer> servingF, int n, int u) {
                             if (n < u) stableServing(servingF, n + 1, u)
                         }
                         @Requires({ n <= u && schedF.apply(u) == 0 &&
                             csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) &&
-                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } &&
                             ((schedF.apply(u) == 0 && csAF.apply(u) == 1 && tAF.apply(u) == servingF.apply(u)) ==> csAF.apply(u + 1) == 2) })
                         @Ensures({ csAF.apply(u + 1) == 2 })
-                        static void baseEats(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
-                                             java.util.function.Function<Integer,Integer> servingF, java.util.function.Function<Integer,Integer> schedF, int n, int u) {
+                        static void baseEats(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF,
+                                             Function<Integer,Integer> servingF, Function<Integer,Integer> schedF, int n, int u) {
                             frame(csAF, tAF, n, u)
                             stableServing(servingF, n, u)
                         }
                         @Requires({ n <= v &&
                             csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) + 1 &&
-                            Forall.range(n, v, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(n, v, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            (n..<v).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (n..<v).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } &&
                             servingF.apply(v + 1) == servingF.apply(v) + 1 && csAF.apply(v + 1) == csAF.apply(v) && tAF.apply(v + 1) == tAF.apply(v) })
                         @Ensures({ csAF.apply(v + 1) == 1 && tAF.apply(v + 1) == servingF.apply(v + 1) })
-                        static void reduceMeasure1(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
-                                                   java.util.function.Function<Integer,Integer> servingF, int n, int v) {
+                        static void reduceMeasure1(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF,
+                                                   Function<Integer,Integer> servingF, int n, int v) {
                             frame(csAF, tAF, n, v)
                             stableServing(servingF, n, v)
                         }
                         @Requires({ n <= v && v + 1 <= u && schedF.apply(u) == 0 &&
                             csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) + 1 &&
-                            Forall.range(n, v, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(n, v, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            (n..<v).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (n..<v).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } &&
                             servingF.apply(v + 1) == servingF.apply(v) + 1 && csAF.apply(v + 1) == csAF.apply(v) && tAF.apply(v + 1) == tAF.apply(v) &&
-                            Forall.range(v + 1, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(v + 1, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            (v + 1..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (v + 1..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } &&
                             ((schedF.apply(u) == 0 && csAF.apply(u) == 1 && tAF.apply(u) == servingF.apply(u)) ==> csAF.apply(u + 1) == 2) })
                         @Ensures({ csAF.apply(u + 1) == 2 })
-                        static void overtakenEats(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
-                                                  java.util.function.Function<Integer,Integer> servingF, java.util.function.Function<Integer,Integer> schedF, int n, int v, int u) {
+                        static void overtakenEats(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF,
+                                                  Function<Integer,Integer> servingF, Function<Integer,Integer> schedF, int n, int v, int u) {
                             reduceMeasure1(csAF, tAF, servingF, n, v)
                             baseEats(csAF, tAF, servingF, schedF, v + 1, u)
                         }
@@ -14870,26 +14871,26 @@ class Maybe {                                              // a hand-rolled Some
         // so the reduction cannot establish measure-0 at v+1 — reduceMeasure1's postcondition refutes.
         [group: 'P175 liveness-complete', name: 'reduction refutes when the Leave does not advance serving', expect: 'Cannot prove postcondition',
          src: tc('''class OvertakeBroken {
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } })
                         @Ensures({ csAF.apply(u) == csAF.apply(n) && tAF.apply(u) == tAF.apply(n) })
                         @Decreases({ u - n })
-                        static void frame(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF, int n, int u) {
+                        static void frame(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF, int n, int u) {
                             if (n < u) frame(csAF, tAF, n + 1, u)
                         }
-                        @Requires({ n <= u && Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Requires({ n <= u && (n..<u).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } })
                         @Ensures({ servingF.apply(u) == servingF.apply(n) })
                         @Decreases({ u - n })
-                        static void stableServing(java.util.function.Function<Integer,Integer> servingF, int n, int u) {
+                        static void stableServing(Function<Integer,Integer> servingF, int n, int u) {
                             if (n < u) stableServing(servingF, n + 1, u)
                         }
                         @Requires({ n <= v &&
                             csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) + 1 &&
-                            Forall.range(n, v, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
-                            Forall.range(n, v, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            (n..<v).every { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) } &&
+                            (n..<v).every { int i -> servingF.apply(i + 1) == servingF.apply(i) } &&
                             servingF.apply(v + 1) == servingF.apply(v) && csAF.apply(v + 1) == csAF.apply(v) && tAF.apply(v + 1) == tAF.apply(v) })
                         @Ensures({ csAF.apply(v + 1) == 1 && tAF.apply(v + 1) == servingF.apply(v + 1) })
-                        static void reduceMeasure1(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
-                                                   java.util.function.Function<Integer,Integer> servingF, int n, int v) {
+                        static void reduceMeasure1(Function<Integer,Integer> csAF, Function<Integer,Integer> tAF,
+                                                   Function<Integer,Integer> servingF, int n, int v) {
                             frame(csAF, tAF, n, v)
                             stableServing(servingF, n, v)
                         }
