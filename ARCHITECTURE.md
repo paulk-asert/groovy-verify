@@ -61,6 +61,7 @@ groovy-contracts-rewritten forms. (Verbatim text comes from power-assert's
 |---|---|
 | `VerifyChecker` | the `@TypeChecked` extension; call-site, body, loop & implicit checks, annotation-law synthesis (`@Reducer` / `@Monadic`), the information-flow noninterference walk (`@Label`), and Bean Validation (`jakarta` / `javax.validation`) constraints read as preconditions (Phase 128) |
 | `Encoder` | Groovy expression → SMT (the fragment lives here) |
+| `TypeEnvironment` | the per-method name → type scope the `Encoder` translates under (set/list/map element types; enum/decimal/FP/boolean/tuple/carrier/`Function`/atomic names), built by `VerifyChecker` per verification context and passed whole — named fields in place of the historical ~17 positional constructor parameters |
 | `BodyEncoder` / `LoopEncoder` | path enumeration & symbolic execution for `@Ensures`/loops |
 | `PureEvaluator` | closed pure-function evaluation & fuel-bounded unfolding — the normalise-then-SMT accelerator (Phase 8a) |
 | `Forall` | the `Forall.range(lo, hi){…}` bounded-quantifier helper (the native GDK `every`/`any` idioms are the preferred surface) |

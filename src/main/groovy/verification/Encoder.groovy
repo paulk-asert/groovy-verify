@@ -292,39 +292,30 @@ class Encoder {
      */
     private final Set<String> decimalNames
 
-    Encoder(SmtSession session, PureEvaluator pureEvaluator = null,
-            Map<String, ClassNode> setElementTypes = null,
-            Map<String, ClassNode[]> mapTypes = null,
-            Map<String, ClassNode> listElementTypes = null,
-            Map<String, ClassNode> scalarTypes = null,
-            Map<String, Integer> enumDomainSizes = null,
-            Map<String, ClassNode> nestedSetValueTypes = null,
-            Set<String> listNames = null,
-            Map<String, ClassNode> objectParams = null,
-            Set<String> booleanLocals = null,
-            Set<String> decimalNames = null,
-            Map<String, Boolean> fpNames = null,
-            Map<String, ClassNode> tupleParams = null,
-            Map<String, Object[]> combiners = null,
-            Map<String, ClassNode> carrierTypes = null,
-            Map<String, ClassNode> functionReturnTypes = null) {
+    /** The name→type scope travels as one {@link TypeEnvironment} (named fields, all non-null) — a new
+     *  scope fact is a field there + one assignment here, not a positional-signature change. The encoder
+     *  keeps the environment's map <i>references</i> (not copies), so a checker that keeps enriching a map
+     *  while this encoder is live is seen — the same aliasing as the old parameter threading. */
+    Encoder(SmtSession session, PureEvaluator pureEvaluator = null, TypeEnvironment env = null) {
+        env = env != null ? env : new TypeEnvironment()
         this.session = session
-        this.combiners = combiners != null ? combiners : new LinkedHashMap<String, Object[]>()
-        this.carrierTypes = carrierTypes != null ? carrierTypes : new HashMap<String, ClassNode>()
-        this.functionReturnTypes = functionReturnTypes != null ? functionReturnTypes : new HashMap<String, ClassNode>()
         this.pureEvaluator = pureEvaluator
-        this.setElementTypes = setElementTypes != null ? setElementTypes : new HashMap<String, ClassNode>()
-        this.mapTypes = mapTypes != null ? mapTypes : new HashMap<String, ClassNode[]>()
-        this.listElementTypes = listElementTypes != null ? listElementTypes : new HashMap<String, ClassNode>()
-        this.scalarTypes = scalarTypes != null ? scalarTypes : new HashMap<String, ClassNode>()
-        this.enumDomainSizes = enumDomainSizes != null ? enumDomainSizes : new HashMap<String, Integer>()
-        this.nestedSetValueTypes = nestedSetValueTypes != null ? nestedSetValueTypes : new HashMap<String, ClassNode>()
-        this.listNames = listNames != null ? listNames : new HashSet<String>()
-        this.objectParams = objectParams != null ? objectParams : new LinkedHashMap<String, ClassNode>()
-        this.booleanLocals = booleanLocals != null ? booleanLocals : new HashSet<String>()
-        this.decimalNames = decimalNames != null ? decimalNames : new HashSet<String>()
-        this.fpNames = fpNames != null ? fpNames : new HashMap<String, Boolean>()
-        this.tupleParams = tupleParams != null ? tupleParams : new LinkedHashMap<String, ClassNode>()
+        this.setElementTypes = env.setElementTypes
+        this.mapTypes = env.mapTypes
+        this.listElementTypes = env.listElementTypes
+        this.scalarTypes = env.scalarTypes
+        this.enumDomainSizes = env.enumDomainSizes
+        this.nestedSetValueTypes = env.nestedSetValueTypes
+        this.listNames = env.listNames
+        this.objectParams = env.objectParams
+        this.booleanLocals = env.booleanLocals
+        this.decimalNames = env.decimalNames
+        this.fpNames = env.fpNames
+        this.tupleParams = env.tupleParams
+        this.combiners = env.combiners
+        this.carrierTypes = env.carrierTypes
+        this.functionReturnTypes = env.functionReturnTypes
+        this.atomicNames = env.atomicNames
     }
 
     /** Phase 73 — {@code double}/{@code float} names mapped to precision ({@code true} = double/Float64,

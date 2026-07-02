@@ -8453,6 +8453,44 @@ Root suite **1448/0**, docLint **0 drift** (265/265 via the derived map), `catal
 
 ---
 
+## Phase 180 — `TypeEnvironment`: the Encoder's scope as one named-field object  *(shipped — refactoring, no behavior change)*
+
+The second deferred item from Phase 178. The `Encoder` constructor had grown to **17 positional parameters** —
+the per-method name→type scope (`setElementTypes`, `mapTypes`, `scalarTypes`, `carrierTypes`,
+`functionReturnTypes`, …) threaded one-by-one from `VerifyChecker`'s `current*` fields, several of them the
+*same type* (`Map<String, ClassNode>`), so a silently swapped adjacent pair would type-check fine. Every new
+scope fact (most recently `functionReturnTypes` in the `@Monadic` arc) rippled a signature change through the
+construction; `atomicNames` (Phase 162) had already given up and gone in as a post-construction property set —
+the ripple pain in miniature.
+
+Now the scope travels as **one `verification/TypeEnvironment`**: a named-field value object — every field
+**final** and defaulted to an empty collection (never null) — covering all 16 collections *plus* `atomicNames`,
+constructed by named arguments via `@MapConstructor(noArg = true)`. The generated constructor carries
+`@NamedParam` metadata, so the static compiler checks **every key and value type at the call site** (a
+misspelled field is `unexpected named arg`, a mistyped value names both types — probed empirically on the
+Groovy 6 snapshot before adopting). The `Encoder` constructor is `(SmtSession, PureEvaluator,
+TypeEnvironment)` — the evaluator stays a separate collaborator, since it is a service, not scope — and
+`VerifyChecker.mkEncoder` builds the environment with keyword construction (the swapped-pair hazard is gone).
+Finality pins the *references*, not the contents — the live-view aliasing (a checker enriching a map a built
+encoder sees) is unchanged, and absent keys take the field initializer defaults (also probed, incl. the
+`noArg` fallback `new TypeEnvironment()`). A new scope fact is now: one field in `TypeEnvironment`, one
+assignment in the `Encoder` constructor, one named entry at the build site — no positional signature to
+ripple.
+
+Deliberately preserved semantics: the encoder keeps the environment's map **references**, not copies — the
+checker may enrich a map (e.g. register a carrier type discovered mid-walk) while an encoder is live and it is
+seen, exactly as with the old parameter threading. The 7.6k lines of Encoder internals are untouched (its
+`private final` fields remain; only the constructor changed), which is what kept the diff reviewable.
+
+- No new cases (pure refactoring). Full gates: root suite **1448/0**, runtime rung **552/570** clean (engine
+  change ⟹ rung mandatory, per the Phase-177 lesson), docLint **0 drift** with the architecture map at
+  **32/32** (`TypeEnvironment` documented in `ARCHITECTURE.md`).
+
+This is stage one of the Encoder evolution plan (Phase 178's assessment); stage two — the
+`translateMethodCall` dispatch registry — now has a stable constructor to build on.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

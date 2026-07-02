@@ -269,13 +269,23 @@ class VerifyChecker extends TypeCheckingExtension {
         // preceding `r = callee(...)` assignment is replayed (it asserts the callee's @Ensures).
         Map<String, ClassNode> tuples = new LinkedHashMap<String, ClassNode>(currentTupleParams)
         tuples.putAll(currentTupleTypes)
-        Encoder e = new Encoder(session, currentEvaluator, currentSetElementTypes, currentMapTypes,
-                    currentListElementTypes, currentScalarTypes, currentEnumDomainSizes,
-                    currentNestedSetValueTypes, currentListNames, currentObjectParams,
-                    currentBooleanLocals, currentDecimalNames, currentFpNames, tuples, currentCombiners,
-                    currentCarrierTypes, currentFunctionReturnTypes)
-        e.atomicNames = currentAtomicNames
-        e
+        new Encoder(session, currentEvaluator, new TypeEnvironment(
+            setElementTypes    : currentSetElementTypes,
+            mapTypes           : currentMapTypes,
+            listElementTypes   : currentListElementTypes,
+            scalarTypes        : currentScalarTypes,
+            enumDomainSizes    : currentEnumDomainSizes,
+            nestedSetValueTypes: currentNestedSetValueTypes,
+            listNames          : currentListNames,
+            objectParams       : currentObjectParams,
+            booleanLocals      : currentBooleanLocals,
+            decimalNames       : currentDecimalNames,
+            fpNames            : currentFpNames,
+            tupleParams        : tuples,
+            combiners          : currentCombiners,
+            carrierTypes       : currentCarrierTypes,
+            functionReturnTypes: currentFunctionReturnTypes,
+            atomicNames        : currentAtomicNames))
     }
 
     /**
