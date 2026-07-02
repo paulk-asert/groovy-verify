@@ -8530,6 +8530,40 @@ docLint **0 drift** (architecture map 33/33 with the new source).
 
 ---
 
+## Phase 182 — the loop-invariant normalization tenant  *(shipped)*
+
+The tenant-site Phase 181 named: statement-level loop `@Invariant`/`@Decreases` closures ride
+`ContractExpansionTransform`'s loop capture — a separate re-parse from method contracts — and now normalise
+through the same `ContractNormalizer`. The enclosing `MethodNode` is threaded down the capture chain
+(`captureLoops` → `captureLoopsStmt` → `buildLoopSpec`, including the `.each`-as-for-in path), and the
+**re-parsed** invariant/variant expression is normalised before it is stashed in the `LoopSpec`.
+
+Two boundaries, kept deliberately:
+
+- **Fresh trees only, again.** Normalisation applies to the re-parsed expression *only* — the
+  `closureBoolExprs` fallback (taken when re-parse fails) is the **live** closure AST that groovy-contracts
+  compiles into the runtime check, and the while-loop guard is the live condition node; neither may be
+  restructured. A multi-statement invariant closure therefore still skips loudly with the shorthand — same as
+  before.
+- **The unresolved-type catch.** The transform runs at `CompilePhase.CONVERSION`, where a parameter's
+  `ClassNode` is *unresolved* — its name is plain `Function`, not `java.util.function.Function` — so the
+  normaliser's formal-name scope now accepts both spellings. The refute twin caught this exactly as designed:
+  the first run loud-skipped with `this.f(0)` echoed in the diagnostic, failing the case that *expected* a
+  refutation. (A same-named user `Function` type would match too; the rewrite additionally requires an
+  implicit-`this` call spelled with the parameter's own name, so a false positive needs a method and parameter
+  sharing one name — and merely lands on the ordinary uninterpreted modelling. Documented in the code.)
+
+The pinned verify case makes the invariant **load-bearing** — the loop rewrites `r` every iteration, so only
+the invariant's `r == f(0)` clause (normalised to `f.apply(0)`) can carry the value to the exit, with the
+body's own `f(0)` exercising the resolved-`call` spelling in the same method; the refute twin claims a wrong
+exit value, provable-false only if the invariant genuinely translated. All three SAM-shorthand positions —
+method contracts, loop contracts, bodies — now converge on `apply$f`.
+
+2 new `P177 sam-shorthand` cases. Root suite **1453/0** (+2), runtime rung **552/570** clean, docLint
+**0 drift**.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

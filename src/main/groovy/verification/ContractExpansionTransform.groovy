@@ -708,34 +708,34 @@ class ContractExpansionTransform implements ASTTransformation {
     private static boolean captureLoops(MethodNode mn, SourceUnit source) {
         if (!(mn.code instanceof BlockStatement)) return false
         boolean inferLoops = verifyInferLoopsEnabled(mn.declaringClass)   // @TypeChecked(...VerifyChecker(inferLoops: true))
-        return captureLoopsIn(((BlockStatement) mn.code).statements, source, inferLoops)
+        return captureLoopsIn(((BlockStatement) mn.code).statements, source, inferLoops, mn)
     }
 
     /** Phase 91 — capture loop specs recursively, so a *nested* loop's @Invariant/@Decreases is stashed
      *  on the inner loop node too (the verifier reads it when summarising the inner loop). Since the outer
      *  body is copied shallowly ({@link #loopBodyCopy}), the inner node is shared and the metadata is seen. */
-    private static boolean captureLoopsIn(List<Statement> stmts, SourceUnit source, boolean inferLoops) {
+    private static boolean captureLoopsIn(List<Statement> stmts, SourceUnit source, boolean inferLoops, MethodNode mn) {
         boolean found = false
-        if (stmts != null) for (Statement st : stmts) found |= captureLoopsStmt(st, source, inferLoops)
+        if (stmts != null) for (Statement st : stmts) found |= captureLoopsStmt(st, source, inferLoops, mn)
         found
     }
 
-    private static boolean captureLoopsStmt(Statement st, SourceUnit source, boolean inferLoops) {
+    private static boolean captureLoopsStmt(Statement st, SourceUnit source, boolean inferLoops, MethodNode mn) {
         if (st == null) return false
         boolean found = false
         if (st instanceof LoopingStatement) {
-            LoopSpec spec = buildLoopSpec((LoopingStatement) st, source, inferLoops)
+            LoopSpec spec = buildLoopSpec((LoopingStatement) st, source, inferLoops, mn)
             if (spec != null) { st.setNodeMetaData(LOOP_SPEC_KEY, spec); found = true }
-            found |= captureLoopsStmt(((LoopingStatement) st).loopBlock, source, inferLoops)
+            found |= captureLoopsStmt(((LoopingStatement) st).loopBlock, source, inferLoops, mn)
         } else if (st instanceof BlockStatement) {
-            found = captureLoopsIn(((BlockStatement) st).statements, source, inferLoops)
+            found = captureLoopsIn(((BlockStatement) st).statements, source, inferLoops, mn)
         } else if (st instanceof IfStatement) {
-            found |= captureLoopsStmt(((IfStatement) st).ifBlock, source, inferLoops)
-            found |= captureLoopsStmt(((IfStatement) st).elseBlock, source, inferLoops)
+            found |= captureLoopsStmt(((IfStatement) st).ifBlock, source, inferLoops, mn)
+            found |= captureLoopsStmt(((IfStatement) st).elseBlock, source, inferLoops, mn)
         } else if (st instanceof ExpressionStatement) {
             // `xs.each { x -> body }` as an iteration — stash a for-in LoopSpec on the call statement (the verifier
             // finds a loop by this metadata, not by node type), non-destructively (the AST still compiles to `.each`).
-            LoopSpec spec = eachLoopSpec((ExpressionStatement) st, source, inferLoops)
+            LoopSpec spec = eachLoopSpec((ExpressionStatement) st, source, inferLoops, mn)
             if (spec != null) { st.setNodeMetaData(LOOP_SPEC_KEY, spec); found = true }
         }
         found
@@ -748,7 +748,7 @@ class ContractExpansionTransform implements ASTTransformation {
      *  call is a Groovy parse error), so an *accumulating* body that needs one stays a loud skip — the for-in story.
      *  For {@code eachWithIndex} the closure's second param is the user-named index, which drives the loop directly
      *  (so it reads in contracts/asserts/counterexamples as written) with the first param bound to {@code xs[i]}. */
-    private static LoopSpec eachLoopSpec(ExpressionStatement st, SourceUnit source, boolean inferLoops) {
+    private static LoopSpec eachLoopSpec(ExpressionStatement st, SourceUnit source, boolean inferLoops, MethodNode mn) {
         if (!(st.expression instanceof MethodCallExpression)) return null
         MethodCallExpression mce = (MethodCallExpression) st.expression
         String method = mce.methodAsString
@@ -778,7 +778,7 @@ class ContractExpansionTransform implements ASTTransformation {
         }
         ForStatement forIn = new ForStatement(elem, mce.objectExpression, cl.code)
         forIn.setSourcePosition(st)
-        buildLoopSpec(forIn, source, inferLoops, idxName)
+        buildLoopSpec(forIn, source, inferLoops, mn, idxName)
     }
 
     /** True iff the class is checked by VerifyChecker with the {@code inferLoops: true} option, i.e.
@@ -815,7 +815,7 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     private static LoopSpec buildLoopSpec(LoopingStatement loop, SourceUnit source, boolean inferLoops,
-                                          String explicitIndexName = null) {
+                                          MethodNode mn, String explicitIndexName = null) {
         // Phase 59 — a classic for-loop is desugared to while-shape: its condition is the guard, its
         // init becomes a prefix statement, and its update is normalised to a plain assignment and
         // appended to the loop body. Phase 63 — a for-in loop `for (x in xs)` desugars to an *indexed*
@@ -897,7 +897,12 @@ class ContractExpansionTransform implements ASTTransformation {
             // invariant reaches the verifier already resolved (static call / getAt),
             // outside the encoder's fragment. Fall back to the live AST if re-parse
             // fails (e.g. a multi-statement invariant closure).
-            Expression reparsed = reparse(captureSource((ClosureExpression) value, source))
+            // Normalise the fresh re-parse against the enclosing method's signature (ContractNormalizer —
+            // e.g. the SAM shorthand `f(i)` → `f.apply(i)`), same as method-level contracts. Applied to the
+            // RE-PARSED tree only: the closureBoolExprs fallback below is the LIVE closure AST (which
+            // groovy-contracts compiles into the runtime check) and must not be restructured.
+            Expression reparsed = ContractNormalizer.normalize(
+                reparse(captureSource((ClosureExpression) value, source)), mn)
             List<Expression> exprs = reparsed != null ? [reparsed] :
                                      closureBoolExprs((ClosureExpression) value)
             if (simple == 'Invariant') invariants.addAll(exprs)

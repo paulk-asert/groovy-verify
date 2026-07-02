@@ -17,12 +17,12 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P177 sam-shorthand' — SAM call-operator shorthand in contracts and bodies; the
+/** 'P177 sam-shorthand' — SAM call-operator shorthand in contracts, loop invariants, and bodies; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G265_p177_sam_shorthand {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'SAM call-operator shorthand f(x) for a Function-typed formal, modelled identically to f.apply(x), in both contracts and bodies. Groovy\'s v(args)->v.call(args)->apply rewrite is a resolution-phase step, so the two positions present differently: a CONTRACT is re-parsed at CONVERSION (pre-resolution) and f(x) arrives as an implicit-this call this.f(x) — canonicalised to f.apply(x) by ContractNormalizer (Phase 181, the one home for re-parse artifacts) before the encoder sees it, including inside quantifier closures; a BODY is resolved AST where f(x) arrives as f.call(x) — recognised by the encoder directly, gated on a known Function formal so an ordinary Closure.call() is never hijacked. Teeth: a false claim over either position refutes (genuinely modelled, not skipped). Diagnosed as groovy-verify-internal — Groovy and groovy-contracts both resolve f(x) correctly at runtime.'
+    static final String DESCRIPTION = 'SAM call-operator shorthand f(x) for a Function-typed formal, modelled identically to f.apply(x), in contracts, loop @Invariant/@Decreases closures, and bodies. Groovy\'s v(args)->v.call(args)->apply rewrite is a resolution-phase step, so the two positions present differently: a CONTRACT is re-parsed at CONVERSION (pre-resolution) and f(x) arrives as an implicit-this call this.f(x) — canonicalised to f.apply(x) by ContractNormalizer (Phase 181, the one home for re-parse artifacts) before the encoder sees it, including inside quantifier closures; a BODY is resolved AST where f(x) arrives as f.call(x) — recognised by the encoder directly, gated on a known Function formal so an ordinary Closure.call() is never hijacked. Teeth: a false claim over either position refutes (genuinely modelled, not skipped). Diagnosed as groovy-verify-internal — Groovy and groovy-contracts both resolve f(x) correctly at runtime.'
 
     static final List<Map> CASES = [
 
@@ -74,6 +74,38 @@ class G265_p177_sam_shorthand {
                         @Requires({ f != null && f.apply(n) == 7 })
                         @Ensures({ result == 8 })
                         static int g(Function<Integer,Integer> f, int n) { return f(n) }
+                    }''')],
+        // LOOP-level contracts (Phase 182): a statement @Invariant rides the transform's loop-capture re-parse
+        // (a different path from method contracts), now normalised against the same signature. The invariant is
+        // load-bearing here — the loop REWRITES r each iteration, so only its `r == f(0)` clause (normalised to
+        // f.apply(0)) carries the value to the exit; the body's own f(0) is the resolved-call spelling.
+        [group: 'P177 sam-shorthand', name: 'shorthand in a loop @Invariant normalises', ok: true,
+         src: tc('''class SamLoop {
+                        @Requires({ f != null && n >= 0 })
+                        @Ensures({ result == f.apply(0) })
+                        static int g(Function<Integer,Integer> f, int n) {
+                            int i = 0
+                            int r = f(0)
+                            @Invariant({ 0 <= i && i <= n && r == f(0) })
+                            @Decreases({ n - i })
+                            while (i < n) { r = f(0); i = i + 1 }
+                            return r
+                        }
+                    }''')],
+        // Teeth: the same loop claiming a wrong exit value refutes — possible only if the invariant's
+        // shorthand clause was genuinely translated (an unnormalised `this.f(0)` would loud-skip instead).
+        [group: 'P177 sam-shorthand', name: 'loop-@Invariant shorthand refutes a wrong claim', expect: 'Cannot prove postcondition',
+         src: tc('''class SamLoopBad {
+                        @Requires({ f != null && n >= 0 })
+                        @Ensures({ result == f.apply(0) + 1 })
+                        static int g(Function<Integer,Integer> f, int n) {
+                            int i = 0
+                            int r = f(0)
+                            @Invariant({ 0 <= i && i <= n && r == f(0) })
+                            @Decreases({ n - i })
+                            while (i < n) { r = f(0); i = i + 1 }
+                            return r
+                        }
                     }''')],
     ]
 }

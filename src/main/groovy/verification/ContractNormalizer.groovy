@@ -71,12 +71,19 @@ class ContractNormalizer {
         new SamRewriter(fns).transform(e)
     }
 
-    /** Names of {@code java.util.function.Function}-typed formals (raw or generic) — the rewrite scope. */
+    /** Names of {@code java.util.function.Function}-typed formals (raw or generic) — the rewrite scope.
+     *  Accepts the plain {@code Function} spelling too: the loop-contract capture normalises at
+     *  {@code CompilePhase.CONVERSION} (inside {@code ContractExpansionTransform}), where the parameter's
+     *  {@code ClassNode} is still <i>unresolved</i> and carries only the source name. (A same-named user
+     *  type would match too — but the rewrite additionally requires an implicit-{@code this} call spelled
+     *  with the parameter's own name, so a false positive needs a method and a parameter sharing one name,
+     *  and merely lands on the ordinary uninterpreted {@code apply$f} modelling.) */
     static Set<String> functionFormalNames(MethodNode m) {
         Set<String> out = new HashSet<String>()
         Parameter[] ps = m.parameters
         if (ps != null) for (Parameter p : ps) {
-            if (p.type != null && p.type.name == 'java.util.function.Function') out.add(p.name)
+            String tn = p.type?.name
+            if (tn == 'java.util.function.Function' || tn == 'Function') out.add(p.name)
         }
         out
     }
