@@ -281,7 +281,37 @@ uniqueness conjunct and `eating ⟹ served`, exactly the strengthening chain Lei
 That chain is what makes the proof honest: drop the uniqueness conjunct — the last one the paper adds — and
 both `mutualExclusion` and `Leave`-preservation **refute** with `Cannot prove postcondition`. Because a lemma
 the encoder couldn't interpret would *skip* (compile clean), the refutation is what proves the reasoning
-actually ran. What is **not** attempted here is Leino's *liveness* result (a hungry process eventually eats):
-that needs trace and schedule as functions `nat → …`, a fairness assumption, and the eventuality expressed as
-a well-founded measure decreasing over a proof-loop — expressible in shape, but a separate research spike.
+actually ran.
+
+Leino's second half is **liveness** — *a hungry process eventually eats* (Section 7.6). It is genuinely
+surprising that an SMT-backed *sequential* checker can touch it at all, and the reason is Leino's: the liveness
+proof **is an algorithm** — a proof-loop that walks a well-founded measure down to zero — so it needs no
+temporal-logic engine, only a ranking function and `@Decreases`. That measure is **`t[p] - serving`**: the
+number of "serving"-display turns between a waiter `p` and its ticket. Its properties verify as the same kind of
+empty-bodied lemma — bounded below, strictly decreased by `Leave` and unchanged by the other events, always with
+a served process to follow out of the kitchen, and zero enabling entry:
+
+<!-- doclint:ignore illustration: KRML260 §7.6 liveness ranking function (the real cases are P171 in VerifyHarness) -->
+```groovy
+// bounded below — the measure is a natural number, so it cannot descend forever
+@Requires({ valid(ticket, serving, cs, t) && cs[p] != CS.Thinking })
+@Ensures({ t[p] - serving >= 0 })
+static void measureNonNegative(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
+
+// Leave by the served process q drops a distinct waiter p's measure by one — and keeps it >= 0
+// (the >= 0 needs uniqueness + eating==>served: a waiter distinct from the eater holds a larger ticket)
+@Requires({ valid(ticket, serving, cs, t) && cs[q] == CS.Eating && cs[p] == CS.Hungry && p != q &&
+            serving2 == serving + 1 && t2[p] == t[p] })
+@Ensures({ (t2[p] - serving2) < (t[p] - serving) && (t2[p] - serving2) >= 0 })
+static void leaveDecreasesMeasure(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t,
+                                  Phil p, Phil q, int serving2, Map<Phil,Integer> t2) {}
+```
+
+These are the *ingredients* — a well-founded, monotonically-falling measure with an available step and a base
+case — not the composed theorem. The full **eventually-eats** result needs `trace : nat → TSState` and
+`schedule : nat → Process` as uninterpreted functions, a **fairness** assumption (the served process is
+eventually scheduled), and the `IsTrace` link chaining consecutive states, then Leino's proof-loop with
+`@Decreases({ trace(n).t[p] - trace(n).serving })`. That composition — heavy quantifier instantiation over
+uninterpreted functions — is the open next slice and the real research risk; the ranking function above is its
+precondition. Everything up to it verifies today, structure-for-structure with the paper.
 

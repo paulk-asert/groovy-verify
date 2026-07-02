@@ -8079,6 +8079,53 @@ Root suite **1425/0** (+6), full `check` green.
 
 ---
 
+## Phase 171 — Leino's ticket lock: the LIVENESS ranking function  *(shipped)*
+
+The second half of KRML260, started. Where Phase 170 proved *safety* (mutual exclusion is invariant), this begins
+*liveness* — **a hungry process eventually eats** (§7.6). The distinctive part is that an SMT-backed *sequential*
+checker can touch liveness at all: Leino's key move is that the liveness proof **is an algorithm** — a proof-loop
+that walks a well-founded measure down to zero — so it needs no temporal-logic engine, only a ranking function, a
+`@Decreases`-style measure, and the invariant. This slice establishes that **ranking function** and its per-event
+behaviour; composing it over an infinite trace is the next slice (see below).
+
+The measure is **`t[p] - serving`**: how many turns of the "serving" display stand between waiter `p` and its
+ticket. Five empty-bodied lemmas over the same bounded (enum `{A, B}`) state establish the skeleton the
+eventually-eats argument composes:
+
+- **Bounded below** — `valid ∧ cs[p] != Thinking ⟹ t[p] - serving >= 0`. The measure is a natural number; it
+  cannot descend forever.
+- **`Leave` strictly decreases it (and keeps it `>= 0`)** — when the served process `q` leaves, `serving` advances
+  and a *distinct* waiter `p`'s measure drops by exactly one. The `>= 0` half is load-bearing: it needs **both**
+  uniqueness and `eating ⟹ served` to know `t[p] > serving` (a waiter distinct from the eater holds a strictly
+  larger ticket) — the same strengthening safety leaned on, now underwriting well-foundedness.
+- **Non-`Leave` events don't change it** — any event that freezes `serving` and `p`'s ticket (`Enter`, and
+  `Request` for an existing waiter) preserves the measure. So **only `Leave` moves it, always downward**.
+- **A served process always exists while someone waits** — this needs Leino's liveness strengthening of the
+  invariant (`serving < ticket ⟹ someone holds serving`, his `TicketIsInUse` at `serving`): a hungry process then
+  guarantees a *currently-served* process — the one the proof follows out of the kitchen (`CurrentlyServedProcess`).
+  Progress is available at every step.
+- **Measure zero enables entry** — a hungry `p` at measure zero has `t[p] == serving`, so `Enter`'s guard holds and
+  it transitions `Hungry → Eating`. The base case: zero measure means `p` eats next.
+
+**Teeth:** drop uniqueness and the `Leave`-decrease's `>= 0` refutes (the measure could go negative — no longer
+well-founded); drop the `TicketIsInUse` strengthening and served-process existence refutes (exactly why Leino adds
+that conjunct before defining `CurrentlyServedProcess`). Both are `Cannot prove postcondition`.
+
+- 7 `P171 ticket-liveness` cases (5 verify + 2 refute). No new engine code — same enum-keyed-map, symbolic-key,
+  and empty-bodied-lemma machinery as Phase 170.
+
+**What this is not, yet.** These are the *ingredients* of liveness — a sound, well-founded, monotonically-decreasing
+measure with an available step and a base case — not the composed theorem. The full **eventually-eats** result needs
+`trace : nat → TSState` and `schedule : nat → Process` as uninterpreted functions, a **fairness** assumption
+(`∀p,n: HasNext` — the served process is eventually scheduled), and the `IsTrace` link chaining consecutive states,
+then Leino's proof-loop with `@Decreases({ trace(n).t[p] - trace(n).serving })`. That composition — heavy quantifier
+instantiation over uninterpreted functions — is the **open next slice** and the real research risk; the ranking
+function proven here is its precondition.
+
+Root suite **1432/0** (+7), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
