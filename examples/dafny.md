@@ -209,3 +209,79 @@ same thing for the orderings without a native spelling. Either way it's all the 
 preservation refutes on a concrete *unsorted* counterexample (`[7719, 7718]`) — the proof genuinely rests
 on sortedness. Dafny's verbatim binary search then verifies, structure-for-structure.
 
+### Ticket lock — mutual exclusion (Leino, KRML260)
+
+The three above are sequential algorithms. Leino's lecture notes
+[*Modeling Concurrency in Dafny*](https://leino.science/papers/krml260.pdf) (KRML260) are a different animal:
+a **bakery-style ticket lock** for mutual exclusion, reasoned about the way UNITY / Event-B / TLA⁺ do — a
+concurrent system as atomic events interleaved by a tacit scheduler, each event maintaining a **system
+invariant**, and the safety property (*at most one process in the critical section*) proved as a logical
+consequence of that invariant. No thread interleavings are enumerated; concurrency is modelled *sequentially*.
+This is the same posture as the [concurrency-lite gallery](concurrency.md) — except there we prove the local
+half and hand mutual exclusion to the runtime rungs, and here we **prove the mutual-exclusion invariant itself**.
+
+Leino's system invariant `Valid()`, strengthened (over the paper's Section 5.0) until it implies mutual
+exclusion — the ticket dispenser never falls behind the display, every waiting/eating process holds a ticket
+in `[serving, ticket)`, **distinct waiters hold distinct tickets**, and an eating process holds exactly
+`serving`:
+
+```dafny
+predicate Valid()
+  reads this
+{
+  cs.Keys == t.Keys == P &&
+  serving <= ticket &&
+  (forall p :: p in P && cs[p] != Thinking ==> serving <= t[p] < ticket) &&
+  (forall p,q :: p in P && q in P && p != q && cs[p] != Thinking && cs[q] != Thinking ==> t[p] != t[q]) &&
+  (forall p :: p in P && cs[p] == Eating ==> t[p] == serving)
+}
+
+lemma MutualExclusion(p: Process, q: Process)
+  requires Valid() && p in P && q in P && cs[p] == Eating && cs[q] == Eating
+  ensures p == q
+{ }
+```
+
+The faithful Groovy fixes `Process` to a small enum — Leino explicitly offers this (`datatype Process = Agnes
+| Agatha | Germaine | Jack`) — so `P` is finite, `cs`/`t` are **enum-keyed maps**, and the `∀p` / `∀p,q`
+conjuncts expand over the domain. Following the paper's *Section 7* (TLA⁺-style) formulation, each atomic
+event is a **two-state predicate** and each proof an **empty-bodied lemma** — the same law-lemma shape the
+[lattice/monoid arcs](checkers.md) use. `Valid` and `MutualExclusion` become:
+
+<!-- doclint:case p170-ticket-lock/mutual-exclusion-follows-from-the-invariant -->
+```groovy
+enum Phil { A, B }
+enum CS { Thinking, Hungry, Eating }
+
+static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t) {
+    serving <= ticket &&
+    (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
+    (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
+    ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&
+    (cs[Phil.A] == CS.Eating ==> t[Phil.A] == serving) &&
+    (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving)
+}
+
+@Requires({ valid(ticket, serving, cs, t) && cs[p] == CS.Eating && cs[q] == CS.Eating })
+@Ensures({ p == q })                        // both eating ⟹ the same process — mutual exclusion
+static void mutualExclusion(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p, Phil q) {}
+```
+
+Two details are worth calling out. First, `Process` is a fixed enum, so this is the **N = 2 instance** — the
+general symbolic `set<Process>` over an *uninterpreted* sort is out of the fragment (it needs quantification
+over an opaque domain). Second, `mutualExclusion` keeps `p` and `q` **symbolic**, exactly as the paper writes
+it: the reads `cs[p]` / `cs[q]` are at symbolic keys, yet they connect to the literal-key reads inside `valid`
+because an enum scalar carries a **domain-closure axiom** (`p` is `A` or `B`) and maps ride Z3's array theory —
+so one lemma covers every process, no per-actor expansion. The same symbolic-actor form proves that each of
+`Request`, `Enter`, and `Leave` **preserves** `valid` (the two-state predicate of each event relates the pre-
+and post-state passed as parameters). `Leave` — advancing `serving` and re-establishing the strict bound
+`serving+1 <= t[q]` for a still-waiting `q` — is the one the paper flags as trickiest; it needs *both* the
+uniqueness conjunct and `eating ⟹ served`, exactly the strengthening chain Leino walks through.
+
+That chain is what makes the proof honest: drop the uniqueness conjunct — the last one the paper adds — and
+both `mutualExclusion` and `Leave`-preservation **refute** with `Cannot prove postcondition`. Because a lemma
+the encoder couldn't interpret would *skip* (compile clean), the refutation is what proves the reasoning
+actually ran. What is **not** attempted here is Leino's *liveness* result (a hungry process eventually eats):
+that needs trace and schedule as functions `nat → …`, a fairness assumption, and the eventuality expressed as
+a well-founded measure decreasing over a proof-loop — expressible in shape, but a separate research spike.
+

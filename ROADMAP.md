@@ -8022,6 +8022,63 @@ full `check` green.
 
 ---
 
+## Phase 170 — Leino's ticket lock (KRML260): SMT-proved mutual exclusion over a bounded process set  *(shipped)*
+
+The first result to **SMT-prove a concurrency safety invariant itself** — the structural half the "concurrency lite"
+gallery ([`examples/concurrency.md`](examples/concurrency.md)) has always disclaimed and handed to the runtime rungs
+(Lincheck / Fray / jcstress / TLA⁺ TLC). It ports the safety half of K. Rustan M. Leino's *Modeling Concurrency in
+Dafny* (KRML260) — a bakery-style ticket lock for mutual exclusion — into the fragment, following the paper's own
+method: model each atomic event over a system invariant `valid`, prove **mutual exclusion is a consequence of the
+invariant**, and prove **every event preserves it**. No temporal logic; the sequential-model-of-concurrency lineage
+(UNITY / Event-B / TLA⁺) the gallery already cites.
+
+Three reductions, all in-fragment and all faithful:
+
+- **`Process` is a fixed enum `{A, B}`**, not the paper's uninterpreted `type Process(==)` + symbolic `set<Process>`.
+  Leino explicitly sanctions this (`datatype Process = Agnes | Agatha | …`); it makes `P` finite, so `cs : Map<Phil,CS>`
+  and `t : Map<Phil,Integer>` are **enum-keyed maps** (Phase 27/32) and the invariant's `∀p`/`∀p,q` become finite
+  conjunctions over `{A, B}`. It *is* the N=2 instance — the general symbolic `set` over an uninterpreted sort remains
+  the open frontier (see below).
+- **Events are Model-2 two-state predicates**, not Model-1 mutating methods — the pre/post state is passed as
+  parameters and the transition is a relation in `@Requires`, sidestepping mutable-map-field framing (not in the
+  fragment). This is arguably the *more* faithful half: Model 2 is what Leino builds liveness on.
+- **`valid` and each event are empty-bodied lemmas** — the same law-lemma pattern the lattice/monoid arcs use
+  (Phase L0): the checker proves the `@Ensures` from the `@Requires` alone.
+
+The strengthened invariant is the paper's, expanded over `{A, B}`: `serving <= ticket`; every non-thinking process
+holds a ticket in `[serving, ticket)`; **distinct non-thinking processes hold distinct tickets** (the conjunct the
+paper adds last); every eating process holds `serving`. From it:
+
+- **`mutualExclusion`** — the paper's exact lemma, parameterised by two **symbolic** processes `p, q`, concluding
+  `p == q` (both eating ⟹ same process). The acting/queried process being symbolic is the notable engine finding:
+  a symbolic-key read `cs[p]` connects to the literal-key reads inside `valid` via the **enum domain-closure axiom**
+  (`p` is `A` or `B`) plus array extensionality — so **one lemma covers every process**, no per-actor expansion.
+- **`Request` / `Enter` / `Leave` preserve `valid`** — each a symbolic-actor two-state predicate. `Request` leans on
+  the *strict* upper bound `t[q] < ticket` (the fresh ticket equals old `ticket`, distinct from every held one);
+  `Enter`'s guarded branch needs `eating ⟹ served`; **`Leave`** is the case Leino flags as trickiest — advancing
+  `serving` and re-establishing `serving+1 <= t[q]` for a still-waiting `q` needs *both* uniqueness and
+  `eating ⟹ served`.
+
+**Teeth (the invariant-strengthening story, made testable):** drop the uniqueness conjunct — exactly the strengthening
+the paper adds last — and both `mutualExclusion` and `Leave`-preservation **refute** (`Cannot prove postcondition`).
+Because an uninterpreted lemma would *skip* (compile clean), a genuine refutation proves the reasoning ran.
+
+- 6 `P170 ticket-lock` cases (mutual exclusion + `Request`/`Enter`/`Leave` preservation verify; uniqueness-dropped
+  mutual exclusion and `Leave` refute). Reuses the enum-keyed-map (Phase 27/32), enum domain-closure (Phase L0), and
+  empty-bodied-lemma machinery with **no new engine code**.
+
+**Complement to the runtime rungs, not overlap.** `concurrency.md` proves the *local* half and hands mutual exclusion
+to Lincheck/Fray/TLC; this proves the mutual-exclusion **invariant** at compile time for a bounded instance — the two
+could meet on one ticket-lock artifact (as the seqlock does across all three rungs, Phase 163). **Open frontiers:** the
+general N (symbolic `set<Process>` over an *uninterpreted* sort + map theory over it — the general-quantifier
+instantiation frontier); and **liveness** (a hungry process eventually eats — trace/schedule as uninterpreted
+functions, a fairness assumption, and Leino's eventuality-as-a-decreasing-measure-over-a-proof-loop), a separately
+scoped research spike.
+
+Root suite **1425/0** (+6), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
