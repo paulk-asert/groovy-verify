@@ -8564,6 +8564,36 @@ method contracts, loop contracts, bodies — now converge on `apply$f`.
 
 ---
 
+## Phase 183 — the `values().length` fold joins the normaliser (and the body-snapshot discovery)  *(shipped)*
+
+The migration candidate Phase 181 flagged. The `EnumClass.values().length` / `.size()` → literal-count fold
+had lived in the encoder with a dual-shape matcher (resolved `ClassExpression` receiver, plus unresolved
+`VariableExpression` receiver looked up in `enumDomainSizes`). The unresolved shape is a re-parse artifact —
+`ContractNormalizer`'s charter — so the fold is now its second rewrite, applied in **every contract
+position**: method contracts (`contractAstFor`), loop `@Invariant`/`@Decreases` (the Phase-182 capture hook,
+where the fold works at CONVERSION because the enum's constants are already `ACC_ENUM` fields), and — newly
+wired — **class `@Invariant`s** (`classInvariantTexts` now normalises each invariant against its *declaring*
+class, via a `normalize(Expression, ClassNode)` overload: class scope has no `Function` formals, so only the
+class-scope rewrites apply). The enum-count derivation (`enumDomainSizes`, `countEnumConstants`,
+`simpleEnumName`) consolidated into `ContractNormalizer`, with the checker and encoder delegating.
+
+**The discovery — the encoder branch was serving two masters.** The plan was to delete the encoder's
+unresolved-receiver branch outright; the pinned class-invariant *verify* case refused: the mutator's body
+guard (`if (0 <= s && s < State.values().length)`) skipped. Cause: the **clean-body snapshot** is captured at
+CONVERSION, so *body* expressions can carry the unresolved receiver too — the old "post-resolution body code
+has the ClassExpression receiver" comment was only true for some paths, and the branch had been quietly
+serving snapshot-shaped body code all along. So the honest architecture is a charter split, not a wholesale
+move: **contract positions → pre-folded by the normaliser** (the encoder never sees them); **body
+expressions → the encoder's translate-time fold, both receiver shapes** (bodies are not contracts). The
+encoder's matcher documents exactly this.
+
+4 new `P28 enum.values` cases pin the two previously-unpinned positions — loop `@Invariant` and class
+`@Invariant`, verify + refute each (the refutes are the teeth; an unfolded count loud-skips instead). Root
+suite **1457/0** (+4), runtime rung **553/571** clean (the new loop case joined the cross-validated set),
+docLint **0 drift**.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

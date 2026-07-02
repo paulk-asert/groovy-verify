@@ -1294,31 +1294,8 @@ class VerifyChecker extends TypeCheckingExtension {
      * the {@link ClassExpression} receiver and works without this map.
      */
     private static Map<String, Integer> collectEnumDomainSizes(MethodNode node) {
-        Map<String, Integer> out = new LinkedHashMap<String, Integer>()
-        ClassNode dc = node.declaringClass
-        if (dc == null || dc.module == null) return out
-        for (ClassNode cn : dc.module.classes) {
-            if (!cn.isEnum()) continue
-            int count = countEnumConstants(cn)
-            if (count <= 0) continue
-            out.put(cn.nameWithoutPackage, count)
-            String simple = simpleEnumName(cn)   // strips C$ from C$Color → Color (nested-class case)
-            if (simple != cn.nameWithoutPackage) out.put(simple, count)
-        }
-        out
-    }
-
-    /**
-     * Count actual enum constants on a ClassNode by walking its fields for declarations with the
-     * JVM {@code ACC_ENUM} modifier bit set. Filters out the synthetic same-type fields Groovy
-     * adds (notably {@code MIN_VALUE}/{@code MAX_VALUE}) and the array-typed {@code $VALUES}.
-     */
-    private static int countEnumConstants(ClassNode t) {
-        int count = 0
-        for (FieldNode f : t.fields) {
-            if ((f.modifiers & 0x4000) != 0) count++   // 0x4000 = ACC_ENUM
-        }
-        count
+        // The derivation lives in ContractNormalizer (it is also the values().length fold scope).
+        ContractNormalizer.enumDomainSizes(node.declaringClass)
     }
 
     /** True for non-Int scalar types we model under an uninterpreted Z3 sort: String, enums. */
@@ -1545,9 +1522,7 @@ class VerifyChecker extends TypeCheckingExtension {
 
     /** Strip the inner-class binary prefix from an enum's nameWithoutPackage (mirrors Encoder.enumSortName). */
     private static String simpleEnumName(ClassNode t) {
-        String n = t.nameWithoutPackage
-        int dollar = n.lastIndexOf('$')
-        dollar >= 0 ? n.substring(dollar + 1) : n
+        ContractNormalizer.simpleEnumName(t)
     }
 
     /** True if {@code t} appears to be an Enum subclass (mirrors Encoder.isEnumLikeType). */
@@ -8614,7 +8589,9 @@ class VerifyChecker extends TypeCheckingExtension {
             if (item instanceof ConstantExpression) {
                 Object v = ((ConstantExpression) item).value
                 if (v instanceof String && !((String) v).isEmpty()) {
-                    Expression parsed = parseContract((String) v)
+                    // Normalise against the DECLARING class of this invariant (the recursion's cn) —
+                    // class-scope rewrites only (e.g. the values().length enum-count fold).
+                    Expression parsed = ContractNormalizer.normalize(parseContract((String) v), cn)
                     if (parsed != null) out.add(parsed)
                 }
             }

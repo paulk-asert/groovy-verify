@@ -1411,11 +1411,14 @@ class Encoder {
     private Set<String> knownEnumNames = null
     /**
      * Phase 28 — if {@code e} is the shape {@code <EnumClass>.values()} (no arguments), return the
-     * enum's constant count; null otherwise. Two AST shapes accepted: ClassExpression receiver
-     * (post-resolution body) — count by walking the type's static-final fields; and
-     * VariableExpression receiver (re-parsed contract) — look up the name in
-     * {@link #enumDomainSizes} pre-populated by VerifyChecker. Lets a contract like
-     * {@code @Requires({ k < Color.values().length })} fold to {@code k < 3} at translate time.
+     * enum's constant count; null otherwise. Two receiver shapes, both for <b>body</b> expressions:
+     * {@code ClassExpression} (resolved body code) counted from the type directly, and
+     * {@code VariableExpression} looked up in {@link #enumDomainSizes} — needed because the
+     * clean-body <i>snapshot</i> is captured at CONVERSION, so its expressions can carry the
+     * unresolved receiver too (e.g. an {@code if} guard the postcondition path replays).
+     * <b>Contract</b> positions no longer reach here: {@code ContractNormalizer} pre-folds the
+     * re-parsed {@code values().length}/{@code .size()} to the literal count (Phase 183), so
+     * {@code @Requires({ k < Color.values().length })} arrives as {@code k < 3}.
      */
     private Integer enumValuesCountFor(Expression e) {
         if (!(e instanceof MethodCallExpression)) return null
@@ -1437,16 +1440,11 @@ class Encoder {
     }
 
     /**
-     * Count the actual enum constants of {@code t} — fields with the JVM {@code ACC_ENUM}
-     * modifier bit set. Filters out synthetic same-type fields Groovy adds (notably
-     * {@code MIN_VALUE} / {@code MAX_VALUE}) and the array-typed {@code $VALUES}.
+     * Count the actual enum constants of {@code t} — delegated to {@link ContractNormalizer}
+     * (which also uses it for the values().length fold scope).
      */
     private static int countEnumConstants(ClassNode t) {
-        int count = 0
-        for (FieldNode f : t.fields) {
-            if ((f.modifiers & 0x4000) != 0) count++   // 0x4000 = ACC_ENUM
-        }
-        count
+        return ContractNormalizer.countEnumConstants(t)
     }
 
     /**

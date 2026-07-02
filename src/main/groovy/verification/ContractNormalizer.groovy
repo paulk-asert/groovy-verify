@@ -21,9 +21,11 @@ import org.codehaus.groovy.ast.GenericsType
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -53,6 +55,12 @@ import org.codehaus.groovy.ast.stmt.Statement
  *   to {@code f.apply(x)}, the encoder's canonical higher-order shape — including inside closure bodies
  *   ({@code (n..<u).every { csF(i + 1) == csF(i) }}), which a plain {@link ExpressionTransformer} does not
  *   descend into.</li>
+ *   <li><b>{@code <EnumClass>.values().length} / {@code .size()} fold</b> (Phase 28/183): in a re-parsed
+ *   contract the receiver is an unresolved {@code VariableExpression("Color")}; when the name resolves to
+ *   an enum visible from the context class's module, the whole count expression folds to the literal
+ *   constant count. (<i>Body</i> expressions keep the encoder's translate-time fold — both receiver
+ *   shapes, since the clean-body snapshot is captured at CONVERSION and can carry the unresolved
+ *   spelling too; bodies are not contracts, so they are outside this pass's charter.)</li>
  * </ul>
  *
  * <p>Safe to rewrite in place / by copy: the input is a per-call fresh parse (never the shared clean-body
@@ -66,9 +74,54 @@ class ContractNormalizer {
      *  rebuilt). Null-safe on both arguments. */
     static Expression normalize(Expression e, MethodNode m) {
         if (e == null || m == null) return e
-        Set<String> fns = functionFormalNames(m)
-        if (fns.isEmpty()) return e
-        new SamRewriter(fns).transform(e)
+        normalize(e, functionFormalNames(m), enumDomainSizes(m.declaringClass))
+    }
+
+    /** Normalise a freshly re-parsed <b>class-level</b> contract (a class {@code @Invariant}) of
+     *  {@code context}: no method scope, so only the class-scope rewrites (the enum-count fold) apply. */
+    static Expression normalize(Expression e, ClassNode context) {
+        if (e == null || context == null) return e
+        normalize(e, Collections.<String> emptySet(), enumDomainSizes(context))
+    }
+
+    private static Expression normalize(Expression e, Set<String> fns, Map<String, Integer> enums) {
+        if (fns.isEmpty() && enums.isEmpty()) return e
+        new SamRewriter(fns, enums).transform(e)
+    }
+
+    /** Enum classes visible from {@code context}'s module, mapped from simple name (and
+     *  inner-class-stripped name) to constant count — the scope of the {@code values().length} fold.
+     *  Also feeds the checker's {@code enumDomainSizes} scope collection (domain-closure axioms). */
+    static Map<String, Integer> enumDomainSizes(ClassNode context) {
+        Map<String, Integer> out = new LinkedHashMap<String, Integer>()
+        if (context == null || context.module == null) return out
+        for (ClassNode cn : context.module.classes) {
+            if (!cn.isEnum()) continue
+            int count = countEnumConstants(cn)
+            if (count <= 0) continue
+            out.put(cn.nameWithoutPackage, count)
+            String simple = simpleEnumName(cn)   // strips C$ from C$Color → Color (nested-class case)
+            if (simple != cn.nameWithoutPackage) out.put(simple, count)
+        }
+        out
+    }
+
+    /** Count actual enum constants — fields with the JVM {@code ACC_ENUM} modifier bit — filtering the
+     *  synthetic same-type fields Groovy adds ({@code MIN_VALUE}/{@code MAX_VALUE}) and {@code $VALUES}. */
+    static int countEnumConstants(ClassNode t) {
+        int count = 0
+        for (org.codehaus.groovy.ast.FieldNode f : t.fields) {
+            if ((f.modifiers & 0x4000) != 0) count++   // 0x4000 = ACC_ENUM
+        }
+        count
+    }
+
+    /** The user-facing simple name of an enum type: the last {@code $}-segment of a nested name
+     *  ({@code C$Color} → {@code Color}), else the plain name without package. */
+    static String simpleEnumName(ClassNode t) {
+        String n = t.nameWithoutPackage
+        int dollar = n.lastIndexOf('$')
+        dollar >= 0 ? n.substring(dollar + 1) : n
     }
 
     /** Names of {@code java.util.function.Function}-typed formals (raw or generic) — the rewrite scope.
@@ -107,18 +160,35 @@ class ContractNormalizer {
      *  their statements' expressions in place — sound because the whole tree is a fresh, unshared parse. */
     private static class SamRewriter implements ExpressionTransformer {
         private final Set<String> fnNames
-        SamRewriter(Set<String> fnNames) { this.fnNames = fnNames }
+        private final Map<String, Integer> enumSizes
+        SamRewriter(Set<String> fnNames, Map<String, Integer> enumSizes) {
+            this.fnNames = fnNames
+            this.enumSizes = enumSizes
+        }
 
         @Override
         Expression transform(Expression expr) {
             if (expr == null) return null
+            // <EnumClass>.values().length — the property form of the enum-count fold
+            if (expr instanceof PropertyExpression) {
+                PropertyExpression pe = (PropertyExpression) expr
+                if (pe.propertyAsString == 'length') {
+                    Integer cnt = enumValuesCount(pe.objectExpression)
+                    if (cnt != null) return constant(cnt, expr)
+                }
+            }
             if (expr instanceof MethodCallExpression) {
                 MethodCallExpression mce = (MethodCallExpression) expr
                 Expression recv = mce.objectExpression
-                boolean implicitThis = mce.isImplicitThis() ||
-                    (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')
                 List<Expression> args = (mce.arguments instanceof TupleExpression)
                     ? ((TupleExpression) mce.arguments).expressions : null
+                // <EnumClass>.values().size() — the method form of the enum-count fold
+                if (mce.methodAsString == 'size' && args != null && args.isEmpty()) {
+                    Integer cnt = enumValuesCount(recv)
+                    if (cnt != null) return constant(cnt, expr)
+                }
+                boolean implicitThis = mce.isImplicitThis() ||
+                    (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')
                 String name = mce.methodAsString
                 if (implicitThis && name != null && fnNames.contains(name) && args != null && args.size() == 1) {
                     MethodCallExpression apply = new MethodCallExpression(
@@ -133,6 +203,24 @@ class ContractNormalizer {
                 return expr
             }
             return expr.transformExpression(this)
+        }
+
+        /** {@code <name>.values()} (argless, unresolved VariableExpression receiver) for a known enum
+         *  {@code name} → its constant count; null otherwise. */
+        private Integer enumValuesCount(Expression e) {
+            if (!(e instanceof MethodCallExpression)) return null
+            MethodCallExpression mce = (MethodCallExpression) e
+            if (mce.methodAsString != 'values') return null
+            if (!(mce.arguments instanceof TupleExpression) ||
+                !((TupleExpression) mce.arguments).expressions.isEmpty()) return null
+            if (!(mce.objectExpression instanceof VariableExpression)) return null
+            enumSizes.get(((VariableExpression) mce.objectExpression).name)
+        }
+
+        private static Expression constant(Integer cnt, Expression original) {
+            ConstantExpression c = new ConstantExpression(cnt)
+            c.setSourcePosition(original)
+            c
         }
 
         /** Descend into a closure body's statements (a plain ExpressionTransformer stops at the closure).
