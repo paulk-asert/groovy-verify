@@ -325,14 +325,17 @@ be a *downstream symptom* of apply-terms not composing, gone once they do. That 
 loop: not by proving the closed form (the direct telescoping `serving(k) == serving(0) + k` still won't close), but
 by a recursion the solver checks one step at a time. With it, Leino's `GetNextStep` frame argument is expressible —
 a trace value frozen step-by-step across a window is unchanged end-to-end, by recursion over the window — and the
-**base case of `Liveness` verifies with progress derived from fairness, not assumed**: a `Hungry` process holding
-the served ticket, given a fairness witness `u` (a later time it is scheduled), stays ready across `[n, u)` (the
-frame lemma for its state, a stability lemma for `serving`), so its `Enter` fires at `u` and it is `Eating` at
-`u + 1`. What is left for the *complete* two-process theorem is the **measure-1 reduction** — a waiter that does not
-yet hold the served ticket first follows the served process out of the kitchen (a nested fairness round), dropping
-its measure to zero and reducing to this base case. That is Leino's loop body: more of the same machinery, not a new
-capability, but not yet built. The general any-N case additionally wants an unbounded `∀i:nat` `IsTrace` hypothesis
-(a bounded `Forall.range` over a symbolic window has sufficed so far).
+**`Liveness` verifies with progress derived from fairness, not assumed.** The base case is the waiter already
+holding the served ticket: given a fairness witness `u` (a later time it is scheduled), it stays ready across
+`[n, u)` (the frame lemma for its state, a stability lemma for `serving`), so its `Enter` fires at `u` and it is
+`Eating` at `u + 1`. The other case — the **overtaken** waiter (measure 1) — is Leino's loop body: it first follows
+the served process out of the kitchen, whose `Leave` advances `serving` by one; composing the frame and stability
+lemmas with that step drops the waiter's measure to zero (`reduceMeasure1`), reducing to the base case
+(`overtakenEats`). Bounded bypass caps the measure at ≤ 1, so those two cases are **exhaustive** and the two-process
+`eventually-eats` is **complete** — mirroring Leino's loop (base case = exit, reduction = one body iteration, ≤ 1
+bound = at most one iteration), so no unbounded trace loop is needed. The general any-N case would want the trace
+loop itself (recursion over a symbolic number of reductions — now expressible) plus an unbounded `∀i:nat` `IsTrace`
+hypothesis; that generalisation is the remaining frontier, and the two-process theorem is closed.
 
 What *does* ship is the finiteness that underwrites liveness, as a **state invariant** — no trace needed. Add the
 **counting invariant** `ticket - serving == (#non-thinking processes)` (each dispensed-but-unserved ticket is one
@@ -341,8 +344,8 @@ for the two-process lock: **a waiting process is overtaken at most once before i
 liveness property stronger than mere eventual entry, since it bounds the wait. Composed with the ranking function
 above (each `Leave` decreases the measure), from any `Hungry` state at most one competitor `Leave` stands between
 the waiter and eating. Drop the counting invariant and the bound refutes — the dispenser could run arbitrarily far
-ahead of the display. Safety, the ranking function, bounded bypass, a bounded trace-level eventually-eats, and the
-**fair-schedule eventually-eats (base case)** all verify structure-for-structure with the paper; only the measure-1
-reduction (the nested fairness round that reduces an overtaken waiter to the base case) remains to complete the
-two-process liveness.
+ahead of the display. Safety, the ranking function, bounded bypass, and the **full two-process fair-schedule
+eventually-eats** — base case *and* the measure-1 reduction — all verify structure-for-structure with the paper.
+Leino's KRML260 development is reproduced end to end for the two-process lock; only the general any-N generalisation
+(an unbounded trace loop) remains beyond it.
 

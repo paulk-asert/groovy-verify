@@ -8267,6 +8267,50 @@ Root suite **1444/0** (+3), full `check` green.
 
 ---
 
+## Phase 175 — the measure-1 reduction closes the full two-process liveness  *(shipped — the capstone)*
+
+The last piece. Phase 174 proved the base case (a waiter already holding the served ticket eats); this proves the
+other case — the **overtaken** waiter (measure 1) — which is Leino's loop body, and composes the two into the
+**complete two-process fair-schedule `eventually-eats`**.
+
+- **The reduction** (`reduceMeasure1`). An overtaken waiter `A` holds `serving + 1`; the served process (`B`) holds
+  `serving`. `B` completing its critical section **advances `serving` by one** — its `Leave`. Across the window up
+  to that `Leave`, `A` is framed (its state unchanged) and `serving` is stable (only the holder `B` could advance
+  it, and it hasn't yet); at the `Leave`, `serving` becomes `serving + 1 == t[A]`. So `A`'s measure drops to **0**
+  — derived by composing the Phase-174 `frame` and `stableServing` recursive lemmas with the one `Leave` step.
+- **The composition** (`overtakenEats`). `reduceMeasure1` lands `A` at measure 0, then the Phase-174 base case
+  (`baseEats`) fires: `A` eats. Progress derived end to end from fairness + framing, nothing assumed.
+
+**Why this completes it.** Bounded bypass (Phase 172) caps a waiter's measure at **≤ 1**, so a `Hungry` process is
+in exactly one of two cases — measure 0 (Phase 174) or measure 1 (this) — and **both are proved**. The cases are
+*exhaustive*, so the two-process fair-schedule eventually-eats is complete. This mirrors Leino's `Liveness` loop
+exactly: the base case is the loop exit (measure 0), the reduction is one loop-body iteration (measure decreases),
+and the ≤ 1 bound means at most one iteration — which is why no unbounded loop/recursion over the trace is needed
+here, and the whole thing stays in the recursion-with-`@Decreases` fragment.
+
+**Teeth.** If the served process's `Leave` does *not* advance `serving`, the waiter's measure never reaches zero and
+the reduction's postcondition refutes — the `serving`-advance is exactly what discharges the descent.
+
+- 2 `P175 liveness-complete` cases (the full `overtakenEats` composition; the reduction's refutation when `Leave`
+  doesn't advance `serving`). No new engine code.
+
+**Authoring note.** The frame/stability lemma parameters are named to match their callers' (`csAF`/`tAF`/`servingF`):
+a `Forall.range(...)` precondition at a call site is discharged by *syntactic* match against a `Forall.range(...)`
+the caller holds, so aligned closure text (hence aligned parameter names) is what makes the call typecheck. A latent
+sharpening — matching quantified preconditions up to α-renaming / argument substitution — would remove that footgun.
+
+**KRML260, done.** The ticket lock now carries Leino's entire development: **safety / mutual exclusion** (170),
+**invariant strengthening + the ranking function** (171), **bounded bypass** (172), **trace-level composition via
+the apply-term engine fix** (173), and the **fair-schedule `eventually-eats`** in full — base case (174) and the
+measure-1 reduction (175). What is *specific to two processes* is the ≤ 1 measure bound that makes the liveness a
+two-case split rather than a genuine loop; the general any-N case would need the trace loop itself (recursion over a
+symbolic number of reductions — now expressible, since recursion over trace functions works) plus an unbounded
+`∀i:nat` `IsTrace` hypothesis. That generalisation is the remaining frontier; the two-process theorem is closed.
+
+Root suite **1446/0** (+2), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
