@@ -8311,6 +8311,43 @@ Root suite **1446/0** (+2), full `check` green.
 
 ---
 
+## Phase 176 — the rung-2 companion: Leino's ticket lock in TLA⁺ / TLC  *(shipped)*
+
+A pen-and-SMT proof is *one rung*; `CONCURRENCY.md` climbs two more. This adds the natural rung-2 companion to
+the ticket-lock proof — a **TLA⁺ model** an exhaustive model checker (**TLC**) explores across every
+interleaving. Unlike the execution rungs (Lincheck / Fray / jcstress), which need real threaded bytecode, the
+ticket lock is an *abstract state machine* (Leino's Model 2), so its twin is a model checker, not a stress test;
+and the runtime differential oracle stays inapplicable (nothing executable — the rung held at 552/570 throughout
+170–175).
+
+- **`src/tlc/Ticket.tla`** — Leino's Model 2 (§7.2) transcribed: `(ticket, serving, cs, t)` with
+  `Request`/`Enter`/`Leave` as two-state actions, `Fairness == ∀p: WF(Enter(p)) ∧ WF(Leave(p))`, a `TicketBound`
+  state constraint (tickets are otherwise unbounded), and the properties — `MutualExclusion`, the strengthened
+  `Valid` invariant, and `Liveness == ∀p: (cs[p]=Hungry) ⤳ (cs[p]=Eating)`.
+- **`Ticket.cfg`** (N = 3): `./gradlew tlcTicket` explores **179 distinct states** and passes all three —
+  mutual exclusion, `Valid` on every reachable state, and the fair-schedule eventually-eats.
+- **`TicketBad.cfg`**: a broken dispenser (`RequestBad` doesn't advance `ticket`) — TLC prints a **five-state
+  trace ending with two processes Eating at `serving = 0`**, the step-by-step twin of the Phase-170 mutual-
+  exclusion refutation.
+
+**Why this rung, and what it adds.** Unlike the §VII buffer — where rung 1 proves the *local* half and rung 2/3
+the disclaimed *structural* half — the ticket lock's rung 1 already *owns* both safety and liveness. So TLC's
+role is different but real: (a) it **validates the proof's assumptions** — the liveness proof (174–175) *assumes*
+the frame / serving-stability / fairness facts as `@Requires`; TLC builds the transition system and confirms they
+are actual consequences, not vacuous; (b) it **reaches N > 2** — rung 1's fair liveness is two-process-bounded,
+TLC checks safety *and* fair liveness at N = 3, the open general-N frontier; (c) it confirms the exact `Valid`
+invariant the proof uses, exhaustively and independently. Same rung-2 limits as the buffer: action-grained,
+sequentially consistent, finite N, bounded dispenser. Documented in `CONCURRENCY.md` (rung 2) and `examples/dafny.md`.
+
+This closes the ticket-lock arc: rung 1 (SMT) proves safety + liveness symbolically (N = 2), rung 2 (TLC)
+corroborates and generalizes to N = 3 — the "two independent methods agree on one artifact" story the repo tells
+for the seqlock and the §VII buffer, now for Leino's KRML260.
+
+Root suite unchanged **1446/0** (TLC is a separate `tlcTicket` task, not a harness case); `tlcTicket` green,
+full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -41,6 +41,9 @@ information-flow buffer — the [§VII capstone](examples/smith.md) the checker 
 TLA+ at rung 2, and Lincheck-tested at rung 3. Rung 3 also explores a few more
 concurrency examples with different shapes to the buffer:
 lock-based bank accounts, Groovy 6 async/await, and a deadlocking transfer (the Fray case).
+Rung 2 additionally carries a **second** TLA+ model — Leino's [ticket lock](examples/dafny.md) — a different
+kind of pairing, where rung 1 already proves *both* safety and liveness and TLC corroborates them and pushes
+past the proof's two-process bound (see [the ticket-lock subsection](#a-second-rung-2-artifact--leinos-ticket-lock-where-rung-1-already-owns-both-halves)).
 
 ## Rung 1 — Proof
 
@@ -117,6 +120,40 @@ but:
 - **Weak memory (the JMM):** out of scope — TLA+ is sequentially consistent. Justifying the
   "statement-atomic, SC" abstraction against real hardware needs a weak-memory tool (GenMC, herd7) or
   actual synchronization proven sufficient (VerCors / Viper).
+
+### A second rung-2 artifact — Leino's ticket lock, where rung 1 already owns *both* halves
+
+The §VII buffer splits cleanly: rung 1 proves the local half, rungs 2–3 the structural half it disclaims. The
+**ticket lock** ([`examples/dafny.md`](examples/dafny.md), the KRML260 port, Phases 170–175) is different —
+here rung 1 SMT-*proves* the structural properties themselves: **mutual exclusion** (safety) and, for two
+processes, the **fair-schedule eventually-eats** (liveness). So its rung-2 companion plays a different but
+still-substantive role — **corroboration, assumption-validation, and reach beyond the fragment** — rather than
+covering a disclaimed half.
+
+| File | What it is |
+|------|------------|
+| [`Ticket.tla`](src/tlc/Ticket.tla) | Leino's ticket system as a state machine (his Model 2, §7.2): `(ticket, serving, cs, t)` with `Request`/`Enter`/`Leave` as two-state actions. Maps directly to the groovy-verify events. |
+| [`Ticket.cfg`](src/tlc/Ticket.cfg) | The **correct** system at N = 3: `MutualExclusion` + the strengthened `Valid` invariant hold on every reachable state, and `Liveness` (`Hungry ~> Eating`, weak-fair) holds. |
+| [`TicketBad.cfg`](src/tlc/TicketBad.cfg) | The **broken-dispenser** variant: `RequestBad` fails to advance `ticket`, so two processes draw the same one. TLC reports `MutualExclusion` violated and prints the trace. |
+
+`./gradlew tlcTicket` model-checks the correct system at N = 3 (**179 distinct states**): all three properties
+pass. The broken variant (a manual run — `java -cp tla2tools.jar tlc2.TLC -config TicketBad.cfg Ticket.tla`)
+prints a **five-state trace ending with two processes Eating at `serving = 0`** — both handed ticket 0 by the
+stuck dispenser, the step-by-step twin of groovy-verify's mutual-exclusion refutation (Phase 170).
+
+**What this does that rung 1 does not:**
+
+- **Validates the proof's assumptions.** The liveness proof (Phases 174–175) *assumes* the frame / serving-
+  stability / fairness facts as `@Requires` hypotheses. TLC builds the transition system and checks them by
+  exhaustive enumeration — confirming those assumptions really are consequences of the state machine, not
+  vacuous or over-strong. That is a soundness check the proof cannot self-provide.
+- **Reaches N > 2.** Rung 1's fair-schedule liveness is bounded to two processes (the ≤ 1 measure bound is what
+  lets it avoid an unbounded trace loop). TLC checks safety *and* fair liveness at **N = 3** — the general-N
+  frontier the proof can't yet make.
+- **The same invariant, exhaustively.** `Valid` — the strengthened invariant rung 1 shows *inductive* — is
+  confirmed true on all 179 reachable states, by a wholly independent method.
+
+Same rung-2 limits as the buffer: action-grained, sequentially consistent, finite N and a bounded dispenser.
 
 ## Rung 3 — Tested real bytecode
 

@@ -349,3 +349,13 @@ eventually-eats** — base case *and* the measure-1 reduction — all verify str
 Leino's KRML260 development is reproduced end to end for the two-process lock; only the general any-N generalisation
 (an unbounded trace loop) remains beyond it.
 
+**The rung-2 companion.** Because this is an abstract *model* (Leino's Model 2), not runnable bytecode, its
+natural second rung is a **model checker**, not a stress test. [`src/tlc/Ticket.tla`](../src/tlc/Ticket.tla)
+transcribes the same state machine into **TLA⁺**, and `./gradlew tlcTicket` has **TLC** enumerate every
+interleaving at N = 3 (179 states): mutual exclusion, the same strengthened `valid` invariant, and the
+fair-schedule `Hungry ~> Eating` all hold; a broken-dispenser variant prints the two-processes-Eating trace.
+That does three things the proof can't: it **validates the frame/fairness facts the liveness proof assumes**
+(TLC derives them from the transition system rather than taking them as `@Requires`), it **reaches N = 3** where
+the symbolic proof is two-process-bounded, and it confirms the invariant exhaustively — the "two independent
+methods, one artifact" pairing (see [`CONCURRENCY.md`](../CONCURRENCY.md) rung 2).
+

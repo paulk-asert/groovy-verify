@@ -489,6 +489,21 @@ tasks.register('tlcCheck', JavaExec) {
     jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
 }
 
+// TLC on src/tlc/Ticket.tla — Leino's ticket lock (KRML260), the rung-2 companion to the groovy-verify
+// safety+liveness proof (Phases 170-175). Secure spec at N=3: mutual exclusion + the `valid` invariant on
+// every reachable state, plus fair-schedule eventually-eats — the general-N reach the N=2 proof can't make.
+// The broken-dispenser variant is a manual run: java -cp <jar> tlc2.TLC -config TicketBad.cfg Ticket.tla
+tasks.register('tlcTicket', JavaExec) {
+    group = 'verification'
+    description = 'Model-check src/tlc/Ticket.tla (Leino ticket lock, N=3) with TLA+ TLC — rung 2 of CONCURRENCY.md'
+    dependsOn tlcPrepare
+    classpath = configurations.tlc
+    mainClass = 'tlc2.TLC'
+    workingDir = tlcWorkDir
+    args = ['-nowarning', 'Ticket.tla']         // Ticket.cfg is picked up by name; MutualExclusion + Valid + Liveness
+    jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
+}
+
 // ---- Fray: controlled-schedule deadlock detection (rung 3 for the lock-ordering half) ----------
 // Complements the Lincheck spike: Lincheck checks linearizability (the race/atomicity half of the locks
 // example); Fray drives the real JVM scheduler over a *hand-threaded* bank-transfer to check the OTHER
