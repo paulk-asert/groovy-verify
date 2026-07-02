@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G241_pl0_lattice {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A user-defined security lattice proven well-formed: leq a partial order, join/meet the lub/glb; a non-transitive order refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase L0 — security lattice + well-formedness laws (Smith, "A Dafny-based approach to

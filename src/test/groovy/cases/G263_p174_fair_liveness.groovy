@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G263_p174_fair_liveness {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Leino\'s ticket lock — FAIR-SCHEDULE eventually-eats (base case), with progress DERIVED from fairness, not assumed. The Phase-173 apply-term fix incidentally unblocked recursive-lemma induction over trace functions (a recursive call\'s @Ensures serves as the induction hypothesis) — what Phase 172/173 called Wall 2; the earlier \'no usable @Ensures\' was a downstream symptom of apply-terms not composing. With it, Leino\'s GetNextStep frame argument is expressible: a recursive frame lemma proves a trace value frozen step-by-step across a window is unchanged end-to-end (the direct closed form still does NOT close — the recursion carries it). The base-case Liveness then composes: a Hungry process holding the served ticket (measure 0) with fairness giving a future scheduled time u stays ready across [n,u) (frameA + stableServing), so its Enter fires at u -> Eating at u+1. Dropping the Enter step refutes. What remains for FULL two-process liveness is the measure-1 reduction (follow the served process out of the critical section, advancing serving so the waiter\'s measure drops to 0, then the base case) — a nested fairness round not yet built.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 174: Leino's ticket lock — FAIR-SCHEDULE eventually-eats (base case), progress DERIVED ----------

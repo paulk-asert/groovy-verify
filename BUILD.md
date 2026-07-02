@@ -39,8 +39,9 @@ VERIFY_DUMP_SMT=1 ./gradlew verify        # print every solver query as a self-c
 ```
 
 The cases themselves live in **per-group files** under `src/test/groovy/cases/` (`G###_<group>.groovy`, one
-`CASES` list per group, with the shared header/wrappers in `cases/CaseDsl.groovy`); `VerifyHarness` is the runner
-that concatenates and judges them. CI (`.github/workflows/ci.yml`) runs `check` — the suite, the runtime rung
+`CASES` list per group plus the group's one-line `DESCRIPTION` — the text `catalog.json` carries — with the
+shared header/wrappers in `cases/CaseDsl.groovy`); `VerifyHarness` is the runner that concatenates and judges
+them. CI (`.github/workflows/ci.yml`) runs `check` — the suite, the runtime rung
 (with its coverage canary), and the doc-drift asserts — plus the two TLC models, on every push/PR; the rung-3
 bytecode tools (Lincheck / Fray / jcstress) stay local, per `CONCURRENCY.md`.
 

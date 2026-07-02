@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G245_pl_selfensures {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = '@SelfEnsures derives result == <body> from an expression body, so a self-specifying method is written once (and reads as a @Reducer/combiner equation).'
+
     static final List<Map> CASES = [
 
         // ----- @SelfEnsures — the (single-expression) body IS the postcondition (prototype) -----

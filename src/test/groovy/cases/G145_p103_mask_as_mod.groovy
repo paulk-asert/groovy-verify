@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G145_p103_mask_as_mod {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Bit-masking modelled as modular arithmetic (round-up-to-16 via &; parity x & 1 in {0,1}); a soundness boundary at INT_MIN refutes.'
+
     static final List<Map> CASES = [
         // Phase 103 — a low-bit mask `x & (2^k - 1)` is modelled as the Euclidean mod `x mod 2^k` (its low k
         // bits, exact for all x), keeping it in LIA so it bridges to %/+/divisibility. Lands the OpenJML

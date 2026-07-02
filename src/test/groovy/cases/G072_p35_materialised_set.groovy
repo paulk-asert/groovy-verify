@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G072_p35_materialised_set {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A materialised set Set u = a op b mints u as a first-class set whose membership follows the iff axiom.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 35: materialised set ops (Set u = a + b as first-class set) ----------

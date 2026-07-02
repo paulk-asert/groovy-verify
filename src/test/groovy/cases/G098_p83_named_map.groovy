@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G098_p83_named_map {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Groovy\'s map-as-named-tuple return (return [sum: s]; result.sum); a wrong value refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 83: maps as named tuples (m.key / m['key'] on a returned map literal) ----------

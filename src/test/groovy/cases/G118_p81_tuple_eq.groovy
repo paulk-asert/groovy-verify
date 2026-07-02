@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G118_p81_tuple_eq {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Component-wise tuple equality: equal constructed tuples prove equal, unequal refute.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 81: component-wise tuple / list == ----------

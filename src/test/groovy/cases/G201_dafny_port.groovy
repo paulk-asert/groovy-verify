@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G201_dafny_port {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Ported Dafny benchmark proofs (VSComp10 SumMax, linear search): sum <= n*max, find returns the matching index or none.'
+
     static final List<Map> CASES = [
 
         // ---------- Dafny ports — canonical tutorial / VSComp examples (external corpus) ----------

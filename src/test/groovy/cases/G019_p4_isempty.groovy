@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G019_p4_isempty {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'isEmpty() is equated with size()==0.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 4: isEmpty() ----------

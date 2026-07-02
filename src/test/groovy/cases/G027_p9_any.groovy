@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G027_p9_any {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A bounded existential (range.any / xs.any) proves membership at a valid index.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 9: existential quantifier (`any`) + precise membership ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G050_p7_inter_proc {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A callee\'s @Ensures is assumed and @Requires discharged at the call site (contract, not body).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 7 (slice 1): inter-procedural @Ensures (result-binding) ----------

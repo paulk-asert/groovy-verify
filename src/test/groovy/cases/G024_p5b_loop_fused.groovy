@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G024_p5b_loop_fused {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An in-loop array index is verified from the invariant (and refuted when unbounded); the post-loop index too.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 5b: loop-fused bounds (obligation under the invariant) ----------

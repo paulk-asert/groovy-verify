@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G046_p9_repro {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A refuted obligation reconstructs a concrete failing call (bounds / division / null argument).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 9: counterexample reconstructed as a runnable failing call ----------

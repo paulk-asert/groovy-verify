@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G074_p37_element_null {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'List element nullability: an unguarded xs[i].method() refutes; a @Requires xs[i]!=null or an if-guard verifies.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 37: element nullability ----------

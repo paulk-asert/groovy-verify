@@ -8430,6 +8430,29 @@ Root suite **1448/0** (unchanged, corpus byte-identical), rung **552/570** + can
 
 ---
 
+## Phase 179 — GROUP_DESC co-location: each case file is fully self-describing  *(shipped — no engine change)*
+
+The first deferred item from Phase 178, completing the discoverability story. The 265 one-line capability
+descriptions lived in a single `Harvester.GROUP_DESC` map literal — a different file from the cases they
+describe, and the one remaining central table after the corpus split. Now each `cases/G###_<group>.groovy`
+carries its own `static final String DESCRIPTION` beside its `CASES`, and `Harvester.GROUP_DESC` is a **pure
+projection** — aggregated from the case classes via `VerifyHarness.caseClasses()` (the corpus scan, now shared
+by both loaders). One file per capability group = the cases, their teaching comments, and the catalog
+description, in one place; a new phase authors all of it in a single new file.
+
+Verification was byte-level: the migration script evaluated the old map literal from source, injected each
+description into its file (asserting a **bijection** — every file matched exactly one entry and vice versa),
+and a fresh `./gradlew harvest` produced a `catalog.json` **byte-identical** to the pre-migration snapshot —
+escaping round-trip included. The lint keeps its graceful failure mode: a file without a `DESCRIPTION` simply
+contributes no key (the projection skips it rather than crashing on the property read), so DocLint names the
+missing group — negative-tested by stripping one file's constant (`MISSING (1): P1 bounds`) and restoring.
+Guidance strings (DocLint header, `DocLintTest` assert message) now point authors at the co-located constant,
+and the stale "convert to asserts to enforce in CI" note is gone (DocLintTest has been that assert all along).
+
+Root suite **1448/0**, docLint **0 drift** (265/265 via the derived map), `catalog.json` byte-identical.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

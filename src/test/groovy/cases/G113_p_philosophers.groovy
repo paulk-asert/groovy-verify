@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G113_p_philosophers {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Dining philosophers, the thread-local half of the deadlock-freedom story (the structural half is the Fray rung). Deadlock-free by *resource hierarchy*: if every philosopher acquires its two forks in increasing global index order, the wait-for graph is acyclic so no deadlock. groovy-verify proves that LOCAL ordering discipline as pure int arithmetic (min-first over the circle verifies for every philosopher; the discipline holds for any two distinct forks) and REFUTES the naive left-then-right scheme — the counterexample i=n-1 pinpointing the wrap-around philosopher whose acquisition closes the cycle.'
+
     static final List<Map> CASES = [
         [group: 'P-philosophers', name: 'naive left-then-right deadlocks: order violated at the wrap-around philosopher', expect: 'postcondition',
          src: tc("class C { @Requires({ n >= 2 && i >= 0 && i < n }) @Ensures({ result }) static boolean naive(int i, int n) { i < (i + 1) % n } }")],

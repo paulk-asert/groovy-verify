@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G235_p108_content_index {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A content-dependent index a[b[k]] (gather / histogram) bounds against a value-range invariant inside the loop; a missing range refutes.'
+
     static final List<Map> CASES = [
         // ---------- P108 content-dependent array index bounds inside loops ----------
         // A data-dependent index `b[a[k]]` (the index is itself an array read) is bounded by the value-range

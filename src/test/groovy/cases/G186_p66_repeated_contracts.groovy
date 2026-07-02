@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G186_p66_repeated_contracts {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Multiple @Requires (all assumed) and multiple @Ensures (all proven) on one method.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 66: repeated @Requires / @Ensures are conjoined ----------

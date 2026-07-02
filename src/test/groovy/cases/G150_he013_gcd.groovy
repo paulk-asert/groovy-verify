@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G150_he013_gcd {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 013 — Euclid\'s gcd via the Gcd.of(a,b) recurrence helper; the iterative loop proves equal to the spec.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 013 (greatest_common_divisor): Euclid via the Gcd.of(a, b) helper ----------

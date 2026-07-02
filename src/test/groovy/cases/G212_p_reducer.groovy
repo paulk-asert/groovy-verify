@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G212_p_reducer {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = '@Reducer / @Associative auto-prove a combiner\'s monoid laws (associativity + identity); @Associative on subtraction refutes.'
+
     static final List<Map> CASES = [
 
         // Phase 130 — a @Reducer/@Associative combiner *asserts* a monoid/semigroup; groovy-verify now derives and

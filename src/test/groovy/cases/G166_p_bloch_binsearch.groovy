@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G166_p_bloch_binsearch {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Joshua Bloch\'s famous binary-search/mergesort midpoint overflow (a JDK bug hidden ~9 years): under @CheckOverflow the bug `(low + high).intdiv(2)` refutes with the counterexample mid(1, 2147483647), and his fix `low + (high - low).intdiv(2)` verifies.'
+
     static final List<Map> CASES = [
         // ---------- Joshua Bloch's binary-search / mergesort midpoint overflow (a JDK bug ~9 years hidden) ----------
         // "Nearly All Binary Searches and Mergesorts are Broken" (2006): `int mid = (low + high) / 2` overflows

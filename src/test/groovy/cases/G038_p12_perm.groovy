@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G038_p12_perm {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Permutation reasoning via element multiplicity: a swap preserves the multiset, a copy is not a permutation, insertion sort permutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 12: permutation — multiset preserved via per-store count law ----------

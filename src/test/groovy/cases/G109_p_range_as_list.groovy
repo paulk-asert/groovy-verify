@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G109_p_range_as_list {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A Groovy Range lo..hi is modelled as an immutable list of its elements (r[k] reads lo+k, size pinned): bare-range reads verify, a bare-range element write is refused (immutable, throws at runtime), the mutable copies [*lo..hi] / (lo..hi).toList() thread writes, and a whole-list result == [literal] folds to size + element-wise equality (a wrong element refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Range as a list: contents modelled, immutability enforced (Groovy `[].sum()`-style honesty) ----------

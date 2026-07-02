@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G068_p30_subset {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'containsAll as subset: subset entails membership transfer (and reflexivity); membership without subset refutes — for enum-element sets.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 30: s.containsAll(t) — subset reasoning over enum-element sets ----------

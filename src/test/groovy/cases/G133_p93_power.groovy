@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G133_p93_power {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The ** operator via an axiomatised pow primitive: a literal exponent folds and the doubling recurrence proves for symbolic n (a false value soft-fails).'
+
     static final List<Map> CASES = [
         [group: 'P93 power', name: 'result == (2**n).intValue() proves by congruence', ok: true,
          src: tc(''' class C {

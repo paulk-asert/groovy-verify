@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G041_p166_in_loop_call {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A contracted method called inside an annotated loop body has its precondition discharged under the loop invariant + guard (the loop variables symbolic, the in-loop preceding statements replayed from the clean body), not the loop-entry / havoc\'d state — so a swap-helper-based Dutch National Flag verifies, and an in-loop call whose precondition the invariant doesn\'t establish refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 166: a contracted call inside a loop body, precondition under the loop invariant ----------

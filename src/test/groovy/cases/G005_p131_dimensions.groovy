@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G005_p131_dimensions {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'JSR 385 dimensional analysis: a Quantity\'s kind (its [Length,Mass,Time] exponent vector) is propagated through multiply/divide and checked against the cast/return kind — the result-kind the generic type can\'t infer.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 131: JSR 385 dimensional analysis (C₀ — dimension-only) ----------

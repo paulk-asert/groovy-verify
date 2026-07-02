@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G167_p_abs_minvalue {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The Math.abs(Integer.MIN_VALUE) gotcha: abs\'s body `n < 0 ? -n : n` has `-n` overflow at MIN_VALUE under @CheckOverflow, so the `result >= 0` claim refutes (counterexample n = Integer.MIN_VALUE); excluding MIN_VALUE verifies.'
+
     static final List<Map> CASES = [
 
         // ---------- The Math.abs(Integer.MIN_VALUE) gotcha — "absolute value is non-negative" is false ----------

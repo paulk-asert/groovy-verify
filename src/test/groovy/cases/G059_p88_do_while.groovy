@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G059_p88_do_while {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A do-while is B; while(G) B — the invariant is established AFTER the mandatory first iteration (modelling it as a plain while was unsound).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 88: do..while (body runs once before the first guard/invariant check) ----------

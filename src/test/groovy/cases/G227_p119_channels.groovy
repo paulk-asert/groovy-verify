@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G227_p119_channels {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A channel pipeline collapses to function composition (FIFO assumed) and proves the per-element transform; a wrong transform refutes.'
+
     static final List<Map> CASES = [
         // ---------- P119 channels: the per-element transform via FIFO ----------
         // A channel's structural guarantee is FIFO delivery: the i-th value received is the i-th value sent,

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G044_p13_frame {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A @Modifies frame is checked: an honest frame verifies, an undeclared write refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 13 (frame-check): a method writes only what its @Modifies declares ----------

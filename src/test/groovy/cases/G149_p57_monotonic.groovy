@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G149_p57_monotonic {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 057 monotonic — a list is all-non-decreasing OR all-non-increasing (a disjunctive ∀∀ spec via dual existential flags).'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 057 (monotonic): list is all-non-decreasing OR all-non-increasing ----------

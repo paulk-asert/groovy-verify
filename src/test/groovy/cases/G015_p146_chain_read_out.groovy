@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G015_p146_chain_read_out {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A component read on a chain result — Quantity.km(1).plus(Quantity.mile(1)).value — reads the SI magnitude straight off the chain (the terminal step of the JSR-385 shape), proving 2609.344 as a BigDecimal with no intermediate locals. Each maximal carrier call is hoisted to a temp local so the .value read resolves; it composes with decimal arithmetic and works as a local RHS, and a wrong magnitude refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 146: read-out in the same expression (a component read on a chain result) ----------

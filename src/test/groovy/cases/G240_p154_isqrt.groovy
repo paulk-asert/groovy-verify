@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G240_p154_isqrt {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Toccata/Why3\'s integer floor square root by the sum-of-odd-numbers trick — a multiply-free loop whose quadratic equality invariant (sum == (count+1)^2) closes through NIA to prove result^2 <= x < (result+1)^2; dropping that invariant refutes at preservation. The exact-Int counterpart to FP Math.sqrt.'
+
     static final List<Map> CASES = [
 
         // ---------- P154 isqrt — integer square root by the sum-of-odd-numbers trick (Toccata/Why3) ----------

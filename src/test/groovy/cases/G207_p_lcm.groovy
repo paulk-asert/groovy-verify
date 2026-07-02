@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G207_p_lcm {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Least common multiple via Lcm.of(a,b): the identity lcm*gcd == a*b proves symbolically and literals unfold via Euclid.'
+
     static final List<Map> CASES = [
 
         // ---------- Lcm.of(a, b) — least common multiple (sibling of Gcd.of) ----------

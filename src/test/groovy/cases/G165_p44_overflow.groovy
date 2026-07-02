@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G165_p44_overflow {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Opt-in @CheckOverflow: arithmetic must stay in 32-bit range — bounded inputs verify, an unguarded increment refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 44: opt-in 32-bit integer overflow checks (@CheckOverflow) ----------

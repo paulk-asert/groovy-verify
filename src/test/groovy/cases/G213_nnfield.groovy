@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G213_nnfield {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A class @Invariant that a field is non-null: established by the constructor, broken by an unguarded ctor or a nulling method (refutes).'
+
     static final List<Map> CASES = [
 
         [group: 'NNFIELD', name: 'N0 explicit class invariant name!=null establishes via ctor', ok: true,

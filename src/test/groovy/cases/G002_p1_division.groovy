@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G002_p1_division {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A divisor/modulus obligation: guarded verifies, unguarded refutes (divide-by-zero).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 1: division ----------

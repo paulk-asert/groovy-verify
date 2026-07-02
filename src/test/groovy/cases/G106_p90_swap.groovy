@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G106_p90_swap {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A parallel swap (a,b)=[b,a] / array swap snapshots the RHS before any write; without a bounds @Requires it flags OOB.'
+
     static final List<Map> CASES = [
         // Phase 90 — bare multiple assignment / swap `(a, b) = [b, a]` on existing locals. The temp
         // captures the old state, so this is a correct *parallel* swap: a becomes 4, b becomes 3.

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G262_p173_trace_liveness {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Leino\'s ticket lock — TRACE-LEVEL bounded liveness, unblocked by an ENGINE FIX (Phase 173): a numeric-returning Function\'s application f.apply(i) now mints a stable, shared Int-sorted uninterpreted-function term that partakes in integer arithmetic, so the system state OVER TIME can be modelled as trace functions serving/t[p]/cs[p] : nat -> ... and reasoning composes across contract positions. (Previously the int argument was coerced into the Object value sort and f.apply(i) fell through unmodelled — a fresh opaque value per occurrence, so nothing over the trace composed; that was the Wall-1 blocker.) This yields a BOUNDED eventually-eats: with bounded bypass (Phase 172, measure <= 1) a Hungry process eats within a fixed number of trace steps (Leave advances serving -> waiter\'s measure hits zero -> Enter fires -> Eating), the intermediate measure-zero derived not assumed; dropping the Enter step refutes. The full FAIR-schedule eventually-eats — deriving that the productive steps occur over an unbounded window — still needs the trace-loop induction (Wall 2), out of fragment.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 173: Leino's ticket lock — TRACE-LEVEL bounded liveness (engine fix: apply-term sharing) ----------

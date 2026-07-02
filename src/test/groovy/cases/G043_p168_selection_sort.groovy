@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G043_p168_selection_sort {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Iterative selection sort proven sorted AND a permutation (the loop-form twin of the P14 recursive insertion sort): an inner loop finds the minimum of a[i..n), an outer-loop swap helper places it at i (its @Requires discharged from the summarised inner loop\'s `i <= m < n`), and a single nested-quantifier invariant (each placed element <= everything after it) yields global sortedness — no hand-written lemma. Forgetting to place the minimum refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 168: iterative selection sort — sorted AND a permutation (nested loops, helper-in-loop) -----

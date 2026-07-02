@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G091_p49_prefix_exits {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Early returns in a loop\'s prefix region (before the loop) are verified per path; a postcondition violation on an exit refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 49 (Slice A): early-return in loop prefix ----------

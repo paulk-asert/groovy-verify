@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G033_p_ring {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The merged Buffer flagship: both §IV rely/guarantee halves on one class (compatibility lemmas + @UnderRely-framed bodies), including rely-steps inside loop bodies.'
+
     static final List<Map> CASES = [
         // The README flagship `Buffer` — keep in sync with the rely/guarantee subsection. ONE class drives BOTH
         // halves of §IV: the @Rely/@Guarantee predicates discharge the compatibility lemmas, AND the same @Rely

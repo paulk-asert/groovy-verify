@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G093_p48_nia {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Nonlinear integer arithmetic via Z3\'s NIA solver: multiplication commutativity, positive product, non-negative square.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 48: NIA — variable multiplication + div/mod ----------

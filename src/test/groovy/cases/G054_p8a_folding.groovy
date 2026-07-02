@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G054_p8a_folding {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Closed nonlinear products / folded indices are evaluated and bounds-checked.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 8a (normalise-then-SMT): closed-constant folding ----------

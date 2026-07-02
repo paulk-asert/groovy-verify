@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals
  * human-readable report; this fails {@code check} the moment any drift appears, so the single source of truth
  * ({@link VerifyHarness#CASES} and the engine sources) can't silently fall out of sync with the docs.
  *
- *   • every test group carries a one-line capability description (Harvester.GROUP_DESC)
+ *   • every test group carries a one-line capability description (a DESCRIPTION co-located in its cases/G*.groovy file)
  *   • every fenced groovy block in the docs is linked to a case, exempted, or a verbatim substring of some case —
  *     and every doclint:case link still matches its case (comments included)
  *   • every verification/*.groovy engine source is named in ARCHITECTURE.md
@@ -31,7 +31,7 @@ class DocLintTest {
 
     @Test
     void everyTestGroupHasACapabilityDescription() {
-        assertEquals(0, DocLint.lintGroupDescriptions(), 'test groups are missing a Harvester.GROUP_DESC entry')
+        assertEquals(0, DocLint.lintGroupDescriptions(), 'a test group is missing the co-located DESCRIPTION in its cases/G*.groovy file')
     }
 
     @Test

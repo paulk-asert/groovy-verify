@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G251_he152_compare {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 152 — element-wise over two lists: each output is the absolute difference |game[i]-guess[i]| (abs as the body\'s conditional); the signed difference (no abs) refutes.'
+
     static final List<Map> CASES = [
 
         // 152 compare: each output is the absolute difference of the two inputs (abs spelled as the conditional the

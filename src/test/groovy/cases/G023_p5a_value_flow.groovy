@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G023_p5a_value_flow {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An index constrained by a prior assignment (or an aliased index under a guard) is verified; an unconstrained one refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 5a: value-flow (safety implied by an assignment) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G170_p28_enum_values {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'enum.values().length / .size() folds to the enum\'s value count in a body; a wrong count refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 28: enum.values().length folds to a ground int ----------

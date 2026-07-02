@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G238_p105_string_seq {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A read-only per-character loop with a quantified invariant over s.charAt(i) (e.g. all-lowercase); a too-strong char bound refutes.'
+
     static final List<Map> CASES = [
         // ---------- P105 string-sequence: read-only per-character proofs (Slice 1) ----------
         // Read-only string iteration under a quantified loop invariant — the string analogue of the array

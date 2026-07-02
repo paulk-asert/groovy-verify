@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G230_p115_monitor_invariant {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Lock transforms (@WithWriteLock / @Synchronized) are transparent, so the class @Invariant is the monitor invariant each critical section preserves (e.g. balance >= 0).'
+
     static final List<Map> CASES = [
         // ---------- P115 lock transforms: the monitor invariant ----------
         // Groovy's lock AST transforms (@WithReadLock/@WithWriteLock/@Synchronized) are transparent to the

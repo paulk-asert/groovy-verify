@@ -134,9 +134,9 @@ does authoring it look like?" — the answer is generated from the test corpus, 
 
 It's a pure projection of the declared case specs (which CI proves match reality), so it runs in milliseconds
 with no solver. The same corpus is browsable as source: one file per capability group under
-[`src/test/groovy/cases/`](src/test/groovy/cases) (`G###_<group>.groovy`), each a self-contained list of
-annotated good/bad snippets with teaching comments — and the prose inventory is
-[CAPABILITIES.md](CAPABILITIES.md), whose group descriptions are the same text `catalog.json` carries.
+[`src/test/groovy/cases/`](src/test/groovy/cases) (`G###_<group>.groovy`), each fully self-describing — its
+group's one-line `DESCRIPTION` (the same text `catalog.json` carries) co-located above a self-contained list of
+annotated good/bad snippets with teaching comments. The prose inventory is [CAPABILITIES.md](CAPABILITIES.md).
 
 ---
 

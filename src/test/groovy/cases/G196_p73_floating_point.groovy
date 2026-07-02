@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G196_p73_floating_point {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'IEEE-754 vs exact: BigDecimal 0.1+0.2==0.3 but double 0.1d+0.2d != 0.3d (claiming == refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 73: IEEE-754 floating point (double/float via Z3's FP theory) ----------

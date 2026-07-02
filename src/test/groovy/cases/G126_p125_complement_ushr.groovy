@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G126_p125_complement_ushr {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Bitwise complement ~x (the exact Int identity -x-1) and the unsigned/logical right shift x>>>1 (via the 32-bit bit-vector, always non-negative — unlike the arithmetic >>).'
+
     static final List<Map> CASES = [
         // ---------- Phase 125: bitwise complement (~) and unsigned right shift (>>>) ----------
         // ~x is the two's-complement complement, an exact Int identity (-x - 1) — no bit-vector, not refute-hostile.

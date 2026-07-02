@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G163_p42_mutation_replay {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'After xs.add, an in-bounds read (xs[size-1]) passes the implicit bounds check.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 42: LemmaCall replay in implicit-obligation pass ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G008_p142_multi_record {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A multi-component record is a one-constructor N-field datatype (the TupleN analogue), so `new R(a,b).f` round-trips — enabling a dimension-carrying Quantity(value, L, M, T) whose multiply scales the value and composes the exponent vector, the full dimensional algebra in one type.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 142: multi-component record as a one-constructor N-field datatype ----------

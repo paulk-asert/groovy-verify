@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G134_p93b_power_axioms {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Literal 2 ** k unfolds to its value (and base case 2 ** 0 == 1); a wrong value refutes.'
+
     static final List<Map> CASES = [
         // Phase 93b — `pow$` now carries base+step defining axioms (minted by powOf), mirroring fib/gcd.
         // Tier 1: a *literal* exponent unfolds to a concrete value (`2 ** 3` e-matches to 2*2*2*1 == 8).

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G092_p49b_in_body_exits {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An if(cond) return e at the top of a loop body is verified on its own path; preservation holds on the no-exit path.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 49b (Slice B): early-return INSIDE a loop body ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G246_pl_truth {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Groovy truth in @Ensures({ result }): a non-empty String is truthy (verifies), empty is falsy (refutes).'
+
     static final List<Map> CASES = [
 
         // ----- Groovy truth in contract/assert position (non-boolean coerced as Groovy does) -----

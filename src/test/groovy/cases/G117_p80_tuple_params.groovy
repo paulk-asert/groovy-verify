@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G117_p80_tuple_params {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A tuple parameter\'s slots are read in the contract/body (homogeneous and heterogeneous).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 80: tuple PARAMETERS with .vN access ----------

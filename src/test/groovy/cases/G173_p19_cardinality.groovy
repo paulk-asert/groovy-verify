@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G173_p19_cardinality {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Set cardinality: a full bounded set covers its domain; coverage needs the bound; size <= n.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 19: the cardinality axiom — pigeonhole over a bounded domain ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G197_p74_range_bounds {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Range.containsWithinBounds as a pure bounds check over all range forms (step ignored).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 74: Range.containsWithinBounds — bounds-only interval predicate ----------

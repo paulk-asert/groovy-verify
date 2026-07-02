@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G001_p1_bounds {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An array index is in bounds only under a guard / @Requires; an unguarded index refutes (IndexOutOfBounds).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 1: array bounds ----------

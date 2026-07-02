@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G255_he085_add {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 085 — conditional accumulator: summing the even-valued elements at odd indices keeps the running sum even (a parity invariant); claiming the sum is odd refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- 085 add / 121 solution (HumanEval) — a CONDITIONAL accumulator: sum a selected subset ----------

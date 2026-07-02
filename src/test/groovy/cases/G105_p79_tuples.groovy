@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G105_p79_tuples {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Tuple/TupleN fixed-arity typed products with .vN slot access (and first/second/size), heterogeneous slots.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 79: Tuple / TupleN — fixed-arity typed products ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G127_p_trait {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A trait\'s @Invariant and contracted default methods are verified on every implementing class.'
+
     static final List<Map> CASES = [
         // ---------- Phase 121: traits ----------
         // A trait's class @Invariant is collected along the `implements` axis (walkClassInvariants walks

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G260_p171_ticket_liveness {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Leino\'s ticket lock (KRML260 §7.6) — the LIVENESS ranking function `t[p] - serving`, the well-founded measure the paper\'s proof-loop drives to zero to show a hungry process eventually eats. Empty-bodied lemmas over the same bounded state establish the skeleton the eventually-eats argument composes: the measure is bounded below (>= 0 for any waiter), Leave strictly decreases a distinct waiter\'s measure and keeps it >= 0 (needing uniqueness + eating==>served), non-Leave events leave it unchanged (only Leave moves it, downward), a currently-served process always exists while someone is hungry (Leino\'s TicketIsInUse strengthening — CurrentlyServedProcess), and measure zero enables the Hungry->Eating transition (the base case). Dropping uniqueness refutes well-foundedness; dropping TicketIsInUse refutes served-process existence. Composing these over an infinite trace under a fairness assumption (trace/schedule as nat->... functions) is Phase 172\'s wall.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 171: Leino's ticket lock — LIVENESS ranking function (KRML260 §7.6) ----------

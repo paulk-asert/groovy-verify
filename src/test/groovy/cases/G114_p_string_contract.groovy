@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G114_p_string_contract {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The Java-friendly String-contract prototype: this project\'s own verification.@Requires/@Ensures/@Decreases(\'…\') take the condition as a String (a legal Java annotation value, unlike a closure) and capture it into the SAME reparse→encode→prove pipeline as a groovy-contracts closure. A recursive method verifies inductively (method-level @Decreases assumes the @Ensures at the recursive call) and a wrong @Ensures refutes on the base case; a straight-line method verifies; and a String @Requires discharges an implicit obligation (division-by-zero). Loop invariants stay out of reach — Java forbids statement annotations.'
+
     static final List<Map> CASES = [
         [group: 'P-string-contract', name: 'recursive count verifies from String contracts', ok: true,
          src: tcStr('''class C {

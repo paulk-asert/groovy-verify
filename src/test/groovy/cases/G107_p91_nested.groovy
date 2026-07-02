@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G107_p91_nested {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A loop nested inside another (matrix sum, n*n / n*m double loops) with scalar accumulators.'
+
     static final List<Map> CASES = [
         // Matrix sum — nested loops + array-range `.sum()` aggregation + the NIA monotonicity lemma (the
         // flat-index `a[k]` read bound `i*m+j < n*m`). The bare `.sum()` form is NOT empty-safe: a range subscript

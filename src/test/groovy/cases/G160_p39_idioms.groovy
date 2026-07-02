@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G160_p39_idioms {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Collection accessor idioms are equated: xs.get(i)===xs[i], xs.first()/head()===xs[0].'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 39: common non-mutating list/map idioms ----------

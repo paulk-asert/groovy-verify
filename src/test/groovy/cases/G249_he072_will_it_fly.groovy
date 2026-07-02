@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G249_he072_will_it_fly {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 072 — a list flies iff it is a palindrome and its sum <= w: a loop-built flag equals the content quantifier (0..<n).every { q[it]==q[n-1-it] }, an ends-only check refutes, the combined palindrome+sum proof, and forgetting the palindrome half refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- will_it_fly (HumanEval/72) — a list flies iff it is a palindrome AND its sum <= w ----------

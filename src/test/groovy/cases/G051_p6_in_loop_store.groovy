@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G051_p6_in_loop_store {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An in-loop array store (zero-fill) preserves a quantified invariant; a store that breaks it refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 6: in-loop store (array update threaded through a loop) ----------

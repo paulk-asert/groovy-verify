@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G045_p9_diagnostics {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Diagnostics echo the developer\'s spelling — .size() vs .length — rather than a normalised form.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 9: diagnostics echo the accessor the developer wrote (not the internal a.size) ----------

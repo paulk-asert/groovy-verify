@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G095_p51_sum {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A list sum aggregation carried by a loop invariant (s == xs[0..<i].sum()), via base/step axioms.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 51: numeric sum aggregation over an Int list (xs[lo..<hi].sum()) ----------

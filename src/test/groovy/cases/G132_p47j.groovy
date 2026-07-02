@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G132_p47j {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Groovy\'s ==~ match operator reflects the match and is equivalent to .matches; a false claim refutes.'
+
     static final List<Map> CASES = [
         [group: 'P47j ==~', name: '==~ result reflects the match', ok: true,
          src: tc('''class C {

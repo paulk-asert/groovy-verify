@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G198_nested_static_groovy_12066 {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A static nested class\'s @Invariant is established by its constructor (GROOVY-12066); unestablished refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- GROOVY-12066: contracts on a *static nested* class (upstream fix) ----------

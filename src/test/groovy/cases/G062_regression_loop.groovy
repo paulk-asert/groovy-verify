@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G062_regression_loop {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A regression anchor for loop verification (countUp).'
+
     static final List<Map> CASES = [
 
         // ---------- Regression: loops ----------

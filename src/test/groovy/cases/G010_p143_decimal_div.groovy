@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G010_p143_decimal_div {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'BigDecimal division is modelled soundly: a terminating divisor (only the prime factors 2 and 5, e.g. /1000) is exact in Groovy so it verifies (the unit-conversion read-out), a wrong factor refutes, and a non-terminating divisor (Groovy rounds) skips loudly rather than prove a runtime-false fact.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 143: BigDecimal division modelled soundly (terminating divisors only) ----------

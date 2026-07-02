@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G193_p76_decimal_max_min {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'List<BigDecimal> max/min as a witnessed extremum (bounds every element, achieved by one).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 76: List<BigDecimal>.max() / .min() — the Real witnessed extremum ----------

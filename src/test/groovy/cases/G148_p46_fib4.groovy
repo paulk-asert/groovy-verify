@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G148_p46_fib4 {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 046 — tetranacci (fib4) via the Tetra.of(i) recurrence helper; the iterative version proves equal to the spec.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 046 (fib4): tetranacci via the Tetra.of(i) helper ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G122_p_multichecker {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'RegexChecker (pattern syntax) + VerifyChecker (match semantics) compose on the same .matches, each on its own concern.'
+
     static final List<Map> CASES = [
         // ===== Multi-checker composition (Q2): VerifyChecker runs alongside a sibling groovy-typecheckers
         // extension in one @TypeChecked(extensions=[...]); each reports its own errors. Here BOTH engage the

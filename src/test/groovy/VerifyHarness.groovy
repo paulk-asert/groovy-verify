@@ -60,15 +60,21 @@ class VerifyHarness {
 
     static final List<Map> CASES = loadCases()
 
-    /** Concatenate every case file's CASES, in filename order (the G### prefix preserves the
-     *  original group order, so case numbering in reports stays stable). */
-    private static List<Map> loadCases() {
+    /** The per-group case classes (cases/G*.groovy), in filename order (the G### prefix preserves the
+     *  original group order, so case numbering in reports stays stable). Shared with Harvester, which
+     *  also reads each class's co-located {@code DESCRIPTION}. */
+    static List<Class> caseClasses() {
         File dir = new File('src/test/groovy/cases')
         List<String> names = (dir.listFiles() ?: new File[0])*.name
             .findAll { it ==~ /G\d{3}_.*\.groovy/ }.sort()
         assert names : "case corpus not found under ${dir.absolutePath} — run from the project root"
+        names.collect { String n -> Class.forName('cases.' + (n - '.groovy')) }
+    }
+
+    /** Concatenate every case file's CASES. */
+    private static List<Map> loadCases() {
         List<Map> all = []
-        names.each { String n -> all.addAll((List<Map>) Class.forName('cases.' + (n - '.groovy')).CASES) }
+        caseClasses().each { Class c -> all.addAll((List<Map>) c.CASES) }
         all
     }
 

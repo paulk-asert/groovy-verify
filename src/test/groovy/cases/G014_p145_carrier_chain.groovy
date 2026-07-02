@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G014_p145_carrier_chain {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A carrier-returning call is a value in expression position, not only a local-assignment RHS, so a single-expression chain resolves: Quantity.km(1).plus(Quantity.mile(1)) == 2609.344 in metres (receiver and argument are both factory calls), the fluent twin of the JSR 385 example — the guarded .plus precondition still discharges over the real argument (a wrong total refutes the postcondition, a mismatched dimension refutes the guard).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 145: carrier-returning calls as values in expression position (chaining) ----------

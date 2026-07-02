@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G243_pl_infer {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Loop-invariant inference for a bare counter loop (opt-in VerifyChecker(inferLoops: true)) proves array bounds with no @Invariant.'
+
     static final List<Map> CASES = [
 
         // ----- Loop-invariant INFERENCE for a bare counting loop -----

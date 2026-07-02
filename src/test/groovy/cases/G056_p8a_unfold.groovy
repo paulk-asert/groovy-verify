@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G056_p8a_unfold {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A non-recursive pure helper is inlined (ternary to ite), a recursive one unfolded under the path constraint.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 8a (bounded symbolic unfolding): inline a pure fn against symbolic args ----------

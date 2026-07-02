@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G112_p_check_then_act {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Check-then-act, the rung-1 boundary sharpened: a bounded counter whose `if (count < 1) count = count + 1` keeps `count <= 1` SEQUENTIALLY — groovy-verify proves the @Invariant (a wrong bound `<= 0` refutes) — yet is NOT thread-safe (two threads both pass the guard → count == 2, which jcstress\'s BoundedCounterJCStress catches, ~5 in 7 billion). The verifier reasons above the JMM, so it proves the SAME invariant for the racy and the @WithWriteLock-fixed version; only the structural rung tells them apart. A verified-sequential invariant that concurrency breaks — rung 1\'s documented scope, not unsoundness.'
+
     static final List<Map> CASES = [
         // String-contract prototype: the Java-friendly `verification.@Requires/@Ensures/@Decreases('…')` (a String
         // is a legal Java annotation value where a closure is not), captured into the SAME reparse→prove pipeline.

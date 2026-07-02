@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G052_p7_induction {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A recursive method (sumUp) proven by induction; a non-decreasing or too-strong claim refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 7 (induction): recursion via @Decreases + self-IH ----------

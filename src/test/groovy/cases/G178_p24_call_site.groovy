@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G178_p24_call_site {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A callee\'s precondition is discharged at the call site against the post-mutation state.'
+
     static final List<Map> CASES = [
         // Phase 24 (call-site soundness): a recursive closure-threading DFS now REFUTES at the recursive
         // call. After `visited.add(u)`, the callee's closure precondition is checked against the post-add

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G221_p_monadlaw {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The monad laws hand-written (left/right identity, associativity) prove; a wrong bind equation refutes.'
+
     static final List<Map> CASES = [
 
         // Phase C (Tier-1 law) — left identity `unit(a).chain(f) == f.apply(a)` discharged over the carrier

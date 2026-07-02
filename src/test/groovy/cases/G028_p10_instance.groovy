@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G028_p10_instance {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Instance methods with field reads/writes and parameter contracts verify (getter, mutator).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 10 (Layer A): instance methods with parameter-only contracts ----------

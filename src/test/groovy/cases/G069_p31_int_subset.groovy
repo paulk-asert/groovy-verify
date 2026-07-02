@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G069_p31_int_subset {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The same subset reasoning for Int-element sets under Sets.boundedBy.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 31: Int-element s.containsAll(t) via bounded-domain context ----------

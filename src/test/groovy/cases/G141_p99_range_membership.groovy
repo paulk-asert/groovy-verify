@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G141_p99_range_membership {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The in operator over an integer range (i in 1..3, exclusive ..<) gives bounds facts.'
+
     static final List<Map> CASES = [
         // Phase 99 — integer range membership: `i in lo..hi` and `(lo..hi).contains(i)` lower to the
         // order-/exclusivity-aware bounds (reusing translateContainsWithinBounds), exact for `..` and `..<`.

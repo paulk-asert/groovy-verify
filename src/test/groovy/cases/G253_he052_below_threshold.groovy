@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G253_he052_below_threshold {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 052 — boolean predicate over a list: true iff every element is below t; the early return-false witnesses the negated quantifier, and an off-by-one (<= t) refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- 052 below_threshold (HumanEval) — a boolean predicate over a list: are ALL elements below t ----------

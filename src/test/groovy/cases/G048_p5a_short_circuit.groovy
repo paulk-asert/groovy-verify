@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G048_p5a_short_circuit {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A short-circuit && / || guard protects accesses in its right operand; an unguarded access still refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 5a: short-circuit guard path conditions (&& / ||) ----------

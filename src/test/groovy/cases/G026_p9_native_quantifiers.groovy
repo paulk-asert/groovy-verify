@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G026_p9_native_quantifiers {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The native GDK every/any (range-exclusive, indices, element-wise) entail an instance.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 9: native GDK quantifier idioms (same universal, no Forall helper) ----------

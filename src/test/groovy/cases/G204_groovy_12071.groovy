@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G204_groovy_12071 {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Generic-typed tuple slots / map values / list elements keep their declared type in a contract, so arithmetic on them needs no cast (GROOVY-12071).'
+
     static final List<Map> CASES = [
 
         // ---------- Generic types restored in @Ensures closures (GROOVY-12071) ----------

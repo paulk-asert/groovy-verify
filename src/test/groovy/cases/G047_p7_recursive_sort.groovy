@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G047_p7_recursive_sort {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A recursive insertion sort proven sorted; an intervening store / missing insert refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 7: recursive insertion sort (sortedness, end-to-end) ----------

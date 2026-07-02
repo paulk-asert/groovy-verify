@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G071_p33_union_intersect {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Inline set algebra membership: union is a disjunction, intersection a conjunction of operand memberships.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 33: inline set union / intersection (lazy lowering on .contains, .containsAll) ----------

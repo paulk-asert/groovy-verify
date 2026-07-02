@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G063_boxed_list {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Integer (boxed) scalar postconditions and Integer[] sorted-difference reasoning.'
+
     static final List<Map> CASES = [
 
         // ---------- Boxed types & lists (structural: the encoder is untyped) ----------

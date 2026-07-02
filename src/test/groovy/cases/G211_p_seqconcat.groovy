@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G211_p_seqconcat {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Straight-line String concatenation in contracts/bodies; an inline string combiner proves, a combiner call in return position skips honestly.'
+
     static final List<Map> CASES = [
 
         // Phase 129 — a String/sequence operand reaching the integer arithmetic/comparison dispatch used to

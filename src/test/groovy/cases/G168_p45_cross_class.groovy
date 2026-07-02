@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G168_p45_cross_class {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A foreign class\'s @Invariant is assumed at entry when reasoning across classes; a stronger claim refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 45: cross-class @Invariant call-site assumption ----------

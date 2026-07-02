@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G104_sized_int {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A sized allocation new int[n] is a fresh zero-filled array (length==n, unwritten elements read 0).'
+
     static final List<Map> CASES = [
 
         // ---------- Sized array allocation `new int[n]` (fresh, zero-filled) ----------

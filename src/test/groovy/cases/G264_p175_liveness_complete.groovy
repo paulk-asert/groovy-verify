@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G264_p175_liveness_complete {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Leino\'s ticket lock — the measure-1 reduction that CLOSES the full two-process fair-schedule liveness. The base case (Phase 174) is the waiter already holding the served ticket (measure 0); this is the OVERTAKEN waiter (measure 1), Leino\'s loop body. reduceMeasure1 composes the frame + serving-stability lemmas with the served process\'s Leave (which advances serving by one) to bring the waiter from measure 1 to measure 0; overtakenEats chains that into the base case, so the overtaken waiter reaches Eating. Bounded bypass (Phase 172) caps a waiter\'s measure at 1, so measure-0 and measure-1 are EXHAUSTIVE — the two-process eventually-eats is complete, all progress derived from fairness + framing. Teeth: if the Leave does not advance serving, the measure never reaches zero and the reduction refutes. (Frame/stability lemma params are named to match callers\' csAF/tAF/servingF — the Forall.range precondition is discharged by syntactic match.)'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 175: Leino's ticket lock — the measure-1 reduction closes the FULL two-process liveness ----------

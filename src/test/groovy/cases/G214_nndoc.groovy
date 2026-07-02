@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G214_nndoc {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The README @NonNull lifecycle example, composed under NullChecker + VerifyChecker.'
+
     static final List<Map> CASES = [
 
         [group: 'NNDOC', name: 'README @NonNull lifecycle under both checkers', ok: true,

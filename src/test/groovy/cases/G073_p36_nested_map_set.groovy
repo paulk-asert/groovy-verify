@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G073_p36_nested_map_set {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Nested Map<K,Set<V>> reads: x in m[k] / m[k].contains / m[k].containsAll round-trip; distinct keys do not leak membership.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 36: Map<K, Set<V>> nesting (read-only) ----------

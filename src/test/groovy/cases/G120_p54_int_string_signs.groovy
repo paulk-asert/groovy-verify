@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G120_p54_int_string_signs {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A negative Integer.toString is non-empty (a claim that it isEmpty refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 54: sign-faithful Integer.toString / parseInt ----------

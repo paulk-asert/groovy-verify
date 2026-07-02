@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G206_bitwise {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Bitwise/shift operators: a literal shift is arithmetic (x<<1==x*2, x>>1==x.intdiv(2) for x>=0).'
+
     static final List<Map> CASES = [
 
         // ---------- Bitwise / shift operators (& | ^ << >>) ----------

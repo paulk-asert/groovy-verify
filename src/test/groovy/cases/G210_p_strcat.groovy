@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G210_p_strcat {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'String concatenation is associative but not commutative (proven via void/boolean law lemmas on the str.++ monoid).'
+
     static final List<Map> CASES = [
 
         // String concatenation lowers to Z3's Seq concat: associative, NOT commutative. The verifier proves the

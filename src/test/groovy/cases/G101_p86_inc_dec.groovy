@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G101_p86_inc_dec {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Pre/post ++ / -- as statements in straight-line code.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 86: pre/post increment & decrement (++ / --) as statements ----------

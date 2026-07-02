@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G061_p89_field_write {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A field write is seen through the same / an aliased reference, and not through a non-aliased one (refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 89 (slice 2): field WRITES through object references ----------

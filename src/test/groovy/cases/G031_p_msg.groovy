@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G031_p_msg {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Scalar producer/consumer information flow: declassify-then-deliver verifies; delivering an unreleased secret, or a secure-update that publishes one, refutes.'
+
     static final List<Map> CASES = [
         // PROBE-msg (Step 2 — Smith's producer/consumer info-flow, sequential/atomic, on SCALAR messages). The
         // §III mechanics assembled into one producer/consumer narrative: declassify (§III-E) to produce a Low

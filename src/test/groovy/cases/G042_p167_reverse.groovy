@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G042_p167_reverse {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'In-place array reverse via a swap helper called inside the loop (Phase 166): each swap\'s bounds @Requires is discharged from the loop invariant and its @Ensures carries both the element exchange (proving the reversal a[k] == orig[n-1-k], against a ghost `orig` capturing the entry array) and count preservation (permutation). A reverse that forgets to swap refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 167: in-place array reverse via a swap helper (helper-in-loop + permutation) ----------

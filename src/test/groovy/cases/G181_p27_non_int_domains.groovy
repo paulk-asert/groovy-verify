@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G181_p27_non_int_domains {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'String-element sets: literal membership round-trips, distinct literals are not collapsed.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 27: non-Int element domains — Set<String> ----------

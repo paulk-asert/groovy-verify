@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G139_p97_safe_nav_non_null {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Safe navigation ?. lets a precondition prove a deref; the same under || does not (still flags NPE).'
+
     static final List<Map> CASES = [
         // Phase 97 — a top-level `recv?.foo()` precondition conjunct implies `recv != null` (a null receiver
         // makes safe-navigation falsy), so the body's unguarded `recv.bar()` discharges its null-deref check

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G025_p6_quantifiers {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A bounded forall assumed in a precondition entails an instance; sortedness entails adjacent order.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 6: quantifiers (bounded universal via Forall.range) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G096_p52_below_zero {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 003 below_zero — the full biconditional: result iff some prefix sum is negative.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 3 (below_zero): running balance ever negative ----------

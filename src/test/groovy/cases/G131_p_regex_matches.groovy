@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G131_p_regex_matches {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A .matches postcondition is proven from a matches precondition; a wrong character-class claim refutes.'
+
     static final List<Map> CASES = [
 
         // VerifyChecker reasons about regex matching semantically: `.matches(pattern)` lowers to Z3's

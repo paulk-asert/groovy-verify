@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G121_p_induction {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Recursive methods proven by induction via @Decreases (factorial grows >= linearly; the recursive call is the inductive hypothesis).'
+
     static final List<Map> CASES = [
 
         // ---------- Inductive proof helper (README Act 1): a recursive method's own @Ensures is the

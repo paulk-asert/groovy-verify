@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G115_p35b_set_return {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Returning a set-algebra result (a & b, a | b, a.or(b)) as a Set.'
+
     static final List<Map> CASES = [
 
         // ===== set-return probes (Phase 35b: result bound to a set binop) =====

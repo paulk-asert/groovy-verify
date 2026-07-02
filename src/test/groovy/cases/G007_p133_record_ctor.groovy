@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G007_p133_record_ctor {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A single-component record is modelled as a one-constructor datatype, so `new R(v).f == v` round-trips (the canonical-constructor gap, closed for records) — enabling a bespoke, self-contained value type (e.g. a units Length) to verify; richer forms (operators, carrier locals) skip gracefully.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 133: single-component record modelled as a one-constructor datatype ----------

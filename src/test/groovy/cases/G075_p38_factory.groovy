@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G075_p38_factory {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Immutable factories (List.of / [a,b,c]) peephole-fold .size()/.contains/.get(literal) to ground terms.'
+
     static final List<Map> CASES = [
         // ---------- Phase 38: immutable-container factory recognition ----------
         // List.of(...).size() folds to a literal count — usable as a ground int in @Ensures.

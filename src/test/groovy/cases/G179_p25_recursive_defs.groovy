@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G179_p25_recursive_defs {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Recursively-defined reachability/bcount proven by induction over the defining equation; a wrong bound refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 25: recursive definitions in contracts (the defining-equation upgrade) ----------

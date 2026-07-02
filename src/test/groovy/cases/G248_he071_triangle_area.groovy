@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G248_he071_triangle_area {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 071 — squared Heron area (sqrt-free, exact integers): the triangle inequality makes s-a non-negative, a valid triangle\'s squared area is non-negative or -1, an incomplete validity check refutes, and the int product overflows under @CheckOverflow.'
+
     static final List<Map> CASES = [
 
         // ---------- Triangle area (HumanEval/71) — the triangle inequality makes the half-perimeter terms safe ----------

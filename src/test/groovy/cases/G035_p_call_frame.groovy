@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G035_p_call_frame {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A @Modifies call havocs un-pinned fields; a rely-step\'s @Ensures re-establishes the obligation, a weakened rely no longer does.'
+
     static final List<Map> CASES = [
         // P-rg-guarantee: with fix (b), the per-segment GUARANTEE assertion — a two-state assert over a mutated
         // Int field (`int t = tail; …; assert <relate t and tail>`) — is really discharged, standalone and after

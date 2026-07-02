@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G083_p47b_replace_indexof {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Literal String.replace / indexOf fold (single occurrence, no-op on absent).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47b: replace + indexOf ----------

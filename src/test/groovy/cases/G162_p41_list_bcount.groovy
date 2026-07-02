@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G162_p41_list_bcount {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'xs.add(v) raises xs.count(v) by one and leaves count(w) unchanged for w != v.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 41: bounded count tracking for lists ----------

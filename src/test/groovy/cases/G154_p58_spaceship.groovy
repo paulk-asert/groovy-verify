@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G154_p58_spaceship {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The spaceship <=> as a three-way comparator (-1/0/1 = Integer.compareTo); a contract over it verifies.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 58: spaceship operator `<=>` (three-way Int comparison) ----------

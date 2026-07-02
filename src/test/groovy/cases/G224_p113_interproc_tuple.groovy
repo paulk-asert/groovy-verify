@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G224_p113_interproc_tuple {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A tuple-returning call bound to a local whose slots carry the callee\'s @Ensures into the caller\'s body (the interprocedural-tuple case).'
+
     static final List<Map> CASES = [
         // ---------- P113 inter-procedural tuple results ----------
         // Binding `Tuple2 r = callee(...)` to a local and using its slots (`r.v1`) in the body — array index,

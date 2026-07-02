@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G080_p46c_string_axioms {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'String length axioms: non-negativity, startsWith implies a length bound, a too-short string never starts with a longer prefix.'
+
     static final List<Map> CASES = [
         // Length on a String parameter is non-negative (axiom 1) — even with no other constraint,
         // s.length() >= 0 holds. This is the load-bearing axiom for length-based reasoning.

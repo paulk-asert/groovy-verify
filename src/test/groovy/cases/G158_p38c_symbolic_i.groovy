@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G158_p38c_symbolic_i {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A factory container indexed by a symbolic i in range folds; without the bound it refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 38c-4: non-constant-i ite-chain for factory list indexing ----------

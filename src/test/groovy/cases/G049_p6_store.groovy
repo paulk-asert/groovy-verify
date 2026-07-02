@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G049_p6_store {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'After an array store, the stored element reads back; a wrong store value refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 6: array update (store) ----------

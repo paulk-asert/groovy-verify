@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G229_p116_monoid {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A two-checker compile (CombinerChecker + VerifyChecker) over a real injectParallel site: the shape is checked and the monoid laws + reduce==sum proven.'
+
     static final List<Map> CASES = [
         // ---------- P116 monoids/semigroups: checked AND proven (composition with CombinerChecker) ----------
         // A genuine two-checker compile under one @TypeChecked(extensions=[...]). `groovy.typecheckers.Combiner-

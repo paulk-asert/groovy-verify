@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G125_p124_biginteger {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'BigInteger maps to Z3\'s unbounded Int sort exactly (no width/overflow): values flow as Int and a literal (42g) folds; a literal wider than 64 bits skips loudly.'
+
     static final List<Map> CASES = [
         // ---------- Phase 124: BigInteger ----------
         // BigInteger is Groovy's arbitrary-precision integer, which is Z3's unbounded Int sort exactly — so it is

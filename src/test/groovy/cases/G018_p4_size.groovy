@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G018_p4_size {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A @Requires bound on .size() verifies an index.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 4: .length / .size() in contracts ----------

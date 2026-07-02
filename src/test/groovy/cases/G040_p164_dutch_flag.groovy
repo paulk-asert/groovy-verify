@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G040_p164_dutch_flag {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Dijkstra\'s Dutch National Flag — the in-place three-way partition proven sorted AND a permutation from a four-region loop @Invariant (reds | whites | unknown | blues) over three moving indices with @Decreases (hi - mid); permutation rides the per-store count law now threaded through loop-body preservation (Phase 165). The classic off-by-one (mid++ after the blue swap) refutes the sorted invariant, and a clobbering loop refutes the permutation invariant.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 164: Dijkstra's Dutch National Flag — in-place three-way partition ----------

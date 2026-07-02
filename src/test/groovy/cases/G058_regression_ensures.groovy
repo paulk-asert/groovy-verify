@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G058_regression_ensures {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Regression anchors for @Ensures (max verifies, maxBuggy refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Regression: postconditions ----------

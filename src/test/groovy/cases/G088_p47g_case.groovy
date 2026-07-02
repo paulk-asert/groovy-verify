@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G088_p47g_case {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Literal toUpperCase/toLowerCase fold; a wrong-case literal refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47g: case folding (toUpperCase / toLowerCase / equalsIgnoreCase) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G159_p38b_factory_local {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The factory folds lift across a local binding (xs = List.of(...); xs.size()).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 38b: factory through assignment ----------

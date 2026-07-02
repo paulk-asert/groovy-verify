@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G064_p15a_class_invariant {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A class @Invariant is assumed on method entry and checked preserved on exit; a mutator that breaks it refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 15a (step 3): class @Invariant — entry-assume + exit-prove ----------

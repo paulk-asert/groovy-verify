@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G102_p78_list_return {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A list-literal return binds result for constant-index result[k] (HumanEval 008 sum_product); a wrong element claim refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 78: list-literal returns + constant-index result[k] ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G140_p98_elvis {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The Elvis operator n ?: 5 takes n when truthy else the default; a false claim refutes.'
+
     static final List<Map> CASES = [
         // Phase 98 — Elvis `a ?: b` is `groovyTruth(a) ? a : b`, NOT a plain ternary: the condition is Groovy
         // truth on the first operand. The integral case is modelled soundly (truth is `a != 0`); reference /

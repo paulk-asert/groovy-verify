@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G244_pl_assert {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A bare Groovy assert is discharged at compile time: a false constant refutes, one provable from @Requires verifies.'
+
     static final List<Map> CASES = [
 
         // ----- Inline `assert` as a compile-time obligation (Dafny-style) -----

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G020_p4_equals {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'x.equals(y) is equated with ==; a missing assumption refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 4: equals() ----------

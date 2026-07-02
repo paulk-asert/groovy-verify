@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G089_p47i_reverse {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Literal String.reverse folds and a palindrome reverses to itself; a wrong reversal refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47i: String.reverse() (algebraic, literal-pinning) ----------

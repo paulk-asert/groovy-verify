@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G070_p32_containsvalue_equals {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Map.containsValue for enum-keyed maps (key-pinned value), and map equality.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 32a: m.containsValue(v) over enum-keyed maps ----------

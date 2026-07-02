@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G143_p101_range_non_null {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A range-membership fact implies non-null (deref ok with no guard); the same under || does not, so an NPE is still flagged.'
+
     static final List<Map> CASES = [
         // Phase 101 — a top-level `v in lo..hi` precondition implies `v != null` (a range never contains null),
         // so an unguarded deref in the body discharges its null check. The `||` control confirms soundness.

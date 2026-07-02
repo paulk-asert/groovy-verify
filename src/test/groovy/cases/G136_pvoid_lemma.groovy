@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G136_pvoid_lemma {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A false void @Ensures (over state or a param) refutes rather than passing vacuously.'
+
     static final List<Map> CASES = [
 
         // ===== Void-method (lemma) postcondition enforcement =====

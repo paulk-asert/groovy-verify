@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G094_p50_groovy_div_mod {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Groovy-faithful % (sign of dividend) and intdiv (truncate toward zero); a claim that % is always non-negative refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 50: Groovy-faithful division / modulo semantics ----------

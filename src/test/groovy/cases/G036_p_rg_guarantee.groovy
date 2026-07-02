@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G036_p_rg_guarantee {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A standalone @Guarantee predicate proves (and a violation refutes), including after a rely-call.'
+
     static final List<Map> CASES = [
         [group: 'P-rg-guarantee', name: 'standalone guarantee proves', ok: true,
          src: tc('''class Buffer {

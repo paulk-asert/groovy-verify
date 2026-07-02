@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G180_p26_frontier {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A DFS establishes its closure via a frontier/stack invariant.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 26: the frontier/stack invariant — DFS establishes closure ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G184_p64_loop_stable_req {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Only loop-stable @Requires facts are carried into a loop; a precondition over modified state is soundly dropped.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 64: loop-stable @Requires (element reasoning from a precondition) ----------

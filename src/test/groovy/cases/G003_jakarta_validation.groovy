@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G003_jakarta_validation {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Jakarta/javax Bean Validation numeric constraints (@Positive/@Min/@Max/…) read as method-entry preconditions; contradictory ones are flagged vacuous.'
+
     static final List<Map> CASES = [
 
         // ---------- Jakarta Bean Validation constraints — read as method-entry preconditions ----------

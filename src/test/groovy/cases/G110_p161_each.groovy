@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G110_p161_each {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Phase 161 — `xs.each { x -> body }` is modelled as the for-in `for (x in xs)`: stashed non-destructively on the call statement so the verifier finds it by metadata, with the auto bounds invariant (`0 <= idx <= size`) + `size - idx` variant proving SAFETY and termination without a hand-written @Invariant. A per-element property verifies (over an explicit `{ x -> }` param *or* the implicit `{ it }`), an unguarded one refutes, and the same relaxation lets a plain safety for-in verify with no invariant. `xs.eachWithIndex { x, i -> … }` is modelled the same way but with the *user-named* index `i` driving the loop (so `x` binds to `xs[i]` and `i` reads in contracts/counterexamples as written) — and its two-param closure infers cleanly on a primitive array even untyped, as `.each`\'s implicit `it` now also does since GROOVY-12100 was fixed (so `int[].each { it }` type-checks and the implicit-`it` path applies to arrays too — the pre-pinned boundary case flipped to refuting unguarded, like the list form). An *accumulating* body (writing a variable the postcondition depends on) loud-skips — the same accumulation is provable as a classic `for` whose in-scope index carries the inductive `@Invariant` a `.each` statement can\'t (companion cases D2/D3) — — `.each` can\'t carry an @Invariant to frame it (a Groovy parse error on a method-call statement).'
+
     static final List<Map> CASES = [
 
         // Inline intersection membership reads in a contract (the set-RETURN form is a separate gap).

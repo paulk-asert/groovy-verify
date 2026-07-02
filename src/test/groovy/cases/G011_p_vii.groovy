@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G011_p_vii {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The §VII capstone: information flow × rely/guarantee on one buffer verifies; a producer leaking a secret under R/G still refutes. A Lincheck-ready variant keeps the rely-stable @Requires (proof goes through, the runtime guard is dead under it) while a live runtime empty/full guard makes the same source thread-safe to call.'
+
     static final List<Map> CASES = [
 
         // The §VII capstone made Lincheck-ready, ONE source: keep the rely-stable @Requires preconditions (so the

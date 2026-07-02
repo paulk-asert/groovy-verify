@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G219_p_libmonad {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Real library monad shapes (Vavr Option, Functional Java Option, java.util.Optional): the five monad/functor laws prove, Optional refutes functor composition.'
+
     static final List<Map> CASES = [
 
         // The three real-world Maybe/Option flavors, as the full five-law set written out by hand (the README's

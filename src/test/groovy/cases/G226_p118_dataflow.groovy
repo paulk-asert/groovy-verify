@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G226_p118_dataflow {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A single-assignment dataflow network desugars to SSA and proves its computed value (a+b); a wrong value refutes.'
+
     static final List<Map> CASES = [
         // ---------- P118 dataflow: the determinacy half via single-assignment ----------
         // A dataflow network's defining structural guarantee is single-assignment: every DataflowVariable

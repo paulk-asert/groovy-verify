@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G119_p82_nested {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Nested tuples: .v1.v2 slot access in a body (and via a local).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 82: nested tuples ----------

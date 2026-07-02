@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G202_sorted_helper {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The Sorted.ascending/strictlyAscending helper yields the sortedness gap fact (a[i] <=/< a[j] for i<j); no sortedness ⇒ the fact refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Sorted helper — the canonical sortedness precondition (flat 2-D, multi-pattern) ----------

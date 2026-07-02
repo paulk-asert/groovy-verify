@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G254_he009_rolling_max {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 009 — running maximum into a returned list: the implied monotone+dominates characterisation (each output >= its element and non-decreasing) verifies; returning the input unchanged refutes on a descending list.'
+
     static final List<Map> CASES = [
 
         // ---------- 009 rolling_max (HumanEval) — the running maximum at each position, as a returned list ----------

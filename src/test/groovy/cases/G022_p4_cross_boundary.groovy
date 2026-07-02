@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G022_p4_cross_boundary {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A guard / enclosing @Requires proves a callee argument non-null across the call; a possibly-null arg refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 4: cross-boundary oracle binding (nullity + size) ----------

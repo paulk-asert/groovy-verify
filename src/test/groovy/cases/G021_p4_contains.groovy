@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G021_p4_contains {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An assumed .contains entails contains; an unproven one refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 4: contains() (uninterpreted predicate) ----------

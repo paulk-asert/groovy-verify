@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G192_p70_decimal_sum {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'List<BigDecimal> sum and N-account conservation via old.bal.sum(); a skim fails the build.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 70: List<BigDecimal>.sum() via Real-element arrays ----------

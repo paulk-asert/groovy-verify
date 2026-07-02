@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G261_p172_ticket_bypass {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Leino\'s ticket lock — BOUNDED BYPASS (bounded overtaking), the liveness result that IS provable in the fragment after the full temporal eventually-eats hits the trace-composition/induction wall. With the counting invariant `ticket - serving == (#non-thinking processes)` — maintained by every event (Request +1 dispensing, Leave -1 advancing serving, Enter unchanged) — a waiting process\'s measure `t[p] - serving` is <= 1 for the two-process lock: a waiter is overtaken AT MOST ONCE before it enters (stronger than mere eventual entry — it bounds the wait). Composed with Phase 171 (each Leave decreases the measure), at most one competitor Leave stands between a Hungry waiter and eating. Dropping the counting invariant refutes the bound (the dispenser could run arbitrarily far ahead). This is a state invariant, so it sidesteps the temporal machinery; the eventually-eats theorem that composes it with fairness over a trace remains out of fragment.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 172: Leino's ticket lock — BOUNDED BYPASS (bounded overtaking) ----------

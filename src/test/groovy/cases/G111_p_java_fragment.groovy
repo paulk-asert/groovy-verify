@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G111_p_java_fragment {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Verifying a Java algorithm by treating it as Groovy: Java is largely a syntactic subset, so a typical integer/array method (semicolons, C-style `for`, typed locals, `return`, `new int[]{…}`, statement `@Invariant`/`@Decreases`) verifies unchanged once the contract annotations are added — a full Java-style `max` proves end-to-end. Every proof is over GROOVY semantics — the tool has no model of Java intent. The dangerous divergences that Groovy\'s own typing rejects are caught at COMPILE time: integer division `/` is BigDecimal (true) division, a hard @TypeChecked error when fed to an int (use `.intdiv()`), and the bare brace array initializer `{…}` is a closure that won\'t parse (use `[…]` or `new int[]{…}`). Divergences Groovy\'s typing tolerates are proved silently with Groovy semantics — `==` is value-equality (`.equals`), so two equal Strings verify `result == true`, which is NOT Java reference-equality: read the fragment as Groovy.'
+
     static final List<Map> CASES = [
         // Verifying a Java algorithm as Groovy. Java is largely a syntactic subset of Groovy, so a typical
         // integer/array algorithm — semicolons, C-style `for`, typed locals, `return`, `new int[]{…}` — parses

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G191_p69_sum_under_store {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'N-account conservation via old.bal.sum() across an array store; a skim fails the build (could not decide).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 69: sum-under-store law → N-account conservation ----------

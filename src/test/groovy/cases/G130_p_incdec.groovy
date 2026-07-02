@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G130_p_incdec {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A side-effecting array index a[i] = ++i / a[i] = i++ snapshots the index and proves bounds; a wrong claim refutes.'
+
     static final List<Map> CASES = [
         // Phase 127 — a pre-increment in an array-store RHS whose variable also indexes the store (`a[i] = ++i`)
         // snapshots the index before the increment, so the store lands at the old slot. Verifies the fill where

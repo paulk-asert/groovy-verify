@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G237_p106_char_seq {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Building a char[] buffer char-by-char (the Int-element-array route for string construction), e.g. functional ChangeCase; a wrong-char claim refutes.'
+
     static final List<Map> CASES = [
         // ---------- P106 char-sequence: ChangeCase via the array theory (Slice 2) ----------
         // The spike showed string *construction*-content invariants time out on Z3's seq theory (`str.++`),

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G060_p89_ref_identity {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Reference identity (a.is(b) / a===b) ⇒ the two handles\' fields coincide; no identity ⇒ they need not (refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 89 (slice 1): reference identity + identity-keyed field reads ----------

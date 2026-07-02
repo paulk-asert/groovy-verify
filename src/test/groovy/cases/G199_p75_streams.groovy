@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G199_p75_streams {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Bounded infinite-stream every/any over Stream.iterate(...).limit(n): a literal limit unrolls, a property of every element proves by induction, a witness for any.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 75: infinite-stream every/any — bounded unroll + symbolic-limit induction --------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G183_p63_for_in {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A for(x in xs) / Java-style for(:) loop desugars to the indexed while-machinery (the index is hidden, the loop variable keeps its name).'
+
     static final List<Map> CASES = [
         // ---------- Phase 63: for-in loops (synthesized hidden index, loop var retained) ----------
         // `for (x in xs)` desugars to an indexed while: a hidden index drives iteration, the loop

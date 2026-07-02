@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G032_p_array {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Information-flow over an array\'s value-dependent positional label (the §VII buffer): the consumable region is Low; reading the High region or advancing tail over a secret refutes.'
+
     static final List<Map> CASES = [
         // PROBE-array (Step 2b — array-element labels, Smith §VII's actual buffer). The element's classification is
         // value-dependent on POSITION and the control fields: L(values[i]) = (head <= i < tail) ? Low : High (the

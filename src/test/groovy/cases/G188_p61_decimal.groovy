@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G188_p61_decimal {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The / operator is exact BigDecimal/Real division (a/2 == 2.5), contrasted with intdiv.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 61: Groovy-faithful BigDecimal division (Z3 Real sort) ----------

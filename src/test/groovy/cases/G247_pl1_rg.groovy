@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G247_pl1_rg {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Rely/guarantee compatibility lemmas: each rely reflexive/transitive, every guarantee implies every other thread\'s rely; a non-implying guarantee refutes.'
+
     static final List<Map> CASES = [
 
         // ----- Rely/guarantee well-formedness (Smith §IV compatibility lemmas) -----

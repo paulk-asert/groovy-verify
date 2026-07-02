@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G208_p88b_do_while_early_return {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A do-while with an in-body early return: the first-iteration exit is checked from the entry state (not the not-yet-established invariant).'
+
     static final List<Map> CASES = [
 
         // ---------- do-while early return on the first iteration (Phase 88b — a soundness fix) ----------

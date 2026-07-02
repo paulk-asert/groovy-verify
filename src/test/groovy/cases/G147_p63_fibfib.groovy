@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G147_p63_fibfib {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 063 — tribonacci (fibfib) via the Trib.of(i) recurrence helper; the iterative version proves equal to the spec.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 063 (fibfib): tribonacci via the Trib.of(i) helper ----------

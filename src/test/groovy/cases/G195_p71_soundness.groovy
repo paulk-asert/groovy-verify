@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G195_p71_soundness {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Soundness anchors: a boolean field write is tracked (no crash), a vacuous precondition is flagged.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 71: soundness hardening (boolean fields, vacuous preconditions) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G205_set_algebra {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Int-element set algebra membership: x in (a-b) / (a^b) follows from operand memberships.'
+
     static final List<Map> CASES = [
 
         // ---------- Set algebra: union (+) / intersection (.intersect) / difference (-) / symmetric difference (^) ----------

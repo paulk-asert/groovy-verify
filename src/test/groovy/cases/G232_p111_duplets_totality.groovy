@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G232_p111_duplets_totality {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The FoVeOOS Duplets challenge proven total — a real duplet is returned (the sentinel fall-through is infeasible under the existential precondition).'
+
     static final List<Map> CASES = [
         // ---------- P111 Duplets totality (find-given-exists, no engine change) ----------
         // Strengthens the Phase-110 partial-correctness duplet to TOTALITY: with a sentinel-free postcondition

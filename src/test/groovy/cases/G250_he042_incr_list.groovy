@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G250_he042_incr_list {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 042 — element-wise map: build a list whose every element is the input + 1, with a per-element @Ensures over the returned list; forgetting the +1 refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Element-wise list transforms (HumanEval 042 / 152 / 062) — build a list whose every element is a

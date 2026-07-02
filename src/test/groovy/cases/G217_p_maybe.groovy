@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G217_p_maybe {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A two-case Some|None @Monadic carrier: Vavr-style auto-proves all laws, Optional-style (@NonNull content) auto-refutes functor composition.'
+
     static final List<Map> CASES = [
 
         // Phase M-C — a two-case @Monadic carrier (Some(value) | None) is recognised and modelled as a two-constructor

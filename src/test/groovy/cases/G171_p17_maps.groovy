@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G171_p17_maps {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Finite Map lookup/store (m[k], put): a put stores the value and adds the key.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 17: finite maps (value array + key-set) ----------

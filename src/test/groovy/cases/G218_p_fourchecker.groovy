@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G218_p_fourchecker {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'One Maybe class under four checkers (Null/Monadic/Purity/Verify) with a live DO-comprehension: Vavr-style auto-proves the laws, Optional-style refutes functor composition.'
+
     static final List<Map> CASES = [
 
         // The headline four-checker example: NullChecker + MonadicChecker + PurityChecker + VerifyChecker on one

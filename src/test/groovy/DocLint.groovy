@@ -16,10 +16,10 @@
 
 /**
  * SKETCH — the three drift lints that keep the hand-maintained docs honest against the single source of truth
- * ({@link VerifyHarness#CASES} and the codebase). Run in REPORT mode here so it prints the *current* drift; to
- * enforce, convert each to a JUnit assert (so it runs in `check`) after baselining the existing gap.
+ * ({@link VerifyHarness#CASES} and the codebase). This entry point is the human-readable REPORT; the same three
+ * lints are asserted by {@link DocLintTest} inside `check`/CI, so drift fails the build.
  *
- *   1. group-descriptions — every CASES group has a one-line capability description (Harvester.GROUP_DESC)
+ *   1. group-descriptions — every CASES group has a one-line capability description (a co-located DESCRIPTION in its cases/G*.groovy file, aggregated by Harvester.GROUP_DESC)
  *   2. snippets-as-tests  — every fenced ```groovy block in the docs appears as a CASES source (can't silently break)
  *   3. architecture-map   — every file named in ARCHITECTURE.md exists; every verification/*.groovy is mapped
  *

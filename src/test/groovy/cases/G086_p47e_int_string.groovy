@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G086_p47e_int_string {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Integer.toString / String.valueOf / Integer.parseInt fold for literals.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47e: Integer ↔ String conversion ----------

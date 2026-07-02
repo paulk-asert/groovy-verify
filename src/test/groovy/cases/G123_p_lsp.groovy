@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G123_p_lsp {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Behavioural subtyping (Liskov): an override may weaken @Requires / strengthen @Ensures, never the reverse — strengthening refutes with a witness.'
+
     static final List<Map> CASES = [
         // ---------- Phase 120: behavioral subtyping (Liskov substitution) ----------
         // When an override *redeclares* its own contract, groovy-verify proves it is substitutable for the

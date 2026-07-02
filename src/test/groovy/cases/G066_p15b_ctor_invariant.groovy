@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G066_p15b_ctor_invariant {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A constructor must establish the class @Invariant (not assume it); a ctor leaving it false refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 15b: class @Invariant on constructors (establishment) ----------

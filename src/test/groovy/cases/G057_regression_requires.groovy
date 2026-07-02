@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G057_regression_requires {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Regression anchors for @Requires (good literal call verifies, bad refutes).'
+
     static final List<Map> CASES = [
 
         // ---------- Regression: call-site preconditions ----------

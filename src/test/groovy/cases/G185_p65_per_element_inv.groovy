@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G185_p65_per_element_inv {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A for-in invariant referencing the loop variable x is a per-element check (verified with x = xs[idx] under the index bound).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 65: for-in invariants over the loop variable (per-element checks) ----------

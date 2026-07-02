@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G030_p_counter {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A monotone-counter rely/guarantee: an observed lower bound persists across interference; a non-monotonic rely drops it.'
+
     static final List<Map> CASES = [
         // PROBE-counter (Step 1 — a second R/G example, a different shape: one shared scalar with a *monotonicity*
         // rely, not array pointers). Two symmetric threads only ever increment `count`; each relies on the other to

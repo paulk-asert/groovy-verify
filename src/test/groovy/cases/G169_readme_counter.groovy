@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G169_readme_counter {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The README Counter without a @Requires refutes at construction.'
+
     static final List<Map> CASES = [
 
         // README Counter example — confirm the constructor-refute diagnostic shape used in docs.

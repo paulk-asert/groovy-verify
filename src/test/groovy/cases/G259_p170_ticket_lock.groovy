@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G259_p170_ticket_lock {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Leino\'s ticket lock (KRML260, Modeling Concurrency in Dafny) — SMT-proved mutual exclusion over a bounded (enum) process set. Each atomic event is a Model-2 two-state predicate over a system invariant `valid`, discharged as an empty-bodied lemma (the lattice/monoid-law pattern): mutual exclusion is proved a consequence of the invariant (the paper\'s exact lemma — two symbolic processes p,q, concluding p==q, riding the enum domain-closure axiom so one lemma covers every process), and Request/Enter/Leave each preserve it (Leave, advancing serving while re-establishing the strict bound for a waiter, needs BOTH uniqueness and eating==>served). Dropping the uniqueness conjunct — the strengthening the paper adds last — refutes mutual exclusion and Leave-preservation. Process is a fixed enum {A,B} (the N=2 instance; general symbolic set<Process> is out of fragment).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 170: Leino's ticket lock (KRML260) — SAFETY over a bounded (enum) process set ----------

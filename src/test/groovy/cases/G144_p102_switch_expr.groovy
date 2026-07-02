@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G144_p102_switch_expr {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A switch expression (arrow form, int/String/range labels) folds to an ite-chain; an unmatched case or a false branch claim refutes.'
+
     static final List<Map> CASES = [
         // Phase 102 — switch EXPRESSIONS (arrow form, simple literal labels) lower to an ite-chain. A switch
         // expr desugars to `{ -> switch }.call()`; the encoder recognises that and builds

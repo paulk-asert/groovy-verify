@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G175_p21_bcount_law {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The per-mutation count law: a fresh in-domain add increments the count, a non-fresh or out-of-domain add does not.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 21: the bcount per-add law (Sets.boundedCount as a primitive) ----------

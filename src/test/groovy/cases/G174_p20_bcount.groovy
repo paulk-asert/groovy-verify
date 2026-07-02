@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G174_p20_bcount {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The bounded-count law 0 <= bcount(s,k) <= k; a full domain gives bcount==k, over-counting breaks the bound.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 20: bcount — the bounded-sum cardinality, properties earned by induction ----------

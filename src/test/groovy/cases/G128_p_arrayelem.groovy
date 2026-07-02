@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G128_p_arrayelem {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'int[] element values appear in counterexamples, and an element-wise refutation names the offending slot.'
+
     static final List<Map> CASES = [
         // Phase 125 — an Int-valued *parameter* array's element values are rendered in the counterexample
         // (`xs[1] = 8` makes plain why `xs[1] == 7` fails). A *local* array's elements stay suppressed: in a

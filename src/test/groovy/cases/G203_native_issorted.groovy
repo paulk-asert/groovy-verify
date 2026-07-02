@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G203_native_issorted {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The native xs.isSorted() / .sorted predicate yields the sortedness gap fact (a[i] <= a[j] for i<j) for arrays and lists.'
+
     static final List<Map> CASES = [
 
         // ---------- Native sortedness idiom — `a.isSorted()` / `a.sorted` (Groovy 6 GDK, native int[]/long[]) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G099_p84_map_params {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A named-map parameter\'s values are read via property/subscript and used in body arithmetic.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 84: map PARAMETERS with .key access ----------

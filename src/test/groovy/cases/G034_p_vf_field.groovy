@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G034_p_vf_field {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Field self-increment / const-write in a body, tracked in SSA, checked against an assert (true proves, false refutes).'
+
     static final List<Map> CASES = [
         // Value-flow SSA versioning of an Int field/param write (fix b). A *bare* write to a field/param reuses
         // that name's entry symbol; as a plain `name == rhs` binding `tail = tail + 1` threads the self-

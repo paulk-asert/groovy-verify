@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G006_p132_unit_scale {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'JSR 385 value/scale: a Quantity built from known units (getQuantity/prefixes/add/to) has its SI magnitude recovered, so getValue() in a named unit verifies exactly and a wrong-unit extraction refutes (the Mars scale bug).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 132: JSR 385 value/scale (C₁ — SI-normalized magnitudes) ----------

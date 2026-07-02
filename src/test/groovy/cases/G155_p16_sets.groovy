@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G155_p16_sets {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Finite Set membership: x in s / !in, and an assumed membership entails membership.'
+
     static final List<Map> CASES = [
 
         // ---------- `!in` operator (negated membership; `x !in s` ≡ `!(x in s)`) ----------

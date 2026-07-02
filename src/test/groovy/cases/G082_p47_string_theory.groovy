@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G082_p47_string_theory {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Z3\'s native string theory: prefixof implies equal chars, distinct literals are theory-distinct, literal concat folds.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47: Z3 string theory adoption ----------

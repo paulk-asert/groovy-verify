@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G236_p107_ring_buffer {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A ring buffer as a mutable data structure: enqueue/dequeue preserve the class @Invariant under @Modifies framing; an over-strong frame refutes. Both the non-wrapping bounded queue and the WRAPPING circular (modulo) ring verify — `items[t % capacity]` is proven in bounds — so the circular shape is no harder for the fragment.'
+
     static final List<Map> CASES = [
         // ---------- P107 ring buffer: a verified mutable data structure (class @Invariant) ----------
         // A bounded (non-wrapping) queue as a ring buffer, after Leino's Dafny tutorial (Why3's `ring_buffer`).

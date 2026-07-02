@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G103_p78_int_return {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An int[] return accepts a coerced [a,b] / new int[]{a,b} with constant-index result[k] and .length; a wrong length refutes.'
+
     static final List<Map> CASES = [
 
         // The SAME returns through a declared `int[]` type (not List). Groovy implicitly coerces the body's

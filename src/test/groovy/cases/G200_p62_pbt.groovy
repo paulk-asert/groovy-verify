@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G200_p62_pbt {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'When the solver returns UNKNOWN, a bounded property-based pass refutes by testing and reports a fails-on repro (or bails to could-not-decide).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 62: bounded property-based refutation when the solver says UNKNOWN ----------

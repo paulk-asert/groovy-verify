@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G225_p112_dupletexcept {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'The dupletExcept variant proven total; without the existential precondition it refutes.'
+
     static final List<Map> CASES = [
         // ---------- P112 Duplets: dupletExcept (exclusion-totality search) ----------
         // The second-pass engine of the full two-pair Duplets: find a duplicate pair whose VALUE differs from

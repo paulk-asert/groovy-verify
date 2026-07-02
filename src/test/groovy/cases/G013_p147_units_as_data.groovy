@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G013_p147_units_as_data {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A unit is itself a Unit(scale, l, m, t) record value and Quantity.of(v, unit) a factory reading its fields, so the literal JSR 385 shape verifies on the bespoke type with no new engine code: Quantity.of(1, Unit.kilo(Unit.metre())).plus(Quantity.of(1, Unit.mile())).value == 2609.344 (a metric prefix is a Unit->Unit factory). A wrong total refutes the postcondition and a length-plus-mass refutes the dimension guard.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 147: units-as-data — a Unit(scale, dims) value + a getQuantity factory over it ----------

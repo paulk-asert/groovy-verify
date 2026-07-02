@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G233_p110_tuple_exit {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A Tuple returned from a mid-loop early-exit (return Tuple.tuple(i,j)); a wrong slot order refutes.'
+
     static final List<Map> CASES = [
         // ---------- P110 tuple return on an early-exit path ----------
         // checkEarlyExit bound only a scalar `result`, so an early `return Tuple.tuple(i, j)` couldn't resolve

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G100_p85_compound_assign {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Compound assignment += -= *= /= %= in straight-line and loop bodies.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 85: compound assignment operators (+= -= *= /= %=) ----------

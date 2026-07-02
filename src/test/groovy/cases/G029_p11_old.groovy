@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G029_p11_old {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'old(...) snapshots pre-state field and array contents, so a mutator\'s post/pre delta is checked; a wrong delta refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 11: old(...) pre-state — relate the result to the method's entry state ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G039_p14_sort {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Insertion sort proven sorted AND a permutation at once; a no-op sort cannot claim sorted.'
+
     static final List<Map> CASES = [
         // ---------- Phase 14: the verified sort — sorted AND a permutation ----------
         // insert threads a ghost upper bound `hi` (the recursion passes the pivot a[m] as the new,

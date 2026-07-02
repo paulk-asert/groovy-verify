@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G222_p_carrier {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A single-value @Monadic wrapper carrier round-trips (new Res(m.v) == m); distinct carriers are not forced equal.'
+
     static final List<Map> CASES = [
 
         // Phase B (carrier model) — a single-field @Monadic wrapper carrier is modelled as a one-constructor

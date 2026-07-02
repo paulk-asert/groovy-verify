@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G215_p_nonnull {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An explicit result != null postcondition proven from a non-null parameter/literal; an unconstrained param refutes.'
+
     static final List<Map> CASES = [
 
         // Phase 131 — value-flow nullity: a method can now *prove* it returns non-null (literal / new / concat /

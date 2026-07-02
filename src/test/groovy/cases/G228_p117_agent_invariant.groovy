@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G228_p117_agent_invariant {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An Agent/actor\'s class @Invariant is the serialized monitor invariant each handler preserves (bounded-buffer occupancy); an unguarded add refutes.'
+
     static final List<Map> CASES = [
         // ---------- P117 agents/actors: the monitor invariant via serialization ----------
         // The lock trick spans paradigms. An Agent/Actor is a monitor whose mutual exclusion comes from

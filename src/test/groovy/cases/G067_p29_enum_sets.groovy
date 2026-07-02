@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G067_p29_enum_sets {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A finite-state-machine\'s reachable states as an enum/ordinal set: full coverage entails every state, partial coverage cannot.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 29: Sets.boundedBy / Sets.boundedCount generalised to enum-element sets ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G004_nonnull_param {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A @NonNull-style annotation (NullChecker / Checker Framework / JSR-305 vocabulary) on a reference parameter is read as a non-null precondition, discharging a deref or apply the unannotated form could not.'
+
     static final List<Map> CASES = [
 
         // ---------- @NonNull parameter read as a non-null precondition (NullChecker / Checker Framework vocabulary) ----------

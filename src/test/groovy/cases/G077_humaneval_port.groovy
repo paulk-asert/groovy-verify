@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G077_humaneval_port {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Faithful Verus-HumanEval ports (strlen, get_positive, is_prime) with the functional @Ensures the originals omit.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval port — strlen (Verus task 023) ----------

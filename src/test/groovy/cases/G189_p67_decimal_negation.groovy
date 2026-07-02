@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G189_p67_decimal_negation {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'BigDecimal unary minus / negative literals verify.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 67: decimal negation (unary minus, negative literal) ----------

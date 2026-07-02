@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G138_p_shift_power {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A shift equals a power of two (1 << n == 2 ** n); an off-by-one is caught.'
+
     static final List<Map> CASES = [
         // `1 << n == 2 ** n` proved for the whole range 0..30 at once — the verification analog of the
         // runtime `(0..10).each { assert 1 << n == 2 ** n }`, and stronger (every n, not sampled points).

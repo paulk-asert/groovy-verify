@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G076_p38c_immutable {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Factory edge cases: Set.of with duplicate literals skips the fold, unmodifiable wrappers are transparent.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 38c: Set.of dedup check + transparent immutable wrappers ----------

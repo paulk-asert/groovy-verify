@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G124_p123_interface_contracts {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An interface method\'s @Requires/@Ensures is inherited by every implementer — the contract-inheritance walk traverses implemented interfaces, not just the superclass.'
+
     static final List<Map> CASES = [
         // ---------- Phase 123: interface-declared contracts ----------
         // groovy-contracts lets an interface method carry a @Requires/@Ensures that every implementer inherits.

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G081_p46e_charat {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Literal s.charAt(i) folds (first/last position); a wrong literal refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 46e: charAt with per-position literal pinning + bounds ----------

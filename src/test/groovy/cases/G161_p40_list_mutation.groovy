@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G161_p40_list_mutation {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'xs.add(v): size grows by one and the new last element is v; a wrong delta refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 40: size-changing list mutation ----------

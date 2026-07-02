@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G108_p51b_sum_empty {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Groovy\'s duck-typed .sum() empty edge by receiver kind: a primitive array\'s [].sum() is 0 (empty-safe), but a List/sublist\'s is null — so a bare a[0..<k].sum() refuses at empty (a statically-empty range crisply) while the seeded .sum(0) and the int[]-returning Arrays.copyOf(a, len).sum() are empty-safe.'
+
     static final List<Map> CASES = [
 
         // The `.sum()` empty edge, by receiver kind (Groovy duck-types the no-arg fold). A primitive *array*'s

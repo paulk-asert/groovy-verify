@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G220_p_monadauto {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = '@Monadic alone synthesises and proves the monad/functor laws for a modellable carrier; an unmodellable shape is left alone.'
+
     static final List<Map> CASES = [
 
         // Phase 136/137 (auto-synthesis) — @Monadic alone now carries the proof: all four laws (the three identity

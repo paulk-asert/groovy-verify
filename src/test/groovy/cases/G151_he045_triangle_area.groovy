@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G151_he045_triangle_area {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 045 — triangle area a*h/2 in IEEE-754 FP: exact doctest, finiteness, and positive-sides ⇒ result >= 0.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 045 (triangle_area): scalar IEEE-754 FP (Phase 73) ----------

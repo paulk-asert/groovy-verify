@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G137_pvoid_induction {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A void self-inductive lemma (2 ** n >= 1) proves genuinely; an over-claim (>= 2) is caught at the base case.'
+
     static final List<Map> CASES = [
 
         // ===== Genuine inductive `**` facts, unlocked by void-lemma enforcement =====

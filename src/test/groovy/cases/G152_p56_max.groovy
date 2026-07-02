@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G152_p56_max {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'max_element/min_element as a witnessed extremum (bounds every element AND is achieved by one); returning a[0] refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- HumanEval 35 (max_element): the witnessed extremum ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G129_p_fizzbuzz {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Element-wise FizzBuzz array-fill correctness; an off-by-one surfaces the offending element value.'
+
     static final List<Map> CASES = [
         // The other-direction off-by-one (`spec(i)` not `spec(i+1)`): slot 0 gets spec(0) = FizzBuzz (0 is
         // divisible by everything), so the surfaced element renders the actual emoji — Z3 mangles a supplementary

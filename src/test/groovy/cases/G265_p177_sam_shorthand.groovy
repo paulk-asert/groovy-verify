@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G265_p177_sam_shorthand {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'SAM call-operator shorthand f(x) for a Function-typed formal, modelled identically to f.apply(x). Groovy\'s v(args)->v.call(args)->apply rewrite is a resolution-phase step, but contracts are re-parsed at CONVERSION (ContractExpansionTransform), pre-resolution, so f(x) reaches the encoder as an implicit-this call this.f(x); the encoder now recognises that shape when the name is a Function formal and routes it to the same apply$f uninterpreted function as f.apply(x), so the two spellings unify. Teeth: a false claim over the shorthand refutes (genuinely modelled, not skipped). Diagnosed as groovy-verify-internal — Groovy and groovy-contracts both resolve f(x) correctly at runtime.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 177: SAM call-operator shorthand `f(x)` for a Function-typed formal ----------

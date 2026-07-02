@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G146_p55_fib {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 055 — Fibonacci via the Fib.of(i) recurrence helper; the iterative version proves equal to the spec.'
+
     static final List<Map> CASES = [
         [group: 'P55 fib', name: 'Fib.of(5) == 5', ok: true,
          src: tc('''class C {

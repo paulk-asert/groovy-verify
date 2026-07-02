@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G156_p46d_in_loop_guards {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'An in-loop if / && guard discharges a list-element deref obligation; an unguarded in-loop deref refutes.'
+
     static final List<Map> CASES = [
 
         // The earlier P37 "in-body if (xs[i] != null) guard verifies" test covered the

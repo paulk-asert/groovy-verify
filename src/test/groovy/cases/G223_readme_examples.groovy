@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G223_readme_examples {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Assorted README examples (nested-loop count, two-cursor array copy, set-merge union).'
+
     static final List<Map> CASES = [
 
         // ---------- README Examples (verbatim, so the docs can't drift from reality) ----------

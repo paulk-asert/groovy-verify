@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G164_p43_field_bounds {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A field-collection removeLast/first needs a size guard; unguarded refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 43: field-receiver bounds synthesis for runtime-throwing list shapes ----------

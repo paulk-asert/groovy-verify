@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G065_p_inheritance {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A super.m() call assumes the parent\'s postcondition and must satisfy the parent\'s precondition.'
+
     static final List<Map> CASES = [
         // ---------- Inheritance: cross-method reasoning along the `extends` axis ----------
         // A `super.f(x)` call is treated like any contracted call: the parent's @Ensures is *assumed* for the

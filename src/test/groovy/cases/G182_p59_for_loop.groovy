@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G182_p59_for_loop {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A classic for(init;cond;update) loop with @Invariant/@Decreases verifies bounds + postcondition; a missing precondition refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 59: classic for-loops (desugared to while-shape) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G097_p53_product {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A product aggregation via the inject(1){a,x->a*x} fold (and the inject(0) sum fold).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 53: product aggregation via the inject(1){a,x->a*x} fold ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G209_p_expr_inc_dec {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Side-effecting ++ / -- in expression position (x = i++, x = ++i) hoist to the old/new value plus the increment.'
+
     static final List<Map> CASES = [
 
         // ---------- ++ / -- in expression position (variable target) ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G252_he062_derivative {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 062 — index-weighted map: a polynomial\'s coefficients become [c1*1, c2*2, ...] (size n-1), each output the next coefficient times its power; using the index instead of the power refutes.'
+
     static final List<Map> CASES = [
 
         // 062 derivative: a polynomial's coefficients [c0, c1, c2, ...] → [c1*1, c2*2, ...] (size n-1). Each output is

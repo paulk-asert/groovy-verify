@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G078_p46a_string_preds {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'String predicates (startsWith/endsWith/contains) as uninterpreted Bool functions; a contract assumption flows, and contains routes to the string (not list) predicate.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 46a: string predicates as uninterpreted Bool functions ----------

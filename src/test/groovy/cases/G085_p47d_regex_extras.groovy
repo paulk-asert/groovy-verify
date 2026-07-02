@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G085_p47d_regex_extras {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Regex character classes \\d+ / \\w+ match/reject digit and alphanumeric strings.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47d: regex feature expansion ----------

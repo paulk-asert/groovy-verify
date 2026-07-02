@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G176_p22_full_char {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'count==k iff every domain node is in the set (the cardinality characterisation of full coverage).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 22: the full-characterization axiom + end-to-end DFS coverage ----------

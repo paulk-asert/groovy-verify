@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G234_p109_nested_return {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A nested (doubly-looped) search that returns a witness on a match verifies, and the in-body return\'s @Ensures is checked.'
+
     static final List<Map> CASES = [
         // ---------- P109 nested loop with an inner early return ----------
         // Phase 91 summarised a nested inner loop by havocking its writes + assuming `inner_inv ∧ ¬inner_guard`,

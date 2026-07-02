@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G037_p_rely_step {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A hand-written rely-step (@Modifies + @Ensures over old) survives interleaving; a weakened rely no longer protects the read.'
+
     static final List<Map> CASES = [
         // A rely-step is just a *framed assume*: havoc the shared frame (@Modifies), then assume a two-state
         // relation between old and new (@Ensures over `old`). So Phase 13's caller-side framing already lets us

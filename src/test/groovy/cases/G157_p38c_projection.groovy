@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G157_p38c_projection {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Map.of(...).keySet()/.values().contains folds.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 38c-3: keySet / values projections on map factories ----------

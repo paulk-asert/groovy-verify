@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G079_p46b_string_length {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'String .length()/.size() pinned for literals and equated; a wrong literal length refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 46b: string length oracle with literal pinning ----------

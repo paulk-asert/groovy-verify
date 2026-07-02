@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G055_p8a_eval {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A closed (ground) call to a contract-free pure function is evaluated to a literal in contracts/bodies; a wrong value refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 8a (pure-function evaluation): closed calls computed to literals ----------

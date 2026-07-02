@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G187_p60_max_min {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'result == a.max()/a.min() as the witnessed-extremum spec; returning a[0] refutes.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 60: xs.max() / xs.min() as the witnessed-extremum spec ----------

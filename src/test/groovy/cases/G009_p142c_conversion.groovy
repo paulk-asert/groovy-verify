@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G009_p142c_conversion {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'In-record unit conversion: a factory (km) and accessor (inKm) are scale arithmetic on the component, so the round-trip `km(2).inKm() == 2` and record equality `km(1) == metres(1000)` verify, a wrong factor refutes, and a cross-class `Length.km(2)` resolves.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 142c: in-record unit conversion (the construct-to-SI side, multiplicative) ----------

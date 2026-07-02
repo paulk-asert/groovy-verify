@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G084_p47c_regex {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Literal regex .matches: exact match verifies, wrong string refutes, dot matches a single position.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47c: matches with regex parser ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G142_p100_string_next {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A user String.next() example over A..Z proves the letter-advance; stepping off the range refutes.'
+
     static final List<Map> CASES = [
         // Phase 100 — `s.next(i)` / `s.next()` (Groovy 6: last char incremented by i, default 1). First slice:
         // single-char receivers, ASCII, no wraparound. Modelled as a fresh single-char string with code

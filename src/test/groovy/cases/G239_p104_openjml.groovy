@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G239_p104_openjml {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'OpenJML\'s max-by-elimination (the result indexes a maximum; a false min-claim refutes) and invert-injection (a scatter b[a[k]]=k builds a correct inverse under injectivity; dropping injectivity refutes at invariant preservation).'
+
     static final List<Map> CASES = [
         // ---------- P104 OpenJML examples (ported from openjml.org/examples, CC BY-NC) ----------
         // "Max by elimination" — find the index of a maximum by shrinking the window [x, y] from

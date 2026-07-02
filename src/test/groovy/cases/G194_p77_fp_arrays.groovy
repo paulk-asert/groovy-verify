@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G194_p77_fp_arrays {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'double[] element predicates ride the FP theory: every>=0 ⇒ xs[0]>=0, but every>0 does not prove >=1 (FP), and sorted-adjacent holds.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 77: FP-element arrays (double[]) — element reads + predicates ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G012_p149_null_return {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A reference-typed method that returns null on a path (e.g. a bounded queue\'s Integer poll() → null when empty) still verifies its @Invariant / @Ensures over other state: result binds as null, so result == null proves and result != null refutes. This lets the exact SpscBuffer.groovy source verify under groovy-verify (SpscBufferVerifyTest).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 149: `return null` from a reference-typed method ----------

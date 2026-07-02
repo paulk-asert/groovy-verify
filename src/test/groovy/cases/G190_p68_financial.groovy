@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G190_p68_financial {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Conservation proofs: a transfer loses no money, a salami-slice skim is caught, interest credits every cent.'
+
     static final List<Map> CASES = [
         // (Decimal-list `sum()` is now modelled — Phase 70 — so the former "skips loudly" boundary test
         // moved to the P70 group below as a verifying example.)

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G090_p47h_gstring {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'GString interpolation folds for String/int literal holes (single and multiple).'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47h: GString interpolation ----------

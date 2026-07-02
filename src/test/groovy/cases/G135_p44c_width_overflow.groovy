@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G135_p44c_width_overflow {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'Width-aware overflow: long n+1 verifies under a 64-bit bound (no spurious 32-bit refute) but refutes at the 64-bit boundary.'
+
     static final List<Map> CASES = [
         // Phase 44c — width-aware @CheckOverflow: the bound follows the operation's promoted width.
         [group: 'P44c width overflow', name: 'long n+1 verifies under a 64-bit bound (was a spurious 32-bit refute)', ok: true,

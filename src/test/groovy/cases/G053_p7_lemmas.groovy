@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G053_p7_lemmas {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'A void recursive method as a reusable lemma (e.g. sortedness transitivity), proven once and applied by calling it.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 7 (standalone lemmas): void methods + self-IH + standalone calls ----------

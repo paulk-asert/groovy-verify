@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G257_he043_pairs_sum_to_zero {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'HumanEval 043 — is there a pair summing to zero: the nested-existential biconditional verifies via a seen.contains rewrite (the Verus break is unsupported) and a \'no pair so far\' invariant; an always-true checker refutes on the empty list.'
+
     static final List<Map> CASES = [
 
         // ---------- 043 pairs_sum_to_zero (HumanEval) — EXPERIMENT: is there a pair summing to zero? ----------

@@ -21,6 +21,9 @@ import static cases.CaseDsl.*
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G087_p47f_weak_ops {
 
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'replaceAll as a weak-axiom op: no-op on absent, length preserved under equal-length swap, unprovable under unequal-length.'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 47f: replaceAll + lastIndexOf as uninterpreted ----------
