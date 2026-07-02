@@ -14720,6 +14720,90 @@ class Maybe {                                              // a hand-rolled Some
                                          java.util.function.Function<Integer,Integer> servingF,
                                          java.util.function.Function<Integer,Integer> tAF, int n) {}
                     }''')],
+
+        // ---------- Phase 174: Leino's ticket lock — FAIR-SCHEDULE eventually-eats (base case), progress DERIVED ----------
+        // The apply-term fix (Phase 173) turned out to unblock more than bounded composition: recursive-lemma
+        // induction over trace functions now works (a recursive call's @Ensures serves as the induction hypothesis),
+        // which is what Phase 172/173 flagged as "Wall 2". With it, Leino's GetNextStep frame argument is expressible
+        // — and the FAIR-SCHEDULE eventually-eats no longer *assumes* the productive step, it DERIVES it: fairness
+        // yields a future time the process is scheduled, and a recursive frame lemma proves the process stays ready
+        // until then. This is the genuine liveness mechanism (Section 7.5-7.6), for the base case (the waiter already
+        // holds the served ticket).
+        // (1) The frame lemma distilled: a trace value frozen step-by-step across a window is unchanged end-to-end —
+        // recursive induction over the window (the direct closed form does NOT close; the recursion is what carries it).
+        [group: 'P174 fair-liveness', name: 'windowed frame lemma via recursive induction', ok: true,
+         src: tc('''class FairFrame {
+                        @Requires({ n <= u && Forall.range(n, u, { int i -> csF.apply(i + 1) == csF.apply(i) }) })
+                        @Ensures({ csF.apply(u) == csF.apply(n) })
+                        @Decreases({ u - n })
+                        static void frame(java.util.function.Function<Integer,Integer> csF, int n, int u) {
+                            if (n < u) frame(csF, n + 1, u)
+                        }
+                    }''')],
+        // (2) The headline: fair-schedule eventually-eats, base case. A (id 0) is Hungry holding the served ticket
+        // (measure 0) at n; fairness gives a time u >= n when A is scheduled; A is unscheduled on [n,u) so it stays
+        // Hungry with its ticket (frameA), and serving is stable there (only A, the holder, could advance it —
+        // stableServing); at u, A's Enter fires. The frame/stability are DERIVED by the recursive helpers, then the
+        // Enter step gives A Eating at u+1. Progress derived from fairness, not assumed.
+        [group: 'P174 fair-liveness', name: 'fair-schedule eventually-eats (base case)', ok: true,
+         src: tc('''class FairLive {
+                        @Requires({ n <= u &&
+                            Forall.range(n, u, { int i -> schedF.apply(i) != 0 }) &&
+                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) })
+                        @Ensures({ csAF.apply(u) == csAF.apply(n) && tAF.apply(u) == tAF.apply(n) })
+                        @Decreases({ u - n })
+                        static void frameA(java.util.function.Function<Integer,Integer> schedF, java.util.function.Function<Integer,Integer> csAF,
+                                           java.util.function.Function<Integer,Integer> tAF, int n, int u) {
+                            if (n < u) frameA(schedF, csAF, tAF, n + 1, u)
+                        }
+                        @Requires({ n <= u && Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Ensures({ servingF.apply(u) == servingF.apply(n) })
+                        @Decreases({ u - n })
+                        static void stableServing(java.util.function.Function<Integer,Integer> servingF, int n, int u) {
+                            if (n < u) stableServing(servingF, n + 1, u)
+                        }
+                        @Requires({ n <= u && schedF.apply(u) == 0 &&
+                            csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) &&
+                            Forall.range(n, u, { int i -> schedF.apply(i) != 0 }) &&
+                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
+                            Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) &&
+                            ((csAF.apply(u) == 1 && tAF.apply(u) == servingF.apply(u)) ==> csAF.apply(u + 1) == 2) })
+                        @Ensures({ csAF.apply(u + 1) == 2 })
+                        static void eventuallyEats(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
+                                                   java.util.function.Function<Integer,Integer> servingF, java.util.function.Function<Integer,Integer> schedF, int n, int u) {
+                            frameA(schedF, csAF, tAF, n, u)
+                            stableServing(servingF, n, u)
+                        }
+                    }''')],
+        // Teeth: drop the Enter step and reaching Eating no longer follows — the fairness/framing composition is
+        // doing real work, not smuggling the conclusion in.
+        [group: 'P174 fair-liveness', name: 'eventually-eats refutes without the Enter step', expect: 'Cannot prove postcondition',
+         src: tc('''class FairLiveBroken {
+                        @Requires({ n <= u &&
+                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) })
+                        @Ensures({ csAF.apply(u) == csAF.apply(n) && tAF.apply(u) == tAF.apply(n) })
+                        @Decreases({ u - n })
+                        static void frameA(java.util.function.Function<Integer,Integer> csAF,
+                                           java.util.function.Function<Integer,Integer> tAF, int n, int u) {
+                            if (n < u) frameA(csAF, tAF, n + 1, u)
+                        }
+                        @Requires({ n <= u && Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Ensures({ servingF.apply(u) == servingF.apply(n) })
+                        @Decreases({ u - n })
+                        static void stableServing(java.util.function.Function<Integer,Integer> servingF, int n, int u) {
+                            if (n < u) stableServing(servingF, n + 1, u)
+                        }
+                        @Requires({ n <= u && schedF.apply(u) == 0 &&
+                            csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) &&
+                            Forall.range(n, u, { int i -> csAF.apply(i + 1) == csAF.apply(i) && tAF.apply(i + 1) == tAF.apply(i) }) &&
+                            Forall.range(n, u, { int i -> servingF.apply(i + 1) == servingF.apply(i) }) })
+                        @Ensures({ csAF.apply(u + 1) == 2 })
+                        static void eventuallyEats(java.util.function.Function<Integer,Integer> csAF, java.util.function.Function<Integer,Integer> tAF,
+                                                   java.util.function.Function<Integer,Integer> servingF, java.util.function.Function<Integer,Integer> schedF, int n, int u) {
+                            frameA(csAF, tAF, n, u)
+                            stableServing(servingF, n, u)
+                        }
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

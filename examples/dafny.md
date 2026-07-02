@@ -318,13 +318,21 @@ bounded bypass to pin the horizon at a *constant* — a **bounded eventually-eat
 measure one has the served process leave (`serving` advances, so the waiter's measure hits zero — *derived*, not
 assumed), then its `Enter` fires, and it is Eating two trace steps later. Drop the `Enter` step and it refutes.
 
-What stays out of reach is the **fair-schedule** eventually-eats: not the composition (that now works) but
-*deriving* that the productive steps occur — that under any fair schedule the served process is eventually picked —
-which is Leino's `GetNextStep` search-loop and `Liveness` proof-loop over an *unbounded* horizon. That needs two
-things the fragment lacks: **using a recursive lemma's own postcondition as an induction hypothesis** (a probe hits
-"no usable @Ensures" on the self-recursive call — the direct telescoping `serving(k) == serving(0) + k` is the same
-gap), and an **unbounded `∀i:nat`** hypothesis with on-demand instantiation. Those are the next *engine* increments;
-with them, the general (any-N, infinite-trace) liveness is reachable.
+The **fair-schedule** eventually-eats then follows — and it needed no further engine work. The apply fix also
+unblocked **recursive-lemma induction** over trace functions (a recursive call's `@Ensures` serves as the induction
+hypothesis) — earlier probing had reported "no usable @Ensures" on the self-recursive call, but that turned out to
+be a *downstream symptom* of apply-terms not composing, gone once they do. That is exactly how Dafny discharges the
+loop: not by proving the closed form (the direct telescoping `serving(k) == serving(0) + k` still won't close), but
+by a recursion the solver checks one step at a time. With it, Leino's `GetNextStep` frame argument is expressible —
+a trace value frozen step-by-step across a window is unchanged end-to-end, by recursion over the window — and the
+**base case of `Liveness` verifies with progress derived from fairness, not assumed**: a `Hungry` process holding
+the served ticket, given a fairness witness `u` (a later time it is scheduled), stays ready across `[n, u)` (the
+frame lemma for its state, a stability lemma for `serving`), so its `Enter` fires at `u` and it is `Eating` at
+`u + 1`. What is left for the *complete* two-process theorem is the **measure-1 reduction** — a waiter that does not
+yet hold the served ticket first follows the served process out of the kitchen (a nested fairness round), dropping
+its measure to zero and reducing to this base case. That is Leino's loop body: more of the same machinery, not a new
+capability, but not yet built. The general any-N case additionally wants an unbounded `∀i:nat` `IsTrace` hypothesis
+(a bounded `Forall.range` over a symbolic window has sufficed so far).
 
 What *does* ship is the finiteness that underwrites liveness, as a **state invariant** — no trace needed. Add the
 **counting invariant** `ticket - serving == (#non-thinking processes)` (each dispensed-but-unserved ticket is one
@@ -333,7 +341,8 @@ for the two-process lock: **a waiting process is overtaken at most once before i
 liveness property stronger than mere eventual entry, since it bounds the wait. Composed with the ranking function
 above (each `Leave` decreases the measure), from any `Hungry` state at most one competitor `Leave` stands between
 the waiter and eating. Drop the counting invariant and the bound refutes — the dispenser could run arbitrarily far
-ahead of the display. Safety, the ranking function, bounded bypass, and a bounded trace-level eventually-eats all
-verify structure-for-structure with the paper; only the fair-schedule temporal composition — deriving that the
-productive steps occur over an unbounded horizon — remains out of fragment.
+ahead of the display. Safety, the ranking function, bounded bypass, a bounded trace-level eventually-eats, and the
+**fair-schedule eventually-eats (base case)** all verify structure-for-structure with the paper; only the measure-1
+reduction (the nested fairness round that reduces an overtaken waiter to the base case) remains to complete the
+two-process liveness.
 

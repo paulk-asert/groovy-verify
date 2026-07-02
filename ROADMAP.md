@@ -8222,6 +8222,51 @@ Root suite **1441/0** (+4), full `check` green.
 
 ---
 
+## Phase 174 — fair-schedule liveness, base case: progress DERIVED from fairness (Wall 2 was a mirage)  *(shipped)*
+
+The payoff, and a correction. Phases 172–173 named a second wall for the fair-schedule *eventually-eats*: "using a
+recursive lemma's own `@Ensures` as an induction hypothesis," on the strength of a Phase-172 probe that reported
+*no usable @Ensures* on a self-recursive call. Re-probing after the Phase-173 apply-term fix shows that message was
+a **downstream symptom of the apply-term bug**, not a separate limitation: with `f.apply(i)` now a shared term,
+**recursive-lemma induction over trace functions just works** — a recursive call's `@Ensures` *is* used as the
+induction hypothesis (verified over both a `Function` and an `int[]`). Wall 2's induction half was a mirage; the
+apply fix took it down too.
+
+That unlocks Leino's actual liveness mechanism (Section 7.5–7.6), and this phase lands its **base case** with
+progress **derived** from fairness rather than assumed:
+
+- **The frame lemma** (`GetNextStep` distilled). A trace value frozen step-by-step across a window is unchanged
+  end-to-end — proved by **recursive induction over the window** (`@Decreases(u - n)`, `if (n < u) frame(n+1, u)`).
+  The *direct* closed form still does not close (the Phase-172 telescoping) — exactly as in Dafny, the recursion is
+  what carries it; the solver only ever does the one-step-local check.
+- **Base-case `Liveness`.** A process `A` that is `Hungry` holding the served ticket (measure 0) at time `n`, with
+  **fairness** giving a later time `u` at which `A` is scheduled, stays ready across `[n, u)` — `frameA` derives its
+  control-state and ticket are unchanged, `stableServing` derives `serving` is unchanged (only `A`, the holder,
+  could advance it, and it is not scheduled until `u`) — so at `u`, `A`'s `Enter` guard holds and `A` is `Eating`
+  at `u + 1`. This is the genuine argument: fairness → a scheduled time → framing → the step fires. Drop the `Enter`
+  transition and it refutes.
+
+- 3 `P174 fair-liveness` cases (the recursive frame lemma; the composed base-case eventually-eats; its refutation
+  without the `Enter` step). No new engine code — rides the Phase-173 apply fix and the existing recursion/`@Decreases`
+  support.
+
+**What remains for the *complete* two-process liveness.** Only the **measure-1 reduction**: when the waiter does
+*not* hold the served ticket (bounded bypass bounds this at measure 1), it must first follow the *served* process
+out of the critical section — a nested fairness round (that process is eventually scheduled, `Enter`s if hungry then
+`Leave`s, advancing `serving`) after which the waiter's measure drops to 0 and this base case applies. That is
+Leino's loop body; it is more of the same machinery (fairness witness + frame + one transition), not a new
+capability, but it is a real construction and is **not yet built**. With it, the two-process `eventually-eats` is
+complete; the general any-N case additionally wants an unbounded `∀i:nat` `IsTrace` hypothesis (bounded
+`Forall.range` over a symbolic window has sufficed so far).
+
+So the ticket lock now has: **safety** (170), **ranking function** (171), **bounded bypass** (172), **bounded
+trace-level eventually-eats** (173), and **fair-schedule eventually-eats, base case** (174) — Leino's whole
+development bar the one nested-fairness reduction.
+
+Root suite **1444/0** (+3), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
