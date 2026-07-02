@@ -308,15 +308,23 @@ static void leaveDecreasesMeasure(int ticket, int serving, Map<Phil,CS> cs, Map<
 ```
 
 These are the *ingredients* — a well-founded, monotonically-falling measure with an available step and a base
-case. Composing them into the full **eventually-eats** needs `trace : nat → TSState` and `schedule : nat →
-Process` as uninterpreted functions, a **fairness** assumption, and Leino's proof-loop with
-`@Decreases({ trace(n).t[p] - trace(n).serving })`. Probing that composition maps a clean frontier: modelling the
-trace as uninterpreted functions and reasoning *per step* verifies, and a bounded-`∀` transition relation
-(`Forall.range(0, k, …)`) can be **instantiated** at a concrete offset — but **induction over a symbolic-length
-horizon does not close** (the telescoping `serving(k) == serving(0) + k`), and **chaining transitions through
-implication-guarded steps is unreliable**. So the temporal proof-loop, which composes per-step decreases over an
-unbounded number of guarded steps, sits past the quantifier-instantiation frontier — engine work, not a new
-example.
+case. Composing them into an **eventually-eats** means reasoning about the system state *over time*, which Leino
+models as functions `serving`, `t[p]`, `cs[p] : nat → …`. groovy-verify can model those as uninterpreted functions
+(`Function`-typed, `f.apply(i)`), and a small **engine fix** was needed to make it work here: a numeric-returning
+`Function`'s application now mints a stable, shared Int-sorted term that partakes in integer arithmetic (before, the
+`int` time index was coerced into the `Object` value sort and `f.apply(i)` fell through unmodelled — a fresh opaque
+value per occurrence, so nothing over the trace composed). With that, per-step trace reasoning composes, and — using
+bounded bypass to pin the horizon at a *constant* — a **bounded eventually-eats verifies**: a Hungry process at
+measure one has the served process leave (`serving` advances, so the waiter's measure hits zero — *derived*, not
+assumed), then its `Enter` fires, and it is Eating two trace steps later. Drop the `Enter` step and it refutes.
+
+What stays out of reach is the **fair-schedule** eventually-eats: not the composition (that now works) but
+*deriving* that the productive steps occur — that under any fair schedule the served process is eventually picked —
+which is Leino's `GetNextStep` search-loop and `Liveness` proof-loop over an *unbounded* horizon. That needs two
+things the fragment lacks: **using a recursive lemma's own postcondition as an induction hypothesis** (a probe hits
+"no usable @Ensures" on the self-recursive call — the direct telescoping `serving(k) == serving(0) + k` is the same
+gap), and an **unbounded `∀i:nat`** hypothesis with on-demand instantiation. Those are the next *engine* increments;
+with them, the general (any-N, infinite-trace) liveness is reachable.
 
 What *does* ship is the finiteness that underwrites liveness, as a **state invariant** — no trace needed. Add the
 **counting invariant** `ticket - serving == (#non-thinking processes)` (each dispensed-but-unserved ticket is one
@@ -325,6 +333,7 @@ for the two-process lock: **a waiting process is overtaken at most once before i
 liveness property stronger than mere eventual entry, since it bounds the wait. Composed with the ranking function
 above (each `Leave` decreases the measure), from any `Hungry` state at most one competitor `Leave` stands between
 the waiter and eating. Drop the counting invariant and the bound refutes — the dispenser could run arbitrarily far
-ahead of the display. Safety, the ranking function, and bounded bypass all verify structure-for-structure with the
-paper; the temporal eventually-eats that would compose them is the documented wall.
+ahead of the display. Safety, the ranking function, bounded bypass, and a bounded trace-level eventually-eats all
+verify structure-for-structure with the paper; only the fair-schedule temporal composition — deriving that the
+productive steps occur over an unbounded horizon — remains out of fragment.
 

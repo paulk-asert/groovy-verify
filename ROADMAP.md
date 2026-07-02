@@ -8173,6 +8173,55 @@ Root suite **1437/0** (+5), full `check` green.
 
 ---
 
+## Phase 173 — an engine fix unblocks trace-level bounded liveness (Wall 1 removed)  *(shipped)*
+
+The first **engine change** in the ticket-lock arc, and it lands the piece Phase 172 called the critical blocker.
+Phases 170–172 authored contracts; this fixes the encoder so that liveness reasoning *over the trace* composes.
+
+**The bug.** Reasoning about a concurrent system's liveness needs the state *over time* — Leino models it as
+functions `serving`, `t[p]`, `cs[p] : nat → …`. groovy-verify can model those as uninterpreted functions via a
+`Function`-typed parameter and `f.apply(i)` (the Phase-133 higher-order foundation). But that path was built for
+the `@Monadic` laws, where `f`'s argument is a **carrier value** (the shared `Object` sort). For a numeric trace
+function — `Function<Integer,Integer>`, applied to an `int` time index — the encoder coerced the argument into the
+`Object` value sort, which **returns null for an `int`**, so `f.apply(i)` fell through *unmodelled*: a fresh opaque
+value at every occurrence. The consequence was exactly the wall probed in Phase 172 — even a bare modus-ponens over
+`f.apply(n)` terms refused to close, because the `f.apply(n)` in a postcondition was a different opaque value than
+the one in the precondition. Nothing over the trace composed.
+
+**The fix** (`Encoder.translateMethodCall`, the `apply` dispatch). When the `Function`'s declared return type is
+int-like (`Function<…,Integer>` / `Long`), translate the argument in its **natural** sort and build an Int-sorted
+uninterpreted function `apply$f : Int → Int`. Being a stable `applyUF` term keyed by `(apply$f, argterm)`, two
+occurrences of `f.apply(n)` now denote the **same** SMT term and partake in integer arithmetic. The carrier/monad
+path (Object value sort) is untouched — the change is gated on an int-like return type — so the `@Monadic` arc and
+everything else is byte-for-byte unaffected (full suite re-run green, no regressions).
+
+**What it unblocks.** Trace-level composition now works: a bare modus-ponens over `apply` terms verifies, and — the
+payoff — a **bounded eventually-eats** over uninterpreted trace functions closes. With bounded bypass (Phase 172,
+a waiter's measure ≤ 1) the horizon is a fixed constant, so no unbounded induction is needed: a Hungry process `A`
+at measure 1 has the served process leave (`serving` advances by one, `A` untouched), which drives `A`'s measure to
+zero — *derived* from `t[A]` frozen equalling the new `serving`, not assumed — and `A`'s `Enter` then fires, so `A`
+is Eating two trace steps later. The base case (a waiter already at measure zero eats at its next step) verifies
+too. Drop the `Enter` step and it refutes — the composition does real work.
+
+- 4 `P173 trace-liveness` cases (higher-order `apply` composition; the bounded eventually-eats step; its refutation
+  without the `Enter` step; the one-step base case). One localized encoder change; **no regressions** across the
+  1437-case suite and the standalone monad/datatype/seqlock/units tests.
+
+**What is still out of fragment — the honest residual.** This is a *bounded* eventually-eats that *assumes* the
+productive transitions occur (a cooperating schedule over a fixed window). The full **fair-schedule** eventually-eats
+must **derive** that they occur — that under any fair schedule the served process is eventually picked — which is
+Leino's `GetNextStep` search-loop plus the `Liveness` proof-loop over an *unbounded* horizon. That needs the second
+wall (Wall 2): **using a recursive lemma's own `@Ensures` as an induction hypothesis** (probed in Phase 172: the
+engine reports "no usable @Ensures" for the self-recursive call), and representing an unbounded `∀i:nat` `IsTrace`
+hypothesis with on-demand instantiation. Those are the next engine increments, larger than this one; with them, the
+general (any-N, infinite-trace) liveness is reachable. As of Phase 173, the ticket lock has **safety** (170),
+**ranking function** (171), **bounded bypass** (172), and **bounded trace-level eventually-eats** (173) — the whole
+of Leino's development except the fair-schedule temporal composition.
+
+Root suite **1441/0** (+4), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

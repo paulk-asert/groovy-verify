@@ -14661,6 +14661,65 @@ class Maybe {                                              // a hand-rolled Some
                         @Ensures({ t[p] - serving <= 1 })
                         static void boundedBypass(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p) {}
                     }''')],
+
+        // ---------- Phase 173: Leino's ticket lock — TRACE-LEVEL bounded liveness (engine fix: apply-term sharing) ----------
+        // An encoder fix (Phase 173) makes a numeric-returning `Function`'s application `f.apply(i)` a stable, shared
+        // uninterpreted-function term that partakes in integer arithmetic — so the state of the system OVER TIME can be
+        // modelled as trace functions `serving`, `t[p]`, `cs[p] : nat -> ...`, and reasoning composes across contract
+        // positions. Previously the int argument was coerced into the Object value sort and `f.apply(i)` fell through
+        // unmodelled (a fresh opaque value per occurrence), so nothing over the trace composed. This unblocks a
+        // BOUNDED eventually-eats: with bounded bypass (Phase 172: a waiter's measure is <= 1), a Hungry process eats
+        // within a fixed number of trace steps — no unbounded induction. (The full FAIR-schedule eventually-eats, which
+        // must DERIVE that the productive steps occur over an unbounded window, still needs the trace-loop induction —
+        // out of fragment; see ROADMAP Phase 173.)
+        [group: 'P173 trace-liveness', name: 'higher-order function values compose across contracts', ok: true,
+         src: tc('''class TraceCompose {
+                        @Requires({ f.apply(n) == g.apply(n) && (f.apply(n) == g.apply(n) ==> h.apply(n) == 2) })
+                        @Ensures({ h.apply(n) == 2 })
+                        static void compose(java.util.function.Function<Integer,Integer> f,
+                                            java.util.function.Function<Integer,Integer> g,
+                                            java.util.function.Function<Integer,Integer> h, int n) {}
+                    }''')],
+        // The headline: a bounded eventually-eats STEP over the trace. A (Hungry, measure 1) at time n; the served
+        // process leaves at step n (serving advances by one, A untouched), which makes A's measure zero; A's Enter
+        // then fires at step n+1 — so A is Eating at n+2. All over uninterpreted trace functions; the intermediate
+        // measure-zero is DERIVED (t[A] frozen == old serving+1 == new serving), not assumed.
+        [group: 'P173 trace-liveness', name: 'bounded eventually-eats over the trace', ok: true,
+         src: tc('''class TraceEats {
+                        @Requires({
+                            csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) + 1 &&
+                            servingF.apply(n + 1) == servingF.apply(n) + 1 && csAF.apply(n + 1) == 1 && tAF.apply(n + 1) == tAF.apply(n) &&
+                            ((csAF.apply(n + 1) == 1 && tAF.apply(n + 1) == servingF.apply(n + 1)) ==> csAF.apply(n + 2) == 2)
+                        })
+                        @Ensures({ csAF.apply(n + 2) == 2 })
+                        static void eats(java.util.function.Function<Integer,Integer> csAF,
+                                         java.util.function.Function<Integer,Integer> servingF,
+                                         java.util.function.Function<Integer,Integer> tAF, int n) {}
+                    }''')],
+        // Teeth: drop the Enter step and A need not reach Eating — the trace composition is doing real work.
+        [group: 'P173 trace-liveness', name: 'eventually-eats refutes without the Enter step', expect: 'Cannot prove postcondition',
+         src: tc('''class TraceEatsBroken {
+                        @Requires({
+                            csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) + 1 &&
+                            servingF.apply(n + 1) == servingF.apply(n) + 1 && csAF.apply(n + 1) == 1 && tAF.apply(n + 1) == tAF.apply(n)
+                        })
+                        @Ensures({ csAF.apply(n + 2) == 2 })
+                        static void eats(java.util.function.Function<Integer,Integer> csAF,
+                                         java.util.function.Function<Integer,Integer> servingF,
+                                         java.util.function.Function<Integer,Integer> tAF, int n) {}
+                    }''')],
+        // The base case: a waiter whose ticket is already up (measure zero) eats at its next scheduled step (Enter).
+        [group: 'P173 trace-liveness', name: 'base case: a served waiter eats in one step', ok: true,
+         src: tc('''class TraceBase {
+                        @Requires({
+                            csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n) &&
+                            ((csAF.apply(n) == 1 && tAF.apply(n) == servingF.apply(n)) ==> csAF.apply(n + 1) == 2)
+                        })
+                        @Ensures({ csAF.apply(n + 1) == 2 })
+                        static void eats(java.util.function.Function<Integer,Integer> csAF,
+                                         java.util.function.Function<Integer,Integer> servingF,
+                                         java.util.function.Function<Integer,Integer> tAF, int n) {}
+                    }''')],
     ] }
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */

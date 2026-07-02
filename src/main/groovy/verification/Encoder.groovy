@@ -5715,8 +5715,18 @@ class Encoder {
         // the @Monadic monad laws, which quantify over arbitrary `Function`s. Restricted to a VariableExpression
         // receiver so the UF key (`apply$<name>`) denotes a stable function; a computed receiver stays unmodelled.
         if (m == 'apply' && args.size() == 1 && recv instanceof VariableExpression) {
-            Object vSort = session.declareSort('Object')
             String rn = ((VariableExpression) recv).name
+            ClassNode frt = functionReturnTypes.get(rn)
+            // Phase 173 — a numeric-returning Function (e.g. Function<Integer,Integer>, a trace's serving/ticket over
+            // time): model f.apply(i) as an Int-sorted UF over the argument's NATURAL sort, so the result partakes in
+            // integer arithmetic and — being a stable applyUF term keyed by (apply$f, arg) — shares across contract
+            // positions (pre/post/invariant). Without this the int arg was coerced into the Object value sort below,
+            // which returns null, leaving f.apply(i) unmodelled (a fresh opaque value per occurrence — no sharing).
+            if (frt != null && isIntLikeType(frt)) {
+                Object narg = translate(args.get(0))
+                if (narg != null) return session.applyUF('apply$' + rn, [narg], sortFor(frt))
+            }
+            Object vSort = session.declareSort('Object')
             Object range = functionRange(rn, vSort)              // Phase C — a bind function returns the carrier
             Object arg = translateInSort(args.get(0), vSort)
             if (arg != null) return session.applyUF('apply$' + rn, [arg], range)
