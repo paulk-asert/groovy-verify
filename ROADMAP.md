@@ -8126,6 +8126,53 @@ Root suite **1432/0** (+7), full `check` green.
 
 ---
 
+## Phase 172 — Leino's ticket lock: bounded bypass (the full temporal liveness maps its wall)  *(shipped)*
+
+The attempt at the *full* liveness theorem — **a hungry process eventually eats** — and the honest result: the
+temporal theorem over an infinite trace **does not close** in the fragment, but a strictly-stronger-than-eventual
+liveness property, **bounded bypass**, does. The value here is twofold: a real liveness result, and a **precisely
+mapped frontier** (the probes below say exactly what verifies and what doesn't).
+
+**What was probed (empirically, over uninterpreted trace functions `nat → …` modelled via `Function.apply`):**
+
+- **Per-step trace reasoning verifies.** An uninterpreted `int → int` trace function carries linear arithmetic:
+  "one `Leave` step decreases the measure" verifies at concrete indices.
+- **Bounded-`∀` transition hypotheses instantiate.** A `Forall.range(0, k, …)` transition relation over the trace
+  (symbolic bound `k`) can be instantiated at a concrete offset `n < k`.
+- **A single transition composes** (a lone `Enter` step: guard holds ⟹ next state eating) and **pointwise
+  arithmetic chains** (three trace points, `serving` +1 each ⟹ `serving(n+2) == serving(n)+2`).
+- **The wall:** *induction over a symbolic-length horizon does not close* (`serving(k) == serving(0)+k` from a
+  per-step `∀` — a telescoping the engine won't perform), and **chaining transitions through implication-guarded
+  steps is unreliable** (a two-step `Leave`-then-`Enter` unroll refuted; even a bare modus-ponens over `apply`
+  terms did not always fire). So the eventually-eats proof-loop — which *composes* per-step decreases across an
+  unbounded number of steps and reasons through guarded transitions — sits past the quantifier-instantiation
+  frontier. This is the research risk flagged in Phase 171, now confirmed and located.
+
+**What ships instead — bounded bypass, a state invariant.** The finiteness that *underwrites* liveness needs no
+trace. Add the **counting invariant** `ticket - serving == (#non-thinking processes)` — each dispensed-but-not-yet-
+served ticket corresponds to exactly one waiting/eating process. It is maintained by every event (`Request` +1 as
+it dispenses, `Leave` −1 as it advances `serving`, `Enter` unchanged), and it forces a waiter's measure
+`t[p] - serving <= 1` for the two-process lock: **a waiting process is overtaken at most once before it enters.**
+That is a genuine liveness property — *stronger* than mere eventual entry, since it bounds the wait — and combined
+with Phase 171 (each `Leave` strictly decreases the measure) it says: **from any `Hungry` state, at most one
+competitor `Leave` stands between the waiter and eating.** All at the state level, so it sidesteps the temporal wall.
+
+**Teeth:** drop the counting invariant and the bound refutes (the dispenser could run arbitrarily far ahead of the
+display, so the measure is unbounded) — the counting conjunct is exactly the enabler.
+
+- 5 `P172 ticket-bypass` cases (counting invariant preserved by `Request`/`Enter`/`Leave`; the bypass bound
+  `t[p] - serving <= 1`; and its refutation without the counting invariant). No new engine code.
+
+**Where liveness stands.** Ranking function (Phase 171) ✓; bounded-bypass finiteness (Phase 172) ✓; the temporal
+composition that turns them into eventually-eats — `trace : nat → TSState`, fairness, and Leino's proof-loop with
+`@Decreases({ trace(n).t[p] - trace(n).serving })` — is **out of fragment**, blocked at the induction/guarded-step
+wall. Reaching it would need engine work on quantifier instantiation over uninterpreted functions (bounded-horizon
+induction, reliable modus-ponens on `apply` terms), not a new example.
+
+Root suite **1437/0** (+5), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -308,10 +308,23 @@ static void leaveDecreasesMeasure(int ticket, int serving, Map<Phil,CS> cs, Map<
 ```
 
 These are the *ingredients* — a well-founded, monotonically-falling measure with an available step and a base
-case — not the composed theorem. The full **eventually-eats** result needs `trace : nat → TSState` and
-`schedule : nat → Process` as uninterpreted functions, a **fairness** assumption (the served process is
-eventually scheduled), and the `IsTrace` link chaining consecutive states, then Leino's proof-loop with
-`@Decreases({ trace(n).t[p] - trace(n).serving })`. That composition — heavy quantifier instantiation over
-uninterpreted functions — is the open next slice and the real research risk; the ranking function above is its
-precondition. Everything up to it verifies today, structure-for-structure with the paper.
+case. Composing them into the full **eventually-eats** needs `trace : nat → TSState` and `schedule : nat →
+Process` as uninterpreted functions, a **fairness** assumption, and Leino's proof-loop with
+`@Decreases({ trace(n).t[p] - trace(n).serving })`. Probing that composition maps a clean frontier: modelling the
+trace as uninterpreted functions and reasoning *per step* verifies, and a bounded-`∀` transition relation
+(`Forall.range(0, k, …)`) can be **instantiated** at a concrete offset — but **induction over a symbolic-length
+horizon does not close** (the telescoping `serving(k) == serving(0) + k`), and **chaining transitions through
+implication-guarded steps is unreliable**. So the temporal proof-loop, which composes per-step decreases over an
+unbounded number of guarded steps, sits past the quantifier-instantiation frontier — engine work, not a new
+example.
+
+What *does* ship is the finiteness that underwrites liveness, as a **state invariant** — no trace needed. Add the
+**counting invariant** `ticket - serving == (#non-thinking processes)` (each dispensed-but-unserved ticket is one
+waiting/eating process; maintained by every event), and a waiter's measure is provably **`t[p] - serving <= 1`**
+for the two-process lock: **a waiting process is overtaken at most once before it enters** — *bounded bypass*, a
+liveness property stronger than mere eventual entry, since it bounds the wait. Composed with the ranking function
+above (each `Leave` decreases the measure), from any `Hungry` state at most one competitor `Leave` stands between
+the waiter and eating. Drop the counting invariant and the bound refutes — the dispenser could run arbitrarily far
+ahead of the display. Safety, the ranking function, and bounded bypass all verify structure-for-structure with the
+paper; the temporal eventually-eats that would compose them is the documented wall.
 
