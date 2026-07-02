@@ -39,7 +39,7 @@ proof rides on a *nonlinear* loop invariant, `sum ≤ i · max` — the multipli
 the additive prefix-sum invariants. The Dafny original:
 
 ```dafny
-method M(N: int, a: array<int>) returns (sum: int, max: int)
+method M(N: int, a: array<int>) returns (sum: int, max: int)     // Dafny
   requires 0 <= N && a.Length == N && (forall k :: 0 <= k && k < N ==> 0 <= a[k])
   ensures sum <= N * max
 {
@@ -100,7 +100,7 @@ The Dafny tutorial's linear search returns an index, or `−1` with a *universal
 key is absent:
 
 ```dafny
-method Find(a: array<int>, key: int) returns (index: int)
+method Find(a: array<int>, key: int) returns (index: int)     // Dafny
   ensures 0 <= index ==> index < a.Length && a[index] == key
   ensures index < 0 ==> forall k :: 0 <= k < a.Length ==> a[k] != key
 {
@@ -148,7 +148,7 @@ Dafny's flagship tutorial proof, with the `sorted` predicate stated as a *two-di
 quantifier:
 
 ```dafny
-predicate sorted(a: array<int>)
+predicate sorted(a: array<int>)     // Dafny
   reads a
 { forall j, k :: 0 <= j < k < a.Length ==> a[j] <= a[k] }
 
@@ -226,7 +226,7 @@ in `[serving, ticket)`, **distinct waiters hold distinct tickets**, and an eatin
 `serving`:
 
 ```dafny
-predicate Valid()
+predicate Valid()     // Dafny
   reads this
 {
   cs.Keys == t.Keys == P &&

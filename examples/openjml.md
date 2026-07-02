@@ -38,7 +38,7 @@ attempts get *wrong*:
 //@ requires a.length > 0;
 //@ ensures 0 <= \result && \result < a.length;
 //@ ensures (\forall int i; 0 <= i && i < a.length; a[i] <= a[\result]);
-int max(int[] a) {
+int max(int[] a) {                                                                 // Java
     int x = 0, y = a.length - 1;
     //@ maintaining 0 <= x && x <= y && y < a.length;
     //@ maintaining (\forall int i; 0<=i && i<x; a[i] <= a[y]) && (\forall int i; y<i && i<a.length; a[i] <= a[y])
