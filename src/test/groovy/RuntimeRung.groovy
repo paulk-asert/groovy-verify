@@ -552,6 +552,18 @@ class RuntimeRung {
                     'proved a postcondition that is false on the real computed value. Triage, then fix or allowlist.'
             System.exit(1)
         }
+        // Coverage canary: this oracle's value is how MUCH it cross-validates, and a divergence check alone
+        // passes vacuously when coverage collapses. That has happened: a shared-header import made the tierC
+        // source-regex classifier match every case, silently dropping cross-validation from 552/570 to 0/570
+        // while the harness stayed green (see ROADMAP Phase 177). Fail loudly if coverage ever falls off a
+        // cliff again; revisit the floor deliberately if the corpus is ever intentionally restructured.
+        final int CANARY_MIN_CLEAN = 500
+        if (cleanValidated < CANARY_MIN_CLEAN) {
+            println "✗ CANARY: only ${cleanValidated} proofs cleanly cross-validated (floor ${CANARY_MIN_CLEAN}). " +
+                    'The differential oracle has lost coverage — check the tierC / exclusion classifiers ' +
+                    'before trusting this run.'
+            System.exit(1)
+        }
         println '✓ No new confirmed divergence. Postcondition violations were corroborated against the real value: ' +
                 'groovy-contracts mis-evaluations were recovered (verifier correct), and the known divergences are allowlisted with reasons.'
     }

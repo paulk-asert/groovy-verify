@@ -109,7 +109,7 @@ class DocLint {
     }
 
     static void main(String[] args) {
-        println '── DocLint (report mode — drift findings; convert to asserts to enforce in CI) ' + ('─' * 8)
+        println '── DocLint (human-readable report; DocLintTest asserts the same lints inside `check`/CI) ' + ('─' * 8)
         int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture()
         println "\n${'═' * 70}\nTotal drift findings: ${total}  (report-only; not failing the build)"
     }

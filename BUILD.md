@@ -38,6 +38,12 @@ VERIFY_DUMP_SMT=1 ./gradlew verify        # print every solver query as a self-c
 ./gradlew test -Dverify.only='matrix'     # run just the cases whose "group :: name" contains a substring
 ```
 
+The cases themselves live in **per-group files** under `src/test/groovy/cases/` (`G###_<group>.groovy`, one
+`CASES` list per group, with the shared header/wrappers in `cases/CaseDsl.groovy`); `VerifyHarness` is the runner
+that concatenates and judges them. CI (`.github/workflows/ci.yml`) runs `check` — the suite, the runtime rung
+(with its coverage canary), and the doc-drift asserts — plus the two TLC models, on every push/PR; the rung-3
+bytecode tools (Lincheck / Fray / jcstress) stay local, per `CONCURRENCY.md`.
+
 Verbose mode prints, for each refuted case, the OpenJML-style diagnostic — the failed obligation, a concrete
 counterexample, and a runnable repro — that the compact runner collapses to a one-line pass/fail. `VERIFY_REFUTATION`
 chooses **how that repro is rendered** (the formats are mutually exclusive, not additive): `message` — the default —

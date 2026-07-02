@@ -117,6 +117,27 @@ solver query as a self-contained SMT-LIB2 benchmark (declarations, assumptions, 
 so you can pipe an obligation to another solver for a second opinion or read the exact formula to debug the
 encoding. All three, with the gradle invocations, are in [BUILD.md](BUILD.md).
 
+## Capability discovery (for agents and tooling)
+
+The knobs above tune one diagnostic at a time; for the *whole surface* — "what can this checker prove, and what
+does authoring it look like?" — the answer is generated from the test corpus, the single source of truth:
+
+```sh
+./gradlew harvest        # -> build/harvest/{catalog.json, corpus.jsonl}
+```
+
+- **`catalog.json`** — one record per capability group: a one-line `description`, verify/refute/skip counts, the
+  contract `annotations` the group exercises, and a `canonicalVerify` / `canonicalRefute` case id each — the
+  "what can it prove" manifest an agent can load in one read.
+- **`corpus.jsonl`** — one record per case (~1450): `{id, group, name, outcome, annotations, diagnostic, source}` —
+  full authoring examples with their expected outcome, the few-shot corpus for "write me a contract like X".
+
+It's a pure projection of the declared case specs (which CI proves match reality), so it runs in milliseconds
+with no solver. The same corpus is browsable as source: one file per capability group under
+[`src/test/groovy/cases/`](src/test/groovy/cases) (`G###_<group>.groovy`), each a self-contained list of
+annotated good/bad snippets with teaching comments — and the prose inventory is
+[CAPABILITIES.md](CAPABILITIES.md), whose group descriptions are the same text `catalog.json` carries.
+
 ---
 
 Back to the [README](README.md).

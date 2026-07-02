@@ -8386,6 +8386,50 @@ Root suite **1448/0** (+2), runtime rung **552/570** clean, full `check` green.
 
 ---
 
+## Phase 178 — infrastructure: CI, the rung coverage canary, and the per-group case corpus  *(shipped — no engine change)*
+
+Two evolution-velocity investments from a whole-project assessment; no capability change, byte-identical case
+corpus, all gates green before and after.
+
+**CI (`.github/workflows/ci.yml`).** The repo had a strong gate mesh and nothing running it automatically. The
+workflow runs `./gradlew check` (the full suite, the runtime rung, and the `DocLintTest` drift asserts — which,
+worth noting, already enforced doc drift inside `check`; the `docLint` task is just the human-readable report)
+plus the two rung-2 TLC models (`tlcCheck` / `tlcTicket`) on every push/PR. The rung-3 bytecode tools
+(Lincheck / Fray / jcstress) are deliberately excluded — slow, scheduler-dependent, Fray provisions its own JDK —
+and stay local per `CONCURRENCY.md`. *(The workflow file is authored but necessarily unexercised until it runs on
+GitHub — watch the first run.)*
+
+**Rung coverage canary.** The differential oracle's divergence check passes *vacuously* if coverage collapses —
+which happened in Phase 177 (a shared-header import made the `tierC` source-regex match every case: 552/570 → 0/570
+cross-validated, harness green throughout). `RuntimeRung` now fails the build if cleanly-cross-validated proofs
+drop below a floor (500), with a diagnostic pointing at the exclusion classifiers. Negative-tested: raising the
+floor above the current 552 fails the run with the expected message; at 500 it passes.
+
+**Per-group case corpus (`src/test/groovy/cases/`).** `VerifyHarness.groovy` had grown to 15,060 lines with the
+1448 cases in two giant list-literal methods (split once already for the JVM's 64KB `<clinit>` limit; a third
+split loomed). A conservation-checked splitter (every body line partitioned verbatim, 14,803/14,803) moved the
+corpus to **one file per group** — `cases/G###_<group>.groovy`, 265 files, numbered in original group order so
+`CASES` ordering is stable — with the shared import header and `tc`/`tcStr`/`tci`/`tcs`/`tcExt` wrappers in
+`cases.CaseDsl`. `VerifyHarness` (now 181 lines) is the runner: it concatenates the files' `CASES` in filename
+order and re-exposes the DSL surface for external consumers (`RuntimeRung` reads `HDR`; `SpscBufferVerifyTest`
+uses `compile`). Payoffs: the bytecode limit can never bite again (per-group literals are tiny), a new phase adds
+a *file* instead of editing a 15k-line one, group edits are locally reviewable, and incremental compilation gets
+cheaper. `-Dverify.only` filtering, the `verify` console runner, DocLint's snippet links (101/101 intact — the
+byte-level corruption detector for the migration), and the rung (552/570) all confirmed unchanged.
+
+**Deferred from the same assessment** (recorded so they aren't lost): co-locating `Harvester.GROUP_DESC`
+descriptions into the per-group files (one source of truth per group); a `TypeEnvironment` object for the
+Encoder's 16-map constructor plus a registry for its 850-line `translateMethodCall` dispatch; a contract
+*normalization* pass after the CONVERSION re-parse (one home for the unresolved-form special cases: enum
+constants, `new Res(a)`, `values().length`, the Phase-177 SAM shorthand); α-renaming/substitution matching for
+quantified preconditions (the aligned-names footgun, Phase 175's authoring note); structured (non-regex) rung
+tier classification; and a per-VC timing budget assertion against the ~200 ms/site pledge.
+
+Root suite **1448/0** (unchanged, corpus byte-identical), rung **552/570** + canary, docLint **0 drift**
+(265/265 groups, 101/101 links), `verify` runner green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
