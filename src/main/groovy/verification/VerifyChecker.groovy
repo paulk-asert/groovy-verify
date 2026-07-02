@@ -355,16 +355,10 @@ class VerifyChecker extends TypeCheckingExtension {
 
     /** Phase C — {@code Function}-typed parameters → their declared return type (the 2nd generic of
      *  {@code Function<A, R>}), so the encoder can sort {@code f.apply(x)}'s result (a bind function returns
-     *  the carrier). Raw {@code Function} (no generics) is omitted → default value sort. */
+     *  the carrier). Raw {@code Function} (no generics) is omitted → default value sort. The derivation
+     *  lives in {@link ContractNormalizer} (it is also the normaliser's rewrite scope). */
     private static Map<String, ClassNode> collectFunctionReturnTypes(MethodNode node) {
-        Map<String, ClassNode> out = new HashMap<String, ClassNode>()
-        for (Parameter p : node.parameters) {
-            ClassNode t = p.type
-            if (t == null || t.name != 'java.util.function.Function') continue
-            org.codehaus.groovy.ast.GenericsType[] g = t.genericsTypes
-            if (g != null && g.length == 2 && g[1]?.type != null) out.put(p.name, g[1].type)
-        }
-        out
+        ContractNormalizer.functionReturnTypes(node)
     }
 
     /** {@code E} from an `@Ensures` of the shape `result == E` (either order), else null. */
@@ -8535,7 +8529,9 @@ class VerifyChecker extends TypeCheckingExtension {
      */
     private static Expression contractAstFor(MethodNode m, String kind) {
         String text = findContractText(m, kind)
-        return text != null ? parseContract(text) : null
+        // Normalise the fresh re-parse against m's signature (the one home for pre-resolution parse
+        // shapes — e.g. the SAM shorthand f(x) → f.apply(x)), so the encoder deals in one spelling.
+        return text != null ? ContractNormalizer.normalize(parseContract(text), m) : null
     }
 
     /** Read @ContractSource's member, walking superclass then implemented interfaces for inherited contracts. */

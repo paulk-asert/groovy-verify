@@ -17,22 +17,27 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P177 sam-shorthand' — 2 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P177 sam-shorthand' — SAM call-operator shorthand in contracts and bodies; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G265_p177_sam_shorthand {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'SAM call-operator shorthand f(x) for a Function-typed formal, modelled identically to f.apply(x). Groovy\'s v(args)->v.call(args)->apply rewrite is a resolution-phase step, but contracts are re-parsed at CONVERSION (ContractExpansionTransform), pre-resolution, so f(x) reaches the encoder as an implicit-this call this.f(x); the encoder now recognises that shape when the name is a Function formal and routes it to the same apply$f uninterpreted function as f.apply(x), so the two spellings unify. Teeth: a false claim over the shorthand refutes (genuinely modelled, not skipped). Diagnosed as groovy-verify-internal — Groovy and groovy-contracts both resolve f(x) correctly at runtime.'
+    static final String DESCRIPTION = 'SAM call-operator shorthand f(x) for a Function-typed formal, modelled identically to f.apply(x), in both contracts and bodies. Groovy\'s v(args)->v.call(args)->apply rewrite is a resolution-phase step, so the two positions present differently: a CONTRACT is re-parsed at CONVERSION (pre-resolution) and f(x) arrives as an implicit-this call this.f(x) — canonicalised to f.apply(x) by ContractNormalizer (Phase 181, the one home for re-parse artifacts) before the encoder sees it, including inside quantifier closures; a BODY is resolved AST where f(x) arrives as f.call(x) — recognised by the encoder directly, gated on a known Function formal so an ordinary Closure.call() is never hijacked. Teeth: a false claim over either position refutes (genuinely modelled, not skipped). Diagnosed as groovy-verify-internal — Groovy and groovy-contracts both resolve f(x) correctly at runtime.'
 
     static final List<Map> CASES = [
 
-        // ---------- Phase 177: SAM call-operator shorthand `f(x)` for a Function-typed formal ----------
-        // Groovy's `v(args)` -> `v.call(args)` -> SAM `apply` rewrite is a resolution-phase step, but contracts are
-        // re-parsed at CONVERSION (ContractExpansionTransform), pre-resolution, so `f(x)` arrives at the encoder as an
-        // implicit-`this` call `this.f(x)`. The encoder now recognises that shape when `f` is a Function-typed formal
-        // and models it as the SAME `apply$f` uninterpreted function as `f.apply(x)`, so the two spellings unify.
-        // (Diagnosed as a groovy-verify-internal limitation — Groovy and groovy-contracts both resolve `f(x)` fine;
-        // only the verifier's CONVERSION-phase contract re-parse dropped it.)
+        // ---------- Phase 177/181: SAM call-operator shorthand `f(x)` for a Function-typed formal ----------
+        // Groovy's `v(args)` -> `v.call(args)` -> SAM `apply` rewrite is a resolution-phase step, so the two
+        // positions present differently, and each has its own canonicalisation:
+        //   - CONTRACTS are re-parsed at CONVERSION (pre-resolution), so `f(x)` arrives as an implicit-`this`
+        //     call `this.f(x)` — rewritten to `f.apply(x)` by ContractNormalizer (the one home for re-parse
+        //     artifacts) before the encoder ever sees it, including inside quantifier closure bodies.
+        //   - BODIES are resolved AST, where `f(x)` arrives as `f.call(x)` — the encoder recognises that as
+        //     the SAM application directly, gated on a known Function-typed formal (a plain Closure.call()
+        //     is never hijacked).
+        // Both routes land on the SAME `apply$f` uninterpreted function as an explicit `f.apply(x)`, so all
+        // three spellings unify. (Diagnosed as a groovy-verify-internal limitation — Groovy and
+        // groovy-contracts both resolve `f(x)` fine; only the pre-resolution contract re-parse dropped it.)
         [group: 'P177 sam-shorthand', name: 'f(x) shorthand unifies with f.apply(x)', ok: true,
          src: tc('''class Sam {
                         @Requires({ f.apply(n) == 7 })
@@ -45,6 +50,30 @@ class G265_p177_sam_shorthand {
                         @Requires({ f(n) == 7 })
                         @Ensures({ f(n) == 8 })
                         static void bad(Function<Integer,Integer> f, int n) {}
+                    }''')],
+        // The shorthand inside a quantifier closure — the normaliser must descend into closure bodies (a plain
+        // ExpressionTransformer stops at the closure boundary); the P174 frame lemmas rely on exactly this.
+        [group: 'P177 sam-shorthand', name: 'shorthand inside a quantifier closure normalises', ok: true,
+         src: tc('''class SamQuant {
+                        @Requires({ n <= u && (n..<u).every { int i -> f(i + 1) == f(i) } })
+                        @Ensures({ f.apply(u) == f.apply(u) })
+                        static void quant(Function<Integer,Integer> f, int n, int u) {}
+                    }''')],
+        // BODY-side: the resolved `f.call(n)` spelling. The body computes f(n); with the precondition pinning
+        // f.apply(n) == 7, the postcondition result == 7 verifies only if the body's `f.call(n)` lands on the
+        // same apply$f term — proving the encoder models the resolved shorthand, not just the contract form.
+        [group: 'P177 sam-shorthand', name: 'body-side shorthand (resolved f.call) is modelled', ok: true,
+         src: tc('''class SamBody {
+                        @Requires({ f != null && f.apply(n) == 7 })
+                        @Ensures({ result == 7 })
+                        static int g(Function<Integer,Integer> f, int n) { return f(n) }
+                    }''')],
+        // Teeth for the body side: a wrong claimed result refutes (a skip would compile clean instead).
+        [group: 'P177 sam-shorthand', name: 'body-side shorthand refutes a wrong result', expect: 'Cannot prove postcondition',
+         src: tc('''class SamBodyBad {
+                        @Requires({ f != null && f.apply(n) == 7 })
+                        @Ensures({ result == 8 })
+                        static int g(Function<Integer,Integer> f, int n) { return f(n) }
                     }''')],
     ]
 }

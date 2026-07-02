@@ -8491,6 +8491,45 @@ This is stage one of the Encoder evolution plan (Phase 178's assessment); stage 
 
 ---
 
+## Phase 181 — `ContractNormalizer`: one home for re-parse artifacts (+ body-side SAM shorthand)  *(shipped)*
+
+The third deferred item from Phase 178. Contract text is re-parsed at `CompilePhase.CONVERSION` —
+*pre-resolution* — so spellings that Groovy's resolution would rewrite arrive in raw parse shape, and each such
+shape had grown its own special case at the point a user-visible failure exposed it (unresolved enum constants,
+`new Res(a)` carrier recovery, `values().length` folding, the Phase-177 SAM shorthand). Now there is **one
+home**: `verification/ContractNormalizer`, wired into `VerifyChecker.contractAstFor`, canonicalises every
+freshly re-parsed method-level contract (`requires`/`ensures`/`decreases`/`modifies`, including the inherited
+and LSP-alignment paths, which all funnel through that choke point) against the owning method's signature —
+**before the encoder ever sees it**.
+
+- **First tenant: the SAM shorthand.** `f(x)` for a `Function`-typed formal (re-parsed as implicit-`this`
+  `this.f(x)`) is rewritten to `f.apply(x)` — **including inside quantifier closure bodies** (`(n..<u).every
+  { f(i+1) == f(i) }`), which a plain `ExpressionTransformer` does not descend into; the normaliser walks
+  closure statements explicitly, which the P174 frame lemmas exercise. The Phase-177 encoder branch is
+  **deleted** — the encoder now deals in one spelling.
+- **Body-side shorthand ships too** (a capability add uncovered by the migration probe): in a *body* — a
+  resolved AST, not re-parsed text — `f(n)` arrives as **`f.call(n)`**, a third spelling the Phase-177 branch
+  never matched (so deleting it regressed nothing). The encoder's `apply` recogniser now also accepts `call`,
+  gated on a *known* `Function`-typed formal so an ordinary `Closure.call()` is never hijacked. All three
+  spellings — `f.apply(x)`, contract `f(x)`, body `f(x)` — land on the same `apply$f` term. (A body-side
+  `f(n)` is an instance-method dereference, so the standard implicit `f != null` obligation applies — the
+  pinned cases guard it, as any real caller must.)
+- **Scope, stated honestly.** The normaliser sees *fresh* per-call parses only — never the clean-body
+  snapshot, which is shallow-shared across consumers and must not be restructured (the body path doesn't need
+  it: bodies are resolved ASTs). *Statement-level loop* `@Invariant`/`@Decreases` closures ride a different
+  capture path (`ContractExpansionTransform`'s loop machinery) and are **not yet normalised** — SAM shorthand
+  there stays a loud skip; migrating that path is the natural next tenant-site. The remaining special cases
+  (enum constants, carrier recovery — translate-time *resolution*, not rewrites) stay in the encoder by
+  design; `values().length` folding is a rewrite and a migration candidate, left in place this slice.
+- The `Function`-formal return-type derivation moved to `ContractNormalizer.functionReturnTypes` (it is also
+  the rewrite scope); `VerifyChecker.collectFunctionReturnTypes` delegates.
+
+3 new `P177 sam-shorthand` cases (quantifier-closure normalisation; body-side verify + refute — the refute is
+the teeth, since a skip also compiles clean). Root suite **1451/0** (+3), runtime rung **552/570** clean,
+docLint **0 drift** (architecture map 33/33 with the new source).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

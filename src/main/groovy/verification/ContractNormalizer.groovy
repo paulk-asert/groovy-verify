@@ -1,0 +1,145 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package verification
+
+import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.GenericsType
+import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.Parameter
+import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.ExpressionTransformer
+import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.TupleExpression
+import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.ast.stmt.Statement
+
+/**
+ * Canonicalises a freshly <b>re-parsed</b> contract expression against the owning method's signature,
+ * before the encoder ever sees it.
+ *
+ * <p>Contract text is re-parsed at {@code CompilePhase.CONVERSION} (see {@code ContractExpansionTransform}
+ * / {@code VerifyChecker.parseContract}), which is <i>pre-resolution</i> — so spellings that Groovy's later
+ * resolution phases would rewrite arrive in their raw parse shape. Historically each such shape grew its
+ * own special case at the point it was discovered (unresolved enum constants, {@code new Res(a)} carrier
+ * recovery, {@code values().length} folding, the Phase-177 SAM shorthand — each found by a user-visible
+ * failure). This pass is the <b>one home</b> for the rewrites among them: shapes that have a canonical
+ * equivalent are normalised here, so the encoder deals in one spelling. (Pure <i>resolution</i> concerns —
+ * enum-constant and carrier-type recovery, which need translate-time scope rather than a rewrite — stay
+ * with the encoder.)
+ *
+ * <p>Current rewrites:
+ * <ul>
+ *   <li><b>SAM call-operator shorthand</b> (Phase 177/181): {@code f(x)} where {@code f} is a
+ *   {@code java.util.function.Function}-typed formal parses as an implicit-{@code this} call
+ *   {@code this.f(x)}; resolution would have made it {@code f.call(x)} → the SAM {@code apply}. Rewritten
+ *   to {@code f.apply(x)}, the encoder's canonical higher-order shape — including inside closure bodies
+ *   ({@code (n..<u).every { csF(i + 1) == csF(i) }}), which a plain {@link ExpressionTransformer} does not
+ *   descend into.</li>
+ * </ul>
+ *
+ * <p>Safe to rewrite in place / by copy: the input is a per-call fresh parse (never the shared clean-body
+ * snapshot, which is shallow-shared across consumers and must not be restructured — bodies are resolved
+ * ASTs anyway, where the shorthand arrives as {@code f.call(x)} and is recognised by the encoder directly).
+ */
+@CompileStatic
+class ContractNormalizer {
+
+    /** Normalise a freshly re-parsed contract expression of method {@code m}; returns {@code e} (possibly
+     *  rebuilt). Null-safe on both arguments. */
+    static Expression normalize(Expression e, MethodNode m) {
+        if (e == null || m == null) return e
+        Set<String> fns = functionFormalNames(m)
+        if (fns.isEmpty()) return e
+        new SamRewriter(fns).transform(e)
+    }
+
+    /** Names of {@code java.util.function.Function}-typed formals (raw or generic) — the rewrite scope. */
+    static Set<String> functionFormalNames(MethodNode m) {
+        Set<String> out = new HashSet<String>()
+        Parameter[] ps = m.parameters
+        if (ps != null) for (Parameter p : ps) {
+            if (p.type != null && p.type.name == 'java.util.function.Function') out.add(p.name)
+        }
+        out
+    }
+
+    /** {@code Function}-typed formals → declared return type (the 2nd generic of {@code Function<A, R>}),
+     *  so the encoder can sort {@code f.apply(x)}'s result; raw {@code Function} is omitted (default value
+     *  sort). Pure function of the signature — shared by {@code VerifyChecker}'s scope collection. */
+    static Map<String, ClassNode> functionReturnTypes(MethodNode m) {
+        Map<String, ClassNode> out = new HashMap<String, ClassNode>()
+        Parameter[] ps = m.parameters
+        if (ps != null) for (Parameter p : ps) {
+            ClassNode t = p.type
+            if (t == null || t.name != 'java.util.function.Function') continue
+            GenericsType[] g = t.genericsTypes
+            if (g != null && g.length == 2 && g[1]?.type != null) out.put(p.name, g[1].type)
+        }
+        out
+    }
+
+    /** The rewriting walk. Contract closure bodies (quantifier predicates) are descended into by mutating
+     *  their statements' expressions in place — sound because the whole tree is a fresh, unshared parse. */
+    private static class SamRewriter implements ExpressionTransformer {
+        private final Set<String> fnNames
+        SamRewriter(Set<String> fnNames) { this.fnNames = fnNames }
+
+        @Override
+        Expression transform(Expression expr) {
+            if (expr == null) return null
+            if (expr instanceof MethodCallExpression) {
+                MethodCallExpression mce = (MethodCallExpression) expr
+                Expression recv = mce.objectExpression
+                boolean implicitThis = mce.isImplicitThis() ||
+                    (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')
+                List<Expression> args = (mce.arguments instanceof TupleExpression)
+                    ? ((TupleExpression) mce.arguments).expressions : null
+                String name = mce.methodAsString
+                if (implicitThis && name != null && fnNames.contains(name) && args != null && args.size() == 1) {
+                    MethodCallExpression apply = new MethodCallExpression(
+                        new VariableExpression(name), 'apply', transform(mce.arguments))
+                    apply.implicitThis = false
+                    apply.setSourcePosition(mce)
+                    return apply
+                }
+            }
+            if (expr instanceof ClosureExpression) {
+                rewriteStatements(((ClosureExpression) expr).code)
+                return expr
+            }
+            return expr.transformExpression(this)
+        }
+
+        /** Descend into a closure body's statements (a plain ExpressionTransformer stops at the closure).
+         *  Only the statement kinds a contract closure can carry in-fragment; anything else is left alone. */
+        private void rewriteStatements(Statement s) {
+            if (s instanceof BlockStatement) {
+                for (Statement inner : ((BlockStatement) s).statements) rewriteStatements(inner)
+            } else if (s instanceof ExpressionStatement) {
+                ExpressionStatement es = (ExpressionStatement) s
+                es.expression = transform(es.expression)
+            } else if (s instanceof ReturnStatement) {
+                ReturnStatement rs = (ReturnStatement) s
+                rs.expression = transform(rs.expression)
+            }
+        }
+    }
+}
