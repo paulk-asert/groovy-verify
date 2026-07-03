@@ -311,7 +311,7 @@ touches (arrays, lists, sets, maps, `BigDecimal`, IEEE-754 floats, objects, grap
 Read **[the five-act tour](examples/tour.md)** for all of it. More worked-and-verified examples by domain:
 
 - **[HumanEval](examples/humaneval.md)** — an external benchmark (Verus' suite) of LeetCode-shape problems we didn't pick.
-- **[Dafny ports](examples/dafny.md)** — the Dafny community's own credentials: `SumMax` (VSComp'10), `Find`, `BinarySearch` — and Leino's *Modeling Concurrency in Dafny* ticket lock, reproduced end to end: mutual exclusion in both of the paper's formulations (enum-bounded and symbolic-N), the fair-schedule liveness at any process count with per-round progress derived from the transition relation, and a TLA+/TLC model as the second rung.
+- **[Dafny ports & cross-tool credentials](examples/dafny.md)** — `SumMax` (VSComp'10), `Find`, `BinarySearch`; Hillel Wayne's *Theorem Prover Showdown* with full specs (leftpad — imperative **and** functional-by-induction — fulcrum's argmin, unique with a bidirectional spec); mergesort's `merge` proved sorted *and* a permutation (math-comp's `path.v`); and Leino's *Modeling Concurrency in Dafny* ticket lock, reproduced end to end: mutual exclusion in both of the paper's formulations (enum-bounded and symbolic-N), the fair-schedule liveness at any process count with per-round progress derived from the transition relation, and a TLA+/TLC model as the second rung.
 - **[OpenJML ports](examples/openjml.md)** — `Max by elimination` and `ChangeCase`, from the JVM's closest prior art (CC BY-NC).
 - **[Concurrency](examples/concurrency.md)** — the *local* half of locks, agents, dataflow, channels, and rely/guarantee; the *structural* half (Lincheck / TLA+ TLC / Fray) is the [three rungs](CONCURRENCY.md).
 - **[Units of measurement](examples/units.md)** — the Mars-orbiter bug, three ways: JSR 385 dimensions (the unchecked `as Quantity<K>` cast), JSR 385 value/scale, and a bespoke `record` units type with verified `+`.
@@ -447,9 +447,10 @@ completed proof means; unset, the default path is byte-identical. Each is docume
 
 Domain vocabularies plug in as **encoding packs** (experimental): `ServiceLoader`-discovered modules
 contributing a library's recognisers and axioms — packs model *libraries*, the core models the *language*.
-The number-theory spec helpers (`Fib.of`/`Gcd.of`/…) and the whole JSR 385 units domain ship as the two
-reference packs, each pinned by its own verify/refute case groups (attributed in the generated
-`catalog.json`). The SPI, the soundness obligations, and a worked minimum pack are in
+Three reference packs ship in tree: the number-theory spec helpers (`Fib.of`/`Gcd.of`/… — extended with
+the Bézout coefficients, through which Gauss's lemma proves), the whole JSR 385 units domain, and a
+combinatorics pack (`Fact.of`, Pascal-rule `Binom.of(n, k)` — the first two-argument spec primitive); each
+is pinned by its own verify/refute case groups (attributed in the generated `catalog.json`). The SPI, the soundness obligations, and a worked minimum pack are in
 **[PACKS.md](PACKS.md)**.
 
 ## Building & using

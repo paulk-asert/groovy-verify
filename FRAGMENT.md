@@ -66,7 +66,10 @@ a coverage metric. In expressions the fragment is:
   (the no-arg fold has no zero element, the way `['', 1, 2, 3].sum() == '123'`), so a bare `a[0..<k].sum()` over a
   possibly-empty sublist is modelled as unconstrained at empty and a spec like `int == a[0..<k].sum()` *refuses*
   to prove at the empty edge — the seeded `a[0..<k].sum(0)`, a guaranteed-non-empty range, or the int[]-returning
-  `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms; the recurrence spec helpers
+  `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms. The **prefix count**
+  `xs[0..<k].count(v)` is the counting sibling (Phase 208): a bounded range count with base/step axioms and a
+  quantified range-store law (a store at `k` provably leaves the `[0,k)` count untouched) — the permutation
+  spelling a merge/fill loop's invariant carries; whole-array `xs.count(v)` keeps its per-store law. The recurrence spec helpers
   `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/56/87);
 - `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /
@@ -157,7 +160,12 @@ a coverage metric. In expressions the fragment is:
 - fuel-bounded inlining of contract-free pure functions (a closed call like
   `pow2(10)` is evaluated to a literal, a symbolic one unfolded);
 - higher-order functions and algebraic carriers, for *law* proofs: a `java.util.function.Function`'s
-  `f.apply(x)` is an uninterpreted function (functional congruence only), and a `@Monadic` carrier — a
+  `f.apply(x)` is an uninterpreted function — numeric-returning applications are Int-sorted terms that
+  partake in arithmetic (the trace-function machinery of the liveness proofs, Phase 173), a
+  `BiFunction`'s two-argument `g.apply(a, b)` is the 2-ary twin (the time×process trace state
+  `cs(i, r)`, Phase 200), the SAM call-operator shorthand `f(x)` / `cs(i, r)` is normalised to the same
+  terms, and lemmas over function formals are reusable under renamed actuals (call-site aliasing,
+  Phase 185); a `@Monadic` carrier — a
   single-value immutable wrapper *or* a two-case `Some(v) | None` — is modelled as a Z3 datatype, so the
   monad / functor laws (left/right identity, associativity, functor identity/composition) derive from the
   annotation alone (Phases 133–141); the combiner analogue inlines an `@Reducer`/`@Associative` method as
@@ -255,7 +263,10 @@ tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -
 loop `while (i < n) a[i++] = 0` verifies and an out-of-bounds `a[i++]` refutes; Phases 85/86), multiple
 assignment — both the declaration `def (a, b) = [1, 2]` and the bare parallel **swap** `(a, b) = [b, a]`
 (the right-hand side is snapshotted before any target is written; Phases 79 / 90), and an
-annotated loop — `while`, `do … while` (Phase 88), a classic
+annotated loop — or **several in sequence** (Phase 207: each loop gets its own establishment /
+preservation / `@Decreases`, earlier loops summarised as havoc + `inv ∧ ¬guard` in the later ones'
+context, so a later loop must restate any earlier-segment fact it needs — the OpenJML `maintaining`
+discipline; early exits combined with sequential loops stay a loud skip) — `while`, `do … while` (Phase 88), a classic
 `for (init; cond; update)`, `for (x in xs)` over a named collection, `xs.each { x -> … }` / `xs.each { … it … }`
 (Phase 161, modelled as that same for-in — the explicit element param *or* the implicit `it`), or
 `xs.eachWithIndex { x, i -> … }` (the closure's second param becomes the loop's *user-named* index, with `x = xs[i]`),
@@ -282,7 +293,9 @@ defined behaviour, landing on the modelled catch path — via a curated type tab
 supertypes, `RuntimeException`/`Exception`/`Throwable`); a wrong-type handler, a handler-body obligation, or
 the same expression outside the try still refutes (Phase 193). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
 call bound to a local, whose slots then carry the callee's postcondition into the caller's body
-(`Tuple2 r = f(a); … r.v1 …`; Phase 113) — a method-level
+(`Tuple2 r = f(a); … r.v1 …`; Phase 113), and a **non-Int-returning call in return position** (the hoist
+local is minted in the callee's return sort, so a String-returning recursion — the functional leftpad —
+carries its `@Ensures` as the induction hypothesis; Phase 206) — a method-level
 `@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a
 `void` lemma proven once then applied by calling it), and `@Modifies` frames what a call may change so the
 caller havocs only those locations while `old.x` snapshots pre-state field and array contents. A class-level
