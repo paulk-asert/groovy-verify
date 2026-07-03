@@ -178,7 +178,9 @@ class LoopEncoder {
                 "nested loop writes a field/collection or unbounded construct — not yet supported")
         }
         for (String nm : scalars) enc.havoc(nm)
-        for (String nm : arrays) enc.havocArray(nm)
+        // Phase 186 — a written subscript target may be a MAP, whose havoc must refresh both the value
+        // array and the key-set (an Int-sorted havocArray on a non-Int-keyed map sort-crashes).
+        for (String nm : arrays) { if (enc.isMapName(nm)) enc.havocMap(nm) else enc.havocArray(nm) }
         s.assertExpr(conj(enc, s, inner.invariants))
         s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
     }
@@ -386,6 +388,17 @@ class LoopEncoder {
                 ((BinaryExpression) be.leftExpression).leftExpression instanceof VariableExpression) {
                 BinaryExpression sub = (BinaryExpression) be.leftExpression
                 String arr = ((VariableExpression) sub.leftExpression).name
+                // Phase 186 — m[k] = v on a MAP inside a loop body: a map put (value store + key-set add +
+                // cardinality law), routed through the map's declared key/value sorts — mirroring the
+                // straight-line replay. Without this the map fell into the Int-indexed array path below
+                // and sort-crashed to a loud skip on any non-Int-keyed map.
+                if (enc.isMapName(arr)) {
+                    Object k = enc.translateInSort(sub.rightExpression, enc.mapKeySort(arr))
+                    Object mv = enc.translateInSort(be.rightExpression, enc.mapValueSort(arr))
+                    if (k == null || mv == null) enc.havocMap(arr)   // unmodelable put → map unknown (sound)
+                    else enc.mapPut(arr, k, mv)
+                    return
+                }
                 Object idx = enc.translate(sub.rightExpression)
                 Object val = enc.translate(be.rightExpression)
                 if (idx == null || val == null) enc.havocArray(arr)   // unmodelable update → contents unknown (sound)

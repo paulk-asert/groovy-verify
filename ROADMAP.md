@@ -8661,6 +8661,39 @@ suite **1461/0** (+4), runtime rung **553/571** clean, docLint **0 drift** (266/
 
 ---
 
+## Phase 186 — map mutation: mostly a phantom gap, one real fix, and Leino Model-1 as the crown  *(shipped)*
+
+The assessment's "map/collection field mutation under class `@Invariant`" item — probed before building, with
+a humbling result: **most of the gap didn't exist**. Straight-line map puts (`m[k] = v` *and* `m.put(k, v)`)
+were already modelled — value-array store + key-set add + cardinality law — with sound key-set/size effects
+(a stale `!containsKey` or `size` claim after a put *refutes*; `containsKey` after a put *verifies*),
+working over map **fields** under a class `@Invariant` (guarded mutator preserves, clobber refutes, `old.m[k]`
+relates pre/post), symbolic enum keys included. It was simply **unpinned** — no case exercised it, which is
+why Phase 170 assumed mutable-map-field framing was out of fragment and chose Model-2. (The lesson cuts both
+ways: unpinned working behaviour reads as absent, and is one regression away from actually being absent.)
+
+**The one genuine gap: loop bodies.** A map put inside a `@Invariant`-carrying loop fell into the Int-indexed
+*array* store path (`LoopEncoder`) and sort-crashed to a loud skip on any non-Int-keyed map (`domain sort
+State and parameter sort Int do not match`). Fixed by routing: the put semantics moved from the checker's
+private `doMapPut` into **`Encoder.mapPut`** (shared by the straight-line replay and the loop executor), the
+loop store branch now dispatches on `isMapName` through the map's declared key/value sorts (with `havocMap`
+as the sound unmodelable fallback), and the nested-loop summariser havocs a written map as a map (value array
++ key-set), not as an Int array. A per-key counting loop now threads its invariant through the store, with
+cross-key framing (storing at `IDLE` provably leaves `DONE`'s clause alone).
+
+**The crown — Leino's ticket lock in Model 1.** With the surface confirmed, KRML260's *imperative*
+formulation — mutating `request`/`enter`/`leave` methods over the `cs`/`t` map fields, the strengthened
+`valid` as the class `@Invariant` — **verifies as written**, and the broken-dispenser variant (`request`
+without the increment, the same bug the TLA⁺ `TicketBad` plants) **refutes the invariant**: the compile-time
+twin of TLC's two-philosophers-Eating trace. Both of the paper's formulations now verify; `examples/dafny.md`
+gains the Model-1 class with a case link, correcting the Phase-170 record.
+
+14 `P186 map-mutation` cases pin the whole surface (7 verify / 7 refute-or-teeth across straight-line, key-set
+soundness both polarities, `put()` form, field invariants, `old.`, loops, and the Model-1 pair). Root suite
+**1475/0** (+14), runtime rung **553/571** clean, docLint **0 drift** (267/267 groups, 102/102 links).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

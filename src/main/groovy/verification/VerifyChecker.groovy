@@ -6218,13 +6218,8 @@ class VerifyChecker extends TypeCheckingExtension {
      * {@code m[k] = v} (array-store) spellings.
      */
     private void doMapPut(SmtSession s, Encoder enc, String logical, Object key, Object val) {
-        enc.putMapVals(logical, s.store(enc.mapValsFor(logical), key, val))
-        Object oldKeys = enc.mapKeysFor(logical)
-        Object memOld = enc.member(oldKeys, key)
-        Object newKeys = s.store(oldKeys, key, s.intLit(1L))
-        s.assertExpr(s.eq(enc.cardOf(newKeys),
-            s.plus(enc.cardOf(oldKeys), s.ite(memOld, s.intLit(0L), s.intLit(1L)))))
-        enc.putMapKeys(logical, newKeys)
+        // The put semantics live in Encoder.mapPut (shared with the loop-body executor — Phase 186).
+        enc.mapPut(logical, key, val)
     }
 
     /** Apply a {@code m.put(k, v)} call as a map mutation; false (fall through to lemma handling) if not one. */

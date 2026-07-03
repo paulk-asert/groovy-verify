@@ -244,9 +244,11 @@ lemma MutualExclusion(p: Process, q: Process)
 
 The faithful Groovy fixes `Process` to a small enum — Leino explicitly offers this (`datatype Process = Agnes
 | Agatha | Germaine | Jack`) — so `P` is finite, `cs`/`t` are **enum-keyed maps**, and the `∀p` / `∀p,q`
-conjuncts expand over the domain. Following the paper's *Section 7* (TLA⁺-style) formulation, each atomic
-event is a **two-state predicate** and each proof an **empty-bodied lemma** — the same law-lemma shape the
-[lattice/monoid arcs](checkers.md) use. `Valid` and `MutualExclusion` become:
+conjuncts expand over the domain. The paper gives the system twice — **Model 1**, atomic events as mutating
+*methods* on a class, and **Model 2** (Section 7), events as TLA⁺-style *two-state predicates* — and both
+verify below. Model 2 comes first here, out of the paper's order, because it is the shape the liveness
+development builds on: each atomic event a **two-state predicate**, each proof an **empty-bodied lemma** —
+the same law-lemma shape the [lattice/monoid arcs](checkers.md) use. `Valid` and `MutualExclusion` become:
 
 <!-- doclint:case p170-ticket-lock/mutual-exclusion-follows-from-the-invariant -->
 ```groovy
@@ -283,6 +285,41 @@ both `mutualExclusion` and `Leave`-preservation **refute** with `Cannot prove po
 the encoder couldn't interpret would *skip* (compile clean), the refutation is what proves the reasoning
 actually ran.
 
+With the invariant chain established, **Model 1** — the paper's *first*, imperative formulation, atomic
+events as **mutating methods** on a class whose state is the ticket dispenser, the display, and the two
+process maps, with `Valid()` as the class invariant — verifies too, exactly as he writes it: the invariant is
+assumed on entry to each event and checked restored at exit, with the map assignments modelled as
+value-store + key-set updates:
+
+<!-- doclint:case p186-map-mutation/leino-ticket-lock-model-1-all-three-events-preserve-valid -->
+```groovy
+@Invariant({ serving <= ticket &&
+    (cs[Phil.A] != CS.Thinking ==> (serving <= t[Phil.A] && t[Phil.A] < ticket)) &&
+    (cs[Phil.B] != CS.Thinking ==> (serving <= t[Phil.B] && t[Phil.B] < ticket)) &&
+    ((cs[Phil.A] != CS.Thinking && cs[Phil.B] != CS.Thinking) ==> t[Phil.A] != t[Phil.B]) &&
+    (cs[Phil.A] == CS.Eating ==> t[Phil.A] == serving) &&
+    (cs[Phil.B] == CS.Eating ==> t[Phil.B] == serving) })
+class Ticket {
+    enum Phil { A, B }
+    enum CS { Thinking, Hungry, Eating }
+    int ticket
+    int serving
+    Map<Phil,CS> cs
+    Map<Phil,Integer> t
+    @Requires({ cs[p] == CS.Thinking })
+    void request(Phil p) { t[p] = ticket; ticket = ticket + 1; cs[p] = CS.Hungry }
+    @Requires({ cs[p] == CS.Hungry })
+    void enter(Phil p) { if (t[p] == serving) cs[p] = CS.Eating }
+    @Requires({ cs[p] == CS.Eating })
+    void leave(Phil p) { serving = serving + 1; cs[p] = CS.Thinking }
+}
+```
+
+A dispenser that fails to advance (`request` without `ticket = ticket + 1` — the same bug the TLA⁺ model's
+`TicketBad` variant plants) **refutes the class invariant**: the compile-time twin of TLC's
+two-philosophers-Eating trace. So both of the paper's formulations now verify — Model 1 for the imperative
+reading, Model 2 (above) as the base the liveness development builds on.
+
 Leino's second half is **liveness** — *a hungry process eventually eats* (Section 7.6). It is genuinely
 surprising that an SMT-backed *sequential* checker can touch it at all, and the reason is Leino's: the liveness
 proof **is an algorithm** — a proof-loop that walks a well-founded measure down to zero — so it needs no
@@ -309,7 +346,16 @@ static void leaveDecreasesMeasure(int ticket, int serving, Map<Phil,CS> cs, Map<
 ```
 
 These are the *ingredients* — a well-founded, monotonically-falling measure with an available step and a base
-case. Composing them into an **eventually-eats** means reasoning about the system state *over time*, which Leino
+case. One more joins them before the composition: the finiteness that makes it *bounded*, provable as a plain
+**state invariant** with no trace in sight. Add the **counting invariant** `ticket - serving == (#non-thinking
+processes)` (each dispensed-but-unserved ticket is one waiting/eating process; maintained by every event), and
+a waiter's measure is provably **`t[p] - serving <= 1`** for the two-process lock: **a waiting process is
+overtaken at most once before it enters** — *bounded bypass*, a liveness property stronger than mere eventual
+entry, since it bounds the wait. Composed with the ranking function above (each `Leave` decreases the
+measure), from any `Hungry` state at most one competitor `Leave` stands between the waiter and eating; drop
+the counting invariant and the bound refutes — the dispenser could run arbitrarily far ahead of the display.
+
+Composing the ingredients into an **eventually-eats** means reasoning about the system state *over time*, which Leino
 models as functions `serving`, `t[p]`, `cs[p] : nat → …`. groovy-verify models those as uninterpreted functions
 (`Function`-typed, applied as `f.apply(i)` — which the lemmas below write with Groovy's call-operator shorthand
 `f(i)`, sugar for the same SAM `apply`): a numeric-returning `Function`'s application is a stable, shared Int-sorted
@@ -343,24 +389,16 @@ the served process out of the kitchen, whose `Leave` advances `serving` by one; 
 lemmas with that step drops the waiter's measure to zero (`reduceMeasure1`), reducing to the base case
 (`overtakenEats`). Bounded bypass caps the measure at ≤ 1, so those two cases are **exhaustive** and the two-process
 `eventually-eats` is **complete** — mirroring Leino's loop (base case = exit, reduction = one body iteration, ≤ 1
-bound = at most one iteration), so no unbounded trace loop is needed. The general any-N case would want the trace
-loop itself (recursion over a symbolic number of reductions) plus an unbounded `∀i:nat` `IsTrace`
-hypothesis; that generalisation is the remaining frontier, and the two-process theorem is closed.
+bound = at most one iteration), so no unbounded trace loop is needed.
 
-What *does* ship is the finiteness that underwrites liveness, as a **state invariant** — no trace needed. Add the
-**counting invariant** `ticket - serving == (#non-thinking processes)` (each dispensed-but-unserved ticket is one
-waiting/eating process; maintained by every event), and a waiter's measure is provably **`t[p] - serving <= 1`**
-for the two-process lock: **a waiting process is overtaken at most once before it enters** — *bounded bypass*, a
-liveness property stronger than mere eventual entry, since it bounds the wait. Composed with the ranking function
-above (each `Leave` decreases the measure), from any `Hungry` state at most one competitor `Leave` stands between
-the waiter and eating. Drop the counting invariant and the bound refutes — the dispenser could run arbitrarily far
-ahead of the display. Safety, the ranking function, bounded bypass, and the **full two-process fair-schedule
-eventually-eats** — base case *and* the measure-1 reduction — all verify structure-for-structure with the paper.
-Leino's KRML260 development is reproduced end to end for the two-process lock; only the general any-N generalisation
-(an unbounded trace loop) remains beyond it.
+Safety in both of the paper's formulations, the ranking function, bounded bypass, and the **full two-process
+fair-schedule eventually-eats** — base case *and* the measure-1 reduction — verify structure-for-structure with
+the paper: Leino's KRML260 development, reproduced end to end for the two-process lock. Only the general any-N
+form remains beyond it — the trace loop itself (recursion over a symbolic number of reductions) plus an
+unbounded `∀i:nat` `IsTrace` hypothesis.
 
-**The rung-2 companion.** Because this is an abstract *model* (Leino's Model 2), not runnable bytecode, its
-natural second rung is a **model checker**, not a stress test. [`src/tlc/Ticket.tla`](../src/tlc/Ticket.tla)
+**The rung-2 companion.** Because the artifact here is a *model* of the protocol — in either formulation —
+rather than a threaded implementation, its natural second rung is a **model checker**, not a stress test. [`src/tlc/Ticket.tla`](../src/tlc/Ticket.tla)
 transcribes the same state machine into **TLA⁺**, and `./gradlew tlcTicket` has **TLC** enumerate every
 interleaving at N = 3 (179 states): mutual exclusion, the same strengthened `valid` invariant, and the
 fair-schedule `Hungry ~> Eating` all hold; a broken-dispenser variant prints the two-processes-Eating trace.

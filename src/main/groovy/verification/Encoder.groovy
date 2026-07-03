@@ -3139,6 +3139,27 @@ class Encoder {
         putMapKeys(name, session.setVar(mapKeysKey(name) + '$havoc$' + (havocCounter++)))
     }
 
+    /** True iff {@code n} is a known map-typed name (so a subscript store on it is a map put, not an
+     *  Int-indexed array store) — the routing test the store/havoc paths share. */
+    boolean isMapName(String n) { mapTypes.containsKey(n) }
+
+    /**
+     * Thread a map put {@code m[k] = v} / {@code m.put(k, v)}: store {@code v} into the value array, add
+     * {@code k} to the key-set, and assert the key-set cardinality law — so {@code m.size()} grows by one
+     * exactly when {@code k} is a new key. A later {@code m[k]} read sees {@code v}, and {@code m[j]} for
+     * {@code j != k} is unchanged, both via Z3's array theory. Shared by the straight-line replay
+     * (VerifyChecker) and the loop-body executor (LoopEncoder) so both spellings and positions agree.
+     */
+    void mapPut(String logical, Object key, Object val) {
+        putMapVals(logical, session.store(mapValsFor(logical), key, val))
+        Object oldKeys = mapKeysFor(logical)
+        Object memOld = member(oldKeys, key)
+        Object newKeys = session.store(oldKeys, key, session.intLit(1L))
+        session.assertExpr(session.eq(cardOf(newKeys),
+            session.plus(cardOf(oldKeys), session.ite(memOld, session.intLit(0L), session.intLit(1L)))))
+        putMapKeys(logical, newKeys)
+    }
+
     /** Re-bind a receiver's size oracle to a fresh, unconstrained {@code >= 0} integer. */
     void havocSize(String name) {
         Object v = session.intVar(name + '.size$havoc$' + (havocCounter++))
