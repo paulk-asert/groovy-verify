@@ -9493,6 +9493,45 @@ scalar shapes (the third is the `merge` skeleton — that example is now unblock
 
 ---
 
+## Phase 208 — merge: the sequential-loops payoff, and the prefix-count oracle  *(shipped)*
+
+The example Phase 207 was built for: math-comp `path.v`'s `merge` — sorted output AND a permutation of the
+inputs — in the classic imperative form (main two-pointer loop + two drain loops).
+
+**Sortedness** proved through iteration on the invariants, each round teaching something:
+- The stable-`@Requires` filter (Phase 64) drops quantified and call-shaped conjuncts, so `a.isSorted()`
+  (and even its explicit two-var spelling) never reaches loop *preservation* — input sortedness must ride
+  the `@Invariant` (trivially preserved, the arrays are unmodified). A possible future sharpening:
+  quantified conjuncts over provably-unwritten names could be kept.
+- A later loop's establishment sees the previous loop's **summary** (havoc + `inv ∧ ¬guard`) even on the
+  no-op path — so drain-a must carry the *b-frontier* fact (vacuous while drain-a runs, since then
+  `j == b.length`) purely so drain-b can establish. The cross-loop discipline, now pinned.
+- The post-loop `@Ensures` walk needs a return value ("no return value after loop") — `merge` returns `r`,
+  the same shape `unique` used. (A void-with-`@Ensures` loop method is a recorded gap.)
+
+**The permutation layer** needed one engine capability: the **prefix-count oracle** —
+`r[0..<k].count(v)` routes to `bcount(arr, v, lo, hi)` (the range-subscript receiver recognised exactly as
+`…[0..<k].sum()` is), with the `sumOf` axiom scheme quantified over the value as well as the range (base:
+empty range is 0; step: `bcount(…,h) == bcount(…,h−1) + [arr[h−1]==v]`), plus a **quantified range-store
+law** in `emitStoreCountLaw` (ground in the arrays/index/value, `∀ v,l,h`: the store adjusts a range count
+only when the index lies inside the range — the frame that lets the `[0,k)` prefix cross a store at `k`).
+With it, the merge invariant `r[0..<k].count(v) == a[0..<i].count(v) + b[0..<j].count(v)` carries, and the
+whole spec proved on the oracle's first run.
+
+**The suite caught a perf regression before it shipped**: emitting the range-store law on *every* counted
+store made two pre-existing `P12 perm` refute VCs time out (their model search paying for universals their
+goals never touch). The law is now gated on the encoder having actually minted a range-count term this VC
+— whole-array-count corpora keep their historic quantifier profile, and both P12 refutes are crisp again.
+Refute-side posture matches Phase 203's finding: count-layer refutes under the quantified axioms take the
+canary form; the sortedness teeth are quantifier-light and refute crisply.
+
+`P208 merge` (G283, 5 cases) + the gallery section in `examples/dafny.md` (doclint-linked). Perf note for
+the next re-base: the suite now runs ~5,100 solver checks against the 6,000 ceiling. Root suite **1565/0**
+(+5), runtime rung **585/605** clean / 0 need review, `examples-dsl` green, docLint **0 drift**
+(284/284 groups, 108/108 links), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

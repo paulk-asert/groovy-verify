@@ -305,6 +305,78 @@ pinned as a boundary case that fails loudly if a future solver win flips it). So
 carries identity + length by induction; the character clauses are where the imperative port's loop
 invariants earn their keep.
 
+### Merge — mergesort's heart (math-comp, `path.v`)
+
+The Mathematical Components library's `merge` — the function whose correctness statement (`sorted` output,
+a permutation of the inputs) anchors `path.v`'s sorting theory — in its classic imperative form: the main
+two-pointer loop plus the two drain loops, three sequential annotated loops in one method. Both halves of
+the spec prove: **sortedness** (two-variable prefix invariants with frontier bounds, the input sortedness
+restated in each loop's invariant) and **count-preservation** for a symbolic value — the permutation
+spelling — carried by the prefix-count oracle `r[0..<k].count(v)`:
+
+<!-- doclint:case p208-merge/merge-sorted-and-count-preserving-full-spec -->
+```groovy
+@Requires({ a != null && b != null && r != null && r.length == a.length + b.length &&
+            (0..<a.length).every { int x -> (x + 1..<a.length).every { int y -> a[x] <= a[y] } } &&
+            (0..<b.length).every { int x -> (x + 1..<b.length).every { int y -> b[x] <= b[y] } } })
+@Ensures({ (0..<r.length - 1).every { r[it] <= r[it + 1] } &&
+           r[0..<r.length].count(v) == a[0..<a.length].count(v) + b[0..<b.length].count(v) })
+static int[] merge(int[] a, int[] b, int[] r, int v) {
+    int i = 0
+    int j = 0
+    int k = 0
+    @Invariant({ 0 <= i && i <= a.length && 0 <= j && j <= b.length && k == i + j &&
+                 r.length == a.length + b.length &&
+                 (0..<a.length).every { int x -> (x + 1..<a.length).every { int y -> a[x] <= a[y] } } &&
+                 (0..<b.length).every { int x -> (x + 1..<b.length).every { int y -> b[x] <= b[y] } } &&
+                 (0..<k).every { int x -> (x + 1..<k).every { int y -> r[x] <= r[y] } } &&
+                 (i < a.length ==> (0..<k).every { int x -> r[x] <= a[i] }) &&
+                 (j < b.length ==> (0..<k).every { int x -> r[x] <= b[j] }) &&
+                 r[0..<k].count(v) == a[0..<i].count(v) + b[0..<j].count(v) })
+    @Decreases({ a.length + b.length - k })
+    while (i < a.length && j < b.length) {
+        if (a[i] <= b[j]) { r[k] = a[i]; i = i + 1 } else { r[k] = b[j]; j = j + 1 }
+        k = k + 1
+    }
+    @Invariant({ 0 <= i && i <= a.length && 0 <= j && j <= b.length && k == i + j &&
+                 r.length == a.length + b.length &&
+                 (i < a.length ==> j == b.length) &&
+                 (0..<a.length).every { int x -> (x + 1..<a.length).every { int y -> a[x] <= a[y] } } &&
+                 (0..<k).every { int x -> (x + 1..<k).every { int y -> r[x] <= r[y] } } &&
+                 (i < a.length ==> (0..<k).every { int x -> r[x] <= a[i] }) &&
+                 (j < b.length ==> (0..<k).every { int x -> r[x] <= b[j] }) &&
+                 r[0..<k].count(v) == a[0..<i].count(v) + b[0..<j].count(v) })
+    @Decreases({ a.length - i })
+    while (i < a.length) {
+        r[k] = a[i]
+        i = i + 1
+        k = k + 1
+    }
+    @Invariant({ 0 <= j && j <= b.length && i == a.length && k == i + j &&
+                 r.length == a.length + b.length &&
+                 (0..<b.length).every { int x -> (x + 1..<b.length).every { int y -> b[x] <= b[y] } } &&
+                 (0..<k).every { int x -> (x + 1..<k).every { int y -> r[x] <= r[y] } } &&
+                 (j < b.length ==> (0..<k).every { int x -> r[x] <= b[j] }) &&
+                 r[0..<k].count(v) == a[0..<i].count(v) + b[0..<j].count(v) })
+    @Decreases({ b.length - j })
+    while (j < b.length) {
+        r[k] = b[j]
+        j = j + 1
+        k = k + 1
+    }
+    return r
+}
+```
+
+Two spelling disciplines are worth naming. Facts must **cross loop boundaries through the invariants** —
+each later loop restates what it relies on (the sorted prefix, the frontier bounds), including guarded
+facts that are *vacuous while that loop runs* but carry the state over its no-op path (the
+`j < b.length ==> …` frontier in the first drain exists purely so the second drain can establish). And the
+permutation layer rides `r[0..<k].count(v)` — a bounded range count with base/step axioms and a
+quantified range-store law, so a store at `k` provably leaves the prefix count untouched. The teeth:
+picking the *larger* element first refutes the sorted invariant; a corrupted store never preserves the
+count; and the prefix-count oracle carries its own pinned verify/refute pair.
+
 ### Ticket lock — mutual exclusion (Leino, KRML260)
 
 The three above are sequential algorithms. Leino's lecture notes

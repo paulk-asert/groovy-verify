@@ -1787,6 +1787,7 @@ class Encoder implements TheoryApi {
         v
     }
     private int havocCounter = 0
+    private int storeLawCounter = 0
 
     /**
      * The size oracle: an integer constant {@code <recv>.size}, constrained
@@ -1907,6 +1908,24 @@ class Encoder implements TheoryApi {
         Object one = session.intLit(1L), zero = session.intLit(0L)
         boolean isList = isListName(arr)
         Object size = isList ? sizeOf(arr) : null
+        // Phase 208 — the quantified RANGE-store law: for any value and range, the store adjusts the
+        // bounded count only when the index lies inside the range. Ground in the arrays/index/value,
+        // quantified over (v, l, h), triggered on the post-store term — the frame that lets a prefix
+        // count `r[0..<k].count(v)` cross a store at k untouched. Gated on a range-count term actually
+        // being in play: unconditional emission made pre-existing whole-array-count REFUTE VCs time out
+        // (the model search pays for universals the goal never touches).
+        if (rangeCountsUsed) {
+        Object rv = session.boundIntVar('bcrs$v' + storeLawCounter)
+        Object rl = session.boundIntVar('bcrs$l' + storeLawCounter)
+        Object rh2 = session.boundIntVar('bcrs$h' + (storeLawCounter++))
+        Object newTerm = session.bcount(newA, rv, rl, rh2)
+        Object inRange = session.and([session.le(rl, idx), session.lt(idx, rh2)])
+        Object adj = session.minus(session.ite(session.eq(val, rv), one, zero),
+                                   session.ite(session.eq(session.select(oldA, idx), rv), one, zero))
+        session.assertExpr(session.forall([rv, rl, rh2],
+            session.eq(newTerm, session.plus(session.bcount(oldA, rv, rl, rh2),
+                                             session.ite(inRange, adj, zero))), [newTerm]))
+        }
         for (Object v : countVals) {
             Object removed = session.ite(session.eq(session.select(oldA, idx), v), one, zero)
             Object added = session.ite(session.eq(val, v), one, zero)
@@ -3251,6 +3270,50 @@ class Encoder implements TheoryApi {
                 session.implies(session.lt(sl, sh), session.eq(sterm, rhs)), [sterm]))
         }
         session.sum(arr, loH, hiH)
+    }
+
+    /** Array handles whose range-count base/step axioms have been asserted (mint-once, per array). */
+    private final Set<Object> bcountRangeConstrained = new HashSet<Object>()
+
+    /**
+     * Phase 208 — the bounded value-count {@code bcount(arr, v, lo, hi) = #{ i ∈ [lo,hi) : arr[i] == v }}
+     * as a first-class range oracle (the {@code xs[0..<k].count(v)} spelling), with the {@link #sumOf}
+     * axiom scheme, quantified over the value as well as the range (once per array handle):
+     * <ul>
+     *   <li>base — {@code ∀ v,l,h. h <= l ⟹ bcount(arr,v,l,h) == 0}</li>
+     *   <li>step — {@code ∀ v,l,h. l < h ⟹ bcount(arr,v,l,h) == bcount(arr,v,l,h-1) + [arr[h-1]==v]}</li>
+     * </ul>
+     * The step axiom is what carries a merge/fill loop's permutation invariant
+     * {@code r[0..<k].count(v) == …}: at {@code k+1} it e-matches to the freshly-stored slot. The
+     * cross-store frame comes from the quantified range-store law in {@link #emitStoreCountLaw}.
+     */
+    /** True once this encoder (≈ this VC) has minted a range-count term — gates the quantified
+     *  range-store law in {@link #emitStoreCountLaw}, so VCs that only use whole-array counts keep
+     *  their historic (crisper) quantifier profile. */
+    private boolean rangeCountsUsed = false
+
+    Object bcountRangeOf(Object arr, Object vH, Object loH, Object hiH) {
+        rangeCountsUsed = true
+        if (bcountRangeConstrained.add(arr)) {
+            Object zero = session.intLit(0L)
+            Object one = session.intLit(1L)
+            Object bv = session.boundIntVar('bcr$bv' + (quantCounter++))
+            Object bl = session.boundIntVar('bcr$bl' + (quantCounter++))
+            Object bh = session.boundIntVar('bcr$bh' + (quantCounter++))
+            Object bterm = session.bcount(arr, bv, bl, bh)
+            session.assertExpr(session.forall([bv, bl, bh],
+                session.implies(session.le(bh, bl), session.eq(bterm, zero)), [bterm]))
+            Object sv = session.boundIntVar('bcr$sv' + (quantCounter++))
+            Object sl = session.boundIntVar('bcr$sl' + (quantCounter++))
+            Object sh = session.boundIntVar('bcr$sh' + (quantCounter++))
+            Object sterm = session.bcount(arr, sv, sl, sh)
+            Object hm1 = session.minus(sh, one)
+            Object srhs = session.plus(session.bcount(arr, sv, sl, hm1),
+                session.ite(session.eq(session.select(arr, hm1), sv), one, zero))
+            session.assertExpr(session.forall([sv, sl, sh],
+                session.implies(session.lt(sl, sh), session.eq(sterm, srhs)), [sterm]))
+        }
+        session.bcount(arr, vH, loH, hiH)
     }
 
     /** Array handles whose Real-sum base/step axioms have been asserted (mint-once, per array). */
@@ -5860,6 +5923,20 @@ class Encoder implements TheoryApi {
         // size, no semantic mismatch). The receiver-name lookup tolerates both bare {@code xs} and
         // {@code old.xs} via {@link #isListName} stripping the {@code old$} prefix.
         if (m == 'count' && args.size() == 1 && !(args.get(0) instanceof ClosureExpression)) {
+            // Phase 208 — a RANGE-subscript receiver (`r[0..<k].count(v)`) routes to the bounded range
+            // oracle with its base/step axioms — the prefix-count spelling a merge/fill loop's
+            // permutation invariant needs. Whole-array receivers keep their historic paths untouched.
+            if (recv instanceof BinaryExpression &&
+                ((BinaryExpression) recv).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                ((BinaryExpression) recv).rightExpression instanceof RangeExpression) {
+                Object[] rh = listAggHandles(recv)
+                if (rh != null) {
+                    Object v = translate(args.get(0))
+                    if (v == null) return null
+                    return bcountRangeOf(rh[1], v, rh[2], rh[3])
+                }
+                return null
+            }
             Object arr = arrayHandleFor(recv)
             if (arr != null) {
                 Object v = translate(args.get(0))
