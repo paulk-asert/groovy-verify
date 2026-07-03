@@ -124,7 +124,7 @@ the engine proves end-to-end, not "point it at anything":
   proved from an annotation alone.
 - **Past where most tools stop** — information-flow security (no secret reaches a public sink), lock-free
   rely/guarantee concurrency, a mutual-exclusion protocol proved safe **and live** (Leino's ticket lock — the
-  fair-schedule "a hungry process eventually enters", for the two-process instance), dimensional analysis of
+  fair-schedule "a hungry process eventually enters", at any process count, with each round's progress derived from the transition relation), dimensional analysis of
   JSR 385 units, and termination.
 
 Concretely, the engine proves these kinds of property at **compile time** — and when it can't, it **refutes with a
@@ -220,8 +220,9 @@ That stance — a compile-time proof is *one rung*, only as good as what it assu
 where the thread-local proof is the first of **[three rungs](CONCURRENCY.md)**: the proof, an exhaustive TLA+/TLC
 model of every interleaving, and Lincheck / Fray exercising the real bytecode. (One instructive exception runs the
 other way: on [Leino's ticket lock](examples/dafny.md#ticket-lock--mutual-exclusion-leino-krml260), rung 1 proves
-the structural properties themselves — mutual exclusion, and two-process fair-schedule liveness — with TLC
-corroborating and pushing past the proof's process bound rather than covering a disclaimed half.)
+the structural properties themselves — mutual exclusion and fair-schedule liveness, both at any process
+count — with TLC discharging the proof's fairness witnesses exhaustively for a concrete N rather than
+covering a disclaimed half.)
 
 ## Examples
 
@@ -310,7 +311,7 @@ touches (arrays, lists, sets, maps, `BigDecimal`, IEEE-754 floats, objects, grap
 Read **[the five-act tour](examples/tour.md)** for all of it. More worked-and-verified examples by domain:
 
 - **[HumanEval](examples/humaneval.md)** — an external benchmark (Verus' suite) of LeetCode-shape problems we didn't pick.
-- **[Dafny ports](examples/dafny.md)** — the Dafny community's own credentials: `SumMax` (VSComp'10), `Find`, `BinarySearch` — and Leino's *Modeling Concurrency in Dafny* ticket lock, reproduced end to end: mutual exclusion in both of the paper's formulations, and the fair-schedule liveness for the two-process instance, with a TLA+/TLC model as the second rung.
+- **[Dafny ports](examples/dafny.md)** — the Dafny community's own credentials: `SumMax` (VSComp'10), `Find`, `BinarySearch` — and Leino's *Modeling Concurrency in Dafny* ticket lock, reproduced end to end: mutual exclusion in both of the paper's formulations (enum-bounded and symbolic-N), the fair-schedule liveness at any process count with per-round progress derived from the transition relation, and a TLA+/TLC model as the second rung.
 - **[OpenJML ports](examples/openjml.md)** — `Max by elimination` and `ChangeCase`, from the JVM's closest prior art (CC BY-NC).
 - **[Concurrency](examples/concurrency.md)** — the *local* half of locks, agents, dataflow, channels, and rely/guarantee; the *structural* half (Lincheck / TLA+ TLC / Fray) is the [three rungs](CONCURRENCY.md).
 - **[Units of measurement](examples/units.md)** — the Mars-orbiter bug, three ways: JSR 385 dimensions (the unchecked `as Quantity<K>` cast), JSR 385 value/scale, and a bespoke `record` units type with verified `+`.
