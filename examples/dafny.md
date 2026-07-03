@@ -244,9 +244,8 @@ lemma MutualExclusion(p: Process, q: Process)
 
 The faithful Groovy fixes `Process` to a small enum — Leino explicitly offers this (`datatype Process = Agnes
 | Agatha | Germaine | Jack`) — so `P` is finite, `cs`/`t` are **enum-keyed maps**, and the `∀p` / `∀p,q`
-conjuncts expand over the domain. (The **symbolic-N** form also proves — processes int-indexed `0..<N`,
-`valid` quantified with a nested `every` for uniqueness, mutual exclusion and all three transition
-preservations for any `N` — see the any-N safety note after the liveness section.) The paper gives the system twice — **Model 1**, atomic events as mutating
+conjuncts expand over the domain (the **symbolic-N** form follows once the enum machinery is on the
+table). The paper gives the system twice — **Model 1**, atomic events as mutating
 *methods* on a class, and **Model 2** (Section 7), events as TLA⁺-style *two-state predicates* — and both
 verify below. Model 2 comes first here, out of the paper's order, because it is the shape the liveness
 development builds on: each atomic event a **two-state predicate**, each proof an **empty-bodied lemma** —
@@ -271,9 +270,9 @@ static boolean valid(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer>
 static void mutualExclusion(int ticket, int serving, Map<Phil,CS> cs, Map<Phil,Integer> t, Phil p, Phil q) {}
 ```
 
-Two details are worth calling out. First, `Process` is a fixed enum, so this is the **N = 2 instance** — the
-general symbolic `set<Process>` over an *uninterpreted* sort is out of the fragment (it needs quantification
-over an opaque domain). Second, `mutualExclusion` keeps `p` and `q` **symbolic**, exactly as the paper writes
+Two details are worth calling out. First, `Process` is a fixed enum, so this block is the **N = 2
+instance**; the symbolic-N form — int-indexed processes, the skolemization Leino's finite `set<Process>`
+admits — closes that gap below. Second, `mutualExclusion` keeps `p` and `q` **symbolic**, exactly as the paper writes
 it: the reads `cs[p]` / `cs[q]` are at symbolic keys, yet they connect to the literal-key reads inside `valid`
 because an enum scalar carries a **domain-closure axiom** (`p` is `A` or `B`) and maps ride Z3's array theory —
 so one lemma covers every process, no per-actor expansion. The same symbolic-actor form proves that each of
@@ -321,6 +320,34 @@ A dispenser that fails to advance (`request` without `ticket = ticket + 1` — t
 `TicketBad` variant plants) **refutes the class invariant**: the compile-time twin of TLC's
 two-philosophers-Eating trace. So both of the paper's formulations now verify — Model 1 for the imperative
 reading, Model 2 (above) as the base the liveness development builds on.
+
+**Any-N safety.** The enum bound is not where the safety story ends: processes int-indexed
+`0..<N` with `N` symbolic, `cs`/`t` as functions (control states as ints — 0 Thinking, 1 Hungry,
+2 Eating), and `valid` in Leino's own quantified spelling — the per-process bound a bounded `every` over
+the symbolic domain, ticket uniqueness a **nested** `every`:
+
+<!-- doclint:case p198-any-n-safety/mutual-exclusion-for-any-n-helper-valid -->
+```groovy
+static boolean valid(int N, int ticket, int serving, Function<Integer,Integer> cs, Function<Integer,Integer> t) {
+    cs != null && t != null && serving <= ticket &&
+    (0..<N).every { int r -> cs(r) != 0 ==> (serving <= t(r) && t(r) < ticket) } &&
+    (0..<N).every { int r1 -> (0..<N).every { int r2 ->
+        (r1 != r2 && cs(r1) != 0 && cs(r2) != 0) ==> t(r1) != t(r2) } } &&
+    (0..<N).every { int r -> cs(r) == 2 ==> t(r) == serving }
+}
+@Requires({ 0 <= p && p < N && 0 <= q && q < N &&
+    valid(N, ticket, serving, cs, t) && cs(p) == 2 && cs(q) == 2 })
+@Ensures({ p == q })
+static void mutualExclusion(int N, int ticket, int serving,
+                            Function<Integer,Integer> cs, Function<Integer,Integer> t, int p, int q) {}
+```
+
+Mutual exclusion and all three transition preservations (`Request`/`Enter`/`Leave`, each framing the other
+`N − 1` processes in one quantified conjunct) verify for **any** `N`; drop uniqueness and mutual exclusion
+refutes with `N = 2, p = 0, q = 1`, drop the strict dispenser bound and `Request` refutes — the paper's
+invariant-strengthening story, now at any process count. (The refute twin here also caught — and fixed — a
+real engine unsoundness in how boolean helpers unfolded inside quantifier closures; the verify-and-refute
+discipline at work.)
 
 Leino's second half is **liveness** — *a hungry process eventually eats* (Section 7.6). It is genuinely
 surprising that an SMT-backed *sequential* checker can touch it at all, and the reason is Leino's: the liveness
@@ -393,9 +420,9 @@ lemmas with that step drops the waiter's measure to zero (`reduceMeasure1`), red
 `eventually-eats` is **complete** — mirroring Leino's loop (base case = exit, reduction = one body iteration, ≤ 1
 bound = at most one iteration), so no unbounded trace loop is needed.
 
-Safety in both of the paper's formulations, the ranking function, bounded bypass, and the **full two-process
-fair-schedule eventually-eats** — base case *and* the measure-1 reduction — verify structure-for-structure with
-the paper: Leino's KRML260 development, reproduced end to end for the two-process lock.
+That is the **two-process development complete** — the ranking function, bounded bypass, and the
+fair-schedule eventually-eats (base case *and* the measure-1 reduction), verifying structure-for-structure
+with the paper. The rest of the section lifts it to any process count.
 
 **The any-N trace loop.** What is specific to two processes above is only the ≤ 1 measure bound, which turned
 Leino's `Liveness` loop into a two-case split. The loop itself also proves, for a **symbolic** measure `k` —
@@ -422,50 +449,52 @@ where the per-round window facts arrive as a **nested bounded quantifier** — a
 witness-function bounds inside an `every` over rounds — instantiated at `j = m − 1` on each step to feed the
 window lemma. A companion `reduceMeasureK` does the k-fold measure descent (a waiter framed across a window
 in which `serving` advanced `k` times lands at measure 0 — pure arithmetic once framing holds), and the
-composition chains it into the Phase-174 base case: a waiter at **any** measure `k` reaches `Eating`. The
+composition chains it into the base case above: a waiter at **any** measure `k` reaches `Eating`. The
 teeth hold at both ends: one advance short and the reduction refutes; a round that fails to advance
 `serving` and the trace loop's walk refutes. The hypotheses keep the development's skolemized-witness
 posture — the advance times `vF(j)` are supplied as witnesses, exactly as the two-process lemmas take
 scheduled times.
 
-The derivation goes one round deeper still: with processes nameable (the any-N indexing below), the round
-**holder** `hF(j)` enters the picture, and the advance becomes a **conclusion** — per-round fairness says
+The derivation goes one round deeper still: with processes nameable (the any-N indexing from the safety
+section), the round **holder** `hF(j)` enters the picture, and the advance becomes a **conclusion** — per-round fairness says
 the holder is scheduled at its round's time (`schedF(vF(j)) == hF(j)`), the step implication says a
 scheduled holder's `Leave` advances `serving`, and the trace loop chains the modus ponens per round
 (`advanceDerived`), with the full `holderEats` composition taking a `Hungry` waiter at any measure to
-`Eating`. Deriving the *step implication itself* from the transition system needs the time×process state
-`cs(i, r)` — a two-argument function, expressible since the 2-ary apply landed (`BiFunction.apply` as a
-two-argument UF, with the `cs(i, r)` shorthand): the full-system frame lemma — recursion over a window
-whose per-step hypothesis frames *all N processes* via a nested `every` — already proves on it. What
-remains is proof engineering on that rail: spelling the lock's transition relation over `cs(i, r)` and
-deriving the step implication as a theorem.
+`Eating`.
 
-**Any-N safety.** The same move closes the safety side's bounded-process scope: processes int-indexed
-`0..<N` with `N` symbolic, `cs`/`t` as functions, and `valid` in Leino's own quantified spelling — the
-per-process bound a bounded `every` over the symbolic domain, ticket uniqueness a **nested** `every`:
+**The finale: liveness from the transition relation.** With the time×process state `cs(i, r)`
+expressible (the 2-ary apply — `BiFunction.apply` as a two-argument UF, with the `cs(i, r)` shorthand),
+the lock's transition relation is spelled directly — per-step frame as a nested `every` (everyone but
+`schedF(i)` unchanged), `serving` stable unless the scheduled process eats, the scheduled eater's `Leave`
+advancing it, the hungry holder's `Enter` — and the whole liveness chain is **derived** from it. `oneRound`
+takes a hungry holder through its scheduled `Enter` and `Leave` (the framing and stability lemmas
+recursive, the steps instantiated from the relation — the step implication is now a *theorem*);
+`roundsAdvance` is the trace loop over `k` such rounds; and the last lemma finishes with the waiter's own
+`Enter`:
 
-<!-- doclint:case p198-any-n-safety/mutual-exclusion-for-any-n-helper-valid -->
+<!-- doclint:case p201-transition-relation/hungryeats-hungry-to-eating-all-derived -->
 ```groovy
-static boolean valid(int N, int ticket, int serving, Function<Integer,Integer> cs, Function<Integer,Integer> t) {
-    cs != null && t != null && serving <= ticket &&
-    (0..<N).every { int r -> cs(r) != 0 ==> (serving <= t(r) && t(r) < ticket) } &&
-    (0..<N).every { int r1 -> (0..<N).every { int r2 ->
-        (r1 != r2 && cs(r1) != 0 && cs(r2) != 0) ==> t(r1) != t(r2) } } &&
-    (0..<N).every { int r -> cs(r) == 2 ==> t(r) == serving }
+@Ensures({ cs.apply(w + 1, A) == 2 })
+static void hungryEats(BiFunction<Integer,Integer,Integer> cs, BiFunction<Integer,Integer,Integer> tk,
+                       Function<Integer,Integer> servingF, Function<Integer,Integer> schedF,
+                       Function<Integer,Integer> sF, Function<Integer,Integer> uF,
+                       Function<Integer,Integer> vF, Function<Integer,Integer> hF, int A, int k, int w) {
+    roundsAdvance(cs, tk, servingF, schedF, sF, uF, vF, hF, k, k)
+    holderFrame(cs, tk, schedF, A, sF(0), w)
+    stableNoEat(cs, servingF, schedF, sF(k), w)
 }
-@Requires({ 0 <= p && p < N && 0 <= q && q < N &&
-    valid(N, ticket, serving, cs, t) && cs(p) == 2 && cs(q) == 2 })
-@Ensures({ p == q })
-static void mutualExclusion(int N, int ticket, int serving,
-                            Function<Integer,Integer> cs, Function<Integer,Integer> t, int p, int q) {}
 ```
 
-Mutual exclusion and all three transition preservations (`Request`/`Enter`/`Leave`, each framing the other
-`N − 1` processes in one quantified conjunct) verify for **any** `N`; drop uniqueness and mutual exclusion
-refutes with `N = 2, p = 0, q = 1`, drop the strict dispenser bound and `Request` refutes — the paper's
-invariant-strengthening story, now at any process count. (The refute twin here also caught — and fixed — a
-real engine unsoundness in how boolean helpers unfolded inside quantifier closures; the verify-and-refute
-discipline at work.)
+**`Hungry → Eating`, for any measure — hence any process count — from `IsTrace` + fairness witnesses +
+holder identities alone.** The teeth hold: a relation whose `Leave` does not advance `serving` refutes the
+round, and an interior eater breaks the stability derivation. What stays skolemized, by design rather than
+limitation: the fairness *witnesses* (the schedule times) and the holder *identities* — the ∃-half of
+fairness, which the fragment's posture never inverts into a search. That is the same trade Leino's `lemma
+GetTicketHolder` makes when it *returns* the holder rather than merely asserting one exists. KRML260 —
+safety in both of the paper's formulations and at both scales (enum-bounded and symbolic-N), the ranking
+function, bounded bypass, and the fair-schedule liveness with every round's progress derived — is closed.
+
+
 
 **The rung-2 companion.** Because the artifact here is a *model* of the protocol — in either formulation —
 rather than a threaded implementation, its natural second rung is a **model checker**, not a stress test. [`src/tlc/Ticket.tla`](../src/tlc/Ticket.tla)

@@ -9258,6 +9258,54 @@ docLint **0 drift** (104/104 links, 275/275 groups), full `check` green.
 
 ---
 
+## Phase 201 — the transition-relation finale: KRML260 closed  *(shipped)*
+
+The last construction, and it went through on the first probe: the ticket lock's **transition relation**,
+spelled over the two-argument state `cs(i, r)` / `tk(i, r)` (the Phase-200 rail), with the entire liveness
+chain **derived** from it.
+
+**The relation** (per step `i`, as bounded-window hypotheses in the arc's usual posture):
+frame — everyone but `schedF(i)` unchanged (a nested `every` over processes); `serving` stable unless the
+scheduled process is eating; the scheduled **eater's `Leave` advances `serving`**; the scheduled hungry
+holder's **`Enter` fires**; tickets stable in the window.
+
+**The derivation chain**, each level consuming the one below:
+- `holderFrame` / `stableNoEat` — recursive window lemmas whose per-step facts are relation conjuncts
+  (stability now *derived* from "no interior eater", not hypothesized).
+- `oneRound` — a hungry holder taken through its scheduled `Enter` (fires from the relation) and `Leave`
+  (advances `serving`, from the relation): **the Phase-199 step implication is now a theorem.**
+- `roundsAdvance` — the trace loop over `k` rounds, with round-indexed nested windows
+  (`(0..<k).every { j -> (sF(j)..<vF(j)+1).every { i -> … } }`) instantiated at `j = m−1` per recursion
+  step — three levels of quantifier structure, handled by the solver without engine help.
+- **`hungryEats`** — the waiter rides framed to its own scheduled time and its `Enter` fires:
+  **`Hungry → Eating` for any measure `k`, hence any process count `N`, from `IsTrace` + fairness
+  witnesses + holder identities alone.**
+
+**Teeth**: a relation whose `Leave` does not advance `serving` refutes the round; an interior eater breaks
+the stability derivation.
+
+**What stays skolemized — by design, permanently**: the fairness witnesses (schedule times `uF`/`vF`/`w`)
+and the holder identities (`hF`). They are the ∃-half of fairness, which the fragment's ∀-free-goal
+posture never inverts into a search — the same trade Leino's `GetTicketHolder` lemma makes when it
+*returns* the holder rather than asserting existence. Everything else that earlier phases took as
+hypotheses — the advance, the stability, the Enter, the framing — is now derived.
+
+**The arc, closed.** Phases 170–201: safety in both of the paper's formulations, over bounded (enum) and
+symbolic-N process sets; the ranking function; bounded bypass; the apply-term engine fix; the fair-schedule
+base case and two-process capstone; the any-N trace loop and measure reduction; the holder witness; the
+2-ary apply; and the transition relation with liveness derived end to end. Along the way the arc forced —
+and got — five engine capabilities (Int-sorted apply, call-site function aliasing, map mutation, nested
+bounded quantifiers exercised, 2-ary apply) and caught two real engine unsoundnesses through its refute
+twins (the helper-unfold closure leak, Phase 198; the quantity int-shadow comparison, Phase 191). The
+TLA⁺/TLC rung stands beside it. **KRML260 is done.**
+
+`P201 transition relation` (G277 — file `G276_p201_transition_relation.groovy` — 5 cases). Root suite
+**1526/0** (+5), runtime rung **561/580** clean, docLint **0 drift** (105/105 links, 276/276 groups),
+perf budget within ceilings (the deepest VCs in the corpus cost the solver ~2 s at peak), full `check`
+green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
