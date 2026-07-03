@@ -8741,6 +8741,51 @@ demand-driven; slice 3 is the contract (`PACKS.md`, pack-provided case corpora, 
 
 ---
 
+## Phase 188 — extensible encodings, slice 2: the units migration grows the SPI to full surface  *(shipped — experimental)*
+
+The motivating case, delivered: the JSR 385 / units-of-measurement domain (Phases 131–160) now lives wholly
+in **`UnitsPack`** — the curated unit/prefix/DSL-suffix tables and the dimension-vector × SI-magnitude
+readers (~420 lines) moved out of the `Encoder`, which shrank by the same amount and now contains **zero
+units knowledge**. As predicted, the migration forced the SPI to grow demand-driven from call recognisers to
+the full surface set — each new hook placed at the *exact* slot the old inline branch occupied, so dispatch
+order is preserved:
+
+- **`translateProperty`** — `X.value` (the property form of `getValue()`), dispatched after the carrier
+  branches (a bespoke record's own `.value` field still wins) and before the JDK-constant folds.
+- **`translateBinary`** — quantity-to-quantity `==`/`!=` at the domain-comparison slot, with the exact
+  original soundness posture: different dimensions → `==` is `false` (refutable, never provable-true) and
+  `!=` skips loudly (the runtime throws `UnconvertibleException`); equal dimensions fall to SI-magnitude
+  equality; an unmodellable side falls through as before.
+- **`claimsExpression`** — the static "this is a pack-domain value" predicate: `quantity * quantity`
+  dispatches to `Quantity.multiply`, so the Real classifier and the checker's divide-by-zero obligation
+  collector must not claim it. Replaces the `Encoder.isQuantityExpr` calls in both.
+- **`claimsValueSource`** + **`TheoryApi.sourceAlias`** — the generalisation of the quantity-local
+  aliasing: a pack-domain value has no scalar handle, so the checker aliases the name to its construction
+  expression, gated on *any pack's* claim (`enc.packsClaimSource`). The encoder's `quantitySource` map is
+  now the units-agnostic `sourceAliases`; the checker's registration sites no longer mention quantities.
+- **`TheoryApi`** also gained `asRealValue` (translate-as-exact-Real) and the static `rationalOf`
+  (BigDecimal → SMT rational string, relocated from the encoder — it was shared).
+
+Mechanics: a boundary-scripted two-segment extraction (the async/await section sits between the units tables
+and machinery — the first two script runs mis-cut a neighbouring method's tail and left `quantityValueTerm`
+behind; both caught by inspection before compiling, the third run clean), transformed onto the facade
+(`session.` → `api.session.`, `translate(` → `api.translate(`, alias-map reads → `api.sourceAlias`) inside a
+per-call `Reader` bound to one `TheoryApi`. The only missed dependency (`asReal`) was caught by
+`@CompileStatic` at first compile.
+
+**Verification is again the deletion**: with the encoder's units code gone, the whole units corpus —
+`P131 dimensions`, `P132 unit-scale`, `UnitScaleTest`, and the **`examples-dsl` suite** (the `1.km + 1.mile`
+DSL, which exercises every migrated surface at once) — can only pass through the pack, and all do,
+unchanged. Root suite **1475/0**, runtime rung **553/571** clean, docLint **0 drift** (39/39 sources).
+
+**Honestly out of this slice**: the checker-side C₀ *kind-vector* pass (Phase 131's
+`Quantity<Length>`-generics dimension analysis, a self-contained checker walk with its own tables) and the
+quantity-typed-local *recognition* sites remain in `VerifyChecker` — checker-pass and scope-collection SPI
+surfaces are a separate design, deferred with slice 3's contract work (`PACKS.md`, pack corpora, the
+`packs:` override).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

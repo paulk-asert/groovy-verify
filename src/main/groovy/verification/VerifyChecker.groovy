@@ -4010,7 +4010,7 @@ class VerifyChecker extends TypeCheckingExtension {
                 // Phase 152 — a JSR 385 `quantity / quantity` dispatches to Quantity.divide, NOT numeric division, so
                 // the divisor is a quantity (not a number that could be 0): no divide-by-zero obligation. The exact-
                 // division soundness for the magnitude is handled by the reader's terminating-divisor guard instead.
-                if (!Encoder.isQuantityExpr(be)) divideSites.add(new DivideSite(node: be, divisor: be.rightExpression))
+                if (!Encoder.packsClaimExpression(be)) divideSites.add(new DivideSite(node: be, divisor: be.rightExpression))
             }
             // Phase 44 — overflow check on +, -, * (only when enabled by @CheckOverflow). The
             // assignment operator '=' shares Types.PLUS via compound assignment in some forms, so
@@ -5553,8 +5553,8 @@ class VerifyChecker extends TypeCheckingExtension {
                     // handle, so alias the local to its RHS *expression* (the same `quantitySource` mechanism `result`
                     // uses), letting the dimension/magnitude readers resolve it inside a later `d / s`. Short-circuits
                     // the int-SSA path, which would mis-model the quantity as an int shadow.
-                    if (enc.isModellableQuantity(a.rhs)) {
-                        enc.registerQuantitySource(a.name, a.rhs)
+                    if (enc.packsClaimSource(a.rhs)) {
+                        enc.registerSourceAlias(a.name, a.rhs)
                         continue
                     }
                     // Phase 153 — `def fa = async { e }` (lowered to AsyncSupport.async({ e })): alias the local to the
@@ -5824,14 +5824,14 @@ class VerifyChecker extends TypeCheckingExtension {
                         resHandle = session.intVar('result$null$' + (++ssaVersion))
                         enc.bind('result', resHandle)
                         enc.bindNullity('result', session.boolLit(true))
-                    } else if (resHandle == null && enc.isModellableQuantity(p.result)) {
+                    } else if (resHandle == null && enc.packsClaimSource(p.result)) {
                         // Phase 151 — a JSR 385 Quantity-returning method (e.g. `Quantity squareKm() { 1.km * 1.km }`).
                         // A quantity has no scalar Z3 handle (it's a magnitude × a dimension), so instead of binding a
                         // value we alias `result` to the return EXPRESSION: the dimension/magnitude readers resolve it,
                         // letting a quantity-to-quantity `@Ensures({ result == 1.km })` reason about both. Bind a
                         // placeholder handle marked non-null (a constructed quantity is never null).
                         resHandle = session.intVar('result$qty$' + (++ssaVersion))
-                        enc.registerQuantitySource('result', p.result)
+                        enc.registerSourceAlias('result', p.result)
                         enc.bind('result', resHandle)
                         enc.bindNullity('result', session.boolLit(false))
                     } else {

@@ -56,12 +56,36 @@ interface TheoryApi {
     /** Translate a sub-expression coerced into {@code expectedSort}; null if outside the fragment. */
     Object translateInSort(Expression e, Object expectedSort)
 
+    /** Translate a sub-expression as an exact Real (decimal literals, arithmetic, int→real coercion);
+     *  null if outside the fragment. */
+    Object asRealValue(Expression e)
+
     /**
      * Mint-once gate for a pack's defining axioms, scoped to this verification condition: returns true the
      * first time {@code key} is seen on this encoder (assert your axioms then), false afterwards. The
      * per-VC scope matches the engine's own primitives (each VC is a fresh solver context).
      */
     boolean axiomsOnce(String key)
+
+    /**
+     * The expression a (scalar-handle-less) name was aliased to by the checker — a pack-domain value's
+     * construction, registered when the pack's {@code claimsValueSource} accepted it (e.g. a JSR 385
+     * Quantity local's RHS, or a Quantity-returning method's return expression bound to {@code result}).
+     * Null when the name carries no alias. Per-VC, like every encoder binding.
+     */
+    Expression sourceAlias(String name)
+
+    /** A BigDecimal/Double/Float as an SMT rational numeral string ({@code "25/10"} for {@code 2.5G}) —
+     *  the exact-Real literal format {@link SmtSession#realLit} consumes. */
+    static String rationalOf(Object value) {
+        BigDecimal bd = (value instanceof BigDecimal) ? (BigDecimal) value : new BigDecimal(value.toString())
+        bd = bd.stripTrailingZeros()
+        int scale = bd.scale()
+        if (scale <= 0) {
+            return bd.unscaledValue().multiply(BigInteger.TEN.pow(-scale)).toString()
+        }
+        return bd.unscaledValue().toString() + '/' + BigInteger.TEN.pow(scale).toString()
+    }
 
     /**
      * True iff {@code recv} denotes the class named {@code simpleName} in any of the three spellings a

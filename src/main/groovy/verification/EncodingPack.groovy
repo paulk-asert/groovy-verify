@@ -16,8 +16,10 @@
 package verification
 
 import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 
 /**
  * A pluggable <b>domain encoding</b>: recognisers and axioms for a library/domain vocabulary (a spec-helper
@@ -52,4 +54,27 @@ interface EncodingPack {
      * untranslatable (aborts the dispatch — a loud skip), else the SMT handle.
      */
     Object translateCall(TheoryApi api, MethodCallExpression mce, String m, Expression recv, List<Expression> args)
+
+    /** Try to translate a property read {@code obj.prop} (same tri-state as {@link #translateCall}).
+     *  Dispatched after the core's carrier/record branches, before the JDK-constant folds. */
+    default Object translateProperty(TheoryApi api, PropertyExpression pe, Expression obj, String prop) {
+        TheoryApi.NO_MATCH
+    }
+
+    /** Try to translate a binary expression (same tri-state); {@code opType} is the
+     *  {@link org.codehaus.groovy.syntax.Types} operator constant. Dispatched from the core's
+     *  binary translator at the domain-comparison slot (before string/numeric handling). */
+    default Object translateBinary(TheoryApi api, BinaryExpression be, int opType) {
+        TheoryApi.NO_MATCH
+    }
+
+    /** True iff {@code e} is a pack-domain value that scalar classifiers must not claim — e.g. a JSR 385
+     *  {@code quantity / quantity} is Quantity.divide, not BigDecimal division (so no Real classification
+     *  and no divide-by-zero obligation on the divisor). Static context: no {@link TheoryApi} available. */
+    default boolean claimsExpression(Expression e) { false }
+
+    /** True iff {@code e} is a construction this pack can model as a named value's source — the checker
+     *  then aliases the (scalar-handle-less) name to the expression, which the pack's readers resolve via
+     *  {@link TheoryApi#sourceAlias}. */
+    default boolean claimsValueSource(TheoryApi api, Expression e) { false }
 }
