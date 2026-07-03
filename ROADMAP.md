@@ -9573,8 +9573,14 @@ dependent). Fixes: the per-check solver budget is now a knob (`VERIFY_Z3_TIMEOUT
 `-Dverify.z3.timeoutMs`, default 2000 — the eighth tool knob, documented in TOOLING.md with the
 boundary-not-meaning caveat; verified by teeth: a 1 ms budget flips a local refute to timeout), CI sets
 8000, and the fizzbuzz expectation pins the slot-naming *feature* (` — the spec requires "`) rather than
-a model-dependent slot. The `rat`-task three-letter-timezone warnings are upstream Apache RAT under
-JDK 25 — cosmetic, not actionable here.
+a model-dependent slot. Round two (the budget change itself shifted outcomes): the
+bitwise `a & b == a` soft-fail case now *refutes outright* under CI's larger budget — the expectation
+accepts either sound rejection (`postcondition of f`), failing only if the claim ever verifies; and the
+showdown unique refute stays a timeout even at 8s on CI iron, so it takes the canary posture
+(`postcondition of unique` — the tooth is "never proves"). The `rat`-task three-letter-timezone warnings
+(JDK 25.0.3+ deprecation chatter from RAT internals, upstream, not reproducible on the local patch level)
+are demoted to INFO via `logging.captureStandardError` on the task — hidden from the default console,
+real failures unaffected.
 
 `P209 metaprogramming` (G284, 6 cases). README gains the dynamic-Groovy clarification — including the
 two-directions point: Groovy's type checking is extensible toward *stronger* checking (groovy-verify

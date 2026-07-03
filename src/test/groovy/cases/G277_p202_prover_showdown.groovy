@@ -185,7 +185,10 @@ class G277_p202_prover_showdown {
                    }''')],
         // Teeth: the correct dedup body with an over-strong spec — result == a.length claims the input
         // never had duplicates; the exit check refutes.
-        [group: 'P202 prover showdown', name: 'unique refutes an over-strong no-duplicates-ever claim', expect: 'Cannot prove',
+        // (Canary form: this model search is strongly hardware-sensitive — crisp refute in ~2s locally,
+        // timeout even at 8s on a CI runner. The tooth is that the over-strong claim NEVER verifies;
+        // refute-vs-timeout is a hardware detail, and a clean verify fails the case loudly.)
+        [group: 'P202 prover showdown', name: 'unique never proves an over-strong no-duplicates-ever claim (canary)', expect: 'postcondition of unique',
          src: tc('''class C {
                        @Requires({ a != null && r != null && r.length == a.length })
                        @Ensures({ result == a.length && 0 <= result &&

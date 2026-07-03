@@ -50,7 +50,10 @@ group = 'io.github.paulk-asert'
 version = '0.1.0-SNAPSHOT'
 
 // Apache RAT: don't license-check generated output, IDE metadata, or the wrapper.
+// The stderr demotion hides the JDK 25.0.3+ "three-letter time zone ID is deprecated" chatter RAT's
+// internals trigger (upstream, cosmetic) without hiding real failures — the task still fails the build.
 tasks.named('rat') {
+    logging.captureStandardError(LogLevel.INFO)
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 

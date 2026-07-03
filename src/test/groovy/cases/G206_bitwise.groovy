@@ -57,9 +57,11 @@ class G206_bitwise {
         [group: 'bitwise', name: '6 & 3 == 3 refutes', expect: 'Cannot prove postcondition',
          src: tc('class C { @Ensures({ result == 3 }) static int f() { 6 & 3 } }')],
         // A false SYMBOLIC bitwise claim is the refute-hostile direction — bit-blasting the negation
-        // can't find a model in the 2s budget, so it soft-fails as a loud "could not decide" (sound:
-        // rejected, never a false pass), rather than a crisp counterexample.
-        [group: 'bitwise', name: 'a & b == a: false symbolic claim soft-fails (sound)', expect: 'Could not decide',
+        // may or may not find a model within the per-check budget (VERIFY_Z3_TIMEOUT_MS): at the 2s
+        // default it soft-fails as a loud "could not decide"; with CI's larger budget it finds the
+        // counterexample and refutes outright. Both are sound rejections (never a false pass), so the
+        // expectation matches either — and fails loudly if the claim ever *verifies*.
+        [group: 'bitwise', name: 'a & b == a: false symbolic claim rejects (refute or soft-fail, budget-dependent)', expect: 'postcondition of f',
          src: tc('class C { @Ensures({ result == a }) static int f(int a, int b) { a & b } }')],
     ]
 }
