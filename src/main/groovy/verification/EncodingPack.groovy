@@ -44,8 +44,17 @@ import org.codehaus.groovy.ast.expr.PropertyExpression
 @CompileStatic
 interface EncodingPack {
 
-    /** Stable pack name — used for deterministic (name-sorted) dispatch order and diagnostics. */
+    /** Stable pack name — used for deterministic (name-sorted) dispatch order, the {@code VERIFY_PACKS}
+     *  selection knob, and diagnostics/catalog provenance. */
     String name()
+
+    /**
+     * The capability-group names (the {@code group:} keys of the case corpus) that pin this pack's
+     * behaviour — its regression mesh and its {@code catalog.json} provenance. The doc-drift lint fails
+     * the build if a named group has no cases, so the claim cannot silently rot; an empty list is legal
+     * but means the pack ships no evidence (see PACKS.md on the corpus obligation).
+     */
+    default List<String> corpusGroups() { Collections.<String> emptyList() }
 
     /**
      * Try to translate a method call. {@code m} is the method name (non-null), {@code recv} the receiver

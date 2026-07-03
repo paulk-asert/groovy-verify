@@ -51,6 +51,9 @@ class NumberTheoryPack implements EncodingPack {
     String name() { 'number-theory' }
 
     @Override
+    List<String> corpusGroups() { ['P55 fib', 'P63 fibfib', 'P46 fib4', 'HE013 gcd', 'P-lcm'] }
+
+    @Override
     Object translateCall(TheoryApi api, MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         if (m != 'of') return TheoryApi.NO_MATCH
         if (args.size() == 1) {

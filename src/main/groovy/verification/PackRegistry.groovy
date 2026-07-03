@@ -22,6 +22,12 @@ import groovy.transform.CompileStatic
  * (name-sorted) order. A provider that fails to load is reported to stderr and skipped — a broken pack
  * jar should degrade that pack's vocabulary to the ordinary loud "outside fragment" skips, not brick the
  * whole compilation.
+ *
+ * <p><b>Selection knob</b>: {@code VERIFY_PACKS} (env var, or the {@code verify.packs} system property,
+ * which wins) — {@code none} disables every pack, a comma-separated list of pack names keeps only those
+ * ({@code VERIFY_PACKS=jsr385-units}). Unset = all discovered packs. A deselected pack's vocabulary
+ * degrades to the ordinary loud skips — a diagnostic bisection tool, in the {@code VERIFY_*} knob family
+ * (see TOOLING.md); it never changes what a proof means, only which recognisers run.
  */
 @CompileStatic
 class PackRegistry {
@@ -43,6 +49,15 @@ class PackRegistry {
                         }
                     } catch (Throwable t) {
                         System.err.println("verification: EncodingPack discovery failed: ${t}")
+                    }
+                    String sel = System.getProperty('verify.packs', System.getenv('VERIFY_PACKS') ?: '').trim()
+                    if (sel) {
+                        if (sel == 'none') {
+                            out.clear()
+                        } else {
+                            Set<String> keep = new HashSet<String>(sel.split(',')*.trim().findAll { it })
+                            out.removeAll { EncodingPack p -> !keep.contains(p.name()) }
+                        }
                     }
                     out.sort { EncodingPack a, EncodingPack b -> (a.name() ?: '') <=> (b.name() ?: '') }
                     loaded = ps = Collections.unmodifiableList(out)

@@ -437,9 +437,19 @@ regex, combiner, monadic, and purity checkers — each owning *shape* or *syntax
 
 ## Tool knobs
 
-Six environment variables (`VERIFY_REFUTATION`, `VERIFY_SUGGEST`, `VERIFY_EXPLAIN`, `VERIFY_VERBOSE`,
-`VERIFY_CACHE_STATS`, `VERIFY_DUMP_SMT`) tune what the checker *reports* — never what it proves; unset, the default
-path is byte-identical. Each is documented with worked examples in **[TOOLING.md](TOOLING.md)**.
+Seven environment variables (`VERIFY_REFUTATION`, `VERIFY_SUGGEST`, `VERIFY_EXPLAIN`, `VERIFY_VERBOSE`,
+`VERIFY_CACHE_STATS`, `VERIFY_DUMP_SMT`, `VERIFY_PACKS`) tune what the checker *runs and reports* — never what a
+completed proof means; unset, the default path is byte-identical. Each is documented with worked examples in
+**[TOOLING.md](TOOLING.md)**.
+
+## Encoding packs
+
+Domain vocabularies plug in as **encoding packs** (experimental): `ServiceLoader`-discovered modules
+contributing a library's recognisers and axioms — packs model *libraries*, the core models the *language*.
+The number-theory spec helpers (`Fib.of`/`Gcd.of`/…) and the whole JSR 385 units domain ship as the two
+reference packs, each pinned by its own verify/refute case groups (attributed in the generated
+`catalog.json`). The SPI, the soundness obligations, and a worked minimum pack are in
+**[PACKS.md](PACKS.md)**.
 
 ## Building & using
 

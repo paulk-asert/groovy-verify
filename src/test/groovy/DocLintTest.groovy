@@ -41,6 +41,11 @@ class DocLintTest {
     }
 
     @Test
+    void everyPackCorpusGroupExists() {
+        assertEquals(0, DocLint.lintPackCorpora(), 'an EncodingPack claims a corpus group that has no cases')
+    }
+
+    @Test
     void everyEngineSourceIsInTheArchitectureMap() {
         assertEquals(0, DocLint.lintArchitecture(), 'a verification/*.groovy source is not referenced in ARCHITECTURE.md')
     }

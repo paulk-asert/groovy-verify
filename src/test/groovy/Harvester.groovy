@@ -86,6 +86,11 @@ class Harvester {
         }
         new File(work, 'corpus.jsonl').text = corpus.toString()
 
+        // Pack provenance: capability groups an EncodingPack claims as its corpus (catalog attribution —
+        // an agent reading the manifest sees which capabilities are pluggable-domain vs core).
+        Map<String, String> packOfGroup = [:]
+        verification.PackRegistry.packs().each { p -> p.corpusGroups().each { g -> packOfGroup[g] = p.name() } }
+
         def catalog = byGroup.collect { String g, List recs ->
             [ group           : g,
               description     : GROUP_DESC[g],                       // null ⇒ flagged by the cross-check lint
@@ -96,7 +101,7 @@ class Harvester {
               annotations     : recs.collectMany { it.annotations }.unique().sort(),
               canonicalVerify : recs.find { it.outcome == 'verifies' }?.id,
               canonicalRefute : recs.find { it.outcome == 'refutes' }?.id,
-            ]
+            ] + (packOfGroup.containsKey(g) ? [pack: packOfGroup[g]] : [:])   // only pack-claimed groups carry the key
         }.sort { it.group }
         new File(work, 'catalog.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(catalog)) + '\n'
 

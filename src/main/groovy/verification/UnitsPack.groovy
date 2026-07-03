@@ -56,6 +56,10 @@ class UnitsPack implements EncodingPack {
     @Override
     String name() { 'jsr385-units' }
 
+    /** The CASES groups; the DSL surface is additionally pinned by UnitScaleTest and the examples-dsl suite. */
+    @Override
+    List<String> corpusGroups() { ['P131 dimensions', 'P132 unit scale'] }
+
     /** {@code X.getValue()} — the SI magnitude read back in X's current unit (Phase 132). A non-quantity
      *  or unmodellable receiver falls through (the old inline handler fell through identically). */
     @Override

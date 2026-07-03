@@ -16,7 +16,7 @@
 
 # Tool knobs
 
-Six environment variables tune what the checker *reports* — never what it proves. They're **transient tooling**,
+Seven environment variables tune what the checker *runs and reports* — never what a completed proof means. They're **transient tooling**,
 set per run, distinct from the permanent `@TypeChecked(extensions = …)` configuration; unset, every one leaves the
 default path byte-identical.
 
@@ -28,6 +28,7 @@ default path byte-identical.
 | `VERIFY_VERBOSE` | print the full OpenJML-style diagnostic + counterexample behind each one-line result |
 | `VERIFY_CACHE_STATS` | print the in-process VC-cache hit / miss ratio |
 | `VERIFY_DUMP_SMT` | print every solver query as a self-contained SMT-LIB2 benchmark (pipe to cvc5/z3/yices) |
+| `VERIFY_PACKS` | select which [encoding packs](PACKS.md) run: `none` disables all, a comma-separated name list keeps only those — a bisection tool when triaging a suspect domain encoding (a deselected pack's vocabulary degrades to loud skips) |
 
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 

@@ -8786,6 +8786,37 @@ surfaces are a separate design, deferred with slice 3's contract work (`PACKS.md
 
 ---
 
+## Phase 189 — extensible encodings, slice 3: the contract  *(shipped — experimental)*
+
+The arc's closing slice: the pack ecosystem's *rules*, written down and machine-enforced.
+
+- **`PACKS.md`** — the contract document: the library-vs-language boundary, the surfaces table, the
+  tri-state convention (with the two failure modes of getting `NO_MATCH` vs `null` wrong spelled out), the
+  facade description, the four obligations (verify+refute corpus per capability; loud skips at the
+  boundary; namespaced UF symbols; runtime-executable helper twins for graceful degradation), what packs
+  cannot do yet (checker passes, scope collection, normalizer rewrites, rendering — each awaiting its own
+  design), and a worked-minimum pack. Scanned by the snippet lint like every other doc.
+- **Corpus provenance** — `EncodingPack.corpusGroups()`: a pack declares the case groups that pin it. The
+  Harvester attributes them in `catalog.json` (a `pack:` field on claimed groups — an agent reading the
+  manifest sees which capabilities are pluggable-domain vs core), and **DocLint check 4** fails the build
+  if a claimed group has no cases, so the provenance claim cannot silently rot (both in-tree packs
+  declare theirs: 7 groups attributed).
+- **`VERIFY_PACKS`** — the selection knob (env var / `verify.packs` sysprop): `none` disables all packs, a
+  name list keeps only those — the triage/bisection tool for a suspect domain encoding, joining the
+  `VERIFY_*` family in `TOOLING.md`. **Negative-tested both ways**: with `none`, the fib corpus *fails*
+  (proofs degrade to loud skips — proving both the knob and that the pack is load-bearing); with
+  `jsr385-units` selected, units still verify while number-theory would skip. *(Scope note: the plan
+  sketched a per-class `VerifyChecker(packs: …)` parameterised-extension override; a per-run knob is the
+  honest v1 — per-class selection needs per-encoder pack filtering that the static `claimsExpression` path
+  complicates, deferred until someone actually needs split-pack compilation units.)*
+
+README gained the packs section; `TOOLING.md` the knob row. Root suite **1475/0**, docLint **0 drift**
+(now four checks), catalog regenerates with attribution. The extensibility arc (187–189) closes with the
+growth model demonstrated end to end: a domain arrives as one ServiceLoader-discoverable file, carrying its
+own axioms, its own corpus claim, its own catalog entry — and the core is smaller than when the arc began.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -15,13 +15,14 @@
  */
 
 /**
- * SKETCH — the three drift lints that keep the hand-maintained docs honest against the single source of truth
- * ({@link VerifyHarness#CASES} and the codebase). This entry point is the human-readable REPORT; the same three
+ * SKETCH — the four drift lints that keep the hand-maintained docs honest against the single source of truth
+ * ({@link VerifyHarness#CASES} and the codebase). This entry point is the human-readable REPORT; the same four
  * lints are asserted by {@link DocLintTest} inside `check`/CI, so drift fails the build.
  *
  *   1. group-descriptions — every CASES group has a one-line capability description (a co-located DESCRIPTION in its cases/G*.groovy file, aggregated by Harvester.GROUP_DESC)
  *   2. snippets-as-tests  — every fenced ```groovy block in the docs appears as a CASES source (can't silently break)
  *   3. architecture-map   — every file named in ARCHITECTURE.md exists; every verification/*.groovy is mapped
+ *   4. pack-corpora       — every EncodingPack's declared corpus groups exist in CASES (provenance can't rot)
  *
  * Run: {@code ./gradlew docLint}
  */
@@ -62,7 +63,7 @@ class DocLint {
         Map<String, String> byId = caseSourcesById()
         int blocks = 0, unmatched = 0, exempt = 0, quoted = 0, linked = 0, linkBroken = 0
         def examples = [], broken = []
-        def docFiles = ['README.md', 'FRAGMENT.md', 'CAPABILITIES.md', 'ARCHITECTURE.md', 'CONCURRENCY.md', 'TOOLING.md']
+        def docFiles = ['README.md', 'FRAGMENT.md', 'CAPABILITIES.md', 'ARCHITECTURE.md', 'CONCURRENCY.md', 'TOOLING.md', 'PACKS.md']
         File examplesDir = new File('examples')   // the split-out galleries (examples/*.md, examples/**/examples.md)
         if (examplesDir.isDirectory()) examplesDir.eachFileRecurse { File ff -> if (ff.name.endsWith('.md')) docFiles << ff.path }
         docFiles.each { String f ->
@@ -94,6 +95,19 @@ class DocLint {
         unmatched + linkBroken
     }
 
+    // 4 ─ every EncodingPack's declared corpus groups actually exist in CASES — the pack's provenance
+    //     claim (catalog.json `pack:` attribution) can't silently rot when a group is renamed/removed.
+    static int lintPackCorpora() {
+        Set<String> groups = new HashSet<String>(VerifyHarness.CASES.collect { (String) it.group })
+        List<String> broken = []
+        verification.PackRegistry.packs().each { p ->
+            p.corpusGroups().each { g -> if (!groups.contains(g)) broken << "${p.name()}: '${g}'" }
+        }
+        println "\n[4] pack corpora — ${verification.PackRegistry.packs().size()} packs, ${broken.size()} broken group claims"
+        if (broken) println "    BROKEN (${broken.size()}): " + broken.join(', ')
+        broken.size()
+    }
+
     // 3 ─ ARCHITECTURE.md names real files, and every engine source is mapped.
     static int lintArchitecture() {
         File arch = new File('ARCHITECTURE.md')
@@ -110,7 +124,7 @@ class DocLint {
 
     static void main(String[] args) {
         println '── DocLint (human-readable report; DocLintTest asserts the same lints inside `check`/CI) ' + ('─' * 8)
-        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture()
+        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora()
         println "\n${'═' * 70}\nTotal drift findings: ${total}  (report-only; not failing the build)"
     }
 }
