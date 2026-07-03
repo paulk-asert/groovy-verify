@@ -9146,6 +9146,51 @@ have no grid arm), docLint **0 drift** (103/103 links, 272/272 groups), full `ch
 
 ---
 
+## Phase 198 — any-N ticket-lock safety, and the refute twin that caught an engine unsoundness  *(shipped)*
+
+The `set<Process>` edge, closed on the safety side — and the session's clearest demonstration of why every
+capability ships with a refute twin.
+
+**The formulation.** Leino's `Process` set, skolemized as int-indexed processes `0..<N` with `N` symbolic:
+`cs`/`t` become functions, and `valid` takes the paper's own quantified spelling — the per-process bound a
+bounded `every` over the symbolic domain, ticket **uniqueness a nested `every`** (the Phase-197 shape). The
+probe verified **mutual exclusion** and **`Enter` preservation** (quantified precondition, quantified
+frame, quantified *post*) on the first run; the uniqueness-dropped twin refuted with the perfect
+counterexample (`N = 2, p = 0, q = 1`).
+
+**The teeth caught a real unsoundness.** The second refute twin — `Request` preservation with the strict
+dispenser bound weakened to `<=`, which admits a ticket collision — **"verified"**. Not a probe artifact:
+the strict form with its *frame conjunct deleted* also "verified". Root cause, in the Phase-8a pure-helper
+unfold: `PureEvaluator.substitute` replaced formal parameters only **outside closures** — an
+`ExpressionTransformer` never descends into closure statements — so a helper body's quantifier closures
+kept their formal names, which then resolved against the **caller's same-named scope**. A goal-side
+`valid(N, ticket2, serving2, cs2, t2)` unfolded to closures still reading `ticket`/`cs` — the goal
+*silently became the pre-state fact*, true by assumption: every preservation lemma through a
+closure-bearing helper verified vacuously. Pre-existing and latent — earlier helper corpora either had
+closure-free bodies (the P170 enum `valid` enumerates conjuncts) or happened to align names.
+
+**The fix**: `substitute` is now closure-aware — it descends into closure code (expression/return
+statements), closure parameters shadow same-named formals (hygiene, including implicit `it`), the SAM
+shorthand `cs(r)` (an implicit-this call whose *name* is the formal) renames when the actual is a plain
+variable, and any shape it cannot rewrite **refuses the unfold** (null → the call stays uninterpreted, a
+sound over-approximation). Six differential probes pinned the diagnosis (inlined-vs-helper, flat-vs-nested,
+concrete-vs-symbolic N, frame-vs-no-frame); after the fix all six refute, and the four legitimate
+preservations verify **genuinely** — post-state functions now actually in the goal. **Zero regressions**
+across the 1505-case corpus: nothing had leaned on the caller-scope leak.
+
+`P198 any-N safety` (G273, 6 cases): mutual exclusion (helper `valid`), `Request`/`Enter`/`Leave`
+preservation — all for symbolic `N` — plus the two refute twins (uniqueness; the strict bound).
+`examples/dafny.md` gains the any-N safety block (doclint-linked) and the enum-scope caveat now points to
+it; the Phase-170 CAPABILITIES tail is updated. With Phase 197's trace loop, the KRML260 arc's remaining
+edge narrows to one construction: deriving each liveness round's serving-advance from the round-holder's
+own transitions — now that the holder can be *named* (`0..<N` indexing), a witness `holder(j)` function
+with the quantified `valid` is the natural next rung.
+
+Root suite **1511/0** (+6), runtime rung **561/580** clean, `examples-dsl` green, docLint **0 drift**
+(104/104 links, 273/273 groups), perf budget within ceilings, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

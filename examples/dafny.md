@@ -244,7 +244,9 @@ lemma MutualExclusion(p: Process, q: Process)
 
 The faithful Groovy fixes `Process` to a small enum — Leino explicitly offers this (`datatype Process = Agnes
 | Agatha | Germaine | Jack`) — so `P` is finite, `cs`/`t` are **enum-keyed maps**, and the `∀p` / `∀p,q`
-conjuncts expand over the domain. The paper gives the system twice — **Model 1**, atomic events as mutating
+conjuncts expand over the domain. (The **symbolic-N** form also proves — processes int-indexed `0..<N`,
+`valid` quantified with a nested `every` for uniqueness, mutual exclusion and all three transition
+preservations for any `N` — see the any-N safety note after the liveness section.) The paper gives the system twice — **Model 1**, atomic events as mutating
 *methods* on a class, and **Model 2** (Section 7), events as TLA⁺-style *two-state predicates* — and both
 verify below. Model 2 comes first here, out of the paper's order, because it is the shape the liveness
 development builds on: each atomic event a **two-state predicate**, each proof an **empty-bodied lemma** —
@@ -427,6 +429,33 @@ posture — the advance times `vF(j)` are supplied as witnesses, exactly as the 
 scheduled times; what remains beyond the fragment is *deriving* each round's advance from the holder's own
 `Enter`/`Leave` under fairness, which needs the holder's identity per round — reasoning over the
 uninterpreted `set<Process>` domain that the safety section already names as out of the fragment.
+
+**Any-N safety.** The same move closes the safety side's bounded-process scope: processes int-indexed
+`0..<N` with `N` symbolic, `cs`/`t` as functions, and `valid` in Leino's own quantified spelling — the
+per-process bound a bounded `every` over the symbolic domain, ticket uniqueness a **nested** `every`:
+
+<!-- doclint:case p198-any-n-safety/mutual-exclusion-for-any-n-helper-valid -->
+```groovy
+static boolean valid(int N, int ticket, int serving, Function<Integer,Integer> cs, Function<Integer,Integer> t) {
+    cs != null && t != null && serving <= ticket &&
+    (0..<N).every { int r -> cs(r) != 0 ==> (serving <= t(r) && t(r) < ticket) } &&
+    (0..<N).every { int r1 -> (0..<N).every { int r2 ->
+        (r1 != r2 && cs(r1) != 0 && cs(r2) != 0) ==> t(r1) != t(r2) } } &&
+    (0..<N).every { int r -> cs(r) == 2 ==> t(r) == serving }
+}
+@Requires({ 0 <= p && p < N && 0 <= q && q < N &&
+    valid(N, ticket, serving, cs, t) && cs(p) == 2 && cs(q) == 2 })
+@Ensures({ p == q })
+static void mutualExclusion(int N, int ticket, int serving,
+                            Function<Integer,Integer> cs, Function<Integer,Integer> t, int p, int q) {}
+```
+
+Mutual exclusion and all three transition preservations (`Request`/`Enter`/`Leave`, each framing the other
+`N − 1` processes in one quantified conjunct) verify for **any** `N`; drop uniqueness and mutual exclusion
+refutes with `N = 2, p = 0, q = 1`, drop the strict dispenser bound and `Request` refutes — the paper's
+invariant-strengthening story, now at any process count. (The refute twin here also caught — and fixed — a
+real engine unsoundness in how boolean helpers unfolded inside quantifier closures; the verify-and-refute
+discipline at work.)
 
 **The rung-2 companion.** Because the artifact here is a *model* of the protocol — in either formulation —
 rather than a threaded implementation, its natural second rung is a **model checker**, not a stress test. [`src/tlc/Ticket.tla`](../src/tlc/Ticket.tla)

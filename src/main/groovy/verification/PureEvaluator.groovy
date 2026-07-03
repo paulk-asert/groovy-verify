@@ -26,6 +26,7 @@ import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
@@ -126,19 +127,104 @@ class PureEvaluator {
         return null
     }
 
-    /** Deep-copy {@code e}, replacing each formal-parameter variable with its argument expression. */
+    /**
+     * Deep-copy {@code e}, replacing each formal-parameter variable with its argument expression.
+     *
+     * Phase 198 — closure-aware. A helper body's quantifier closures ({@code (0..<N).every { r -> … }})
+     * previously kept their formal names UNSUBSTITUTED (the transformer never descended into closure
+     * statements), so the unfolded body resolved against the CALLER's same-named scope — for a goal-side
+     * unfold like {@code valid(N, ticket2, …, cs2, t2)} the closures still said {@code ticket}/{@code cs},
+     * i.e. the goal silently became the pre-state fact and any preservation lemma "verified" vacuously.
+     * Now: (a) substitution descends into closure code (expression statements only — a helper body is an
+     * expression tree); (b) closure parameters shadow (hygiene); (c) the SAM shorthand {@code cs(r)} — an
+     * implicit-this call whose NAME is the formal — is renamed when the actual is a plain variable, and
+     * the whole unfold is REFUSED (null → the call stays uninterpreted, a sound over-approximation) when
+     * such a shorthand's actual is any other expression shape.
+     */
     private static Expression substitute(Expression e, Map<String, Expression> sub) {
+        boolean[] refuse = [false]
         ExpressionTransformer t = new ExpressionTransformer() {
+            private Map<String, Expression> active = sub
             @Override
             Expression transform(Expression expr) {
                 if (expr instanceof VariableExpression) {
-                    Expression rep = sub.get(((VariableExpression) expr).name)
+                    Expression rep = active.get(((VariableExpression) expr).name)
                     return rep != null ? rep : expr
+                }
+                if (expr instanceof MethodCallExpression) {
+                    MethodCallExpression mc = (MethodCallExpression) expr
+                    Expression rep = mc.implicitThis ? active.get(mc.methodAsString) : null
+                    if (rep != null) {
+                        // f(x) shorthand on a substituted formal: rename to the actual when it is a plain
+                        // variable; anything else can't be spliced as a call name — refuse the unfold.
+                        if (rep instanceof VariableExpression) {
+                            MethodCallExpression out = new MethodCallExpression(mc.objectExpression,
+                                ((VariableExpression) rep).name, transform(mc.arguments))
+                            out.implicitThis = true
+                            out.setSourcePosition(mc)
+                            return out
+                        }
+                        refuse[0] = true
+                        return expr
+                    }
+                    return expr.transformExpression(this)
+                }
+                if (expr instanceof ClosureExpression) {
+                    ClosureExpression ce = (ClosureExpression) expr
+                    // Hygiene: closure parameters shadow same-named formals inside this closure.
+                    Map<String, Expression> outer = active
+                    Map<String, Expression> inner = new HashMap<String, Expression>(outer)
+                    if (ce.parameters != null) for (Parameter cp : ce.parameters) inner.remove(cp.name)
+                    if (ce.parameters == null || ce.parameters.length == 0) inner.remove('it')
+                    active = inner
+                    try {
+                        Statement code = ce.code
+                        if (code instanceof BlockStatement) {
+                            List<Statement> stmts = ((BlockStatement) code).statements
+                            List<Statement> out = new ArrayList<Statement>(stmts.size())
+                            boolean changed = false
+                            for (Statement st : stmts) {
+                                if (st instanceof ExpressionStatement) {
+                                    Expression oldE = ((ExpressionStatement) st).expression
+                                    Expression newE = transform(oldE)
+                                    if (!newE.is(oldE)) {
+                                        Statement ns = new ExpressionStatement(newE)
+                                        ns.setSourcePosition(st)
+                                        out.add(ns); changed = true
+                                        continue
+                                    }
+                                } else if (st instanceof ReturnStatement) {
+                                    Expression oldE = ((ReturnStatement) st).expression
+                                    Expression newE = transform(oldE)
+                                    if (!newE.is(oldE)) {
+                                        Statement ns = new ReturnStatement(newE)
+                                        ns.setSourcePosition(st)
+                                        out.add(ns); changed = true
+                                        continue
+                                    }
+                                } else if (!active.isEmpty()) {
+                                    // a statement shape we can't rewrite — refuse rather than half-substitute
+                                    refuse[0] = true
+                                }
+                                out.add(st)
+                            }
+                            if (changed) {
+                                ClosureExpression nce = new ClosureExpression(ce.parameters,
+                                    new BlockStatement(out, ((BlockStatement) code).variableScope))
+                                nce.setSourcePosition(ce)
+                                return nce
+                            }
+                        }
+                        return ce
+                    } finally {
+                        active = outer
+                    }
                 }
                 return expr.transformExpression(this)
             }
         }
-        t.transform(e)
+        Expression out = t.transform(e)
+        return refuse[0] ? null : out
     }
 
     /**
