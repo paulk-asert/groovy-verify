@@ -8941,6 +8941,46 @@ Root suite **1488/0** (+8), runtime rung **555/574** clean / 0 need review (new 
 
 ---
 
+## Phase 193 — obligations covered by a matching `catch` are defined behaviour  *(shipped)*
+
+Phase 192's recorded residual, closed while the context is warm. The old behaviour was not merely noisy —
+it was **factually wrong**: `try { return Integer.parseInt(s) } catch (NumberFormatException e) { return -1 }`
+(the canonical Java pattern) refuted with `fails on: p(null)`, but `p(null)` never fails — it returns −1.
+The soundness argument for suppression: an obligation's meaning is "this would throw *uncaught*"; with a
+covering handler, the throw transfers control to the catch path, which Phase 192 models (havoc-entry, its
+own postcondition check) — nothing is unverified, so no obligation exists.
+
+Mechanics — one choke point, one index:
+
+- **`dischargeObligationUnder`** is the single dispatcher every obligation pass funnels through (value-flow,
+  region, havoc-fallback, loop, vf-replay), and every site type carries a `.node` anchor — so the guard is
+  one check at its top, and no collector needed to learn about try/catch.
+- **`currentCatchCoverage`** — a per-method index built from the clean body: each try block's source range
+  plus the exception names its handlers cover. Matching is **positional** (the site's anchor inside the try
+  block's line/column span; synthetic line −1 never matches), which is robust across the different node
+  identities the five passes anchor on.
+- **`CATCH_COVERS`** — the curated table, conservative by construction: exact obligation exceptions
+  (NPE / ArithmeticException / IndexOutOfBoundsException / NumberFormatException), the true JDK supertype
+  edges (`IllegalArgumentException` covers NFE), and the broad `RuntimeException`/`Exception`/`Throwable`.
+  An unrecognised catch type covers *nothing* — the safe direction is to keep the (possibly false)
+  refutation, never to invent coverage. User `assert`s (the developer's own spec) and `@CheckOverflow`
+  (wraps at runtime, throws nothing) are never suppressed. Suppression is silent — the same posture as the
+  existing map-lookup no-obligation return, since nothing remains unverified.
+
+`P193 catch-covered obligations` (G270, 7 cases): the parseInt headline, intdiv + ArithmeticException,
+the IllegalArgumentException supertype edge, deref + NPE — all now compile clean; the teeth are the three
+non-suppressions (wrong-type handler; handler-body obligation; same expression after the try). The Phase-192
+CAPABILITIES residual tail now points here (the row discipline from the housekeeping audit).
+
+Known-accepted residual: coverage matches catch types by **simple name** — a user class named `Exception`
+in another package would falsely cover (curated-table trade-off, same as the DSL suffix recognisers; the
+CONVERSION-phase body has unresolved types, so name matching is what exists).
+
+Root suite **1495/0** (+7), runtime rung **559/578** clean / 0 need review, `examples-dsl` green, docLint
+**0 drift** (270/270 groups).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

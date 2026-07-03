@@ -276,7 +276,11 @@ checks `@Ensures` only on normal completion), so the ubiquitous guard-throw prol
 separate path entered with every try-assigned local **havocked** (the try may have executed any prefix before
 throwing, so the handler provably relies on nothing the try wrote; a rethrowing handler contributes no path at
 all). Heap mutation inside a `try` (array/field stores, call statements) can't be framed per-name at catch
-entry and loud-skips, as does `finally` (Phase 192). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
+entry and loud-skips, as does `finally` (Phase 192). An **implicit obligation whose exception the handler
+covers** (`try { Integer.parseInt(s) } catch (NumberFormatException e) { … }`) is suppressed — the throw is
+defined behaviour, landing on the modelled catch path — via a curated type table (exact types, their JDK
+supertypes, `RuntimeException`/`Exception`/`Throwable`); a wrong-type handler, a handler-body obligation, or
+the same expression outside the try still refutes (Phase 193). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
 call bound to a local, whose slots then carry the callee's postcondition into the caller's body
 (`Tuple2 r = f(a); … r.v1 …`; Phase 113) — a method-level
 `@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a

@@ -750,6 +750,75 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * for "named object with fields, possibly carrying class invariants". A reference here drives
      * the cross-class reasoning: receiver-qualified field reads, invariant assumption, etc.
      */
+    /** Phase 193 — per-method catch-coverage index: for each try block, its source range plus the set of
+     *  implicit-obligation exception names its handlers cover (curated, conservative — an unrecognised
+     *  catch type covers nothing, so the obligation keeps refuting). Rebuilt per method. */
+    private List<Object[]> currentCatchCoverage = new ArrayList<Object[]>()
+
+    /** Catch-parameter simple name → the implicit-obligation exceptions it (super)covers. Curated: exact
+     *  types, their JDK supertypes (NFE <: IllegalArgumentException; the broad RuntimeException /
+     *  Exception / Throwable), nothing inferred. */
+    private static final Map<String, List<String>> CATCH_COVERS = [
+        'NullPointerException'          : ['NullPointerException'],
+        'ArithmeticException'           : ['ArithmeticException'],
+        'IndexOutOfBoundsException'     : ['IndexOutOfBoundsException'],
+        'NumberFormatException'         : ['NumberFormatException'],
+        'IllegalArgumentException'      : ['NumberFormatException'],
+        'RuntimeException'              : ['NullPointerException', 'ArithmeticException', 'IndexOutOfBoundsException', 'NumberFormatException'],
+        'Exception'                     : ['NullPointerException', 'ArithmeticException', 'IndexOutOfBoundsException', 'NumberFormatException'],
+        'Throwable'                     : ['NullPointerException', 'ArithmeticException', 'IndexOutOfBoundsException', 'NumberFormatException'],
+    ]
+
+    /** Walk the clean body for try blocks and their handlers' coverage (see {@link #currentCatchCoverage}). */
+    private static List<Object[]> collectCatchCoverage(MethodNode node) {
+        List<Object[]> out = new ArrayList<Object[]>()
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return out
+        try {
+            body.visit(new CodeVisitorSupport() {
+                @Override void visitTryCatchFinally(org.codehaus.groovy.ast.stmt.TryCatchStatement tcs) {
+                    Statement tb = tcs.tryStatement
+                    Set<String> covered = new HashSet<String>()
+                    for (org.codehaus.groovy.ast.stmt.CatchStatement cs : tcs.catchStatements) {
+                        List<String> c = CATCH_COVERS.get(cs.variable?.type?.nameWithoutPackage)
+                        if (c != null) covered.addAll(c)
+                    }
+                    if (tb != null && !covered.isEmpty() && tb.lineNumber > 0) {
+                        out.add([tb.lineNumber, tb.columnNumber, tb.lastLineNumber, tb.lastColumnNumber, covered] as Object[])
+                    }
+                    super.visitTryCatchFinally(tcs)
+                }
+            })
+        } catch (Throwable ignored) { }
+        out
+    }
+
+    /** True iff {@code at} sits inside a try block whose handlers cover {@code exceptionName} — the
+     *  obligation\'s failure mode is then *defined behaviour* (control transfers to the handler, whose
+     *  path Phase 192 models), so no obligation fires. Synthetic positions (line -1) never match. */
+    private boolean catchCovered(org.codehaus.groovy.ast.ASTNode at, String exceptionName) {
+        if (at == null || at.lineNumber < 0) return false
+        int l = at.lineNumber, c = at.columnNumber
+        for (Object[] r : currentCatchCoverage) {
+            int sl = (int) r[0], sc = (int) r[1], el = (int) r[2], ec = (int) r[3]
+            boolean after = l > sl || (l == sl && c >= sc)
+            boolean before = l < el || (l == el && c <= ec)
+            if (after && before && ((Set<String>) r[4]).contains(exceptionName)) return true
+        }
+        false
+    }
+
+    /** The exception an implicit-obligation site would throw uncaught, else null (never suppressed). */
+    private static String obligationExceptionOf(Object site) {
+        if (site instanceof IndexSite || site instanceof StringCharAtSite || site instanceof StringSubstringSite)
+            return 'IndexOutOfBoundsException'
+        if (site instanceof DivideSite) return 'ArithmeticException'
+        if (site instanceof ParseSite) return 'NumberFormatException'
+        if (site instanceof DerefSite) return 'NullPointerException'
+        null   // AssertSite (the developer\'s own spec) and OverflowSite (wraps, never throws) stay checked
+    }
+
     private static Map<String, ClassNode> collectObjectParams(MethodNode node) {
         Map<String, ClassNode> out = new LinkedHashMap<String, ClassNode>()
         ClassNode declaring = node.declaringClass
@@ -1860,6 +1929,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
         currentObjectParams = collectObjectParams(node)
         currentTupleParams = collectTupleParams(node)
+        currentCatchCoverage = collectCatchCoverage(node)
         buildSizeAccessors(node)
         // Phase 15a — pre-filter class invariants once per method. Static methods skip (no `this`).
         // Pre-filtering here means a single skip diagnostic per outside-fragment clause, even if
@@ -2989,6 +3059,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * discharged. Shared by the havoc pass and the Phase 5 value-flow pass.
      */
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+        // Phase 193 — an obligation inside a try whose handler covers its exception is DEFINED behaviour:
+        // the throw transfers to the catch path (modelled since Phase 192), so nothing is uncaught and a
+        // "Possible X ... fails on f(...)" refutation would be factually wrong (f(...) returns the
+        // handler's value). Silent, like the map-lookup no-obligation return below; conservative — only
+        // the curated CATCH_COVERS types suppress, and only for sites positioned inside the try block.
+        String obEx = obligationExceptionOf(site)
+        if (obEx != null && site.hasProperty('node') && catchCovered((org.codehaus.groovy.ast.ASTNode) site['node'], obEx)) return
         if (site instanceof AssertSite) {
             AssertSite as = (AssertSite) site
             Object p = enc.translateGoal(as.cond)
