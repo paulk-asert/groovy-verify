@@ -272,9 +272,10 @@ refutes at the exit check.
 
 **The siblings in the leftpad repo.** Two entries there are old acquaintances. The
 [`java`](https://github.com/hwayne/lets-prove-leftpad/tree/master/java) entry is **OpenJML** — the same
-JML-annotated `char[]` spec, with *two* sequential annotated loops where our fragment mandates one (the
-single-loop body above is the same proof, folded); since Java is largely a syntactic subset of Groovy,
-that entry is line-for-line comparable with ours. The
+JML-annotated `char[]` spec, with *two* sequential annotated loops; both forms verify here (the
+single-loop body above, and the two-loop OpenJML shape — sequential annotated loops landed with each
+later loop restating the facts it needs, exactly the `maintaining` discipline); since Java is largely a
+syntactic subset of Groovy, that entry is line-for-line comparable with ours. The
 [`verus (rust)`](https://github.com/hwayne/lets-prove-leftpad/tree/master/verus%20(rust)) entry — the tool
 whose HumanEval suite the repo already ports — uses a *functional* `spec fn` + a recursive `proof fn`
 whose self-call is the induction hypothesis: exactly the recursive-lemma-with-`@Decreases` pattern here.

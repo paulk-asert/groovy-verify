@@ -2021,9 +2021,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 body = deChan
             }
 
-            LoopSite site
+            List<LoopSite> sites
             try {
-                site = findLoopSite(body)
+                sites = findLoopSites(body)
             } catch (UnsupportedConstructException e) {
                 addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), node)
                 return
@@ -2045,14 +2045,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             LoopEncoder.callHandler.set(relyCallHandler(node))
             try {
                 try {
-                    if (site != null) verifyLoopObligations(node, site)
+                    if (!sites.isEmpty()) verifyLoopObligations(node, sites)
                     else verifyImplicitObligations(node)
                 } catch (Throwable ignored) {
                 }
 
                 try {
-                    if (site != null) verifyLoop(node, site)
-                    else verifyPostcondition(node)
+                    // Phase 207 — SEQUENTIAL annotated loops: each site gets its own establishment /
+                    // preservation / progress (earlier loops summarised in its prefix replay); only the
+                    // LAST site carries the @Ensures / early-exit / post-loop-use checks (its suffix is
+                    // the loop-free tail).
+                    if (!sites.isEmpty()) {
+                        for (int si = 0; si < sites.size(); si++) {
+                            verifyLoop(node, sites.get(si), si == sites.size() - 1)
+                        }
+                    } else {
+                        verifyPostcondition(node)
+                    }
                 } catch (Throwable t) {
                     // An unexpected encoder error (e.g. a value shape the fragment doesn't yet model end-to-end)
                     // must degrade to a loud skip, never crash the compile — the "skip outside the fragment,
@@ -3309,30 +3318,35 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * havoc, so this proves exactly what the user's invariant is strong enough
      * to support — and honestly reports "could not decide" when it is not.
      */
-    private void verifyLoopObligations(MethodNode node, LoopSite site) {
+    private void verifyLoopObligations(MethodNode node, List<LoopSite> sites) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
-        LoopSpec spec = site.spec
-        // 1. Prefix: @Requires + the straight-line prefix store; no invariant yet.
-        dischargeRegion(site.prefix, reqAst, Collections.<Expression>emptyList(), null)
-        // 2. Guard expression: evaluated whenever the invariant holds.
-        for (Object s : sitesInExpression(spec.guard)) {
-            dischargeSeeded(s, reqAst, spec.invariants, null, Collections.<Statement>emptyList())
-        }
-        // 3. Body: invariant ∧ guard, threaded through the (straight-line) body. handleAsserts=true so an in-loop
-        // `assert` (the masking-fix class-invariant assert after a shared write) is discharged here.
-        List<Expression> bodyAssumed = new ArrayList<Expression>(spec.invariants)
-        bodyAssumed.add(spec.guard)
-        dischargeRegion(spec.body, reqAst, bodyAssumed, null, Collections.<Statement>emptyList(), true)
-        // 4. Suffix: invariant ∧ ¬guard (the loop has exited).
-        dischargeRegion(site.suffix, reqAst, spec.invariants, spec.guard)
-        // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
-        // discharged in the INNER loop's own context (inner_inv ∧ inner_guard), where the inner index is
-        // constrained — not under the outer invariant, where it isn't. dischargeRegion (step 3) skips them.
-        for (Statement innerLoop : annotatedInnerLoops(spec.body)) {
-            LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-            List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
-            innerAssumed.add(innerSpec.guard)
-            dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
+        // 1. The region before the FIRST loop: @Requires + the straight-line store; no invariant yet.
+        dischargeRegion(sites.get(0).segmentBefore, reqAst, Collections.<Expression>emptyList(), null)
+        for (int si = 0; si < sites.size(); si++) {
+            LoopSite site = sites.get(si)
+            LoopSpec spec = site.spec
+            // 1b. Phase 207 — the region between the previous loop and this one is the previous site's
+            // segmentAfter (discharged below under ITS inv ∧ ¬guard); nothing extra here.
+            // 2. Guard expression: evaluated whenever the invariant holds.
+            for (Object s : sitesInExpression(spec.guard)) {
+                dischargeSeeded(s, reqAst, spec.invariants, null, Collections.<Statement>emptyList())
+            }
+            // 3. Body: invariant ∧ guard, threaded through the (straight-line) body. handleAsserts=true so an
+            // in-loop `assert` (the masking-fix class-invariant assert after a shared write) is discharged here.
+            List<Expression> bodyAssumed = new ArrayList<Expression>(spec.invariants)
+            bodyAssumed.add(spec.guard)
+            dischargeRegion(spec.body, reqAst, bodyAssumed, null, Collections.<Statement>emptyList(), true)
+            // 4. The region after this loop up to the next one (or the method end): inv ∧ ¬guard.
+            dischargeRegion(site.segmentAfter, reqAst, spec.invariants, spec.guard)
+            // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
+            // discharged in the INNER loop's own context (inner_inv ∧ inner_guard), where the inner index is
+            // constrained — not under the outer invariant, where it isn't. dischargeRegion (step 3) skips them.
+            for (Statement innerLoop : annotatedInnerLoops(spec.body)) {
+                LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
+                innerAssumed.add(innerSpec.guard)
+                dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
+            }
         }
     }
 
@@ -6304,8 +6318,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static class LoopSite {
         Statement loopStmt
         LoopSpec spec
-        /** Non-exit prefix statements only — what {@link LoopEncoder#symExec} executes. */
+        /** Non-exit prefix statements only — what {@link LoopEncoder#symExec} executes. For the 2nd+ of
+         *  SEQUENTIAL annotated loops (Phase 207) this is the FULL preceding history including earlier
+         *  loop statements, which the replay summarises (havoc writes, assume inv ∧ ¬guard). */
         List<Statement> prefix
+        /** Phase 207 — the statements strictly between the PREVIOUS annotated loop (or method start)
+         *  and this loop: the region whose obligations belong to this site. */
+        List<Statement> segmentBefore
+        /** Phase 207 — the statements strictly between this loop and the NEXT annotated loop (or method
+         *  end): discharged under this loop's inv ∧ ¬guard. */
+        List<Statement> segmentAfter
         /** Non-exit suffix statements only. */
         List<Statement> suffix
         /** Phase 49 — source-order prefix including early-exit if-statements. */
@@ -6340,19 +6362,34 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * Raises {@link UnsupportedConstructException} (→ "skipped") if the body has
      * more than one — the spike models a single loop.
      */
-    private static LoopSite findLoopSite(Statement body) {
+    private static List<LoopSite> findLoopSites(Statement body) {
         List<Statement> top = topStatements(body)
-        int idx = -1
+        List<Integer> idxs = new ArrayList<Integer>()
         for (int i = 0; i < top.size(); i++) {
-            if (top.get(i).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
-                if (idx != -1) {
-                    throw new UnsupportedConstructException(
-                        "more than one annotated loop in the method body")
-                }
-                idx = i
-            }
+            if (top.get(i).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) idxs.add(i)
         }
-        if (idx == -1) return null
+        if (idxs.isEmpty()) return Collections.<LoopSite> emptyList()
+        List<LoopSite> sites = new ArrayList<LoopSite>()
+        for (int s = 0; s < idxs.size(); s++) {
+            LoopSite site = buildLoopSite(top, idxs.get(s))
+            // Phase 207 — sequential loops: the trimmed segments (between neighbouring loops) own the
+            // region obligations; the full prefix (earlier loops included, summarised by the replay)
+            // carries establishment. Early exits with multiple sequential loops stay a loud skip (v1).
+            int prevEnd = s == 0 ? 0 : idxs.get(s - 1) + 1
+            site.segmentBefore = new ArrayList<Statement>(top.subList(prevEnd, idxs.get(s)))
+            if (s == 0 && site.spec.init != null) site.segmentBefore.addAll(site.spec.init)
+            int nextStart = s + 1 < idxs.size() ? idxs.get(s + 1) : top.size()
+            site.segmentAfter = new ArrayList<Statement>(top.subList(idxs.get(s) + 1, nextStart))
+            if (idxs.size() > 1 && !site.earlyExits.isEmpty()) {
+                throw new UnsupportedConstructException(
+                    "early exits combined with multiple sequential annotated loops")
+            }
+            sites.add(site)
+        }
+        sites
+    }
+
+    private static LoopSite buildLoopSite(List<Statement> top, int idx) {
         LoopSite site = new LoopSite()
         site.loopStmt = top.get(idx)
         site.spec = (LoopSpec) site.loopStmt.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
@@ -6573,9 +6610,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@link Encoder}, so any variable a context does not bind is a fresh
      * unconstrained value: that is exactly "havoc the loop-modified variables".
      */
-    private void verifyLoop(MethodNode node, LoopSite site) {
+    private void verifyLoop(MethodNode node, LoopSite site, boolean tail = true) {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
-        Expression postAst = findEnsures(node) != null ? contractAstFor(node, 'ensures') : null
+        // Phase 207 — only the LAST of sequential annotated loops carries the @Ensures / early-exit /
+        // post-loop-use checks; earlier sites verify establishment/preservation/progress only.
+        Expression postAst = (tail && findEnsures(node) != null) ? contractAstFor(node, 'ensures') : null
         // Phase 65 — for a for-in, an invariant clause referencing the loop variable is checked at
         // body-entry (x bound to the current element), exactly as groovy-contracts does at runtime —
         // not at the loop head, where x is undefined (which spuriously "failed" on the empty

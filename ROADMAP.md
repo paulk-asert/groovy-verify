@@ -9322,7 +9322,7 @@ loop-invariant verification and groovy-verify *is* the imperative-invariant side
   own partial Dafny solution — via nested `every`/`any` and a membership-scan inner loop whose invariant
   ties `found` to the scanned prefix.
 
-Iteration notes worth keeping: the fragment allows **one annotated loop per method** (leftpad reshaped to
+Iteration notes worth keeping: the fragment allowed **one annotated loop per method** (lifted in Phase 207; leftpad was reshaped to
 a single loop); STC rejects arithmetic on `List.sum()` (Object) — the pure-helper spelling is the fix and
 the better spec anyway; loop-invariant preservation assumes only the invariant, so `a != null` and local
 *definitions* (`pad == …`, `r.length == …`) must ride in it. Two engine wrinkles found and recorded, not
@@ -9456,6 +9456,40 @@ step, all properties as `@Ensures` on the function itself, the self-call as indu
 section carries the sibling commentary and the functional block (doclint-linked). Root suite **1555/0**
 (+4, and the flip), runtime rung **580/599** clean, `examples-dsl` green, docLint **0 drift**
 (282/282 groups, 107/107 links), full `check` green.
+
+---
+
+## Phase 207 — sequential annotated loops: the one-loop-per-method limit falls  *(shipped)*
+
+The OpenJML leftpad entry's shape (two sequential `maintaining`-annotated loops), asked for directly and
+delivered — and the assessment held: **two existing pieces did most of the work**.
+
+- `LoopEncoder.symExec` already summarises an annotated loop it meets in a replay list (havoc the written
+  vars, assume `inv ∧ ¬guard` — the Phase-91 nested-loop summary). So "loop₁ sits in loop₂'s prefix" was
+  already executable; the sequential case reuses the nested machinery at the top level.
+- Loop₂'s entry context **is** loop₁'s exit context — the same `inv ∧ ¬guard` seeding the single-loop
+  suffix discharge always used.
+
+**The mechanics**: `findLoopSites` (plural) replaces the single-site finder; each `LoopSite` keeps the
+FULL preceding history as its prefix (earlier loops included — establishment replays through their
+summaries) plus trimmed `segmentBefore`/`segmentAfter` for region obligations; `verifyLoopObligations`
+walks the site list (segment₀ under `@Requires`, each guard/body under its own invariant, each
+after-segment under that loop's `inv ∧ ¬guard`); `verifyLoop` gains a `tail` flag so only the **last**
+site carries the `@Ensures` / early-exit / post-loop-use checks. v1 scope-out, loud: early exits combined
+with sequential loops.
+
+**The discipline it enforces is OpenJML's own**: a later loop must restate any earlier-segment fact it
+needs (its writes havoc the shared state) — the second leftpad loop carries
+`(0..<pad).every { r[it] == c }` exactly as the Java entry's `maintaining` does. The teeth prove the
+checker demands it: drop the carried fact and the postcondition fails; claim a second invariant the
+first loop's exit state doesn't establish and it refutes at entry (with the summarised havoc names
+visible in the counterexample).
+
+`P207 sequential loops` (G282, 5 cases): the two-loop leftpad (OpenJML parity), two- and **three**-loop
+scalar shapes (the third is the `merge` skeleton — that example is now unblocked), and the two teeth.
+**Zero regressions** across the corpus. Root suite **1560/0** (+5), runtime rung **584/603** clean
+(the new loop shapes cross-validate at runtime), `examples-dsl` green, docLint **0 drift**
+(283/283 groups), full `check` green.
 
 ---
 
