@@ -5814,7 +5814,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         ExpressionTransformer tr = null
                         tr = { Expression e ->
                             if (isCallExpr(e)) {
-                                Object fresh = session.intVar('ret$call$' + (++ssaVersion))
+                                // Phase 206 — mint the hoist local in the CALLEE's return sort: a String- (or
+                                // otherwise non-Int-) returning recursive call previously got an Int handle,
+                                // and the callee's @Ensures over result.length() crashed the seq sort
+                                // ("seq.len: given domain Int") — the functional-leftpad shape.
+                                MethodNode hoistCallee = (e instanceof MethodCall) ? resolveContractedCallee(node,
+                                    ((MethodCall) e).methodAsString,
+                                    collectArgumentExpressions((MethodCall) e)?.size() ?: -1,
+                                    hasDecreases(node), null) : null
+                                ClassNode hrt = hoistCallee?.returnType
+                                Object hSort = (hrt != null && !isIntElement(hrt)) ? enc.sortForType(hrt) : null
+                                Object fresh = hSort != null ?
+                                    session.varOfSort('ret$call$' + (++ssaVersion), hSort) :
+                                    session.intVar('ret$call$' + (++ssaVersion))
                                 if (assumeCalleeEnsures(session, enc, e, node, fresh, hasDecreases(node))) {
                                     String nm = 'ret$call$local$' + ssaVersion
                                     enc.bind(nm, fresh)

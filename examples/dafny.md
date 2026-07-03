@@ -270,6 +270,40 @@ The teeth: a mis-offset leftpad suffix refutes, a fulcrum that never updates its
 preservation, and an over-strong unique claim (`result == a.length` — "the input never had duplicates")
 refutes at the exit check.
 
+**The siblings in the leftpad repo.** Two entries there are old acquaintances. The
+[`java`](https://github.com/hwayne/lets-prove-leftpad/tree/master/java) entry is **OpenJML** — the same
+JML-annotated `char[]` spec, with *two* sequential annotated loops where our fragment mandates one (the
+single-loop body above is the same proof, folded); since Java is largely a syntactic subset of Groovy,
+that entry is line-for-line comparable with ours. The
+[`verus (rust)`](https://github.com/hwayne/lets-prove-leftpad/tree/master/verus%20(rust)) entry — the tool
+whose HumanEval suite the repo already ports — uses a *functional* `spec fn` + a recursive `proof fn`
+whose self-call is the induction hypothesis: exactly the recursive-lemma-with-`@Decreases` pattern here.
+
+**The functional sibling.** The repo also has a
+[`dafny (functional)`](https://github.com/hwayne/lets-prove-leftpad/tree/master/dafny%20(functional))
+entry — no loops, no mutation: a recursion prepending one pad character per step, all four properties as
+`ensures` on the function itself, proved by structural induction. The same shape proves here, over
+Strings, with Z3's native sequence theory carrying length-of-concat as a theorem:
+
+<!-- doclint:case p206-functional-leftpad/identity-length-by-induction -->
+```groovy
+@Requires({ pad != null && s != null && pad.length() == 1 })
+@Ensures({ (s.length() >= n ==> result == s) &&
+           (s.length() < n ==> result.length() == n) })
+@Decreases({ n - s.length() })
+static String leftpad(String pad, int n, String s) {
+    s.length() >= n ? s : leftpad(pad, n, pad + s)
+}
+```
+
+The honest boundary: the two **character** clauses are mutually inductive — the prefix clause alone
+*refutes* (its index `n − |s| − 1` is covered by the recursive call's *suffix* clause, which is exactly
+why the Dafny entry states all four `ensures` together — a fact the corpus pins as an instructive refute
+case), and the full four-clause spec defeats the solver's timeout (seq-`nth` quantifiers under induction;
+pinned as a boundary case that fails loudly if a future solver win flips it). So the functional twin
+carries identity + length by induction; the character clauses are where the imperative port's loop
+invariants earn their keep.
+
 ### Ticket lock — mutual exclusion (Leino, KRML260)
 
 The three above are sequential algorithms. Leino's lecture notes

@@ -40,7 +40,10 @@ class G211_p_seqconcat {
                         static String glue(String a, String b) { a + b }
                         @Ensures({ glue(s, t) == s + t })
                         static void check(String s, String t) { } }''')],
-        [group: 'P-seqconcat', name: 'string combiner call in return position skips (no crash)', expect: 'outside fragment',
+        // (This was the pinned boundary "string combiner call in return position skips" — closed in
+        // Phase 206: the return-position call hoist now mints its local in the CALLEE's return sort, so
+        // the String-returning combiner's @Ensures binds and the postcondition proves.)
+        [group: 'P-seqconcat', name: 'string combiner call in return position verifies (boundary closed in P206)', ok: true,
          src: tc('''class C {
                         @Ensures({ result == a + b })
                         static String glue(String a, String b) { a + b }

@@ -9424,6 +9424,41 @@ Root suite **1551/0** (+6), runtime rung **579/598** clean / 0 need review, `exa
 
 ---
 
+## Phase 206 — the functional leftpad sibling, and the sort-aware return-call hoist  *(shipped)*
+
+Two follow-ups from the showdown review. First, the leftpad repo's **sibling entries**, now commented in
+the gallery: the `java` entry is **OpenJML** (same `char[]` spec, two annotated loops where our fragment
+mandates one — line-for-line comparable since Java reads as Groovy), and the `verus (rust)` entry uses the
+functional `spec fn` + recursive `proof fn` structure — the recursive-lemma-with-`@Decreases` pattern this
+repo uses throughout. Both tools the repo already cites as cross-tool credentials.
+
+Second, the **`dafny (functional)` twin**, built: a String-returning recursion prepending one pad char per
+step, all properties as `@Ensures` on the function itself, the self-call as induction hypothesis.
+
+- **The engine fix that unlocked it**: the return-position call hoist (`ret$call$…`) minted its
+  single-assignment local as an `intVar` regardless of the callee's return type — a String-returning
+  recursive call got an Int handle and the callee's `@Ensures({ result.length() … })` crashed the seq
+  sort (`seq.len: given domain Int`, an internal loud skip). The hoist now resolves the callee
+  (`resolveContractedCallee`) and mints in its **return sort**. The fix immediately flipped a pinned
+  boundary elsewhere: `P-seqconcat`'s "string combiner call in return position skips (no crash)" now
+  **verifies** — the case is flipped with its comment recording the closure (the P199 pattern).
+- **What proves**: identity (`|s| >= n ⟹ result == s`) and length (`|s| < n ⟹ |result| == n`) by
+  structural induction — with **no length-of-concat axiom needed**: strings ride Z3's native sequence
+  theory (`mkConcat`/`mkNth`), where it is a theorem.
+- **Honest boundaries, pinned as cases**: the two character clauses are *mutually* inductive — the
+  prefix clause alone **refutes** (index `n−|s|−1` of this call's result is covered by the recursive
+  call's *suffix* clause, absent from a prefix-only hypothesis — precisely why the Dafny entry states
+  all four `ensures` together; the refute is kept as an instructive case), and the full four-clause spec
+  defeats the solver timeout (seq-`nth` quantifiers under induction) — pinned with the
+  fails-loudly-on-improvement canary expectation, so a future solver/engine win flips it visibly.
+
+`P206 functional leftpad` (G281, 4 cases) + the flipped `P-seqconcat` boundary. The gallery's showdown
+section carries the sibling commentary and the functional block (doclint-linked). Root suite **1555/0**
+(+4, and the flip), runtime rung **580/599** clean, `examples-dsl` green, docLint **0 drift**
+(282/282 groups, 107/107 links), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
