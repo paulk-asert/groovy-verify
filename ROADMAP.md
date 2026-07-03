@@ -8299,6 +8299,9 @@ helper), and the frame/stability lemma parameters are named to match their calle
 a `.every` precondition at a call site is discharged by *syntactic* match against a `.every` the caller holds, so
 aligned closure text (hence aligned parameter names) is what makes the call typecheck. A latent sharpening —
 matching quantified preconditions up to α-renaming / argument substitution — would remove that footgun.
+*(Closed in Phase 185: call-site function aliasing — the root cause was the `apply$<name>` symbol, not the
+closure text — so a generic lemma is now reusable under renamed formals; the aligned names here stay for
+readability.)*
 
 **KRML260, done.** The ticket lock now carries Leino's entire development: **safety / mutual exclusion** (170),
 **invariant strengthening + the ranking function** (171), **bounded bypass** (172), **trace-level composition via
@@ -8620,6 +8623,41 @@ Order remains load-bearing and is now *visible*: the registry table reads top-to
 - Not attempted (deliberately): per-domain *files*. The handlers lean on dozens of private Encoder helpers and
   fields; extracting them to separate classes means widening visibility wholesale — a stage-three decision to
   take only if the single file's size itself becomes the bottleneck, now that its *structure* no longer is.
+
+---
+
+## Phase 185 — lemma reuse under renamed `Function` formals (the aligned-names footgun, closed)  *(shipped)*
+
+The last big-ticket item from the Phase-178 assessment, and the capability the ticket-lock arc created demand
+for. Phases 174–175 had to name every frame lemma's formals identically to the caller's actuals
+(`csAF`/`tAF`/`servingF`) — a generic, reusable `frame(Function g, int a, int b)` was impossible. The
+assessment (and the Phase-175 authoring note) framed the fix as "α-renaming / substitution matching of
+quantified preconditions"; diagnosing before designing found the real root cause one level lower, and the fix
+correspondingly smaller:
+
+**Root cause: the UF symbol, not the closure text.** At a call site, a *scalar* formal is bound by asserting
+`formal#arg == actual-handle` — name-independent. A **`Function`-typed formal has no scalar handle to
+equate**: its identity is the uninterpreted `apply$<name>` symbol minted from the *name in the contract AST*.
+So the callee's quantified `@Requires` over `g` translated to facts about `apply$g` while the caller's facts
+lived on `apply$csAF` — two unrelated symbols, connected only when the names happened to coincide. Not a
+quantifier-matching problem at all.
+
+**The fix: call-site function aliasing.** The checker registers `formal → named-actual` aliases on the per-VC
+encoder at both halves of the call boundary — the `@Requires` discharge and the `@Ensures` assumption — and
+the encoder resolves every `apply$` mint through the alias map (`tmcSamApply` and the Phase-C `applyFunction`
+path, including the sort lookup). The lemma's `g.apply(x)` then *is* `apply$csAF(x)`: exact, quantifier-free,
+sound (the formal is the actual — functions are passed by reference and never mutated). A non-variable actual
+(closure literal, call result) gets no alias and keeps today's honest behaviour.
+
+Probed end-to-end before promoting: the renamed generic frame lemma verifies (both directions — its
+precondition discharged from the caller's differently-named facts, *and* its postcondition assumed onto the
+caller's symbol, which the caller's own proof needs); passing a function the caller holds **no** facts about
+still fails the callee precondition; a wrong conclusion still refutes; two formals bound to one actual unify
+(`needsEqual(h, h)` discharges `p.apply(0) == q.apply(0)`).
+
+4 `P185 lemma-reuse` cases pin all of that. The Phase-175 authoring note and the `G264` case comment are
+updated — the aligned names in the ticket-lock lemmas are now a readability choice, not a requirement. Root
+suite **1461/0** (+4), runtime rung **553/571** clean, docLint **0 drift** (266/266 groups).
 
 ---
 

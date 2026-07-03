@@ -264,6 +264,22 @@ class Encoder {
      *  f.apply(x)} can range over the right sort (e.g. a bind function returns the carrier). */
     private final Map<String, ClassNode> functionReturnTypes
 
+    /** Phase 185 — call-site function aliasing: a Function-typed FORMAL name → the ACTUAL argument's
+     *  name. Registered by the checker when discharging a callee @Requires / assuming a callee @Ensures
+     *  with a named Function actual, so the contract's `g.apply(x)` mints the CALLER's `apply$csAF`
+     *  symbol. This is the lemma-reuse (α-renaming) bridge: a Function formal has no scalar handle to
+     *  equate across the call boundary — the UF symbol IS its identity — so without the alias, only
+     *  same-named formals lined up with the caller's facts (the Phase-175 aligned-names footgun). */
+    private final Map<String, String> functionAliases = new HashMap<String, String>()
+
+    /** Register a formal→actual function alias for this encoder's (per-VC) translations. */
+    void aliasFunction(String formal, String actual) {
+        if (formal != null && actual != null) functionAliases.put(formal, actual)
+    }
+
+    /** Resolve a name through the call-site function aliases (identity when unaliased). */
+    private String fnName(String n) { functionAliases.getOrDefault(n, n) }
+
     /** Optional pure-function evaluator/unfolder (Phase 8a); null disables both. */
     private final PureEvaluator pureEvaluator
     /**
@@ -1296,7 +1312,7 @@ class Encoder {
 
     private Object applyFunction(Expression fexpr, Object arg, Object defaultRange) {
         if (fexpr instanceof VariableExpression) {
-            String fn = ((VariableExpression) fexpr).name
+            String fn = fnName(((VariableExpression) fexpr).name)
             return session.applyUF('apply$' + fn, [arg], functionRange(fn, defaultRange))
         }
         if (fexpr instanceof ClosureExpression) {
@@ -5770,9 +5786,9 @@ class Encoder {
         // re-parsed pre-resolution, are normalised to `f.apply(x)` by ContractNormalizer instead). Gated on
         // a KNOWN Function-typed formal so an ordinary Closure.call() is never hijacked.
         boolean samCall = (m == 'call' && recv instanceof VariableExpression &&
-            functionReturnTypes.containsKey(((VariableExpression) recv).name))
+            functionReturnTypes.containsKey(fnName(((VariableExpression) recv).name)))
         if ((m == 'apply' || samCall) && args.size() == 1 && recv instanceof VariableExpression) {
-            String rn = ((VariableExpression) recv).name
+            String rn = fnName(((VariableExpression) recv).name)   // call-site alias: formal → actual (Phase 185)
             ClassNode frt = functionReturnTypes.get(rn)
             // Phase 173 — a numeric-returning Function (e.g. Function<Integer,Integer>, a trace's serving/ticket over
             // time): model f.apply(i) as an Int-sorted UF over the argument's NATURAL sort, so the result partakes in

@@ -34,8 +34,10 @@ class G264_p175_liveness_complete {
         // then chains that into the base case, so the overtaken waiter reaches Eating. Bounded bypass (Phase 172) caps
         // a waiter's measure at 1, so measure-0 (Phase 174) and measure-1 (here) are EXHAUSTIVE: the two-process
         // fair-schedule eventually-eats is complete. All progress derived from fairness + framing, none assumed.
-        // NB: the frame/stability lemma parameters are named to match the callers' (`csAF`/`tAF`/`servingF`) — the
-        // `(lo..<hi).every` precondition at a call site is discharged by syntactic match, so aligned names matter.
+        // (Historical note: these lemmas' formals were once REQUIRED to match the callers' names — a Function
+        // formal's identity is its apply$<name> symbol, and nothing connected a renamed formal to the caller's
+        // facts. Phase 185's call-site aliasing removed that constraint; the aligned names here are kept for
+        // readability, and the P185 lemma-reuse group pins the renamed form.)
         [group: 'P175 liveness-complete', name: 'overtaken (measure-1) waiter eats: reduction + base case', ok: true,
          src: tc('''class OvertakeEats {
                         @Requires({ n <= u && (n..<u).every { int i -> csAF(i + 1) == csAF(i) && tAF(i + 1) == tAF(i) } })

@@ -7604,6 +7604,14 @@ class VerifyChecker extends TypeCheckingExtension {
                     Object kn = enc.nullityOfExpr(argExprs[i])      // e.g. `new X(…)` → known non-null
                     if (kn != null) formalKnownNullity[formals[i].name] = kn
                 }
+                // Phase 185 — a Function-typed formal has no scalar handle to equate: its identity is the
+                // uninterpreted `apply$<name>` symbol. Alias the formal to the named actual so the callee's
+                // quantified @Requires over `g` translates onto the CALLER's `apply$csAF` facts (lemma reuse
+                // without name-aligning the formals).
+                if (formals[i].type?.name == 'java.util.function.Function' &&
+                        argExprs[i] instanceof VariableExpression) {
+                    enc.aliasFunction(formals[i].name, ((VariableExpression) argExprs[i]).name)
+                }
             }
 
             // 3. Translate the contract and assert its NEGATION. We're
@@ -8371,6 +8379,12 @@ class VerifyChecker extends TypeCheckingExtension {
             }
             if (h == null) return false   // can't faithfully substitute → don't assume
             bindings.put(formals[i].name, h)
+            // Phase 185 — alias a Function-typed formal to its named actual, so the callee's @Ensures over
+            // `g.apply(…)` is assumed onto the caller's own `apply$<actual>` symbol (the other half of the
+            // lemma-reuse bridge; see the @Requires-discharge twin).
+            if (ft?.name == 'java.util.function.Function' && actuals.get(i) instanceof VariableExpression) {
+                enc.aliasFunction(formals[i].name, ((VariableExpression) actuals.get(i)).name)
+            }
         }
         // Phase 113 — a tuple result is bound by renaming `result` to the caller's tuple local in the
         // @Ensures (below), not by a scalar `result` term, so its slot accessors resolve to the local's slots.
