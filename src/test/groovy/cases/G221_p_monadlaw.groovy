@@ -24,6 +24,9 @@ class G221_p_monadlaw {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'The monad laws hand-written (left/right identity, associativity) prove; a wrong bind equation refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // Phase C (Tier-1 law) — left identity `unit(a).chain(f) == f.apply(a)` discharged over the carrier

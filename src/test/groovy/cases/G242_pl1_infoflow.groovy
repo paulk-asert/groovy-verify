@@ -24,6 +24,9 @@ class G242_pl1_infoflow {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Information-flow noninterference over static @Label levels: High→Low refutes (leak), Low→Low and High→High verify.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — info-flow: @Label is not a runtime contract'
+
     static final List<Map> CASES = [
         // ---------- Phase L1 — information-flow noninterference (static labels), Smith §III ----------
         // Slice 1 builds on the PL0 lattice: a method whose result carries an @Label classification, with

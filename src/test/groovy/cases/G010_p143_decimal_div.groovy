@@ -45,10 +45,10 @@ class G010_p143_decimal_div {
                     }''')],
         // The unit-conversion read-out now verifies for a terminating factor: a length's value in km is
         // metres / 1000, and a wrong factor refutes. (The record carries its own @TypeChecked so inKm is checked.)
-        [group: 'P143 decimal div', name: 'conversion read-out (/1000) verifies', ok: true,
+        [group: 'P143 decimal div', name: 'conversion read-out (/1000) verifies', rung: 'C — units/records: no grid-executable runtime arm', ok: true,
          src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'record Length(BigDecimal metres) { @Ensures({ result == metres / 1000.0 }) BigDecimal inKm() { metres / 1000.0 } }'],
-        [group: 'P143 decimal div', name: 'wrong conversion factor refutes', expect: 'Cannot prove postcondition',
+        [group: 'P143 decimal div', name: 'wrong conversion factor refutes', rung: 'C — units/records: no grid-executable runtime arm', expect: 'Cannot prove postcondition',
          src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'record Length(BigDecimal metres) { @Ensures({ result == metres / 100.0 }) BigDecimal inKm() { metres / 1000.0 } }'],
     ]

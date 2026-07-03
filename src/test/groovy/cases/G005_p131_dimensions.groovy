@@ -24,6 +24,9 @@ class G005_p131_dimensions {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'JSR 385 dimensional analysis: a Quantity\'s kind (its [Length,Mass,Time] exponent vector) is propagated through multiply/divide and checked against the cast/return kind — the result-kind the generic type can\'t infer.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 131: JSR 385 dimensional analysis (C₀ — dimension-only) ----------

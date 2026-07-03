@@ -24,6 +24,9 @@ class G265_p177_sam_shorthand {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'SAM call-operator shorthand f(x) for a Function-typed formal, modelled identically to f.apply(x), in contracts, loop @Invariant/@Decreases closures, and bodies. Groovy\'s v(args)->v.call(args)->apply rewrite is a resolution-phase step, so the two positions present differently: a CONTRACT is re-parsed at CONVERSION (pre-resolution) and f(x) arrives as an implicit-this call this.f(x) — canonicalised to f.apply(x) by ContractNormalizer (Phase 181, the one home for re-parse artifacts) before the encoder sees it, including inside quantifier closures; a BODY is resolved AST where f(x) arrives as f.call(x) — recognised by the encoder directly, gated on a known Function formal so an ordinary Closure.call() is never hijacked. Teeth: a false claim over either position refutes (genuinely modelled, not skipped). Diagnosed as groovy-verify-internal — Groovy and groovy-contracts both resolve f(x) correctly at runtime.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 177/181: SAM call-operator shorthand `f(x)` for a Function-typed formal ----------
@@ -45,7 +48,7 @@ class G265_p177_sam_shorthand {
                         static void unify(Function<Integer,Integer> f, int n) {}
                     }''')],
         // Teeth: the shorthand is genuinely modelled (not vacuously skipped) — a false claim over it refutes.
-        [group: 'P177 sam-shorthand', name: 'f(x) shorthand refutes a false claim', expect: 'Cannot prove postcondition',
+        [group: 'P177 sam-shorthand', name: 'f(x) shorthand refutes a false claim', rung: 'run', expect: 'Cannot prove postcondition',
          src: tc('''class SamBad {
                         @Requires({ f(n) == 7 })
                         @Ensures({ f(n) == 8 })

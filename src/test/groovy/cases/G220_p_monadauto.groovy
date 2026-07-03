@@ -24,6 +24,9 @@ class G220_p_monadauto {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = '@Monadic alone synthesises and proves the monad/functor laws for a modellable carrier; an unmodellable shape is left alone.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // Phase 136/137 (auto-synthesis) — @Monadic alone now carries the proof: all four laws (the three identity

@@ -36,7 +36,7 @@ class G229_p116_monoid {
         // proves it warranted. Sum is a *monoid* (identity 0), so it carries @Reducer(zero='0'); the seedless
         // `sumParallel(Sum::add)` (a `::` method reference) is the simplest call form, and CombinerChecker certifies
         // it from the @Reducer. (Largest, a semigroup with no identity, stays @Associative.) A full Sum monoid:
-        [group: 'P116 monoid', name: 'Sum monoid: add + identity + associativity + reduce == sum (both checkers)', ok: true,
+        [group: 'P116 monoid', name: 'Sum monoid: add + identity + associativity + reduce == sum (both checkers)', rung: 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid', ok: true,
          src: tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], '''class Sum {
                         @groovy.transform.Reducer(zero = '0')
                         @Ensures({ result == a + b })

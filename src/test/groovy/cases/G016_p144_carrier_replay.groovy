@@ -24,6 +24,9 @@ class G016_p144_carrier_replay {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A carrier-returning contracted call (a factory like Quantity.km(1), or a routed operator) is modelled in the precondition-check\'s prefix replay, not havoced to an Int — so factory-built operands feed a guarded operator (Quantity.km(1) + Quantity.mile(1) == 2609.344 in metres), the dimension guard fires across the replay, and a wrong total refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 144: carrier-returning calls modelled in the precondition-check replay ----------

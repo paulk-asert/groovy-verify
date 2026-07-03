@@ -24,6 +24,9 @@ class G011_p_vii {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'The §VII capstone: information flow × rely/guarantee on one buffer verifies; a producer leaking a secret under R/G still refutes. A Lincheck-ready variant keeps the rely-stable @Requires (proof goes through, the runtime guard is dead under it) while a live runtime empty/full guard makes the same source thread-safe to call.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
 
         // The §VII capstone made Lincheck-ready, ONE source: keep the rely-stable @Requires preconditions (so the

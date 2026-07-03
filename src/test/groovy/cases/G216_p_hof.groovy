@@ -24,6 +24,9 @@ class G216_p_hof {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A java.util.function.Function\'s apply is an uninterpreted congruent function: f(a)==f(a) proves, f(a)==f(b) refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
         // Phase A (higher-order foundation) — a `java.util.function.Function` parameter's `f.apply(x)` is modelled
         // as an uninterpreted function. Congruence (same arg → same result) is provable; distinctness is not.

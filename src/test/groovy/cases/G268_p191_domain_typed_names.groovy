@@ -24,6 +24,9 @@ class G268_p191_domain_typed_names {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Domain-typed names the packs cannot resolve stay honest: a Quantity parameter (or a local bound from one) skips loudly — never modelled as an int shadow — while a comparison over unresolvable quantity-typed operands is claimed as untranslatable rather than left to the scalar path (whose model would not carry compareTo value-equality or the cross-kind UnconvertibleException); a local aliased from a claimable construction still verifies through the value-source scope hook.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 191: domain-typed names outside the packs' reach stay loud ----------

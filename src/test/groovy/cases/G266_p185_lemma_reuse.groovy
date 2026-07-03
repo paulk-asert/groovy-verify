@@ -24,6 +24,9 @@ class G266_p185_lemma_reuse {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Lemma reuse under renamed Function formals — the Phase-175 aligned-names footgun, closed. A Function-typed formal has no scalar handle to equate across a call boundary: its identity IS the uninterpreted apply$<name> symbol, so a generic lemma frame(g, a, b) with a quantified @Requires over g only lined up with a caller\'s facts when the caller\'s function was ALSO named g. The checker now registers a call-site alias (formal -> named actual) on the per-VC encoder for both the @Requires discharge and the @Ensures assumption, so the lemma\'s g.apply(x) mints the caller\'s apply$csAF symbol — one generic recursive frame lemma serves any caller. Teeth both ways: passing a function the caller holds no facts about fails the callee precondition, and a wrong conclusion refutes; two formals bound to one actual unify.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 185: lemma reuse under renamed Function formals ----------

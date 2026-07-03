@@ -24,6 +24,9 @@ class G008_p142_multi_record {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A multi-component record is a one-constructor N-field datatype (the TupleN analogue), so `new R(a,b).f` round-trips — enabling a dimension-carrying Quantity(value, L, M, T) whose multiply scales the value and composes the exponent vector, the full dimensional algebra in one type.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 142: multi-component record as a one-constructor N-field datatype ----------

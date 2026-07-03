@@ -24,6 +24,9 @@ class G033_p_ring {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'The merged Buffer flagship: both §IV rely/guarantee halves on one class (compatibility lemmas + @UnderRely-framed bodies), including rely-steps inside loop bodies.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
         // The README flagship `Buffer` — keep in sync with the rely/guarantee subsection. ONE class drives BOTH
         // halves of §IV: the @Rely/@Guarantee predicates discharge the compatibility lemmas, AND the same @Rely
@@ -65,7 +68,7 @@ class G033_p_ring {
         // a loop verifies under the environment's interference. Summing the first k elements under a rely where the
         // writer keeps head and only grows tail: the loop invariant `k <= tail` is rely-stable (tail only grows), so
         // values[j] (j < k <= tail <= length) stays in bounds across iterations.
-        [group: 'P-ring', name: 'rely-step inside loop body verifies', ok: true,
+        [group: 'P-ring', name: 'rely-step inside loop body verifies', rung: 'run', ok: true,
          src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
                     class Ring {
                        int head
@@ -172,7 +175,7 @@ class G033_p_ring {
         // claims tail is constant, but the rely lets the writer grow tail — so the rely-step's havoc inside the
         // loop breaks the invariant and preservation fails. (Without framing the loop would have loud-skipped or,
         // worse, silently "preserved" the false invariant since this thread never touches tail.)
-        [group: 'P-ring', name: 'non-rely-stable loop invariant refutes', expect: 'invariant',
+        [group: 'P-ring', name: 'non-rely-stable loop invariant refutes', rung: 'run', expect: 'invariant',
          src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
                     class Ring {
                        int head
@@ -203,7 +206,7 @@ class G033_p_ring {
         // call-framing (the rely-step havoc+assume), array bounds, and the class invariant. (Engine-coverage form
         // with hand-written @Modifies/@Ensures rely-steps; the README flagship uses the @UnderRely-synthesised form
         // above.)
-        [group: 'P-ring', name: 'concurrent bounded buffer: reader + writer both in bounds', ok: true,
+        [group: 'P-ring', name: 'concurrent bounded buffer: reader + writer both in bounds', rung: 'run', ok: true,
          src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
                     class Ring {
                        int head
@@ -233,7 +236,7 @@ class G033_p_ring {
                    }''')],
         // Weaken the reader's rely — drop `head == old.head`, so the writer could move the read pointer past the
         // buffer — and the read is no longer provably safe: it refutes with an out-of-bounds counterexample.
-        [group: 'P-ring', name: 'weak rely allows out-of-bounds read', expect: 'bounds',
+        [group: 'P-ring', name: 'weak rely allows out-of-bounds read', rung: 'run', expect: 'bounds',
          src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
                     class Ring {
                        int head
@@ -435,7 +438,7 @@ class G033_p_ring {
                    }''')],
         // Symmetric: weaken the writer's rely — drop `tail == old.tail`, so the reader could move the write
         // pointer past capacity — and the append refutes with an out-of-bounds counterexample.
-        [group: 'P-ring', name: 'weak rely allows out-of-bounds write', expect: 'bounds',
+        [group: 'P-ring', name: 'weak rely allows out-of-bounds write', rung: 'run', expect: 'bounds',
          src: tc('''@Invariant({ 0 <= head && head <= tail && tail <= values.length })
                     class Ring {
                        int head

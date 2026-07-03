@@ -24,6 +24,9 @@ class G007_p133_record_ctor {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A single-component record is modelled as a one-constructor datatype, so `new R(v).f == v` round-trips (the canonical-constructor gap, closed for records) — enabling a bespoke, self-contained value type (e.g. a units Length) to verify; richer forms (operators, carrier locals) skip gracefully.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 133: single-component record modelled as a one-constructor datatype ----------
@@ -144,7 +147,7 @@ class G007_p133_record_ctor {
         // new-is-non-null (Phase 133): a callee `@Requires({ s != null })` discharges when the actual is a
         // statically-non-null expression with no *name* to tie the nullity oracle to (a literal / `new R(…)` /
         // concatenation). Without the fix the formal's nullity is free and this precondition refutes.
-        [group: 'P133 record ctor', name: 'non-variable non-null actual satisfies a non-null precondition', ok: true,
+        [group: 'P133 record ctor', name: 'non-variable non-null actual satisfies a non-null precondition', rung: 'run', ok: true,
          src: HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C {\n' +
               '  @Requires({ s != null }) static int g(String s) { 0 }\n' +

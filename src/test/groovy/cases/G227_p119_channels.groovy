@@ -24,6 +24,9 @@ class G227_p119_channels {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A channel pipeline collapses to function composition (FIFO assumed) and proves the per-element transform; a wrong transform refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
         // ---------- P119 channels: the per-element transform via FIFO ----------
         // A channel's structural guarantee is FIFO delivery: the i-th value received is the i-th value sent,
@@ -55,7 +58,7 @@ class G227_p119_channels {
                         }
                     }""")],
         // Producer-first ordering (send before the pipeline is built) proves the same way — a single `map` stage.
-        [group: 'P119 channels', name: 'single-stage channel transform (producer first)', ok: true,
+        [group: 'P119 channels', name: 'single-stage channel transform (producer first)', rung: 'run', ok: true,
          src: tc("""class C {
                         @Ensures({ result == x * 3 })
                         static int triple(int x) {

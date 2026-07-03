@@ -24,6 +24,9 @@ class G247_pl1_rg {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Rely/guarantee compatibility lemmas: each rely reflexive/transitive, every guarantee implies every other thread\'s rely; a non-implying guarantee refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
 
         // ----- Rely/guarantee well-formedness (Smith §IV compatibility lemmas) -----

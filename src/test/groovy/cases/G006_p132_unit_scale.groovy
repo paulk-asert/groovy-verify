@@ -24,6 +24,9 @@ class G006_p132_unit_scale {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'JSR 385 value/scale: a Quantity built from known units (getQuantity/prefixes/add/to) has its SI magnitude recovered, so getValue() in a named unit verifies exactly and a wrong-unit extraction refutes (the Mars scale bug).'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
 
         // ---------- Phase 132: JSR 385 value/scale (C₁ — SI-normalized magnitudes) ----------

@@ -24,6 +24,9 @@ class G231_p114_records {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A record\'s components read like final fields in contracts, and a record may carry its own contracts; a wrong component refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — units/records: no grid-executable runtime arm'
+
     static final List<Map> CASES = [
         // ---------- P114 records (no engine change — a record is a class with component fields) ----------
         // A Groovy `record` is modelled by the existing Phase-45 object-field machinery: its components are

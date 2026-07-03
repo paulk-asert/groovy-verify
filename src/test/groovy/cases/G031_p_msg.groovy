@@ -24,6 +24,9 @@ class G031_p_msg {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Scalar producer/consumer information flow: declassify-then-deliver verifies; delivering an unreleased secret, or a secure-update that publishes one, refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — info-flow: @Label is not a runtime contract'
+
     static final List<Map> CASES = [
         // PROBE-msg (Step 2 — Smith's producer/consumer info-flow, sequential/atomic, on SCALAR messages). The
         // §III mechanics assembled into one producer/consumer narrative: declassify (§III-E) to produce a Low

@@ -9068,6 +9068,43 @@ counters plus a test-scope assertion — the encoder emits identical SMT).
 
 ---
 
+## Phase 196 — structured rung tiers: declared, not inferred  *(shipped)*
+
+The last backlog item, and the structural fix for the Phase-177 incident class. The rung's Tier-C
+exclusion ("this contract has no grid-executable runtime arm") was five regex families over raw case
+source — and source-text inference is exactly what broke when a shared header gained one import: every
+case matched, coverage silently collapsed 552/570 → 0/570, and only the coverage canary caught it.
+
+**Tiers are now declarations, co-located like `DESCRIPTION`:**
+
+- A group file carries `static final String RUNG_TIER = 'C — <reason>'` — 29 groups declare one (25
+  fully-excluded + 4 heavily-mixed).
+- An individual case may override: `rung: 'run'` (grid-run despite the group tier — the 8 minority cases
+  of the heavy-mixed groups) or `rung: 'C — <reason>'` (excluded within a runnable group — the 6 C-cases
+  of the lightly-mixed groups).
+- `RuntimeRung.declaredGroupTiers()` builds the map off `VerifyHarness.caseClasses()` (the same scan
+  `GROUP_DESC` uses); malformed declarations **fail loudly** (must be `'run'` or start with `'C — '`).
+- The regex classifier is **deleted** — inference has no fallback to rot back into.
+
+**Migration was scripted from the regexes themselves**: a census script classified every case under the
+old rules (25 fully-C groups, 8 mixed), derived each group's reason from its majority clause, and wrote
+the declarations + the 14 per-case keys. **Parity is exact**: excluded 107, needs-seed 5, headline
+561/580 clean — identical before and after, now with a structured census the report prints per reason
+(35 units/records, 26 concurrency, 23 abstract-carrier laws, 20 info-flow, 3 String-form contracts).
+
+The coverage canary **stays** (floor 500): declaration removes the silent-inference failure mode, but the
+canary also guards over-broad `RUNG_TIER` declarations, compile-exclusion creep, and grid erosion. The
+canary comment records the hand-off.
+
+Two small deliberate scope-outs: the declared tiers don't flow into `catalog.json` yet (an agent reading
+the manifest can't see rung coverage per group — a natural future provenance field beside `pack:`), and
+Tier B ("needs seed") remains a runtime outcome, not a declaration — it genuinely depends on the grid.
+
+Root suite **1500/0**, runtime rung **561/580** clean / 0 need review (byte-identical census totals),
+`examples-dsl` green, docLint **0 drift**.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

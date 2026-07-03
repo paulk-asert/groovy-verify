@@ -37,13 +37,32 @@ class RuntimeRung {
 
     static final int MAX_COMBOS = 256
 
-    /** Cases outside Slice-1 scope: their contract isn't a grid-executable runtime assertion (census Tier C). */
-    static boolean tierC(String src) {
-        src =~ /javax\.measure|tech\.units|systems\.uom|\bQuantity\b|\brecord\s/ ||   // units / records
-        src =~ /\basync\b|\bawait\b|Awaitable|@Rely|@Guarantee|@UnderRely/ ||         // concurrency
-        src =~ /@Label|Declassify\.to|\bLabel\(/ ||                                    // info-flow (not a runtime contract)
-        src =~ /import\s+verification\.(Requires|Ensures|Decreases)\b/ ||             // String-form contracts: verify-only, no groovy-contracts runtime arm to cross-validate against
-        src =~ /@Monadic|@Reducer|@Associative|\.apply\(/                             // abstract-carrier laws (NB: not `java.util.function` — now a shared HDR import, so it no longer discriminates; `.apply(`/`@Monadic` are the case-specific signals)
+    /**
+     * Phase 196 — tier classification is DECLARED, not inferred. A group file carries a
+     * {@code RUNG_TIER = 'C — <reason>'} field (co-located like DESCRIPTION); an individual case may
+     * override with {@code rung: 'run'} (grid-run despite the group tier) or {@code rung: 'C — <reason>'}
+     * (excluded within a runnable group). This replaces the retired source-regex classifier, whose
+     * fragility once silently reclassified the whole corpus when a shared header gained an import —
+     * caught only by the coverage canary. Malformed declarations fail loudly here.
+     */
+    static Map<String, String> declaredGroupTiers() {
+        Map<String, String> out = [:]
+        VerifyHarness.caseClasses().each { Class c ->
+            if (!c.metaClass.hasProperty(c, 'RUNG_TIER')) return
+            String tier = (String) c.RUNG_TIER
+            assert tier.startsWith('C — ') : "malformed RUNG_TIER on ${c.simpleName}: '${tier}'"
+            ((List<Map>) c.CASES)*.group.unique().each { g -> out[(String) g] = tier }
+        }
+        out
+    }
+
+    /** The effective tier of one case: its own {@code rung:} key, else its group's declaration.
+     *  Returns null for grid-run (Tier A/B), else the 'C — …' reason. */
+    static String tierOf(Map c, Map<String, String> groupTiers) {
+        String r = (String) c.rung ?: groupTiers[(String) c.group]
+        if (r == null || r == 'run') return null
+        assert r.startsWith('C — ') : "malformed rung on case '${c.name}': '${r}'"
+        r
     }
 
     /** Drop the VerifyChecker @TypeChecked extension — compile verifier-off, groovy-contracts still fires. */
@@ -470,14 +489,17 @@ class RuntimeRung {
         println 'self-test OK: contract assertions fire at runtime, and corroboration distinguishes confirmed vs quirk.\n'
 
         def proven = VerifyHarness.CASES.findAll { it.ok == true }
+        Map<String, String> groupTiers = declaredGroupTiers()
         int cleanValidated = 0, needseed = 0, exTierC = 0, exCompile = 0, exNoMethod = 0, exType = 0, validatedStrong = 0
         def buckets = new TreeMap<String, List>()   // category -> [ "[group] name · method(args)" ]
+        def tierCensus = new TreeMap<String, Integer>()   // declared 'C — reason' -> count (Phase 196)
         def reviewCats = [] as Set
         boolean anyUnknown = false
 
         proven.each { Map c ->
             String src = stripVerifier((String) c.src)
-            if (tierC(src)) { exTierC++; return }
+            String tier = tierOf(c, groupTiers)
+            if (tier != null) { exTierC++; tierCensus.merge(tier, 1, Integer::sum); return }
             // an inline `assert <cond>` is a runtime-active logical check too (Groovy asserts are on by default),
             // so it counts as a postcondition oracle alongside @Ensures / @Invariant.
             boolean strong = src.contains('@Ensures') || src.contains('@Invariant') || (src =~ /\bassert\s/)
@@ -541,7 +563,8 @@ class RuntimeRung {
         println "  ✓ cleanly cross-validated   : ${cleanValidated}   (${validatedStrong} with an @Ensures/@Invariant/assert postcondition oracle; rest exercise implicit-safety)"
         println "  ~ diverged (categorised)    : ${diverged}"
         println "  · needs seed (Tier B)       : ${needseed}   (grid never satisfied the @Requires precondition)"
-        println "  · excluded — Tier C         : ${exTierC}   (units/records, concurrency, info-flow, abstract-carrier laws)"
+        println "  · excluded — Tier C         : ${exTierC}   (declared per group/case — Phase 196)"
+        tierCensus.each { String reason, int n -> println "      ${n}\t${reason}" }
         println "  · excluded — compile-off    : ${exCompile}   (won't compile without the extension)"
         println "  · excluded — type/no-method : ${exType + exNoMethod}"
         println()
@@ -560,10 +583,12 @@ class RuntimeRung {
             System.exit(1)
         }
         // Coverage canary: this oracle's value is how MUCH it cross-validates, and a divergence check alone
-        // passes vacuously when coverage collapses. That has happened: a shared-header import made the tierC
-        // source-regex classifier match every case, silently dropping cross-validation from 552/570 to 0/570
-        // while the harness stayed green (see ROADMAP Phase 177). Fail loudly if coverage ever falls off a
-        // cliff again; revisit the floor deliberately if the corpus is ever intentionally restructured.
+        // passes vacuously when coverage collapses. That has happened: a shared-header import made the (since
+        // retired, Phase 196) tierC source-regex classifier match every case, silently dropping cross-validation
+        // from 552/570 to 0/570 while the harness stayed green (see ROADMAP Phase 177). Tiers are DECLARED now,
+        // which removes that failure mode — but the canary stays: it also guards against over-broad RUNG_TIER
+        // declarations, compile-exclusion creep, and grid erosion. Revisit the floor deliberately if the corpus
+        // is ever intentionally restructured.
         final int CANARY_MIN_CLEAN = 500
         if (cleanValidated < CANARY_MIN_CLEAN) {
             println "✗ CANARY: only ${cleanValidated} proofs cleanly cross-validated (floor ${CANARY_MIN_CLEAN}). " +

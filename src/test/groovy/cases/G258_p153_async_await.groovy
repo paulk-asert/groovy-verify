@@ -24,6 +24,9 @@ class G258_p153_async_await {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Groovy 6 async/await: a safe async closure (a pure value) is driven synchronously, so `await (async { e })` reads out `e` and the functional contract proves (compute), a bug after the await refutes (computeBuggy), and chained awaits thread the value (computeTwice). Awaitable.all (multi-arg await) gathers tasks into a value list to combine (a wrong total refutes). delay is a no-op (timing not modelled) and orTimeoutMillis is transparent (the deadline assumed away). The racing Awaitable.any/first are modelled as a nondeterministic choice over the task values (an if/else over the winner — the spec must hold for every winner, a hedged same-value race is determinate); the value-or-fallback completeOnTimeoutMillis and an opaque parameter Awaitable skip loudly. A combined example fans out tasks over symbolic inputs, pauses with delay, gathers with all, and combines — verifying (a+1)+(b+1)+(c+1) (a wrong combination refutes).'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
 
         // ---------- Groovy 6 async/await (the bmc4j Work.kt approach, native syntax) ----------

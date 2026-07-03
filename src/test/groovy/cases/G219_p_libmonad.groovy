@@ -24,6 +24,9 @@ class G219_p_libmonad {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'Real library monad shapes (Vavr Option, Functional Java Option, java.util.Optional): the five monad/functor laws prove, Optional refutes functor composition.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // The three real-world Maybe/Option flavors, as the full five-law set written out by hand (the README's

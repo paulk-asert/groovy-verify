@@ -24,6 +24,9 @@ class G218_p_fourchecker {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'One Maybe class under four checkers (Null/Monadic/Purity/Verify) with a live DO-comprehension: Vavr-style auto-proves the laws, Optional-style refutes functor composition.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // The headline four-checker example: NullChecker + MonadicChecker + PurityChecker + VerifyChecker on one

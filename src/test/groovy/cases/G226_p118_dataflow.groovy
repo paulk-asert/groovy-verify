@@ -24,6 +24,9 @@ class G226_p118_dataflow {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A single-assignment dataflow network desugars to SSA and proves its computed value (a+b); a wrong value refutes.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
         // ---------- P118 dataflow: the determinacy half via single-assignment ----------
         // A dataflow network's defining structural guarantee is single-assignment: every DataflowVariable

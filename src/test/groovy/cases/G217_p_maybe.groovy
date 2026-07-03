@@ -24,11 +24,14 @@ class G217_p_maybe {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A two-case Some|None @Monadic carrier: Vavr-style auto-proves all laws, Optional-style (@NonNull content) auto-refutes functor composition.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
+
     static final List<Map> CASES = [
 
         // Phase M-C — a two-case @Monadic carrier (Some(value) | None) is recognised and modelled as a two-constructor
         // datatype: `some(x).value == x` and `some(x) != none()` hold by datatype theory (carrier-rooted, no bare param).
-        [group: 'P-maybe', name: 'two-case carrier: some/none/content round-trips', ok: true,
+        [group: 'P-maybe', name: 'two-case carrier: some/none/content round-trips', rung: 'run', ok: true,
          src: tc('''@groovy.transform.Monadic(bind = 'flatMap', map = 'map')
                     class Maybe {
                         final boolean present

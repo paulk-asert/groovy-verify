@@ -24,6 +24,9 @@ class G030_p_counter {
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
     static final String DESCRIPTION = 'A monotone-counter rely/guarantee: an observed lower bound persists across interference; a non-monotonic rely drops it.'
 
+    /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
+    static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
+
     static final List<Map> CASES = [
         // PROBE-counter (Step 1 — a second R/G example, a different shape: one shared scalar with a *monotonicity*
         // rely, not array pointers). Two symmetric threads only ever increment `count`; each relies on the other to

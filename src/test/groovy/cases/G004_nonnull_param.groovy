@@ -31,7 +31,7 @@ class G004_nonnull_param {
          src: HDR + NONNULL_ANN + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { static int len(@NonNull String s) { s.length() } }'],
         // The unannotated twin (`static int n(String s) { s.length() }`) refutes — see P1 null / P9 repro.
-        [group: 'nonnull param', name: '@NonNull function param discharges apply (the Maybe shape)', ok: true,
+        [group: 'nonnull param', name: '@NonNull function param discharges apply (the Maybe shape)', rung: 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid', ok: true,
          src: HDR + NONNULL_ANN + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               'class C { static Object call(@NonNull java.util.function.Function g, Object x) { g.apply(x) } }'],
     ]
