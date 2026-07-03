@@ -44,5 +44,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Proof suite + runtime rung + doc lint
         run: ./gradlew check --no-daemon
+        env:
+          # Refute-direction VCs (model search) are hardware-speed sensitive; CI runners get 4x the
+          # per-check solver budget a dev laptop needs for the same crisp refutations.
+          VERIFY_Z3_TIMEOUT_MS: '8000'
       - name: TLC exhaustive models (rung 2)
         run: ./gradlew tlcCheck tlcTicket --no-daemon

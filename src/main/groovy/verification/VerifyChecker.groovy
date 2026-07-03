@@ -1937,7 +1937,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     @Override
     void setup() {
-        backend = new Z3Backend(2000)
+        // Per-check solver budget: 2s default, overridable via -Dverify.z3.timeoutMs / VERIFY_Z3_TIMEOUT_MS.
+        // Refute-direction VCs (model search) are hardware-speed sensitive — CI runners need more headroom
+        // than a dev laptop for the same crisp refutation.
+        String tmo = System.getProperty('verify.z3.timeoutMs', System.getenv('VERIFY_Z3_TIMEOUT_MS') ?: '2000')
+        backend = new Z3Backend(tmo.isInteger() ? tmo.toInteger() : 2000)
     }
 
     @Override

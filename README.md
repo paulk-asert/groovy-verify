@@ -439,9 +439,11 @@ regex, combiner, monadic, and purity checkers — each owning *shape* or *syntax
 
 ## Tool knobs
 
-Seven environment variables (`VERIFY_REFUTATION`, `VERIFY_SUGGEST`, `VERIFY_EXPLAIN`, `VERIFY_VERBOSE`,
-`VERIFY_CACHE_STATS`, `VERIFY_DUMP_SMT`, `VERIFY_PACKS`) tune what the checker *runs and reports* — never what a
-completed proof means; unset, the default path is byte-identical. Each is documented with worked examples in
+Eight environment variables (`VERIFY_REFUTATION`, `VERIFY_SUGGEST`, `VERIFY_EXPLAIN`, `VERIFY_VERBOSE`,
+`VERIFY_CACHE_STATS`, `VERIFY_DUMP_SMT`, `VERIFY_PACKS`, `VERIFY_Z3_TIMEOUT_MS`) tune what the checker
+*runs and reports* — never what a completed proof means; unset, the default path is byte-identical. (The
+timeout knob moves the prove/refute-vs-undecided boundary for *slower hardware* — CI sets it to 8000 —
+but an answer, once given, means the same thing at any budget.) Each is documented with worked examples in
 **[TOOLING.md](TOOLING.md)**.
 
 ## Encoding packs

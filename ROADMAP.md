@@ -9565,6 +9565,17 @@ ternary) and the property (`n.fizzBuzz` under a branch-pruning precondition). Sp
 `n % 3 == 0 && n % 5 == 0`. v1 scope, loud where it ends: `Integer` receivers, single-expression pure
 closure bodies, one parameter, same-class visibility.
 
+**CI hardening (post-209).** First CI run on slower iron surfaced the refute-direction speed sensitivity
+three ways: two crisp local refutations (dutch-flag `mid++`, showdown unique's over-strong claim) came
+back `solver: timeout`, and the fizzbuzz off-by-one refuted with a *different counterexample slot* than
+the pinned diagnostic text (`r[2] = "4"` vs the local `r[0] = "2"` — Z3's model choice is timing
+dependent). Fixes: the per-check solver budget is now a knob (`VERIFY_Z3_TIMEOUT_MS` /
+`-Dverify.z3.timeoutMs`, default 2000 — the eighth tool knob, documented in TOOLING.md with the
+boundary-not-meaning caveat; verified by teeth: a 1 ms budget flips a local refute to timeout), CI sets
+8000, and the fizzbuzz expectation pins the slot-naming *feature* (` — the spec requires "`) rather than
+a model-dependent slot. The `rat`-task three-letter-timezone warnings are upstream Apache RAT under
+JDK 25 — cosmetic, not actionable here.
+
 `P209 metaprogramming` (G284, 6 cases). README gains the dynamic-Groovy clarification — including the
 two-directions point: Groovy's type checking is extensible toward *stronger* checking (groovy-verify
 itself) and toward *selective relaxation* (typing visible dynamic code), and the pack does both at once.
