@@ -5379,10 +5379,61 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ok
     }
 
+    /** Collect every variable name mentioned in {@code e} into {@code into}. */
+    private static void collectVarNames(Expression e, Set<String> into) {
+        if (e == null) return
+        try {
+            e.visit(new CodeVisitorSupport() {
+                @Override void visitVariableExpression(VariableExpression v) { into.add(v.name) }
+            })
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * Phase 194 — demote-to-skip at the no-aliasing boundary (arrays). The model gives each array
+     * parameter its own store: sound per-array, but a store through one parameter with ANOTHER
+     * same-element-type array parameter read on the path (or in the postcondition) is proved under
+     * "they are distinct arrays" — unsound for aliased actuals (`f(x, x)`), and invisible to the runtime
+     * rung (its grid never aliases two actuals). Reads of the *stored* array itself stay sound (same
+     * name, exact store model); a same-type sibling that is never read is unaffected. Loud skip.
+     */
+    private static void guardArrayAliasHazard(MethodNode node, Path p, Expression postAst) {
+        Map<String, String> arrays = new LinkedHashMap<String, String>()   // array param -> element type
+        for (Parameter par : node.parameters) {
+            if (par.type != null && par.type.isArray()) arrays.put(par.name, par.type.componentType?.name)
+        }
+        if (arrays.size() < 2) return
+        Set<String> stored = new LinkedHashSet<String>()
+        for (Object st : p.steps) {
+            if (st instanceof ArrayStore && arrays.containsKey(((ArrayStore) st).arr)) stored.add(((ArrayStore) st).arr)
+        }
+        if (stored.isEmpty()) return
+        Set<String> mentioned = new HashSet<String>()
+        collectVarNames(postAst, mentioned)
+        collectVarNames(p.result, mentioned)
+        for (Object st : p.steps) {
+            if (st instanceof Assign) collectVarNames(((Assign) st).rhs, mentioned)
+            else if (st instanceof Guard) collectVarNames(((Guard) st).cond, mentioned)
+            else if (st instanceof ArrayStore) { collectVarNames(((ArrayStore) st).index, mentioned); collectVarNames(((ArrayStore) st).value, mentioned) }
+            else if (st instanceof LemmaCall) collectVarNames(((LemmaCall) st).call, mentioned)
+            else if (st instanceof AssertAssume) collectVarNames(((AssertAssume) st).cond, mentioned)
+        }
+        for (String pn : stored) {
+            for (Map.Entry<String, String> other : arrays.entrySet()) {
+                if (other.key != pn && other.value == arrays.get(pn) && mentioned.contains(other.key)) {
+                    throw new UnsupportedConstructException(
+                        "array parameters '${pn}' and '${other.key}' may alias — a store through '${pn}' " +
+                        "with '${other.key}' read on the path is modelled as independent (heap aliasing is a non-goal)")
+                }
+            }
+        }
+    }
+
     private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst,
                            List<Expression> classInvs) {
         SmtSession session = backend.session()
         try {
+            guardArrayAliasHazard(node, p, postAst)
             Encoder enc = mkEncoder(session)
             int ssaVersion = 0   // mints fresh versions for re-assigned names (SSA, see the Assign step)
 
@@ -6043,6 +6094,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String recvName = ((VariableExpression) recv).name
         if (!currentObjectParams.containsKey(recvName)) return false
         ClassNode recvType = currentObjectParams.get(recvName)
+
+        // Phase 194 — demote-to-skip at the no-aliasing boundary: with ANOTHER parameter of the same
+        // class in scope, the per-name havoc below misses the (possibly aliased) sibling — a field read
+        // through it after this call would be proved from stale pre-call state, unsound for f(x, x)
+        // actuals. The Phase 89 identity model covers field reads/writes but not call effects, and the
+        // runtime rung can never catch this (its grid never aliases two actuals). Throw, not `return
+        // false`: falling through to assumeCalleeEnsures would assume the callee's effects un-havocked.
+        for (Map.Entry<String, ClassNode> e : currentObjectParams.entrySet()) {
+            if (e.key != recvName && e.value?.name == recvType?.name) {
+                throw new UnsupportedConstructException(
+                    "call through '${recvName}' — parameter '${e.key}' of the same class may alias the receiver, " +
+                    "and the per-name field model would miss the shared mutation (heap aliasing is a non-goal)")
+            }
+        }
 
         // Step 1 — havoc every declared instance field of the receiver: rebind {@code b$field}
         // to a fresh SMT constant. Subsequent reads of {@code b.field} pick up the fresh value,

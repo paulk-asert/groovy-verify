@@ -8981,6 +8981,55 @@ Root suite **1495/0** (+7), runtime rung **559/578** clean / 0 need review, `exa
 
 ---
 
+## Phase 194 — alias demote-to-skip: the no-aliasing boundary made loud  *(shipped)*
+
+The last soundness item on the backlog. The project's no-aliasing assumption ("distinct parameter names
+denote distinct objects") is documented as the posture everything lives under — but *documented* is not
+*loud*: where the assumption is load-bearing, a proof silently held only for unaliased actuals. The probe
+confirmed two real unsound verifies:
+
+- **Arrays**: `@Requires({ …b[0] == 7 }) @Ensures({ result == 7 }) f(int[] a, int[] b) { a[0] = 5; return b[0] }`
+  — VERIFIED. Under `f(x, x)` the store changes `b[0]` and the method returns 5. The separate-arrays model
+  is exact per-array but blind across them.
+- **Cross-class calls**: `f(Counter b, Counter c) { b.incr(); return c.count }` with `@Requires({ c.count == 3 })`
+  `@Ensures({ result == 3 })` — the postcondition VERIFIED (Phase 45's per-name havoc rebinds `b$count`
+  only; an aliased `c` keeps its stale entry value).
+
+Neither is reachable by the runtime rung: its input grid instantiates each parameter independently, so
+aliased actuals never occur — precisely the class of hole a differential oracle structurally misses, and
+why the demotion has to be static.
+
+**The gates** (both loud skips naming the parameters involved):
+
+- `guardArrayAliasHazard` at `checkPath`'s top: ≥2 same-element-type array parameters + an `ArrayStore`
+  through one + the *other* mentioned anywhere on the path (steps, result, postcondition) → skip. The
+  mention-refinement keeps the sound shapes verifying: reads of the **stored array itself** are exact
+  (same name, same store), and store-free two-array methods are alias-consistent (an aliased actual
+  simply satisfies both preconditions or neither).
+- `applyCrossClassCall` **throws** (rather than returning false) when another parameter shares the
+  receiver's class — falling through to `assumeCalleeEnsures` would have assumed the callee's effects
+  entirely un-havocked, worse than the hole being closed.
+
+Phase 89's identity-modelled field reads/writes (the surface *designed* for two same-class receivers) are
+untouched — the demotion covers exactly the surfaces the identity model does not.
+
+`P194 alias demote` (G271, 4 cases): the two demotions pinned with their unsound-shape sources, plus the
+two survival teeth. **Zero regressions** across the 1495-case corpus — no existing case leaned on either
+shape, which is itself evidence the posture was honest in practice and the holes were latent, not load-bearing
+in the galleries.
+
+Honest residuals: (a) the implicit-obligation replays (`dischargeVfObligation`'s call framing) carry a
+narrower version of the cross-receiver exposure — an obligation proved from a stale sibling field after a
+cross-class call; (b) an *assigned* cross-class call (`x = b.get()`) routes through `assumeCalleeEnsures`,
+which doesn't model cross-class receiver effects at all (pre-existing known limit, now adjacent to a loud
+boundary); (c) array aliasing through non-parameter references (fields, locals aliased to params) is out of
+scope — the fragment's arrays are parameters.
+
+Root suite **1499/0** (+4), runtime rung **561/580** clean / 0 need review, `examples-dsl` green, docLint
+**0 drift** (271/271 groups).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
