@@ -433,10 +433,12 @@ The derivation goes one round deeper still: with processes nameable (the any-N i
 the holder is scheduled at its round's time (`schedF(vF(j)) == hF(j)`), the step implication says a
 scheduled holder's `Leave` advances `serving`, and the trace loop chains the modus ponens per round
 (`advanceDerived`), with the full `holderEats` composition taking a `Hungry` waiter at any measure to
-`Eating`. What remains beyond the fragment is deriving the *step implication itself* from the transition
-system, which needs the time×process state `cs(i, r)` — a two-argument function; `BiFunction.apply` is
-outside the fragment today (pinned by a boundary case), and a 2-ary apply UF would be the natural
-Phase-173 move one arity up.
+`Eating`. Deriving the *step implication itself* from the transition system needs the time×process state
+`cs(i, r)` — a two-argument function, expressible since the 2-ary apply landed (`BiFunction.apply` as a
+two-argument UF, with the `cs(i, r)` shorthand): the full-system frame lemma — recursion over a window
+whose per-step hypothesis frames *all N processes* via a nested `every` — already proves on it. What
+remains is proof engineering on that rail: spelling the lock's transition relation over `cs(i, r)` and
+deriving the step implication as a theorem.
 
 **Any-N safety.** The same move closes the safety side's bounded-process scope: processes int-indexed
 `0..<N` with `N` symbolic, `cs`/`t` as functions, and `valid` in Leino's own quantified spelling — the

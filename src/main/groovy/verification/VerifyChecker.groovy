@@ -302,6 +302,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             combiners          : currentCombiners,
             carrierTypes       : currentCarrierTypes,
             functionReturnTypes: currentFunctionReturnTypes,
+            biFunctionReturnTypes: currentBiFunctionReturnTypes,
             atomicNames        : currentAtomicNames))
     }
 
@@ -377,6 +378,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static Map<String, ClassNode> collectFunctionReturnTypes(MethodNode node) {
         ContractNormalizer.functionReturnTypes(node)
     }
+
+    private Map<String, ClassNode> currentBiFunctionReturnTypes = new HashMap<String, ClassNode>()
 
     /** {@code E} from an `@Ensures` of the shape `result == E` (either order), else null. */
     private static Expression equationalEnsuresRhs(Expression ens) {
@@ -1921,6 +1924,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentCombiners = collectCombiners(node)
         currentCarrierTypes = collectCarrierTypes(node)
         currentFunctionReturnTypes = collectFunctionReturnTypes(node)
+        currentBiFunctionReturnTypes = ContractNormalizer.biFunctionReturnTypes(node)
         currentDecimalNames = collectDecimalNames(node)
         currentFpNames = collectFpNames(node)
         currentBooleanLocals = collectBooleanLocals(node)
@@ -7624,7 +7628,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // uninterpreted `apply$<name>` symbol. Alias the formal to the named actual so the callee's
                 // quantified @Requires over `g` translates onto the CALLER's `apply$csAF` facts (lemma reuse
                 // without name-aligning the formals).
-                if (formals[i].type?.name == 'java.util.function.Function' &&
+                if ((formals[i].type?.name == 'java.util.function.Function' ||
+                        formals[i].type?.name == 'java.util.function.BiFunction') &&
                         argExprs[i] instanceof VariableExpression) {
                     enc.aliasFunction(formals[i].name, ((VariableExpression) argExprs[i]).name)
                 }
@@ -8398,7 +8403,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 185 — alias a Function-typed formal to its named actual, so the callee's @Ensures over
             // `g.apply(…)` is assumed onto the caller's own `apply$<actual>` symbol (the other half of the
             // lemma-reuse bridge; see the @Requires-discharge twin).
-            if (ft?.name == 'java.util.function.Function' && actuals.get(i) instanceof VariableExpression) {
+            if ((ft?.name == 'java.util.function.Function' || ft?.name == 'java.util.function.BiFunction') &&
+                    actuals.get(i) instanceof VariableExpression) {
                 enc.aliasFunction(formals[i].name, ((VariableExpression) actuals.get(i)).name)
             }
         }

@@ -9225,6 +9225,39 @@ docLint **0 drift** (104/104 links, 274/274 groups), full `check` green.
 
 ---
 
+## Phase 200 — the 2-ary apply: time×process trace state expressible  *(shipped)*
+
+The engine capability Phase 199 named as the single blocker, built as designed — the Phase-173 move one
+arity up.
+
+**Engine (small, symmetric with the unary machinery):**
+- `Encoder.tmcSamApply` gains the 2-argument branch: `g.apply(a, b)` (or the resolved body-side
+  `g.call(a, b)`) on a `BiFunction`-typed formal models as `applyUF('apply2$' + name, [a, b], range)` over
+  the arguments' natural sorts — Int-like ranges only, matching the trace fragment.
+- `ContractNormalizer` collects `biFunctionFormalNames`/`biFunctionReturnTypes` (the 3rd generic of
+  `BiFunction<A,B,R>`), and the SAM rewriter is arity-aware: the contract shorthand `cs(i, r)` normalises
+  to `cs.apply(i, r)` exactly as the unary form does.
+- `TypeEnvironment.biFunctionReturnTypes` carries the scope; both Phase-185 aliasing sites (the
+  `@Requires`-discharge formals loop and `assumeCalleeEnsures`) extend to BiFunction formals, so 2-ary
+  lemmas are reusable under renamed formals.
+
+**The payoff, first-run verified**: the **full-system frame lemma** — recursion over a time window whose
+per-step hypothesis is a nested `every` framing *all N processes* at once
+(`(n..<u).every { i -> (0..<N).every { r -> cs.apply(i+1, r) == cs.apply(i, r) } }`), concluding any single
+cell unchanged end-to-end. That is the `GetNextStep` shape over whole-system state — the read path the
+step-implication-as-theorem construction needs. Teeth: a hole in the frame (only processes below `p`
+framed) refutes; distinct cells stay independent (congruence is not confusion). The `P199` boundary case
+flipped from `expect: 'outside fragment'` to a congruence verify, with its comment recording the closure.
+
+`P200 two-arg trace` (G275, 5 cases). With this, the KRML260 arc has **no engine gap left**: what remains —
+spelling the lock's transition relation over `cs(i, r)` and deriving the Phase-199 step implication as a
+theorem of the system — is proof engineering on rails that all exist, none of it blocked.
+
+Root suite **1521/0** (+5, and the flipped boundary), runtime rung **561/580** clean, `examples-dsl` green,
+docLint **0 drift** (104/104 links, 275/275 groups), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

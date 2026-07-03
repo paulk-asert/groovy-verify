@@ -22,7 +22,7 @@ import static cases.CaseDsl.*
 class G274_p199_holder_witness {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The KRML260 capstone composition: each liveness round\'s serving-advance is DERIVED, not hypothesized — the round holder hF(j) (nameable since the any-N int indexing) is scheduled at vF(j) by per-round fairness, and the scheduled holder\'s Leave advances serving (the step implication); the trace loop chains the modus ponens per round, and the full holderEats composition takes a waiter at any measure k to Eating. Teeth: an unscheduled holder breaks the derivation; a missing final fairness witness breaks the composition. The remaining construction is pinned as a boundary case: the full time-by-process state needs a two-argument function (BiFunction apply), which skips loudly today.'
+    static final String DESCRIPTION = 'The KRML260 capstone composition: each liveness round\'s serving-advance is DERIVED, not hypothesized — the round holder hF(j) (nameable since the any-N int indexing) is scheduled at vF(j) by per-round fairness, and the scheduled holder\'s Leave advances serving (the step implication); the trace loop chains the modus ponens per round, and the full holderEats composition takes a waiter at any measure k to Eating. Teeth: an unscheduled holder breaks the derivation; a missing final fairness witness breaks the composition. The two-argument-state boundary this group once pinned closed in Phase 200 (the 2-ary apply UF); the former skip probe is kept as its congruence verify.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — abstract-carrier laws: higher-order/monadic shapes beyond the grid'
@@ -154,10 +154,10 @@ class G274_p199_holder_witness {
                             frame(csAF, tAF, n, w)
                         }
                     }''')],
-        // The boundary, pinned: the construction beyond this — deriving the STEP IMPLICATION itself from
-        // the full transition system — needs the time-by-process state cs(i, r), a two-argument function.
-        // BiFunction.apply is outside the fragment today; this pins the loud skip.
-        [group: 'P199 holder witness', name: 'two-argument trace state skips loudly (the boundary)', expect: 'outside fragment',
+        // The boundary that WAS here — BiFunction.apply outside the fragment — fell in Phase 200: the
+        // 2-ary apply UF models csT.apply(i, r), so the time-by-process state is expressible. The former
+        // loud-skip probe is now the congruence verify (see the P200 two-arg trace group for the payoff).
+        [group: 'P199 holder witness', name: 'two-argument trace state verifies (boundary closed in P200)', ok: true,
          src: HDR + 'import java.util.function.BiFunction\n' +
               "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
               '''class TwoArg {

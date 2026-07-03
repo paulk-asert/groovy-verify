@@ -261,6 +261,7 @@ class Encoder implements TheoryApi {
     /** Phase C — declared return type of a {@code Function}-typed parameter (its second generic), so {@code
      *  f.apply(x)} can range over the right sort (e.g. a bind function returns the carrier). */
     private final Map<String, ClassNode> functionReturnTypes
+    private final Map<String, ClassNode> biFunctionReturnTypes
 
     /** Phase 185 — call-site function aliasing: a Function-typed FORMAL name → the ACTUAL argument's
      *  name. Registered by the checker when discharging a callee @Requires / assuming a callee @Ensures
@@ -329,6 +330,7 @@ class Encoder implements TheoryApi {
         this.combiners = env.combiners
         this.carrierTypes = env.carrierTypes
         this.functionReturnTypes = env.functionReturnTypes
+        this.biFunctionReturnTypes = env.biFunctionReturnTypes
         this.atomicNames = env.atomicNames
     }
 
@@ -5217,7 +5219,22 @@ class Encoder implements TheoryApi {
         // re-parsed pre-resolution, are normalised to `f.apply(x)` by ContractNormalizer instead). Gated on
         // a KNOWN Function-typed formal so an ordinary Closure.call() is never hijacked.
         boolean samCall = (m == 'call' && recv instanceof VariableExpression &&
-            functionReturnTypes.containsKey(fnName(((VariableExpression) recv).name)))
+            (functionReturnTypes.containsKey(fnName(((VariableExpression) recv).name)) ||
+             biFunctionReturnTypes.containsKey(fnName(((VariableExpression) recv).name))))
+        // Phase 200 — the 2-ary twin: `g.apply(a, b)` (or the shorthand `g(a, b)`) on a BiFunction-typed
+        // formal models as a two-argument UF `apply2$g(a, b)` over the arguments' natural sorts. This is
+        // what makes a time-by-process trace state `cs(i, r)` expressible — the Phase-173 move one arity
+        // up. Int-like ranges only (the trace fragment); other ranges keep the loud skip.
+        if ((m == 'apply' || samCall) && args.size() == 2 && recv instanceof VariableExpression) {
+            String rn2 = fnName(((VariableExpression) recv).name)
+            ClassNode brt = biFunctionReturnTypes.get(rn2)
+            if (brt != null && isIntLikeType(brt)) {
+                Object a0 = translate(args.get(0))
+                Object a1 = translate(args.get(1))
+                if (a0 != null && a1 != null) return session.applyUF('apply2$' + rn2, [a0, a1], sortFor(brt))
+            }
+            return NO_MATCH
+        }
         if ((m == 'apply' || samCall) && args.size() == 1 && recv instanceof VariableExpression) {
             String rn = fnName(((VariableExpression) recv).name)   // call-site alias: formal → actual (Phase 185)
             ClassNode frt = functionReturnTypes.get(rn)

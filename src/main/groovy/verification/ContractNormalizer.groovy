@@ -74,19 +74,19 @@ class ContractNormalizer {
      *  rebuilt). Null-safe on both arguments. */
     static Expression normalize(Expression e, MethodNode m) {
         if (e == null || m == null) return e
-        normalize(e, functionFormalNames(m), enumDomainSizes(m.declaringClass))
+        normalize(e, functionFormalNames(m), biFunctionFormalNames(m), enumDomainSizes(m.declaringClass))
     }
 
     /** Normalise a freshly re-parsed <b>class-level</b> contract (a class {@code @Invariant}) of
      *  {@code context}: no method scope, so only the class-scope rewrites (the enum-count fold) apply. */
     static Expression normalize(Expression e, ClassNode context) {
         if (e == null || context == null) return e
-        normalize(e, Collections.<String> emptySet(), enumDomainSizes(context))
+        normalize(e, Collections.<String> emptySet(), Collections.<String> emptySet(), enumDomainSizes(context))
     }
 
-    private static Expression normalize(Expression e, Set<String> fns, Map<String, Integer> enums) {
-        if (fns.isEmpty() && enums.isEmpty()) return e
-        new SamRewriter(fns, enums).transform(e)
+    private static Expression normalize(Expression e, Set<String> fns, Set<String> biFns, Map<String, Integer> enums) {
+        if (fns.isEmpty() && biFns.isEmpty() && enums.isEmpty()) return e
+        new SamRewriter(fns, biFns, enums).transform(e)
     }
 
     /** Enum classes visible from {@code context}'s module, mapped from simple name (and
@@ -141,6 +141,32 @@ class ContractNormalizer {
         out
     }
 
+    /** Names of {@code java.util.function.BiFunction}-typed formals — the 2-ary rewrite scope (Phase 200);
+     *  same unresolved-name tolerance as {@link #functionFormalNames}. */
+    static Set<String> biFunctionFormalNames(MethodNode m) {
+        Set<String> out = new HashSet<String>()
+        Parameter[] ps = m.parameters
+        if (ps != null) for (Parameter p : ps) {
+            String tn = p.type?.name
+            if (tn == 'java.util.function.BiFunction' || tn == 'BiFunction') out.add(p.name)
+        }
+        out
+    }
+
+    /** {@code BiFunction}-typed formals → declared return type (the 3rd generic of {@code BiFunction<A,B,R>});
+     *  raw {@code BiFunction} omitted. The 2-ary twin of {@link #functionReturnTypes} (Phase 200). */
+    static Map<String, ClassNode> biFunctionReturnTypes(MethodNode m) {
+        Map<String, ClassNode> out = new HashMap<String, ClassNode>()
+        Parameter[] ps = m.parameters
+        if (ps != null) for (Parameter p : ps) {
+            ClassNode t = p.type
+            if (t == null || t.name != 'java.util.function.BiFunction') continue
+            GenericsType[] g = t.genericsTypes
+            if (g != null && g.length == 3 && g[2]?.type != null) out.put(p.name, g[2].type)
+        }
+        out
+    }
+
     /** {@code Function}-typed formals → declared return type (the 2nd generic of {@code Function<A, R>}),
      *  so the encoder can sort {@code f.apply(x)}'s result; raw {@code Function} is omitted (default value
      *  sort). Pure function of the signature — shared by {@code VerifyChecker}'s scope collection. */
@@ -160,9 +186,11 @@ class ContractNormalizer {
      *  their statements' expressions in place — sound because the whole tree is a fresh, unshared parse. */
     private static class SamRewriter implements ExpressionTransformer {
         private final Set<String> fnNames
+        private final Set<String> biFnNames
         private final Map<String, Integer> enumSizes
-        SamRewriter(Set<String> fnNames, Map<String, Integer> enumSizes) {
+        SamRewriter(Set<String> fnNames, Set<String> biFnNames, Map<String, Integer> enumSizes) {
             this.fnNames = fnNames
+            this.biFnNames = biFnNames
             this.enumSizes = enumSizes
         }
 
@@ -190,7 +218,9 @@ class ContractNormalizer {
                 boolean implicitThis = mce.isImplicitThis() ||
                     (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')
                 String name = mce.methodAsString
-                if (implicitThis && name != null && fnNames.contains(name) && args != null && args.size() == 1) {
+                boolean samShape = args != null && ((fnNames.contains(name) && args.size() == 1) ||
+                                                     (biFnNames.contains(name) && args.size() == 2))
+                if (implicitThis && name != null && samShape) {
                     MethodCallExpression apply = new MethodCallExpression(
                         new VariableExpression(name), 'apply', transform(mce.arguments))
                     apply.implicitThis = false

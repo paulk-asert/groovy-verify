@@ -86,6 +86,9 @@ class TypeEnvironment {
     /** {@code Function}-typed names → declared return type (2nd generic), for {@code f.apply}'s range (Phases 133/173). */
     final Map<String, ClassNode> functionReturnTypes = new HashMap<String, ClassNode>()
 
+    /** {@code BiFunction}-typed formals → declared return type — the 2-ary apply's range sort (Phase 200). */
+    final Map<String, ClassNode> biFunctionReturnTypes = new LinkedHashMap<String, ClassNode>()
+
     /** Names modelled as atomic int cells — {@code AtomicInteger}/{@code AtomicLong} fields (Phase 162). */
     final Set<String> atomicNames = new HashSet<String>()
 }
