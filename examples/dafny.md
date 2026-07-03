@@ -393,9 +393,40 @@ bound = at most one iteration), so no unbounded trace loop is needed.
 
 Safety in both of the paper's formulations, the ranking function, bounded bypass, and the **full two-process
 fair-schedule eventually-eats** — base case *and* the measure-1 reduction — verify structure-for-structure with
-the paper: Leino's KRML260 development, reproduced end to end for the two-process lock. Only the general any-N
-form remains beyond it — the trace loop itself (recursion over a symbolic number of reductions) plus an
-unbounded `∀i:nat` `IsTrace` hypothesis.
+the paper: Leino's KRML260 development, reproduced end to end for the two-process lock.
+
+**The any-N trace loop.** What is specific to two processes above is only the ≤ 1 measure bound, which turned
+Leino's `Liveness` loop into a two-case split. The loop itself also proves, for a **symbolic** measure `k` —
+hence any process count:
+
+<!-- doclint:case p197-any-n-liveness/advanceto-the-trace-loop-over-symbolic-rounds -->
+```groovy
+@Requires({ vF != null && servingF != null && 0 <= m && m <= k &&
+    (0..<k).every { int j -> vF(j) + 1 <= vF(j + 1) } &&
+    (0..<k).every { int j -> servingF(vF(j) + 1) == servingF(vF(j)) + 1 } &&
+    (0..<k).every { int j -> (vF(j) + 1..<vF(j + 1)).every { int i -> servingF(i + 1) == servingF(i) } } })
+@Ensures({ servingF(vF(m)) == servingF(vF(0)) + m })
+@Decreases({ m })
+static void advanceTo(Function<Integer,Integer> vF, Function<Integer,Integer> servingF, int k, int m) {
+    if (m > 0) {
+        advanceTo(vF, servingF, k, m - 1)
+        stableServing(servingF, vF(m - 1) + 1, vF(m))
+    }
+}
+```
+
+`advanceTo` is the trace loop: recursion over a symbolic number of serving-advance rounds (`@Decreases m`),
+where the per-round window facts arrive as a **nested bounded quantifier** — an `every` over
+witness-function bounds inside an `every` over rounds — instantiated at `j = m − 1` on each step to feed the
+window lemma. A companion `reduceMeasureK` does the k-fold measure descent (a waiter framed across a window
+in which `serving` advanced `k` times lands at measure 0 — pure arithmetic once framing holds), and the
+composition chains it into the Phase-174 base case: a waiter at **any** measure `k` reaches `Eating`. The
+teeth hold at both ends: one advance short and the reduction refutes; a round that fails to advance
+`serving` and the trace loop's walk refutes. The hypotheses keep the development's skolemized-witness
+posture — the advance times `vF(j)` are supplied as witnesses, exactly as the two-process lemmas take
+scheduled times; what remains beyond the fragment is *deriving* each round's advance from the holder's own
+`Enter`/`Leave` under fairness, which needs the holder's identity per round — reasoning over the
+uninterpreted `set<Process>` domain that the safety section already names as out of the fragment.
 
 **The rung-2 companion.** Because the artifact here is a *model* of the protocol — in either formulation —
 rather than a threaded implementation, its natural second rung is a **model checker**, not a stress test. [`src/tlc/Ticket.tla`](../src/tlc/Ticket.tla)
@@ -404,6 +435,6 @@ interleaving at N = 3 (179 states): mutual exclusion, the same strengthened `val
 fair-schedule `Hungry ~> Eating` all hold; a broken-dispenser variant prints the two-processes-Eating trace.
 That does three things the proof can't: it **validates the frame/fairness facts the liveness proof assumes**
 (TLC derives them from the transition system rather than taking them as `@Requires`), it **reaches N = 3** where
-the symbolic proof is two-process-bounded, and it confirms the invariant exhaustively — the "two independent
+the symbolic liveness composition is witness-parameterised, and it confirms the invariant exhaustively — the "two independent
 methods, one artifact" pairing (see [`CONCURRENCY.md`](../CONCURRENCY.md) rung 2).
 

@@ -9105,6 +9105,47 @@ Root suite **1500/0**, runtime rung **561/580** clean / 0 need review (byte-iden
 
 ---
 
+## Phase 197 — the any-N trace loop: the recorded wall fell to probing  *(shipped)*
+
+The frontier Phase 175 left open — "the general any-N case would need the trace loop itself (recursion over
+a symbolic number of reductions) plus an unbounded `∀i:nat` `IsTrace` hypothesis" — and the fourth time
+probe-first restructured a slice: **both halves of the recorded wall were softer than recorded, and the
+whole thing proves with zero engine changes.**
+
+- **The "unbounded `∀i:nat`" hypothesis is unnecessary.** The per-round trace facts fit in *bounded*
+  quantifiers over symbolic bounds — including the shape the arc had never tried: a **nested** bounded
+  quantifier, an `every` over witness-function window bounds inside an `every` over rounds
+  (`(0..<k).every { j -> (vF(j)+1..<vF(j+1)).every { i -> … } }`). The load-bearing probe (an inner-window
+  equality proved *from* the nested fact) verified on the first run.
+- **The trace loop proves.** `advanceTo` — recursion over the round prefix (`@Decreases m`), each step
+  instantiating the nested hypothesis at `j = m−1` to discharge `stableServing`'s window `@Requires` — is
+  exactly the "recursion over a symbolic number of reductions", and the Phase-173 apply machinery carries
+  it. The only diagnostics on the first attempt were honest NPE obligations on the body's function
+  applications (fixed with `!= null` guards in the `@Requires`, a real crash possibility).
+- **The measure descent is arithmetic, not iteration.** Once framing holds and the `k` serving-advances
+  are witnessed (`servingF(u) == servingF(n) + k`), measure 0 at `u` is linear arithmetic
+  (`reduceMeasureK` — frame + one subtraction), and the composition into the Phase-174 base case gives:
+  **a waiter at any measure `k` — hence any process count `N` — reaches `Eating`.** What was specific to
+  two processes (the ≤ 1 bound making liveness a two-case split) is gone.
+
+**Honest scope, same posture as the whole arc**: the hypotheses are skolemized witnesses — the advance
+times `vF(j)`, exactly as Phases 174/175 take scheduled times `u` and the advance `servingF(v+1) ==
+servingF(v)+1` as `@Requires` facts. What remains beyond the fragment is *deriving* each round's advance
+from the round-holder's own `Enter`/`Leave` under fairness, which needs the holder's **identity** per round
+— reasoning over the uninterpreted `set<Process>` domain the Phase-170 safety section already scoped out.
+That, plus the N-process generalisation of bounded bypass (measure < N), is the remaining edge; the trace
+loop and the composition no longer are.
+
+`P197 any-N liveness` (G272, 5 cases): the k-fold reduction + base-case composition (symbolic `k`), its
+one-advance-short refutation, the pinned load-bearing nested quantifier, `advanceTo` itself, and its
+non-advancing-round refutation. `examples/dafny.md` gains the any-N block (doclint-linked to the trace
+loop); the Phase-175 CAPABILITIES tail now points here.
+
+Root suite **1505/0** (+5), runtime rung **561/580** clean (the group is declared Tier C — trace functions
+have no grid arm), docLint **0 drift** (103/103 links, 272/272 groups), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
