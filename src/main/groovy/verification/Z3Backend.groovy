@@ -589,51 +589,6 @@ class Z3Session implements SmtSession {
         ctx.mkApp(prodFn, (Expr) arr, (Expr) lo, (Expr) hi)
     }
 
-    private FuncDecl fibFn
-    @Override
-    Object fib(Object k) {
-        if (fibFn == null) {
-            fibFn = ctx.mkFuncDecl('fib$', [ctx.getIntSort()] as Sort[], ctx.getIntSort())
-        }
-        ctx.mkApp(fibFn, (Expr) k)
-    }
-
-    private FuncDecl tribFn
-    @Override
-    Object trib(Object k) {
-        if (tribFn == null) {
-            tribFn = ctx.mkFuncDecl('trib$', [ctx.getIntSort()] as Sort[], ctx.getIntSort())
-        }
-        ctx.mkApp(tribFn, (Expr) k)
-    }
-
-    private FuncDecl tetraFn
-    @Override
-    Object tetra(Object k) {
-        if (tetraFn == null) {
-            tetraFn = ctx.mkFuncDecl('tetra$', [ctx.getIntSort()] as Sort[], ctx.getIntSort())
-        }
-        ctx.mkApp(tetraFn, (Expr) k)
-    }
-
-    private FuncDecl gcdFn
-    @Override
-    Object gcd(Object a, Object b) {
-        if (gcdFn == null) {
-            gcdFn = ctx.mkFuncDecl('gcd$', [ctx.getIntSort(), ctx.getIntSort()] as Sort[], ctx.getIntSort())
-        }
-        ctx.mkApp(gcdFn, (Expr) a, (Expr) b)
-    }
-
-    private FuncDecl lcmFn
-    @Override
-    Object lcm(Object a, Object b) {
-        if (lcmFn == null) {
-            lcmFn = ctx.mkFuncDecl('lcm$', [ctx.getIntSort(), ctx.getIntSort()] as Sort[], ctx.getIntSort())
-        }
-        ctx.mkApp(lcmFn, (Expr) a, (Expr) b)
-    }
-
     private FuncDecl powFn
     @Override
     Object pow(Object base, Object exp) {

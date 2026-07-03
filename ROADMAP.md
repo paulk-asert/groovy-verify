@@ -8694,6 +8694,53 @@ soundness both polarities, `put()` form, field invariants, `old.`, loops, and th
 
 ---
 
+## Phase 187 — extensible encodings, slice 1: the `EncodingPack` SPI + the number-theory pack  *(shipped — experimental)*
+
+The start of the extensibility arc: a standard way to plug domain encodings in, so new domains arrive as
+self-describing packs rather than more lines in the core encoder. The boundary is principled — **packs model
+library/domain vocabularies; the core models the language** (ints, arrays, operators, closures, `String`
+theory stay in the `Encoder`).
+
+**The SPI (deliberately minimal — call recognisers + axioms; grown demand-driven):**
+
+- **`EncodingPack`** — `name()` + `translateCall(api, mce, m, recv, args)`, with the registry's exact
+  tri-state convention: `NO_MATCH` (guard didn't fire → dispatch continues), `null` (matched but honestly
+  untranslatable → the whole dispatch aborts to a loud skip), or the SMT handle. The sentinel's canonical
+  home moved to `TheoryApi`, so packs and the 30 built-in handlers share the identical object.
+- **`TheoryApi`** — the curated facade packs program against (implemented by the per-VC `Encoder`): the
+  `SmtSession`, `translate`/`translateInSort`, `axiomsOnce(key)` (the per-VC mint-once gate, matching the
+  engine's own primitives), and the `receiverIsClass` helper for the three receiver spellings
+  (unresolved import / re-parsed FQN / resolved `ClassExpression`). Packs never see `Encoder` internals —
+  the facade is the stability contract, and its javadoc carries the soundness obligations (verify+refute
+  corpus per capability; namespaced UF symbols).
+- **`PackRegistry`** — `ServiceLoader` discovery (`META-INF/services/verification.EncodingPack`, the same
+  mechanism that registers the contract transform), name-sorted deterministic order, per-provider failure
+  containment (a broken pack degrades to loud skips for its vocabulary, not a bricked compile). The encoder
+  dispatches packs at a fixed registry slot: after the core scalar/aggregation forms, before the collection
+  oracles — exactly where the migrated built-ins sat, so the move is order-preserving.
+
+**First pack: `NumberTheoryPack`** — the `Fib`/`Trib`/`Tetra`/`Gcd`/`Lcm` spec helpers, migrated wholesale.
+The instructive finding: the pack needs **no backend-specific API at all** — the bespoke
+`SmtSession.fib/trib/tetra/gcd/lcm` methods were just lazily-created named UFs, i.e. exactly what the generic
+`applyUF(name, args, sort)` already does, so they are **retired** from `SmtBackend`/`Z3Backend` and the pack
+mints the same `fib$` … `lcm$` symbols generically (identical emitted SMT). The encoder-side `fibOf…lcmOf`
+primitives and their mint-once flags are deleted; the old `tmcSpecHelpers` handler shrinks to
+`tmcSetsCardinality` (the `Sets.boundedBy`/`boundedCount` core primitives, which are language-level set
+cardinality, not a domain pack).
+
+**Verification is the deletion itself**: with the old paths gone, the pre-existing corpus groups
+(`P55 fib`, `P63 fibfib`, `P46 fib4`, `HE013 gcd`, `P-lcm` — verify *and* refute twins) can only pass through
+the SPI — and all do, unchanged. The architecture-map lint enforced documentation of the four new sources on
+first run (working as designed). Root suite **1475/0** (unchanged), runtime rung **553/571** clean, docLint
+**0 drift** (37/37 sources mapped).
+
+**Next slices** (the assessment's plan): slice 2 migrates the JSR 385/units domain — the motivating case,
+which will force the facade to grow property/operator recognisers, scope collection, and rendering hooks
+demand-driven; slice 3 is the contract (`PACKS.md`, pack-provided case corpora, catalog provenance, and a
+`packs:` parameterised-extension override alongside ServiceLoader).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

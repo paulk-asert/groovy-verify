@@ -258,45 +258,6 @@ interface SmtSession extends AutoCloseable {
     Object strConcatRange(Object arr, Object lo, Object hi)
 
     /**
-     * The Fibonacci function {@code fib(k)} — an uninterpreted {@code Int -> Int}. Meaning from the base
-     * ({@code fib(0)==0}, {@code fib(1)==1}) and step ({@code ∀k. k>=2 ⟹ fib(k)==fib(k-1)+fib(k-2)})
-     * axioms the caller asserts (mint-once, globally). Recognised from the {@code Fib.of(i)} helper.
-     */
-    Object fib(Object k)
-
-    /**
-     * The tribonacci-style function {@code trib(k)} — an uninterpreted {@code Int -> Int} (HumanEval 063
-     * {@code fibfib}). Meaning from base ({@code trib(0)==0}, {@code trib(1)==0}, {@code trib(2)==1}) and
-     * step ({@code ∀k. k>=3 ⟹ trib(k)==trib(k-1)+trib(k-2)+trib(k-3)}) axioms the caller asserts
-     * (mint-once, globally). Recognised from the {@code Trib.of(i)} helper — the three-term sibling of {@code fib}.
-     */
-    Object trib(Object k)
-
-    /**
-     * The fib4 / tetranacci-style function {@code tetra(k)} — an uninterpreted {@code Int -> Int} (HumanEval 046
-     * {@code fib4}). Meaning from base ({@code tetra(0)==0}, {@code tetra(1)==0}, {@code tetra(2)==2},
-     * {@code tetra(3)==0}) and step ({@code ∀k. k>=4 ⟹ tetra(k)==tetra(k-1)+tetra(k-2)+tetra(k-3)+tetra(k-4)})
-     * axioms the caller asserts (mint-once, globally). Recognised from {@code Tetra.of(i)} — the four-term sibling.
-     */
-    Object tetra(Object k)
-
-    /**
-     * The greatest-common-divisor function {@code gcd(a, b)} — an uninterpreted {@code (Int, Int) -> Int}
-     * (HumanEval 013 {@code greatest_common_divisor}). Meaning from Euclid's base ({@code ∀x. gcd(x, 0)==x})
-     * and step ({@code ∀x,y. y!=0 ⟹ gcd(x, y)==gcd(y, x % y)}) axioms the caller asserts (mint-once,
-     * globally). Recognised from the {@code Gcd.of(a, b)} helper — the two-argument sibling of {@code fib}.
-     */
-    Object gcd(Object a, Object b)
-
-    /**
-     * The least-common-multiple function {@code lcm(a, b)} — an uninterpreted {@code (Int, Int) -> Int}.
-     * Meaning from the caller's base ({@code ∀a. lcm(a,0)==0}, {@code ∀b. lcm(0,b)==0}) and the fundamental
-     * identity {@code ∀a,b. lcm(a,b) * gcd(a,b) == a * b} axioms (so it composes with {@link #gcd}).
-     * Recognised from the {@code Lcm.of(a, b)} helper.
-     */
-    Object lcm(Object a, Object b)
-
-    /**
      * Integer exponentiation {@code base ** exp} — an uninterpreted {@code (Int, Int) -> Int}. Z3 has no
      * variable-exponent power in its arithmetic theory, so this carries no value axioms: two applications
      * with the same {@code (base, exp)} share the term (congruence), so {@code result == base ** exp}

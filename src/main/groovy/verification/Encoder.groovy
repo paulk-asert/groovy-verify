@@ -102,7 +102,7 @@ import org.codehaus.groovy.syntax.Types
  *   - quantifiers
  */
 @CompileStatic
-class Encoder {
+class Encoder implements TheoryApi {
 
     final SmtSession session
     /** Variable name in source scope -> SMT handle. */
@@ -3517,161 +3517,6 @@ class Encoder {
         n == 'double' || n == 'java.lang.Double'
     }
 
-    /** Whether fib's defining axioms have been asserted (mint-once — fib is one global function). */
-    private boolean fibConstrained = false
-
-    /**
-     * The Fibonacci function {@code fib(k)}, asserting its defining axioms the first time it is seen:
-     * base {@code fib(0)==0} / {@code fib(1)==1}, step {@code ∀k. k>=2 ⟹ fib(k)==fib(k-1)+fib(k-2)}.
-     * The step (triggered on {@code fib(k)}) is what preserves a generation invariant {@code b ==
-     * Fib.of(i+1)} across {@code b = a + b}: at {@code i+2} it e-matches to {@code fib(i+2) ==
-     * fib(i+1) + fib(i)}, exactly the body's update (a congruence, not a fresh nonlinearity).
-     */
-    Object fibOf(Object kH) {
-        if (!fibConstrained) {
-            fibConstrained = true
-            Object zero = session.intLit(0L), one = session.intLit(1L), two = session.intLit(2L)
-            session.assertExpr(session.eq(session.fib(zero), zero))
-            session.assertExpr(session.eq(session.fib(one), one))
-            Object k = session.boundIntVar('fib$k' + (quantCounter++))
-            Object term = session.fib(k)
-            Object rhs = session.plus(session.fib(session.minus(k, one)), session.fib(session.minus(k, two)))
-            session.assertExpr(session.forall([k], session.implies(session.ge(k, two), session.eq(term, rhs)), [term]))
-        }
-        session.fib(kH)
-    }
-
-    /** Whether trib's defining axioms have been asserted (mint-once — trib is one global function). */
-    private boolean tribConstrained = false
-    private boolean gcdConstrained = false
-    private boolean lcmConstrained = false
-
-    /**
-     * The tribonacci function {@code trib(k)} (HumanEval 063 {@code fibfib}), asserting its defining axioms
-     * the first time it is seen: base {@code trib(0)==0} / {@code trib(1)==0} / {@code trib(2)==1}, step
-     * {@code ∀k. k>=3 ⟹ trib(k)==trib(k-1)+trib(k-2)+trib(k-3)}. The three-term sibling of {@link #fibOf}:
-     * the step (triggered on {@code trib(k)}) preserves a generation invariant {@code c == Trib.of(i+2)}
-     * across {@code c = a + b + c} by e-matching to {@code trib(i+3) == trib(i+2)+trib(i+1)+trib(i)}.
-     */
-    Object tribOf(Object kH) {
-        if (!tribConstrained) {
-            tribConstrained = true
-            Object zero = session.intLit(0L), one = session.intLit(1L)
-            Object two = session.intLit(2L), three = session.intLit(3L)
-            session.assertExpr(session.eq(session.trib(zero), zero))
-            session.assertExpr(session.eq(session.trib(one), zero))
-            session.assertExpr(session.eq(session.trib(two), one))
-            Object k = session.boundIntVar('trib$k' + (quantCounter++))
-            Object term = session.trib(k)
-            Object rhs = session.plus(session.plus(session.trib(session.minus(k, one)),
-                                                   session.trib(session.minus(k, two))),
-                                      session.trib(session.minus(k, three)))
-            session.assertExpr(session.forall([k], session.implies(session.ge(k, three), session.eq(term, rhs)), [term]))
-        }
-        session.trib(kH)
-    }
-
-    private boolean tetraConstrained = false
-    /**
-     * The fib4 / tetranacci function {@code tetra(k)} (HumanEval 046 {@code fib4}), asserting its defining axioms
-     * the first time it is seen: base {@code tetra(0)==0} / {@code tetra(1)==0} / {@code tetra(2)==2} /
-     * {@code tetra(3)==0}, step {@code ∀k. k>=4 ⟹ tetra(k)==tetra(k-1)+tetra(k-2)+tetra(k-3)+tetra(k-4)}. The
-     * four-term sibling of {@link #tribOf}: the step (triggered on {@code tetra(k)}) preserves a generation
-     * invariant {@code d == Tetra.of(i+3)} across {@code e = a+b+c+d} by e-matching to
-     * {@code tetra(i+4) == tetra(i+3)+tetra(i+2)+tetra(i+1)+tetra(i)}.
-     */
-    Object tetraOf(Object kH) {
-        if (!tetraConstrained) {
-            tetraConstrained = true
-            Object zero = session.intLit(0L), one = session.intLit(1L), two = session.intLit(2L)
-            Object three = session.intLit(3L), four = session.intLit(4L)
-            session.assertExpr(session.eq(session.tetra(zero), zero))
-            session.assertExpr(session.eq(session.tetra(one), zero))
-            session.assertExpr(session.eq(session.tetra(two), two))
-            session.assertExpr(session.eq(session.tetra(three), zero))
-            Object k = session.boundIntVar('tetra$k' + (quantCounter++))
-            Object term = session.tetra(k)
-            Object rhs = session.plus(session.plus(session.plus(session.tetra(session.minus(k, one)),
-                                                                session.tetra(session.minus(k, two))),
-                                                   session.tetra(session.minus(k, three))),
-                                      session.tetra(session.minus(k, four)))
-            session.assertExpr(session.forall([k], session.implies(session.ge(k, four), session.eq(term, rhs)), [term]))
-        }
-        session.tetra(kH)
-    }
-
-    /**
-     * The greatest-common-divisor function {@code gcd(a, b)} (HumanEval 013), asserting Euclid's defining
-     * axioms the first time it is seen: base {@code ∀x. gcd(x, 0) == x} and step
-     * {@code ∀x,y. y != 0 ⟹ gcd(x, y) == gcd(y, x % y)}. The two-argument sibling of {@link #fibOf}: the step
-     * (triggered on {@code gcd(x, y)}) preserves a Euclid loop's invariant {@code Gcd.of(x, y) == Gcd.of(a, b)}
-     * across {@code t = x % y; x = y; y = t} by e-matching {@code gcd(x, y) == gcd(y, x % y)}, and at exit
-     * ({@code y == 0}) the base axiom collapses {@code gcd(x, 0)} to {@code x}.
-     */
-    Object gcdOf(Object aH, Object bH) {
-        ensureGcdAxioms()
-        session.gcd(aH, bH)
-    }
-
-    /** Assert Euclid's gcd axioms once (base + step) — shared by {@link #gcdOf} and {@link #lcmOf}. */
-    private void ensureGcdAxioms() {
-        if (gcdConstrained) return
-        gcdConstrained = true
-        Object zero = session.intLit(0L)
-        // base: ∀x. gcd(x, 0) == x
-        Object x = session.boundIntVar('gcd$x' + (quantCounter++))
-        Object baseTerm = session.gcd(x, zero)
-        session.assertExpr(session.forall([x], session.eq(baseTerm, x), [baseTerm]))
-        // step: ∀x,y. y != 0 ⟹ gcd(x, y) == gcd(y, x % y)
-        Object sx = session.boundIntVar('gcd$x' + (quantCounter++))
-        Object sy = session.boundIntVar('gcd$y' + (quantCounter++))
-        Object stepTerm = session.gcd(sx, sy)
-        Object rhs = session.gcd(sy, session.intRem(sx, sy))
-        session.assertExpr(session.forall([sx, sy],
-            session.implies(session.ne(sy, zero), session.eq(stepTerm, rhs)), [stepTerm]))
-        // non-zero: ∀x,y. (x != 0 ∨ y != 0) ⟹ gcd(x, y) != 0. A theorem of the recurrence (Euclid never
-        // returns 0 unless both args are 0) that finite e-matching can't reach for symbolic args; asserted
-        // directly so dividing by a gcd — `a.intdiv(Gcd.of(a, b))`, the lcm idiom — discharges its
-        // divisor-non-zero obligation. Sound: it's a true fact about `Gcd.of`.
-        Object nx = session.boundIntVar('gcd$x' + (quantCounter++))
-        Object ny = session.boundIntVar('gcd$y' + (quantCounter++))
-        Object nzTerm = session.gcd(nx, ny)
-        session.assertExpr(session.forall([nx, ny],
-            session.implies(session.or([session.ne(nx, zero), session.ne(ny, zero)]), session.ne(nzTerm, zero)),
-            [nzTerm]))
-    }
-
-    /**
-     * The least-common-multiple function {@code lcm(a, b)} — the multiplicative sibling of {@link #gcdOf}.
-     * Asserts the gcd axioms plus lcm's base ({@code ∀a. lcm(a,0)==0}, {@code ∀b. lcm(0,b)==0}) and the
-     * <em>fundamental identity</em> {@code ∀a,b. lcm(a,b) * gcd(a,b) == a * b} (triggered on {@code lcm(a, b)}).
-     * So a concrete {@code Lcm.of(4, 6)} unfolds {@code gcd(4,6)==2} via Euclid, then NIA solves
-     * {@code lcm * 2 == 24} ⟹ {@code 12}; and the identity {@code Lcm.of(a,b) * Gcd.of(a,b) == a*b} proves
-     * symbolically (it <em>is</em> the axiom). The identity is sound for the runtime helper, whose
-     * {@code (a / gcd) * b} satisfies it by construction since {@code gcd(a, b)} divides {@code a}.
-     */
-    Object lcmOf(Object aH, Object bH) {
-        ensureGcdAxioms()
-        if (!lcmConstrained) {
-            lcmConstrained = true
-            Object zero = session.intLit(0L)
-            // base: ∀a. lcm(a, 0) == 0 ; ∀b. lcm(0, b) == 0
-            Object la = session.boundIntVar('lcm$a' + (quantCounter++))
-            Object lz = session.lcm(la, zero)
-            session.assertExpr(session.forall([la], session.eq(lz, zero), [lz]))
-            Object lb = session.boundIntVar('lcm$b' + (quantCounter++))
-            Object zl = session.lcm(zero, lb)
-            session.assertExpr(session.forall([lb], session.eq(zl, zero), [zl]))
-            // identity: ∀a,b. lcm(a, b) * gcd(a, b) == a * b
-            Object pa = session.boundIntVar('lcm$a' + (quantCounter++))
-            Object pb = session.boundIntVar('lcm$b' + (quantCounter++))
-            Object lterm = session.lcm(pa, pb)
-            session.assertExpr(session.forall([pa, pb],
-                session.eq(session.times(lterm, session.gcd(pa, pb)), session.times(pa, pb)), [lterm]))
-        }
-        session.lcm(aH, bH)
-    }
-
     /** Whether pow's defining axioms have been asserted (mint-once — {@code pow$} is one global function). */
     private boolean powConstrained = false
 
@@ -3681,7 +3526,7 @@ class Encoder {
      * pow(b, k-1)}. The step (triggered on {@code pow(b, k)}) unfolds a literal exponent to a value
      * ({@code 2 ** 3} e-matches down to {@code 2*2*2*1 == 8}) and proves the doubling recurrence
      * {@code 2 ** (n + 1) == 2 * (2 ** n)} by e-matching on {@code pow(2, n+1)} — exactly the {@code << }
-     * idiom's essence, expressed in {@code **}. The two-argument sibling of {@link #fibOf}: symbolic-exponent
+     * idiom's essence, expressed in {@code **}. The two-argument sibling of the recurrence primitives (now {@code NumberTheoryPack}): symbolic-exponent
      * <em>value</em> facts (e.g. {@code 2 ** n >= 1}) need induction the finite e-matching can't reach, so
      * they stay "could not decide" — honest. Negative exponents are left unconstrained (the axioms guard
      * {@code k >= 0}); a fractional {@code b ** -k} isn't an int anyway. For a symbolic base the step's
@@ -5689,13 +5534,21 @@ class Encoder {
     }
 
     /**
-     * The translateMethodCall registry's "this handler's guard did not fire" sentinel. Distinct from
+     * The translateMethodCall registry's "this handler's guard did not fire" sentinel (the canonical
+     * constant lives on TheoryApi, so EncodingPacks share the identical object). Distinct from
      * {@code null}, which the branches use to mean "matched, but honestly untranslatable — abort the
      * whole dispatch" (e.g. an unsupported op on a String receiver must NOT fall through to the
      * list/array oracle). A handler ends with {@code return NO_MATCH} so control moves to the next
      * handler exactly where the old if-chain fell through.
      */
-    private static final Object NO_MATCH = new Object()
+    private static final Object NO_MATCH = TheoryApi.NO_MATCH
+
+    /** Keys of pack axioms already asserted on this encoder (≈ this VC) — {@link TheoryApi#axiomsOnce}.
+     *  Per-VC scope matches the engine's own mint-once primitives (each VC is a fresh solver context). */
+    private final Set<String> packAxiomKeys = new HashSet<String>()
+
+    @Override
+    boolean axiomsOnce(String key) { packAxiomKeys.add(key) }
 
     private Object translateMethodCall(MethodCallExpression mce) {
         String m = mce.methodAsString
@@ -5739,7 +5592,8 @@ class Encoder {
         r = tmcImplies            (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcAggregations       (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcMaxMin             (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
-        r = tmcSpecHelpers        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcPacks              (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcSetsCardinality    (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcEveryAny           (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcEnumValuesSize     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcMapReceiver        (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
@@ -6191,55 +6045,21 @@ class Encoder {
         return NO_MATCH
     }
 
+    /** translateMethodCall registry — the {@link EncodingPack} slot: each ServiceLoader-discovered pack's
+     *  recognisers run here, in name-sorted order, with this encoder as the {@link TheoryApi}. A pack
+     *  returning anything but NO_MATCH — including null, the matched-but-untranslatable abort — is final,
+     *  exactly like a built-in handler. (The number-theory spec helpers, formerly inline here, were the
+     *  first migration — see {@code NumberTheoryPack}.) */
+    private Object tmcPacks(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
+        for (EncodingPack p : PackRegistry.packs()) {
+            Object r = p.translateCall(this, mce, m, recv, args)
+            if (!NO_MATCH.is(r)) return r
+        }
+        return NO_MATCH
+    }
+
     /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */
-    private Object tmcSpecHelpers(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
-        // Fib.of(i) — the Fibonacci spec helper (Phase 55), lowered to the axiomatised fib$ primitive.
-        boolean isFib = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Fib') ||
-                        (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Fib') ||
-                        (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Fib')
-        if (m == 'of' && isFib && args.size() == 1) {
-            Object k = translate(args.get(0))
-            return k == null ? null : fibOf(k)
-        }
-
-        // Trib.of(i) — the tribonacci spec helper (HumanEval 063 fibfib), lowered to the trib$ primitive.
-        boolean isTrib = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Trib') ||
-                         (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Trib') ||
-                         (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Trib')
-        if (m == 'of' && isTrib && args.size() == 1) {
-            Object k = translate(args.get(0))
-            return k == null ? null : tribOf(k)
-        }
-
-        // Tetra.of(i) — the fib4 / tetranacci spec helper (HumanEval 046 fib4), lowered to the tetra$ primitive.
-        boolean isTetra = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Tetra') ||
-                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Tetra') ||
-                          (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Tetra')
-        if (m == 'of' && isTetra && args.size() == 1) {
-            Object k = translate(args.get(0))
-            return k == null ? null : tetraOf(k)
-        }
-
-        // Gcd.of(a, b) — the Euclid gcd spec helper (HumanEval 013), lowered to the gcd$ primitive.
-        boolean isGcd = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Gcd') ||
-                        (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Gcd') ||
-                        (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Gcd')
-        if (m == 'of' && isGcd && args.size() == 2) {
-            Object a = translate(args.get(0))
-            Object b = translate(args.get(1))
-            return (a == null || b == null) ? null : gcdOf(a, b)
-        }
-
-        // Lcm.of(a, b) — the least-common-multiple spec helper, lowered to the lcm$ primitive (built on gcd$).
-        boolean isLcm = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Lcm') ||
-                        (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Lcm') ||
-                        (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Lcm')
-        if (m == 'of' && isLcm && args.size() == 2) {
-            Object a = translate(args.get(0))
-            Object b = translate(args.get(1))
-            return (a == null || b == null) ? null : lcmOf(a, b)
-        }
-
+    private Object tmcSetsCardinality(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         boolean isSets = (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'Sets') ||
                          (recv instanceof PropertyExpression && ((PropertyExpression) recv).propertyAsString == 'Sets') ||
                          (recv instanceof ClassExpression && ((ClassExpression) recv).type?.nameWithoutPackage == 'Sets')
