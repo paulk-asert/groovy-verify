@@ -9532,6 +9532,50 @@ the next re-base: the suite now runs ~5,100 solver checks against the 6,000 ceil
 
 ---
 
+## Phase 209 — the metaprogramming pack: dynamic Groovy through a narrow, evidence-backed gate  *(shipped)*
+
+The most novel pack yet, and a new kind of pack: it extends the **type checking**, not just the encoding.
+Runtime metaprogramming has been out of scope by *posture* since Phase 1 — the verifier's front door is
+`@TypeChecked`, which rejects metaclass tricks before the encoder ever sees them (a fact the README now
+states explicitly, with the new "What about dynamic Groovy?" section). The insight: when the runtime
+reshaping is itself **statically visible** — an `ExpandoMetaClass` registration spelled out in the same
+class — it is really a pure function definition in disguise, and both halves of the problem are solvable.
+
+- **The STC-companion SPI** (new `EncodingPack` surfaces `resolveDynamicProperty` /
+  `resolveDynamicMethod`, wired through `handleUnresolvedProperty`/`handleMissingMethod` in the checker):
+  a pack may TYPE an unresolved reference it can also faithfully MODEL. Three blessing points, all from
+  the registered closure's own signature and body: the registration write (`metaClass.<name> =` on
+  `groovy.lang.MetaClass`), `delegate`-dispatched arithmetic *inside* the registration closure (STC sees
+  the delegate as `java.lang.Class`), and the use sites (`n.fizzBuzz`, `(n % 3) * '🥤'`). Everything not
+  claimed stays a compile error — pinned by teeth (unregistered use; cross-class registration under the
+  v1 same-class rule).
+- **The encoding half** inlines the registered closure at each use site (`delegate` ↦ receiver, the
+  closure parameter ↦ the argument) and translates the body in the String sort. The getter's bare
+  `delegate` arm — an *Integer* in a String-valued ternary — becomes an opaque per-receiver value
+  `meta$other$<name>(recv)`: sound over-approximation, with the refutation pinned (a claim resting on the
+  opaque arm refuses to prove). Iteration lesson: `translateInSort` on an Int-bound variable returns its
+  existing Int handle, not null — in-sort leaves must be whitelisted, or the ite mixes sorts.
+- **Plumbing**: `TypeEnvironment.method` + `TheoryApi.currentMethod()` (a pack can now reach the declaring
+  class of the VC's method — the registration scan's anchor).
+
+The blog's emoji-FizzBuzz metaclass examples (`fizzbuzz-with-groovy-and-emojis`) both verify against
+exact specifications: the operator overload (`(n % 3) * '🥤' + (n % 5) * '🐝'` equals the four-way emoji
+ternary) and the property (`n.fizzBuzz` under a branch-pruning precondition). Spec note, recorded: the
+`n % 15 == 0` divisibility spelling entangled with a seq-sorted goal is a solver timeout — cases use
+`n % 3 == 0 && n % 5 == 0`. v1 scope, loud where it ends: `Integer` receivers, single-expression pure
+closure bodies, one parameter, same-class visibility.
+
+`P209 metaprogramming` (G284, 6 cases). README gains the dynamic-Groovy clarification — including the
+two-directions point: Groovy's type checking is extensible toward *stronger* checking (groovy-verify
+itself) and toward *selective relaxation* (typing visible dynamic code), and the pack does both at once.
+The worked examples live in `examples/metaprogramming.md` (doclint-pinned: the operator overload, the
+getter with its load-bearing opacity, and the gate-stays-shut compile error); PACKS.md documents the
+STC-companion surfaces and their absolute obligation (*a pack may only bless what it can also faithfully
+model*). Root suite **1571/0** (+6), runtime rung 585/605 clean, `examples-dsl` green, docLint **0 drift**
+(285/285 groups), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

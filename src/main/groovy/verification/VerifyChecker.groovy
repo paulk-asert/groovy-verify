@@ -303,7 +303,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             carrierTypes       : currentCarrierTypes,
             functionReturnTypes: currentFunctionReturnTypes,
             biFunctionReturnTypes: currentBiFunctionReturnTypes,
-            atomicNames        : currentAtomicNames))
+            atomicNames        : currentAtomicNames,
+            method             : currentMethod))
     }
 
     /**
@@ -541,7 +542,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String cn = carrier.nameWithoutPackage
         // unit(arg): `new C(arg)` for a wrapper, `some(arg)` for a two-case carrier.
         String someF = twoCase ? Encoder.someFactoryName(carrier) : null
-        Closure<String> unit = { String arg -> twoCase ? "${someF}(${arg})" : "new ${cn}(${arg})" }
+        Closure<String> unit = { String arg -> (twoCase ? "${someF}(${arg})" : "new ${cn}(${arg})").toString() }
         ClassNode fnCarrier = functionType(carrier)                    // Function<Object, C> — a bind function
         ClassNode fnValue = functionType(ClassHelper.OBJECT_TYPE)      // Function<Object, Object> — a map function
         runMonadicLaw(carrier, 'left identity',
@@ -1824,7 +1825,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (body == null) return
         Set<String> visible = new HashSet<String>()
         if (node.declaringClass != null) node.declaringClass.fields.each { visible.add(it.name) }
-        node.parameters.each { visible.add(it.name) }
+        node.parameters.each { Parameter p -> visible.add(p.name) }
         List<String> offenders = new ArrayList<String>()
         try {
             body.visit(new ClassCodeVisitorSupport() {
@@ -1900,6 +1901,38 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     VerifyChecker(StaticTypeCheckingVisitor visitor) {
         super(visitor)
+    }
+
+    // ── Phase 209 — pack-resolved dynamic references (the STC companion half of an encoding pack) ──
+    // A pack may bless an unresolved property/method it can also faithfully model (e.g. a statically
+    // visible metaClass registration). Everything not claimed by a pack stays a compile error, exactly
+    // as @TypeChecked demands — this is a narrow, evidence-backed gate, not a dynamic-Groovy on-switch.
+
+    @Override
+    boolean handleUnresolvedProperty(PropertyExpression pexp) {
+        ClassNode rt = getType(pexp.objectExpression)
+        ClassNode enclosing = typeCheckingVisitor.typeCheckingContext.enclosingClassNode
+        for (EncodingPack pk : PackRegistry.packs()) {
+            ClassNode stored = pk.resolveDynamicProperty(rt, pexp, enclosing)
+            if (stored != null) {
+                storeType(pexp, stored)
+                return true
+            }
+        }
+        return false
+    }
+
+    @Override
+    List<MethodNode> handleMissingMethod(ClassNode receiver, String name, ArgumentListExpression argList,
+                                         ClassNode[] argTypes, MethodCall call) {
+        ClassNode enclosing = typeCheckingVisitor.typeCheckingContext.enclosingClassNode
+        def ec = typeCheckingVisitor.typeCheckingContext.getEnclosingClosure()
+        ClosureExpression closure = ec != null ? ec.closureExpression : null
+        for (EncodingPack pk : PackRegistry.packs()) {
+            MethodNode mn = pk.resolveDynamicMethod(receiver, name, argTypes, enclosing, closure)
+            if (mn != null) return [mn]
+        }
+        return Collections.<MethodNode> emptyList()
     }
 
     @Override
@@ -2530,10 +2563,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // by the obligation just added.
                 Expression cond = ((AssertStatement) st).booleanExpression
                 scanObligations(cond, steps, out)
-                AssertSite as = new AssertSite()
-                as.node = st
-                as.cond = cond
-                out.add(mkVf(as, new ArrayList<Object>(steps)))
+                AssertSite asite = new AssertSite()
+                asite.node = st
+                asite.cond = cond
+                out.add(mkVf(asite, new ArrayList<Object>(steps)))
                 steps.add(new Guard(cond, true))
                 continue
             }
@@ -3081,11 +3114,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String obEx = obligationExceptionOf(site)
         if (obEx != null && site.hasProperty('node') && catchCovered((org.codehaus.groovy.ast.ASTNode) site['node'], obEx)) return
         if (site instanceof AssertSite) {
-            AssertSite as = (AssertSite) site
-            Object p = enc.translateGoal(as.cond)
+            AssertSite asite = (AssertSite) site
+            Object p = enc.translateGoal(asite.cond)
             if (p == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
-                    "condition '${as.cond.text}' is outside fragment"), as.node)
+                    "condition '${asite.cond.text}' is outside fragment"), asite.node)
                 return
             }
             s.assertExpr(s.not(p))                       // negation of the asserted predicate
@@ -3093,8 +3126,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status != CheckResult.Status.VERIFIED) {
                 // If the assertion is over a method parameter, it is usually a caller precondition written as a
                 // runtime check; nudge toward @Requires, which documents it and is checked at every call site.
-                boolean overParam = referencesParameter(as.cond, currentMethod)
-                addStaticTypeError(withRepro(Reporter.formatAssertion(as.cond.text, r, overParam), r, 'AssertionError'), as.node)
+                boolean overParam = referencesParameter(asite.cond, currentMethod)
+                addStaticTypeError(withRepro(Reporter.formatAssertion(asite.cond.text, r, overParam), r, 'AssertionError'), asite.node)
             }
             return
         }
@@ -3486,10 +3519,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Gated on handleAsserts so the straight-line fallback (which loud-skips asserts) is unchanged.
             Expression cond = ((AssertStatement) st).booleanExpression
             dischargeExpression(cond, reqAst, assumePos, assumeNeg, preceding)
-            AssertSite as = new AssertSite()
-            as.node = st
-            as.cond = cond
-            dischargeSeeded(as, reqAst, assumePos, assumeNeg, preceding)
+            AssertSite asite = new AssertSite()
+            asite.node = st
+            asite.cond = cond
+            dischargeSeeded(asite, reqAst, assumePos, assumeNeg, preceding)
             return
         }
         // Fallback: collect statement-wide sites and discharge each — preserves the original
@@ -3964,7 +3997,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static List<Expression> splitConjuncts(Expression e) {
         // NotExpression IS-A BooleanExpression: unwrapping it would DROP THE NEGATION — the Phase-205
         // else-guard soundness bug (an else-branch obligation was discharged under the positive guard).
-        if (e instanceof NotExpression) return [e]
+        if (e instanceof NotExpression) return [(Expression) e]
         if (e instanceof BooleanExpression) return splitConjuncts(((BooleanExpression) e).expression)
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
             BinaryExpression be = (BinaryExpression) e

@@ -16,7 +16,10 @@
 package verification
 
 import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
@@ -37,9 +40,10 @@ import org.codehaus.groovy.ast.expr.PropertyExpression
  * a recogniser per spelling, defining axioms asserted once per VC via {@link TheoryApi#axiomsOnce}, and a
  * pinned verify/refute case corpus (its groups predate the SPI and double as its regression mesh).
  *
- * <p>This SPI is <b>experimental</b> and minimal by design (call recognisers only); property/operator
- * recognisers, scope collection, normalizer rewrites, and counterexample rendering are the known growth
- * surfaces, to be added when a pack demonstrably needs them.
+ * <p>This SPI is <b>experimental</b> and minimal by design; scope collection, normalizer rewrites, and
+ * counterexample rendering are the known growth surfaces, to be added when a pack demonstrably needs
+ * them. (Property/operator recognisers arrived with UnitsPack — Phase 188; the STC-companion surfaces
+ * {@code resolveDynamicProperty}/{@code resolveDynamicMethod} with MetaProgrammingPack — Phase 209.)
  */
 @CompileStatic
 interface EncodingPack {
@@ -47,6 +51,28 @@ interface EncodingPack {
     /** Stable pack name — used for deterministic (name-sorted) dispatch order, the {@code VERIFY_PACKS}
      *  selection knob, and diagnostics/catalog provenance. */
     String name()
+
+    /**
+     * Phase 209 — the STC companion (type-checking half). A pack may TYPE an unresolved property the
+     * static checker would otherwise reject — e.g. {@code n.fizzBuzz} backed by a statically-visible
+     * {@code Integer.metaClass.getFizzBuzz = { … }} registration in {@code enclosingClass}. Return the
+     * type to store for the property expression, or null to decline. Blessing is principled: a pack must
+     * only resolve what it can also faithfully MODEL (or the model refuses loudly) — this is the narrow
+     * gate through which slim dynamic-Groovy support returns to the {@code @TypeChecked} world.
+     */
+    default ClassNode resolveDynamicProperty(ClassNode receiverType, PropertyExpression pexp,
+                                             ClassNode enclosingClass) { null }
+
+    /**
+     * Phase 209 — the STC companion for a missing METHOD (e.g. the operator method
+     * {@code Integer.multiply(String)} added via {@code metaClass}, or a {@code delegate}-dispatched call
+     * inside a registration closure). Return a synthetic {@link MethodNode} carrying the resolved
+     * signature (name/params/return type), or null to decline. {@code enclosingClosure} is non-null when
+     * the call sits inside a closure (a registration body's {@code delegate} calls resolve against the
+     * registration's target type).
+     */
+    default MethodNode resolveDynamicMethod(ClassNode receiverType, String name, ClassNode[] argTypes,
+                                            ClassNode enclosingClass, ClosureExpression enclosingClosure) { null }
 
     /**
      * The capability-group names (the {@code group:} keys of the case corpus) that pin this pack's
@@ -94,5 +120,5 @@ interface EncodingPack {
      * contained per-pack (the pass silently contributes nothing, matching the engine's own posture for
      * this pass class). Program against {@link CheckerApi} only.
      */
-    default void checkMethod(CheckerApi api, org.codehaus.groovy.ast.MethodNode node) { }
+    default void checkMethod(CheckerApi api, MethodNode node) { }
 }

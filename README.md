@@ -317,6 +317,7 @@ Read **[the five-act tour](examples/tour.md)** for all of it. More worked-and-ve
 - **[Units of measurement](examples/units.md)** — the Mars-orbiter bug, three ways: JSR 385 dimensions (the unchecked `as Quantity<K>` cast), JSR 385 value/scale, and a bespoke `record` units type with verified `+`.
 - **[Bean Validation](examples/validation.md)** — `jakarta.validation` / `javax.validation` constraints (`@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty`) read as compile-time preconditions, discharged for free from annotations you already wrote.
 - **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, and invariant inference.
+- **[Metaprogramming](examples/metaprogramming.md)** — the blog's emoji-FizzBuzz `ExpandoMetaClass` examples proved: a metaclass property and an operator overload, type-checked *and* verified from the statically-visible registration — with the compile-error teeth showing the gate stays shut.
 - **[Thread-local IFC (Smith)](examples/smith.md)** — Graeme Smith's Dafny approach: information flow (a security lattice + noninterference) and rely/guarantee, combined in the §VII capstone.
 
 ## Verifying Java fragments
@@ -452,6 +453,29 @@ the Bézout coefficients, through which Gauss's lemma proves), the whole JSR 385
 combinatorics pack (`Fact.of`, Pascal-rule `Binom.of(n, k)` — the first two-argument spec primitive); each
 is pinned by its own verify/refute case groups (attributed in the generated `catalog.json`). The SPI, the soundness obligations, and a worked minimum pack are in
 **[PACKS.md](PACKS.md)**.
+
+### What about dynamic Groovy?
+
+A point that may not be obvious: everything above lives in Groovy's **statically-checkable subset** — the
+verifier's front door is `@TypeChecked`, so runtime metaprogramming (metaclass changes, `methodMissing`,
+categories, dynamic dispatch) has been out of scope from the start, ruled out by the type checker before
+the encoder ever sees it. That is a *posture*, not an accident: you can't prove theorems about code whose
+meaning is decided at runtime — unless the runtime reshaping is itself statically visible.
+
+The **metaprogramming pack** (experimental) is that exception, and it rests on a subtle point: Groovy's
+type checking is extensible in **two directions**. An STC extension can *strengthen* checking —
+groovy-verify itself is exactly that, an extension that piles proof obligations on top of the type
+system — and it can *selectively relax* it, typing what looks like uncheckable dynamic code when there is
+evidence to type it from. The pack does both at once: when an `ExpandoMetaClass` registration is spelled
+out in the same class (`Integer.metaClass.getFizzBuzz = { … }`, or an operator method
+`Integer.metaClass.multiply = { String s -> … }`), it types the registration and its use sites under
+`@TypeChecked` (relaxation, from the registered closure's own signature), then models them by inlining
+that closure at each use and holds the result to a full functional specification (strengthening). The
+blog's emoji-FizzBuzz metaclass examples prove against exact specs this way, teeth included — worked
+through in **[examples/metaprogramming.md](examples/metaprogramming.md)**. The gate is deliberately narrow
+and evidence-backed: no visible registration, no blessing — the code stays a compile error, exactly as
+`@TypeChecked` demands. Metaprogramming the pack cannot faithfully model is not quietly admitted; it
+simply remains outside.
 
 ## Building & using
 

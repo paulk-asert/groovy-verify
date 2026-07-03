@@ -17,6 +17,7 @@ package verification
 
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
@@ -49,6 +50,10 @@ interface TheoryApi {
      *  quantifiers, and {@code applyUF(name, args, rangeSort)} — the generic named-UF creator that makes
      *  bespoke per-function backend methods unnecessary. */
     SmtSession getSession()
+
+    /** Phase 209 — the method whose VC this encoder is building (null for bare encoders). Lets a pack
+     *  scan the declaring class for statically-visible declarations (e.g. metaclass registrations). */
+    MethodNode currentMethod()
 
     /** Translate a sub-expression in its natural sort; null if outside the fragment. */
     Object translate(Expression e)

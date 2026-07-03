@@ -62,7 +62,16 @@ value you know is yours (that is what `claimsExpression` exists to prevent — s
 | `claimsExpression(e)` *(static context)* | scalar classifiers asking "is this value yours?" | `quantity / quantity` is `Quantity.divide` — no Real classification, no divide-by-zero obligation |
 | `claimsValueSource(api, e)` | the checker deciding whether to alias a scalar-handle-less name to its construction expression (read it back via `api.sourceAlias(name)`) | a Quantity-typed local / `result` |
 | `checkMethod(api, node)` | once per method: a pure-AST **checker pass** with diagnostics — no SMT (programs against `CheckerApi`: `reportError`, `cleanBody`, `inferredTypeOf`); best-effort, contained per pack | the C₀ kind-vector check of `as Quantity<K>` casts |
+| `resolveDynamicProperty(receiverType, pexp, enclosingClass)` | **STC time** (Phase 209): an unresolved property `@TypeChecked` would reject — return the type to store, or null to decline | `n.fizzBuzz` backed by a visible `metaClass` registration (MetaProgrammingPack) |
+| `resolveDynamicMethod(receiverType, name, argTypes, enclosingClass, enclosingClosure)` | **STC time** (Phase 209): a missing method — return a synthetic `MethodNode` with the resolved signature, or null | `Integer.multiply(String)` from `Integer.metaClass.multiply = { String s -> … }` |
 | `corpusGroups()` | provenance: the case groups that pin this pack | `['P131 dimensions', 'P132 unit scale']` |
+
+The two `resolveDynamic*` surfaces are the **STC companion half**: they run inside the type checker
+(before any encoding), and they are the narrow gate through which slim dynamic-Groovy support returns to
+the `@TypeChecked` world. The obligation is absolute: **a pack may only bless what it can also faithfully
+model** (or whose model refuses loudly) — a blessing without a model is how silent unsoundness starts.
+The `MetaProgrammingPack` is the reference: same-class-visible `ExpandoMetaClass` registrations, typed
+from the registered closure's own signature and modelled by inlining that closure at each use site.
 
 All but `translateCall` have no-op defaults — implement what your domain needs. The encoder-facing hooks
 receive `TheoryApi` (a live SMT session per VC); `checkMethod` receives `CheckerApi` (diagnostics + AST

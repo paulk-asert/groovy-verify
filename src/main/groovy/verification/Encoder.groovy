@@ -60,7 +60,6 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.SwitchStatement
-import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 
@@ -315,6 +314,7 @@ class Encoder implements TheoryApi {
         env = env != null ? env : new TypeEnvironment()
         this.session = session
         this.pureEvaluator = pureEvaluator
+        this.vcMethod = env.method
         this.setElementTypes = env.setElementTypes
         this.mapTypes = env.mapTypes
         this.listElementTypes = env.listElementTypes
@@ -1128,8 +1128,8 @@ class Encoder implements TheoryApi {
     /** {@code factory(param.apply(content))} — a Some-wrap of the mapped value. */
     private static boolean isFactoryOfApply(Expression e, String factory, String param, String content) {
         if (callName(e) != factory) return false
-        List<Expression> as = callArgs(e)
-        as.size() == 1 && isApplyOnParamToField(as.get(0), param, content)
+        List<Expression> actuals = callArgs(e)
+        actuals.size() == 1 && isApplyOnParamToField(actuals.get(0), param, content)
     }
     /** A nullary {@code factory()} call (the none-wrap). */
     private static boolean isNullaryFactory(Expression e, String factory) {
@@ -1181,10 +1181,10 @@ class Encoder implements TheoryApi {
         if (factory == null) return false
         Expression body = soleReturnExpr(factory)
         if (!(body instanceof ConstructorCallExpression)) return false
-        List<Expression> as = (((ConstructorCallExpression) body).arguments instanceof ArgumentListExpression) ?
+        List<Expression> actuals = (((ConstructorCallExpression) body).arguments instanceof ArgumentListExpression) ?
             ((ArgumentListExpression) ((ConstructorCallExpression) body).arguments).expressions : Collections.<Expression>emptyList()
         // the boolean discriminant is the first constructor argument in the canonical idiom
-        !as.isEmpty() && as.get(0) instanceof ConstantExpression && ((ConstantExpression) as.get(0)).value == expected
+        !actuals.isEmpty() && actuals.get(0) instanceof ConstantExpression && ((ConstantExpression) actuals.get(0)).value == expected
     }
 
     private static final Set<String> NON_NULL_NAMES = ['NonNull', 'NotNull', 'Nonnull', 'MonotonicNonNull'] as Set<String>
@@ -1282,8 +1282,8 @@ class Encoder implements TheoryApi {
         MethodCallExpression mc = (MethodCallExpression) e
         if (mc.methodAsString != 'apply' || !(mc.objectExpression instanceof VariableExpression) ||
             ((VariableExpression) mc.objectExpression).name != paramName) return false
-        List<Expression> as = argList(mc)
-        as.size() == 1 && as.get(0) instanceof VariableExpression && ((VariableExpression) as.get(0)).name == fieldName
+        List<Expression> actuals = argList(mc)
+        actuals.size() == 1 && actuals.get(0) instanceof VariableExpression && ((VariableExpression) actuals.get(0)).name == fieldName
     }
     /** The single value expression of a closure literal's body, or null. */
     private static Expression soleClosureExpr(ClosureExpression cl) {
@@ -1761,6 +1761,12 @@ class Encoder implements TheoryApi {
      * rather than aborting the whole analysis. Sound for the verification
      * conditions, which only ever get harder under havoc.
      */
+    /** Phase 209 — the method whose VC this encoder builds (null for bare encoders); see TheoryApi. */
+    private final MethodNode vcMethod
+
+    @Override
+    MethodNode currentMethod() { vcMethod }
+
     Object havoc(String name) {
         // Phase 205 — havoc in the name's OWN sort: a boolean local havocked as an Int handle later
         // crashes the guard translation (`Cannot cast IntExpr to BoolExpr` — the inner-loop `found`
@@ -3772,8 +3778,8 @@ class Encoder implements TheoryApi {
             if (rn != 'Declassify') return null
         }
         if (args instanceof ArgumentListExpression) {
-            List<Expression> as = ((ArgumentListExpression) args).expressions
-            if (as.size() == 2) return as.get(1)
+            List<Expression> actuals = ((ArgumentListExpression) args).expressions
+            if (actuals.size() == 2) return actuals.get(1)
         }
         null
     }

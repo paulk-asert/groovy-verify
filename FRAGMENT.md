@@ -242,6 +242,17 @@ contract it *declares* — an inherited `@Ensures` isn't re-checked against an *
 (groovy-contracts still enforces it at runtime); and when a method inherits a contract from *both* a superclass
 and an implemented interface, the nearer superclass declaration is used (the two aren't conjoined).
 
+**Dynamic Groovy** is outside the fragment *by construction* — the front door is `@TypeChecked`, so
+runtime metaprogramming (metaclass changes, `methodMissing`, categories, dynamic dispatch) is rejected by
+the type checker before the encoder sees it, with one deliberate exception (Phase 209): a **statically
+visible, same-class `ExpandoMetaClass` registration** — `Integer.metaClass.getFizzBuzz = { … }` or an
+operator method `Integer.metaClass.multiply = { String s -> … }` — is typed *and* modelled by the
+metaprogramming pack (the registered closure inlined at each use site; a value arm outside the String
+sort becomes a sound opaque per-receiver term that refuses to prove claims about it). v1 scope: `Integer`
+receivers, single-expression pure closure bodies, one parameter. Everything not backed by a visible
+registration stays a compile error — cross-class registrations, runtime-conditional reshaping, and
+`methodMissing` included ([examples/metaprogramming.md](examples/metaprogramming.md)).
+
 Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
 a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` on
 `int` / `long`, and `@Size(min, max)` / `@NotEmpty` on an array / `List` / `String` — read as the obvious bound and

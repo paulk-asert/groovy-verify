@@ -18,6 +18,7 @@ package verification
 import groovy.transform.CompileStatic
 import groovy.transform.MapConstructor
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.MethodNode
 
 /**
  * The per-method <b>name → type scope</b> the {@link Encoder} translates under: which names are sets /
@@ -40,6 +41,10 @@ import org.codehaus.groovy.ast.ClassNode
 @CompileStatic
 @MapConstructor(noArg = true)
 class TypeEnvironment {
+
+    /** Phase 209 — the method this VC belongs to (null for bare encoders). Packs reach it via
+     *  {@link TheoryApi#currentMethod} to scan the declaring class (e.g. metaclass registrations). */
+    MethodNode method
 
     /** Set-typed names → element type (Phase 16/27). */
     final Map<String, ClassNode> setElementTypes = new HashMap<String, ClassNode>()
