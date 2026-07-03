@@ -24,11 +24,14 @@ quantities, a money or time library — from outside the core engine. The bounda
 > **Packs model libraries; the core models the language.**
 
 Ints, arrays, operators, closures, collections, and `String` theory are the language — they live in the
-`Encoder`. `Quantities.getQuantity(1, KILO(METRE))` is a library's vocabulary — it lives in a pack. The two
+`Encoder`. `Quantities.getQuantity(1, KILO(METRE))` is a library's vocabulary — it lives in a pack. The three
 in-tree packs are the references: [`NumberTheoryPack`](src/main/groovy/verification/NumberTheoryPack.groovy)
-(the minimal shape — five call recognisers + their axioms) and
-[`UnitsPack`](src/main/groovy/verification/UnitsPack.groovy) (the full surface — properties, operators,
-expression claims, value-source aliasing, a checker pass, curated tables).
+(the minimal shape — call recognisers + recurrence axioms, extended in Phase 204 with the Bézout
+coefficient witnesses), [`UnitsPack`](src/main/groovy/verification/UnitsPack.groovy) (the full surface —
+properties, operators, expression claims, value-source aliasing, a checker pass, curated tables), and
+[`CombinatoricsPack`](src/main/groovy/verification/CombinatoricsPack.groovy) (factorial and the Pascal-rule
+binomial — the first **two-argument** primitive, and a worked warning about axiom domain guards: its refute
+twins caught an unguarded-base inconsistency during development).
 
 ## The shape of a pack
 

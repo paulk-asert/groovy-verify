@@ -45,8 +45,10 @@ class PerfBudget {
     /** Distinct VCs actually solved (the cache-miss population). Deterministic. */
     static final long MAX_DISTINCT_VCS = 4_000
 
-    /** UNKNOWN results (solver gave up / timed out). Near-zero by construction; small allowance. */
-    static final long MAX_UNKNOWN = 25
+    /** UNKNOWN results (solver gave up / timed out). The corpus carries a handful of hard VCs plus the
+     *  Phase 203/204 inconsistency canaries (recurrence-axiom refutes that intentionally time MBQI out —
+     *  measured 24 after those landed); re-based with headroom. */
+    static final long MAX_UNKNOWN = 40
 
     /** Pathological single-check backstop — machine-dependent, hence deliberately enormous. */
     static final long MAX_SINGLE_CHECK_MS = 30_000

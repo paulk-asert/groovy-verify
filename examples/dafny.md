@@ -209,6 +209,67 @@ same thing for the orderings without a native spelling. Either way it's all the 
 preservation refutes on a concrete *unsorted* counterexample (`[7719, 7718]`) — the proof genuinely rests
 on sortedness. Dafny's verbatim binary search then verifies, structure-for-structure.
 
+### The Theorem Prover Showdown — leftpad, unique, fulcrum (Hillel Wayne)
+
+Hillel Wayne's [Theorem Prover Showdown](https://www.hillelwayne.com/post/theorem-prover-showdown/) posed
+three verification challenges as an imperative-vs-functional duel — and groovy-verify sits squarely on the
+imperative side the challenge was designed to exercise: loops carrying `@Invariant`s. All three verify with
+their **full specifications**:
+
+- **leftpad** — output length is `max(n, len)`, the pad prefix is all `c`, the suffix is `s` — a single
+  fill loop over the two regions ([the famous benchmark](https://github.com/hwayne/lets-prove-leftpad)
+  with entries from thirty-odd provers; the Groovy proof is the `int[]` form of the same spec).
+- **unique** — the deduplicated prefix is **pairwise-distinct and covers the input in both directions**
+  (`output ⊆ input` and `input ⊆ output`, nested `every`/`any` quantifiers) — a *bidirectional* spec, one
+  direction more than the challenge's own partial Dafny solution — with a nested membership-scan loop
+  whose invariant ties the `found` flag to the scanned prefix.
+- **fulcrum** — the crown: return the cut `i` minimizing `|sum(left) − sum(right)|`, in O(n). The prefix
+  sum arrives as a guarded pure-recursive `psum` helper (its defining equation ties the loop accumulator
+  to the spec term one unfold per iteration), and the argmin invariant carries minimality over every cut
+  seen:
+
+<!-- doclint:case p202-prover-showdown/fulcrum-returned-cut-minimizes-left-right-over-all-cuts -->
+```groovy
+static int psum(int[] a, int k) {
+    (a != null && 0 < k && k <= a.length) ? psum(a, k - 1) + a[k - 1] : 0
+}
+
+@Requires({ a != null })
+@Ensures({ 0 <= result && result <= a.length &&
+    (0..a.length).every { int j ->
+        (2 * psum(a, result) - psum(a, a.length) >= 0 ?
+             2 * psum(a, result) - psum(a, a.length) : psum(a, a.length) - 2 * psum(a, result)) <=
+        (2 * psum(a, j) - psum(a, a.length) >= 0 ?
+             2 * psum(a, j) - psum(a, a.length) : psum(a, a.length) - 2 * psum(a, j)) } })
+static int fulcrum(int[] a) {
+    int total = psum(a, a.length)
+    int left = 0
+    int best = 0
+    int bestDiff = total >= 0 ? total : -total
+    int i = 1
+    @Invariant({ a != null && 1 <= i && i <= a.length + 1 &&
+        total == psum(a, a.length) &&
+        left == psum(a, i - 1) &&
+        0 <= best && best <= i - 1 &&
+        bestDiff == (2 * psum(a, best) - total >= 0 ? 2 * psum(a, best) - total : total - 2 * psum(a, best)) &&
+        (0..<i).every { int j ->
+            bestDiff <= (2 * psum(a, j) - total >= 0 ? 2 * psum(a, j) - total : total - 2 * psum(a, j)) } })
+    @Decreases({ a.length + 1 - i })
+    while (i <= a.length) {
+        left = left + a[i - 1]
+        int d = 2 * left - total
+        int diff = d >= 0 ? d : -d
+        if (diff < bestDiff) { best = i; bestDiff = diff }
+        i = i + 1
+    }
+    return best
+}
+```
+
+The teeth: a mis-offset leftpad suffix refutes, a fulcrum that never updates its best cut fails invariant
+preservation, and an over-strong unique claim (`result == a.length` — "the input never had duplicates")
+refutes at the exit check.
+
 ### Ticket lock — mutual exclusion (Leino, KRML260)
 
 The three above are sequential algorithms. Leino's lecture notes

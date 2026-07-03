@@ -51,15 +51,23 @@ class NumberTheoryPack implements EncodingPack {
     String name() { 'number-theory' }
 
     @Override
-    List<String> corpusGroups() { ['P55 fib', 'P63 fibfib', 'P46 fib4', 'HE013 gcd', 'P-lcm'] }
+    List<String> corpusGroups() { ['P55 fib', 'P63 fibfib', 'P46 fib4', 'HE013 gcd', 'P-lcm', 'P204 bezout'] }
 
     @Override
     Object translateCall(TheoryApi api, MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
-        if (m != 'of') return TheoryApi.NO_MATCH
+        if (m != 'of' && m != 'u' && m != 'v') return TheoryApi.NO_MATCH
         if (args.size() == 1) {
             if (TheoryApi.receiverIsClass(recv, 'Fib'))   return unary(api, args, this.&fibAxioms,   'fib$')
             if (TheoryApi.receiverIsClass(recv, 'Trib'))  return unary(api, args, this.&tribAxioms,  'trib$')
             if (TheoryApi.receiverIsClass(recv, 'Tetra')) return unary(api, args, this.&tetraAxioms, 'tetra$')
+        }
+        if ((m == 'u' || m == 'v') && args.size() == 2 && TheoryApi.receiverIsClass(recv, 'Bezout')) {
+            Object a = api.translate(args.get(0))
+            Object b = api.translate(args.get(1))
+            if (a == null || b == null) return null
+            gcdAxioms(api)
+            bezoutAxioms(api)
+            return apply2(api.session, m == 'u' ? 'bezU$' : 'bezV$', a, b)
         }
         if (args.size() == 2) {
             if (TheoryApi.receiverIsClass(recv, 'Gcd')) {
@@ -178,5 +186,18 @@ class NumberTheoryPack implements EncodingPack {
         Object lterm = apply2(s, 'lcm$', pa, pb)
         s.assertExpr(s.forall([pa, pb],
             s.eq(s.times(lterm, apply2(s, 'gcd$', pa, pb)), s.times(pa, pb)), [lterm]))
+    }
+
+    /** Bézout (Phase 204, math-comp egcdn): ∀m,n. m*bezU(m,n) + n*bezV(m,n) == gcd(m,n), triggered on
+     *  the bezU$ term so the (nonlinear) identity is minted only for contracts that mention Bezout. */
+    private static void bezoutAxioms(TheoryApi api) {
+        if (!api.axiomsOnce('numtheory.bezout')) return
+        SmtSession s = api.session
+        Object m = s.boundIntVar('bez$m' + QUANT.getAndIncrement())
+        Object n = s.boundIntVar('bez$n' + QUANT.getAndIncrement())
+        Object u = apply2(s, 'bezU$', m, n)
+        Object v = apply2(s, 'bezV$', m, n)
+        s.assertExpr(s.forall([m, n],
+            s.eq(s.plus(s.times(m, u), s.times(n, v)), apply2(s, 'gcd$', m, n)), [u]))
     }
 }

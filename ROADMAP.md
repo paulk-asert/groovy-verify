@@ -9306,6 +9306,124 @@ green.
 
 ---
 
+## Phase 202 — the Theorem Prover Showdown, full specs  *(shipped)*
+
+Hillel Wayne's three-challenge imperative-vs-functional duel (leftpad / unique / fulcrum), landed with
+complete specifications — the repo's genre exactly, since the challenge was designed to exercise
+loop-invariant verification and groovy-verify *is* the imperative-invariant side on the JVM.
+
+- **leftpad**: length `== max(n, len)`, all-`c` prefix, `s` suffix — the `int[]` form of the
+  lets-prove-leftpad spec (single fill loop; the two-region body as `if`/`else`).
+- **fulcrum** (the crown): the returned cut minimizes `|2·prefix − total|` over **all** cuts, O(n). The
+  spec's prefix sums ride a guarded pure-recursive `psum` helper — its defining equation ties the loop
+  accumulator to the spec term one unfold per iteration (the Phase-198 closure-aware substitution doing
+  real work), and the argmin invariant carries minimality over every cut seen.
+- **unique**: pairwise-distinct **and both subset directions** — one direction more than the challenge's
+  own partial Dafny solution — via nested `every`/`any` and a membership-scan inner loop whose invariant
+  ties `found` to the scanned prefix.
+
+Iteration notes worth keeping: the fragment allows **one annotated loop per method** (leftpad reshaped to
+a single loop); STC rejects arithmetic on `List.sum()` (Object) — the pure-helper spelling is the fix and
+the better spec anyway; loop-invariant preservation assumes only the invariant, so `a != null` and local
+*definitions* (`pad == …`, `r.length == …`) must ride in it. Two engine wrinkles found and recorded, not
+fixed here: the **else-branch guard of an `if` inside a loop body is not threaded to array-store
+obligations** (workaround: put the guarded store in the then-branch), and an inverted-guard variant of
+unique hit an internal Int/Bool sort mismatch on the inner-loop `found` havoc (loud skip, not silent).
+*(Both fixed in Phase 205 — the first turned out to be a genuine soundness bug, not a precision gap.)*
+
+`P202 prover showdown` (G277, 6 cases: three full-spec verifies + three refute twins). The group is
+grid-runnable, so the runtime rung cross-validates all three algorithms (rung 561→575 clean). A
+lets-prove-leftpad PR is the natural follow-up.
+
+---
+
+## Phase 203 — the combinatorics pack, and axiom domain guards as a worked warning  *(shipped)*
+
+The third `EncodingPack` (math-comp `binomial.v` inspired): `Fact.of(n)` and `Binom.of(n, k)` — the
+first spec primitive minted as a genuinely **two-argument** UF (`binom$` under Pascal's rule, riding the
+same generic `applyUF` the 2-ary trace state uses). Ground values unfold by e-matching (`fact(4)==24`,
+`C(4,2)==6`); the factorial loop carries `r == Fact.of(i)` through `r = r * (i+1)` (the fib-loop shape
+with a product); `C(n,1) == n` proves by recursive-lemma induction over Pascal; `Fact.of(n) >= 1` is the
+asserted-theorem move (`gcd$`-nonzero precedent).
+
+**The teeth caught an axiom inconsistency during development** — the pack's third such catch this
+session: the unguarded base `∀n. binom(n,0)==1` clashes with the out-of-range axiom at negative `n`
+(`binom(-1,0)` forced to both 1 and 0), making *everything* provable; the wrong-value refute twin failed
+by "verifying". All axioms are now domain-guarded (`n >= 0`), and the incident is recorded in the pack's
+javadoc and PACKS.md as the worked warning about axiom domains.
+
+A structural finding, recorded honestly: for recurrence-axiomed primitives the **refute direction of a
+ground claim is intractable** (it needs an MBQI *model* of the recurrence universals; the verify/disproof
+direction unfolds linearly with ground coefficients). The teeth therefore use the disproof form
+(`fact(4) != 25` VERIFIES) plus an **inconsistency canary** whose expected diagnostic matches both honest
+outcomes ("Cannot prove …"/"Could not decide …" share a substring) while a clean verify — the
+inconsistency signature — fails it loudly. The perf budget's UNKNOWN ceiling was re-based (25 → 40) for
+these intentional timeouts.
+
+`P203 combinatorics` (G278, 8 cases); `Fact`/`Binom` runtime twins; HDR imports extended.
+
+---
+
+## Phase 204 — Bézout coefficients: the div.v layer under gcd$  *(shipped)*
+
+math-comp's `egcdn`, as the skolemized-witness extension of `NumberTheoryPack`: `Bezout.u(m, n)` /
+`Bezout.v(m, n)` are coefficient-witness UFs with the defining axiom
+`∀m,n. m·u(m,n) + n·v(m,n) == gcd(m,n)` — minted only when a contract mentions them (triggered on the
+`bezU$` term), so existing gcd corpora see no new quantifiers.
+
+What proves, first run: the identity itself; the coprime unit combination (`gcd == 1 ⟹ m·u + n·v == 1`);
+and **Euclid/Gauss's lemma** — `coprime(a, n) ∧ n | a·b ⟹ n | b`, with the divisibility hypothesis
+arriving as a witness (`a·b == n·t`) and the quotient of `b` exhibited
+(`b == n·(u·t + v·b)`) — pure ring algebra over the Bézout axiom, which Z3 closes without help. Teeth:
+the off-by-one identity is disproved; a wrong Gauss quotient has the inconsistency-canary expectation.
+The Chinese-remainder witness construction is the recorded next rung on this rail.
+
+`P204 bezout` (G279, 5 cases); the `Bezout` runtime twin (iterative extended Euclid);
+`NumberTheoryPack.corpusGroups` extended.
+
+Across the three phases: root suite **1545/0** (+19), runtime rung **575/594** clean / 0 need review
+(+14 — all three showdown algorithms cross-validate), docLint **0 drift** (106/106 links, 279/279 groups,
+3 packs / 0 broken claims), full `check` green.
+
+---
+
+## Phase 205 — the NotExpression trap: an else-guard soundness bug, found by a wrinkle hunt  *(shipped)*
+
+The two P202 wrinkles, chased to root cause — and the first turned out to be a **soundness bug**, not the
+diagnostic-precision gap it looked like.
+
+**The hunt.** The minimal repro (an else-branch array store inside an annotated loop) refuted with an
+impossible counterexample (`k = 0` under an asserted `!(k < 2)`). Seed tracing showed the else fact
+*asserted*; the SMT dump showed the solver received the **positive** `(< k 2)`. The gap between those two
+observations was the bug: `splitConjuncts` — applied to every seed on the array-bounds discharge path —
+unwraps `BooleanExpression` wrappers, and **Groovy's `NotExpression` subclasses `BooleanExpression`**, so
+the unwrap silently dropped the negation. An else-branch obligation was checked under the *then*-guard:
+wrong-fact assumption, which both over-refutes (the observed shape) and can over-verify (the dual).
+
+**The audit.** Every `instanceof BooleanExpression` unwrap in the codebase, checked for the subclass trap:
+- `splitConjuncts` (the finder) — fixed: `NotExpression` is kept whole.
+- `PureEvaluator.eval` / `ContractTester.eval` — the `BooleanExpression` arm preceded the `NotExpression`
+  arm, so closed evaluation computed `!x` as `x` — **also soundness** (closed-evaluated values feed VCs
+  as literals). Reordered, and pinned by a `!`-bearing pure-helper verify/refute pair.
+- The carrier shape-matchers (`isFieldRef`, `isApplyEqNull`) and the equational-`@Ensures` recognizers —
+  could mis-match negated forms; hardened to refuse `NotExpression`.
+- The obligation/product walkers (`scanObligations`, `dischargeExpression`, `collectProducts`) — safe:
+  descending through a negation doesn't change site collection or short-circuit protection.
+
+**Wrinkle 2** (`found$havoc$0` Int→Bool cast crash): `Encoder.havoc` minted every havoc as an `intVar`;
+a boolean inner-loop flag havocked at the outer level then crashed the guard translation. Now sort-aware
+(the prior binding's sort is the authority; unbound names default to Int as before).
+
+`P205 guard polarity` (G280, 6 cases): else stores under negated guards (constant and symbolic-split
+shapes), the genuinely-out-of-range else store still refuting (the fix suppressed nothing), sort-correct
+boolean havoc across an inner loop, and negation-bearing closed evaluation both ways. The P202
+CAPABILITIES/ROADMAP wrinkle notes now point here.
+
+Root suite **1551/0** (+6), runtime rung **579/598** clean / 0 need review, `examples-dsl` green, docLint
+**0 drift** (280/280 groups), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

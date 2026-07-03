@@ -188,8 +188,9 @@ class ContractTester {
             if (v == null) throw new NotEvaluable()
             return v
         }
-        if (e instanceof BooleanExpression) return eval(((BooleanExpression) e).expression, env)
+        // NotExpression IS-A BooleanExpression — match it first or `!x` evaluates as `x` (Phase 205).
         if (e instanceof NotExpression) return Boolean.valueOf(!evalBool(((NotExpression) e).expression, env))
+        if (e instanceof BooleanExpression) return eval(((BooleanExpression) e).expression, env)
         if (e instanceof UnaryMinusExpression) {
             return Long.valueOf(-evalLong(((UnaryMinusExpression) e).expression, env))
         }

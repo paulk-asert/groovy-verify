@@ -321,7 +321,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (MethodNode mn : dc.methods) {
             if (findRequires(mn) != null) continue
             Expression ens = contractAstFor(mn, 'ensures')
-            if (ens instanceof BooleanExpression) ens = ((BooleanExpression) ens).expression
+            if (ens instanceof BooleanExpression && !(ens instanceof NotExpression)) ens = ((BooleanExpression) ens).expression
             Expression e = equationalEnsuresRhs(ens)
             if (e == null) continue
             List<String> formals = new ArrayList<String>()
@@ -441,7 +441,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (t == null || node.parameters[1].type == null || t.name != node.parameters[1].type.name) return
         if (findRequires(node) != null) return
         Expression ens = contractAstFor(node, 'ensures')
-        if (ens instanceof BooleanExpression) ens = ((BooleanExpression) ens).expression
+        if (ens instanceof BooleanExpression && !(ens instanceof NotExpression)) ens = ((BooleanExpression) ens).expression
         Expression e = equationalEnsuresRhs(ens)
         List<String> formals = new ArrayList<String>()
         for (Parameter p : node.parameters) formals.add(p.name)
@@ -3063,6 +3063,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * discharged. Shared by the havoc pass and the Phase 5 value-flow pass.
      */
     private void dischargeObligationUnder(SmtSession s, Encoder enc, Object site) {
+
         // Phase 193 — an obligation inside a try whose handler covers its exception is DEFINED behaviour:
         // the throw transfers to the catch path (modelled since Phase 192), so nothing is uncaught and a
         // "Possible X ... fails on f(...)" refutation would be factually wrong (f(...) returns the
@@ -3947,6 +3948,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         r
     }
     private static List<Expression> splitConjuncts(Expression e) {
+        // NotExpression IS-A BooleanExpression: unwrapping it would DROP THE NEGATION — the Phase-205
+        // else-guard soundness bug (an else-branch obligation was discharged under the positive guard).
+        if (e instanceof NotExpression) return [e]
         if (e instanceof BooleanExpression) return splitConjuncts(((BooleanExpression) e).expression)
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
             BinaryExpression be = (BinaryExpression) e

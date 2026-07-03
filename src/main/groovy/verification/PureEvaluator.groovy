@@ -396,8 +396,10 @@ class PureEvaluator {
             if (v == null) throw new NotEvaluable()   // unbound (e.g. a field) → not evaluable
             return v
         }
-        if (e instanceof BooleanExpression) return eval(((BooleanExpression) e).expression, env)
+        // NotExpression IS-A BooleanExpression — it must be matched FIRST or the unwrap drops the
+        // negation and `!x` evaluates as `x` (Phase 205).
         if (e instanceof NotExpression) return !evalBool(((NotExpression) e).expression, env)
+        if (e instanceof BooleanExpression) return eval(((BooleanExpression) e).expression, env)
         if (e instanceof UnaryMinusExpression) return -evalLong(((UnaryMinusExpression) e).expression, env)
         if (e instanceof TernaryExpression) {
             TernaryExpression te = (TernaryExpression) e

@@ -1097,6 +1097,7 @@ class Encoder implements TheoryApi {
     // ---- Phase M-D: case-split flatMap/map bodies (`present ? someCase : this`) for a two-case carrier ----
 
     private static boolean isFieldRef(Expression e, String name) {
+        if (e instanceof NotExpression) return false   // IS-A BooleanExpression: unwrap would drop the negation
         if (e instanceof BooleanExpression) e = ((BooleanExpression) e).expression
         if (e instanceof VariableExpression) return ((VariableExpression) e).name == name
         (e instanceof PropertyExpression && isThisExpr(((PropertyExpression) e).objectExpression) &&
@@ -1136,6 +1137,7 @@ class Encoder implements TheoryApi {
     }
     /** {@code param.apply(content) == null}. */
     private static boolean isApplyEqNull(Expression e, String param, String content) {
+        if (e instanceof NotExpression) return false   // IS-A BooleanExpression: unwrap would drop the negation
         if (e instanceof BooleanExpression) e = ((BooleanExpression) e).expression
         if (!(e instanceof BinaryExpression)) return false
         BinaryExpression b = (BinaryExpression) e
@@ -1760,7 +1762,15 @@ class Encoder implements TheoryApi {
      * conditions, which only ever get harder under havoc.
      */
     Object havoc(String name) {
-        Object v = session.intVar(name + '$havoc$' + (havocCounter++))
+        // Phase 205 — havoc in the name's OWN sort: a boolean local havocked as an Int handle later
+        // crashes the guard translation (`Cannot cast IntExpr to BoolExpr` — the inner-loop `found`
+        // flag). The prior binding's sort is the authority; unbound names default to Int as before.
+        Object prev = env.get(name)
+        String hn = name + '$havoc$' + (havocCounter++)
+        Object v
+        if (prev != null && session.isBool(prev)) v = session.boolVar(hn)
+        else if (prev != null && session.isReal(prev)) v = session.realVar(hn)
+        else v = session.intVar(hn)
         env.put(name, v)
         v
     }

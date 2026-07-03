@@ -41,6 +41,9 @@ class CaseDsl {
         import verification.Tetra
         import verification.Gcd
         import verification.Lcm
+        import verification.Fact
+        import verification.Binom
+        import verification.Bezout
         import verification.CheckOverflow
         import verification.Declassify
         import verification.Label
