@@ -425,6 +425,13 @@ class RuntimeRung {
             return [cat: 'partial-extremum: a.max()/a.min() on an empty array throws — verifier proves the spec without a non-empty precondition (well-definedness gap)', review: true]
         if (has('ArrayIndexOutOfBoundsException'))
             return [cat: 'array-edge / correlated-input: empty array in a range spec, or independent multi-param grid violated a size relation', review: false]
+        // Phase 192 — the source contains an explicit `throw`: a guard-throw prologue (or rethrowing
+        // handler) threw on this grid input BY DESIGN. A postcondition is vacuous on a non-returning
+        // call (groovy-contracts checks @Ensures only on normal completion), so this is the modelled
+        // behaviour, not a proof gap. Gated on the throw actually appearing in the case source so a
+        // genuinely unexplained exception from throw-free code still lands in OTHER and fails the run.
+        if (src.contains('throw new'))
+            return [cat: 'guard-throw: the method threw by design on this input — postcondition vacuous on a non-returning call, not a proof gap', review: false]
         return [cat: 'OTHER — uncategorised exception: ' + names.take(2).join(' <- '), review: true, unknown: true]
     }
 

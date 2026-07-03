@@ -32,6 +32,9 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.ast.stmt.AssertStatement
+import org.codehaus.groovy.ast.stmt.CatchStatement
+import org.codehaus.groovy.ast.stmt.ThrowStatement
+import org.codehaus.groovy.ast.stmt.TryCatchStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -90,6 +93,15 @@ class AssertAssume {
     Expression cond
 }
 
+/** Phase 192 — a name whose value is unknown at this point on the path: catch-entry state, where the try
+ *  block may have executed any prefix of itself before throwing. Bound to a fresh unconstrained handle
+ *  (value and, for reference types, nullity). */
+@CompileStatic
+@TupleConstructor
+class Havoc {
+    String name
+}
+
 /**
  * One straight-line execution path through a method body: an ordered
  * list of {@link Guard}/{@link Assign} steps and the expression whose
@@ -127,7 +139,10 @@ class UnsupportedConstructException extends RuntimeException {
  * Supported: blocks, {@code if}/{@code else}, single-assignment
  * local declarations and assignments, explicit {@code return}, and the
  * Groovy implicit return (the trailing expression of the body or of a
- * branch in tail position). Loops, switch, try/catch, re-assignment and
+ * branch in tail position), {@code throw} (the path ends — a postcondition
+ * is vacuous on a non-returning path), and {@code try}/{@code catch} without
+ * {@code finally} (the happy path plus one havoc-entry path per handler —
+ * Phase 192). Loops, switch, {@code finally}, re-assignment and
  * multi-variable declarations are deliberately out of scope.
  */
 @CompileStatic
@@ -186,6 +201,28 @@ class BodyEncoder {
         return res
     }
 
+    /** Phase 192 — the names the try block assigns on ANY of its paths (beyond the shared prefix): the
+     *  catch-entry havoc set. Heap-mutating steps are outside the fragment — a catch path can't frame
+     *  them per-name. Nested try/catch composes: an inner handler's own {@link Havoc} names count. */
+    private static List<String> tryAssignedNames(WalkResult rTry, int prefixLen, TryCatchStatement tcs) {
+        LinkedHashSet<String> names = new LinkedHashSet<String>()
+        List<Path> all = new ArrayList<Path>(rTry.terminated)
+        all.addAll(rTry.live)
+        for (Path p : all) {
+            for (int i = prefixLen; i < p.steps.size(); i++) {
+                Object st = p.steps.get(i)
+                if (st instanceof Assign) names.add(((Assign) st).name)
+                else if (st instanceof Havoc) names.add(((Havoc) st).name)
+                else if (st instanceof ArrayStore || st instanceof PropStore || st instanceof LemmaCall) {
+                    throw new UnsupportedConstructException(
+                        "try block mutates heap state (array/field store or call statement) — " +
+                        "catch-entry state can't be framed (line ${tcs.lineNumber})")
+                }
+            }
+        }
+        return new ArrayList<String>(names)
+    }
+
     private static WalkResult walkOne(Statement s, Path prefix, boolean tail) {
         WalkResult res = new WalkResult()
 
@@ -208,6 +245,45 @@ class BodyEncoder {
             Path np = copy(prefix)
             np.steps.add(new AssertAssume(((AssertStatement) s).booleanExpression))
             res.live.add(np)
+            return res
+        }
+
+        if (s instanceof ThrowStatement) {
+            // Phase 192 — an explicit `throw`: this path never completes normally, so the @Ensures is
+            // vacuous on it (groovy-contracts checks a postcondition only on normal return) and the path
+            // simply ends — neither live nor terminated. `if (bad) throw new IAE()` guard prologues and
+            // rethrowing catch handlers both fall out of this.
+            return res
+        }
+
+        if (s instanceof TryCatchStatement) {
+            TryCatchStatement tcs = (TryCatchStatement) s
+            Statement fin = tcs.finallyStatement
+            if (fin != null && !(fin instanceof EmptyStatement) &&
+                !(fin instanceof BlockStatement && ((BlockStatement) fin).statements.isEmpty())) {
+                throw new UnsupportedConstructException(
+                    "'finally' unsupported (line ${tcs.lineNumber})")
+            }
+            // Phase 192 — the happy path: the try block ran to completion (its implicit obligations are
+            // still collected and checked by the other passes; this fork concerns only the @Ensures
+            // value flow). Walked in the incoming tail context, so `try { 1 } catch (E e) { 0 }` in
+            // return position resolves both implicit returns.
+            int prefixLen = prefix.steps.size()
+            WalkResult rTry = walkStatements(asList(tcs.tryStatement), [copy(prefix)] as List<Path>, tail)
+            res.terminated.addAll(rTry.terminated)
+            res.live.addAll(rTry.live)
+            // Catch-entry state: the try block may have executed ANY prefix of itself before throwing, so
+            // every local it assigns (on any of its paths) is unknown in the handler — havoc each. Heap
+            // effects (array-element / field stores, standalone call statements) can't be framed per-name
+            // this way, so they push the whole method out of the fragment, loudly.
+            List<String> assigned = tryAssignedNames(rTry, prefixLen, tcs)
+            for (CatchStatement cs : tcs.catchStatements) {
+                Path pc = copy(prefix)
+                for (String n : assigned) pc.steps.add(new Havoc(n))
+                WalkResult rCatch = walkStatements(asList(cs.code), [pc] as List<Path>, tail)
+                res.terminated.addAll(rCatch.terminated)
+                res.live.addAll(rCatch.live)
+            }
             return res
         }
 

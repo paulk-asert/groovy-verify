@@ -8896,6 +8896,51 @@ docLint **0 drift** (268/268 groups, 2 packs / 0 broken claims).
 
 ---
 
+## Phase 192 — try/catch happy path + `throw` ends its path  *(shipped)*
+
+The body fragment's oldest deliberate exclusion, opened: `try`/`catch` and `throw` join the `@Ensures` path
+model. The design falls out of the existing fork machinery:
+
+- **`throw` ends its path** — neither live nor terminated: a postcondition is vacuous on a non-returning
+  path (groovy-contracts checks `@Ensures` only on normal completion). This alone unlocks the ubiquitous
+  **guard-throw prologue** (`if (n < 0) throw new IAE(); return n + 1` — previously an "unsupported
+  statement ThrowStatement" skip, now a verify with the guard's negation as a path fact) and rethrowing
+  catch handlers.
+- **`try`/`catch` forks like an `if`** — the happy path walks the try block exactly (in the incoming tail
+  context, so implicit returns resolve); each handler is a separate path entered with a **`Havoc`** step
+  (new path-step type) per try-assigned local: the try may have executed *any prefix* of itself before
+  throwing, so the handler provably relies on nothing the try wrote. `Havoc` rebinds to a fresh
+  unconstrained handle (Assign's sort selection minus the equality; reference types also forget nullity) —
+  weakest-possible knowledge, a sound over-approximation of every partial execution. Nested try/catch
+  composes (an inner handler's own Havoc names count toward the outer set).
+- **Loud boundaries**: `finally` skips; heap effects inside a try (array/field stores, standalone call
+  statements) skip — catch-entry state can't be framed per-name for those.
+
+**The find of the slice** was upstream of the walker: the first green run still showed a phantom
+"assertion safety check" skip anchored at the `@Ensures` line. Root cause — `copyBody`'s clean-body
+snapshot deep-copies the *containers groovy-contracts restructures* (blocks, if-branches) but shared a
+user `TryCatchStatement` by identity, so when contracts later instrumented the returns *inside* the try
+block, the injected `def result=…; try{assert}` leaked into the snapshot — a latent contamination for
+**every** user try/catch under `@Ensures`, invisible until now only because such methods skipped anyway.
+`copyBody` now copies through try/catch exactly as it does if-branches.
+
+The runtime rung then flagged the new capability — `inc(-1)` throws by design, which had no category — and
+gained one: **guard-throw (vacuous on a non-returning call, not a proof gap)**, gated on an explicit
+`throw` in the case source so throw-free uncategorised exceptions still fail the run. The differential
+oracle thereby *empirically corroborated* the vacuous-postcondition semantics.
+
+`P192 try-catch` (G269, 8 cases) pins it: compensating-catch verify, violating-handler refute (catch paths
+are checked), **havoc teeth** (a handler returning a try-written local can't prove the try's value),
+rethrow-verify, guard-throw verify + refute twin, and the two loud skips. FRAGMENT.md and CAPABILITIES
+carry the capability; the residual is recorded honestly: the implicit-obligation passes still check
+obligations inside `try` as if uncaught — a `catch (ArithmeticException)` doesn't yet suppress the divide
+obligation it handles (its own slice, with its own soundness argument to make).
+
+Root suite **1488/0** (+8), runtime rung **555/574** clean / 0 need review (new category triaged),
+`examples-dsl` green, docLint **0 drift** (269/269 groups).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

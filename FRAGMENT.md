@@ -268,7 +268,15 @@ and since a statement-level `@Invariant` is a Groovy parse error on a `.each` ca
 levels, scalar accumulators or array-filling inner bodies — and the inner loop may **`return` a witness** on a
 match, so a doubly-nested search verifies, Phase 109 — see below). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
-plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
+plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
+explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts
+checks `@Ensures` only on normal completion), so the ubiquitous guard-throw prologue
+(`if (bad) throw new IllegalArgumentException(...)`) verifies with the guard's negation as a path fact — and
+**`try`/`catch` (no `finally`)** forks like an `if`: the happy path is walked exactly, while each handler is a
+separate path entered with every try-assigned local **havocked** (the try may have executed any prefix before
+throwing, so the handler provably relies on nothing the try wrote; a rethrowing handler contributes no path at
+all). Heap mutation inside a `try` (array/field stores, call statements) can't be framed per-name at catch
+entry and loud-skips, as does `finally` (Phase 192). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
 call bound to a local, whose slots then carry the callee's postcondition into the caller's body
 (`Tuple2 r = f(a); … r.v1 …`; Phase 113) — a method-level
 `@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a

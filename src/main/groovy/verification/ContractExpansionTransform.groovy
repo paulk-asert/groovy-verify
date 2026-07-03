@@ -52,6 +52,8 @@ import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
+import org.codehaus.groovy.ast.stmt.CatchStatement
+import org.codehaus.groovy.ast.stmt.TryCatchStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import groovyjarjarasm.asm.Opcodes
@@ -654,6 +656,21 @@ class ContractExpansionTransform implements ASTTransformation {
             IfStatement i = (IfStatement) s
             IfStatement out = new IfStatement((BooleanExpression) copyExpr(i.booleanExpression, freshen),
                 copyBody(i.ifBlock, freshen), copyBody(i.elseBlock, freshen))
+            out.setSourcePosition(s); out.copyNodeMetaData(s)
+            return out
+        }
+        // Phase 192 — a USER try/catch (the body model now supports it): its try/catch blocks are
+        // containers whose returns groovy-contracts instruments in place, exactly like an IfStatement's
+        // branches — a shared node would leak the injected `def result=…; try{assert}` back into the
+        // snapshot (the assert then surfaces in the assertion-safety pass, anchored at the @Ensures).
+        if (s instanceof TryCatchStatement) {
+            TryCatchStatement t = (TryCatchStatement) s
+            TryCatchStatement out = new TryCatchStatement(copyBody(t.tryStatement, freshen), t.finallyStatement)
+            for (CatchStatement cs : t.catchStatements) {
+                CatchStatement co = new CatchStatement(cs.variable, copyBody(cs.code, freshen))
+                co.setSourcePosition(cs); co.copyNodeMetaData(cs)
+                out.addCatch(co)
+            }
             out.setSourcePosition(s); out.copyNodeMetaData(s)
             return out
         }

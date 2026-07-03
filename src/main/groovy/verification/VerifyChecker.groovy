@@ -5380,6 +5380,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             "guard '${g.cond.text}' is outside fragment")
                     }
                     session.assertExpr(g.positive ? c : session.not(c))
+                } else if (step instanceof Havoc) {
+                    // Phase 192 — catch-entry state: the try block may have executed any prefix before
+                    // throwing, so the name's value is unknown here. Rebind to a fresh UNCONSTRAINED
+                    // handle in the name's sort (mirroring Assign's sort selection, minus the equality);
+                    // reference types also forget their nullity. Weakest-possible knowledge = sound
+                    // over-approximation of every partial execution.
+                    Havoc h = (Havoc) step
+                    ClassNode hType = currentScalarTypes.get(h.name)
+                    Object hFresh
+                    if (enc.isDecimalName(h.name)) {
+                        hFresh = session.realVar(h.name + '#' + (++ssaVersion))
+                    } else if (hType != null && !isIntElement(hType)) {
+                        hFresh = session.varOfSort(h.name + '#' + (++ssaVersion), enc.sortForType(hType))
+                    } else if (currentBooleanLocals.contains(h.name)) {
+                        hFresh = session.boolVar(h.name + '#' + (++ssaVersion))
+                    } else {
+                        hFresh = session.intVar(h.name + '#' + (++ssaVersion))
+                    }
+                    enc.bind(h.name, hFresh)
+                    if (hType != null && !isIntElement(hType) && !enc.isDecimalName(h.name)) {
+                        enc.bindNullity(h.name, session.boolVar(h.name + '?null#' + ssaVersion))
+                    }
                 } else if (step instanceof Assign) {
                     Assign a = (Assign) step
                     // Phase 35 — Set<X> u = a + b / Set<X> u = a.intersect(b): if the RHS is a
