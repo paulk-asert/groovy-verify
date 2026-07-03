@@ -86,4 +86,13 @@ interface EncodingPack {
      *  then aliases the (scalar-handle-less) name to the expression, which the pack's readers resolve via
      *  {@link TheoryApi#sourceAlias}. */
     default boolean claimsValueSource(TheoryApi api, Expression e) { false }
+
+    /**
+     * A per-method <b>checker pass</b> — pure AST analysis with diagnostics, no SMT (e.g. UnitsPack's C₀
+     * kind-vector check of {@code as Quantity<K>} casts: compile-time exponent arithmetic over the
+     * declared generics). Runs after the method's encoder-backed checks, best-effort: an exception is
+     * contained per-pack (the pass silently contributes nothing, matching the engine's own posture for
+     * this pass class). Program against {@link CheckerApi} only.
+     */
+    default void checkMethod(CheckerApi api, org.codehaus.groovy.ast.MethodNode node) { }
 }

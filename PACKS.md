@@ -16,7 +16,7 @@
 
 # Encoding packs
 
-> **Experimental.** The SPI is young (Phases 187–188) and grown demand-driven; expect it to move.
+> **Experimental.** The SPI is young (Phases 187–190) and grown demand-driven; expect it to move.
 
 An **encoding pack** teaches the verifier a *library or domain vocabulary* — a spec-helper family, JSR 385
 quantities, a money or time library — from outside the core engine. The boundary is principled:
@@ -28,7 +28,7 @@ Ints, arrays, operators, closures, collections, and `String` theory are the lang
 in-tree packs are the references: [`NumberTheoryPack`](src/main/groovy/verification/NumberTheoryPack.groovy)
 (the minimal shape — five call recognisers + their axioms) and
 [`UnitsPack`](src/main/groovy/verification/UnitsPack.groovy) (the full surface — properties, operators,
-expression claims, value-source aliasing, curated tables).
+expression claims, value-source aliasing, a checker pass, curated tables).
 
 ## The shape of a pack
 
@@ -58,9 +58,12 @@ value you know is yours (that is what `claimsExpression` exists to prevent — s
 | `translateBinary(api, be, opType)` | a binary expression, at the domain-comparison slot | quantity `==` / `!=` |
 | `claimsExpression(e)` *(static context)* | scalar classifiers asking "is this value yours?" | `quantity / quantity` is `Quantity.divide` — no Real classification, no divide-by-zero obligation |
 | `claimsValueSource(api, e)` | the checker deciding whether to alias a scalar-handle-less name to its construction expression (read it back via `api.sourceAlias(name)`) | a Quantity-typed local / `result` |
+| `checkMethod(api, node)` | once per method: a pure-AST **checker pass** with diagnostics — no SMT (programs against `CheckerApi`: `reportError`, `cleanBody`, `inferredTypeOf`); best-effort, contained per pack | the C₀ kind-vector check of `as Quantity<K>` casts |
 | `corpusGroups()` | provenance: the case groups that pin this pack | `['P131 dimensions', 'P132 unit scale']` |
 
-All but `translateCall` have `NO_MATCH`/`false` defaults — implement what your domain needs.
+All but `translateCall` have no-op defaults — implement what your domain needs. The encoder-facing hooks
+receive `TheoryApi` (a live SMT session per VC); `checkMethod` receives `CheckerApi` (diagnostics + AST
+queries, no session) — a pass that needs solving belongs in the encoder hooks instead.
 
 ### The facade
 
@@ -94,11 +97,10 @@ unsound for everyone. The project's discipline therefore applies to packs verbat
 
 ## What packs cannot do (yet)
 
-Deliberately outside the SPI, pending their own design work: **checker-pass hooks** (e.g. the JSR 385 C₀
-kind-vector analysis over `Quantity<Length>` generics remains in `VerifyChecker`), **scope collection**
-(recognising domain-typed locals is still checker code; packs only *claim* the construction via
-`claimsValueSource`), **normalizer rewrites**, and **counterexample rendering**. Each is added when a pack
-demonstrably needs it — the same slice discipline as the engine.
+Deliberately outside the SPI, pending their own design work: **scope collection** (recognising
+domain-typed locals is still checker code; packs only *claim* the construction via `claimsValueSource`),
+**normalizer rewrites**, and **counterexample rendering**. Each is added when a pack demonstrably needs
+it — the same slice discipline as the engine.
 
 ## Worked minimum
 

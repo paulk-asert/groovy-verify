@@ -8817,6 +8817,44 @@ own axioms, its own corpus claim, its own catalog entry — and the core is smal
 
 ---
 
+## Phase 190 — checker-pass hooks: the C₀ kind-vector pass moves into UnitsPack  *(shipped — experimental)*
+
+The first deferred SPI surface from Phase 188's "honestly out" list, delivered: **`EncodingPack.checkMethod`**
+— a per-method **checker pass** (pure AST analysis + diagnostics, no SMT), the surface class the C₀
+dimension analysis needed. With it, the *last* units knowledge leaves the core: the kind table
+(`javax.measure.quantity.* → [L, M, T]` exponent vectors), the structural `dimOf` walker, the
+`as Quantity<K>` cast check, and the mismatch diagnostic text (relocated out of `Reporter` — it is units
+vocabulary) all now live in `UnitsPack` (~160 lines out of `VerifyChecker`).
+
+- **`CheckerApi`** — the checker-side sibling of `TheoryApi`, implemented by `VerifyChecker`: `reportError`
+  (the diagnostic channel), `cleanBody` (the CONVERSION snapshot — packs must never read `node.code` for
+  analysis), and `inferredTypeOf` (STC's type query — the one hidden dependency the migration surfaced:
+  `dimOf` leaned on the extension's `getType`, which no facade covered). A pass that needs solving belongs
+  in the encoder hooks; this surface is deliberately session-free.
+- **Dispatch** keeps the pre-migration posture exactly: best-effort with per-pack containment (the old
+  `verifyDimensions` call sat in its own `try/catch(Throwable)`; each pack's pass now gets the same).
+- **Load-bearing, negative-tested**: `P131 dimensions` passes 6/6 through the pack; under
+  `VERIFY_PACKS=none` its two refute twins *fail* — the "Dimensional mismatch" diagnostic genuinely rides
+  `checkMethod`.
+
+**An incident worth recording**: the first migration attempt corrupted `VerifyChecker`'s encoding — a
+`perl -0pi` edit whose replacement text contained a non-ASCII codepoint (`C₀`) upgraded perl's slurped
+scalar to wide-character mode, re-encoding the *entire* file and double-encoding every existing UTF-8
+sequence (722 mojibake lines). The suite caught it before commit — three counterexample-rendering cases
+failed because the em-dash inside the `a[0] = 1 — the spec requires 0` template had itself been mangled —
+and the file was restored from git and the edits redone with explicit-UTF-8 tooling. Moral: non-ASCII
+replacement text needs encoding-aware tools (python3 `io`/the Edit tool), never byte-mode perl.
+
+Scope note: `mentionsQuantity` gates the pass per method inside the pack (signature mentions
+`javax.measure.Quantity`) — generic gating stays pack-internal by design; the core dispatches every pack on
+every method. Remaining out (unchanged): scope collection, normalizer rewrites, counterexample rendering.
+
+Root suite **1475/0**, runtime rung **553/571** clean, `examples-dsl` green, docLint **0 drift**
+(39/39 sources mapped). `VerifyChecker` sheds 171 lines; the extensibility arc's tally after four phases:
+the core has lost ~1,100 lines of domain knowledge to two packs, at zero behaviour change.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
