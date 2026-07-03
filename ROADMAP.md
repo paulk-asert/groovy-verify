@@ -8855,6 +8855,47 @@ the core has lost ~1,100 lines of domain knowledge to two packs, at zero behavio
 
 ---
 
+## Phase 191 — scope-collection hooks: investigated, and the probe found the real gap elsewhere  *(shipped)*
+
+The last deferred SPI surface on the units list — and the third time the probe-first tenet earned its keep.
+The plan was a scope-collection hook (packs contributing to the checker's per-method scope walks). The
+survey showed the mechanics were **already generic** after Phase 188: the local-declaration and
+`result`-binding walks ask `packsClaimSource` and register plain source aliases — the remaining units
+flavour at those sites was comments, not code.
+
+The probe (a scratch `P900` group, expectations forced to print actual diagnostics) then tested the
+suspected gap — a domain-typed name no pack can claim (`def d = q` from a `Quantity` parameter) falling
+through to int-SSA:
+
+- **Value reads already honest**: the read-out paths skip loudly ("outside fragment"), and the deref
+  obligations still fire (`f(null)` genuinely throws). No missing hook there.
+- **One genuine pre-existing dishonesty, pack-side**: `x == y` over two parameter quantities was REFUTED
+  through int shadows ("counterexample: a = 0, b = 0") — a model that carries neither compareTo
+  value-equality nor the cross-kind `UnconvertibleException` (the Phase 151 posture explicitly forbids
+  both). Root cause: `UnitsPack.translateBinary` returned `NO_MATCH` when dimensions were unresolvable,
+  letting the generic scalar path claim the comparison. (Why int shadows at all: `javax.measure.Quantity`
+  is a field-less interface, so `isCrossClassObjectType` rejects it and params default to int handles.
+  Pre-existing — the pre-188 inline branch fell through identically.)
+
+**The fix used an existing surface**: the pack now distinguishes its two NO-cases — a comparison with a
+quantity-*typed* but unresolvable side is claimed as matched-but-untranslatable (`null` → loud skip); only
+a comparison with no quantity-typed side at all falls through. Exactly the tri-state distinction PACKS.md
+documents as load-bearing, exercised in anger.
+
+**No new SPI surface shipped, by evidence**: `claimsValueSource` + `sourceAlias` *is* the scope story the
+in-tree packs need; a declared-type claim (`claimsType`, e.g. routing field-less domain interfaces away
+from int shadows wholesale) stays deferred until a pack demonstrably needs it — the probe showed the
+blast radius today is confined to comparisons, which the pack-side fix covers. The two registration-site
+comments were genericized (pack-domain, not JSR 385), closing the last units flavour in the checker.
+
+`P191 domain-typed names` (G268, 5 cases) pins the whole finding: parameter-quantity value reads skip,
+the once-refuting comparison now skips (the teeth), the cross-kind throwing comparison skips, and the
+claimable-construction alias still verifies value-equality through the scope hook. PACKS.md records the
+investigation outcome. Root suite **1480/0** (+5), runtime rung **553/571** clean, `examples-dsl` green,
+docLint **0 drift** (268/268 groups, 2 packs / 0 broken claims).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

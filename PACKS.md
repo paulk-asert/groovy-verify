@@ -97,10 +97,16 @@ unsound for everyone. The project's discipline therefore applies to packs verbat
 
 ## What packs cannot do (yet)
 
-Deliberately outside the SPI, pending their own design work: **scope collection** (recognising
-domain-typed locals is still checker code; packs only *claim* the construction via `claimsValueSource`),
-**normalizer rewrites**, and **counterexample rendering**. Each is added when a pack demonstrably needs
-it — the same slice discipline as the engine.
+Deliberately outside the SPI, pending their own design work: **normalizer rewrites** and
+**counterexample rendering**. Each is added when a pack demonstrably needs it — the same slice discipline
+as the engine.
+
+**Scope collection** was investigated (Phase 191) and deliberately *not* grown: the checker's collection
+walks are already units-agnostic — a pack participates through `claimsValueSource` (locals and `result`
+alias to their construction; read back via `sourceAlias`), and probing the suspected gaps showed the
+remaining dishonesty was pack-side (a `translateBinary` `NO_MATCH` that let the scalar path int-shadow
+unresolvable quantity comparisons — fixed in the pack, pinned by `P191 domain-typed names`). A
+declared-type claim (`claimsType`) stays deferred until a pack demonstrably needs one.
 
 ## Worked minimum
 

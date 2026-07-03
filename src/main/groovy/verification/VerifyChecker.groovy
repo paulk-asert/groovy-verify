@@ -5405,10 +5405,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (enc.tryRecordSetBinopAssign(a.name, a.rhs)) {
                         continue
                     }
-                    // Phase 152 — a JSR 385 Quantity local (`def d = 1.m`, `def s = 1.s`): a quantity has no scalar
-                    // handle, so alias the local to its RHS *expression* (the same `quantitySource` mechanism `result`
-                    // uses), letting the dimension/magnitude readers resolve it inside a later `d / s`. Short-circuits
-                    // the int-SSA path, which would mis-model the quantity as an int shadow.
+                    // EncodingPack scope hook (Phases 152/188) — a pack-domain local (`def d = 1.m`): a
+                    // pack-claimed value has no scalar handle, so alias the local to its RHS *expression*
+                    // (the same source-alias mechanism `result` uses), letting the claiming pack's readers
+                    // resolve it later. Short-circuits the int-SSA path, which would mis-model the value
+                    // as an int shadow.
                     if (enc.packsClaimSource(a.rhs)) {
                         enc.registerSourceAlias(a.name, a.rhs)
                         continue
@@ -5681,11 +5682,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.bind('result', resHandle)
                         enc.bindNullity('result', session.boolLit(true))
                     } else if (resHandle == null && enc.packsClaimSource(p.result)) {
-                        // Phase 151 — a JSR 385 Quantity-returning method (e.g. `Quantity squareKm() { 1.km * 1.km }`).
-                        // A quantity has no scalar Z3 handle (it's a magnitude × a dimension), so instead of binding a
-                        // value we alias `result` to the return EXPRESSION: the dimension/magnitude readers resolve it,
-                        // letting a quantity-to-quantity `@Ensures({ result == 1.km })` reason about both. Bind a
-                        // placeholder handle marked non-null (a constructed quantity is never null).
+                        // EncodingPack scope hook (Phases 151/188) — a pack-domain-returning method (e.g. a
+                        // Quantity `squareKm() { 1.km * 1.km }`). A pack-claimed value has no scalar Z3 handle,
+                        // so instead of binding a value we alias `result` to the return EXPRESSION: the claiming
+                        // pack's readers resolve it (`@Ensures({ result == 1.km })` reasons about both layers).
+                        // Bind a placeholder handle marked non-null (a pack-claimed construction never is).
                         resHandle = session.intVar('result$qty$' + (++ssaVersion))
                         enc.registerSourceAlias('result', p.result)
                         enc.bind('result', resHandle)

@@ -54,8 +54,9 @@ import org.codehaus.groovy.syntax.Types
  * modelled; a parameter quantity skips loudly. All state is per-call ({@link Reader} wraps the
  * {@link TheoryApi}); the tables are static.
  *
- * <p>Corpus: groups {@code P131 dimensions}, {@code P132 unit-scale}, and the {@code examples-dsl}
- * subproject's suite (the {@code 1.km + 1.mile} DSL) — verify and refute twins throughout.
+ * <p>Corpus: groups {@code P131 dimensions}, {@code P132 unit-scale}, {@code P191 domain-typed names},
+ * and the {@code examples-dsl} subproject's suite (the {@code 1.km + 1.mile} DSL) — verify and refute
+ * twins throughout.
  */
 @CompileStatic
 class UnitsPack implements EncodingPack {
@@ -65,7 +66,7 @@ class UnitsPack implements EncodingPack {
 
     /** The CASES groups; the DSL surface is additionally pinned by UnitScaleTest and the examples-dsl suite. */
     @Override
-    List<String> corpusGroups() { ['P131 dimensions', 'P132 unit scale'] }
+    List<String> corpusGroups() { ['P131 dimensions', 'P132 unit scale', 'P191 domain-typed names'] }
 
     /** {@code X.getValue()} — the SI magnitude read back in X's current unit (Phase 132). A non-quantity
      *  or unmodellable receiver falls through (the old inline handler fell through identically). */
@@ -92,14 +93,25 @@ class UnitsPack implements EncodingPack {
     /** Quantity-to-quantity {@code ==} / {@code !=} (Phase 151/159). Sound only by consulting BOTH layers:
      *  different dimensions THROW at runtime (UnconvertibleException, empirically pinned) — so {@code ==}
      *  is `false` (refutable, never provable-true) and {@code !=} must skip loudly (null); equal dimensions
-     *  fall to SI-magnitude equality. Either side unmodellable → NO_MATCH (the core's fall-through). */
+     *  fall to SI-magnitude equality. A quantity-typed side the readers can't resolve is claimed as
+     *  untranslatable (loud skip — Phase 191); only a comparison with no quantity-typed side at all
+     *  falls through (NO_MATCH). */
     @Override
     Object translateBinary(TheoryApi api, BinaryExpression be, int opType) {
         if (opType != Types.COMPARE_EQUAL && opType != Types.COMPARE_NOT_EQUAL) return TheoryApi.NO_MATCH
         Reader r = new Reader(api)
         int[] dL = r.dimensionOf(be.leftExpression)
         int[] dR = r.dimensionOf(be.rightExpression)
-        if (dL == null || dR == null) return TheoryApi.NO_MATCH
+        if (dL == null || dR == null) {
+            // Phase 191 — a side is quantity-TYPED but its dimension is unresolvable (a Quantity
+            // parameter, or a local bound from one). NO_MATCH here would let the generic scalar path
+            // model the operands as int shadows and refute/prove a comparison whose runtime meaning
+            // (compareTo value-equality; UnconvertibleException across kinds) that model does not
+            // carry — the P900 probe caught exactly that refutation. Claim it: matched but
+            // untranslatable → the loud skip (the Phase 151 posture for unknown quantities).
+            if (Reader.isQuantityTyped(be.leftExpression) || Reader.isQuantityTyped(be.rightExpression)) return null
+            return TheoryApi.NO_MATCH
+        }
         if (!java.util.Arrays.equals(dL, dR)) {
             return opType == Types.COMPARE_EQUAL ? api.session.boolLit(false) : null
         }
