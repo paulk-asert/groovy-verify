@@ -9191,6 +9191,40 @@ Root suite **1511/0** (+6), runtime rung **561/580** clean, `examples-dsl` green
 
 ---
 
+## Phase 199 — the holder-witness capstone: per-round progress derived  *(shipped)*
+
+The construction Phase 198 said was "the natural next rung", built: each liveness round's serving-advance
+is now **derived from a named holder's scheduled `Leave`**, not hypothesized. Every case verified on the
+first run — the Phase-197/198 machinery (trace-loop recursion, nested bounded quantifiers, per-round
+witness functions) was exactly sufficient.
+
+- **`advanceDerived`** — the trace loop with one derivation step inside each round. New hypotheses, both
+  quantified over rounds: per-round **fairness** (`schedF(vF(j)) == hF(j)` — the holder, nameable since the
+  any-N int indexing, is scheduled at its round's time) and the **step implication** (a scheduled holder's
+  `Leave` advances `serving`). The recursion instantiates both at `j = m−1` and chains the modus ponens —
+  Phase 197's `servingF(vF(j)+1) == servingF(vF(j)) + 1` hypothesis is now a conclusion.
+- **`holderEats`** — the full composition: a `Hungry` waiter at **any measure k**, k derived advances, the
+  waiter framed throughout, its own fairness witness at `w`, the `Enter` fires. Leino's Liveness lemma with
+  every round's progress derived from fairness + a named holder + framing.
+- **Teeth**: drop the per-round fairness conjunct and the derivation refutes (the step implication can't
+  fire); drop the `Enter` step and the composition refutes.
+- **The boundary beyond, pinned as a case**: deriving the *step implication itself* from the transition
+  system needs the time×process state `cs(i, r)` — a two-argument function. `BiFunction.apply` skips
+  loudly today (`expect: 'outside fragment'` — the boundary is now corpus-pinned, not just prose). A
+  2-ary apply UF would be the Phase-173 move one arity up — a small engine slice, named and waiting.
+
+With this, the KRML260 arc's ledger reads: safety in both formulations (170/186), bounded (enum) and
+**symbolic-N** (198) process sets; ranking function (171); bounded bypass (172); the apply-term engine fix
+(173); fair-schedule base case (174); the two-process capstone (175); the any-N trace loop and measure
+reduction (197); and per-round progress **derived** from holder fairness (199). What remains is one
+engine capability (2-ary apply) plus the transition-relation spelling over it — after which the step
+implication itself becomes a theorem of the system rather than a witness.
+
+`P199 holder witness` (G274, 5 cases). Root suite **1516/0** (+5), runtime rung **561/580** clean,
+docLint **0 drift** (104/104 links, 274/274 groups), full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

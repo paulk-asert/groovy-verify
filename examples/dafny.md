@@ -426,9 +426,17 @@ composition chains it into the Phase-174 base case: a waiter at **any** measure 
 teeth hold at both ends: one advance short and the reduction refutes; a round that fails to advance
 `serving` and the trace loop's walk refutes. The hypotheses keep the development's skolemized-witness
 posture — the advance times `vF(j)` are supplied as witnesses, exactly as the two-process lemmas take
-scheduled times; what remains beyond the fragment is *deriving* each round's advance from the holder's own
-`Enter`/`Leave` under fairness, which needs the holder's identity per round — reasoning over the
-uninterpreted `set<Process>` domain that the safety section already names as out of the fragment.
+scheduled times.
+
+The derivation goes one round deeper still: with processes nameable (the any-N indexing below), the round
+**holder** `hF(j)` enters the picture, and the advance becomes a **conclusion** — per-round fairness says
+the holder is scheduled at its round's time (`schedF(vF(j)) == hF(j)`), the step implication says a
+scheduled holder's `Leave` advances `serving`, and the trace loop chains the modus ponens per round
+(`advanceDerived`), with the full `holderEats` composition taking a `Hungry` waiter at any measure to
+`Eating`. What remains beyond the fragment is deriving the *step implication itself* from the transition
+system, which needs the time×process state `cs(i, r)` — a two-argument function; `BiFunction.apply` is
+outside the fragment today (pinned by a boundary case), and a 2-ary apply UF would be the natural
+Phase-173 move one arity up.
 
 **Any-N safety.** The same move closes the safety side's bounded-process scope: processes int-indexed
 `0..<N` with `N` symbolic, `cs`/`t` as functions, and `valid` in Leino's own quantified spelling — the
