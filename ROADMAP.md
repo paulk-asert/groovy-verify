@@ -9030,6 +9030,44 @@ Root suite **1499/0** (+4), runtime rung **561/580** clean / 0 need review, `exa
 
 ---
 
+## Phase 195 — the perf-budget assertion  *(shipped)*
+
+The compilation-slowdown risk the project flagged from the start ("Z3 calls take 10–100 ms each"), turned
+from a documented risk into an **asserted invariant** — the same move the runtime rung's coverage canary
+made for silent tier drift, now for silent cost drift.
+
+**Design decision — count, don't clock.** Wall-clock budgets are machine-brittle (a CI runner and an
+M-series laptop disagree by multiples), so the primary ceilings are **deterministic counters**: total
+solver `check()` calls and distinct VCs solved are properties of the corpus + encoder, reproducible on any
+machine (up to ~1–2% test-class-ordering jitter, dwarfed by headroom). An encoder change that doubles the
+check count — a lost VC-cache key, a duplicated discharge pass, an axiom re-minted per call instead of
+per VC — trips the budget everywhere. Wall-clock appears only as a deliberately-enormous single-check
+backstop (a quantifier explosion shows up as one huge check long before machines disagree about it) and as
+a human report line. UNKNOWNs get a small allowlisted ceiling — a new hard-UNKNOWN is a capability
+regression signal, but a slow machine can legitimately time out a hard VC.
+
+**Mechanics**: four counters on `Z3Backend` beside the Phase-34 VC-cache stats (total/peak solver ms,
+UNKNOWNs, checks > 500 ms — fed from the same `computeCheck` timing the `Z3_TIMING` forensic hook uses);
+`PerfBudget` (test scope) holds the ceilings, the report, and the assertion; the harness appends
+**`perf budget within ceilings`** as the final dynamic test in the stream (dynamic tests execute in order,
+so the whole run has accumulated), and the console `verify` runner prints the `perf:` line. Ceilings are
+≤-only, so a `-Dverify.only` subset run passes trivially — the full run is what the budget measures.
+
+**Sized from measurement, negative-tested**: the full suite measures ~4,550 checks (~2,900 solved /
+~1,650 cached), ~45 s in Z3, max single check ~2.0 s, 19 UNKNOWN → ceilings 6,000 / 4,000 / 25 / 30 s
+(~30% headroom; re-basing after a deliberate corpus jump is a one-line reviewed change). The canary was
+negative-tested at a ceiling of 1: it fails with the self-explanatory
+`check-call ceiling exceeded — perf: …` message.
+
+The suite line is now **1500** (1,499 cases + the budget). TOOLING.md carries the description next to the
+knob family. Baseline for the record: 19 UNKNOWNs exist today — hard VCs at the solver timeout; driving
+that number down is an optimisation frontier the budget now pins against silent growth.
+
+Root suite **1500/0**, docLint **0 drift**; rung and `examples-dsl` untouched by construction (report-only
+counters plus a test-scope assertion — the encoder emits identical SMT).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

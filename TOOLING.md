@@ -118,6 +118,12 @@ solver query as a self-contained SMT-LIB2 benchmark (declarations, assumptions, 
 so you can pipe an obligation to another solver for a second opinion or read the exact formula to debug the
 encoding. All three, with the gradle invocations, are in [BUILD.md](BUILD.md).
 
+Related, but an invariant rather than a knob: the suite ends with a **perf-budget assertion** (`PerfBudget`,
+printed as a `perf:` line by `test` and `verify`) — deterministic ceilings on solver checks issued, distinct
+VCs solved, and UNKNOWN results, plus a generous single-check wall backstop. An encoder change that doubles
+the check count (a lost cache key, a duplicated discharge pass, a re-minted axiom) fails the build on any
+machine, fast or slow; `Z3_TIMING=1` is the forensic follow-up for locating the hot spot.
+
 ## Capability discovery (for agents and tooling)
 
 The knobs above tune one diagnostic at a time; for the *whole surface* — "what can this checker prove, and what

@@ -91,6 +91,24 @@ class Z3Backend implements SmtBackend {
     static void resetVCCacheStats() { vcHits.set(0); vcMisses.set(0) }
     static void recordVCCacheHit()   { vcHits.incrementAndGet() }
     static void recordVCCacheMiss()  { vcMisses.incrementAndGet() }
+
+    // Phase 195 — perf-budget counters. The check/VC counts are deterministic given the corpus and the
+    // encoder (the regression signal a wall-clock budget can't give across machines); the millisecond
+    // figures are the machine-dependent backstop. Asserted against ceilings by PerfBudget (test scope).
+    private static final AtomicLong solverMs = new AtomicLong()       // total ms inside solver.check()
+    private static final AtomicLong solverMsPeak = new AtomicLong()   // slowest single check
+    private static final AtomicLong unknowns = new AtomicLong()       // UNKNOWN results (timeouts etc.)
+    private static final AtomicLong slowChecks = new AtomicLong()     // checks over 500 ms
+    static long solverMsTotal()   { solverMs.get() }
+    static long solverMsMax()     { solverMsPeak.get() }
+    static long unknownResults()  { unknowns.get() }
+    static long slowCheckCount()  { slowChecks.get() }
+    static void recordSolverCheck(long elapsedMs, boolean unknown) {
+        solverMs.addAndGet(elapsedMs)
+        solverMsPeak.accumulateAndGet(elapsedMs, (a, b) -> Math.max(a, b))
+        if (elapsedMs > 500) slowChecks.incrementAndGet()
+        if (unknown) unknowns.incrementAndGet()
+    }
 }
 
 @CompileStatic
@@ -1357,6 +1375,7 @@ class Z3Session implements SmtSession {
         long t0 = System.nanoTime()
         Status status = solver.check()
         long elapsedMs = (long)((System.nanoTime() - t0) / 1_000_000L)
+        Z3Backend.recordSolverCheck(elapsedMs, status == Status.UNKNOWN)
         if (System.getenv('Z3_TIMING') == '1' && elapsedMs > 500) {
             System.err.println("[Z3] check ${status} in ${elapsedMs}ms")
         }

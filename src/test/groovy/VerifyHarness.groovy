@@ -148,6 +148,13 @@ class VerifyHarness {
                 Assertions.assertTrue((boolean) r.ok, (String) r.detail)
             }
         }
+        // Phase 195 — the perf-budget assertion runs LAST in the stream (dynamic tests execute in
+        // order), over the counters the whole run accumulated. Ceilings are ≤-only, so a filtered
+        // subset run passes trivially; the full run is what the budget really measures.
+        tests << dynamicTest('perf budget within ceilings') {
+            println PerfBudget.report()
+            PerfBudget.assertBudget()
+        }
         tests
     }
 
@@ -174,6 +181,7 @@ class VerifyHarness {
         }
         println "\n${'═' * 64}"
         println "${passed} passed, ${failed} failed, ${CASES.size()} total"
+        println PerfBudget.report()
         if (System.getenv('VERIFY_CACHE_STATS') == '1') {
             long hits   = Z3Backend.vcCacheHits()
             long misses = Z3Backend.vcCacheMisses()
