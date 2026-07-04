@@ -133,6 +133,11 @@ tasks.withType(GroovyCompile).configureEach {
     groovyOptions.parameters = true   // keep formal parameter names for the checker
 }
 
+// Apache-2.0 §4: every distributed artifact carries the license text (and the NOTICE) in META-INF.
+tasks.withType(Jar).configureEach {
+    metaInf { from(rootProject.file('LICENSE'), rootProject.file('NOTICE')) }
+}
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)

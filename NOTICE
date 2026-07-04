@@ -1,0 +1,9 @@
+groovy-verify
+Copyright 2025-2026 The original author or authors
+
+This product includes software developed by the author.
+
+Documentation in examples/openjml.md quotes example material from the
+OpenJML project's tutorial pages (openjml.org), (c) their authors, used
+under the pages' CC BY-NC terms with attribution; that material is
+documentation-only and is not included in the published Maven artifacts.
