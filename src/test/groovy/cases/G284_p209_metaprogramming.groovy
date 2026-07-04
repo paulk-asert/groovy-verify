@@ -17,7 +17,7 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P209 metaprogramming' — 6 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P209 metaprogramming' — 7 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G284_p209_metaprogramming {
 
@@ -28,14 +28,14 @@ class G284_p209_metaprogramming {
 
         // ---------- Phase 209: the blog's metaclass FizzBuzz, proved ----------
         // Operator overload by metaclass: Integer.multiply(String) selects the emoji exactly when the
-        // remainder is zero. Spec note: `n % 3 == 0 && n % 5 == 0` rather than `n % 15 == 0` — the
-        // divisibility equivalence 15|n <=> (3|n && 5|n) entangled with the seq goal is a solver timeout.
+        // remainder is zero. The natural `n % 15 == 0` spelling proves at the default budget (it was a
+        // solver timeout when first probed pre-Phase-211; the divisibility equivalence now closes).
         [group: 'P209 metaprogramming', name: 'metaclass multiply: emoji selection proves', ok: true,
          src: tc('''class C {
                        static {
                            Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
                        }
-                       @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
+                       @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
                        static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
                    }''')],
         [group: 'P209 metaprogramming', name: 'metaclass multiply: swapped emojis refute', expect: 'Cannot prove postcondition',
@@ -43,9 +43,21 @@ class G284_p209_metaprogramming {
                        static {
                            Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
                        }
-                       @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🐝' : n % 5 == 0 ? '🥤' : '') })
+                       @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : n % 3 == 0 ? '🐝' : n % 5 == 0 ? '🥤' : '') })
                        static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
                    }''')],
+        // SCRIPT form: the registration is a bare top-level statement (it lands in the script's
+        // run(), which stays dynamic/unchecked); only the method carries @TypeChecked. The pack's
+        // registration scan covers the script class's methods, so no static-initializer wrapper is
+        // needed — the exact shape of the blog post's own snippets.
+        [group: 'P209 metaprogramming', name: 'script form: top-level registration, no wrapper', ok: true,
+         src: HDR + '''
+            Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
+
+            @TypeChecked(extensions = 'verification.VerifyChecker')
+            @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
+            static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
+         '''.stripIndent()],
         // The metaclass property: every Integer answers for itself. The bare-`delegate` arm is modelled
         // as an opaque value, so the spec is scoped to the String branches by the precondition.
         [group: 'P209 metaprogramming', name: 'metaclass getter: the numbers answer for themselves', ok: true,
@@ -58,7 +70,7 @@ class G284_p209_metaprogramming {
                            }
                        }
                        @Requires({ n % 3 == 0 || n % 5 == 0 })
-                       @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : '🐝') })
+                       @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : '🐝') })
                        static String fizz(int n) { n.fizzBuzz as String }
                    }''')],
         // Soundness of the opaque arm: WITHOUT the precondition, the claim rests on the bare-`delegate`

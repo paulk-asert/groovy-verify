@@ -43,14 +43,17 @@ class C {
     static {
         Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
     }
-    @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
+    @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
     static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
 }
 ```
 
-Swap the two emojis in the `@Ensures` and it refutes. (Spec spelling note: `n % 3 == 0 && n % 5 == 0`
-rather than `n % 15 == 0` — the divisibility equivalence `15∣n ⟺ 3∣n ∧ 5∣n` entangled with a
-string-sorted goal is a recorded solver timeout.)
+The class wrapper above is the corpus spelling; in a **script** the registration is simply a
+top-level statement (it lands in the script's dynamic `run()`, and only the method carries
+`@TypeChecked`) — no `static { }` block needed, exactly as the blog post writes it. Both forms are
+pinned. Swap the two emojis in the `@Ensures` and it refutes (`counterexample: n = 5`). The natural
+`n % 15 == 0` spelling proves at the default solver budget — the divisibility equivalence
+`15∣n ⟺ 3∣n ∧ 5∣n` was a recorded timeout when first probed, resolved by later encoder work.
 
 ## Every Integer answers for itself
 
@@ -70,7 +73,7 @@ class C {
         }
     }
     @Requires({ n % 3 == 0 || n % 5 == 0 })
-    @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : '🐝') })
+    @Ensures({ result == (n % 15 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : '🐝') })
     static String fizz(int n) { n.fizzBuzz as String }
 }
 ```
