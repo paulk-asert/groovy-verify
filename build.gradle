@@ -36,7 +36,7 @@ plugins {
     id 'maven-publish'
     // Maven Central publishing (signs + uploads to the Central Portal). Inert until its own tasks
     // (`jreleaserDeploy` / `jreleaserConfig`) are invoked — does not touch build / verify / check.
-    id 'org.jreleaser' version '1.24.0'
+    id 'org.jreleaser' version '1.25.0'
     // Fray controlled-schedule concurrency testing (rung 3 for the lock-ordering / deadlock half). Pointed at
     // the isolated `frayCheck` task below, so it never touches the main `test` execution. Run: ./gradlew frayCheck
     id 'org.pastalab.fray.gradle' version '0.8.5'
@@ -66,15 +66,15 @@ tasks.named('rat') {
 // no `(int)` cast in contracts), and imports reaching loop-level @Invariant/@Decreases closures
 // (GROOVY-12072 — so helper references inside them need no `verification.` FQN). So the build is
 // self-contained: no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can
-// add mavenLocal() above. To ride upstream changes ahead of the next release, switch groovyVersion
-// back to 6.0.0-SNAPSHOT and re-enable the ASF snapshot repo below; if a freshly-published snapshot
-// looks stale, `--refresh-dependencies`.)
+// add mavenLocal() above. To ride upstream changes ahead of the next release, switch groovyVersion in
+// gradle.properties back to 6.0.0-SNAPSHOT (or -PgroovyVersion=… for a one-off) and re-enable the ASF
+// snapshot repo below; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
     // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
-def groovyVersion = '6.0.0-alpha-2'
+// groovyVersion comes from gradle.properties (shared with examples-dsl; -PgroovyVersion=… to override)
 def spockVersion  = '2.4-groovy-5.0'
 
 dependencies {
@@ -124,7 +124,7 @@ dependencies {
     // JUnit 6 — drives the VerifyHarness `@TestFactory` (one dynamic test per CASES entry), so the
     // suite is individually runnable from the IDE / `./gradlew test`. The compact `CASES` data and the
     // `./gradlew verify` console runner (VerifyHarness.main) are unchanged; both share `evaluate()`.
-    testImplementation platform('org.junit:junit-bom:6.1.0')
+    testImplementation platform("org.junit:junit-bom:$junitVersion")
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -351,7 +351,7 @@ dependencies {
     // ---- lincheck = the Lincheck TESTS (depend on the compiled domain + the domain's deps via extendsFrom) ----
     lincheckImplementation sourceSets.concurrent.output
     lincheckImplementation 'org.jetbrains.lincheck:lincheck:3.6'
-    lincheckImplementation platform('org.junit:junit-bom:6.1.0')
+    lincheckImplementation platform("org.junit:junit-bom:$junitVersion")
     lincheckImplementation 'org.junit.jupiter:junit-jupiter'
     lincheckRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -526,7 +526,7 @@ dependencies {
     // The shared domain `Account` (plain @CompileStatic @POJO) — Fray uses its `id` for a global lock order instead
     // of redefining a bank account inline. Just the compiled output; Account pulls in nothing exotic.
     frayCheckImplementation sourceSets.concurrent.output
-    frayCheckImplementation platform('org.junit:junit-bom:6.1.0')
+    frayCheckImplementation platform("org.junit:junit-bom:$junitVersion")
     frayCheckImplementation 'org.junit.jupiter:junit-jupiter'
     frayCheckRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     // fray-core / fray-junit / fray-runtime / fray-jvmti are injected into frayCheckImplementation by the plugin

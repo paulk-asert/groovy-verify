@@ -25,7 +25,7 @@ java {
     toolchain { languageVersion = JavaLanguageVersion.of(25) }   // match the root project's JVM target
 }
 
-def groovyVersion = '6.0.0-alpha-2'
+// groovyVersion comes from the root gradle.properties
 
 repositories {
     mavenCentral()
@@ -42,7 +42,7 @@ dependencies {
     implementation 'tech.units:indriya:2.2.4'
     implementation 'systems.uom:systems-common:2.2'
 
-    testImplementation platform('org.junit:junit-bom:6.1.0')
+    testImplementation platform("org.junit:junit-bom:$junitVersion")
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

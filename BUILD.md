@@ -25,7 +25,8 @@ Built using JDK 25 against `org.apache.groovy:6.0.0-alpha-2` from Maven Central 
 pre-release carrying everything the verifier relies on (static `@Ensures`, method-level `@Decreases`,
 nested closures in contract conditions, the primitive `isSorted()` GDK, and the contract-closure
 generics/imports fixes). No snapshot repository needed; to test against unreleased upstream changes,
-switch `groovyVersion` back to `6.0.0-SNAPSHOT` and re-enable the commented-out ASF snapshot repo in
+switch `groovyVersion` in `gradle.properties` back to `6.0.0-SNAPSHOT` (or pass
+`-PgroovyVersion=6.0.0-SNAPSHOT` for a one-off) and re-enable the commented-out ASF snapshot repo in
 `build.gradle` (and `examples-dsl/build.gradle`).
 
 ```sh
