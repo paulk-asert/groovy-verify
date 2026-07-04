@@ -481,8 +481,8 @@ simply remains outside.
 
 ## Building & using
 
-Built with JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the
-[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots). `./gradlew verify`
+Built with JDK 25 against `org.apache.groovy:6.0.0-alpha-2` from Maven Central (the first Groovy 6
+pre-release carrying all the contract fixes the verifier relies on). `./gradlew verify`
 runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
 JUnit 6 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
 Central yet — consume it via a local install, a Gradle composite build, or JitPack.

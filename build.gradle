@@ -57,7 +57,7 @@ tasks.named('rat') {
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 
-// Everything this project needs from Groovy 6.0.0-SNAPSHOT is on the ASF snapshot repo:
+// Everything this project needs from Groovy 6 shipped in the 6.0.0-alpha-2 release (on Central):
 // static @Ensures, method-level @Decreases (GROOVY-12060), nested closures in contract
 // conditions including @Ensures (GROOVY-12059 — enables the `any` / membership existential
 // surface), the native primitive `int[]` GDK `isSorted()` overload the sortedness idiom
@@ -66,13 +66,15 @@ tasks.named('rat') {
 // no `(int)` cast in contracts), and imports reaching loop-level @Invariant/@Decreases closures
 // (GROOVY-12072 — so helper references inside them need no `verification.` FQN). So the build is
 // self-contained: no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can
-// add mavenLocal() above; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
+// add mavenLocal() above. To ride upstream changes ahead of the next release, switch groovyVersion
+// back to 6.0.0-SNAPSHOT and re-enable the ASF snapshot repo below; if a freshly-published snapshot
+// looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
-    maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
+    // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
-def groovyVersion = '6.0.0-SNAPSHOT'
+def groovyVersion = '6.0.0-alpha-2'
 def spockVersion  = '2.4-groovy-5.0'
 
 dependencies {

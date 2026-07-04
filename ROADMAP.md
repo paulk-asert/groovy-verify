@@ -9631,6 +9631,18 @@ Rung headline: **591/605 cross-validated clean, 14 diverged across 4 categories,
 
 ---
 
+## Housekeeping (post-210) — Groovy 6.0.0-alpha-2  *(shipped)*
+
+The first Groovy 6 pre-release carrying everything the verifier relies on is out; the build now pins
+`org.apache.groovy:6.0.0-alpha-2` from Maven Central and drops the ASF snapshot repository (kept in both
+`build.gradle` files, commented out, for testing future unreleased upstream changes — switch
+`groovyVersion` back to `6.0.0-SNAPSHOT` and re-enable it). Full gates on the release artifact are
+byte-identical to the snapshot baseline: root suite **1571/0**, runtime rung **591/605** clean /
+14 diverged / 0 need review, `examples-dsl` green, docLint 0 drift, full `check` green. BUILD.md and
+README.md no longer claim the snapshot dependency.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -25,11 +25,11 @@ java {
     toolchain { languageVersion = JavaLanguageVersion.of(25) }   // match the root project's JVM target
 }
 
-def groovyVersion = '6.0.0-SNAPSHOT'
+def groovyVersion = '6.0.0-alpha-2'
 
 repositories {
     mavenCentral()
-    maven { url = 'https://repository.apache.org/content/repositories/snapshots' }
+    // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
 dependencies {
