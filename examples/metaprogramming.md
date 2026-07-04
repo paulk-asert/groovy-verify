@@ -44,7 +44,7 @@ class C {
         Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
     }
     @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
-    static String emoji(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
+    static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
 }
 ```
 

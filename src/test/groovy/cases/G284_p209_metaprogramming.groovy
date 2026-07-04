@@ -36,7 +36,7 @@ class G284_p209_metaprogramming {
                            Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
                        }
                        @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🥤' : n % 5 == 0 ? '🐝' : '') })
-                       static String emoji(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
+                       static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
                    }''')],
         [group: 'P209 metaprogramming', name: 'metaclass multiply: swapped emojis refute', expect: 'Cannot prove postcondition',
          src: tc('''class C {
@@ -44,7 +44,7 @@ class G284_p209_metaprogramming {
                            Integer.metaClass.multiply = { String s -> delegate == 0 ? s : '' }
                        }
                        @Ensures({ result == (n % 3 == 0 && n % 5 == 0 ? '🥤🐝' : n % 3 == 0 ? '🐝' : n % 5 == 0 ? '🥤' : '') })
-                       static String emoji(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
+                       static String fizzbuzz(int n) { (n % 3) * '🥤' + (n % 5) * '🐝' }
                    }''')],
         // The metaclass property: every Integer answers for itself. The bare-`delegate` arm is modelled
         // as an opaque value, so the spec is scoped to the String branches by the precondition.
