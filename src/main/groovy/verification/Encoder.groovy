@@ -525,6 +525,16 @@ class Encoder implements TheoryApi {
                 isStringReceiver(mc.objectExpression)) {
                 return true
             }
+            // Phase 211 — a same-class PURE helper whose declared return type is String (`pads(pad, k)`)
+            // is a String receiver: `pad + pads(pad, k - 1)` routes to stringConcat, and
+            // `pads(pad, k).length()` reaches the length oracle over the helper's UF term.
+            if (pureEvaluator != null) {
+                PureEvaluator.Call pc = pureEvaluator.callInfo(mc)
+                if (pc != null) {
+                    ClassNode rt = pureEvaluator.returnType(pc)
+                    if (rt != null && rt.name == 'java.lang.String') return true
+                }
+            }
             // Phase 47e — static int→string conversions also produce String values.
             Expression mcRecv = mc.objectExpression
             boolean isIntCls = (mcRecv instanceof VariableExpression && ((VariableExpression) mcRecv).name == 'Integer') ||
@@ -890,7 +900,8 @@ class Encoder implements TheoryApi {
     private static boolean isNonIntPureRange(ClassNode t) {
         if (t == null) return false
         String n = t.name
-        n == 'boolean' || n == 'java.lang.Boolean' || t.isEnum() || isEnumLikeType(t)
+        n == 'boolean' || n == 'java.lang.Boolean' || n == 'java.lang.String' ||   // String: Phase 211
+            t.isEnum() || isEnumLikeType(t)
     }
 
     private Object sortFor(ClassNode t) {
@@ -1658,6 +1669,16 @@ class Encoder implements TheoryApi {
             if (obj instanceof ClassExpression || obj instanceof VariableExpression) {
                 return session.litOfSort(expectedSort, pe.propertyAsString)
             }
+        }
+        // Phase 211 — a ternary in a non-Int position descends: condition in the Bool world, both
+        // value branches in the expected sort (a String-valued pure helper's body is exactly this shape).
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            Object cnd = translate(te.booleanExpression)
+            Object tv = translateInSort(te.trueExpression, expectedSort)
+            Object fv = translateInSort(te.falseExpression, expectedSort)
+            if (cnd == null || tv == null || fv == null) return null
+            return session.ite(cnd, tv, fv)
         }
         // Anything else: best-effort fall back to the Int path (will likely return null, which the
         // caller treats as outside-fragment).
@@ -6219,9 +6240,17 @@ class Encoder implements TheoryApi {
         // same term (congruence) — which is what lets an inductive proof equate `chain(u,d)` with the
         // hypothesis's `chain(next[u],d-1)`, where the old inline-the-body unfolding produced unequal terms
         // at different fuel depths.
+        // Phase 211 — each argument in its DECLARED sort: a String-typed parameter of a pure helper
+        // (`pads(String pad, int k)`) must arrive as a String term, or the UF declaration and every
+        // occurrence's congruence break on a sort mismatch. Int params keep the historic translate path.
+        ClassNode[] pts = pureEvaluator.paramTypes(c)
         List<Object> handles = new ArrayList<Object>()
-        for (Expression a : c.args) {
-            Object h = translate(a)
+        for (int ai = 0; ai < c.args.size(); ai++) {
+            Expression a = c.args.get(ai)
+            ClassNode pt = (pts != null && ai < pts.length) ? pts[ai] : null
+            Object h = (pt != null && pt.name == 'java.lang.String')
+                ? translateInSort(a, session.declareSort('String'))
+                : translate(a)
             if (h == null) return null
             handles.add(h)
         }
@@ -6247,7 +6276,11 @@ class Encoder implements TheoryApi {
                 int prev = unfoldDepth
                 unfoldDepth = prev - 1
                 try {
-                    Object bodyH = translate(body)
+                    // Phase 211 — a String-valued body translates in the String sort (its ternary
+                    // branches are String terms); other ranges keep the historic natural translation.
+                    Object bodyH = (pureRt != null && pureRt.name == 'java.lang.String')
+                        ? translateInSort(body, session.declareSort('String'))
+                        : translate(body)
                     if (bodyH != null) session.assertExpr(session.eq(fSharp, bodyH))
                 } finally {
                     unfoldDepth = prev

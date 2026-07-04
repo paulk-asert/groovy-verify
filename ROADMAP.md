@@ -9643,6 +9643,36 @@ README.md no longer claim the snapshot dependency.
 
 ---
 
+## Phase 211 — String-valued pure helpers: the complete functional leftpad  *(shipped)*
+
+Driven by the lets-prove-leftpad PR (two entries: imperative + functional). The functional entry wanted
+what Phase 206 couldn't give — all three challenge properties — and the unlock was a **structural** spec
+plus one engine slice.
+
+- **Engine — sort-aware `f#`**: the pure-helper machinery declared every helper UF over Int. Now a String
+  param translates in the String sort (`translateInSort`, which also gained ternary descent), a
+  String-valued body's defining equation asserts in the String sort, `isNonIntPureRange` includes String,
+  and `isStringReceiver` recognises same-class pure String-returning calls — so
+  `pad + pads(pad, k - 1)` concatenates and `pads(pad, k).length()` reaches the length oracle.
+- **The proof**: `result == pads(pad, n − s.length()) + s` — one equality pinning prefix AND suffix by
+  construction (stronger than index clauses, and it sidesteps the seq-nth-quantifier timeout that kept
+  Phase 206's four-clause form a canary). Length is derived Verus-style: `padsLen` (`|pads(k)| == k`, by
+  induction) + `lengthTheorem` (call the lemma, return the value; length-of-concat is a seq-theory
+  theorem). Proof-engineering lessons, both pinned in comments: recursion must prepend to the **result**
+  (`pad + leftpad(pad, n-1, s)`) — the accumulator form hits a commutation lemma (`pad + pads(k) ==
+  pads(k) + pad`) the structural induction avoids; and lemma-dependent clauses live in theorem methods —
+  putting `result.length() == n` in leftpad's own ensures demands the lemma inside the induction.
+- **The PR** (hwayne/lets-prove-leftpad): `groovy` (the P207 two-loop imperative, all three properties as
+  index clauses, deliberately shaped after the repo's Java/OpenJML entry) and `groovy (functional)` (this
+  proof). Both entry files validated verbatim through the harness before submission (a `main` demo
+  method was dropped — call-site skips would have muddied the "compiles clean" story).
+
+`P211 structural leftpad` (G285, 3 cases: the full proof, wrong-side padding refutes, off-by-one length
+canary). Root suite **1574/0** (+3), runtime rung **592/606** clean / 0 need review, `examples-dsl`
+green, docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

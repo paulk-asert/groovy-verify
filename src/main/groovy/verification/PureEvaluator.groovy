@@ -302,6 +302,15 @@ class PureEvaluator {
         m?.returnType
     }
 
+    /** Phase 211 — the callee's declared parameter types (null when unresolvable), so the encoder can
+     *  translate each argument of a pure-helper call in its DECLARED sort (a String param must not be
+     *  translated as an Int term). */
+    ClassNode[] paramTypes(Call c) {
+        if (c == null) return null
+        MethodNode m = resolve(c.name, c.args.size())
+        m?.parameters?.collect { it.type } as ClassNode[]
+    }
+
     private MethodNode resolve(String name, int arity) {
         if (owner == null || name == null) return null
         for (MethodNode m : owner.getMethods(name)) {
