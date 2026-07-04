@@ -9593,6 +9593,44 @@ model*). Root suite **1571/0** (+6), runtime rung 585/605 clean, `examples-dsl` 
 
 ---
 
+## Phase 210 — divergence ledger knockdown: 20 → 14, six categories → four  *(shipped)*
+
+A triage pass over the runtime rung's divergence ledger (each divergence attributed to its true owner —
+upstream groovy-contracts, the example, or groovy-verify itself), then the local ones knocked out:
+
+- **Rung: a crashing `@Requires` is an unsatisfied one** (Eiffel-style). Three grid inputs crashed while
+  *evaluating the precondition* (`(0..i-1)` reversing at `i == 0`, so `a[it]` explodes inside the
+  contract closure); the exercise loop now independently re-evaluates the conjoined requires on a signal
+  and skips the input when that evaluation throws — exactly as a clean `false` is skipped via
+  `PreconditionViolation`. Conservative: unparseable requires → the signal propagates as before.
+- **Rung: the `range-edge` category** (corroboration-backed). Two cases crash evaluating the
+  *postcondition* at the degenerate edge — `(0..<r.length-1)` at length 0 is `[0]` at runtime (Groovy
+  ranges auto-reverse) where the verifier's forward-only model reads empty. The rung now corroborates
+  (contracts-off body runs clean, only the spec's own evaluation throws) and files them under a precise
+  documented category; the quirk itself is now in FRAGMENT.md beside the `[].sum()` edge.
+- **Engine: set-typed `result` aliasing** (the Phase 45b list precedent, extended). The set-algebra case
+  spelled its `@Ensures` over the body local `u` because `result.containsAll(a)` skipped as
+  outside-fragment — and a local-naming contract is not runtime-evaluable by groovy-contracts
+  (`MissingPropertyException`, previously mis-filed as "DSL helper not runtime-evaluable"; `Sets.boundedBy`
+  has had a real runtime body all along). A returned set-typed local now aliases `result`'s set handle
+  and element classification; the case proves over `result` and **cross-validates clean**.
+- **Examples: total-function `pow2` base** (`n <= 0 ? 1 : …`). The rung exercises the uncontracted helper
+  itself; `pow2(-1)` was infinite recursion. The defensive base is identical on the proof domain and
+  terminates everywhere (chosen over `@Requires` on the helper, which would have re-routed the P8a
+  unfold machinery under test).
+
+What remains is deliberately not ours to fix here: **gc-loop-check (6)** — groovy-contracts' runtime
+loop-check placement disagrees with real loop semantics (flagship: do-while body-first establishment,
+which the verifier models faithfully per Phase 88) — and **recovered (5)** — groovy-contracts' generated
+assertion reports violations the rung's independent re-evaluation disproves (`max(1, 0)` → 1 "violating"
+`result >= a && result >= b`; three BigDecimal results; the functional leftpad's empty identity). Eleven
+JIRA-ready upstream repros, plus **guard-throw (1)** and **range-edge (2)**, both by-design and documented.
+
+Rung headline: **591/605 cross-validated clean, 14 diverged across 4 categories, 0 need review**
+(was 585/605, 20 across 6). Root suite **1571/0**, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -177,8 +177,14 @@ class RuntimeRung {
             } catch (java.lang.reflect.InvocationTargetException ite) {
                 Throwable cause = ite.cause ?: ite
                 if (isPrecondition(cause)) continue
+                // Eiffel-style: a @Requires whose EVALUATION throws on this input (the grid landed on a
+                // degenerate edge — e.g. `(0..i-1)` reversing at i == 0, so `a[it]` explodes inside the
+                // contract) is an UNSATISFIED precondition, not a divergence: skip the input exactly as a
+                // clean `false` would have been skipped via PreconditionViolation.
+                if (requiresEvalCrashes(src, m, args)) continue
                 return [kind: 'signal', cause: cause, args: render(args), argsList: new ArrayList(args)]
             } catch (Throwable other) {
+                if (requiresEvalCrashes(src, m, args)) continue
                 return [kind: 'signal', cause: other, args: render(args), argsList: new ArrayList(args)]
             }
         }
@@ -397,6 +403,25 @@ class RuntimeRung {
         (brace < 0 || brace > mi) ? null : braceBody(src, brace)
     }
 
+    /** True when independently evaluating the method's conjoined @Requires against these args THROWS —
+     *  the crash-as-unsatisfied test backing the exercise loop's skip (a requires that merely returns
+     *  false never reaches here: groovy-contracts raises PreconditionViolation for that). Conservative:
+     *  un-parseable or arity-mismatched requires → false (the signal propagates as before). */
+    static boolean requiresEvalCrashes(String src, Method m, List args) {
+        String req = allRequires(src)
+        if (!req) return false
+        def names = paramNamesFor(src, m.name)
+        if (names == null || names.size() != args.size()) return false
+        def b = new Binding()
+        names.eachWithIndex { n, i -> b.setVariable((String) n, args[i]) }
+        try {
+            new GroovyShell(b).evaluate(VerifyHarness.HDR + '\n(' + req + ')')
+            return false     // evaluated cleanly (whatever the value) — not a requires-eval crash
+        } catch (Throwable ignored) {
+            return true
+        }
+    }
+
     /** verdict: 'confirmed' (verifier proof refuted on the real value), 'gc-quirk' (value satisfies spec —
      *  groovy-contracts mis-evaluated), or 'uncorroborated' (spec not independently evaluable here). */
     static Map corroborate(String src, Method m, List args) {
@@ -543,6 +568,17 @@ class RuntimeRung {
                         signalled = true; break
                     }
                     def cat = category(src, cause)
+                    // A contract-evaluation crash on a returning body is the RANGE-REVERSAL edge, not a
+                    // proof gap: `(0..<n-1)` at n == 0 is `[0]` at runtime (Groovy ranges auto-reverse)
+                    // where the verifier's forward-only model reads empty — the [].sum() class of
+                    // documented quirk. Corroboration separates it: the contracts-off body runs clean
+                    // and returns a value; only the spec's own evaluation throws.
+                    if (cat.cat.startsWith('array-edge')) {
+                        def cor = corroborate(src, m, (List) r.argsList)
+                        if (cor.verdict == 'uncorroborated' && ((String) cor.why).startsWith('spec eval threw')) {
+                            cat = [cat: 'range-edge: Groovy ranges auto-reverse at the degenerate edge (`0..<-1` is [0], not empty) — the contract itself crashes at runtime where the verifier\'s forward-only model reads the range as empty; documented quirk (see FRAGMENT.md), body value correct', review: false]
+                        }
+                    }
                     buckets.computeIfAbsent(cat.cat, { [] }) << label
                     if (cat.review) reviewCats << cat.cat
                     if (cat.unknown) anyUnknown = true

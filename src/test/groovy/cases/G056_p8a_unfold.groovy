@@ -45,7 +45,7 @@ class G056_p8a_unfold {
         // A recursive helper on a path-constrained symbolic arg unfolds until the base case fires.
         [group: 'P8a unfold', name: 'recursive helper unfolds under path constraint', ok: true,
          src: tc('''class C {
-                       static int pow2(int n) { n == 0 ? 1 : 2 * pow2(n - 1) }
+                       static int pow2(int n) { n <= 0 ? 1 : 2 * pow2(n - 1) }
                        @Requires({ n == 2 })
                        @Ensures({ result == 4 })
                        static int f(int n) { pow2(n) }

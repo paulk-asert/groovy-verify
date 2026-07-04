@@ -75,7 +75,7 @@ class G205_set_algebra {
         [group: 'set algebra', name: 'Int: materialise u = a + b, u.containsAll(a)', ok: true,
          src: tc('''class C {
                         @Requires({ Sets.boundedBy(a, n) && Sets.boundedBy(b, n) })
-                        @Ensures({ u.containsAll(a) })
+                        @Ensures({ result.containsAll(a) })
                         static Set<Integer> f(Set<Integer> a, Set<Integer> b, int n) {
                             Set<Integer> u = a + b
                             u

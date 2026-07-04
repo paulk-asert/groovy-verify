@@ -2817,6 +2817,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // (Phase 41) the same way the local would.
             currentListNames.add('result')
         }
+        // Phase 210 — the SET analogue: a set-typed local returned directly aliases result's set handle
+        // and element-type classification, so @Ensures({ result.containsAll(a) }) reasons about the
+        // returned set instead of skipping as outside-fragment (which also made the contract spell the
+        // body LOCAL — not runtime-evaluable by groovy-contracts, a rung divergence).
+        if (currentSetElementTypes.containsKey(localName) || enc.peekSet(localName) != null) {
+            enc.bindSet('result', enc.setFor(localName))
+            ClassNode et = currentSetElementTypes.get(localName)
+            if (et != null) currentSetElementTypes.put('result', et)
+        }
     }
 
     /**

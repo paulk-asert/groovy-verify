@@ -66,7 +66,13 @@ a coverage metric. In expressions the fragment is:
   (the no-arg fold has no zero element, the way `['', 1, 2, 3].sum() == '123'`), so a bare `a[0..<k].sum()` over a
   possibly-empty sublist is modelled as unconstrained at empty and a spec like `int == a[0..<k].sum()` *refuses*
   to prove at the empty edge — the seeded `a[0..<k].sum(0)`, a guaranteed-non-empty range, or the int[]-returning
-  `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms. The **prefix count**
+  `Arrays.copyOf(a, len).sum()` (a fresh array, so empty is 0) are the empty-safe forms. A related documented
+  edge: Groovy ranges **auto-reverse** when the upper bound drops below the lower (`0..-1` is `[0, -1]`,
+  `0..<-1` is `[0]`), while the verifier's quantifier model reads such ranges as *empty* (forward-only) —
+  so at the degenerate edge (`(0..<n-1).every { a[it] <= a[it+1] }` with `n == 0`) the contract itself can
+  crash at *runtime* where the proof read a vacuous ∀. The runtime rung triages these as `range-edge`
+  (corroborating that the body's value is correct); an empty-safe spelling guards the form
+  (`n < 2 || (0..<n-1).every { … }`). The **prefix count**
   `xs[0..<k].count(v)` is the counting sibling (Phase 208): a bounded range count with base/step axioms and a
   quantified range-store law (a store at `k` provably leaves the `[0,k)` count untouched) — the permutation
   spelling a merge/fill loop's invariant carries; whole-array `xs.count(v)` keeps its per-store law. The recurrence spec helpers
