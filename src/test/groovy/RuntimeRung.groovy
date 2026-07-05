@@ -472,14 +472,34 @@ class RuntimeRung {
         // Phase 192 — the source contains an explicit `throw`: a guard-throw prologue (or rethrowing
         // handler) threw on this grid input BY DESIGN. A postcondition is vacuous on a non-returning
         // call (groovy-contracts checks @Ensures only on normal completion), so this is the modelled
-        // behaviour, not a proof gap. Gated on the throw actually appearing in the case source so a
-        // genuinely unexplained exception from throw-free code still lands in OTHER and fails the run.
-        if (src.contains('throw new'))
-            return [cat: 'guard-throw: the method threw by design on this input — postcondition vacuous on a non-returning call, not a proof gap', review: false]
+        // behaviour, not a proof gap. CHECKED, not merely explained (the explained→checked upgrade):
+        // the runtime exception's type must be one the source explicitly `throw new`s — a guard-throw
+        // method that starts throwing something UNDECLARED (an NPE from a broken guard, say) escapes
+        // this bucket, lands in OTHER, and fails the run, exactly like throw-free code.
+        List<String> declared = (src =~ /throw\s+new\s+([A-Za-z_][\w.]*)/).collect { it[1].tokenize('.').last() }
+        if (declared) {
+            boolean matches = false
+            for (Throwable c = cause; c != null; c = c.cause) {
+                if (c.getClass().simpleName in declared) { matches = true; break }
+            }
+            if (matches)
+                return [cat: 'guard-throw: the method threw its DECLARED exception on this input (type-checked against the source) — postcondition vacuous on a non-returning call, not a proof gap', review: false]
+            return [cat: 'OTHER — threw ' + names.take(2).join(' <- ') + ' but the source declares only: ' + declared.join(', '), review: true, unknown: true]
+        }
         return [cat: 'OTHER — uncategorised exception: ' + names.take(2).join(' <- '), review: true, unknown: true]
     }
 
     static void selfTest() {
+        // Thrown-type check (the explained→checked guard-throw upgrade): the DECLARED exception is
+        // benign; an UNDECLARED one must escape the bucket and land in OTHER (review + unknown).
+        String gsrc = 'class G { static int f(int n) { if (n < 0) throw new IllegalStateException("no"); n } }'
+        def declaredOk = category(gsrc, new IllegalStateException('no'))
+        def undeclared = category(gsrc, new NullPointerException('boom'))
+        if (!declaredOk.cat.startsWith('guard-throw') || declaredOk.review ||
+            !undeclared.cat.startsWith('OTHER') || !undeclared.unknown) {
+            throw new IllegalStateException('rung self-test failed: thrown-type check — declared=' +
+                declaredOk.cat + ' undeclared=' + undeclared.cat)
+        }
         def gcl = new GroovyClassLoader()
         Class st = gcl.parseClass(VerifyHarness.HDR +
             'class ST { @Requires({ x > 0 }) @Ensures({ result == 1 }) static int f(int x) { x } }', 'ST.groovy')

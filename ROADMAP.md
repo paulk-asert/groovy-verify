@@ -9704,7 +9704,14 @@ the affected cases (and their teeth twins, and the doclint-pinned dafny.md merge
 indices form. Rung on alpha-2: **594/606 clean, 12 diverged across 3 categories** — the `range-edge`
 bucket is empty; combined with the upstream groovy-contracts fixes (GROOVY-12128/12129/12130, verified
 against 6.0.0-SNAPSHOT) the ledger drops to **just the by-design guard-throw** on next-release Groovy.
-Recorded next rung: a compile-time *non-reversal obligation* on quantifier ranges (prove `hi >= lo` or
+**Guard-throw, explained→checked** (same pass): the rung's benign `guard-throw` bucket previously
+matched on the case source merely *containing* `throw new`; it now extracts the declared exception
+types and requires the runtime exception to match one — an undeclared throw (an NPE from a broken
+guard, say) escapes the bucket, lands in OTHER, and fails the run. Pinned by a rung self-test
+(declared `IllegalStateException` → benign; undeclared NPE → OTHER/unknown). The ledger's last
+by-design line now earns its keep. Recorded next rungs: `@ThrowsIf` exceptional contracts (the
+prototype-then-upstream path, which would promote the guard-throw line from checked divergence to
+positive cross-validation), and a compile-time *non-reversal obligation* on quantifier ranges (prove `hi >= lo` or
 diagnose loudly), so the trap cannot silently re-enter the corpus — the latent instances (e.g. the
 selection-sort and dutch-flag `@Ensures`) keep the old spelling until then, shielded by their
 preconditions. Root suite **1575/0**, docLint 0 drift, full `check` green.
