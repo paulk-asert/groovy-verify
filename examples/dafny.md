@@ -319,7 +319,7 @@ spelling — carried by the prefix-count oracle `r[0..<k].count(v)`:
 @Requires({ a != null && b != null && r != null && r.length == a.length + b.length &&
             (0..<a.length).every { int x -> (x + 1..<a.length).every { int y -> a[x] <= a[y] } } &&
             (0..<b.length).every { int x -> (x + 1..<b.length).every { int y -> b[x] <= b[y] } } })
-@Ensures({ (0..<r.length - 1).every { r[it] <= r[it + 1] } &&
+@Ensures({ r.indices.every { it == 0 || r[it - 1] <= r[it] } &&
            r[0..<r.length].count(v) == a[0..<a.length].count(v) + b[0..<b.length].count(v) })
 static int[] merge(int[] a, int[] b, int[] r, int v) {
     int i = 0

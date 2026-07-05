@@ -32,8 +32,8 @@ class G149_p57_monotonic {
         // invariant. The in-body early return (both flags set ⇒ not monotonic) is the Phase-49b machinery.
         [group: 'P57 monotonic', name: 'monotonic verifies (disjunctive ∀∀ spec)', ok: true,
          src: tc('''class C {
-                        @Ensures({ result == ((0..<(l.length - 1)).every { l[it] <= l[it + 1] } ||
-                                              (0..<(l.length - 1)).every { l[it] >= l[it + 1] }) })
+                        @Ensures({ result == (l.indices.every { it == 0 || l[it - 1] <= l[it] } ||
+                                              l.indices.every { it == 0 || l[it - 1] >= l[it] }) })
                         static boolean monotonic(int[] l) {
                             if (l.length <= 1) return true
                             boolean increasing = false
@@ -58,7 +58,7 @@ class G149_p57_monotonic {
         [group: 'P57 monotonic', name: 'dropping the OR-decreasing disjunct refutes (proof is non-vacuous)',
          ok: false, expect: 'postcondition',
          src: tc('''class C {
-                        @Ensures({ result == (0..<(l.length - 1)).every { l[it] <= l[it + 1] } })
+                        @Ensures({ result == l.indices.every { it == 0 || l[it - 1] <= l[it] } })
                         static boolean monotonic(int[] l) {
                             if (l.length <= 1) return true
                             boolean increasing = false

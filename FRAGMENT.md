@@ -71,8 +71,15 @@ a coverage metric. In expressions the fragment is:
   `0..<-1` is `[0]`), while the verifier's quantifier model reads such ranges as *empty* (forward-only) —
   so at the degenerate edge (`(0..<n-1).every { a[it] <= a[it+1] }` with `n == 0`) the contract itself can
   crash at *runtime* where the proof read a vacuous ∀. The runtime rung triages these as `range-edge`
-  (corroborating that the body's value is correct); an empty-safe spelling guards the form
-  (`n < 2 || (0..<n-1).every { … }`). The **prefix count**
+  (corroborating that the body's value is correct). **Reversal-immune spellings** for the
+  adjacent-pairs idiom — all four prove identically and are runtime-total at the empty edge:
+  `xs.indices.every { it == 0 || xs[it-1] <= xs[it] }` (the house preference — `indices` is
+  `0..<length`, which never reverses), the implication twin
+  `xs.indices.every { it > 0 ==> xs[it-1] <= xs[it] }` (the most spec-like read — groovy-contracts'
+  `==>` sugar works inside the quantifier closure), the same with an explicit `(0..<xs.length)`
+  range, or `Forall.range(0, xs.length - 1) { xs[it] <= xs[it+1] }` (half-open by contract, so it
+  keeps the natural `n−1` bound and is vacuously true when the bound drops below `lo`). An explicit
+  `n < 2 || …` guard also works but reads worst. The **prefix count**
   `xs[0..<k].count(v)` is the counting sibling (Phase 208): a bounded range count with base/step axioms and a
   quantified range-store law (a store at `k` provably leaves the `[0,k)` count untouched) — the permutation
   spelling a merge/fill loop's invariant carries; whole-array `xs.count(v)` keeps its per-store law. The recurrence spec helpers

@@ -47,7 +47,7 @@ plugins {
 // is the Maven Central namespace, verified via GitHub (a one-off verification repo under the paulk-asert
 // account) rather than DNS. The version is a placeholder until the first release.
 group = 'io.github.paulk-asert'
-version = '0.1.0-SNAPSHOT'
+version = '0.1.0'
 
 // Apache RAT: don't license-check generated output, IDE metadata, or the wrapper.
 // The stderr demotion hides the JDK 25.0.3+ "three-letter time zone ID is deprecated" chatter RAT's

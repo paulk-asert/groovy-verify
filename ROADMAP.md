@@ -9688,6 +9688,29 @@ carrying these fixes is adopted.
 
 ---
 
+## Housekeeping (post-211) — range-edge respell: the reversal-immune adjacent-pairs idiom  *(shipped)*
+
+The two `range-edge` divergences closed by spelling, after a three-way probe. Groovy ranges auto-reverse
+below the lower bound (`0..<-1` is `[0]`, not empty — only `0..<0` is empty), so the ubiquitous
+`(0..<n-1).every { a[it] <= a[it+1] }` adjacent-pairs idiom crashes its own contract evaluation at
+`n == 0`. Three reversal-immune respellings all **prove identically** on both affected cases
+(`P57 monotonic` disjunctive spec, `P208 merge` full spec): `xs.indices.every { it == 0 || … }` (adopted —
+`indices` is `0..<length`, which never reverses), the implication twin
+`xs.indices.every { it > 0 ==> … }` (probed separately — the `==>` sugar reaches inside the quantifier
+closure), the explicit `(0..<xs.length)` twin, and
+`Forall.range(0, n-1) { … }` (half-open by contract, vacuous below the bound — the only spelling that
+keeps the natural `n−1` bound). The variants are documented as guidance in FRAGMENT.md's range-edge note;
+the affected cases (and their teeth twins, and the doclint-pinned dafny.md merge block) now use the
+indices form. Rung on alpha-2: **594/606 clean, 12 diverged across 3 categories** — the `range-edge`
+bucket is empty; combined with the upstream groovy-contracts fixes (GROOVY-12128/12129/12130, verified
+against 6.0.0-SNAPSHOT) the ledger drops to **just the by-design guard-throw** on next-release Groovy.
+Recorded next rung: a compile-time *non-reversal obligation* on quantifier ranges (prove `hi >= lo` or
+diagnose loudly), so the trap cannot silently re-enter the corpus — the latent instances (e.g. the
+selection-sort and dutch-flag `@Ensures`) keep the old spelling until then, shielded by their
+preconditions. Root suite **1575/0**, docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
