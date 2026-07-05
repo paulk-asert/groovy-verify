@@ -2070,6 +2070,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // @Ensures verifies trivially (the silent vacuous pass the project warns about most).
             checkPreconditionSatisfiable(node)
 
+            // Phase 212 — shouldFail claims: each GroovyAssert.shouldFail(E) { … } in the body is a
+            // GROUND exceptional claim ("this closed call throws E") — verified or refuted here, the
+            // exceptional analogue of closed-call evaluation. Contained: never fails the compile flow.
+            try {
+                verifyShouldFailClaims(node, body)
+            } catch (Throwable ignored) {
+            }
+
             // Implicit safety obligations (array bounds, division by zero, null
             // dereference) fire on every method, contract or not. For an
             // annotated loop they are discharged *with the invariant in scope*
@@ -6361,6 +6369,211 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * loop machinery only fires on the "no early-exit taken" path.
      */
     @CompileStatic
+    // ── Phase 212 — shouldFail: the provable exceptional witness ────────────────────────────────
+    // `shouldFail(E) { m(consts) }` is a closed claim: substitute the constants into the callee body,
+    // walk the (if/throw/return) fragment deciding each guard by closed evaluation, and check which
+    // throw the unique execution path reaches. Verified silently; refuted with the concrete reason
+    // ("completes normally, returning 4" / "throws X, not the expected Y"); outside-fragment → loud
+    // skip (groovy-test still checks the claim at runtime — graceful degradation as everywhere else).
+
+    /** Closed-evaluation failure for the shouldFail walk (mirrors PureEvaluator's NotEvaluable). */
+    @CompileStatic
+    private static class SfNotClosed extends RuntimeException {
+        SfNotClosed(String why) { super(why) }
+    }
+
+    private void verifyShouldFailClaims(MethodNode node, Statement body) {
+        List<MethodCallExpression> claims = new ArrayList<MethodCallExpression>()
+        collectShouldFailCalls(body, claims)
+        for (MethodCallExpression mce : claims) {
+            List<Expression> args = collectArgumentExpressions(mce)
+            if (args == null || args.isEmpty()) continue
+            ClassNode expected = null
+            ClosureExpression block = null
+            if (args.size() == 2 && args.get(0) instanceof ClassExpression && args.get(1) instanceof ClosureExpression) {
+                expected = ((ClassExpression) args.get(0)).type
+                block = (ClosureExpression) args.get(1)
+            } else if (args.size() == 1 && args.get(0) instanceof ClosureExpression) {
+                block = (ClosureExpression) args.get(0)
+            } else {
+                continue   // not a recognisable shouldFail shape — leave to runtime
+            }
+            try {
+                Object outcome = shouldFailOutcome(node, block)
+                if (outcome instanceof ClassNode) {
+                    ClassNode thrown = (ClassNode) outcome
+                    if (expected != null && !thrown.equals(expected) && !thrown.isDerivedFrom(expected)) {
+                        addStaticTypeError(Reporter.formatShouldFailRefuted(
+                            "the block throws ${thrown.nameWithoutPackage}, not the expected " +
+                            "${expected.nameWithoutPackage} — shouldFail would rethrow at runtime"), mce)
+                    }
+                    // matching (or untyped) throw: claim verified, silently
+                } else {
+                    addStaticTypeError(Reporter.formatShouldFailRefuted(
+                        "the block completes normally (returning ${outcome}) — it never throws, and " +
+                        "shouldFail would fail at runtime"), mce)
+                }
+            } catch (SfNotClosed nc) {
+                addStaticTypeError(Reporter.formatShouldFailSkipped(nc.message), mce)
+            }
+        }
+    }
+
+    private static void collectShouldFailCalls(Statement st, List<MethodCallExpression> out) {
+        if (st instanceof BlockStatement) {
+            for (Statement s : ((BlockStatement) st).statements) collectShouldFailCalls(s, out)
+        } else if (st instanceof IfStatement) {
+            collectShouldFailCalls(((IfStatement) st).ifBlock, out)
+            if (((IfStatement) st).elseBlock != null) collectShouldFailCalls(((IfStatement) st).elseBlock, out)
+        } else if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'shouldFail') {
+                out.add((MethodCallExpression) e)
+            }
+        }
+    }
+
+    /** The block's provable outcome: the thrown exception's ClassNode, or the (Long/String) value it
+     *  returns / falls through with. Throws {@link SfNotClosed} when outside the closed fragment. */
+    private Object shouldFailOutcome(MethodNode node, ClosureExpression block) {
+        List<Statement> stmts = block.code instanceof BlockStatement ?
+            ((BlockStatement) block.code).statements : Collections.<Statement> singletonList(block.code)
+        // Canonical witness shape: a single same-class call with closed arguments — inline the callee.
+        if (stmts.size() == 1 && stmts.get(0) instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) stmts.get(0)).expression
+            if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) {
+                String name = ((MethodCall) e).methodAsString
+                List<Expression> actuals = collectArgumentExpressions((MethodCall) e)
+                MethodNode callee = node.declaringClass.getMethods(name).find {
+                    it.parameters.length == (actuals?.size() ?: -1) && it.code != null
+                }
+                if (callee != null) {
+                    Map<String, Object> env = new LinkedHashMap<String, Object>()
+                    for (int i = 0; i < actuals.size(); i++) {
+                        env.put(callee.parameters[i].name, sfEval(actuals.get(i), Collections.<String, Object> emptyMap()))
+                    }
+                    List<Statement> calleeStmts = callee.code instanceof BlockStatement ?
+                        ((BlockStatement) callee.code).statements : Collections.<Statement> singletonList(callee.code)
+                    Object r = sfWalk(calleeStmts, env)
+                    return r == null ? 'void' : r   // fell through the callee → completes normally
+                }
+                throw new SfNotClosed("cannot resolve same-class callee '${name}'")
+            }
+        }
+        // Direct statements (e.g. `shouldFail { throw new IllegalStateException('x') }`).
+        Object r = sfWalk(stmts, new LinkedHashMap<String, Object>())
+        return r == null ? 'void' : r
+    }
+
+    /** Walk a statement list under a closed environment. Returns the terminating outcome — the thrown
+     *  ClassNode or the returned value — or null when the list falls through (normal completion). */
+    private Object sfWalk(List<Statement> stmts, Map<String, Object> env) {
+        for (Statement st : stmts) {
+            if (st instanceof BlockStatement) {
+                Object r = sfWalk(((BlockStatement) st).statements, env)
+                if (r != null) return r
+            } else if (st instanceof ThrowStatement) {
+                Expression ex = ((ThrowStatement) st).expression
+                if (ex instanceof ConstructorCallExpression) return ((ConstructorCallExpression) ex).type
+                throw new SfNotClosed('throw of a non-constructor expression')
+            } else if (st instanceof ReturnStatement) {
+                Expression re = ((ReturnStatement) st).expression
+                return (re == null || re instanceof org.codehaus.groovy.ast.expr.EmptyExpression) ? 'void' : sfEval(re, env)
+            } else if (st instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) st
+                Object c = sfEval(ifs.booleanExpression, env)
+                if (!(c instanceof Boolean)) throw new SfNotClosed("guard '${ifs.booleanExpression.text}' is not a closed boolean")
+                Statement branch = ((Boolean) c) ? ifs.ifBlock : ifs.elseBlock
+                if (branch != null && !(branch instanceof EmptyStatement)) {
+                    Object r = sfWalk(Collections.singletonList(branch), env)
+                    if (r != null) return r
+                }
+            } else if (st instanceof ExpressionStatement &&
+                       ((ExpressionStatement) st).expression instanceof DeclarationExpression) {
+                DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) st).expression
+                if (!(de.leftExpression instanceof VariableExpression)) throw new SfNotClosed('multi-target declaration')
+                env.put(((VariableExpression) de.leftExpression).name, sfEval(de.rightExpression, env))
+            } else {
+                throw new SfNotClosed("statement ${st.class.simpleName} is outside the closed-witness fragment")
+            }
+        }
+        null
+    }
+
+    /** Tiny closed evaluator: constants, env lookups, unary minus, int arithmetic, comparisons,
+     *  boolean connectives, ternary. Throws {@link SfNotClosed} for anything else. */
+    private Object sfEval(Expression e, Map<String, Object> env) {
+        if (e instanceof NotExpression) {                                 // IS-A BooleanExpression: first
+            Object v = sfEval(((NotExpression) e).expression, env)
+            if (v instanceof Boolean) return !((Boolean) v)
+            throw new SfNotClosed('! of a non-boolean')
+        }
+        if (e instanceof BooleanExpression) return sfEval(((BooleanExpression) e).expression, env)
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof Number) return ((Number) v).longValue()
+            if (v instanceof Boolean || v instanceof String) return v
+            if (v == null) return null
+            throw new SfNotClosed("literal ${v.class.simpleName} is outside the closed fragment")
+        }
+        if (e instanceof VariableExpression) {
+            String n = ((VariableExpression) e).name
+            if (n == 'true') return Boolean.TRUE
+            if (n == 'false') return Boolean.FALSE
+            if (env.containsKey(n)) return env.get(n)
+            throw new SfNotClosed("'${n}' is not a closed value")
+        }
+        if (e instanceof UnaryMinusExpression) {
+            Object v = sfEval(((UnaryMinusExpression) e).expression, env)
+            if (v instanceof Long) return -((Long) v)
+            throw new SfNotClosed('unary minus of a non-int')
+        }
+        if (e instanceof TernaryExpression) {
+            TernaryExpression te = (TernaryExpression) e
+            Object c = sfEval(te.booleanExpression, env)
+            if (!(c instanceof Boolean)) throw new SfNotClosed('ternary condition not closed boolean')
+            return sfEval(((Boolean) c) ? te.trueExpression : te.falseExpression, env)
+        }
+        if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            int op = be.operation.type
+            if (op == Types.LOGICAL_AND) {
+                Object l = sfEval(be.leftExpression, env)
+                if (!(l instanceof Boolean)) throw new SfNotClosed('&& of non-boolean')
+                return ((Boolean) l) ? sfEval(be.rightExpression, env) : Boolean.FALSE
+            }
+            if (op == Types.LOGICAL_OR) {
+                Object l = sfEval(be.leftExpression, env)
+                if (!(l instanceof Boolean)) throw new SfNotClosed('|| of non-boolean')
+                return ((Boolean) l) ? Boolean.TRUE : sfEval(be.rightExpression, env)
+            }
+            Object l = sfEval(be.leftExpression, env)
+            Object r = sfEval(be.rightExpression, env)
+            if (l instanceof Long && r instanceof Long) {
+                long a = (Long) l, b = (Long) r
+                switch (op) {
+                    case Types.PLUS: return a + b
+                    case Types.MINUS: return a - b
+                    case Types.MULTIPLY: return a * b
+                    case Types.MOD: case Types.REMAINDER: return b == 0 ? sfDivZero() : a % b
+                    case Types.INTDIV: return b == 0 ? sfDivZero() : a.intdiv(b)
+                    case Types.COMPARE_LESS_THAN: return a < b
+                    case Types.COMPARE_LESS_THAN_EQUAL: return a <= b
+                    case Types.COMPARE_GREATER_THAN: return a > b
+                    case Types.COMPARE_GREATER_THAN_EQUAL: return a >= b
+                    case Types.COMPARE_EQUAL: return a == b
+                    case Types.COMPARE_NOT_EQUAL: return a != b
+                }
+            }
+            if (op == Types.COMPARE_EQUAL) return java.util.Objects.equals(l, r)
+            if (op == Types.COMPARE_NOT_EQUAL) return !java.util.Objects.equals(l, r)
+            throw new SfNotClosed("operator '${be.operation.text}' over non-int operands")
+        }
+        throw new SfNotClosed("expression ${e.class.simpleName} is outside the closed fragment")
+    }
+
+    private static Object sfDivZero() { throw new SfNotClosed('division by zero in closed evaluation') }
+
     private static class LoopSite {
         Statement loopStmt
         LoopSpec spec

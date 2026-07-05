@@ -9718,6 +9718,37 @@ preconditions. Root suite **1575/0**, docLint 0 drift, full `check` green.
 
 ---
 
+## Phase 212 — `shouldFail` as a provable fragment: exceptional witnesses  *(shipped)*
+
+Slice 1 of the exceptional-contracts arc (the design survey: JML `signals`/`exceptional_behavior`,
+SPARK's late-life `Exceptional_Cases` retrofit, WhyML `raises`, Dafny/Verus failure-as-value — and the
+observation that `GroovyAssert.shouldFail` is a **ground instance** of the eventual `@ThrowsIf`
+universal, provable today with zero upstream changes).
+
+`shouldFail(E) { m(consts) }` in a `@TypeChecked` body is now a compile-time obligation — the
+exceptional analogue of closed-call evaluation (`pow2(10) == 1024`):
+- **Mechanics**: the same-class callee is resolved and its body inlined with the constant actuals; a
+  dedicated closed evaluator (constants, int arithmetic, comparisons, boolean connectives, ternaries,
+  local declarations) decides each guard; the unique execution path terminates in a `throw` or a return.
+- **Verdicts**: a matching throw (exact or subtype, via the class-hierarchy check — `RuntimeException`
+  matches a thrown `IllegalArgumentException`) verifies silently; a normal completion refutes naming the
+  returned value; a wrong-typed throw refutes naming both types; anything outside the closed-witness
+  fragment (symbolic arguments, unresolvable callees, unmodelled statements) **skips loudly**, with
+  groovy-test still enforcing the claim at runtime — the graceful-degradation posture everywhere else.
+- **Spellings**: `GroovyAssert.shouldFail(E) { … }`, the static-import bare form, and untyped
+  `shouldFail { … }` (any throw satisfies); direct `throw` statements in the block work without a callee.
+- **Plumbing**: `groovy-test` joins the harness classpath; HDR imports `GroovyAssert` + the static form.
+
+`P212 shouldFail` (G286, 6 cases: two verifies incl. supertype, two refutes with concrete reasons, the
+untyped/static-import form, the loud skip). On the runtime rung the `demo` methods cross-validate clean
+(the block really throws; groovy-test swallows it), and the case classes' own `inc` helpers land in the
+type-checked guard-throw bucket at `inc(-1)` (595/609 clean, 14 diverged across 3, 0 need review) — a
+live preview of exactly what `@ThrowsIf` would promote to positive validation. Next slices recorded: `@ThrowsIf` prototype (the
+universal, which discharges these witnesses by instantiation and promotes the rung's guard-throw line to
+positive validation), then the upstream groovy-contracts conversation with the prototype as reference.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

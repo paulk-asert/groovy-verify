@@ -90,6 +90,7 @@ dependencies {
 
     testImplementation "org.apache.groovy:groovy:$groovyVersion"
     testImplementation "org.apache.groovy:groovy-json:$groovyVersion"   // Harvester (agent catalog/corpus generation)
+    testImplementation "org.apache.groovy:groovy-test:$groovyVersion"   // GroovyAssert.shouldFail — the provable exceptional-witness fragment (Phase 212)
     testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
 
     // Test-only: Jakarta Bean Validation constraint annotations (@Positive, @Min, @Size, …). The engine reads

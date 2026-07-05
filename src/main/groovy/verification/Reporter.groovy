@@ -273,6 +273,18 @@ class Reporter {
 
     // ---- Dimensional analysis (Phase 131) ----
 
+    /** Phase 212 — a {@code shouldFail} claim refuted: the block provably does NOT behave as claimed. */
+    static String formatShouldFailRefuted(String detail) {
+        "Cannot prove shouldFail claim: ${detail}"
+    }
+
+    /** Phase 212 — a {@code shouldFail} block outside the closed-witness fragment: loud skip. */
+    static String formatShouldFailSkipped(String reason) {
+        "Skipped shouldFail claim (${reason}). The block is outside the closed-witness fragment " +
+        "(a same-class call with constant arguments, or direct if/throw/return statements over " +
+        "constants). The claim is allowed to proceed unchecked — groovy-test still checks it at runtime."
+    }
+
     static String formatPostconditionSkipped(String methodName, String reason) {
         "Skipped verification of postcondition for ${methodName} (${reason}). " +
         "The body uses a construct or value outside the spike's supported " +

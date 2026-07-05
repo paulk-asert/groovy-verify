@@ -33,6 +33,8 @@ class CaseDsl {
         import groovy.contracts.Decreases
         import groovy.contracts.Modifies
         import jakarta.validation.constraints.*
+        import groovy.test.GroovyAssert
+        import static groovy.test.GroovyAssert.shouldFail
         import verification.Forall
         import verification.Sets
         import verification.Sorted

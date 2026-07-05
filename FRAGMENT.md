@@ -315,7 +315,11 @@ entry and loud-skips, as does `finally` (Phase 192). An **implicit obligation wh
 covers** (`try { Integer.parseInt(s) } catch (NumberFormatException e) { … }`) is suppressed — the throw is
 defined behaviour, landing on the modelled catch path — via a curated type table (exact types, their JDK
 supertypes, `RuntimeException`/`Exception`/`Throwable`); a wrong-type handler, a handler-body obligation, or
-the same expression outside the try still refutes (Phase 193). Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
+the same expression outside the try still refutes (Phase 193). A **`shouldFail(E) { … }` block**
+(the groovy-test idiom) is a provable *ground exceptional claim* (Phase 212): a same-class call with
+constant arguments is inlined and closed-evaluated, and the claim verifies (the path provably throws
+`E` or a subtype), refutes (completes normally / wrong type — with the concrete reason), or loud-skips
+when non-closed — groovy-test still checks it at runtime. Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
 call bound to a local, whose slots then carry the callee's postcondition into the caller's body
 (`Tuple2 r = f(a); … r.v1 …`; Phase 113), and a **non-Int-returning call in return position** (the hoist
 local is minted in the callee's return sort, so a String-returning recursion — the functional leftpad —
