@@ -9673,6 +9673,21 @@ green, docLint 0 drift, full `check` green.
 
 ---
 
+## Housekeeping (post-211) — upstream groovy-contracts fixes verified  *(checked against 6.0.0-SNAPSHOT)*
+
+The two upstream defect classes the Phase 210 divergence triage attributed to groovy-contracts are now
+fixed in Groovy master — GROOVY-12128 (loop contract checks fired at points that disagree with loop
+semantics), GROOVY-12129 (postcondition weaving mishandled implicit returns), and GROOVY-12130 (inline
+postconditions read the wrong cached constant). Verified by temporarily running the rung against
+`-PgroovyVersion=6.0.0-SNAPSHOT`: **all eleven divergences in those buckets cleared** — `gc-loop-check`
+(6) and `recovered` (5) both empty — leaving **598/606 cross-validated clean, 3 diverged across 2
+categories** (guard-throw ×1 by design, range-edge ×2 documented). The proof suite is unaffected by the
+weaving changes (1575/0 on the snapshot). The build stays pinned to released `6.0.0-alpha-2`
+(14 diverged there, as recorded); the ledger drops to 3 automatically when the next Groovy pre-release
+carrying these fixes is adopted.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
