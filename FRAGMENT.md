@@ -266,6 +266,15 @@ receivers, single-expression pure closure bodies, one parameter. Everything not 
 registration stays a compile error — cross-class registrations, runtime-conditional reshaping, and
 `methodMissing` included ([examples/metaprogramming.md](examples/metaprogramming.md)).
 
+**External specifications** (Phase 215) extend contracts to code you don't own — JML's `.jml` files in
+the project's own dialect: a library class re-declared as an ordinary Groovy *skeleton* (gc annotations,
+empty bodies), discovered lazily at `META-INF/groovy-verify/specs/<fqn>.groovy` on the classpath (or a
+`VERIFY_SPECS` directory), parsed AST-only. The spec's `@Requires` becomes an obligation at every call
+site and its `@Ensures` is assumed for the result — `Math.abs(a)` proves `result >= 0` and refuses the
+unguarded `Integer.MIN_VALUE` edge, from a twelve-line skeleton. Every registry spec is **trusted** by
+definition (nobody proves the JDK's bodies) and its consumption recorded; `@Pure` admission into contract
+positions and `@ThrowsIf` arms in skeletons are the recorded next steps.
+
 Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
 a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` on
 `int` / `long`, and `@Size(min, max)` / `@NotEmpty` on an array / `List` / `String` — read as the obvious bound and

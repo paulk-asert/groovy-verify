@@ -9825,6 +9825,45 @@ reference weaving implementation, witness-bearing refutations, and a test corpus
 
 ---
 
+## Phase 215 — the external-specification registry: JML's `.jml`, in our dialect  *(shipped)*
+
+Slice A of the external-specs design (Slice D — reading OpenJML's actual `.jml` files — deliberately
+skipped): contracts for code you don't own, authored as ordinary Groovy skeletons.
+
+- **The spec file** (`src/main/resources/META-INF/groovy-verify/specs/java.lang.Math.groovy`): the JML
+  running example, translated — `@Pure` (JML `assignable \nothing`), `@Requires({ a > Integer.MIN_VALUE })`,
+  `@Ensures({ (a >= 0 ==> result == a) && (a < 0 ==> result == -a) })` on an empty-bodied `abs(int)`.
+- **Discovery** is lazy and index-free: first lookup of an FQN tries exactly one classpath resource
+  (`META-INF/groovy-verify/specs/<fqn>.groovy`); a `VERIFY_SPECS` directory overrides (the ninth knob,
+  documented with its honest asterisk — trusted specs can change what proves, which is why consumption
+  is recorded via `SpecRegistry.consumed()`).
+- **Parsing** stops at CONVERSION (AST only — no STC, no codegen, no duplicate-class clash with the
+  real `java.lang.Math`), then `ContractExpansionTransform` runs manually so `@ContractSource` attaches
+  exactly as for user code. Iteration lesson: at CONVERSION the skeleton's annotation types are
+  *unresolved simple names*, so the consumption gates match on captured contract TEXT
+  (`contractAstFor`), not on resolved annotation types (`findEnsures`).
+- **Consumption**, symmetric with in-code contracts through two hooks: STC's `onMethodSelection`
+  (which hands the *resolved* JDK target) turns the spec's `@Requires` into a call-site obligation —
+  `Math.abs(a)` unguarded refutes with `counterexample: a = -2147483648`; and
+  `resolveContractedCallee`'s registry fallback (behind a new `staticOwnerType` resolution) feeds the
+  `@Ensures` assumption through the existing return-hoist and local-assignment paths — the over-strong
+  `result > 0` claim refutes *through the spec* with `abs(0) == 0`.
+- **Two real bugs found by the gates**: the FP corpus caught the **overload trap** (the `abs(int)` spec
+  mis-applied to `Math.abs(double)` — Int/FP sort crash; fixed with type-aware lookup keyed on the
+  resolved target's parameter types, and a unique-arity-only rule plus an actual-type guard on the
+  assumption path); and the registry's `a > Integer.MIN_VALUE` obligation exposed that **call-site
+  precondition sessions never asserted the Phase-44c JVM int bounds** — the solver refuted with
+  `a = MIN_VALUE − 1`, a value the runtime cannot exhibit. Both fixed; the bounds fix hardens every
+  call-site check corpus-wide.
+
+`P215 external specs` (G288, 4 cases: consumption in return and assignment positions, the obligation
+teeth, the ensures-driven refute). Root suite **1596/0** (+4), runtime rung **601/615** clean / 0 need
+review, docLint 0 drift, full `check` green. Recorded next steps: `@Pure` admission into contract
+positions, `@ThrowsIf` arms in skeletons (registry-scale exceptional contracts), the unified trusted
+ledger (Slice B), and the starter JDK specs artifact (Slice C).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

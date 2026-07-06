@@ -7982,7 +7982,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Find @Requires on the callee. Walk superclasses too — a child
         // can inherit a contract via overriding.
         AnnotationNode req = findRequires(target)
-        if (req == null) return
+        if (req == null) {
+            // Phase 215 — the external-spec registry: STC hands us the RESOLVED target (the real
+            // java.lang.Math#abs), so a registered skeleton's @Requires becomes the call-site
+            // obligation exactly as an in-code contract would.
+            MethodNode spec = SpecRegistry.lookup(target.declaringClass?.name, target.name,
+                target.parameters.length, target.parameters.collect { it.type.name })
+            if (spec != null && contractAstFor(spec, 'requires') != null) {
+                target = spec
+            }
+        }
+        if (req == null && !(contractAstFor(target, 'requires') != null)) return
 
         Expression contractAst = contractAstFor(target, 'requires')
         if (contractAst == null) {
@@ -8070,6 +8080,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession session = backend.session()
         try {
             Encoder enc = mkEncoder(session)
+            // Phase 44c bounds apply at call sites too: without them the solver picks caller-parameter
+            // values outside the JVM int range (a = MIN_VALUE - 1) that the runtime cannot exhibit —
+            // surfaced by the external-spec registry's `a > Integer.MIN_VALUE` obligation (Phase 215).
+            assumeIntJvmBounds(session, enc)
 
             Map<String, Object> formalBindings = [:]
             // Reference-typed formals bound to a named actual: candidates for
@@ -8588,7 +8602,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 133 — an instance call `recv.m(args)` whose method lives on the *receiver's* (carrier) type rather
         // than the caller's class — e.g. a record's `plus`. Search there too (a different class, so no self-call).
         if (receiverType != null && !receiverType.is(caller?.declaringClass)) {
-            return resolveContractedIn(receiverType, null, name, arity, true)
+            m = resolveContractedIn(receiverType, null, name, arity, true)
+            if (m != null) return m
+            // Phase 215 — the external-spec registry: a trusted skeleton contract for a library class
+            // (`Math.abs` from META-INF/groovy-verify/specs/java.lang.Math.groovy). Same consumption as
+            // any contracted callee: @Ensures assumed, @Modifies framed.
+            MethodNode spec = SpecRegistry.lookup(receiverType.name, name, arity)
+            // gate on captured contract TEXT: the skeleton parses only to CONVERSION, so its annotation
+            // types are unresolved simple names — @ContractSource (attached by CET) is the authority
+            if (spec != null && (contractAstFor(spec, 'ensures') != null || contractAstFor(spec, 'modifies') != null)) return spec
+        }
+        null
+    }
+
+    /** Phase 215 — the owner type of a plain static call (`Math.abs(x)` / static-import shape), or null. */
+    private static ClassNode staticOwnerType(Expression callExpr) {
+        if (callExpr instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) callExpr).ownerType
+        if (callExpr instanceof MethodCallExpression) {
+            Expression obj = ((MethodCallExpression) callExpr).objectExpression
+            if (obj instanceof ClassExpression) return ((ClassExpression) obj).type
         }
         null
     }
@@ -8966,10 +8998,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression rcv = ((MethodCallExpression) callExpr).objectExpression
             if (rcv != null && !(rcv instanceof ClassExpression) && isCallExpr(rcv)) receiverType = carrierValueExprType(rcv)
         }
-        // Resolve on the instance receiver's type, else a static call's owner type (`Length.km(…)` — Phase 142c).
-        ClassNode forResolve = receiverType != null ? receiverType : ownerCarrierType(callExpr)
+        // Resolve on the instance receiver's type, else a static call's owner type (`Length.km(…)` — Phase 142c),
+        // else the plain static owner (Phase 215 — `Math.abs(x)`, so the external-spec registry can answer).
+        ClassNode forResolve = receiverType != null ? receiverType :
+            (ownerCarrierType(callExpr) ?: staticOwnerType(callExpr))
         MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve)
         if (callee == null) return false
+        // Phase 215 — a registry skeleton must match the actuals' types (the unique-arity fallback can
+        // still collide with a JDK overload set: abs(int) spec vs an abs(double) call — sort crash).
+        if (callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null) {
+            for (int ti = 0; ti < actuals.size(); ti++) {
+                ClassNode at = inferredTypeOf(actuals.get(ti))
+                String specT = callee.parameters[ti].type.nameWithoutPackage.toLowerCase()
+                String actT = at != null ? at.nameWithoutPackage.toLowerCase() : null
+                if (actT != null && specT != actT &&
+                    !(specT in ['int', 'integer'] && actT in ['int', 'integer']) &&
+                    !(specT in ['long'] && actT in ['long']) ) {
+                    return false
+                }
+            }
+        }
         Expression ensuresAst = contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
         // Nothing to model — no @Ensures and no @Modifies — so we can't account for the call's effect.
