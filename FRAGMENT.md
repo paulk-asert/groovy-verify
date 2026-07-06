@@ -271,7 +271,7 @@ the project's own dialect: a library class re-declared as an ordinary Groovy *sk
 empty bodies), discovered lazily at `META-INF/groovy-verify/specs/<fqn>.groovy` on the classpath (or a
 `VERIFY_SPECS` directory), parsed AST-only. The spec's `@Requires` becomes an obligation at every call
 site and its `@Ensures` is assumed for the result — `Math.abs(a)` proves `result >= 0` and refuses the
-unguarded `Integer.MIN_VALUE` edge, from a twelve-line skeleton. Every registry spec is **trusted** by
+unguarded `Integer.MIN_VALUE` edge, from a small skeleton. Every registry spec is **trusted** by
 definition (nobody proves the JDK's bodies) and its consumption recorded in the **trusted-spec
 ledger** (one inventory across in-place `trusted` contracts and registry consumption — printed beside
 the harness perf line, linted by DocLint's trusted-inventory section); `@Pure`-marked spec methods are admitted **into contract

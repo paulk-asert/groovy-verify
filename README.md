@@ -153,6 +153,11 @@ concrete counterexample** (Dafny/Verus-style) rather than passing silently:
   postcondition, never the reverse.
 - **Algebraic laws** — a `@Reducer` combiner is proved to satisfy the monoid laws, and a `@Monadic` carrier the
   monad / functor laws — automatically, from the annotation alone.
+- **Exceptional contracts & specs for code you don't own** — `@ThrowsIf` proves a method throws *exactly*
+  when its condition holds; shipped JDK spec skeletons make `Math.abs`, `Objects.checkIndex`,
+  `indexOf`-then-`charAt` and friends provable at call sites — including *survival facts*
+  (`floorDiv(a, b)` returned ⟹ `b != 0`) and *catch-entry facts* (`catch (ArithmeticException)` after
+  `floorDiv` knows `b == 0`). Every trusted fact is inventoried in the ledger.
 
 The full per-capability table — each with a ✅ phase tag and its honest "deferred" edge — is in
 **[CAPABILITIES.md](CAPABILITIES.md)**.
@@ -196,14 +201,21 @@ you write:
   nested) with `@Invariant` / `@Decreases`; the `xs.each { x -> … }` / `xs.eachWithIndex { x, i -> … }` iteration
   forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant); early
   `return`; and `switch` *expressions* — the arrow form (`case 1 -> …`) with literal / range labels; plus
-  side-effecting assignment, `++` / `--`, and parallel swap.
-  *Out:* `try` / `catch`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  side-effecting assignment, `++` / `--`, and parallel swap; and `try` / `catch` (no `finally`) — the
+  happy path walked exactly, each handler entered with sound catch-entry state (and, when the try's
+  throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
+  after `Math.floorDiv(a, b)` knows `b == 0`).
+  *Out:* `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 
 **Spec sources** — beyond `@Requires` / `@Ensures` / `@Invariant`, a precondition can also be read off a Jakarta /
 `javax.validation` constraint on a parameter or field — `@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty` — so
-code already annotated for *runtime* validation verifies as-is.
+code already annotated for *runtime* validation verifies as-is. Exceptional behaviour is contracted with
+`@ThrowsIf` — an *iff* by default (throws exactly when the condition holds), one-directional
+(JML-`signals`-style) with `exhaustive = false`. And contracts for **code you don't own** come from
+external-specification skeletons (JML's `.jml` idea, in Groovy dialect) — shipped for a growing JDK
+surface and consumable from any jar; see [External specifications](#external-specifications).
 
 The full itemised enumeration — every operator, type, theory, phase, and honest boundary — is in
 **[FRAGMENT.md](FRAGMENT.md)**. The worked examples below put it through its paces.
@@ -318,6 +330,7 @@ Read **[the five-act tour](examples/tour.md)** for all of it. More worked-and-ve
 - **[Bean Validation](examples/validation.md)** — `jakarta.validation` / `javax.validation` constraints (`@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty`) read as compile-time preconditions, discharged for free from annotations you already wrote.
 - **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, and invariant inference.
 - **[Metaprogramming](examples/metaprogramming.md)** — the blog's emoji-FizzBuzz `ExpandoMetaClass` examples proved: a metaclass property and an operator overload, type-checked *and* verified from the statically-visible registration — with the compile-error teeth showing the gate stays shut.
+- **[JDK specs & exceptional contracts](examples/jdk-specs.md)** — the external-specification registry end to end: the `Math.abs` skeleton and the wrap-bug refute, `clamp` proved by nested spec composition, `Math.abs` as contract vocabulary, `indexOf`-then-`charAt`, `checkIndex`-then-index via survival facts, catch-entry facts, `java.time` instance ranges, and the Unicode honesty edge.
 - **[Thread-local IFC (Smith)](examples/smith.md)** — Graeme Smith's Dafny approach: information flow (a security lattice + noninterference) and rely/guarantee, combined in the §VII capstone.
 
 ## Verifying Java fragments
@@ -456,6 +469,24 @@ the Bézout coefficients, through which Gauss's lemma proves), the whole JSR 385
 combinatorics pack (`Fact.of`, Pascal-rule `Binom.of(n, k)` — the first two-argument spec primitive); each
 is pinned by its own verify/refute case groups (attributed in the generated `catalog.json`). The SPI, the soundness obligations, and a worked minimum pack are in
 **[PACKS.md](PACKS.md)**.
+
+## External specifications
+
+Where packs contribute a library's *vocabulary and axioms*, the **external-specification registry**
+contributes a library's *method contracts* — the same principle one level up, and JML's `.jml`-file
+idea in the project's own dialect. A spec is an ordinary Groovy **skeleton**: the target class
+re-declared with the same gc annotations user code carries (plus `@Pure` and `@ThrowsIf` arms) and
+empty bodies, discovered lazily as the classpath resource `META-INF/groovy-verify/specs/<fqn>.groovy`
+and parsed AST-only — never compiled, never executed. Consumption is symmetric with in-code contracts
+(`@Requires` = call-site obligation, `@Ensures` = assumed result, `@Pure` = usable *inside* your own
+contracts, `@ThrowsIf` = survival and catch-entry facts), with typed overload matching and both
+instance and receiver-state forms. Every registry spec is **trusted by definition** — nobody proves
+the JDK's bodies — so every consumption is recorded in the **trusted-spec ledger** (one inventory
+across in-place `trusted` contracts and registry facts, printed beside the harness perf line and
+linted by DocLint), and the runtime rung cross-checks the specs against the live JDK. Skeletons for
+the everyday JDK surface ship in the jar (`Math`, `Integer`, `Long`, `Character`, `Objects`,
+`Arrays`, `String`, `java.time`); the whole arc is worked through in
+**[examples/jdk-specs.md](examples/jdk-specs.md)**.
 
 ### What about dynamic Groovy?
 
