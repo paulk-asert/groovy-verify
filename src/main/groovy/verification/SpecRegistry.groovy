@@ -19,6 +19,7 @@ import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
@@ -117,6 +118,46 @@ class SpecRegistry {
 
     /** The trusted-spec ledger: every {@code fqn#name/arity} this JVM's compilations consumed. */
     static Set<String> consumed() { Collections.unmodifiableSet(CONSUMED) }
+
+    /** True when a spec skeleton exists for the FQN (loads and caches on first ask). */
+    static boolean hasSpec(String fqn) {
+        if (fqn == null) return false
+        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
+        entry instanceof ClassNode
+    }
+
+    /** True when the skeleton method is marked {@code @Pure} (simple-name match — the skeleton parses
+     *  only to CONVERSION, so annotation types are unresolved). Purity is the admission gate for
+     *  contract-position use: only a mathematical function may become an uninterpreted function. */
+    static boolean isPure(MethodNode m) {
+        m != null && m.getAnnotations().any { it.classNode.nameWithoutPackage == 'Pure' }
+    }
+
+    /** The skeleton's captured contract of {@code kind} ('requires'/'ensures'), re-parsed and
+     *  normalised against the skeleton's signature — null when absent or unparseable. */
+    static org.codehaus.groovy.ast.expr.Expression contractAst(MethodNode m, String kind) {
+        if (m == null) return null
+        AnnotationNode cs = m.getAnnotations().find { it.classNode.nameWithoutPackage == 'ContractSource' }
+        Object member = cs?.getMember(kind)
+        String text = member instanceof org.codehaus.groovy.ast.expr.ConstantExpression ?
+            (((org.codehaus.groovy.ast.expr.ConstantExpression) member).value as String) : null
+        if (text == null || text.isEmpty()) return null
+        try {
+            List<ASTNode> parsed = new org.codehaus.groovy.ast.builder.AstBuilder().buildFromString(
+                org.codehaus.groovy.control.CompilePhase.CONVERSION, true, text)
+            def top = parsed ? parsed[0] : null
+            org.codehaus.groovy.ast.expr.Expression e = null
+            if (top instanceof org.codehaus.groovy.ast.stmt.BlockStatement) {
+                def stmts = ((org.codehaus.groovy.ast.stmt.BlockStatement) top).statements
+                if (stmts.size() == 1 && stmts[0] instanceof org.codehaus.groovy.ast.stmt.ExpressionStatement) {
+                    e = ((org.codehaus.groovy.ast.stmt.ExpressionStatement) stmts[0]).expression
+                }
+            }
+            e != null ? ContractNormalizer.normalize(e, m) : null
+        } catch (Throwable ignored) {
+            null
+        }
+    }
 
     /** Test hook: drop all cached parses (spec files edited under a live daemon). */
     static void reset() { CACHE.clear(); CONSUMED.clear() }

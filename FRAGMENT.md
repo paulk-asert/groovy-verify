@@ -274,8 +274,11 @@ site and its `@Ensures` is assumed for the result — `Math.abs(a)` proves `resu
 unguarded `Integer.MIN_VALUE` edge, from a twelve-line skeleton. Every registry spec is **trusted** by
 definition (nobody proves the JDK's bodies) and its consumption recorded in the **trusted-spec
 ledger** (one inventory across in-place `trusted` contracts and registry consumption — printed beside
-the harness perf line, linted by DocLint's trusted-inventory section); `@Pure` admission into contract
-positions and `@ThrowsIf` arms in skeletons are the recorded next steps.
+the harness perf line, linted by DocLint's trusted-inventory section); `@Pure`-marked spec methods are admitted **into contract
+positions** (Phase 218): `@Ensures({ result == Math.abs(a) })` models the call as an uninterpreted
+function axiomatised by the spec's own guarded contract — ensures-free specs stay opaque, unspecced
+methods stay loud skips, int-like signatures in v1. `@ThrowsIf` arms ship in skeletons (documentation +
+rung-visible; caller-side catch-reachability consumption is the recorded next step).
 
 Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
 a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` on

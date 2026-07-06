@@ -9919,6 +9919,38 @@ Root suite **1600/0** (+4), runtime rung **603/617** clean / 0 need review, docL
 
 ---
 
+## Phase 218 — `@Pure` admission: spec methods as contract vocabulary  *(shipped)*
+
+The external-specs arc's final recorded step for this run: registry-spec'd, `@Pure`-marked JDK methods
+become usable *inside* contract expressions — specs can now speak the same vocabulary as code, instead
+of hand-expanding `Math.abs` into ternaries.
+
+- **Mechanics**: `Math.abs(E)` in a contract (or body) position becomes the uninterpreted term
+  `jdk$java_lang_Math$abs(E)` with, asserted once per ground term, the guarded instantiation of the
+  skeleton's own contract — `requires[a↦E] ⟹ ensures[result↦UF(E), a↦E]`. Implementation detail worth
+  keeping: no AST substitution — the skeleton's formals (and `result`) are *bound* to the actual handles
+  around a plain `translateBool` of the stored contract, then restored. The guard keeps the edge honest:
+  a context admitting `abs(MIN_VALUE)` gets no facts, not wrong ones.
+- **Purity as the double gate**: statically, an impure method is not a mathematical function (UF
+  congruence would be unsound); dynamically, groovy-contracts executes contract closures at runtime —
+  and the JDK method *is* its own executable, so admission ships zero runtime support (the pleasant
+  contrast with the spec-DSL helpers, which each carry a runtime implementation).
+- **The showpiece**: `@Requires({ Integer.signum(x) == 1 })` proving `result > 0` — the sign fact
+  *derived from the spec axiom*, not asserted.
+- **Honest edges, all pinned**: an ensures-free spec (`floorDiv`) yields an opaque UF — an over-claim
+  through it refutes rather than fabricates; an unspecced method (`floorMod`) stays a loud
+  outside-fragment skip; non-`@Pure` specs are refused. The admission branch runs before the
+  PureEvaluator path and also serves body positions (`return Math.abs(a)` now translates directly,
+  subsuming the hoist for spec'd calls — P215/P217 verdicts unchanged).
+
+`P218 pure admission` (G290, 5 cases). Corpus ledger: **8 trusted facts (6 external, 2 in-place)**.
+Root suite **1605/0** (+5), runtime rung **605/619** clean / 0 need review, docLint 0 drift, full
+`check` green. The arc's remaining horizon, recorded: one-directional `@ThrowsIf` arms (JML `signals`),
+instance-method spec consumption, catch-reachability consuming skeleton `@ThrowsIf`, and the
+licensing-unblocked-but-deferred `.jml` importer (download-on-first-use, not bundled).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

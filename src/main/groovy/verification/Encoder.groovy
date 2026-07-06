@@ -38,6 +38,7 @@ import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.GStringExpression
+import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.BitwiseNegationExpression
 import org.codehaus.groovy.ast.expr.NotExpression
@@ -6227,6 +6228,12 @@ class Encoder implements TheoryApi {
      * them are not guaranteed — that is the inductive case (Phase 7), not this one.
      */
     private Object translateCall(Expression e) {
+        // Phase 218 — @Pure admission: a registry-spec'd JDK method in a contract/body expression
+        // becomes an uninterpreted function whose defining axiom is the SPEC's own @Ensures, guarded
+        // by its @Requires. Tried first: it needs no PureEvaluator and covers cross-class statics.
+        Object spec = translateSpecCall(e)
+        if (spec != null) return spec
+
         if (pureEvaluator == null) return null
 
         // (1) closed evaluation
@@ -6302,6 +6309,93 @@ class Encoder implements TheoryApi {
      *   ordering on the enum sort there is no "first n constants" notion, so non-matching {@code n}
      *   skips with an honest "outside fragment" diagnostic.
      */
+    /** Ground UF terms whose spec-derived defining axiom has been asserted (assert-once per term). */
+    private final Set<Object> specDefined = new HashSet<Object>()
+
+    /**
+     * Phase 218 — {@code @Pure} admission for external-spec methods. {@code Math.abs(E)} (in a contract
+     * or body expression) becomes the uninterpreted term {@code jdk$java_lang_Math$abs(E)} with, asserted
+     * once per ground term, the guarded instantiation of the skeleton's own contract:
+     * {@code requires[a↦E] ⟹ ensures[result↦UF(E), a↦E]}. The guard is what keeps the edge honest —
+     * where the context admits a requires-violating argument, no facts flow and the term stays opaque.
+     * A spec with no @Ensures yields a bare (opaque) UF: sound, weak, honest. v1 fragment: int-like
+     * signatures; non-{@code @Pure} specs are refused (an impure method is not a function).
+     */
+    private Object translateSpecCall(Expression e) {
+        if (!(e instanceof MethodCall)) return null
+        String name = ((MethodCall) e).methodAsString
+        if (name == null) return null
+        String fqn = specOwnerFqn(e)
+        if (fqn == null) return null
+        List<Expression> args = e instanceof MethodCallExpression ? argList((MethodCallExpression) e)
+            : (((StaticMethodCallExpression) e).arguments instanceof ArgumentListExpression ?
+               ((ArgumentListExpression) ((StaticMethodCallExpression) e).arguments).expressions : null)
+        if (args == null) return null
+        MethodNode spec = SpecRegistry.lookup(fqn, name, args.size())
+        if (spec == null || !SpecRegistry.isPure(spec)) return null
+        if (!spec.parameters.every { Parameter p -> isIntLikeType(p.type) } || !isIntLikeType(spec.returnType)) return null
+        List<Object> handles = new ArrayList<Object>()
+        for (Expression a : args) {
+            Object h = translate(a)
+            if (h == null) return null
+            handles.add(h)
+        }
+        Object uf = session.applyUF('jdk$' + fqn.replace('.', '_') + '$' + name, handles, session.intSort())
+        if (specDefined.add(uf)) {
+            Expression ensAst = SpecRegistry.contractAst(spec, 'ensures')
+            if (ensAst != null) {
+                Expression reqAst = SpecRegistry.contractAst(spec, 'requires')
+                // bind the skeleton's formals to the actual handles (and `result` to the UF term),
+                // translate the contract in that scope, then restore — no AST substitution needed.
+                Map<String, Object> saved = new LinkedHashMap<String, Object>()
+                spec.parameters.eachWithIndex { Parameter p, int i ->
+                    saved.put(p.name, peekVar(p.name)); bind(p.name, handles.get(i))
+                }
+                saved.put('result', peekVar('result')); bind('result', uf)
+                try {
+                    Object ens = translateBool(ensAst)
+                    Object req = reqAst != null ? translateBool(reqAst) : null
+                    if (ens != null && (reqAst == null || req != null)) {
+                        session.assertExpr(req == null ? ens : session.implies(req, ens))
+                    }
+                } finally {
+                    saved.each { String n, Object h -> if (h != null) bind(n, h) else env.remove(n) }
+                }
+            }
+        }
+        uf
+    }
+
+    /** The registry FQN a call's receiver denotes: a resolved ClassExpression / static-call owner, a
+     *  bare capitalised name (contract re-parses are unresolved — try the auto-import packages), or a
+     *  fully-qualified property chain (`java.util.Objects`). Null when no spec exists. */
+    private static String specOwnerFqn(Expression e) {
+        if (e instanceof StaticMethodCallExpression) {
+            String n = ((StaticMethodCallExpression) e).ownerType?.name
+            return SpecRegistry.hasSpec(n) ? n : null
+        }
+        if (!(e instanceof MethodCallExpression)) return null
+        Expression obj = ((MethodCallExpression) e).objectExpression
+        if (obj instanceof ClassExpression) {
+            String n = ((ClassExpression) obj).type?.name
+            return SpecRegistry.hasSpec(n) ? n : null
+        }
+        if (obj instanceof VariableExpression) {
+            String n = ((VariableExpression) obj).name
+            if (n != null && !n.isEmpty() && Character.isUpperCase(n.charAt(0))) {
+                for (String p : ['java.lang.', 'java.util.']) {
+                    if (SpecRegistry.hasSpec(p + n)) return p + n
+                }
+            }
+            return null
+        }
+        if (obj instanceof PropertyExpression) {
+            String n = obj.text
+            return SpecRegistry.hasSpec(n) ? n : null
+        }
+        null
+    }
+
     private Object translateSetsBounded(Expression setExpr, Expression nExpr) {
         String key = setKeyFor(setExpr)
         if (key == null) return null
