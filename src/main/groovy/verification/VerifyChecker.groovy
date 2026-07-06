@@ -9014,7 +9014,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ClassNode at = inferredTypeOf(actuals.get(ti))
                 String specT = callee.parameters[ti].type.nameWithoutPackage.toLowerCase()
                 String actT = at != null ? at.nameWithoutPackage.toLowerCase() : null
+                boolean refActual = at != null && !ClassHelper.isPrimitiveType(at) &&
+                    !(actT in ['integer', 'long', 'double', 'float', 'short', 'byte', 'character', 'boolean'])
                 if (actT != null && specT != actT &&
+                    !(specT == 'object' && refActual) &&
                     !(specT in ['int', 'integer'] && actT in ['int', 'integer']) &&
                     !(specT in ['long'] && actT in ['long']) ) {
                     return false

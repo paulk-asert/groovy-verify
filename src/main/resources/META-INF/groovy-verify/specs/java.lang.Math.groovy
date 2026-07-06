@@ -23,6 +23,7 @@ package java.lang
 import groovy.contracts.Ensures
 import groovy.contracts.Requires
 import groovy.transform.Pure
+import verification.ThrowsIf
 
 class Math {
 
@@ -30,4 +31,16 @@ class Math {
     @Requires({ a > Integer.MIN_VALUE })
     @Ensures({ (a >= 0 ==> result == a) && (a < 0 ==> result == -a) })
     static int abs(int a) {}
+
+    // Throws EXACTLY at the one unrepresentable point — a true iff, unlike most JDK exceptional
+    // behaviour (trusted: the JDK's body is not ours to prove; the rung can still observe it).
+    @Pure
+    @ThrowsIf(value = { a == Integer.MIN_VALUE }, exception = ArithmeticException, trusted = true)
+    @Ensures({ a != Integer.MIN_VALUE ==> result == -a })
+    static int negateExact(int a) {}
+
+    // Defined behaviour on a zero divisor is the throw itself (not a precondition) — another true iff.
+    @Pure
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    static int floorDiv(int a, int b) {}
 }

@@ -129,9 +129,10 @@ class SpecRegistry {
         } catch (Throwable ignored) { null }
     }
 
-    /** Lint-facing: true when CET captured at least one contract text on the method. */
+    /** Lint-facing: true when CET captured at least one contract text on the method — or the method
+     *  carries a @ThrowsIf arm (exceptional-only specs are real specs, not lint drift). */
     static boolean hasContractText(MethodNode m) {
-        m.getAnnotations().any { it.classNode.nameWithoutPackage == 'ContractSource' }
+        m.getAnnotations().any { it.classNode.nameWithoutPackage in ['ContractSource', 'ThrowsIf', 'ThrowsIfConditions'] }
     }
 
     private static ClassNode load(String fqn) {

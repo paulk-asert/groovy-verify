@@ -9890,6 +9890,35 @@ remains the recorded next step, now landing into a ledgered, linted registry.
 
 ---
 
+## Phase 217 — the starter JDK specs artifact  *(shipped)*
+
+Slice C: the registry gets its first real population — three skeletons, six methods, every contract
+chosen to be **provably true** rather than merely useful:
+
+- **`java.lang.Math`**: `abs` (the Phase 215 flagship), `negateExact` — its `@ThrowsIf` is a *true iff*
+  (throws `ArithmeticException` exactly at the one unrepresentable point, `Integer.MIN_VALUE`) plus the
+  conditional ensures `a != MIN_VALUE ==> result == -a` — and `floorDiv` (the zero-divisor iff; a
+  divisor of zero is *defined* behaviour, the throw, not a precondition).
+- **`java.lang.Integer`**: `signum` with the three-way sign-split ensures. `parseInt` is **deliberately
+  absent**, and the reason is a design finding worth the entry: `@ThrowsIf` is an *iff* contract, and
+  parseInt's exact throw condition (malformed *or* out of range) is outside the fragment — a sloppy
+  one-directional spelling would be a *wrong* iff, and the rung would rightly flag it on grid inputs.
+  One-directional (JML `signals`-style) arms are the recorded future extension.
+- **`java.util.Objects`**: `requireNonNull` — the `@ThrowsIf(null)` arm plus a non-null ensures,
+  consumable thanks to the new **Object-formal leniency** in the assumption guard (a spec's `Object`
+  parameter accepts any reference actual; the exact-type rule stays for primitives, preserving the
+  Phase 215 overload protection).
+- **Lint co-evolution**: exceptional-only skeletons now count as contracted in DocLint's `[5] trusted
+  inventory` (a `@ThrowsIf`-only spec is a real spec, not drift).
+
+`P217 jdk specs` (G289, 4 cases: negateExact's conditional ensures under a caller guard, signum consumed
+and refuted-through, requireNonNull's nullity ensures). The corpus trusted ledger now reads
+**7 facts (5 external specs, 2 in-place)**; inventory: 3 files / 5 contracted methods / 0 broken.
+Root suite **1600/0** (+4), runtime rung **603/617** clean / 0 need review, docLint 0 drift, full
+`check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
