@@ -6449,8 +6449,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
 
         // trusted instances: specification-only — vacuity-checked (a contradictory trusted spec poisons
-        // every caller), then assumed without proof or warning. The rung still monitors them.
+        // every caller), then assumed without proof or warning. The rung still monitors them, and the
+        // ledger records them (Phase 216 — quiet at the use site, visible in the inventory).
         for (TiInstance ti : instances.findAll { it.trusted }) {
+            TrustLedger.record('in-place @ThrowsIf', "${node.declaringClass.name}#${node.name}",
+                "throws ${ti.exception != null ? ti.exception.nameWithoutPackage : 'Throwable'} iff ${ti.cond.text}")
             SmtSession s = backend.session()
             try {
                 Encoder enc = mkEncoder(s)

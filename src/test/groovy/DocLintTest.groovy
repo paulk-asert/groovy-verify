@@ -43,6 +43,7 @@ class DocLintTest {
     @Test
     void everyPackCorpusGroupExists() {
         assertEquals(0, DocLint.lintPackCorpora(), 'an EncodingPack claims a corpus group that has no cases')
+        assertEquals(0, DocLint.lintTrustedSpecs(), 'a shipped external-spec skeleton is malformed or contract-free (silent trust loss)')
     }
 
     @Test

@@ -9864,6 +9864,32 @@ ledger (Slice B), and the starter JDK specs artifact (Slice C).
 
 ---
 
+## Phase 216 — the trusted-spec ledger: trust that is visible is trust that gets reviewed  *(shipped)*
+
+Slice B of the external-specs design. Proof-waiving is deliberately quiet at the use site — a
+`trusted = true` `@ThrowsIf` compiles without a warning, a registry spec consumes silently — so the
+inventory is where trust must reappear, uniformly across provenance:
+
+- **`TrustLedger`**: one deduplicated, JVM-wide inventory with two entry kinds — *in-place `@ThrowsIf`*
+  (recorded when the checker processes a trusted arm, with owning method + the iff contract) and
+  *external spec* (recorded at every registry hit, alongside `SpecRegistry.consumed()`).
+- **Surfacing, three ways**: the harness prints a `trusted:` line beside the `perf:` line (the full
+  corpus currently reads `3 fact(s) assumed without proof — 1 external spec, 2 in-place trusted
+  contracts`); `entries()`/`summary()` expose the facts programmatically; and DocLint gains
+  **`[5] trusted inventory`** — every shipped spec skeleton must parse and carry at least one captured
+  contract (a malformed spec file is *silent trust loss*: the registry caches the miss and callers
+  quietly lose the obligation and assumption — so it is drift, asserted inside `check`), plus a
+  report-only count of in-place trusted contracts in the corpus.
+- **Teeth** (`TrustLedgerTest`): external consumption ledgered on a real `Math.abs` compile; in-place
+  trusted arms ledgered with their owning method; malformed spec text contained (`parseForLint` returns
+  null, never throws).
+
+Root suite **1596/0**, docLint **0 drift** across the now-five sections, full `check` green. Slice C
+(the starter JDK specs artifact — `Objects`, `Integer.parseInt` with `@ThrowsIf` arms, `String` gaps)
+remains the recorded next step, now landing into a ledgered, linted registry.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

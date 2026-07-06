@@ -122,9 +122,36 @@ class DocLint {
         unmapped.size()
     }
 
+    // 5 ─ every SHIPPED external-spec skeleton parses and carries at least one contract — a malformed
+    //     spec file is silent trust loss (the registry caches the miss and callers quietly lose the
+    //     obligation/assumption), so it is drift, not a runtime error.
+    static int lintTrustedSpecs() {
+        File dir = new File('src/main/resources/META-INF/groovy-verify/specs')
+        List<File> files = (dir.listFiles() ?: new File[0]).findAll { it.name.endsWith('.groovy') }
+        List<String> broken = []
+        int methods = 0
+        files.each { File f ->
+            String fqn = f.name - '.groovy'
+            def cn = verification.SpecRegistry.parseForLint(f.getText('UTF-8'), fqn)
+            if (cn == null) { broken << "${f.name}: does not parse"; return }
+            int contracted = cn.methods.count { m ->
+                verification.SpecRegistry.hasContractText(m) } as int
+            if (contracted == 0) broken << "${f.name}: no contracted methods"
+            methods += contracted
+        }
+        // in-place trusted contracts in the corpus are inventoried too (report-only count)
+        int inPlace = new File('src/test/groovy/cases').listFiles()
+            .findAll { it.name.endsWith('.groovy') }
+            .sum { File f -> f.text.count('trusted = true') } as int
+        println "\n[5] trusted inventory — ${files.size()} shipped spec file(s), ${methods} contracted method(s); " +
+            "${inPlace} in-place trusted contract(s) in the corpus; ${broken.size()} broken"
+        if (broken) println "    BROKEN (${broken.size()}): " + broken.join(', ')
+        broken.size()
+    }
+
     static void main(String[] args) {
         println '── DocLint (human-readable report; DocLintTest asserts the same lints inside `check`/CI) ' + ('─' * 8)
-        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora()
+        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora() + lintTrustedSpecs()
         println "\n${'═' * 70}\nTotal drift findings: ${total}  (report-only; not failing the build)"
     }
 }

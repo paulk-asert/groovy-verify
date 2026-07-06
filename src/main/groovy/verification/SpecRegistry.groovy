@@ -93,6 +93,8 @@ class SpecRegistry {
         if (m != null) {
             m.putNodeMetaData(SPEC_KEY, Boolean.TRUE)
             CONSUMED.add("${fqn}#${name}/${arity}".toString())
+            TrustLedger.record('external spec', "${fqn}#${name}/${arity}".toString(),
+                'registry skeleton (META-INF/groovy-verify/specs)')
         }
         m
     }
@@ -119,9 +121,26 @@ class SpecRegistry {
     /** Test hook: drop all cached parses (spec files edited under a live daemon). */
     static void reset() { CACHE.clear(); CONSUMED.clear() }
 
+    /** Lint-facing: parse spec TEXT exactly as {@link #lookup} would (no cache); null on failure. */
+    static ClassNode parseForLint(String text, String fqn) {
+        try {
+            Object r = parse(text, fqn)
+            r instanceof ClassNode ? (ClassNode) r : null
+        } catch (Throwable ignored) { null }
+    }
+
+    /** Lint-facing: true when CET captured at least one contract text on the method. */
+    static boolean hasContractText(MethodNode m) {
+        m.getAnnotations().any { it.classNode.nameWithoutPackage == 'ContractSource' }
+    }
+
     private static ClassNode load(String fqn) {
         String text = specText(fqn)
         if (text == null) return null
+        parse(text, fqn)
+    }
+
+    private static ClassNode parse(String text, String fqn) {
         try {
             CompilerConfiguration cfg = new CompilerConfiguration()
             // AST only: no gc weaving, no STC, no codegen — and CET applied manually below, so the

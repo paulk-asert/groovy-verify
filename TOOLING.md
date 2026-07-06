@@ -32,6 +32,15 @@ default path byte-identical.
 | `VERIFY_Z3_TIMEOUT_MS` | the per-check solver budget in milliseconds (default `2000`; also `-Dverify.z3.timeoutMs`). Refute-direction VCs are model searches and therefore hardware-speed sensitive: a refutation that is crisp on a dev laptop can come back `solver: timeout` on a slower CI runner. Raising the budget moves the decided-vs-undecided boundary only — it never changes what a returned verdict means. CI sets `8000` |
 | `VERIFY_SPECS` | a directory of external-spec skeletons overriding the classpath lookup (also `-Dverify.specs`) — JML's specspath analogue, for iterating on a spec before jarring it. Specs are TRUSTED axioms: the knob changes which trusted facts are consulted, so unlike the other knobs it can change what proves — every consumed spec is recorded (`SpecRegistry.consumed()`) for exactly that reason |
 
+**The trusted-spec ledger.** Proof-waiving is deliberately quiet at the use site — a `trusted = true`
+`@ThrowsIf` compiles without a warning, an external spec consumes silently — so the inventory is where
+trust reappears: the harness prints a `trusted:` line beside the `perf:` line (counts split by
+provenance), `SpecRegistry.consumed()` / `TrustLedger.entries()` expose the exact facts
+programmatically, and DocLint's `[5] trusted inventory` section lints every shipped spec skeleton
+(a malformed spec file is *silent trust loss* — the registry caches the miss and callers quietly lose
+the contract — so it is a drift finding, asserted in `check`). Trust that is visible is trust that
+gets reviewed.
+
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 
 <!-- doclint:ignore Tool-knobs walkthrough scaffold — illustrative unguarded method shared by the three knob examples -->

@@ -153,6 +153,8 @@ class VerifyHarness {
         // subset run passes trivially; the full run is what the budget really measures.
         tests << dynamicTest('perf budget within ceilings') {
             println PerfBudget.report()
+        println verification.TrustLedger.summary()
+            println verification.TrustLedger.summary()
             PerfBudget.assertBudget()
         }
         tests

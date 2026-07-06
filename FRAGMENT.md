@@ -272,7 +272,9 @@ empty bodies), discovered lazily at `META-INF/groovy-verify/specs/<fqn>.groovy` 
 `VERIFY_SPECS` directory), parsed AST-only. The spec's `@Requires` becomes an obligation at every call
 site and its `@Ensures` is assumed for the result — `Math.abs(a)` proves `result >= 0` and refuses the
 unguarded `Integer.MIN_VALUE` edge, from a twelve-line skeleton. Every registry spec is **trusted** by
-definition (nobody proves the JDK's bodies) and its consumption recorded; `@Pure` admission into contract
+definition (nobody proves the JDK's bodies) and its consumption recorded in the **trusted-spec
+ledger** (one inventory across in-place `trusted` contracts and registry consumption — printed beside
+the harness perf line, linted by DocLint's trusted-inventory section); `@Pure` admission into contract
 positions and `@ThrowsIf` arms in skeletons are the recorded next steps.
 
 Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
