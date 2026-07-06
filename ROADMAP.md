@@ -10018,6 +10018,29 @@ Inventory: **5 files / 18 contracted methods / 0 broken**; `P217 jdk specs` at 1
 
 ---
 
+## Housekeeping (post-218) — Long joins the registry, via its own statics  *(shipped)*
+
+The mechanical mirror, with two findings worth more than the specs themselves:
+
+- **The overload landmine, scoped around**: Math's long overloads (`abs(long)`, `max(long,long)`, …)
+  would create same-arity overload *pairs* in the Math skeleton — and the arity-only
+  assumption/admission lookups decline ambiguity rather than risk binding an int-edged fact
+  (`a == Integer.MIN_VALUE`) to a long argument, so adding them would have silently broken the
+  existing int consumption. `java.lang.Long`'s own single-overload statics (`max`, `min`, `compare`,
+  `signum`, `sum`) deliver the mirror cleanly; typed disambiguation on those lookup paths is the
+  recorded unlock for the Math overloads.
+- **A trusted-but-false spec caught before shipping**: `Long.sum`'s natural ensures
+  (`result == a + b`) is a *math-int* claim, but the runtime **wraps** on overflow — the spec was
+  false at the edges. Now overflow-guarded, the same discipline as `Math.addExact`. The registry's
+  one absolute rule, applied to itself: only provably-true contracts ship.
+
+Cases: the long clamp composition, `Long.compare` as vocabulary, `signum(sum(…))` composing under the
+overflow guard, and the signum over-claim refute. Inventory: **6 files / 23 contracted methods /
+0 broken**; `P217 jdk specs` at 19 cases; ledger **23 trusted facts (21 external, 2 in-place)**.
+Suite **1622/0**, rung **618/632** clean, docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

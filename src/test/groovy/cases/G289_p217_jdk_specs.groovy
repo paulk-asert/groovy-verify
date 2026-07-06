@@ -17,12 +17,12 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P217 jdk specs' — 15 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P217 jdk specs' — 19 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G289_p217_jdk_specs {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The starter JDK specs artifact (Slice C): shipped skeletons for java.lang.Math (abs, negateExact with its true-iff @ThrowsIf at MIN_VALUE, floorDiv with its zero-divisor @ThrowsIf), java.lang.Integer (signum, sign-split ensures), and java.util.Objects (requireNonNull — @ThrowsIf(null) plus a non-null ensures, consumed under the Object-formal leniency rule: a spec\'s Object parameter accepts any reference actual). Chosen for provably-TRUE contracts: every @ThrowsIf arm is a genuine iff (negateExact throws exactly at the one unrepresentable point; floorDiv exactly at zero divisor) — Integer.parseInt is deliberately absent because its exact throw condition is outside the fragment and @ThrowsIf is an iff contract (one-directional signals-style arms are recorded future work). Consumers prove conditional ensures under caller guards and refute over-strong claims through the specs; all consumption is ledgered. Post-218 expansion: Math.max/min (total specs — nested composition proves clamp), floorMod (divisor-sign range facts + zero-divisor @ThrowsIf), addExact (overflow condition spelled over longs so the closure is also runtime-correct), Integer.compare (exact -1/0/1), Objects.checkIndex (the guard idiom as a method). Character (predicates via the boolean-return admission extension): isDigit/isUpperCase/isLowerCase and the toUpperCase/toLowerCase 32-point shifts — PARTIAL specs by design (the real predicates are Unicode-aware), each stated fact true over the ASCII ranges it names, everything else honestly opaque (the unguarded !isDigit claim refutes); the case round-trip composes two partial specs. String is deliberately absent: its core surface is natively modelled in the seq theory (better than trusted specs), and the rest gates on instance-method assumption consumption (recorded).'
+    static final String DESCRIPTION = 'The starter JDK specs artifact (Slice C): shipped skeletons for java.lang.Math (abs, negateExact with its true-iff @ThrowsIf at MIN_VALUE, floorDiv with its zero-divisor @ThrowsIf), java.lang.Integer (signum, sign-split ensures), and java.util.Objects (requireNonNull — @ThrowsIf(null) plus a non-null ensures, consumed under the Object-formal leniency rule: a spec\'s Object parameter accepts any reference actual). Chosen for provably-TRUE contracts: every @ThrowsIf arm is a genuine iff (negateExact throws exactly at the one unrepresentable point; floorDiv exactly at zero divisor) — Integer.parseInt is deliberately absent because its exact throw condition is outside the fragment and @ThrowsIf is an iff contract (one-directional signals-style arms are recorded future work). Consumers prove conditional ensures under caller guards and refute over-strong claims through the specs; all consumption is ledgered. Post-218 expansion: Math.max/min (total specs — nested composition proves clamp), floorMod (divisor-sign range facts + zero-divisor @ThrowsIf), addExact (overflow condition spelled over longs so the closure is also runtime-correct), Integer.compare (exact -1/0/1), Objects.checkIndex (the guard idiom as a method). Character (predicates via the boolean-return admission extension): isDigit/isUpperCase/isLowerCase and the toUpperCase/toLowerCase 32-point shifts — PARTIAL specs by design (the real predicates are Unicode-aware), each stated fact true over the ASCII ranges it names, everything else honestly opaque (the unguarded !isDigit claim refutes); the case round-trip composes two partial specs. String is deliberately absent: its core surface is natively modelled in the seq theory (better than trusted specs), and the rest gates on instance-method assumption consumption (recorded). Long (max/min/compare/signum/sum via Long\'s OWN single-overload statics — Math\'s long overloads are deferred: same-arity overload pairs would trip the ambiguity-declining lookups; sum\'s ensures is overflow-guarded, since the runtime wraps and a trusted-but-false spec is the one thing the registry must not ship).'
 
     static final List<Map> CASES = [
 
@@ -146,6 +146,38 @@ class G289_p217_jdk_specs {
                         @Ensures({ !result })
                         static boolean f(char c) {
                             return Character.isDigit(c)
+                        }
+                    }''')],
+        // ---------- Long: the mechanical mirror, via Long's own single-overload statics ----------
+        [group: 'P217 jdk specs', name: 'Long clamp: nested max/min composition over longs', ok: true,
+         src: tc('''class C {
+                        @Requires({ lo <= hi })
+                        @Ensures({ lo <= result && result <= hi })
+                        static long clamp(long x, long lo, long hi) {
+                            return Long.max(lo, Long.min(x, hi))
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Long.compare as contract vocabulary', ok: true,
+         src: tc('''class C {
+                        @Requires({ Long.compare(x, y) == 1 })
+                        @Ensures({ result == x })
+                        static long larger(long x, long y) {
+                            return Long.max(x, y)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Long.signum of a guarded Long.sum composes', ok: true,
+         src: tc('''class C {
+                        @Requires({ a > 0 && a < 1000000 && b > 0 && b < 1000000 })
+                        @Ensures({ result == 1 })
+                        static int f(long a, long b) {
+                            return Long.signum(Long.sum(a, b))
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Long.signum over-claim refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 1 })
+                        static int f(long a) {
+                            return Long.signum(a)
                         }
                     }''')],
     ]
