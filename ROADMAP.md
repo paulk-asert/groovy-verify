@@ -10105,6 +10105,35 @@ one-directional `signals` arms.
 
 ---
 
+## Phase 221 — receiver-state spec ensures: the indexOf-then-charAt idiom  *(shipped)*
+
+Instance specs may now state facts about receiver state, closing the gap Phase 220 scoped around:
+
+- **Mechanism**: at each consumption site, the contract's implicit-this zero-arg calls are substituted
+  onto the *actual receiver expression* — `String#indexOf(int)`'s `@Ensures({ result >= -1 && result <
+  length() })` becomes `result < s.length()` at a `s.indexOf(c)` call — and the substituted contract
+  translates through the native seq/oracle machinery (an `ExpressionTransformer`, with decline for
+  unsupported shapes: implicit-this calls *with* arguments, bare field names). Requires-side receiver
+  state stays strict (obligation-side receiver wiring is separate work).
+- **The en-route engine fix, worth more than the feature**: the obligation-replay walk was missing
+  checkPath's scalar call-assign branch — `int i = s.indexOf(c)` left `i` *unconstrained* in
+  implicit-obligation sessions (the probe's guarded charAt refuted with `i = 1`). Mirrored; every
+  contracted scalar call-assign now constrains obligation sessions too.
+- **The showpiece**: the **indexOf-then-charAt idiom** — `int i = s.indexOf(120); if (i >= 0) return
+  s.charAt(i)` proves its *native* bounds obligation from the *registry* fact (`i < s.length()`) plus
+  the found-check branch; drop the check and the `-1` sentinel refutes it (`counterexample: i = -1`).
+  A trusted external spec, a native theory, and path-sensitivity composing in one four-line method.
+- The `java.lang.String` skeleton stays deliberately minimal (`indexOf`/`lastIndexOf` over int only) —
+  the native seq theory models the rest exactly, and a spec would be a downgrade.
+
+`P221 receiver-state specs` (G293, 3 cases). Inventory: **9 files / 37 contracted methods / 0 broken**;
+ledger **27 trusted facts (25 external)**. Root suite **1634/0** (+3), rung **624/638** clean /
+0 need review, docLint 0 drift, full `check` green. The external-specs arc's remaining recorded items:
+contract-position instance admission (opaque receiver handles), obligation-side receiver state, and the
+one-directional `signals` arms.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

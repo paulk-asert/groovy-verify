@@ -2696,7 +2696,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         if (assumeCalleeEnsures(s, enc, a.rhs, node, null, hasDecreases(node), a.name)) continue
                     }
                     Object rhs = enc.translate(a.rhs)
-                    if (rhs != null) s.assertExpr(s.eq(enc.varFor(a.name), rhs))
+                    if (rhs != null) { s.assertExpr(s.eq(enc.varFor(a.name), rhs)); continue }
+                    // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
+                    // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
+                    // replay leaves `i` unconstrained and a downstream `s.charAt(i)` bound can't discharge.
+                    if (isCallExpr(a.rhs)) {
+                        Object fresh = s.intVar('specw$' + Integer.toHexString(System.identityHashCode(a.rhs)))
+                        if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
+                            s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                        }
+                    }
                 } else if (step instanceof FieldAssign) {
                     // SSA-version a field/param write: read the rhs against the CURRENT (pre-write) symbol, then
                     // rebind the name to a fresh symbol equal to it, so subsequent reads see the post-write value
@@ -8653,6 +8662,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ok[0]
     }
 
+    /** Phase 221 — rewrite a receiver-state contract onto the actual receiver: each implicit-this
+     *  zero-arg call ({@code length()}) becomes {@code recv.length()}. Returns null (decline) for
+     *  shapes that cannot be substituted faithfully: implicit-this calls WITH arguments, or bare
+     *  lowercase names that are neither formals nor {@code result} (fields). */
+    private static Expression substituteReceiverState(MethodNode spec, Expression contractAst, Expression recv) {
+        Set<String> allowed = new HashSet<String>(spec.parameters.collect { it.name })
+        allowed.add('result')
+        boolean[] bad = [false]
+        ExpressionTransformer tx = new ExpressionTransformer() {
+            @Override Expression transform(Expression e) {
+                if (e == null) return null
+                if (e instanceof MethodCallExpression && ((MethodCallExpression) e).implicitThis) {
+                    MethodCallExpression m = (MethodCallExpression) e
+                    boolean zeroArg = m.arguments instanceof ArgumentListExpression &&
+                        ((ArgumentListExpression) m.arguments).expressions.isEmpty()
+                    if (!zeroArg) { bad[0] = true; return e }
+                    MethodCallExpression sub = new MethodCallExpression(recv, m.methodAsString,
+                        ArgumentListExpression.EMPTY_ARGUMENTS)
+                    sub.setImplicitThis(false)
+                    sub.setSourcePosition(e)
+                    return sub
+                }
+                if (e instanceof VariableExpression) {
+                    String n = ((VariableExpression) e).name
+                    if (!(n in allowed) && !(n != null && !n.isEmpty() && Character.isUpperCase(n.charAt(0))) &&
+                        n != 'this') bad[0] = true
+                    return e
+                }
+                return e.transformExpression(this)
+            }
+        }
+        Expression out = tx.transform(contractAst)
+        bad[0] ? null : out
+    }
+
     /** Phase 215 — the owner type of a plain static call (`Math.abs(x)` / static-import shape), or null. */
     private static ClassNode staticOwnerType(Expression callExpr) {
         if (callExpr instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) callExpr).ownerType
@@ -9047,11 +9091,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (callee == null) return false
         // Phase 215 — a registry skeleton must match the actuals' types (the unique-arity fallback can
         // still collide with a JDK overload set: abs(int) spec vs an abs(double) call — sort crash).
+        Expression specEnsuresOverride = null
         if (callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null) {
-            // Phase 220 — receiver-independence guard (uniform for static and instance spec callees)
-            if (!specContractReceiverIndependent(callee, contractAstFor(callee, 'ensures')) ||
-                !specContractReceiverIndependent(callee, contractAstFor(callee, 'requires'))) {
-                return false
+            // Phase 220 — requires stays receiver-independent (obligation-side wiring is separate work)
+            if (!specContractReceiverIndependent(callee, contractAstFor(callee, 'requires'))) return false
+            Expression specEns = contractAstFor(callee, 'ensures')
+            if (!specContractReceiverIndependent(callee, specEns)) {
+                // Phase 221 — receiver-STATE ensures (`result < length()` on String#indexOf): substitute
+                // each implicit-this zero-arg call onto the ACTUAL receiver expression, so `length()`
+                // becomes `s.length()` and translates through the native seq/oracle machinery.
+                Expression recv = (callExpr instanceof MethodCallExpression &&
+                    !((MethodCallExpression) callExpr).implicitThis) ?
+                    ((MethodCallExpression) callExpr).objectExpression : null
+                specEnsuresOverride = recv != null ? substituteReceiverState(callee, specEns, recv) : null
+                if (specEnsuresOverride == null) return false
             }
             for (int ti = 0; ti < actuals.size(); ti++) {
                 ClassNode at = inferredTypeOf(actuals.get(ti))
@@ -9067,7 +9120,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
         }
-        Expression ensuresAst = contractAstFor(callee, 'ensures')
+        Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
         // Nothing to model — no @Ensures and no @Modifies — so we can't account for the call's effect.
         if (ensuresAst == null && (modSet == null || modSet.isEmpty())) return false

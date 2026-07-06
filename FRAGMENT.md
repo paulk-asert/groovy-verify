@@ -281,8 +281,9 @@ methods stay loud skips, int-like signatures in v1. `@ThrowsIf` arms ship in ske
 rung-visible; caller-side catch-reachability consumption is the recorded next step). Instance-method
 specs are consumed too (Phase 220), under the receiver-independence rule: an instance contract may
 state facts about `result` and the arguments only — the `java.time` value-getter ranges are the debut
-(`t.getHour()` is `0..23` wherever it flows); receiver-*state* contracts (`charAt` bounds via
-`length()`) remain recorded work.
+(`t.getHour()` is `0..23` wherever it flows); receiver-*state* ensures land in Phase 221:
+`s.indexOf(c)` carries `result >= -1 && result < length()` with `length()` substituted onto the actual
+receiver — the indexOf-then-charAt idiom proves its bounds from the registry fact plus the found-check.
 
 Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
 a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` on
