@@ -28,4 +28,9 @@ class Integer {
     @Pure
     @Ensures({ (a > 0 ==> result == 1) && (a == 0 ==> result == 0) && (a < 0 ==> result == -1) })
     static int signum(int a) {}
+
+    // Exact (the implementation returns precisely -1/0/1), which comparator reasoning leans on.
+    @Pure
+    @Ensures({ (x < y ==> result == -1) && (x == y ==> result == 0) && (x > y ==> result == 1) })
+    static int compare(int x, int y) {}
 }

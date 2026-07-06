@@ -27,4 +27,10 @@ class Objects {
     @ThrowsIf(value = { obj == null }, exception = NullPointerException, trusted = true)
     @Ensures({ result != null })
     static Object requireNonNull(Object obj) {}
+
+    // The guard idiom as a method: throws exactly outside the range, returns the index inside it.
+    @Pure
+    @ThrowsIf(value = { index < 0 || index >= length }, exception = IndexOutOfBoundsException, trusted = true)
+    @Ensures({ (0 <= index && index < length) ==> result == index })
+    static int checkIndex(int index, int length) {}
 }

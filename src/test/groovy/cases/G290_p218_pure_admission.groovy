@@ -22,7 +22,7 @@ import static cases.CaseDsl.*
 class G290_p218_pure_admission {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = '@Pure admission: a registry-spec\'d JDK method marked @Pure becomes usable VOCABULARY inside contract expressions — @Ensures({ result == Math.abs(a) }) — modelled as an uninterpreted function whose defining axiom is the spec\'s own @Ensures, guarded by its @Requires (requires[a->E] ==> ensures[result->UF(E), a->E], asserted once per ground term; where the context admits a requires-violating argument no facts flow, keeping the MIN_VALUE edge honest). Purity is the admission gate twice over: statically an impure method is not a function (congruence would be unsound), dynamically groovy-contracts executes contract closures at runtime (the JDK method IS the runtime implementation — no shipped executable needed, unlike the spec-DSL helpers). Honest edges pinned: an ensures-free spec (floorDiv) yields an opaque UF — claims through it refuse to prove; an unspecced method (floorMod) stays a loud skip. v1 fragment: int-like signatures.'
+    static final String DESCRIPTION = '@Pure admission: a registry-spec\'d JDK method marked @Pure becomes usable VOCABULARY inside contract expressions — @Ensures({ result == Math.abs(a) }) — modelled as an uninterpreted function whose defining axiom is the spec\'s own @Ensures, guarded by its @Requires (requires[a->E] ==> ensures[result->UF(E), a->E], asserted once per ground term; where the context admits a requires-violating argument no facts flow, keeping the MIN_VALUE edge honest). Purity is the admission gate twice over: statically an impure method is not a function (congruence would be unsound), dynamically groovy-contracts executes contract closures at runtime (the JDK method IS the runtime implementation — no shipped executable needed, unlike the spec-DSL helpers). Honest edges pinned: an ensures-free spec (floorDiv) yields an opaque UF — claims through it refuse to prove; an unspecced method (multiplyExact) stays a loud skip. v1 fragment: int-like signatures.'
 
     static final List<Map> CASES = [
 
@@ -58,9 +58,11 @@ class G290_p218_pure_admission {
                             return 0
                         }
                     }''')],
-        [group: 'P218 pure admission', name: 'unspecced method stays a loud skip (floorMod)', expect: 'Skipped verification of postcondition',
+        // (was floorMod until the post-218 expansion spec'd it — the boundary example must stay
+        // genuinely unspecced, or the case flips from skip to spec-driven refute, as happened)
+        [group: 'P218 pure admission', name: 'unspecced method stays a loud skip (multiplyExact)', expect: 'Skipped verification of postcondition',
          src: tc('''class C {
-                        @Ensures({ result == Math.floorMod(a, b) })
+                        @Ensures({ result == Math.multiplyExact(a, b) })
                         static int f(int a, int b) {
                             return 0
                         }

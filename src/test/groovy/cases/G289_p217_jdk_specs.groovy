@@ -17,12 +17,12 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P217 jdk specs' — 4 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P217 jdk specs' — 10 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G289_p217_jdk_specs {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The starter JDK specs artifact (Slice C): shipped skeletons for java.lang.Math (abs, negateExact with its true-iff @ThrowsIf at MIN_VALUE, floorDiv with its zero-divisor @ThrowsIf), java.lang.Integer (signum, sign-split ensures), and java.util.Objects (requireNonNull — @ThrowsIf(null) plus a non-null ensures, consumed under the Object-formal leniency rule: a spec\'s Object parameter accepts any reference actual). Chosen for provably-TRUE contracts: every @ThrowsIf arm is a genuine iff (negateExact throws exactly at the one unrepresentable point; floorDiv exactly at zero divisor) — Integer.parseInt is deliberately absent because its exact throw condition is outside the fragment and @ThrowsIf is an iff contract (one-directional signals-style arms are recorded future work). Consumers prove conditional ensures under caller guards and refute over-strong claims through the specs; all consumption is ledgered.'
+    static final String DESCRIPTION = 'The starter JDK specs artifact (Slice C): shipped skeletons for java.lang.Math (abs, negateExact with its true-iff @ThrowsIf at MIN_VALUE, floorDiv with its zero-divisor @ThrowsIf), java.lang.Integer (signum, sign-split ensures), and java.util.Objects (requireNonNull — @ThrowsIf(null) plus a non-null ensures, consumed under the Object-formal leniency rule: a spec\'s Object parameter accepts any reference actual). Chosen for provably-TRUE contracts: every @ThrowsIf arm is a genuine iff (negateExact throws exactly at the one unrepresentable point; floorDiv exactly at zero divisor) — Integer.parseInt is deliberately absent because its exact throw condition is outside the fragment and @ThrowsIf is an iff contract (one-directional signals-style arms are recorded future work). Consumers prove conditional ensures under caller guards and refute over-strong claims through the specs; all consumption is ledgered. Post-218 expansion: Math.max/min (total specs — nested composition proves clamp), floorMod (divisor-sign range facts + zero-divisor @ThrowsIf), addExact (overflow condition spelled over longs so the closure is also runtime-correct), Integer.compare (exact -1/0/1), Objects.checkIndex (the guard idiom as a method).'
 
     static final List<Map> CASES = [
 
@@ -56,6 +56,56 @@ class G289_p217_jdk_specs {
                         @Ensures({ result != null })
                         static Object f(Object x) {
                             return java.util.Objects.requireNonNull(x)
+                        }
+                    }''')],
+        // ---------- post-218 expansion: the high-priority core methods ----------
+        // the showpiece: nested spec calls — clamp via max(min(...)) proves the range property
+        [group: 'P217 jdk specs', name: 'clamp: nested max/min spec composition proves the range', ok: true,
+         src: tc('''class C {
+                        @Requires({ lo <= hi })
+                        @Ensures({ lo <= result && result <= hi })
+                        static int clamp(int x, int lo, int hi) {
+                            return Math.max(lo, Math.min(x, hi))
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'floorMod: divisor-sign range ensures', ok: true,
+         src: tc('''class C {
+                        @Requires({ n > 0 })
+                        @Ensures({ 0 <= result && result < n })
+                        static int wrap(int i, int n) {
+                            return Math.floorMod(i, n)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'floorMod over-claim refutes (result can be 0)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n > 0 })
+                        @Ensures({ result > 0 })
+                        static int wrap(int i, int n) {
+                            return Math.floorMod(i, n)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Integer.compare as contract vocabulary', ok: true,
+         src: tc('''class C {
+                        @Requires({ Integer.compare(x, y) == -1 })
+                        @Ensures({ result == y })
+                        static int larger(int x, int y) {
+                            return Math.max(x, y)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Objects.checkIndex identity under the range guard', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= i && i < n })
+                        @Ensures({ result == i })
+                        static int f(int i, int n) {
+                            return java.util.Objects.checkIndex(i, n)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Math.addExact: long-spelled overflow condition, exact sum ensured', ok: true,
+         src: tc('''class C {
+                        @Requires({ a >= 0 && a <= 1000 && b >= 0 && b <= 1000 })
+                        @Ensures({ result == a + b })
+                        static int f(int a, int b) {
+                            return Math.addExact(a, b)
                         }
                     }''')],
     ]

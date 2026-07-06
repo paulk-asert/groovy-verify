@@ -55,4 +55,27 @@ class Math {
     @Pure
     @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
     static int floorDiv(int a, int b) {}
+
+    @Pure
+    @Ensures({ (a >= b ==> result == a) && (a < b ==> result == b) })
+    static int max(int a, int b) {}
+
+    @Pure
+    @Ensures({ (a <= b ==> result == a) && (a > b ==> result == b) })
+    static int min(int a, int b) {}
+
+    // The result carries the DIVISOR's sign — the fact modular-arithmetic proofs actually need.
+    @Pure
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    @Ensures({ (b > 0 ==> (0 <= result && result < b)) &&
+               (b < 0 ==> (b < result && result <= 0)) })
+    static int floorMod(int a, int b) {}
+
+    // Overflow is the throw condition — spelled over longs so the closure is also RUNTIME-correct
+    // (an int-typed `a + b` would wrap when the rung evaluates it).
+    @Pure
+    @ThrowsIf(value = { (long) a + (long) b > Integer.MAX_VALUE || (long) a + (long) b < Integer.MIN_VALUE },
+              exception = ArithmeticException, trusted = true)
+    @Ensures({ ((long) a + (long) b <= Integer.MAX_VALUE && (long) a + (long) b >= Integer.MIN_VALUE) ==> result == a + b })
+    static int addExact(int a, int b) {}
 }

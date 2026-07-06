@@ -9976,6 +9976,26 @@ Root suite green, rung clean, docLint 0 drift, full `check` green.
 
 ---
 
+## Housekeeping (post-218) — the high-priority core methods land in the registry  *(shipped)*
+
+The hand-picked expansion from the OpenJML-corpus survey's "genuinely valuable core", every contract
+provably true and consumable today: **`Math.max`/`min`** (total specs — and the showpiece: nested
+composition proves `clamp(x, lo, hi) = max(lo, min(x, hi))` keeps its range, spec calls inside spec
+calls); **`Math.floorMod`** (the divisor-sign range facts modular proofs lean on, plus the zero-divisor
+`@ThrowsIf`); **`Math.addExact`** (the overflow condition spelled over `long`s — an int-typed `a + b`
+in the closure would wrap at *runtime evaluation*, so the spelling keeps the rung honest too);
+**`Integer.compare`** (exact `-1/0/1`, immediately usable as contract vocabulary via Phase 218
+admission); **`Objects.checkIndex`** (the guard idiom as a method — iff throw outside the range,
+identity inside it). One instructive ripple: G290's "unspecced method" boundary case had used
+`floorMod` as its example — the expansion spec'd it, and the case flipped from loud-skip to a
+spec-driven refute (`b = 0`, where the guarded axiom leaves the term unconstrained). The boundary
+example moved to the still-unspecced `multiplyExact`; registry growth can flip skip-pinning cases, a
+maintenance fact now on record. Inventory: **4 files / 13 contracted methods / 0 broken**;
+`P217 jdk specs` grows to 10 cases; corpus ledger **15 trusted facts (13 external, 2 in-place)**.
+Suite **1613/0**, rung **611/625** clean, docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
