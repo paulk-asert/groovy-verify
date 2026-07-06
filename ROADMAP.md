@@ -10074,6 +10074,37 @@ docLint 0 drift, full `check` green.
 
 ---
 
+## Phase 220 — instance-method spec consumption: the `java.time` debut  *(shipped)*
+
+The registry now answers for *instance* calls. The engine change was one line of threading plus one
+guard — the design work was choosing the soundness scope:
+
+- **Threading**: `instanceReceiverType` (the receiver's STC-inferred type) joins the carrier and
+  static-owner cases in `assumeCalleeEnsures`'s resolution chain; everything downstream (typed lookup,
+  the hoist and assign paths, the ledger) works unchanged.
+- **The receiver-independence rule**: a consumed instance contract may reference only `result` and the
+  formals. Receiver-state names (`length()`, fields, implicit-this calls) would translate as unrelated
+  caller variables — silently unsound — so a uniform guard on all spec callees declines them. That
+  makes *range facts on immutable value getters* the natural v1 population: `LocalDate.getMonthValue`
+  is 1–12 on **every** receiver, no state needed.
+- **Skeletons**: `java.time.LocalDate` (`getMonthValue` 1–12, `getDayOfMonth` 1–31, `getDayOfYear`
+  1–366) and `java.time.LocalTime` (`getHour` 0–23, `getMinute`/`getSecond` 0–59) — immutable, `@Pure`.
+- **The nullity discipline composed for free** (the probe found it before I did): an unguarded
+  `d.getMonthValue()` first refutes with the `d != null` obligation — the receiver dereference is a
+  real proof obligation — and only under the guard does the range fact flow. Defense in depth, no new
+  code.
+- **Showpiece**: `minuteOfDay(t) = t.getHour() * 60 + t.getMinute()` proves `0 <= result < 1440` from
+  two instance facts composing arithmetically; the over-claim refutes with month = 1 (January as
+  counterexample).
+
+`P220 instance specs` (G292, 4 cases). Inventory: **8 files / 35 contracted methods / 0 broken**;
+ledger **26 trusted facts (24 external)**. Root suite **1631/0** (+4), rung clean, docLint 0 drift,
+full `check` green. Recorded next: receiver-*state* contracts (needs receiver-oracle wiring — the
+`charAt`-bounds shape), contract-position instance admission (needs opaque receiver handles), and the
+one-directional `signals` arms.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

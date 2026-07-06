@@ -8620,6 +8620,39 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /** Phase 220 — the STC-inferred type of an instance call's receiver (`d.getMonthValue()`), so the
+     *  external-spec registry can answer for instance methods too. Null for static/implicit-this shapes. */
+    private ClassNode instanceReceiverType(Expression callExpr) {
+        if (!(callExpr instanceof MethodCallExpression)) return null
+        MethodCallExpression mce = (MethodCallExpression) callExpr
+        if (mce.implicitThis) return null
+        Expression obj = mce.objectExpression
+        if (obj == null || obj instanceof ClassExpression) return null
+        inferredTypeOf(obj)
+    }
+
+    /** Phase 220 — a registry spec consumed on an INSTANCE receiver must be receiver-independent:
+     *  its contract may reference only {@code result} and the formals (plus capitalised class refs
+     *  like {@code Integer.MAX_VALUE}). Receiver-state names ({@code length()}, fields) would
+     *  translate as unrelated caller variables — unsound — so such specs are declined here. */
+    private static boolean specContractReceiverIndependent(MethodNode spec, Expression contractAst) {
+        if (contractAst == null) return true
+        Set<String> allowed = new HashSet<String>(spec.parameters.collect { it.name })
+        allowed.add('result')
+        boolean[] ok = [true]
+        contractAst.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                String n = ve.name
+                if (!(n in allowed) && !(n && Character.isUpperCase(n.charAt(0)))) ok[0] = false
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (call.implicitThis) ok[0] = false   // receiver-state call (`length()`)
+                super.visitMethodCallExpression(call)
+            }
+        })
+        ok[0]
+    }
+
     /** Phase 215 — the owner type of a plain static call (`Math.abs(x)` / static-import shape), or null. */
     private static ClassNode staticOwnerType(Expression callExpr) {
         if (callExpr instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) callExpr).ownerType
@@ -9006,7 +9039,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Resolve on the instance receiver's type, else a static call's owner type (`Length.km(…)` — Phase 142c),
         // else the plain static owner (Phase 215 — `Math.abs(x)`, so the external-spec registry can answer).
         ClassNode forResolve = receiverType != null ? receiverType :
-            (ownerCarrierType(callExpr) ?: staticOwnerType(callExpr))
+            (ownerCarrierType(callExpr) ?: staticOwnerType(callExpr) ?: instanceReceiverType(callExpr))
         // Phase 219 — STC-inferred actual types, when all are known, disambiguate registry overloads.
         List<ClassNode> inferred = actuals.collect { Expression a -> inferredTypeOf(a) }
         List<String> actualTypeNames = inferred.every { it != null } ? inferred.collect { it.name } : null
@@ -9015,6 +9048,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 215 — a registry skeleton must match the actuals' types (the unique-arity fallback can
         // still collide with a JDK overload set: abs(int) spec vs an abs(double) call — sort crash).
         if (callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null) {
+            // Phase 220 — receiver-independence guard (uniform for static and instance spec callees)
+            if (!specContractReceiverIndependent(callee, contractAstFor(callee, 'ensures')) ||
+                !specContractReceiverIndependent(callee, contractAstFor(callee, 'requires'))) {
+                return false
+            }
             for (int ti = 0; ti < actuals.size(); ti++) {
                 ClassNode at = inferredTypeOf(actuals.get(ti))
                 String specT = callee.parameters[ti].type.nameWithoutPackage.toLowerCase()

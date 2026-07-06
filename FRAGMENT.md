@@ -278,7 +278,11 @@ the harness perf line, linted by DocLint's trusted-inventory section); `@Pure`-m
 positions** (Phase 218): `@Ensures({ result == Math.abs(a) })` models the call as an uninterpreted
 function axiomatised by the spec's own guarded contract — ensures-free specs stay opaque, unspecced
 methods stay loud skips, int-like signatures in v1. `@ThrowsIf` arms ship in skeletons (documentation +
-rung-visible; caller-side catch-reachability consumption is the recorded next step).
+rung-visible; caller-side catch-reachability consumption is the recorded next step). Instance-method
+specs are consumed too (Phase 220), under the receiver-independence rule: an instance contract may
+state facts about `result` and the arguments only — the `java.time` value-getter ranges are the debut
+(`t.getHour()` is `0..23` wherever it flows); receiver-*state* contracts (`charAt` bounds via
+`length()`) remain recorded work.
 
 Beyond `@Requires`, a method-entry precondition can also come from a **Jakarta / `javax.validation` constraint** on
 a parameter or field — `@Positive` / `@PositiveOrZero` / `@Negative` / `@NegativeOrZero` / `@Min(n)` / `@Max(n)` on
