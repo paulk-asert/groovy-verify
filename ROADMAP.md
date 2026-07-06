@@ -10041,6 +10041,39 @@ Suite **1622/0**, rung **618/632** clean, docLint 0 drift, full `check` green.
 
 ---
 
+## Phase 219 — typed lookup disambiguation: the Math long overloads unlock  *(shipped)*
+
+The machinery slice that retires the overload landmine. Three lookup paths, three treatments:
+
+- **Obligations** (`onMethodSelection`) were already typed — STC hands the resolved target.
+- **Assumption** (`assumeCalleeEnsures`): STC-inferred actual types now thread through
+  `resolveContractedCallee` into the registry lookup.
+- **Admission** (`translateSpecCall`): confident encoder-side kind inference — declared formals (via
+  `vcMethod`), literals, casts, unary minus, agreeing ternaries, arithmetic (long if either side is),
+  and *nested spec calls* whose kind is their matched skeleton's return type, recursing through the
+  same typed lookup. A confident contradiction with the matched spec's formals **declines** admission
+  rather than mis-bind an int-edged fact to a long argument.
+- **Wildcard-aware matching** in `SpecRegistry.lookup`: unknown kinds match anything, but the result
+  must be *unique* among candidates — partial knowledge narrows the overload set instead of
+  discarding it (the naive all-or-nothing version broke `clamp`'s nested `max(min(…))`).
+- **Width classes**: `char`/`short`/`byte` classify as `int` on both sides of the match — the encoder
+  models all sub-int integrals as math ints (the first cut kept `char` distinct, knocking Character's
+  whole surface off the admission path; the boolean-returning fallback then hit the hoist's Int-sorted
+  handle — a crash the corpus caught within minutes).
+
+With the paths typed, **Math's long overloads ship**: `abs` (total, wrap stated at `Long.MIN_VALUE`),
+`max`/`min`, `floorDiv`/`floorMod` (zero-divisor iffs + divisor-sign ranges), and `addExact` via the
+**rearranged-comparison overflow idiom** (`b > 0 && a > Long.MAX_VALUE - b` — no wider type to widen
+into, and wrap-free at runtime too). The routing proof in the teeth case: `abs(long)`'s wrap
+counterexample is `-9223372036854775808` — the *long* MIN_VALUE, not the int one. The showpiece:
+`Math.abs(i) + Math.abs(l)` in one method, each call routed to its own overload by its argument's type.
+
+`P219 typed specs` (G291, 5 cases). Inventory: **6 files / 29 contracted methods / 0 broken**; ledger
+**23 trusted facts**. Root suite **1627/0** (+5), runtime rung **622/636** clean / 0 need review,
+docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

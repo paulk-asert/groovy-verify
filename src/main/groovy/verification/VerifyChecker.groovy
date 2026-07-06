@@ -8598,7 +8598,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * which needs {@code @Decreases} for well-foundedness and is a later slice.
      */
     private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity, boolean allowSelf,
-                                                      ClassNode receiverType = null) {
+                                                      ClassNode receiverType = null, List<String> actualTypeNames = null) {
         if (name == null) return null
         MethodNode m = resolveContractedIn(caller?.declaringClass, caller, name, arity, allowSelf)
         if (m != null) return m
@@ -8610,7 +8610,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 215 — the external-spec registry: a trusted skeleton contract for a library class
             // (`Math.abs` from META-INF/groovy-verify/specs/java.lang.Math.groovy). Same consumption as
             // any contracted callee: @Ensures assumed, @Modifies framed.
-            MethodNode spec = SpecRegistry.lookup(receiverType.name, name, arity)
+            // typed when the caller could infer the actuals (disambiguates same-arity overload pairs —
+            // abs(int) vs abs(long)); arity-unique otherwise, exactly as before
+            MethodNode spec = SpecRegistry.lookup(receiverType.name, name, arity, actualTypeNames)
             // gate on captured contract TEXT: the skeleton parses only to CONVERSION, so its annotation
             // types are unresolved simple names — @ContractSource (attached by CET) is the authority
             if (spec != null && (contractAstFor(spec, 'ensures') != null || contractAstFor(spec, 'modifies') != null)) return spec
@@ -9005,7 +9007,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // else the plain static owner (Phase 215 — `Math.abs(x)`, so the external-spec registry can answer).
         ClassNode forResolve = receiverType != null ? receiverType :
             (ownerCarrierType(callExpr) ?: staticOwnerType(callExpr))
-        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve)
+        // Phase 219 — STC-inferred actual types, when all are known, disambiguate registry overloads.
+        List<ClassNode> inferred = actuals.collect { Expression a -> inferredTypeOf(a) }
+        List<String> actualTypeNames = inferred.every { it != null } ? inferred.collect { it.name } : null
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), allowSelf, forResolve, actualTypeNames)
         if (callee == null) return false
         // Phase 215 — a registry skeleton must match the actuals' types (the unique-arity fallback can
         // still collide with a JDK overload set: abs(int) spec vs an abs(double) call — sort crash).

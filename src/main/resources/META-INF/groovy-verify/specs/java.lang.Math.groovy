@@ -78,4 +78,38 @@ class Math {
               exception = ArithmeticException, trusted = true)
     @Ensures({ ((long) a + (long) b <= Integer.MAX_VALUE && (long) a + (long) b >= Integer.MIN_VALUE) ==> result == a + b })
     static int addExact(int a, int b) {}
+
+    // ── the long overloads (Phase 219 — typed lookup disambiguation makes same-arity pairs safe) ──
+
+    @Pure
+    @Ensures({ (a >= 0 ==> result == a) &&
+               (a < 0 && a != Long.MIN_VALUE ==> result == -a) &&
+               (a == Long.MIN_VALUE ==> result == Long.MIN_VALUE) })
+    static long abs(long a) {}
+
+    @Pure
+    @Ensures({ (a >= b ==> result == a) && (a < b ==> result == b) })
+    static long max(long a, long b) {}
+
+    @Pure
+    @Ensures({ (a <= b ==> result == a) && (a > b ==> result == b) })
+    static long min(long a, long b) {}
+
+    @Pure
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    static long floorDiv(long a, long b) {}
+
+    @Pure
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    @Ensures({ (b > 0 ==> (0 <= result && result < b)) &&
+               (b < 0 ==> (b < result && result <= 0)) })
+    static long floorMod(long a, long b) {}
+
+    // No wider type to widen into: the overflow condition uses the rearranged-comparison idiom,
+    // which is wrap-free at runtime too.
+    @Pure
+    @ThrowsIf(value = { (b > 0 && a > Long.MAX_VALUE - b) || (b < 0 && a < Long.MIN_VALUE - b) },
+              exception = ArithmeticException, trusted = true)
+    @Ensures({ !((b > 0 && a > Long.MAX_VALUE - b) || (b < 0 && a < Long.MIN_VALUE - b)) ==> result == a + b })
+    static long addExact(long a, long b) {}
 }

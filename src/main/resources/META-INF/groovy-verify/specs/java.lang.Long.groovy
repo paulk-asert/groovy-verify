@@ -15,11 +15,8 @@
  */
 
 // External-specification skeleton: trusted contracts for java.lang.Long — the mechanical mirror of
-// the Integer/Math int surface, via Long's OWN single-overload statics. (Math's long OVERLOADS —
-// abs(long), max(long,long), … — are deliberately deferred: they would create same-arity overload
-// pairs in the Math skeleton, and the arity-only assumption/admission lookups decline ambiguity
-// rather than risk binding an int-edged fact to a long argument. Typed disambiguation on those
-// paths is the recorded unlock.)
+// the Integer/Math int surface, via Long's own single-overload statics. (Math's long OVERLOADS also
+// ship now — Phase 219's typed lookup disambiguation made same-arity overload pairs safe.)
 package java.lang
 
 import groovy.contracts.Ensures

@@ -6331,8 +6331,20 @@ class Encoder implements TheoryApi {
             : (((StaticMethodCallExpression) e).arguments instanceof ArgumentListExpression ?
                ((ArgumentListExpression) ((StaticMethodCallExpression) e).arguments).expressions : null)
         if (args == null) return null
-        MethodNode spec = SpecRegistry.lookup(fqn, name, args.size())
+        // Phase 219 — typed disambiguation for same-arity overload pairs (abs(int)/abs(long)):
+        // confident static inference per argument ('int'/'long', null = wildcard); a confident
+        // contradiction with the matched spec's formals declines admission rather than mis-bind.
+        List<String> argKinds = args.collect { Expression a -> staticNumericKind(a) }
+        MethodNode spec = SpecRegistry.lookup(fqn, name, args.size(), argKinds)
         if (spec == null || !SpecRegistry.isPure(spec)) return null
+        for (int ki = 0; ki < args.size(); ki++) {
+            String kind = argKinds.get(ki)
+            String formal = spec.parameters[ki].type.name
+            if (kind != null && formal in ['int', 'long', 'java.lang.Integer', 'java.lang.Long'] &&
+                kind != (formal.contains('Long') || formal == 'long' ? 'long' : 'int')) {
+                return null
+            }
+        }
         boolean boolRet = spec.returnType?.name in ['boolean', 'java.lang.Boolean']   // predicates (Character.isDigit)
         if (!spec.parameters.every { Parameter p -> isIntLikeType(p.type) } ||
             !(isIntLikeType(spec.returnType) || boolRet)) return null
@@ -6367,6 +6379,71 @@ class Encoder implements TheoryApi {
             }
         }
         uf
+    }
+
+    /** Confident static numeric kind of an expression — 'int', 'long', or null (unknown/wildcard).
+     *  Only shapes whose kind is certain answer: declared-type variables, literals, casts, unary
+     *  minus, ternaries with agreeing branches, and arithmetic (long if either side is long). */
+    private String staticNumericKind(Expression e) {
+        if (e instanceof MethodCall && (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression)) {
+            // a nested spec call's kind is its matched skeleton's return type (Math.min(x, hi) inside
+            // Math.max(lo, …)); resolution recurses through the same typed lookup
+            String fqn = specOwnerFqn((Expression) e)
+            if (fqn != null) {
+                List<Expression> inner = e instanceof MethodCallExpression ? argList((MethodCallExpression) e)
+                    : (((StaticMethodCallExpression) e).arguments instanceof ArgumentListExpression ?
+                       ((ArgumentListExpression) ((StaticMethodCallExpression) e).arguments).expressions : null)
+                if (inner != null) {
+                    MethodNode nested = SpecRegistry.lookup(fqn, ((MethodCall) e).methodAsString, inner.size(),
+                        inner.collect { Expression a -> staticNumericKind(a) })
+                    String rn = nested?.returnType?.name
+                    if (rn == 'long' || rn == 'java.lang.Long') return 'long'
+                    if (rn in ['int', 'java.lang.Integer', 'char', 'java.lang.Character', 'short', 'byte']) return 'int'
+                }
+            }
+            return null
+        }
+        if (e instanceof CastExpression) {
+            String n = ((CastExpression) e).type?.name
+            if (n == 'long' || n == 'java.lang.Long') return 'long'
+            if (n == 'int' || n == 'java.lang.Integer') return 'int'
+            return staticNumericKind(((CastExpression) e).expression)
+        }
+        if (e instanceof ConstantExpression) {
+            Object v = ((ConstantExpression) e).value
+            if (v instanceof Long) return 'long'
+            if (v instanceof Integer || v instanceof Short || v instanceof Byte) return 'int'
+            return null
+        }
+        if (e instanceof VariableExpression) {
+            String vn = ((VariableExpression) e).name
+            ClassNode t = scalarTypes.get(vn)
+            if (t == null && vcMethod != null) {
+                Parameter mp = vcMethod.parameters.find { it.name == vn }   // contract/body formals
+                t = mp?.type
+            }
+            String n = t?.name
+            if (n == 'long' || n == 'java.lang.Long') return 'long'
+            if (n in ['int', 'java.lang.Integer', 'short', 'java.lang.Short', 'byte', 'java.lang.Byte', 'char', 'java.lang.Character']) return 'int'
+            return null
+        }
+        if (e instanceof UnaryMinusExpression) return staticNumericKind(((UnaryMinusExpression) e).expression)
+        if (e instanceof TernaryExpression) {
+            String a = staticNumericKind(((TernaryExpression) e).trueExpression)
+            String b = staticNumericKind(((TernaryExpression) e).falseExpression)
+            return a == b ? a : (a == 'long' || b == 'long' ? 'long' : null)
+        }
+        if (e instanceof BinaryExpression) {
+            int op = ((BinaryExpression) e).operation.type
+            if (op in [Types.PLUS, Types.MINUS, Types.MULTIPLY, Types.MOD, Types.REMAINDER, Types.INTDIV]) {
+                String a = staticNumericKind(((BinaryExpression) e).leftExpression)
+                String b = staticNumericKind(((BinaryExpression) e).rightExpression)
+                if (a == 'long' || b == 'long') return 'long'
+                if (a == 'int' && b == 'int') return 'int'
+            }
+            return null
+        }
+        null
     }
 
     /** The registry FQN a call's receiver denotes: a resolved ClassExpression / static-call owner, a

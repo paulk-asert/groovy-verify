@@ -84,10 +84,14 @@ class SpecRegistry {
         List<MethodNode> byArity = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
         MethodNode m
         if (paramTypeNames != null) {
-            m = byArity.find { MethodNode c ->
+            // wildcard-aware: a null entry matches anything; partial knowledge narrows the overload
+            // set instead of discarding it — the match must still be UNIQUE among candidates
+            List<MethodNode> hits = byArity.findAll { MethodNode c ->
                 List<String> specTypes = c.parameters.collect { simpleTypeName(it.type.name) }
-                specTypes == paramTypeNames.collect { simpleTypeName(it) }
+                List<String> asked = paramTypeNames.collect { it == null ? null : simpleTypeName(it) }
+                (0..<arity).every { int i -> asked.get(i) == null || asked.get(i) == specTypes.get(i) }
             }
+            m = hits.size() == 1 ? hits.get(0) : null
         } else {
             m = byArity.size() == 1 ? byArity.get(0) : null
         }
@@ -102,16 +106,16 @@ class SpecRegistry {
 
     private static String simpleTypeName(String n) {
         String s = n.contains('.') ? n.substring(n.lastIndexOf('.') + 1) : n
-        // box/unbox pairs are one type for matching purposes
+        // matching works on numeric WIDTH classes: box/unbox pairs are one type, and the sub-int
+        // integrals (char/short/byte) classify as int — the encoder models them all as math ints,
+        // and the kind vocabulary the typed lookups speak is {int, long} (Phase 219)
         switch (s) {
-            case 'Integer': return 'int'
+            case 'Integer': case 'char': case 'Character':
+            case 'short': case 'Short': case 'byte': case 'Byte': return 'int'
             case 'Long': return 'long'
             case 'Double': return 'double'
             case 'Float': return 'float'
             case 'Boolean': return 'boolean'
-            case 'Character': return 'char'
-            case 'Short': return 'short'
-            case 'Byte': return 'byte'
             default: return s
         }
     }
