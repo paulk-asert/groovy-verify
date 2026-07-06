@@ -14,14 +14,17 @@
  * limitations under the License.
  */
 
-// External-specification skeleton (Phase 217): trusted contracts for java.lang.Integer.
-// (Integer.parseInt is deliberately absent: @ThrowsIf is an IFF contract, and parseInt's exact
-// throw condition — malformed OR out of int range — is outside the fragment; a one-directional
-// signals-style mode is recorded future work.)
+// External-specification skeleton (Phase 217/222): trusted contracts for java.lang.Integer.
+// parseInt ships as a ONE-DIRECTIONAL arm (exhaustive = false, Phase 222): `s == null` is a
+// sufficient throw condition but not the whole story (malformed / out-of-range also throw, and
+// those conditions are outside the fragment) — so the arm makes no exhaustiveness claim. What
+// callers get is the normal-return contrapositive: parseInt(s) surviving proves s != null.
 package java.lang
 
 import groovy.contracts.Ensures
+import groovy.contracts.Requires
 import groovy.transform.Pure
+import verification.ThrowsIf
 
 class Integer {
 
@@ -33,4 +36,8 @@ class Integer {
     @Pure
     @Ensures({ (x < y ==> result == -1) && (x == y ==> result == 0) && (x > y ==> result == 1) })
     static int compare(int x, int y) {}
+
+    @Pure
+    @ThrowsIf(value = { s == null }, exception = NumberFormatException, trusted = true, exhaustive = false)
+    static int parseInt(String s) {}
 }

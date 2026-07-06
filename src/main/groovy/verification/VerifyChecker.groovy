@@ -2695,6 +2695,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.registerTupleLocal(a.name, currentTupleTypes.get(a.name))
                         if (assumeCalleeEnsures(s, enc, a.rhs, node, null, hasDecreases(node), a.name)) continue
                     }
+                    assertSurvivalFacts(s, enc, a.rhs, node)   // Phase 222 — executed call ⟹ no arm held
                     Object rhs = enc.translate(a.rhs)
                     if (rhs != null) { s.assertExpr(s.eq(enc.varFor(a.name), rhs)); continue }
                     // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's
@@ -5697,6 +5698,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // @Requires — see carrierOperatorCall), so the call path below discharges it via the operator's
                     // @Ensures. No-op for everything else; the call paths still see `rhsE`.
                     Expression rhsE = carrierOperatorCall(a.rhs, node)
+                    assertSurvivalFacts(session, enc, a.rhs, node)   // Phase 222 — executed call ⟹ no arm held
                     Object rhs = isDecimal ? enc.asRealValue(a.rhs) : enc.translate(a.rhs)
                     // Phase 146 — a decimal local read out of a carrier chain (`BigDecimal v = km(1).plus(mile(1)).value`):
                     // hoist the chain call to a temp carrier local so the `.value` read resolves, then retry the Real path.
@@ -6398,6 +6400,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression cond
         ClassNode exception     // null = untyped (any throwable)
         boolean trusted
+        boolean exhaustive = true   // false = one-directional (signals-style): must-throw only
         Expression anchor
     }
 
@@ -6443,6 +6446,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ti.exception = excMember instanceof ClassExpression ? ((ClassExpression) excMember).type : null
             Expression tr = ann.getMember('trusted')
             ti.trusted = tr instanceof ConstantExpression && ((ConstantExpression) tr).value == true
+            Expression ex = ann.getMember('exhaustive')
+            ti.exhaustive = !(ex instanceof ConstantExpression && ((ConstantExpression) ex).value == false)
             // condition scope: the (transform-normalised) closure params + method params
             Set<String> condVars = new LinkedHashSet<String>()
             collectVariableNames(ti.cond, condVars)
@@ -6501,6 +6506,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } else {
                 // ONLY-WHEN: a throw of T must be justified by SOME instance matching T (trusted ones
                 // included — a visible throw contradicting a trusted spec is evidence, not noise).
+                // A one-directional arm (exhaustive = false) disclaims the exhaustiveness of the whole
+                // arm-set, so the only-when direction is not an obligation (Phase 222).
+                if (instances.any { !it.exhaustive }) continue
                 List<Expression> matchConds = instances.findAll { TiInstance ti ->
                     ti.exception == null || thrown.equals(ti.exception) || thrown.isDerivedFrom(ti.exception)
                 }*.cond
@@ -8623,8 +8631,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // abs(int) vs abs(long)); arity-unique otherwise, exactly as before
             MethodNode spec = SpecRegistry.lookup(receiverType.name, name, arity, actualTypeNames)
             // gate on captured contract TEXT: the skeleton parses only to CONVERSION, so its annotation
-            // types are unresolved simple names — @ContractSource (attached by CET) is the authority
-            if (spec != null && (contractAstFor(spec, 'ensures') != null || contractAstFor(spec, 'modifies') != null)) return spec
+            // types are unresolved simple names — @ContractSource (attached by CET) is the authority.
+            // @ThrowsIf-only specs qualify too (Phase 222): a normal return implies no must-throw
+            // condition held — the contrapositive is a consumable fact even with no @Ensures.
+            if (spec != null && (contractAstFor(spec, 'ensures') != null || contractAstFor(spec, 'modifies') != null ||
+                !SpecRegistry.throwsIfArms(spec).isEmpty())) return spec
         }
         null
     }
@@ -8695,6 +8706,51 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Expression out = tx.transform(contractAst)
         bad[0] ? null : out
+    }
+
+    /**
+     * Phase 222 — survival facts: an EXECUTED call the program moved past did not throw, so for every
+     * registry-spec'd call subexpression, each @ThrowsIf arm's condition is FALSE (the contrapositive of
+     * must-throw — valid for iff and one-directional arms alike). Contract-position mentions of the same
+     * methods deliberately do NOT get this (a spec references a value, it doesn't execute a call) — that
+     * is why it lives in the body paths, not in the Phase 218 admission axiom.
+     */
+    private void assertSurvivalFacts(SmtSession s, Encoder enc, Expression e, MethodNode caller) {
+        if (e == null) return
+        VerifyChecker self = this
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                handle(call, call.arguments); super.visitMethodCallExpression(call)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+                handle(call, call.arguments); super.visitStaticMethodCallExpression(call)
+            }
+            private void handle(Expression call, Expression argsExpr) {
+                ClassNode owner = staticOwnerType(call) ?: self.instanceReceiverType(call)
+                if (owner == null) return
+                List<Expression> actuals = argsExpr instanceof ArgumentListExpression ?
+                    ((ArgumentListExpression) argsExpr).expressions : null
+                if (actuals == null) return
+                List<ClassNode> inferred = actuals.collect { Expression a -> self.inferredTypeOf(a) }
+                MethodNode spec = SpecRegistry.lookup(owner.name, ((MethodCall) call).methodAsString,
+                    actuals.size(), inferred.every { it != null } ? inferred.collect { it.name } : null)
+                if (spec == null) return
+                List<Map<String, Object>> arms = SpecRegistry.throwsIfArms(spec)
+                if (arms.isEmpty()) return
+                Map<String, Object> bindings = new LinkedHashMap<String, Object>()
+                for (int i = 0; i < spec.parameters.length; i++) {
+                    Object h = enc.translate(actuals.get(i))
+                    if (h == null) return
+                    bindings.put(spec.parameters[i].name, h)
+                }
+                for (Map<String, Object> arm : arms) {
+                    Expression c = (Expression) arm.get('cond')
+                    if (!specContractReceiverIndependent(spec, c)) continue
+                    Object ch = enc.translateWith(c, bindings)
+                    if (ch != null) s.assertExpr(s.not(ch))
+                }
+            }
+        })
     }
 
     /** Phase 215 — the owner type of a plain static call (`Math.abs(x)` / static-import shape), or null. */
@@ -9122,8 +9178,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
-        // Nothing to model — no @Ensures and no @Modifies — so we can't account for the call's effect.
-        if (ensuresAst == null && (modSet == null || modSet.isEmpty())) return false
+        // Phase 222 — a spec callee's @ThrowsIf arms yield the normal-return contrapositive below.
+        List<Map<String, Object>> specArms = callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null ?
+            SpecRegistry.throwsIfArms(callee) : Collections.<Map<String, Object>> emptyList()
+        // Nothing to model — no @Ensures, no @Modifies, no arms — so we can't account for the call's effect.
+        if (ensuresAst == null && (modSet == null || modSet.isEmpty()) && specArms.isEmpty()) return false
 
         Parameter[] formals = callee.parameters
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
@@ -9239,6 +9298,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         if (ensuresAst != null && post == null) return false   // @Ensures outside the fragment → skip
         if (post != null) s.assertExpr(post)
+        // Phase 222 — the normal-return contrapositive: this call RETURNED, so no must-throw condition
+        // held (valid for iff and one-directional arms alike — both promise cond ⟹ throws). parseInt(s)
+        // surviving proves s != null; floorDiv(a, b) surviving proves b != 0. Receiver-dependent or
+        // untranslatable conditions are simply not assumed.
+        for (Map<String, Object> arm : specArms) {
+            Expression c = (Expression) arm.get('cond')
+            if (!specContractReceiverIndependent(callee, c)) continue
+            Object ch = enc.translateWith(c, bindings)
+            if (ch != null) s.assertExpr(s.not(ch))
+        }
         return true
     }
 

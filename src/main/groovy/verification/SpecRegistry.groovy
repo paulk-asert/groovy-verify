@@ -163,6 +163,49 @@ class SpecRegistry {
         }
     }
 
+    /** A skeleton method's @ThrowsIf arms as [cond: Expression (the closure's single expression),
+     *  exhaustive: boolean] — for the normal-return CONTRAPOSITIVE (a returned call implies no
+     *  must-throw condition held) and for lint. Malformed arms are skipped, never thrown. */
+    static List<Map<String, Object>> throwsIfArms(MethodNode m) {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>()
+        if (m == null) return out
+        List<AnnotationNode> arms = new ArrayList<AnnotationNode>()
+        m.getAnnotations().each { AnnotationNode an ->
+            String n = an.classNode.nameWithoutPackage
+            if (n == 'ThrowsIf') arms.add(an)
+            else if (n == 'ThrowsIfConditions') {
+                Object v = an.getMember('value')
+                if (v instanceof org.codehaus.groovy.ast.expr.ListExpression) {
+                    ((org.codehaus.groovy.ast.expr.ListExpression) v).expressions.each { Object e ->
+                        if (e instanceof org.codehaus.groovy.ast.expr.AnnotationConstantExpression) {
+                            Object inner = ((org.codehaus.groovy.ast.expr.AnnotationConstantExpression) e).value
+                            if (inner instanceof AnnotationNode) arms.add((AnnotationNode) inner)
+                        }
+                    }
+                }
+            }
+        }
+        arms.each { AnnotationNode an ->
+            Object v = an.getMember('value')
+            if (!(v instanceof org.codehaus.groovy.ast.expr.ClosureExpression)) return
+            Object code = ((org.codehaus.groovy.ast.expr.ClosureExpression) v).code
+            if (!(code instanceof org.codehaus.groovy.ast.stmt.BlockStatement)) return
+            def stmts = ((org.codehaus.groovy.ast.stmt.BlockStatement) code).statements
+            if (stmts.size() != 1 || !(stmts[0] instanceof org.codehaus.groovy.ast.stmt.ExpressionStatement)) return
+            Object ex = an.getMember('exhaustive')
+            boolean exhaustive = !(ex instanceof org.codehaus.groovy.ast.expr.ConstantExpression &&
+                ((org.codehaus.groovy.ast.expr.ConstantExpression) ex).value == false)
+            Object excM = an.getMember('exception')
+            String excName = excM instanceof org.codehaus.groovy.ast.expr.ClassExpression ?
+                ((org.codehaus.groovy.ast.expr.ClassExpression) excM).type.nameWithoutPackage :
+                (excM instanceof org.codehaus.groovy.ast.expr.VariableExpression ?
+                    ((org.codehaus.groovy.ast.expr.VariableExpression) excM).name : null)
+            out.add([cond: ((org.codehaus.groovy.ast.stmt.ExpressionStatement) stmts[0]).expression,
+                     exhaustive: exhaustive, exception: excName] as Map<String, Object>)
+        }
+        out
+    }
+
     /** Test hook: drop all cached parses (spec files edited under a live daemon). */
     static void reset() { CACHE.clear(); CONSUMED.clear() }
 

@@ -10134,6 +10134,41 @@ one-directional `signals` arms.
 
 ---
 
+## Phase 222 — one-directional `signals` arms and survival facts  *(shipped)*
+
+The arc's last recorded machinery item, in two halves:
+
+- **`exhaustive = false`** on `@ThrowsIf` (JML `signals`-style): the arm-set no longer claims to list
+  every throw reason — must-throw stays an obligation, the only-when check is skipped for the set, and
+  the rung treats an unjustified matching throw as in-domain rather than a violation. The pinning trio:
+  the unlisted second throw reason verifies under `exhaustive = false`, still refutes under the iff
+  default, and must-throw still refutes either way. `Integer.parseInt` finally ships its arm
+  (`{ s == null }`, trusted, non-exhaustive) — with the honest note that parseInt *calls* were already
+  natively modelled with a validity obligation, so the arm is ledger/rung documentation.
+- **Survival facts** — the contrapositive of must-throw: an executed call the program moved past did
+  not throw, so every registry arm's condition is asserted FALSE on the continuation (valid for iff and
+  one-directional arms alike). Wired into the body assign paths (checkPath + the obligation-replay
+  walk), and deliberately NOT into the Phase 218 admission axiom — a contract *mentions* a value, it
+  does not execute a call; only executed calls yield survival. The design found its showpiece
+  immediately: **`Objects.checkIndex`-then-index** — `int j = Objects.checkIndex(i, a.length); return
+  a[j]` proves the array access from the JDK's own guard method (contrapositive bounds + identity
+  ensures), and `negateExact` survival proves `a != Integer.MIN_VALUE` as a distinct fact its ensures
+  alone cannot supply.
+- **Rung co-evolution**: the checkIndex case's runtime throw on out-of-range grid inputs surfaced as a
+  need-review divergence — the guard method doing its job, uncategorised. New **spec-throw** category:
+  a called registry-spec'd method throwing an exception its `@ThrowsIf` arm declares is modelled
+  behaviour (postcondition vacuous on a non-returning call), type-checked against the spec exactly as
+  guard-throw is type-checked against the source.
+
+`P222 signals arms` (G294, 5 cases). Inventory: **9 files / 38 contracted methods**; ledger
+**28 trusted facts (26 external)**. Root suite **1639/0** (+5), runtime rung **626/641** clean /
+15 diverged (the spec-throw case now categorised) / 0 need review, docLint 0 drift, full `check`
+green. The external-specs arc as designed — registry, ledger, JDK population, admission, typed
+disambiguation, instance + receiver-state consumption, signals arms — is complete; what remains
+recorded is caller-side catch-reachability and the (upstream-conversation-gated) `.jml` importer.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

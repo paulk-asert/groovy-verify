@@ -188,6 +188,9 @@ class RuntimeRung {
                 // throw justified by NO instance violates the only-when direction.
                 if (throwsIfTypeMatches(m, cause)) {
                     if (throwsIfJustifies(m, src, args, cause)) { inDomain++; continue }
+                    // Phase 222 — a one-directional arm-set (any exhaustive = false) disclaims the
+                    // only-when direction: an unlisted-reason throw is in-contract, not a violation.
+                    if (m.getAnnotationsByType(verification.ThrowsIf).any { !it.exhaustive() }) { inDomain++; continue }
                     return [kind: 'signal', cause: new AssertionError((Object) ('@ThrowsIf VIOLATED: threw ' +
                         cause.getClass().simpleName + ' although no condition holds')),
                         args: render(args), argsList: new ArrayList(args)]
@@ -564,7 +567,40 @@ class RuntimeRung {
                 return [cat: 'guard-throw: the method threw its DECLARED exception on this input (type-checked against the source) — postcondition vacuous on a non-returning call, not a proof gap', review: false]
             return [cat: 'OTHER — threw ' + names.take(2).join(' <- ') + ' but the source declares only: ' + declared.join(', '), review: true, unknown: true]
         }
+        // Phase 222 — a CALLED registry-spec'd method threw an exception its @ThrowsIf arm declares
+        // (Objects.checkIndex on an out-of-range grid input): the guard method doing its job, same
+        // rationale as guard-throw — the call never returned, so the proof isn't contradicted.
+        List<String> specDeclared = specDeclaredThrowTypes(src)
+        if (specDeclared) {
+            for (Throwable c = cause; c != null; c = c.cause) {
+                if (c.getClass().simpleName in specDeclared)
+                    return [cat: 'spec-throw: a called registry-spec\'d method threw its DECLARED @ThrowsIf exception (type-checked against the spec) — postcondition vacuous on a non-returning call, not a proof gap', review: false]
+            }
+        }
         return [cat: 'OTHER — uncategorised exception: ' + names.take(2).join(' <- '), review: true, unknown: true]
+    }
+
+    /** Exception simple names declared by @ThrowsIf arms of registry-spec'd methods the source CALLS. */
+    static List<String> specDeclaredThrowTypes(String src) {
+        List<String> out = []
+        (src =~ /([A-Za-z_][\w.]*)\.([a-z]\w*)\s*\(/).each { def mt ->
+            String owner = mt[1], name = mt[2]
+            List<String> fqns = owner.contains('.') ? [owner] :
+                ['java.lang.', 'java.util.', 'java.time.'].collect { it + owner }
+            for (String fqn : fqns) {
+                if (!verification.SpecRegistry.hasSpec(fqn)) continue
+                // any arity: gather arms across the overload set
+                for (int ar = 0; ar <= 4; ar++) {
+                    def spec = verification.SpecRegistry.lookup(fqn, name, ar)
+                    if (spec != null) {
+                        verification.SpecRegistry.throwsIfArms(spec).each { def arm ->
+                            if (arm.exception) out << (String) arm.exception
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     static void selfTest() {

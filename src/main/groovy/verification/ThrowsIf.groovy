@@ -73,4 +73,15 @@ import java.lang.annotation.Target
     /** True for specification-only instances (documented third-party behaviour): not woven, not
      *  proved (and not warned about) — still assumed by callers and monitored by the runtime rung. */
     boolean trusted() default false
+
+    /**
+     * {@code true} (default): the arm-set is an <b>iff</b> — the listed conditions are the ONLY
+     * reasons a matching exception is thrown, and the only-when direction is verified.
+     * {@code false}: a one-directional (JML {@code signals}-style) arm — the condition is
+     * <i>sufficient</i> for the throw but the set makes no exhaustiveness claim (the method may
+     * throw the same exception for other, unlisted reasons). The must-throw direction is still
+     * verified; the only-when check is skipped for the whole arm-set. This is what admits specs
+     * like {@code Integer.parseInt} whose full throw condition is outside the fragment.
+     */
+    boolean exhaustive() default true
 }
