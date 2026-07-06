@@ -319,7 +319,16 @@ the same expression outside the try still refutes (Phase 193). A **`shouldFail(E
 (the groovy-test idiom) is a provable *ground exceptional claim* (Phase 212): a same-class call with
 constant arguments is inlined and closed-evaluated, and the claim verifies (the path provably throws
 `E` or a subtype), refutes (completes normally / wrong type — with the concrete reason), or loud-skips
-when non-closed — groovy-test still checks it at runtime. Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
+when non-closed — groovy-test still checks it at runtime. The UNIVERSAL form is
+**`@ThrowsIf(value = { x == null }, exception = E)`** (Phases 213/214, prototype, `@Repeatable`): the
+method throws (a subtype of) `E` *exactly when* the condition holds at entry. Per-arm modes: **woven**
+(default — the transform inserts the generative guard-throw pre-STC, the reference weaving until
+groovy-contracts adopts the annotation), **woven = false** (the body implements it — hand-written or
+`Objects.requireNonNull`, which the checker models — and the full iff is proved with concrete
+witnesses), and **trusted** (specification-only for third-party throws: not woven, not proved, not
+warned; vacuity-checked and rung-monitored). Bare gc-style condition closures are normalised
+pre-STC; unmodelled calls loud-skip; loops stay outside the v1 fragment. The runtime rung is
+repeatable-aware and counts a declared throw justified by some arm as a positive cross-validation. Across method boundaries: a callee's `@Ensures` is assumed at its call site — including a **tuple-returning**
 call bound to a local, whose slots then carry the callee's postcondition into the caller's body
 (`Tuple2 r = f(a); … r.v1 …`; Phase 113), and a **non-Int-returning call in return position** (the hoist
 local is minted in the callee's return sort, so a String-returning recursion — the functional leftpad —

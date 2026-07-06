@@ -9749,6 +9749,82 @@ positive validation), then the upstream groovy-contracts conversation with the p
 
 ---
 
+## Phase 213 — `@ThrowsIf`: the universal exceptional contract (prototype)  *(shipped)*
+
+Slice 2 of the exceptional-contracts arc: the `verification`-owned reference implementation of
+"throws exactly when", ahead of the upstream groovy-contracts conversation (JML `exceptional_behavior`
+and SPARK's `Exceptional_Cases` retrofit are the cited prior art).
+
+- **The contract**: `@ThrowsIf(value = { int n -> n < 0 }, type = IllegalArgumentException)` — iff
+  semantics. The checker enumerates the body's execution paths (continuation-style over the
+  guard/throw/return fragment) and discharges both directions per path: **must-throw** (path guards ∧ C
+  satisfiable on a normal-return path → refuted, with the model as witness — `counterexample: n = -5`
+  for a guard at `n < -5` under a contract at `n < 0`) and **only-when** (guards ∧ ¬C satisfiable on a
+  matching-throw path → refuted — `n = 0` for a guard at `n <= 0`). `@Requires` participates, narrowing
+  the checked domain. Non-parameter conditions, parameter reassignment, and loop bodies skip loudly.
+- **The rung promotion** — the arc's payoff: the rung reads the annotation reflectively, evaluates the
+  condition closure on the grid input (bound by parameter name), and counts a declared throw under a
+  true condition as a **positive cross-validation**. The three annotated corpus methods left the
+  guard-throw divergence bucket entirely: **598/612 clean** (the bucket keeps only unannotated
+  guard-throw helpers). Violations in either direction (returned under C / threw under ¬C) fail the run;
+  the runtime helpers are pinned by rung self-tests (condition true/false × type match/mismatch).
+- **Iteration lessons, recorded**: the groovy-contracts-style bare closure (`{ n < 0 }`) is
+  compile-order fragile outside gc's own transform — the annotation closure is lifted to a synthetic
+  class at canonicalization, and whether STC sees it before or after the lift differs between compile
+  environments (the harness accepted it; the rung's plain `parseClass` did not, landing the cases in
+  compile-off). The prototype uses **typed-param closures** (`{ int n -> … }` — self-contained under
+  `@TypeChecked` everywhere); the bare spelling is exactly what the upstream slice buys. Also:
+  `Closure.call(Object[])` treats the array as one argument — `InvokerHelper.invokeClosure` is the
+  correct dispatch — and the rung's case compile now sets `parameters = true` so the condition binds by
+  real parameter names.
+
+`P213 throwsif` (G287, 6 cases: the iff verify, both refute directions with witnesses, untyped form,
+`@Requires`-narrowed domain, the loop loud-skip). Slice 3 recorded: the groovy-contracts JIRA with this
+as the reference implementation — runtime weaving of both directions, and the bare-closure spelling
+for free.
+
+---
+
+## Phase 214 — `@ThrowsIf` round 2: repeatable arms, three modes, and the reference weaving  *(shipped)*
+
+The design round driven by two worked examples (the two-arm `myMethod` with an
+`Objects.requireNonNull` body; the Guava-guarded `divide`), which reshaped the prototype top to bottom:
+
+- **The annotation family**: `@Repeatable` (with the `@ThrowsIfConditions` container, mirroring
+  groovy-contracts' own convention — whose `@Requires`/`@Ensures` are already repeatable, as the
+  transform has long documented); `type` → **`exception`**; per-arm **`woven`** (default true) and
+  **`trusted`** flags.
+- **Generative reference weaving in `ContractExpansionTransform`**: a woven arm gets
+  `if (C) throw new E('@ThrowsIf: …')` inserted at method entry (built by re-parsing the captured
+  condition text — Lombok-`@NonNull`-style, and exactly what upstream groovy-contracts weaving would
+  do). Because CET runs pre-STC, **the verifier needs no `woven` flag-reading at all** — it simply
+  proves the post-weave body, and must-throw holds by construction. When gc adopts the annotation,
+  CET's weaving is deleted and nothing else moves.
+- **Bare-closure normalisation, also in CET**: the gc-idiom condition (`{ x == null }`) is rewritten
+  to a typed-param closure pre-STC, closing the compile-order fragility that forced Phase 213's
+  typed-param requirement — the spelling now matches `@Requires` everywhere (harness AND rung compiles).
+- **`woven = false`** (the body implements the guard): the checker proves the full iff, now modelling
+  `Objects.requireNonNull(v)` as `if (v == null) throw NPE` — the `myMethod` y-arm verifies. Call
+  policy made consistent: an unmodelled call anywhere (statement or return position) loud-skips, since
+  a silent no-op could hide a throw in either direction.
+- **`trusted = true`** (specification-only, the third-party case that started the design discussion):
+  not woven, not proved, **not warned** — with a vacuity check (an unsatisfiable trusted condition is
+  flagged; it would poison every caller) and the untrusted twin of the same opaque body pinned as a
+  loud skip, so the corpus records exactly what trust waives. Callers assume; the rung monitors.
+- **Repeatable-aware rung**: `getAnnotationsByType`, per-arm condition evaluation, and the justified-
+  throw rule — a throw matching *some* arm's type with that arm's condition true is a positive
+  cross-validation; a matching throw justified by no arm, or a return while any condition holds, fails
+  the run. Only-when at compile time correspondingly checks the disjunction of all matching arms.
+
+`P213 throwsif` grows to 11 cases (the two worked examples, the trusted/untrusted twin pair, vacuous
+trusted condition, two-exception arms, plus the round-1 matrix — the must-throw teeth now explicitly
+`woven = false`, since generative weaving would cure it by construction). Root suite **1592/0** (+5),
+runtime rung **599/613** clean / 14 diverged / 0 need review, `examples-dsl` green, docLint 0 drift,
+full `check` green. The upstream JIRA now has everything: worked semantics for all three modes, a
+reference weaving implementation, witness-bearing refutations, and a test corpus.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

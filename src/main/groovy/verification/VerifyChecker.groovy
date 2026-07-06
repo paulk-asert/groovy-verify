@@ -32,6 +32,7 @@ import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.builder.AstBuilder
+import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
@@ -2075,6 +2076,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // exceptional analogue of closed-call evaluation. Contained: never fails the compile flow.
             try {
                 verifyShouldFailClaims(node, body)
+            } catch (Throwable ignored) {
+            }
+
+            // Phase 213 — @ThrowsIf: the UNIVERSAL exceptional contract (throws exactly when the
+            // condition holds). Both directions discharged per path; contained like the passes above.
+            try {
+                verifyThrowsIf(node, body)
             } catch (Throwable ignored) {
             }
 
@@ -6369,6 +6377,275 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * loop machinery only fires on the "no early-exit taken" path.
      */
     @CompileStatic
+    // ── Phase 213 — @ThrowsIf: the universal exceptional contract ───────────────────────────────
+    // `@ThrowsIf(value = { C }, type = E)` asserts the method throws (a subtype of) E exactly when C
+    // holds at entry. Two directions, each checked per execution path of the (guard/throw/return)
+    // fragment: MUST-THROW — no normal-return path is satisfiable together with C; ONLY-WHEN — no
+    // E-throwing path is satisfiable together with ¬C. SAT gives the concrete witness input.
+
+    /** One parsed @ThrowsIf instance: condition AST, declared exception, mode flags, anchor. */
+    @CompileStatic
+    private static class TiInstance {
+        Expression cond
+        ClassNode exception     // null = untyped (any throwable)
+        boolean trusted
+        Expression anchor
+    }
+
+    /** All @ThrowsIf annotation nodes (direct repeats and/or the @ThrowsIfConditions container). */
+    private static List<AnnotationNode> tiAnnotations(MethodNode node) {
+        List<AnnotationNode> out = new ArrayList<AnnotationNode>()
+        for (AnnotationNode an : node.getAnnotations()) {
+            String n = an.classNode.nameWithoutPackage
+            if (n == 'ThrowsIf') out.add(an)
+            else if (n == 'ThrowsIfConditions' && an.getMember('value') instanceof ListExpression) {
+                for (Expression e : ((ListExpression) an.getMember('value')).expressions) {
+                    if (e instanceof AnnotationConstantExpression &&
+                        ((AnnotationConstantExpression) e).value instanceof AnnotationNode) {
+                        out.add((AnnotationNode) ((AnnotationConstantExpression) e).value)
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    private void verifyThrowsIf(MethodNode node, Statement body) {
+        List<AnnotationNode> anns = tiAnnotations(node)
+        if (anns.isEmpty()) return
+        Set<String> paramNames = node.parameters.collect { it.name } as Set
+
+        // parse every instance first (a malformed one is its own loud skip, others proceed)
+        List<TiInstance> instances = new ArrayList<TiInstance>()
+        for (AnnotationNode ann : anns) {
+            Expression member = ann.getMember('value')
+            if (!(member instanceof ClosureExpression)) continue
+            Statement cc = ((ClosureExpression) member).code
+            List<Statement> cs = cc instanceof BlockStatement ? ((BlockStatement) cc).statements :
+                Collections.<Statement> singletonList(cc)
+            if (cs.size() != 1 || !(cs.get(0) instanceof ExpressionStatement)) {
+                addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name, 'condition is not a single expression'), (ASTNode) member)
+                continue
+            }
+            TiInstance ti = new TiInstance()
+            ti.cond = ((ExpressionStatement) cs.get(0)).expression
+            ti.anchor = member
+            Expression excMember = ann.getMember('exception')
+            ti.exception = excMember instanceof ClassExpression ? ((ClassExpression) excMember).type : null
+            Expression tr = ann.getMember('trusted')
+            ti.trusted = tr instanceof ConstantExpression && ((ConstantExpression) tr).value == true
+            // condition scope: the (transform-normalised) closure params + method params
+            Set<String> condVars = new LinkedHashSet<String>()
+            collectVariableNames(ti.cond, condVars)
+            if (!paramNames.containsAll(condVars)) {
+                addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name,
+                    "condition references non-parameters: ${(condVars - paramNames).join(', ')}"), (ASTNode) member)
+                continue
+            }
+            instances.add(ti)
+        }
+        if (instances.isEmpty()) return
+
+        Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
+
+        // trusted instances: specification-only — vacuity-checked (a contradictory trusted spec poisons
+        // every caller), then assumed without proof or warning. The rung still monitors them.
+        for (TiInstance ti : instances.findAll { it.trusted }) {
+            SmtSession s = backend.session()
+            try {
+                Encoder enc = mkEncoder(s)
+                if (reqAst != null) { Object pre = enc.translateBool(reqAst); if (pre != null) s.assertExpr(pre) }
+                Object ch = enc.translateBool(ti.cond)
+                if (ch != null) {
+                    s.assertExpr(ch)
+                    if (s.check().status == CheckResult.Status.VERIFIED) {   // UNSAT — condition can never hold
+                        addStaticTypeError(Reporter.formatThrowsIfRefuted(node.name,
+                            'the TRUSTED condition is unsatisfiable — the contract is vacuous', null), (ASTNode) ti.anchor)
+                    }
+                }
+            } catch (Throwable ignored) {
+            } finally { try { s.close() } catch (Throwable ignored) {} }
+        }
+        List<TiInstance> checked = instances.findAll { !it.trusted }
+        if (checked.isEmpty()) return
+
+        List<Object[]> paths = new ArrayList<Object[]>()
+        try {
+            tiWalk(body instanceof BlockStatement ? ((BlockStatement) body).statements :
+                Collections.<Statement> singletonList(body), 0, new ArrayList<Expression>(), paramNames, paths)
+        } catch (UnsupportedConstructException e) {
+            addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name, e.message), (ASTNode) checked.get(0).anchor)
+            return
+        }
+        for (Object[] path : paths) {
+            List<Expression> guards = (List<Expression>) path[0]
+            ClassNode thrown = (ClassNode) path[1]
+            if (thrown == null) {
+                // MUST-THROW, per checked instance: no normal return is satisfiable with its condition.
+                for (TiInstance ti : checked) {
+                    if (tiCheckSat(node, reqAst, guards, Collections.singletonList(ti.cond),
+                            'the method can return normally although the condition holds', ti.anchor)) return
+                }
+            } else {
+                // ONLY-WHEN: a throw of T must be justified by SOME instance matching T (trusted ones
+                // included — a visible throw contradicting a trusted spec is evidence, not noise).
+                List<Expression> matchConds = instances.findAll { TiInstance ti ->
+                    ti.exception == null || thrown.equals(ti.exception) || thrown.isDerivedFrom(ti.exception)
+                }*.cond
+                if (matchConds.isEmpty()) continue      // outside every declared contract
+                List<Expression> negs = matchConds.collect { Expression c ->
+                    (Expression) new NotExpression(new BooleanExpression(c)) }
+                if (tiCheckSat(node, reqAst, guards, negs,
+                        "the method can throw ${thrown.nameWithoutPackage} although no @ThrowsIf condition holds",
+                        checked.get(0).anchor)) return
+            }
+        }
+        // all paths UNSAT in both directions: the contracts are verified, silently
+    }
+
+    /** Assert req + guards + extras; SAT ⟹ report the violation (with a null-aware counterexample) and
+     *  return true; UNKNOWN ⟹ loud skip and return true; UNSAT ⟹ false (this check passed). */
+    private boolean tiCheckSat(MethodNode node, Expression reqAst, List<Expression> guards,
+                               List<Expression> extras, String direction, Expression anchor) {
+        SmtSession s = backend.session()
+        try {
+            Encoder enc = mkEncoder(s)
+            boolean clean = true
+            if (reqAst != null) {
+                Object pre = enc.translateBool(reqAst)
+                if (pre == null) clean = false else s.assertExpr(pre)
+            }
+            for (Expression g : (guards + extras)) {
+                if (!clean) break
+                Object gh = enc.translateBool(g)
+                if (gh == null) clean = false else s.assertExpr(gh)
+            }
+            if (!clean) {
+                addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name,
+                    'a path guard or condition is outside the fragment'), (ASTNode) anchor)
+                return true
+            }
+            CheckResult r = s.check()
+            if (r.status == CheckResult.Status.REFUTED) {
+                String cex = r.counterexample.collect { k, v ->
+                    k.endsWith('?null') ? "${k - '?null'} = ${v == 1L ? 'null' : 'non-null'}" : "${k} = ${v}"
+                }.join(', ')
+                addStaticTypeError(Reporter.formatThrowsIfRefuted(node.name, direction, cex), (ASTNode) anchor)
+                return true
+            }
+            if (r.status == CheckResult.Status.UNKNOWN) {
+                addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name,
+                    "solver could not decide: ${direction}"), (ASTNode) anchor)
+                return true
+            }
+            return false
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Path enumeration for the @ThrowsIf fragment: guards + terminal per path. Continuation-style so
+     *  a non-terminating branch flows into the statements after its `if`. */
+    private void tiWalk(List<Statement> stmts, int i, List<Expression> guards,
+                        Set<String> paramNames, List<Object[]> out) {
+        if (i >= stmts.size()) { out.add([guards, null] as Object[]); return }
+        Statement st = stmts.get(i)
+        if (st instanceof BlockStatement) {
+            List<Statement> merged = new ArrayList<Statement>(((BlockStatement) st).statements)
+            merged.addAll(stmts.subList(i + 1, stmts.size()))
+            tiWalk(merged, 0, guards, paramNames, out)
+        } else if (st instanceof ThrowStatement) {
+            Expression ex = ((ThrowStatement) st).expression
+            if (!(ex instanceof ConstructorCallExpression)) throw new UnsupportedConstructException('non-constructor throw')
+            out.add([guards, ((ConstructorCallExpression) ex).type] as Object[])
+        } else if (st instanceof ReturnStatement) {
+            // a call inside the returned expression can itself throw — treating it as a pure return
+            // would be inconsistent with the loud-skip policy for call statements
+            Expression re = ((ReturnStatement) st).expression
+            if (re != null && containsCall(re)) {
+                throw new UnsupportedConstructException("unmodelled call in return expression '${re.text}'")
+            }
+            out.add([guards, null] as Object[])
+        } else if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            List<Statement> rest = stmts.subList(i + 1, stmts.size())
+            List<Statement> thenList = new ArrayList<Statement>(); thenList.add(ifs.ifBlock); thenList.addAll(rest)
+            List<Expression> tg = new ArrayList<Expression>(guards); tg.add(ifs.booleanExpression)
+            tiWalk(thenList, 0, tg, paramNames, out)
+            List<Expression> eg = new ArrayList<Expression>(guards); eg.add(new NotExpression(ifs.booleanExpression))
+            if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) {
+                List<Statement> elseList = new ArrayList<Statement>(); elseList.add(ifs.elseBlock); elseList.addAll(rest)
+                tiWalk(elseList, 0, eg, paramNames, out)
+            } else {
+                tiWalk(rest, 0, eg, paramNames, out)
+            }
+        } else if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+                Expression lhs = ((BinaryExpression) e).leftExpression
+                if (lhs instanceof VariableExpression && paramNames.contains(((VariableExpression) lhs).name)) {
+                    throw new UnsupportedConstructException("parameter '${((VariableExpression) lhs).name}' is reassigned")
+                }
+                tiWalk(stmts, i + 1, guards, paramNames, out)
+            } else if (e instanceof DeclarationExpression) {
+                tiWalk(stmts, i + 1, guards, paramNames, out)   // locals don't affect param-only guards
+            } else if (isCallExpr(e)) {
+                // Objects.requireNonNull(v) IS a guard-throw — model it as `if (v == null) throw NPE`.
+                Expression rnnTarget = requireNonNullTarget(e)
+                if (rnnTarget != null) {
+                    Expression isNull = new BinaryExpression(rnnTarget,
+                        Token.newSymbol(Types.COMPARE_EQUAL, st.lineNumber, st.columnNumber),
+                        ConstantExpression.NULL)
+                    List<Expression> tg = new ArrayList<Expression>(guards); tg.add(isNull)
+                    out.add([tg, ClassHelper.make(NullPointerException)] as Object[])
+                    List<Expression> eg = new ArrayList<Expression>(guards)
+                    eg.add(new NotExpression(new BooleanExpression(isNull)))
+                    tiWalk(stmts, i + 1, eg, paramNames, out)
+                } else {
+                    // any other call can throw or matter — silence would be unsound in either direction
+                    throw new UnsupportedConstructException(
+                        "unmodelled call '${e.text}' in the @ThrowsIf fragment")
+                }
+            } else {
+                tiWalk(stmts, i + 1, guards, paramNames, out)
+            }
+        } else {
+            throw new UnsupportedConstructException("statement ${st.class.simpleName} in the @ThrowsIf fragment")
+        }
+    }
+
+    /** The argument of an {@code Objects.requireNonNull(v[, msg])} call (any receiver spelling), or null. */
+    private static Expression requireNonNullTarget(Expression e) {
+        if (!(e instanceof MethodCall)) return null
+        if (((MethodCall) e).methodAsString != 'requireNonNull') return null
+        List<Expression> args = e instanceof MethodCallExpression ?
+            (((MethodCallExpression) e).arguments instanceof ArgumentListExpression ?
+                ((ArgumentListExpression) ((MethodCallExpression) e).arguments).expressions : null) :
+            (e instanceof StaticMethodCallExpression &&
+             ((StaticMethodCallExpression) e).arguments instanceof ArgumentListExpression ?
+                ((ArgumentListExpression) ((StaticMethodCallExpression) e).arguments).expressions : null)
+        if (args == null || args.isEmpty() || args.size() > 2) return null
+        args.get(0)
+    }
+
+    /** True when the expression tree contains any method/constructor call. */
+    private static boolean containsCall(Expression e) {
+        boolean[] found = [false]
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) { found[0] = true; super.visitMethodCallExpression(mce) }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sm) { found[0] = true; super.visitStaticMethodCallExpression(sm) }
+            @Override void visitConstructorCallExpression(ConstructorCallExpression cce) { found[0] = true; super.visitConstructorCallExpression(cce) }
+        })
+        found[0]
+    }
+
+    private static void collectVariableNames(Expression e, Set<String> out) {
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override
+            void visitVariableExpression(VariableExpression ve) {
+                if (!(ve.name in ['true', 'false', 'this'])) out.add(ve.name)
+            }
+        })
+    }
+
     // ── Phase 212 — shouldFail: the provable exceptional witness ────────────────────────────────
     // `shouldFail(E) { m(consts) }` is a closed claim: substitute the constants into the callee body,
     // walk the (if/throw/return) fragment deciding each guard by closed evaluation, and check which

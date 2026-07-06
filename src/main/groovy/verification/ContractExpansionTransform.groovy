@@ -19,6 +19,7 @@ import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.AnnotationNode
+import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
@@ -326,6 +327,11 @@ class ContractExpansionTransform implements ASTTransformation {
             }
         }
 
+        // @ThrowsIf (Phase 214) — normalise bare condition closures and insert the generative guard for
+        // woven instances (the reference weaving until groovy-contracts adopts the annotation). Runs
+        // pre-STC, so the verifier simply proves the post-weave body.
+        processThrowsIf(mn, source)
+
         // @UnderRely — the *declarative* rely-step. Prepend a call to each named rely-step method at the start of
         // the body (before the snapshot below), so the verifier's caller-side framing havocs the shared frame and
         // assumes the rely, exactly as a hand-written call would — while the source body stays pure logic.
@@ -372,6 +378,114 @@ class ContractExpansionTransform implements ASTTransformation {
             // each loop body is isolated separately by loopBodyCopy.
             mn.setNodeMetaData(ORIGINAL_BODY_KEY, copyBody((BlockStatement) mn.code, hasTailRecursive(mn)))
         }
+    }
+
+    // ── Phase 214 — @ThrowsIf: closure normalisation + generative reference weaving ─────────────
+
+    /** All @ThrowsIf annotation nodes on the method (direct repeats and/or the container). */
+    private static List<AnnotationNode> throwsIfNodes(MethodNode mn) {
+        List<AnnotationNode> out = []
+        for (AnnotationNode an : mn.getAnnotations()) {
+            String n = an.classNode.nameWithoutPackage
+            if (n == 'ThrowsIf') out << an
+            else if (n == 'ThrowsIfConditions') {
+                Expression v = an.getMember('value')
+                if (v instanceof ListExpression) {
+                    for (Expression e : ((ListExpression) v).expressions) {
+                        if (e instanceof AnnotationConstantExpression &&
+                            ((AnnotationConstantExpression) e).value instanceof AnnotationNode) {
+                            out << (AnnotationNode) ((AnnotationConstantExpression) e).value
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /**
+     * For each @ThrowsIf on the method: (1) rewrite a bare condition closure ({@code { n < 0 }},
+     * the groovy-contracts idiom) into a typed-parameter closure over the method parameters it
+     * references — pre-STC, so the spelling type-checks in every compile environment; (2) for a
+     * woven, untrusted instance with an explicit exception type, prepend the generative guard
+     * {@code if (C) throw new E('@ThrowsIf: …')} — the contract satisfied by construction, exactly
+     * what upstream groovy-contracts weaving would do.
+     */
+    private static void processThrowsIf(MethodNode mn, SourceUnit source) {
+        List<AnnotationNode> anns = throwsIfNodes(mn)
+        if (anns.isEmpty() || mn.code == null) return
+        List<Statement> guards = []
+        for (AnnotationNode an : anns) {
+            Expression member = an.getMember('value')
+            if (!(member instanceof ClosureExpression)) continue
+            ClosureExpression ce = (ClosureExpression) member
+            // (1) bare closure → typed-parameter closure (params = referenced method params, in order)
+            if (ce.parameters == null || ce.parameters.length == 0) {
+                Set<String> free = [] as Set
+                ce.code?.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+                    @Override
+                    void visitVariableExpression(VariableExpression v) {
+                        if (!(v.name in ['true', 'false', 'this', 'it'])) free << v.name
+                    }
+                })
+                Parameter[] typed = mn.parameters.findAll { it.name in free }
+                    .collect { new Parameter(it.type, it.name) } as Parameter[]
+                if (typed.length > 0) {
+                    ClosureExpression normalised = new ClosureExpression(typed, ce.code)
+                    normalised.setSourcePosition(ce)
+                    normalised.setVariableScope(ce.variableScope)
+                    an.setMember('value', normalised)
+                    ce = normalised
+                }
+            }
+            // (2) generative weaving
+            boolean woven = !(an.getMember('woven') instanceof ConstantExpression &&
+                              ((ConstantExpression) an.getMember('woven')).value == false)
+            boolean trusted = an.getMember('trusted') instanceof ConstantExpression &&
+                              ((ConstantExpression) an.getMember('trusted')).value == true
+            Expression excMember = an.getMember('exception')
+            // pre-resolution the class reference may still be a VariableExpression — accept both
+            String excName = excMember instanceof ClassExpression ? ((ClassExpression) excMember).type.name
+                           : excMember instanceof VariableExpression ? ((VariableExpression) excMember).name
+                           : null
+            if (!woven || trusted || excName == null) continue
+            String condText = closureBodyText(ce, source)
+            if (condText == null) continue
+            String msg = ('@ThrowsIf: ' + condText).replace('\\', '\\\\').replace('"', '\\"')
+            String snippet = "if (${condText}) throw new ${excName}(\"${msg}\")"
+            try {
+                List<ASTNode> built = new org.codehaus.groovy.ast.builder.AstBuilder()
+                    .buildFromString(org.codehaus.groovy.control.CompilePhase.CONVERSION, true, snippet)
+                BlockStatement bs = (BlockStatement) built.find { it instanceof BlockStatement }
+                Statement guard = bs?.statements?.find { it instanceof IfStatement }
+                if (guard != null) { guard.setSourcePosition((ASTNode) an); guards << guard }
+            } catch (Throwable ignored) {
+                // un-parseable condition text: leave unwoven — the verifier's fragment checks will speak
+            }
+        }
+        if (guards) {
+            Statement code = mn.code
+            BlockStatement block = code instanceof BlockStatement ? (BlockStatement) code : null
+            if (block == null) {
+                block = new BlockStatement()
+                block.addStatement(code)
+                mn.code = block
+            }
+            block.statements.addAll(0, guards)
+        }
+    }
+
+    /** The source text of a closure's body (braces stripped), or null. */
+    private static String closureBodyText(ClosureExpression ce, SourceUnit source) {
+        String t = captureSource(ce, source)
+        if (t == null) return null
+        t = t.trim()
+        if (t.startsWith('{')) t = t.substring(1)
+        if (t.endsWith('}')) t = t.substring(0, t.length() - 1)
+        int arrow = t.indexOf('->')
+        if (arrow >= 0) t = t.substring(arrow + 2)
+        String r = t.trim()
+        r.isEmpty() ? null : r
     }
 
     /** True if the method carries {@code verification.SelfEnsures} (matched by FQN, no hard dependency). */

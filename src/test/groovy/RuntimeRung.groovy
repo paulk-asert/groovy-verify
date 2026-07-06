@@ -169,13 +169,29 @@ class RuntimeRung {
         if (combos.size() > MAX_COMBOS) combos = combos.take(MAX_COMBOS)
         int inDomain = 0
         for (args in combos) {
+            Boolean tiCond = throwsIfCondition(m, src, args)   // Phase 213 — null when no/uneval @ThrowsIf
             try {
                 // Fresh map per combo: a mutating `put` must not leak into the next combo's grid value (arrays/
                 // lists reuse their objects too, but corroborate relies on in-place mutation for post-state, so we
                 // clone only here in `exercise`, and pass the pristine originals to corroborate via argsList).
-                m.invoke(null, freshCombo(args)); inDomain++
+                m.invoke(null, freshCombo(args))
+                // Phase 213 — @ThrowsIf: a normal return while the condition holds VIOLATES the contract.
+                if (tiCond == Boolean.TRUE) {
+                    return [kind: 'signal', cause: new AssertionError((Object) ('@ThrowsIf VIOLATED: returned ' +
+                        'normally although the condition holds')), args: render(args), argsList: new ArrayList(args)]
+                }
+                inDomain++
             } catch (java.lang.reflect.InvocationTargetException ite) {
                 Throwable cause = ite.cause ?: ite
+                // Phase 213/214 — @ThrowsIf: a declared throw justified by SOME instance (type match +
+                // condition true) is the SPECIFIED behaviour — a positive cross-validation. A type-matching
+                // throw justified by NO instance violates the only-when direction.
+                if (throwsIfTypeMatches(m, cause)) {
+                    if (throwsIfJustifies(m, src, args, cause)) { inDomain++; continue }
+                    return [kind: 'signal', cause: new AssertionError((Object) ('@ThrowsIf VIOLATED: threw ' +
+                        cause.getClass().simpleName + ' although no condition holds')),
+                        args: render(args), argsList: new ArrayList(args)]
+                }
                 if (isPrecondition(cause)) continue
                 // Eiffel-style: a @Requires whose EVALUATION throws on this input (the grid landed on a
                 // degenerate edge — e.g. `(0..i-1)` reversing at i == 0, so `a[it]` explodes inside the
@@ -193,6 +209,68 @@ class RuntimeRung {
 
     /** Clone mutable map args so a per-combo invocation can't mutate the shared grid value. */
     static Object[] freshCombo(List args) { args.collect { it instanceof Map ? new LinkedHashMap((Map) it) : it } as Object[] }
+
+    // ---- Phase 213/214: @ThrowsIf — the exceptional contract, checked positively at runtime ----------
+    /** Evaluate ONE @ThrowsIf instance's condition on these args (typed-param closure, bound by name). */
+    static Boolean tiEvalCondition(verification.ThrowsIf ann, List names, List args) {
+        try {
+            Closure c = (Closure) ann.value().getDeclaredConstructors()[0].newInstance(null, null)
+            Object[] callArgs = c.parameterTypes.length == 0 ? new Object[0] :
+                (c.class.methods.find { it.name == 'doCall' }?.parameters ?: [])*.name
+                    .collect { pn -> args[names.indexOf(pn)] } as Object[]
+            Object r = org.codehaus.groovy.runtime.InvokerHelper.invokeClosure(c, callArgs)
+            return r instanceof Boolean ? (Boolean) r : null
+        } catch (Throwable ignored) {
+            return null
+        }
+    }
+
+    /** Any-instance condition truth: TRUE if some instance's condition holds, FALSE if all evaluable
+     *  ones are false, null when there are no instances (or none evaluable). Repeatable-aware. */
+    static Boolean throwsIfCondition(Method m, String src, List args) {
+        def anns = m.getAnnotationsByType(verification.ThrowsIf)
+        if (anns == null || anns.length == 0) return null
+        def names = paramNamesFor(src, m.name)
+        if (names == null || names.size() != args.size()) return null
+        Boolean any = null
+        for (def ann : anns) {
+            Boolean v = tiEvalCondition(ann, names, args)
+            if (v == Boolean.TRUE) return Boolean.TRUE
+            if (v == Boolean.FALSE) any = Boolean.FALSE
+        }
+        any
+    }
+
+    /** True when the thrown exception matches SOME instance whose condition holds — the specified
+     *  behaviour. (An instance matching by type but with a false condition does NOT justify it.) */
+    static boolean throwsIfJustifies(Method m, String src, List args, Throwable cause) {
+        def anns = m.getAnnotationsByType(verification.ThrowsIf)
+        if (anns == null || anns.length == 0) return false
+        def names = paramNamesFor(src, m.name)
+        if (names == null || names.size() != args.size()) return false
+        for (def ann : anns) {
+            Class declared = ann.exception()
+            boolean typeMatch = false
+            for (Throwable c = cause; c != null; c = c.cause) {
+                if (declared.isInstance(c)) { typeMatch = true; break }
+            }
+            if (typeMatch && tiEvalCondition(ann, names, args) == Boolean.TRUE) return true
+        }
+        false
+    }
+
+    /** True when the thrown exception matches ANY instance's declared type (chain-walked). */
+    static boolean throwsIfTypeMatches(Method m, Throwable cause) {
+        def anns = m.getAnnotationsByType(verification.ThrowsIf)
+        if (anns == null) return false
+        for (def ann : anns) {
+            Class declared = ann.exception()
+            for (Throwable c = cause; c != null; c = c.cause) {
+                if (declared.isInstance(c)) return true
+            }
+        }
+        false
+    }
 
     // ---- #1: contract-derived seeds (the jqwik-#486 idea, scoped) -----------------------------------------------
     // The fixed grid never lands in-domain for a structural precondition (`s.startsWith("foo")`, `a.length > 5`,
@@ -490,6 +568,23 @@ class RuntimeRung {
     }
 
     static void selfTest() {
+        // Phase 213 — @ThrowsIf runtime helpers: the condition closure binds by name and evaluates;
+        // the declared-type match walks the cause chain. Both directions of each must be exact.
+        def ticfg = new org.codehaus.groovy.control.CompilerConfiguration(); ticfg.parameters = true
+        def tigcl = new GroovyClassLoader(RuntimeRung.classLoader, ticfg)
+        String tisrc = VerifyHarness.HDR + '''class TIST {
+            @verification.ThrowsIf(value = { int n -> n < 0 }, exception = IllegalArgumentException)
+            static int f(int n) { if (n < 0) throw new IllegalArgumentException('neg'); n }
+        }'''
+        tigcl.parseClass(tisrc, 'TIST.groovy')
+        def tim = tigcl.loadedClasses.find { it.simpleName == 'TIST' }.declaredMethods.find { it.name == 'f' }
+        if (throwsIfCondition(tim, tisrc, [-1]) != Boolean.TRUE ||
+            throwsIfCondition(tim, tisrc, [3]) != Boolean.FALSE ||
+            !throwsIfTypeMatches(tim, new IllegalArgumentException('x')) ||
+            throwsIfTypeMatches(tim, new IllegalStateException('x'))) {
+            throw new IllegalStateException('rung self-test failed: @ThrowsIf runtime helpers')
+        }
+
         // Thrown-type check (the explained→checked guard-throw upgrade): the DECLARED exception is
         // benign; an UNDECLARED one must escape the bucket and land in OTHER (review + unknown).
         String gsrc = 'class G { static int f(int n) { if (n < 0) throw new IllegalStateException("no"); n } }'
@@ -548,12 +643,16 @@ class RuntimeRung {
             // an inline `assert <cond>` is a runtime-active logical check too (Groovy asserts are on by default),
             // so it counts as a postcondition oracle alongside @Ensures / @Invariant.
             boolean strong = src.contains('@Ensures') || src.contains('@Invariant') || (src =~ /\bassert\s/)
-            def gcl = new GroovyClassLoader()
+            // parameters=true so reflective param names are real — the @ThrowsIf condition closure
+            // binds its typed params to the invocation args by name (Phase 213).
+            def gclCfg = new org.codehaus.groovy.control.CompilerConfiguration()
+            gclCfg.parameters = true
+            def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader ?: RuntimeRung.classLoader, gclCfg)
             List<Class> classes
             try {
                 gcl.parseClass(src, 'Case.groovy')
                 classes = gcl.loadedClasses.findAll { !it.name.contains('$') && !it.isInterface() && !it.isAnnotation() }
-            } catch (MultipleCompilationErrorsException ignored) { exCompile++; return }
+            } catch (MultipleCompilationErrorsException mce) { if (('' + c.group).contains('213')) System.err.println('P213 COMPILE FAIL:\n' + mce.message?.take(800)); exCompile++; return }
             catch (Throwable ignored) { exCompile++; return }
             def methods = classes.collectMany { targetMethods(it) }
             if (methods.isEmpty()) { exNoMethod++; return }

@@ -273,6 +273,19 @@ class Reporter {
 
     // ---- Dimensional analysis (Phase 131) ----
 
+    /** Phase 213 — an @ThrowsIf direction refuted, with the concrete witness input. */
+    static String formatThrowsIfRefuted(String methodName, String detail, String cex) {
+        "Cannot prove @ThrowsIf contract of ${methodName}: ${detail}" +
+            (cex ? "\n    counterexample: ${cex}" : '')
+    }
+
+    /** Phase 213 — an @ThrowsIf contract outside the checkable fragment: loud skip. */
+    static String formatThrowsIfSkipped(String methodName, String reason) {
+        "Skipped @ThrowsIf verification for ${methodName} (${reason}). The contract is outside the " +
+        "checked fragment (a condition over unmodified parameters; a body of guards, throws, and " +
+        "returns). The method is allowed to proceed unchecked."
+    }
+
     /** Phase 212 — a {@code shouldFail} claim refuted: the block provably does NOT behave as claimed. */
     static String formatShouldFailRefuted(String detail) {
         "Cannot prove shouldFail claim: ${detail}"
