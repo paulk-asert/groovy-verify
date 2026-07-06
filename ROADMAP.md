@@ -9996,6 +9996,28 @@ Suite **1613/0**, rung **611/625** clean, docLint 0 drift, full `check` green.
 
 ---
 
+## Housekeeping (post-218) — Character joins the registry; String deliberately doesn't  *(shipped)*
+
+- **Character** (5 methods, plus the **boolean-return admission extension** — predicates become
+  Bool-sorted UFs): `isDigit`/`isUpperCase`/`isLowerCase` and the `toUpperCase`/`toLowerCase`
+  32-code-point shifts, using the `('0' as char)` code-point idiom. **Partial specs by design** — the
+  real predicates are Unicode-aware (`isDigit` accepts Arabic-Indic digits), so each stated fact holds
+  only over the ASCII range it names and everything else stays honestly opaque: the corpus pins both
+  the composition payoff (`toLowerCase(toUpperCase(c)) == c` chaining two partial specs through the
+  shifted range) and the honesty edge (an unguarded `!isDigit(c)` claim refutes — the model picks an
+  uncovered code point where the term is free).
+- **String, deliberately absent**, for two graded reasons: its core surface (`length`, `charAt` bounds,
+  `substring`, `startsWith`/`endsWith`/`contains`, concat) is *natively modelled in the seq theory* —
+  exact, not trusted — so specs would be a downgrade; and the remainder gates on instance-method
+  assumption consumption, the recorded machinery gap (obligations via `onMethodSelection` would work
+  today, but receiver-state conditions like `0 <= i && i < length()` need the receiver-oracle wiring).
+
+Inventory: **5 files / 18 contracted methods / 0 broken**; `P217 jdk specs` at 15 cases; ledger
+**18 trusted facts (16 external, 2 in-place)**. Suite **1618/0**, rung **615/629** clean, docLint
+0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

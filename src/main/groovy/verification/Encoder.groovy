@@ -6333,14 +6333,17 @@ class Encoder implements TheoryApi {
         if (args == null) return null
         MethodNode spec = SpecRegistry.lookup(fqn, name, args.size())
         if (spec == null || !SpecRegistry.isPure(spec)) return null
-        if (!spec.parameters.every { Parameter p -> isIntLikeType(p.type) } || !isIntLikeType(spec.returnType)) return null
+        boolean boolRet = spec.returnType?.name in ['boolean', 'java.lang.Boolean']   // predicates (Character.isDigit)
+        if (!spec.parameters.every { Parameter p -> isIntLikeType(p.type) } ||
+            !(isIntLikeType(spec.returnType) || boolRet)) return null
         List<Object> handles = new ArrayList<Object>()
         for (Expression a : args) {
             Object h = translate(a)
             if (h == null) return null
             handles.add(h)
         }
-        Object uf = session.applyUF('jdk$' + fqn.replace('.', '_') + '$' + name, handles, session.intSort())
+        Object uf = session.applyUF('jdk$' + fqn.replace('.', '_') + '$' + name, handles,
+            boolRet ? session.boolSort() : session.intSort())
         if (specDefined.add(uf)) {
             Expression ensAst = SpecRegistry.contractAst(spec, 'ensures')
             if (ensAst != null) {

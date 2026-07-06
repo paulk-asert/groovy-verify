@@ -17,12 +17,12 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P217 jdk specs' — 10 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P217 jdk specs' — 15 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G289_p217_jdk_specs {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The starter JDK specs artifact (Slice C): shipped skeletons for java.lang.Math (abs, negateExact with its true-iff @ThrowsIf at MIN_VALUE, floorDiv with its zero-divisor @ThrowsIf), java.lang.Integer (signum, sign-split ensures), and java.util.Objects (requireNonNull — @ThrowsIf(null) plus a non-null ensures, consumed under the Object-formal leniency rule: a spec\'s Object parameter accepts any reference actual). Chosen for provably-TRUE contracts: every @ThrowsIf arm is a genuine iff (negateExact throws exactly at the one unrepresentable point; floorDiv exactly at zero divisor) — Integer.parseInt is deliberately absent because its exact throw condition is outside the fragment and @ThrowsIf is an iff contract (one-directional signals-style arms are recorded future work). Consumers prove conditional ensures under caller guards and refute over-strong claims through the specs; all consumption is ledgered. Post-218 expansion: Math.max/min (total specs — nested composition proves clamp), floorMod (divisor-sign range facts + zero-divisor @ThrowsIf), addExact (overflow condition spelled over longs so the closure is also runtime-correct), Integer.compare (exact -1/0/1), Objects.checkIndex (the guard idiom as a method).'
+    static final String DESCRIPTION = 'The starter JDK specs artifact (Slice C): shipped skeletons for java.lang.Math (abs, negateExact with its true-iff @ThrowsIf at MIN_VALUE, floorDiv with its zero-divisor @ThrowsIf), java.lang.Integer (signum, sign-split ensures), and java.util.Objects (requireNonNull — @ThrowsIf(null) plus a non-null ensures, consumed under the Object-formal leniency rule: a spec\'s Object parameter accepts any reference actual). Chosen for provably-TRUE contracts: every @ThrowsIf arm is a genuine iff (negateExact throws exactly at the one unrepresentable point; floorDiv exactly at zero divisor) — Integer.parseInt is deliberately absent because its exact throw condition is outside the fragment and @ThrowsIf is an iff contract (one-directional signals-style arms are recorded future work). Consumers prove conditional ensures under caller guards and refute over-strong claims through the specs; all consumption is ledgered. Post-218 expansion: Math.max/min (total specs — nested composition proves clamp), floorMod (divisor-sign range facts + zero-divisor @ThrowsIf), addExact (overflow condition spelled over longs so the closure is also runtime-correct), Integer.compare (exact -1/0/1), Objects.checkIndex (the guard idiom as a method). Character (predicates via the boolean-return admission extension): isDigit/isUpperCase/isLowerCase and the toUpperCase/toLowerCase 32-point shifts — PARTIAL specs by design (the real predicates are Unicode-aware), each stated fact true over the ASCII ranges it names, everything else honestly opaque (the unguarded !isDigit claim refutes); the case round-trip composes two partial specs. String is deliberately absent: its core surface is natively modelled in the seq theory (better than trusted specs), and the rest gates on instance-method assumption consumption (recorded).'
 
     static final List<Map> CASES = [
 
@@ -106,6 +106,46 @@ class G289_p217_jdk_specs {
                         @Ensures({ result == a + b })
                         static int f(int a, int b) {
                             return Math.addExact(a, b)
+                        }
+                    }''')],
+        // ---------- post-218c: Character (partial-but-true ASCII facts; boolean-return admission) ----------
+        [group: 'P217 jdk specs', name: 'Character.isDigit: ascii range implies true', ok: true,
+         src: tc('''class C {
+                        @Requires({ c >= ('0' as char) && c <= ('9' as char) })
+                        @Ensures({ result })
+                        static boolean f(char c) {
+                            return Character.isDigit(c)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Character.isDigit: ascii letters imply false', ok: true,
+         src: tc('''class C {
+                        @Requires({ c >= ('a' as char) && c <= ('z' as char) })
+                        @Ensures({ !result })
+                        static boolean f(char c) {
+                            return Character.isDigit(c)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Character.toUpperCase: the 32 code-point shift', ok: true,
+         src: tc('''class C {
+                        @Requires({ c >= ('a' as char) && c <= ('z' as char) })
+                        @Ensures({ result == c - 32 })
+                        static char up(char c) {
+                            return Character.toUpperCase(c)
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'case round-trip composes two partial specs', ok: true,
+         src: tc('''class C {
+                        @Requires({ c >= ('a' as char) && c <= ('z' as char) })
+                        @Ensures({ result == c })
+                        static char roundTrip(char c) {
+                            return Character.toLowerCase(Character.toUpperCase(c))
+                        }
+                    }''')],
+        [group: 'P217 jdk specs', name: 'Unicode honesty: unguarded isDigit claim refutes (partial spec stays partial)', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ !result })
+                        static boolean f(char c) {
+                            return Character.isDigit(c)
                         }
                     }''')],
     ]
