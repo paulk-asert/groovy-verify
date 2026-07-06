@@ -10202,6 +10202,23 @@ on the OpenJML licensing conversation, not engineering.
 
 ---
 
+## Housekeeping — the `@ThrowsIf` upstream proposal drafted  *(in tree)*
+
+**[THROWSIF-PROPOSAL.md](THROWSIF-PROPOSAL.md)** — the JIRA-shaped draft for pushing `@ThrowsIf` to
+groovy-contracts, doubling as the design record. Captures the upstream priority ranking settled in
+discussion: (0) groovy-verify's own Maven Central alpha first — every pitch lands better with a
+released consumer; (1) the small factual Groovy-core fixes (the MethodNode-anchored-diagnostics STC
+bug; shepherding the in-flight gc-loop fixes); (2) `@ThrowsIf` as the one big ask — standalone
+runtime value (declarative guard clauses, the Lombok-`@NonNull` generalisation), the missing
+exceptional quadrant of DbC, machine-readable/agent-consumable specs that cannot rot silently, and
+two years of field-tested semantics; (3) the String-valued contract twins as a rider; (4) explicitly
+NOT asking for `trusted`/`woven` on stock `@Requires`/`@Ensures` (the external-spec registry absorbed
+that use case) nor upstreaming the registry itself (groovy-verify's differentiator, verification-first).
+Open questions left to the upstream thread: `trusted` packaging (leaning include), inheritance/Liskov
+for exceptional contracts, runtime only-when monitoring (defer), naming.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

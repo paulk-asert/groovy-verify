@@ -2118,8 +2118,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 } catch (Throwable t) {
                     // An unexpected encoder error (e.g. a value shape the fragment doesn't yet model end-to-end)
                     // must degrade to a loud skip, never crash the compile — the "skip outside the fragment,
-                    // don't throw" contract. Anchor on a positioned proxy at the method's location so the skip
-                    // surfaces (a MethodNode-anchored diagnostic is silently dropped by STC on this path).
+                    // don't throw" contract. Anchored on a positioned proxy at the method's location (the
+                    // Phase 94 convention; the historical MN-anchored drop no longer reproduces on alpha-2,
+                    // the proxy is retained as insurance).
                     ConstantExpression at = new ConstantExpression(node.name)
                     at.setSourcePosition((ASTNode) node)
                     addStaticTypeError(Reporter.formatPostconditionSkipped(node.name, 'internal: ' + t.message), (ASTNode) at)
@@ -6005,14 +6006,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status == CheckResult.Status.VERIFIED) return
 
             // Anchor the diagnostic on a positioned *expression* node. A value-returning method uses its
-            // return expression. A void method (a lemma — its @Ensures is over parameters/fields, e.g.
-            // `@Ensures({ 2 ** (n+1) == 2 * (2 ** n) })`) has no return expression. Anchoring it on the
-            // {@link MethodNode} is silently DROPPED by Groovy's StaticTypeCheckingVisitor on this path —
-            // which would make a false void @Ensures pass cleanly (a silent unsoundness) — and anchoring on
-            // the captured @Ensures AST surfaces it but at that AST's synthetic line-1 position. So mint a
-            // positioned proxy Expression carrying the method's real declaration position: an Expression (so
-            // STC surfaces it) at the true source line. (The class-invariant-only path keeps the {@code node}
-            // fallback; a void method with only an invariant is not the lemma case.)
+            // return expression. A void method (a lemma — its @Ensures is over parameters/fields) has no
+            // return expression, so mint a positioned proxy Expression at the method's real declaration
+            // position. History: Phase 94 found the MethodNode-anchored diagnostic being silently dropped
+            // (a false void @Ensures passed cleanly); a re-audit against Groovy 6.0.0-alpha-2 could NOT
+            // reproduce the drop — user MethodNodes stay positioned through gc weaving and STC surfaces
+            // MN-anchored errors — so the proxy is retained as zero-cost insurance across Groovy versions,
+            // not as a live workaround. (The class-invariant-only path keeps the {@code node} fallback.)
             ASTNode anchor
             if (p.result != null && p.result.lineNumber > 0) {
                 anchor = (ASTNode) p.result
