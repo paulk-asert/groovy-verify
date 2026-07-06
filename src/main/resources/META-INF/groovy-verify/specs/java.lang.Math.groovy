@@ -27,10 +27,22 @@ import verification.ThrowsIf
 
 class Math {
 
+    // TOTAL spec (adopted from the OpenJML Specs corpus reading): no precondition — the wrap
+    // behaviour at the one unrepresentable point is stated, not excluded. The classic abs bug
+    // (`abs(x) >= 0` is FALSE at MIN_VALUE) refutes through this ensures.
     @Pure
-    @Requires({ a > Integer.MIN_VALUE })
-    @Ensures({ (a >= 0 ==> result == a) && (a < 0 ==> result == -a) })
+    @Ensures({ (a >= 0 ==> result == a) &&
+               (a < 0 && a != Integer.MIN_VALUE ==> result == -a) &&
+               (a == Integer.MIN_VALUE ==> result == Integer.MIN_VALUE) })
     static int abs(int a) {}
+
+    // The EXCEPTIONAL-contract sibling: same mathematical intent, the edge handled by a throw —
+    // a true iff, the @ThrowsIf style (contrast the total spec above and binarySearch's true
+    // @Requires in java.util.Arrays: the JDK's three contract styles on display).
+    @Pure
+    @ThrowsIf(value = { a == Integer.MIN_VALUE }, exception = ArithmeticException, trusted = true)
+    @Ensures({ a != Integer.MIN_VALUE ==> ((a >= 0 ==> result == a) && (a < 0 ==> result == -a)) })
+    static int absExact(int a) {}
 
     // Throws EXACTLY at the one unrepresentable point — a true iff, unlike most JDK exceptional
     // behaviour (trusted: the JDK's body is not ours to prove; the rung can still observe it).

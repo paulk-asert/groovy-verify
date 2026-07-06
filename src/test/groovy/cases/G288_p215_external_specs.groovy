@@ -17,7 +17,7 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P215 external specs' — 4 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P215 external specs' — 6 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G288_p215_external_specs {
 
@@ -28,7 +28,7 @@ class G288_p215_external_specs {
 
         // ---------- Phase 215: the external-spec registry (JML .jml, our dialect) ----------
         // The spec skeleton lives at src/main/resources/META-INF/groovy-verify/specs/java.lang.Math.groovy.
-        [group: 'P215 external specs', name: 'Math.abs spec consumed: requires discharged, ensures proves the caller', ok: true,
+        [group: 'P215 external specs', name: 'Math.abs total spec consumed: ensures proves the caller', ok: true,
          src: tc('''class C {
                         @Requires({ a != Integer.MIN_VALUE })
                         @Ensures({ result >= 0 })
@@ -36,12 +36,30 @@ class G288_p215_external_specs {
                             return Math.abs(a)
                         }
                     }''')],
-        // Obligation teeth: without the caller precondition, the spec's requires refutes at the call.
-        [group: 'P215 external specs', name: 'spec @Requires refutes the unguarded call (obligation teeth)', expect: 'Cannot prove precondition of abs',
+        // The classic abs bug, caught by the TOTAL spec (adopted from the OpenJML corpus reading):
+        // abs wraps at MIN_VALUE, so `result >= 0` is simply FALSE there — the ensures refutes it.
+        [group: 'P215 external specs', name: 'the abs wrap bug: unguarded result >= 0 refutes at MIN_VALUE', expect: 'Cannot prove postcondition',
          src: tc('''class C {
                         @Ensures({ result >= 0 })
                         static int f(int a) {
                             return Math.abs(a)
+                        }
+                    }''')],
+        // The TRUE-precondition style lives on java.util.Arrays#binarySearch (result UNDEFINED unless
+        // sorted — the JDK's rarest contract kind): calling it on a possibly-unsorted array refutes
+        // the spec's @Requires at the call site.
+        [group: 'P215 external specs', name: 'binarySearch requires sorted: unsorted call site refutes', expect: 'Cannot prove precondition of binarySearch',
+         src: tc('''class C {
+                        static int find(int[] a, int key) {
+                            return java.util.Arrays.binarySearch(a, key)
+                        }
+                    }''')],
+        // ...and a caller that KNOWS sortedness discharges it.
+        [group: 'P215 external specs', name: 'binarySearch obligation discharged by caller sortedness', ok: true,
+         src: tc('''class C {
+                        @Requires({ a != null && a.indices.every { it == 0 || a[it - 1] <= a[it] } })
+                        static int find(int[] a, int key) {
+                            return java.util.Arrays.binarySearch(a, key)
                         }
                     }''')],
         // Ensures teeth: an over-strong caller claim refutes through the spec (abs(0) == 0).

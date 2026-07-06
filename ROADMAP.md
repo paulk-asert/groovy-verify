@@ -9951,6 +9951,31 @@ licensing-unblocked-but-deferred `.jml` importer (download-on-first-use, not bun
 
 ---
 
+## Housekeeping (post-218) — the total `abs` spec, and the contract-style triptych  *(shipped)*
+
+The OpenJML Specs survey (289 `.jml` files; last commit 2021; `Math.jml` self-describes as Java-1.5
+vintage; **no license file at all** — unlicensed, which gates even download-on-first-use and makes the
+importer's precondition an upstream conversation, not engineering) yielded one immediate adoption and
+one design upgrade:
+
+- **`Math.abs` is now the TOTAL spec** (their corpus's better idea): no precondition; the wrap behaviour
+  at `MIN_VALUE` is *stated* — so the classic abs bug refutes through the ensures itself
+  (`@Ensures({ result >= 0 })` on an unguarded `Math.abs(a)` fails with `a = MIN_VALUE`), rather than
+  via a caller obligation.
+- **The requires style found its true home instead of a parallel `abs` variant** — the JDK's three
+  contract kinds now sit side by side in the shipped skeletons as a deliberate triptych:
+  *total spec* (`Math.abs` — every input defined, edges stated), *exceptional contract*
+  (`Math.absExact`, joining `negateExact`/`floorDiv` — the edge is a defined throw, `@ThrowsIf`'s iff),
+  and *true precondition* (`java.util.Arrays#binarySearch` — the javadoc's "result is undefined unless
+  sorted" is what `@Requires` actually means, spelled with the reversal-immune sortedness idiom; the
+  unsorted call site refutes, the sortedness-knowing caller discharges — array formals and the
+  quantified condition flowing through the call-site machinery unchanged).
+
+Inventory: **4 spec files / 7 contracted methods / 0 broken**; `P215 external specs` grows to 6 cases.
+Root suite green, rung clean, docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
