@@ -277,12 +277,16 @@ ledger** (one inventory across in-place `trusted` contracts and registry consump
 the harness perf line, linted by DocLint's trusted-inventory section); `@Pure`-marked spec methods are admitted **into contract
 positions** (Phase 218): `@Ensures({ result == Math.abs(a) })` models the call as an uninterpreted
 function axiomatised by the spec's own guarded contract — ensures-free specs stay opaque, unspecced
-methods stay loud skips, int-like signatures in v1. `@ThrowsIf` arms ship in skeletons (documentation +
-rung-visible; caller-side catch-reachability consumption is the recorded next step — and when built it
-must be gated on fully `exhaustive` arm-sets: catch-block reasoning consumes the only-when /
-JML-`signals` direction, which a one-directional arm disclaims. Survival facts need no such gate — they
-consume only must-throw, valid in both modes. Neither mode makes a JML-`signals_only` claim: exhaustive
-covers the *conditions for the mentioned types*, never the exception *types* themselves). Instance-method
+methods stay loud skips, int-like signatures in v1. `@ThrowsIf` arms in skeletons are consumed three
+ways: at *verification* of the annotated method (both directions of the iff), as *survival facts*
+(Phase 222 — an executed call the program moved past did not throw, so no arm condition held;
+must-throw direction, valid in both modes), and as *catch-entry facts* (Phase 223 —
+`catch (ArithmeticException e)` after `Math.floorDiv(a, b)` knows `b == 0`; the only-when /
+JML-`signals` direction, gated on fully `exhaustive` matching arms, every try-block call being
+arm-characterised, no native source of the caught type, and prefix-independent conditions).
+Catch-reachability leans on one documented convention: a registry skeleton's arm types are read as
+its complete throw-type story — the implicit `signals_only` of an external spec, true of every
+shipped skeleton and rung-monitored. User-method arm-sets make no such type claim. Instance-method
 specs are consumed too (Phase 220), under the receiver-independence rule: an instance contract may
 state facts about `result` and the arguments only — the `java.time` value-getter ranges are the debut
 (`t.getHour()` is `0..23` wherever it flows); receiver-*state* ensures land in Phase 221:

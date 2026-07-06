@@ -83,15 +83,19 @@ import java.lang.annotation.Target
      * verified; the only-when check is skipped for the whole arm-set. This is what admits specs
      * like {@code Integer.parseInt} whose full throw condition is outside the fragment.
      *
-     * <p><b>Consumption gating.</b> The two directions are consumed separately, and future consumers
-     * must gate on the right one. <i>Survival facts</i> (a call the program moved past did not throw,
-     * so no arm's condition held — Phase 222) use only the must-throw direction and are valid in both
-     * modes. <i>Catch-block reasoning</i> ("caught E, therefore some arm's condition held" — unbuilt)
-     * would consume the only-when / JML-{@code signals} direction and MUST be gated on the arm-set
-     * being fully exhaustive: one {@code exhaustive = false} arm makes that assumption unsound.
-     * Note also what neither mode claims: {@code @ThrowsIf} is exhaustive (at most) over the
-     * <i>conditions for the types it mentions</i>, never over exception <i>types</i> — there is no
-     * JML-{@code signals_only} claim here, so an undeclared exception type is unconstrained.
+     * <p><b>Consumption gating.</b> The two directions are consumed separately, and consumers gate on
+     * the right one. <i>Survival facts</i> (a call the program moved past did not throw, so no arm's
+     * condition held — Phase 222) use only the must-throw direction and are valid in both modes.
+     * <i>Catch-block reasoning</i> ("caught E, therefore some matching arm's condition held" —
+     * Phase 223) consumes the only-when / JML-{@code signals} direction and IS gated on the matching
+     * arms being fully exhaustive: one {@code exhaustive = false} arm yields no catch fact.
+     * Note also what neither mode claims in general: {@code @ThrowsIf} is exhaustive (at most) over
+     * the <i>conditions for the types it mentions</i>, never over exception <i>types</i> — there is
+     * no JML-{@code signals_only} claim on user methods, and an undeclared exception type is
+     * unconstrained. The ONE deliberate exception: catch-reachability reads a <b>registry
+     * skeleton's</b> arm types as its complete throw-type story (the implicit {@code signals_only}
+     * of an external spec — true of every shipped skeleton and monitored by the rung's spec-throw
+     * category); a spec file that lists arms is read as the whole exceptional contract, type-wise.
      */
     boolean exhaustive() default true
 }

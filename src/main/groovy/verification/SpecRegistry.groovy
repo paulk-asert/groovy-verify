@@ -163,6 +163,17 @@ class SpecRegistry {
         }
     }
 
+    /** All arity-matching skeleton overloads for {@code fqn#name} (Phase 223 — a catch-entry fact is
+     *  the union over overloads: whichever one ran, its matching arm's condition held). */
+    static List<MethodNode> overloads(String fqn, String name, int arity) {
+        if (fqn == null || name == null) return Collections.<MethodNode> emptyList()
+        Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
+        if (!(entry instanceof ClassNode)) return Collections.<MethodNode> emptyList()
+        List<MethodNode> out = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
+        if (!out.isEmpty()) CONSUMED.add("${fqn}#${name}/${arity}".toString())
+        out
+    }
+
     /** A skeleton method's @ThrowsIf arms as [cond: Expression (the closure's single expression),
      *  exhaustive: boolean] — for the normal-return CONTRAPOSITIVE (a returned call implies no
      *  must-throw condition held) and for lint. Malformed arms are skipped, never thrown. */

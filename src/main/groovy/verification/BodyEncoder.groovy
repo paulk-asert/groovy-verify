@@ -30,6 +30,12 @@ import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.expr.ExpressionTransformer
+import org.codehaus.groovy.ast.expr.MethodCall
+import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.CodeVisitorSupport
+import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.CatchStatement
@@ -100,6 +106,16 @@ class AssertAssume {
 @TupleConstructor
 class Havoc {
     String name
+}
+
+/** Phase 223 — a path fact that holds at this point but is OPTIONAL to encode: translated and asserted
+ *  when the fragment can express it, silently skipped otherwise (an assumption may be dropped soundly;
+ *  a {@link Guard} may not). Carries the catch-entry fact — the disjunction of matching {@code @ThrowsIf}
+ *  arm conditions of the try block's registry-spec'd calls. */
+@CompileStatic
+@TupleConstructor
+class SoftAssume {
+    Expression cond
 }
 
 /**
@@ -223,6 +239,140 @@ class BodyEncoder {
         return new ArrayList<String>(names)
     }
 
+    /**
+     * Phase 223 — the catch-entry fact for one handler, or null when no sound fact exists. Soundness
+     * gates, all mandatory:
+     * (1) every call in the try must resolve to a registry spec carrying at least one @ThrowsIf arm —
+     *     the arm TYPES are read as the spec's complete throw-type story (the implicit signals_only of
+     *     a skeleton; true of every shipped spec and monitored by the rung's spec-throw category);
+     * (2) arms matching the caught type must be fully `exhaustive` (catch-reasoning consumes the
+     *     only-when / JML-signals direction, which a one-directional arm disclaims);
+     * (3) the try must contain no other source of the caught type — explicit throws decline, and the
+     *     native throw operators of the caught type (`/` `%` for ArithmeticException, indexing for
+     *     IndexOutOfBoundsException) decline; NPE and the broad catch types are never attempted;
+     * (4) the instantiated conditions may reference only names assigned neither in the try (havoced)
+     *     nor earlier on the path — the fact must be prefix-independent.
+     */
+    private static Expression catchEntryFact(TryCatchStatement tcs, CatchStatement cs,
+                                             List<String> tryAssigned, Path prefix) {
+        final String catchType = cs.variable?.type?.nameWithoutPackage
+        if (catchType == null ||
+            catchType in ['NullPointerException', 'Exception', 'RuntimeException', 'Throwable', 'Error']) return null
+        final Set<String> tainted = new HashSet<String>(tryAssigned)
+        for (Object st : prefix.steps) {
+            if (st instanceof Assign) tainted.add(((Assign) st).name)
+            else if (st instanceof Havoc) tainted.add(((Havoc) st).name)
+        }
+        final List<Expression> disjuncts = new ArrayList<Expression>()
+        final Set<String> seenTexts = new HashSet<String>()
+        final boolean[] bad = [false] as boolean[]
+        tcs.tryStatement.visit(new CodeVisitorSupport() {
+            @Override void visitThrowStatement(ThrowStatement ts) { bad[0] = true }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                String op = be.operation.text
+                if (catchType == 'ArithmeticException' && (op == '/' || op == '%')) bad[0] = true
+                if (catchType == 'IndexOutOfBoundsException' && op == '[') bad[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                handleCall(call, call.arguments); super.visitMethodCallExpression(call)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+                handleCall(call, call.arguments); super.visitStaticMethodCallExpression(call)
+            }
+            private void handleCall(Expression call, Expression argsE) {
+                if (bad[0]) return
+                String fqn = catchOwnerFqn(call)
+                String mname = ((MethodCall) call).methodAsString
+                List<Expression> actuals = argsE instanceof ArgumentListExpression ?
+                    ((ArgumentListExpression) argsE).expressions : null
+                if (fqn == null || mname == null || actuals == null) { bad[0] = true; return }
+                List<MethodNode> specs = SpecRegistry.overloads(fqn, mname, actuals.size())
+                if (specs.isEmpty()) { bad[0] = true; return }
+                for (MethodNode spec : specs) {
+                    List<Map<String, Object>> arms = SpecRegistry.throwsIfArms(spec)
+                    if (arms.isEmpty()) { bad[0] = true; return }   // no type claim at all
+                    for (Map<String, Object> arm : arms) {
+                        if (((String) arm.get('exception')) != catchType) continue
+                        if (!((boolean) arm.get('exhaustive'))) { bad[0] = true; return }
+                        Expression inst = instantiateArm((Expression) arm.get('cond'), spec.parameters, actuals)
+                        if (inst == null) { bad[0] = true; return }
+                        Set<String> refs = new HashSet<String>()
+                        collectNames(inst, refs)
+                        if (refs.any { String n -> tainted.contains(n) }) { bad[0] = true; return }
+                        if (seenTexts.add(inst.text)) disjuncts.add(inst)
+                    }
+                }
+            }
+        })
+        if (bad[0] || disjuncts.isEmpty()) return null
+        Expression fact = disjuncts.get(0)
+        for (int i = 1; i < disjuncts.size(); i++) {
+            fact = new BinaryExpression(fact, Token.newSymbol('||', -1, -1), disjuncts.get(i))
+        }
+        fact
+    }
+
+    /** The registry FQN of a call receiver in a walked (resolved) body, else null. */
+    private static String catchOwnerFqn(Expression call) {
+        if (call instanceof StaticMethodCallExpression) {
+            String n = ((StaticMethodCallExpression) call).ownerType?.name
+            return SpecRegistry.hasSpec(n) ? n : null
+        }
+        if (!(call instanceof MethodCallExpression)) return null
+        Expression obj = ((MethodCallExpression) call).objectExpression
+        if (obj instanceof ClassExpression) {
+            String n = ((ClassExpression) obj).type?.name
+            return SpecRegistry.hasSpec(n) ? n : null
+        }
+        if (obj instanceof VariableExpression) {
+            String n = ((VariableExpression) obj).name
+            if (n != null && !n.isEmpty() && Character.isUpperCase(n.charAt(0))) {
+                for (String pfx : ['java.lang.', 'java.util.', 'java.time.']) {
+                    if (SpecRegistry.hasSpec(pfx + n)) return pfx + n
+                }
+            }
+            return null
+        }
+        if (obj instanceof PropertyExpression) {
+            String n = obj.text
+            return SpecRegistry.hasSpec(n) ? n : null
+        }
+        null
+    }
+
+    /** An arm condition with formals substituted by the call's actuals; null when the condition
+     *  references anything else lowercase (receiver state, fields) — not substitutable. */
+    private static Expression instantiateArm(Expression cond, Parameter[] formals, List<Expression> actuals) {
+        final Map<String, Expression> byName = new HashMap<String, Expression>()
+        for (int i = 0; i < formals.length; i++) byName.put(formals[i].name, actuals.get(i))
+        final boolean[] bad = [false] as boolean[]
+        ExpressionTransformer tx = new ExpressionTransformer() {
+            @Override Expression transform(Expression e) {
+                if (e == null) return null
+                if (e instanceof VariableExpression) {
+                    String n = ((VariableExpression) e).name
+                    Expression sub = byName.get(n)
+                    if (sub != null) return sub
+                    if (!(n != null && !n.isEmpty() && Character.isUpperCase(n.charAt(0)))) bad[0] = true
+                    return e
+                }
+                if (e instanceof MethodCallExpression && ((MethodCallExpression) e).implicitThis) {
+                    bad[0] = true; return e   // receiver-state condition — not instantiable here
+                }
+                return e.transformExpression(this)
+            }
+        }
+        Expression out = tx.transform(cond)
+        bad[0] ? null : out
+    }
+
+    private static void collectNames(Expression e, Set<String> out) {
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) { out.add(ve.name) }
+        })
+    }
+
     private static WalkResult walkOne(Statement s, Path prefix, boolean tail) {
         WalkResult res = new WalkResult()
 
@@ -280,6 +430,12 @@ class BodyEncoder {
             for (CatchStatement cs : tcs.catchStatements) {
                 Path pc = copy(prefix)
                 for (String n : assigned) pc.steps.add(new Havoc(n))
+                // Phase 223 — catch-reachability: entering this handler means some try-block source threw
+                // the caught type; when every such source is arm-characterised, the disjunction of the
+                // matching arm conditions is a fact at catch entry (`catch (ArithmeticException e)` after
+                // `Math.floorDiv(a, b)` knows `b == 0`).
+                Expression fact = catchEntryFact(tcs, cs, assigned, prefix)
+                if (fact != null) pc.steps.add(new SoftAssume(fact))
                 WalkResult rCatch = walkStatements(asList(cs.code), [pc] as List<Path>, tail)
                 res.terminated.addAll(rCatch.terminated)
                 res.live.addAll(rCatch.live)

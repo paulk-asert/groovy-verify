@@ -2718,6 +2718,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         s.assertExpr(s.eq(fresh, rhs))
                         enc.bind(a.name, fresh)
                     }
+                } else if (step instanceof SoftAssume) {
+                    Object c = enc.translate(((SoftAssume) step).cond)   // Phase 223 — catch-entry fact
+                    if (c != null) s.assertExpr(c)
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
@@ -5594,6 +5597,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         Object c = enc.translate(((AssertAssume) step).cond)
                         if (c != null) session.assertExpr(c)
                     }
+                } else if (step instanceof SoftAssume) {
+                    // Phase 223 — catch-entry fact: assumed when expressible, dropped (soundly) when not.
+                    Object c = enc.translate(((SoftAssume) step).cond)
+                    if (c != null) session.assertExpr(c)
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)

@@ -10169,6 +10169,39 @@ recorded is caller-side catch-reachability and the (upstream-conversation-gated)
 
 ---
 
+## Phase 223 — caller-side catch-reachability: the handler knows why it was entered  *(shipped)*
+
+The last item on the external-specs arc's frontier. Entering a `catch` means some try-block source
+threw the caught type; when every source is arm-characterised, the disjunction of the matching
+`@ThrowsIf` arm conditions is a fact at catch entry — `catch (ArithmeticException e)` after
+`Math.floorDiv(a, b)` knows `b == 0`, and proves the handler branch that depends on it.
+
+- **The direction and its gates**: this consumes the only-when / JML-`signals` direction — exactly what
+  the Phase 222 gating note reserved — so all four gates are mandatory: (1) matching arms fully
+  `exhaustive` (`parseInt`'s one-directional arm yields no fact, pinned); (2) every call in the try
+  resolves to a registry spec with ≥1 arm, whose arm *types* are read as the complete throw-type story
+  — the **implicit `signals_only` convention** for skeletons, now documented in the `@ThrowsIf` javadoc
+  as load-bearing (true of every shipped spec; the rung's spec-throw category monitors it); (3) no
+  other source of the caught type in the try — explicit throws and the native throw operators (`%`,
+  `/` for ArithmeticException, indexing for IOOBE) decline, and NPE/broad catch types are never
+  attempted; (4) instantiated conditions prefix-independent (no name assigned in the try or earlier).
+- **Mechanics**: a new `SoftAssume` path step at catch entry — an *optional* fact, asserted when the
+  fragment can express it and dropped soundly when not (the contrast with `Guard`, which must fail
+  loudly). The fact is built in `BodyEncoder`'s catch-path construction by formal→actual substitution,
+  unioned across arity-matching overloads (whichever overload ran, its arm held) and deduplicated.
+- **Pinned both ways**: the `b == 0` fact proves the compensating handler and refutes its contradiction
+  (`counterexample: b = 0` *inside the handler*); the checkIndex variant knows the range violation; the
+  two gate cases (non-exhaustive arm, second `%` source) yield no fact and refuse to prove.
+
+`P223 catch-reachability` (G295, 5 cases). Root suite **1644/0** (+5), rung **628/643** clean /
+0 need review, docLint 0 drift, full `check` green. The external-specs arc is now complete through
+every recorded item: registry (215), ledger (216), JDK population (217), `@Pure` admission (218),
+typed disambiguation (219), instance (220) + receiver-state (221) consumption, signals arms + survival
+facts (222), catch-reachability (223). The sole remaining recorded item is the `.jml` importer, gated
+on the OpenJML licensing conversation, not engineering.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
