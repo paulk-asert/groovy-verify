@@ -6377,7 +6377,12 @@ class Encoder implements TheoryApi {
                     Object ens = translateBool(ensAst)
                     Object req = reqAst != null ? translateBool(reqAst) : null
                     if (ens != null && (reqAst == null || req != null)) {
-                        session.assertExpr(req == null ? ens : session.implies(req, ens))
+                        Object axiom = req == null ? ens : session.implies(req, ens)
+                        session.assertExpr(axiom)
+                        // Phase 231 — VERIFY_EXPLAIN heritage: the admission axiom is a trusted fact
+                        if (Reporter.EXPLAIN) {
+                            session.explainNoteFact("TRUSTED spec ${fqn}#${name} admission axiom".toString(), axiom)
+                        }
                     }
                 } finally {
                     saved.each { String n, Object h -> if (h != null) bind(n, h) else env.remove(n) }
