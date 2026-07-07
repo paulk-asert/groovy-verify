@@ -32,12 +32,12 @@ class CaseDsl {
         import groovy.contracts.Invariant
         import groovy.contracts.Decreases
         import groovy.contracts.Modifies
+        import groovy.contracts.ThrowsIf
         import jakarta.validation.constraints.*
         import groovy.test.GroovyAssert
         import static groovy.test.GroovyAssert.shouldFail
         import verification.Forall
-        import verification.ThrowsIf
-        import verification.Sets
+                import verification.Sets
         import verification.Sorted
         import verification.Fib
         import verification.Trib

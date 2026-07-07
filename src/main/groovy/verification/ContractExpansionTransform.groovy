@@ -412,14 +412,17 @@ class ContractExpansionTransform implements ASTTransformation {
      * what upstream groovy-contracts weaving would do.
      */
     private static void processThrowsIf(MethodNode mn, SourceUnit source) {
+        // Phase 224 — weaving migrated UPSTREAM: groovy.contracts.ThrowsIf (GROOVY-12135) generates the
+        // guard itself at SEMANTIC_ANALYSIS, so this pass no longer inserts guards (they would double).
+        // What remains is the bare-closure NORMALISATION: `{ n < 0 }` becomes a typed-parameter closure
+        // over the referenced method params, so the runtime rung's reflective condition evaluation can
+        // bind arguments by doCall parameter name regardless of compile environment.
         List<AnnotationNode> anns = throwsIfNodes(mn)
         if (anns.isEmpty() || mn.code == null) return
-        List<Statement> guards = []
         for (AnnotationNode an : anns) {
             Expression member = an.getMember('value')
             if (!(member instanceof ClosureExpression)) continue
             ClosureExpression ce = (ClosureExpression) member
-            // (1) bare closure → typed-parameter closure (params = referenced method params, in order)
             if (ce.parameters == null || ce.parameters.length == 0) {
                 Set<String> free = [] as Set
                 ce.code?.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
@@ -435,43 +438,8 @@ class ContractExpansionTransform implements ASTTransformation {
                     normalised.setSourcePosition(ce)
                     normalised.setVariableScope(ce.variableScope)
                     an.setMember('value', normalised)
-                    ce = normalised
                 }
             }
-            // (2) generative weaving
-            boolean woven = !(an.getMember('woven') instanceof ConstantExpression &&
-                              ((ConstantExpression) an.getMember('woven')).value == false)
-            boolean trusted = an.getMember('trusted') instanceof ConstantExpression &&
-                              ((ConstantExpression) an.getMember('trusted')).value == true
-            Expression excMember = an.getMember('exception')
-            // pre-resolution the class reference may still be a VariableExpression — accept both
-            String excName = excMember instanceof ClassExpression ? ((ClassExpression) excMember).type.name
-                           : excMember instanceof VariableExpression ? ((VariableExpression) excMember).name
-                           : null
-            if (!woven || trusted || excName == null) continue
-            String condText = closureBodyText(ce, source)
-            if (condText == null) continue
-            String msg = ('@ThrowsIf: ' + condText).replace('\\', '\\\\').replace('"', '\\"')
-            String snippet = "if (${condText}) throw new ${excName}(\"${msg}\")"
-            try {
-                List<ASTNode> built = new org.codehaus.groovy.ast.builder.AstBuilder()
-                    .buildFromString(org.codehaus.groovy.control.CompilePhase.CONVERSION, true, snippet)
-                BlockStatement bs = (BlockStatement) built.find { it instanceof BlockStatement }
-                Statement guard = bs?.statements?.find { it instanceof IfStatement }
-                if (guard != null) { guard.setSourcePosition((ASTNode) an); guards << guard }
-            } catch (Throwable ignored) {
-                // un-parseable condition text: leave unwoven — the verifier's fragment checks will speak
-            }
-        }
-        if (guards) {
-            Statement code = mn.code
-            BlockStatement block = code instanceof BlockStatement ? (BlockStatement) code : null
-            if (block == null) {
-                block = new BlockStatement()
-                block.addStatement(code)
-                mn.code = block
-            }
-            block.statements.addAll(0, guards)
         }
     }
 

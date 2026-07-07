@@ -19,18 +19,18 @@ package java.util
 
 import groovy.contracts.Ensures
 import groovy.transform.Pure
-import verification.ThrowsIf
+import groovy.contracts.ThrowsIf
 
 class Objects {
 
     @Pure
-    @ThrowsIf(value = { obj == null }, exception = NullPointerException, trusted = true)
+    @ThrowsIf(value = { obj == null }, exception = NullPointerException, woven = false, direct = false)
     @Ensures({ result != null })
     static Object requireNonNull(Object obj) {}
 
     // The guard idiom as a method: throws exactly outside the range, returns the index inside it.
     @Pure
-    @ThrowsIf(value = { index < 0 || index >= length }, exception = IndexOutOfBoundsException, trusted = true)
+    @ThrowsIf(value = { index < 0 || index >= length }, exception = IndexOutOfBoundsException, woven = false, direct = false)
     @Ensures({ (0 <= index && index < length) ==> result == index })
     static int checkIndex(int index, int length) {}
 }

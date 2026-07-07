@@ -97,7 +97,7 @@ class G287_p213_throwsif {
         // trusted: specification-only (the throw lives in a third-party call) — no proof, no warning.
         [group: 'P213 throwsif', name: 'trusted spec on an opaque body is quiet', ok: true,
          src: tc('''class C {
-                        @ThrowsIf(value = { s == null }, exception = NullPointerException, trusted = true)
+                        @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
                         static Object parse(Object s) {
                             return externalLibraryCall(s)
                         }
@@ -115,7 +115,7 @@ class G287_p213_throwsif {
         // a vacuous TRUSTED condition is flagged (a contradictory trusted spec poisons every caller).
         [group: 'P213 throwsif', name: 'vacuous trusted condition is flagged', expect: 'TRUSTED condition is unsatisfiable',
          src: tc('''class C {
-                        @ThrowsIf(value = { int n -> n < 0 && n > 0 }, exception = IllegalStateException, trusted = true)
+                        @ThrowsIf(value = { int n -> n < 0 && n > 0 }, exception = IllegalStateException, woven = false, direct = false)
                         static int f(int n) { return externalCall(n) }
                         static int externalCall(int n) { n }
                     }''')],

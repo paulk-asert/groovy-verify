@@ -192,7 +192,7 @@ class RuntimeRung {
                     if (throwsIfJustifies(m, src, args, cause)) { inDomain++; continue }
                     // Phase 222 — a one-directional arm-set (any exhaustive = false) disclaims the
                     // only-when direction: an unlisted-reason throw is in-contract, not a violation.
-                    if (m.getAnnotationsByType(verification.ThrowsIf).any { !it.exhaustive() }) { inDomain++; continue }
+                    if (m.getAnnotationsByType(groovy.contracts.ThrowsIf).any { !it.exhaustive() }) { inDomain++; continue }
                     return [kind: 'signal', cause: new AssertionError((Object) ('@ThrowsIf VIOLATED: threw ' +
                         cause.getClass().simpleName + ' although no condition holds')),
                         args: render(args), argsList: new ArrayList(args)]
@@ -217,7 +217,7 @@ class RuntimeRung {
 
     // ---- Phase 213/214: @ThrowsIf — the exceptional contract, checked positively at runtime ----------
     /** Evaluate ONE @ThrowsIf instance's condition on these args (typed-param closure, bound by name). */
-    static Boolean tiEvalCondition(verification.ThrowsIf ann, List names, List args) {
+    static Boolean tiEvalCondition(groovy.contracts.ThrowsIf ann, List names, List args) {
         try {
             Closure c = (Closure) ann.value().getDeclaredConstructors()[0].newInstance(null, null)
             Object[] callArgs = c.parameterTypes.length == 0 ? new Object[0] :
@@ -233,7 +233,7 @@ class RuntimeRung {
     /** Any-instance condition truth: TRUE if some instance's condition holds, FALSE if all evaluable
      *  ones are false, null when there are no instances (or none evaluable). Repeatable-aware. */
     static Boolean throwsIfCondition(Method m, String src, List args) {
-        def anns = m.getAnnotationsByType(verification.ThrowsIf)
+        def anns = m.getAnnotationsByType(groovy.contracts.ThrowsIf)
         if (anns == null || anns.length == 0) return null
         def names = paramNamesFor(src, m.name)
         if (names == null || names.size() != args.size()) return null
@@ -249,7 +249,7 @@ class RuntimeRung {
     /** True when the thrown exception matches SOME instance whose condition holds — the specified
      *  behaviour. (An instance matching by type but with a false condition does NOT justify it.) */
     static boolean throwsIfJustifies(Method m, String src, List args, Throwable cause) {
-        def anns = m.getAnnotationsByType(verification.ThrowsIf)
+        def anns = m.getAnnotationsByType(groovy.contracts.ThrowsIf)
         if (anns == null || anns.length == 0) return false
         def names = paramNamesFor(src, m.name)
         if (names == null || names.size() != args.size()) return false
@@ -266,7 +266,7 @@ class RuntimeRung {
 
     /** True when the thrown exception matches ANY instance's declared type (chain-walked). */
     static boolean throwsIfTypeMatches(Method m, Throwable cause) {
-        def anns = m.getAnnotationsByType(verification.ThrowsIf)
+        def anns = m.getAnnotationsByType(groovy.contracts.ThrowsIf)
         if (anns == null) return false
         for (def ann : anns) {
             Class declared = ann.exception()
@@ -611,7 +611,7 @@ class RuntimeRung {
         def ticfg = new org.codehaus.groovy.control.CompilerConfiguration(); ticfg.parameters = true
         def tigcl = new GroovyClassLoader(RuntimeRung.classLoader, ticfg)
         String tisrc = VerifyHarness.HDR + '''class TIST {
-            @verification.ThrowsIf(value = { int n -> n < 0 }, exception = IllegalArgumentException)
+            @groovy.contracts.ThrowsIf(value = { int n -> n < 0 }, exception = IllegalArgumentException)
             static int f(int n) { if (n < 0) throw new IllegalArgumentException('neg'); n }
         }'''
         tigcl.parseClass(tisrc, 'TIST.groovy')

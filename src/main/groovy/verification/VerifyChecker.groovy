@@ -6406,9 +6406,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static class TiInstance {
         Expression cond
         ClassNode exception     // null = untyped (any throwable)
-        boolean trusted
+        boolean woven = true        // upstream default: the guard is GENERATED at entry (by construction)
+        boolean direct = true       // metadata: false = the throw arises from invoked code (trusted claim)
         boolean exhaustive = true   // false = one-directional (signals-style): must-throw only
         Expression anchor
+        /** Specification-only: not woven and not in this body — take on trust, vacuity-check, ledger. */
+        boolean trusted() { !woven && !direct }
+        /** Must-throw needs a body proof only when the throw is claimed to be IN the body. */
+        boolean bodyChecked() { !woven && direct }
     }
 
     /** All @ThrowsIf annotation nodes (direct repeats and/or the @ThrowsIfConditions container). */
@@ -6451,8 +6456,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ti.anchor = member
             Expression excMember = ann.getMember('exception')
             ti.exception = excMember instanceof ClassExpression ? ((ClassExpression) excMember).type : null
-            Expression tr = ann.getMember('trusted')
-            ti.trusted = tr instanceof ConstantExpression && ((ConstantExpression) tr).value == true
+            Expression wv = ann.getMember('woven')
+            ti.woven = !(wv instanceof ConstantExpression && ((ConstantExpression) wv).value == false)
+            Expression dr = ann.getMember('direct')
+            ti.direct = !(dr instanceof ConstantExpression && ((ConstantExpression) dr).value == false)
             Expression ex = ann.getMember('exhaustive')
             ti.exhaustive = !(ex instanceof ConstantExpression && ((ConstantExpression) ex).value == false)
             // condition scope: the (transform-normalised) closure params + method params
@@ -6469,10 +6476,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         Expression reqAst = findRequires(node) != null ? contractAstFor(node, 'requires') : null
 
-        // trusted instances: specification-only — vacuity-checked (a contradictory trusted spec poisons
-        // every caller), then assumed without proof or warning. The rung still monitors them, and the
-        // ledger records them (Phase 216 — quiet at the use site, visible in the inventory).
-        for (TiInstance ti : instances.findAll { it.trusted }) {
+        // trusted instances (woven = false, direct = false): specification-only — vacuity-checked (a
+        // contradictory trusted spec poisons every caller), then assumed without proof or warning. The
+        // rung still monitors them, and the ledger records them (Phase 216 — quiet at the use site,
+        // visible in the inventory).
+        for (TiInstance ti : instances.findAll { it.trusted() }) {
             TrustLedger.record('in-place @ThrowsIf', "${node.declaringClass.name}#${node.name}",
                 "throws ${ti.exception != null ? ti.exception.nameWithoutPackage : 'Throwable'} iff ${ti.cond.text}")
             SmtSession s = backend.session()
@@ -6490,23 +6498,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } catch (Throwable ignored) {
             } finally { try { s.close() } catch (Throwable ignored) {} }
         }
-        List<TiInstance> checked = instances.findAll { !it.trusted }
-        if (checked.isEmpty()) return
+        // Phase 224 — upstream weaving changes what needs a body proof. A WOVEN arm's must-throw holds
+        // BY CONSTRUCTION (groovy.contracts generates the entry guard at SEMANTIC_ANALYSIS — after the
+        // clean-body snapshot this walk sees, which is precisely why it must not be re-proved here).
+        // Only a BODY arm (woven = false, direct = true) claims a throw this walk can find. The
+        // only-when direction still walks whenever any non-trusted arm exists: the body may throw a
+        // matching type for unlisted reasons regardless of who implements the guards.
+        List<TiInstance> walked = instances.findAll { !it.trusted() }
+        List<TiInstance> bodyChecked = instances.findAll { it.bodyChecked() }
+        if (walked.isEmpty()) return
 
         List<Object[]> paths = new ArrayList<Object[]>()
         try {
             tiWalk(body instanceof BlockStatement ? ((BlockStatement) body).statements :
                 Collections.<Statement> singletonList(body), 0, new ArrayList<Expression>(), paramNames, paths)
         } catch (UnsupportedConstructException e) {
-            addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name, e.message), (ASTNode) checked.get(0).anchor)
+            addStaticTypeError(Reporter.formatThrowsIfSkipped(node.name, e.message), (ASTNode) walked.get(0).anchor)
             return
         }
         for (Object[] path : paths) {
             List<Expression> guards = (List<Expression>) path[0]
             ClassNode thrown = (ClassNode) path[1]
             if (thrown == null) {
-                // MUST-THROW, per checked instance: no normal return is satisfiable with its condition.
-                for (TiInstance ti : checked) {
+                // MUST-THROW, per body-checked instance: no normal return is satisfiable with its condition.
+                for (TiInstance ti : bodyChecked) {
                     if (tiCheckSat(node, reqAst, guards, Collections.singletonList(ti.cond),
                             'the method can return normally although the condition holds', ti.anchor)) return
                 }
@@ -6524,7 +6539,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     (Expression) new NotExpression(new BooleanExpression(c)) }
                 if (tiCheckSat(node, reqAst, guards, negs,
                         "the method can throw ${thrown.nameWithoutPackage} although no @ThrowsIf condition holds",
-                        checked.get(0).anchor)) return
+                        walked.get(0).anchor)) return
             }
         }
         // all paths UNSAT in both directions: the contracts are verified, silently

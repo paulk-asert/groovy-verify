@@ -23,7 +23,7 @@ package java.lang
 import groovy.contracts.Ensures
 import groovy.contracts.Requires
 import groovy.transform.Pure
-import verification.ThrowsIf
+import groovy.contracts.ThrowsIf
 
 class Math {
 
@@ -40,20 +40,20 @@ class Math {
     // a true iff, the @ThrowsIf style (contrast the total spec above and binarySearch's true
     // @Requires in java.util.Arrays: the JDK's three contract styles on display).
     @Pure
-    @ThrowsIf(value = { a == Integer.MIN_VALUE }, exception = ArithmeticException, trusted = true)
+    @ThrowsIf(value = { a == Integer.MIN_VALUE }, exception = ArithmeticException, woven = false, direct = false)
     @Ensures({ a != Integer.MIN_VALUE ==> ((a >= 0 ==> result == a) && (a < 0 ==> result == -a)) })
     static int absExact(int a) {}
 
     // Throws EXACTLY at the one unrepresentable point — a true iff, unlike most JDK exceptional
     // behaviour (trusted: the JDK's body is not ours to prove; the rung can still observe it).
     @Pure
-    @ThrowsIf(value = { a == Integer.MIN_VALUE }, exception = ArithmeticException, trusted = true)
+    @ThrowsIf(value = { a == Integer.MIN_VALUE }, exception = ArithmeticException, woven = false, direct = false)
     @Ensures({ a != Integer.MIN_VALUE ==> result == -a })
     static int negateExact(int a) {}
 
     // Defined behaviour on a zero divisor is the throw itself (not a precondition) — another true iff.
     @Pure
-    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, woven = false, direct = false)
     static int floorDiv(int a, int b) {}
 
     @Pure
@@ -66,7 +66,7 @@ class Math {
 
     // The result carries the DIVISOR's sign — the fact modular-arithmetic proofs actually need.
     @Pure
-    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, woven = false, direct = false)
     @Ensures({ (b > 0 ==> (0 <= result && result < b)) &&
                (b < 0 ==> (b < result && result <= 0)) })
     static int floorMod(int a, int b) {}
@@ -75,7 +75,7 @@ class Math {
     // (an int-typed `a + b` would wrap when the rung evaluates it).
     @Pure
     @ThrowsIf(value = { (long) a + (long) b > Integer.MAX_VALUE || (long) a + (long) b < Integer.MIN_VALUE },
-              exception = ArithmeticException, trusted = true)
+              exception = ArithmeticException, woven = false, direct = false)
     @Ensures({ ((long) a + (long) b <= Integer.MAX_VALUE && (long) a + (long) b >= Integer.MIN_VALUE) ==> result == a + b })
     static int addExact(int a, int b) {}
 
@@ -96,11 +96,11 @@ class Math {
     static long min(long a, long b) {}
 
     @Pure
-    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, woven = false, direct = false)
     static long floorDiv(long a, long b) {}
 
     @Pure
-    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, trusted = true)
+    @ThrowsIf(value = { b == 0 }, exception = ArithmeticException, woven = false, direct = false)
     @Ensures({ (b > 0 ==> (0 <= result && result < b)) &&
                (b < 0 ==> (b < result && result <= 0)) })
     static long floorMod(long a, long b) {}
@@ -109,7 +109,7 @@ class Math {
     // which is wrap-free at runtime too.
     @Pure
     @ThrowsIf(value = { (b > 0 && a > Long.MAX_VALUE - b) || (b < 0 && a < Long.MIN_VALUE - b) },
-              exception = ArithmeticException, trusted = true)
+              exception = ArithmeticException, woven = false, direct = false)
     @Ensures({ !((b > 0 && a > Long.MAX_VALUE - b) || (b < 0 && a < Long.MIN_VALUE - b)) ==> result == a + b })
     static long addExact(long a, long b) {}
 }

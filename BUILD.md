@@ -21,13 +21,13 @@ own build. For *what* it proves and *why*, see [README.md](README.md).
 
 ## Building & testing
 
-Built using JDK 25 against `org.apache.groovy:6.0.0-alpha-2` from Maven Central — the first Groovy 6
-pre-release carrying everything the verifier relies on (static `@Ensures`, method-level `@Decreases`,
-nested closures in contract conditions, the primitive `isSorted()` GDK, and the contract-closure
-generics/imports fixes). No snapshot repository needed; to test against unreleased upstream changes,
-switch `groovyVersion` in `gradle.properties` back to `6.0.0-SNAPSHOT` (or pass
-`-PgroovyVersion=6.0.0-SNAPSHOT` for a one-off) and re-enable the commented-out ASF snapshot repo in
-`build.gradle` (and `examples-dsl/build.gradle`).
+Built using JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the ASF snapshot repository —
+currently tracking the snapshot to pick up the upstream `@ThrowsIf` exceptional contracts
+(GROOVY-12135) and the `@Requires` `woven`/`direct` members (GROOVY-12136), plus the groovy-contracts
+loop-annotation fixes; the swap also cleared eleven catalogued rung divergences that were awaiting
+these releases. When the next Groovy 6 pre-release ships, pin `groovyVersion` in `gradle.properties`
+back to it and re-comment the ASF snapshot repo in `build.gradle` (and `examples-dsl/build.gradle`);
+if a freshly-published snapshot looks stale, `--refresh-dependencies`.
 
 ```sh
 ./gradlew verify                          # compact console runner — one line per case, summary at the end

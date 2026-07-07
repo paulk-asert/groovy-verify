@@ -10219,6 +10219,61 @@ for exceptional contracts, runtime only-when monitoring (defer), naming.
 
 ---
 
+## Housekeeping — back onto the snapshot: GROOVY-12135/12136 landed upstream  *(shipped)*
+
+`gradle.properties` moves `groovyVersion` to `6.0.0-SNAPSHOT` and the ASF snapshot repository is
+re-enabled in both build files (the round-trip the alpha-2 entry planned for). What the snapshot
+carries: **`@ThrowsIf` is now a groovy-contracts annotation** (GROOVY-12135 — woven guards, the
+`checked` runtime iff, `direct` metadata, the constructor-special-call and set-level-`checked` fixes
+from review, the VM-error non-claim) and **`@Requires` gained `woven`/`direct`** (GROOVY-12136 —
+unwoven preconditions as documented obligations, including the inherited-weaving rule and the
+pre-existing inline-mode cross-contamination fix its review surfaced). The swap itself was
+adjustment-free — suite **1644/0** unchanged — and the runtime rung's divergence ledger collapsed
+from **14 to 4** (634/643 clean): the six gc-loop-check and five recovered entries were exactly the
+"awaiting next Groovy release" catalogue, now cleared; the remaining four are the benign guard-throw
+(3) and spec-throw (1) categories, 0 need review.
+
+**The recorded next slice**: migrate groovy-verify from its own `verification.ThrowsIf` to the
+upstream `groovy.contracts.ThrowsIf` — consume the upstream annotation in the corpus, the spec
+skeletons, and the rung (spelling `trusted = true` as `woven = false, direct = false`), retire CET's
+generative weaving in favour of upstream's, and keep `verification.ThrowsIf` only if a deprecation
+window is wanted. That is the moment the upstreaming loop actually closes.
+
+---
+
+## Phase 224 — migration to the upstream `groovy.contracts.ThrowsIf`: the loop closes  *(shipped)*
+
+The annotation this project prototyped (Phase 213), redesigned through review (214, 222), proposed
+upstream, and implemented in groovy-contracts (GROOVY-12135) is now consumed *from* upstream — the
+in-tree `verification.ThrowsIf`/`ThrowsIfConditions` are deleted.
+
+- **Weaving moved upstream, and the verifier adapted to what that means**: groovy-contracts generates
+  the entry guard at SEMANTIC_ANALYSIS — *after* the clean-body snapshot the verifier walks — so a
+  woven arm's must-throw now holds **by construction** and is no longer re-proved from the body
+  (previously CET wove at CONVERSION, inside the snapshot, so the proof saw the guard). `TiInstance`
+  reads the upstream members: woven arms skip must-throw and still justify only-when; `woven = false,
+  direct = true` arms get the full body proof (the old checked path); `woven = false, direct = false`
+  is the old `trusted` — vacuity-checked, ledgered, rung-monitored.
+- **CET keeps exactly one duty**: bare-closure normalisation (`{ n < 0 }` → typed-parameter closure),
+  which the runtime rung's reflective condition binding still needs; the generative weaving — always
+  described as "the reference weaving until groovy-contracts adopts the annotation" — is retired on
+  schedule.
+- **Respellings**: the nine spec skeletons, G287, `TrustLedgerTest`, and the rung's reflection all
+  consume `groovy.contracts.ThrowsIf` (`trusted = true` → `woven = false, direct = false`); the HDR
+  imports it; FRAGMENT/ARCHITECTURE/TOOLING speak the upstream vocabulary.
+- **One self-inflicted detour, on record**: a `git checkout build.gradle` during a debug cleanup
+  reverted the uncommitted snapshot-repo line — the careless-checkout lesson, relearned — and the
+  first snapshot pulled predated the merges (a `--refresh-dependencies` later, `groovy-contracts`
+  carried its six ThrowsIf classes).
+
+Suite **1644/0** unchanged, ledger unchanged (**28 trusted facts** — the two in-place arms now
+spec-only-spelled), rung **634/643** clean / 4 diverged / 0 need review, docLint 0 drift, full
+`check` green. groovy-verify now runs entirely on stock upstream contract annotations — the
+positioning claim ("stock `groovy.contracts` annotations") holds with no asterisk for exceptional
+contracts.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

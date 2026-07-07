@@ -41,7 +41,7 @@ class TrustLedgerTest {
     @Test
     void inPlaceTrustedContractIsLedgered() {
         String src = cases.CaseDsl.tc('''class C {
-            @ThrowsIf(value = { s == null }, exception = NullPointerException, trusted = true)
+            @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
             static Object parse(Object s) { return helper(s) }
             static Object helper(Object s) { s }
         }''')

@@ -71,7 +71,7 @@ tasks.named('rat') {
 // snapshot repo below; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
-    // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
+    maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
 // groovyVersion comes from gradle.properties (shared with examples-dsl; -PgroovyVersion=… to override)

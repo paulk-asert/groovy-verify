@@ -24,7 +24,7 @@ package java.lang
 import groovy.contracts.Ensures
 import groovy.contracts.Requires
 import groovy.transform.Pure
-import verification.ThrowsIf
+import groovy.contracts.ThrowsIf
 
 class Integer {
 
@@ -38,6 +38,6 @@ class Integer {
     static int compare(int x, int y) {}
 
     @Pure
-    @ThrowsIf(value = { s == null }, exception = NumberFormatException, trusted = true, exhaustive = false)
+    @ThrowsIf(value = { s == null }, exception = NumberFormatException, woven = false, direct = false, exhaustive = false)
     static int parseInt(String s) {}
 }
