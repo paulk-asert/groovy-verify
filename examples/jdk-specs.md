@@ -284,6 +284,23 @@ class C {
 }
 ```
 
+Mutation crosses the registry boundary too (`@Modifies`-shaped consumption): `Collections.sort`
+declares `@Modifies({ list })` with a post-state sortedness ensures, so the caller's list content is
+havoced at the call and re-constrained by the spec — a pre-sort content fact correctly *dies*, while
+the new adjacent order proves:
+
+<!-- doclint:case p225-collections-specs/collections-sort-the-post-state-sortedness-constrains-the-caller-mutation-crosses-the-registry-boundary -->
+```groovy
+class C {
+    @Requires({ xs != null && xs.size() > 1 })
+    @Ensures({ result <= xs[1] })
+    static int smallestish(List<Integer> xs) {
+        Collections.sort(xs)
+        return xs[0]
+    }
+}
+```
+
 `Collections.frequency` is the registry speaking the corpus's own vocabulary — its spec says
 `result == c.count(o)`, and that exact fact links to the caller's own `count` spelling (get the
 needle wrong and it refutes):

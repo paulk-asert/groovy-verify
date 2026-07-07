@@ -8755,6 +8755,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (contractAst == null) return true
         Set<String> allowed = new HashSet<String>(spec.parameters.collect { it.name })
         allowed.add('result')
+        allowed.add('old')   // Phase 229 — a @Modifies spec's ensures speaks old.<formal>
         boolean[] ok = [true]
         contractAst.visit(new CodeVisitorSupport() {
             @Override void visitVariableExpression(VariableExpression ve) {
@@ -9292,8 +9293,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             // Phase 226 — a collection-typed formal bound to a NAMED list actual: the contract reads the
             // formal's list oracles (`coll.every { … }`, `coll.count(o)`), so alias them to the actual's —
-            // a scalar handle can't carry element/size facts across the boundary.
+            // a scalar handle can't carry element/size facts across the boundary. A formal the callee
+            // @Modifies is aliased AFTER the framing havoc instead (Phase 229): pre-havoc aliasing would
+            // pin the spec's post-state ensures to the stale array.
             if (specSimple(ft.name) in ['Collection', 'List'] &&
+                    !(modSet != null && formals[i].name in modSet) &&
                     actuals.get(i) instanceof VariableExpression) {
                 String an = ((VariableExpression) actuals.get(i)).name
                 // sizeOf/arrayFor/nullityOf MINT on demand (a lazy peek misses oracles the session
@@ -9382,6 +9386,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     enc.putMapKeys(oldKey, enc.mapKeysFor(callerLoc))
                     enc.putMapVals(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
                     enc.putMapKeys(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                }
+                // Phase 229 — a MODIFIED collection-typed formal (Collections.sort's `list`) aliases the
+                // actual's POST-havoc handles, so the spec's post-state ensures (`list.indices.every …`)
+                // constrains the caller's new content; `old.<formal>` was captured above, pre-havoc.
+                // Size is deliberately NOT havoced: the shipped mutators are size-preserving, and the
+                // implicit size stability is a true, load-bearing fact.
+                for (int fi = 0; fi < formals.length; fi++) {
+                    if (formals[fi].name == loc && specSimple(formals[fi].type.name) in ['Collection', 'List']) {
+                        enc.bindArray(loc, enc.arrayFor(callerLoc))
+                        enc.bindSize(loc, enc.sizeOf(callerLoc))
+                        enc.bindNullity(loc, enc.nullityOf(callerLoc))
+                        enc.registerListName(loc)
+                    }
                 }
             }
         }

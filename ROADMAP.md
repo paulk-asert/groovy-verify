@@ -10421,6 +10421,34 @@ clean / 0 need review, docLint 0 drift (126/126 snippet links).
 
 ---
 
+## Phase 229 — the mutators: `@Modifies` crosses the registry boundary  *(shipped)*
+
+`Collections.sort`/`fill`/`reverse` land, and with them the last consumption shape the registry
+lacked: a spec that *changes* the caller's state.
+
+- **The machinery mostly existed**: `assumeCalleeEnsures`'s framing already mapped a `@Modifies`
+  formal to the caller's actual (`callerSideLocation` handles parameters), snapshotted `old.<formal>`,
+  and havoced the location. Two additions made it registry-ready: the receiver-independence guard now
+  allows `old` (the `@Modifies` ensures vocabulary), and — the one real subtlety — **a modified
+  collection formal aliases the actual's POST-havoc handles** (the Phase 226 pre-havoc aliasing would
+  have pinned the spec's post-state sortedness to the stale array; the formal now re-aliases inside
+  the framing loop, after the havoc, with `old.<formal>` captured before it).
+- **Size is deliberately not havoced** — the shipped mutators are size-preserving, and the implicit
+  stability is load-bearing: it is `reverse`'s *only* stated fact (content honestly unknown — the
+  elementwise reversal over `old.list` is the recorded refinement), and it is what lets `sort`'s
+  sortedness quantifier range over the right bounds.
+- **The verdicts**: `sort` proves adjacent order on the caller's list (`result <= xs[1]` after
+  sorting); the havoc teeth kill a pre-sort content fact (`h == xs[0]` refutes after the call);
+  `fill` proves every-element; `reverse` proves size-only. `shuffle` stays unspecced: its honest
+  post-state is the permutation, which is not a parameter closure.
+
+`P225 collections specs` at 13 cases; the jdk-specs gallery gains the mutation snippet. Inventory
+**12 files / 52 methods / 0 broken**; root suite **1659/0** (+4) at the CI budget, rung **645/652**
+clean / 0 need review, docLint 0 drift (127/127 snippet links). The Collections front's sole
+remaining recorded item is the instance `List`/`Map` interfaces (receiver-oracle wiring).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

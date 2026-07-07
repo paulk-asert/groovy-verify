@@ -17,12 +17,12 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P225 collections specs' — 9 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P225 collections specs' — 13 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G296_p225_collections_specs {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The java.util.Collections skeleton (static factory/query surface) plus Long.parseLong. Collections#binarySearch(List, key) is the List twin of the Arrays true-precondition (result undefined unless sorted) — its discharge needed new machinery: verifyCallSite now ties list/array ELEMENT CONTENTS across the call boundary (size and nullity oracles were tied; the element array was a fresh unconstrained function, so a caller\'s own sortedness could never reach the formal). The list factories (emptyList, singletonList, nCopies — nullity + size ensures; nCopies also a true-iff @ThrowsIf on negative count) needed a second piece: list-returning registry callees in ASSIGN position route through the RENAME instantiation (result renamed to the caller\'s local, the tuple mechanism generalised, with the local\'s fresh list oracles minted first) so reference-oracle facts land where downstream obligations read them — gated on the CALLEE\'s declared return type, since declaration-typed locals are invisible to the scalar-type map, and accepting the skeleton\'s unresolved simple-name List. Typed lookup gained the Object-formal wildcard (primitives box on the way in; the uniqueness rule still declines ambiguous sets). Deliberately absent, recorded: the mutators (sort/reverse — @Modifies-shaped consumption), max/min/frequency (Collection-typed formal matching), the instance List/Map interfaces (receiver-oracle wiring). Long.parseLong mirrors Integer.parseInt: a one-directional arm whose survival contrapositive proves s != null. Phase 226 adds Collection-typed formal matching: SpecRegistry.formalAccepts (one acceptance rule shared by the typed lookup and the assumption guard — Object wildcard, Collection/List kinds, width-classed equality) plus assumption-side ORACLE ALIASING (a Collection formal bound to a named list actual gets the actual\'s force-minted size/array/nullity oracles, since a scalar handle cannot carry element facts) — so Collections.max/min ship with empty-collection @ThrowsIf iffs and element-dominance ensures (max\'s fact reaches a named element; min\'s over-claim refutes), and frequency\'s exact result == c.count(o) LINKS to the caller\'s own xs.count(5) spelling (Phase 228: the aliased Collection formal is registered as a list name, so the spec\'s count takes the same bounded-bcount encoding as the caller\'s — the wrong-needle twin refutes).'
+    static final String DESCRIPTION = 'The java.util.Collections skeleton (static factory/query surface) plus Long.parseLong. Collections#binarySearch(List, key) is the List twin of the Arrays true-precondition (result undefined unless sorted) — its discharge needed new machinery: verifyCallSite now ties list/array ELEMENT CONTENTS across the call boundary (size and nullity oracles were tied; the element array was a fresh unconstrained function, so a caller\'s own sortedness could never reach the formal). The list factories (emptyList, singletonList, nCopies — nullity + size ensures; nCopies also a true-iff @ThrowsIf on negative count) needed a second piece: list-returning registry callees in ASSIGN position route through the RENAME instantiation (result renamed to the caller\'s local, the tuple mechanism generalised, with the local\'s fresh list oracles minted first) so reference-oracle facts land where downstream obligations read them — gated on the CALLEE\'s declared return type, since declaration-typed locals are invisible to the scalar-type map, and accepting the skeleton\'s unresolved simple-name List. Typed lookup gained the Object-formal wildcard (primitives box on the way in; the uniqueness rule still declines ambiguous sets). Deliberately absent, recorded: the mutators (sort/reverse — @Modifies-shaped consumption), max/min/frequency (Collection-typed formal matching), the instance List/Map interfaces (receiver-oracle wiring). Long.parseLong mirrors Integer.parseInt: a one-directional arm whose survival contrapositive proves s != null. Phase 226 adds Collection-typed formal matching: SpecRegistry.formalAccepts (one acceptance rule shared by the typed lookup and the assumption guard — Object wildcard, Collection/List kinds, width-classed equality) plus assumption-side ORACLE ALIASING (a Collection formal bound to a named list actual gets the actual\'s force-minted size/array/nullity oracles, since a scalar handle cannot carry element facts) — so Collections.max/min ship with empty-collection @ThrowsIf iffs and element-dominance ensures (max\'s fact reaches a named element; min\'s over-claim refutes), and frequency\'s exact result == c.count(o) LINKS to the caller\'s own xs.count(5) spelling (Phase 228: the aliased Collection formal is registered as a list name, so the spec\'s count takes the same bounded-bcount encoding as the caller\'s — the wrong-needle twin refutes). Phase 229 adds the size-preserving MUTATORS via @Modifies-shaped consumption: the framing machinery maps the spec\'s formal to the caller\'s actual, snapshots old.<formal>, havocs the content, and the post-state ensures re-constrains it — with one ordering subtlety: a MODIFIED collection formal aliases the actual\'s POST-havoc handles (pre-havoc aliasing would pin the sortedness to the stale array). Size is deliberately not havoced (the shipped mutators are size-preserving; the implicit stability is load-bearing — reverse\'s only stated fact). sort proves adjacent order on the caller\'s list; fill proves every-element; the havoc teeth kill a pre-sort content fact; shuffle stays unspecced (its honest post-state is the permutation, outside a parameter closure).'
 
     static final List<Map> CASES = [
 
@@ -95,6 +95,44 @@ class G296_p225_collections_specs {
                         @Ensures({ result == xs.count(7) })
                         static int fives(List<Integer> xs) {
                             return Collections.frequency(xs, 5)
+                        }
+                    }''')],
+        // ---------- Phase 229: the size-preserving mutators (@Modifies-shaped consumption) ----------
+        [group: 'P225 collections specs', name: 'Collections.sort: the post-state sortedness constrains the caller (mutation crosses the registry boundary)', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 1 })
+                        @Ensures({ result <= xs[1] })
+                        static int smallestish(List<Integer> xs) {
+                            Collections.sort(xs)
+                            return xs[0]
+                        }
+                    }''')],
+        [group: 'P225 collections specs', name: 'havoc teeth: a pre-sort content fact dies at the @Modifies call', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 1 })
+                        @Ensures({ result == 1 })
+                        static int f(List<Integer> xs) {
+                            int h = xs[0]
+                            Collections.sort(xs)
+                            return h == xs[0] ? 1 : 0
+                        }
+                    }''')],
+        [group: 'P225 collections specs', name: 'Collections.fill: every element is the fill value afterwards', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() > 0 })
+                        @Ensures({ result == 9 })
+                        static int f(List<Integer> xs) {
+                            Collections.fill(xs, 9)
+                            return xs[0]
+                        }
+                    }''')],
+        [group: 'P225 collections specs', name: 'Collections.reverse: size preserved (not havoced), content honestly unknown', ok: true,
+         src: tc('''class C {
+                        @Requires({ xs != null && xs.size() == 3 })
+                        @Ensures({ result == 3 })
+                        static int f(List<Integer> xs) {
+                            Collections.reverse(xs)
+                            return xs.size()
                         }
                     }''')],
     ]

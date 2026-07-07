@@ -15,12 +15,15 @@
  */
 
 // External-specification skeleton: trusted contracts for java.util.Collections — the static
-// factory/query surface only (the mutators — sort, reverse, shuffle — need @Modifies-shaped
-// consumption the registry does not do yet, and the instance List/Map interfaces gate on further
-// receiver-oracle wiring — both recorded).
+// factory/query surface plus the size-preserving mutators (Phase 229: @Modifies-shaped consumption —
+// the caller's list content is havoced and re-constrained by the post-state ensures; size is not
+// havoced, which is itself the size-preservation fact). The instance List/Map interfaces gate on
+// further receiver-oracle wiring (recorded); shuffle stays unspecced (its only honest post-state
+// fact is the permutation, which needs the quantified count the fragment reserves for loop proofs).
 package java.util
 
 import groovy.contracts.Ensures
+import groovy.contracts.Modifies
 import groovy.contracts.Requires
 import groovy.contracts.ThrowsIf
 import groovy.transform.Pure
@@ -61,4 +64,19 @@ class Collections {
     @Pure
     @Ensures({ result >= 0 && result <= c.size() && result == c.count(o) })
     static int frequency(Collection c, Object o) {}
+
+    // ── the size-preserving mutators (Phase 229) ──
+
+    @Modifies({ list })
+    @Ensures({ list.indices.every { it == 0 || list[it - 1] <= list[it] } })
+    static void sort(List list) {}
+
+    @Modifies({ list })
+    @Ensures({ list.every { it == obj } })
+    static void fill(List list, Object obj) {}
+
+    // Content havoced, size preserved — stated post-state facts limited to what is honestly true
+    // for every element type (the elementwise reversal over old.list is the recorded refinement).
+    @Modifies({ list })
+    static void reverse(List list) {}
 }
