@@ -89,11 +89,7 @@ class SpecRegistry {
             List<MethodNode> hits = byArity.findAll { MethodNode c ->
                 List<String> specTypes = c.parameters.collect { simpleTypeName(it.type.name) }
                 List<String> asked = paramTypeNames.collect { it == null ? null : simpleTypeName(it) }
-                // an Object formal accepts ANY asked type (primitives box on the way in); the
-                // uniqueness rule below still declines genuinely ambiguous overload sets
-                (0..<arity).every { int i ->
-                    asked.get(i) == null || specTypes.get(i) == 'Object' || asked.get(i) == specTypes.get(i)
-                }
+                (0..<arity).every { int i -> formalAccepts(specTypes.get(i), asked.get(i)) }
             }
             m = hits.size() == 1 ? hits.get(0) : null
         } else {
@@ -106,6 +102,26 @@ class SpecRegistry {
                 'registry skeleton (META-INF/groovy-verify/specs)')
         }
         m
+    }
+
+    /** Collection kinds a {@code Collection}-typed formal accepts (simple names, post-width-class). */
+    private static final Set<String> COLLECTION_KINDS =
+        ['Collection', 'List', 'ArrayList', 'LinkedList', 'Set', 'HashSet', 'LinkedHashSet', 'TreeSet'] as Set
+    private static final Set<String> LIST_KINDS = ['List', 'ArrayList', 'LinkedList'] as Set
+
+    /**
+     * Whether a spec formal of (simple, width-classed) type {@code specT} accepts an actual of asked
+     * type {@code askedT} — the registry's assignability, kept deliberately small: {@code null} asked
+     * is a wildcard; an {@code Object} formal accepts anything (primitives box on the way in); a
+     * {@code Collection}/{@code List} formal accepts its kinds; otherwise names must match. The
+     * uniqueness rule at the lookup still declines genuinely ambiguous overload sets.
+     */
+    static boolean formalAccepts(String specT, String askedT) {
+        if (askedT == null || specT == 'Object') return true
+        if (specT == askedT) return true
+        if (specT == 'Collection') return askedT in COLLECTION_KINDS
+        if (specT == 'List') return askedT in LIST_KINDS
+        false
     }
 
     private static String simpleTypeName(String n) {

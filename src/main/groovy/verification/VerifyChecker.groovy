@@ -8685,6 +8685,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /** Phase 226 — the width-classed simple type name the registry's acceptance rule speaks. */
+    private static String specSimple(String n) {
+        String s = n != null && n.contains('.') ? n.substring(n.lastIndexOf('.') + 1) : n
+        switch (s) {
+            case 'Integer': case 'char': case 'Character':
+            case 'short': case 'Short': case 'byte': case 'Byte': return 'int'
+            case 'Long': return 'long'
+            default: return s
+        }
+    }
+
     /** Phase 225 — true when the call resolves to a contracted callee (registry or otherwise) whose
      *  declared return type is list-like — the gate for the rename route below. */
     private boolean calleeReturnsList(Expression call, MethodNode caller) {
@@ -9244,14 +9255,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             for (int ti = 0; ti < actuals.size(); ti++) {
                 ClassNode at = inferredTypeOf(actuals.get(ti))
-                String specT = callee.parameters[ti].type.nameWithoutPackage.toLowerCase()
-                String actT = at != null ? at.nameWithoutPackage.toLowerCase() : null
-                boolean refActual = at != null && !ClassHelper.isPrimitiveType(at) &&
-                    !(actT in ['integer', 'long', 'double', 'float', 'short', 'byte', 'character', 'boolean'])
-                if (actT != null && specT != actT &&
-                    !(specT == 'object' && refActual) &&
-                    !(specT in ['int', 'integer'] && actT in ['int', 'integer']) &&
-                    !(specT in ['long'] && actT in ['long']) ) {
+                if (at == null) continue
+                // Phase 226 — one acceptance rule shared with the typed lookup (Object wildcard,
+                // Collection/List kinds, width-classed equality)
+                if (!SpecRegistry.formalAccepts(specSimple(callee.parameters[ti].type.name), specSimple(at.name))) {
                     return false
                 }
             }
@@ -9277,6 +9284,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 h = enc.translate(actuals.get(i))
                 // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))`): model it.
                 if (h == null && Encoder.isCarrier(ft)) h = carrierValueOf(s, enc, actuals.get(i), caller)
+            }
+            // Phase 226 — a collection-typed formal bound to a NAMED list actual: the contract reads the
+            // formal's list oracles (`coll.every { … }`, `coll.count(o)`), so alias them to the actual's —
+            // a scalar handle can't carry element/size facts across the boundary.
+            if (specSimple(ft.name) in ['Collection', 'List'] &&
+                    actuals.get(i) instanceof VariableExpression) {
+                String an = ((VariableExpression) actuals.get(i)).name
+                // sizeOf/arrayFor/nullityOf MINT on demand (a lazy peek misses oracles the session
+                // hasn't touched yet), so the formal is aliased to the actual's canonical oracles
+                enc.bindArray(formals[i].name, enc.arrayFor(an))
+                enc.bindSize(formals[i].name, enc.sizeOf(an))
+                enc.bindNullity(formals[i].name, enc.nullityOf(an))
+                if (h == null) h = enc.varFor(formals[i].name)   // placeholder scalar; the oracles carry the facts
             }
             if (h == null) return false   // can't faithfully substitute → don't assume
             bindings.put(formals[i].name, h)

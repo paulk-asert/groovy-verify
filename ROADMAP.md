@@ -10330,6 +10330,35 @@ review, docLint 0 drift, full `check` green.
 
 ---
 
+## Phase 226 — Collection-typed formals: `max`/`min`/`frequency` land  *(shipped)*
+
+The recorded matching gap closes, in two layers:
+
+- **One acceptance rule, shared**: `SpecRegistry.formalAccepts` — Object wildcard, `Collection`/`List`
+  kind sets, width-classed equality — now used by both the typed lookup and `assumeCalleeEnsures`'s
+  post-resolution guard (which previously had its own hand-rolled near-copy).
+- **Assumption-side oracle aliasing**: a `Collection`-typed formal bound to a *named list actual* gets
+  the actual's size/array/nullity oracles — **force-minted** via `sizeOf`/`arrayFor`/`nullityOf`
+  (the first cut used lazy `peek*`s and silently missed oracles the session hadn't touched, leaving
+  the contract quantifying over fresh unconstrained arrays; the counterexample's independent
+  `coll.size()` was the tell). A scalar handle cannot carry element facts across the boundary.
+- **The specs**: `Collections.max`/`min` (empty-collection `@ThrowsIf` true-iffs + the element-dominance
+  ensures `coll.every { result >= it }` — max's fact reaches a named element, min's over-claim
+  refutes) and `frequency` (range facts consumed; its exact `result == c.count(o)` is *stated* in the
+  spec but not yet linkable to the caller's own `xs.count(5)` spelling — the count machinery is
+  name-keyed, recorded as the follow-up).
+- **A gate-keeping finding, verified by stash-bisect**: the full-check run tripped two solver
+  *timeouts* on known-hard refute cases (dutch-flag `mid++`, any-N liveness trace) — reproducible on
+  clean committed main at the default budget, i.e. pre-existing machine-borderline VCs, not this
+  slice's doing; green at the CI budget (`VERIFY_Z3_TIMEOUT_MS=8000`), which is how the gates were
+  re-run.
+
+`P225 collections specs` grows to 8 cases. Inventory **10 files / 46 methods / 0 broken**; ledger
+**35 trusted facts (33 external)**. Root suite **1652/0** (+3) at the CI budget, rung **642/649**
+clean / 2 categorised / 0 need review, docLint 0 drift.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

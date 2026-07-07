@@ -17,8 +17,7 @@
 // External-specification skeleton: trusted contracts for java.util.Collections — the static
 // factory/query surface only (the mutators — sort, reverse, shuffle — need @Modifies-shaped
 // consumption the registry does not do yet, and the instance List/Map interfaces gate on further
-// receiver-oracle wiring; Collections.max/min and frequency gate on Collection-typed formal
-// matching — all recorded).
+// receiver-oracle wiring — both recorded).
 package java.util
 
 import groovy.contracts.Ensures
@@ -46,4 +45,22 @@ class Collections {
     @ThrowsIf(value = { n < 0 }, exception = IllegalArgumentException, woven = false, direct = false)
     @Ensures({ result != null && (n >= 0 ==> result.size() == n) })
     static List nCopies(int n, Object o) {}
+
+    // Throws exactly on an empty collection (a true iff); the ensures is the dominance fact
+    // comparable-element proofs lean on (stated over the elements — translates for int-like ones).
+    @Pure
+    @ThrowsIf(value = { coll.isEmpty() }, exception = NoSuchElementException, woven = false, direct = false)
+    @Ensures({ coll.every { result >= it } })
+    static Object max(Collection coll) {}
+
+    @Pure
+    @ThrowsIf(value = { coll.isEmpty() }, exception = NoSuchElementException, woven = false, direct = false)
+    @Ensures({ coll.every { result <= it } })
+    static Object min(Collection coll) {}
+
+    // The exact fact is stated (it is the spec); consumers today get the range half — linking the
+    // formal's count to the caller's spelling crosses the name-keyed count machinery (recorded).
+    @Pure
+    @Ensures({ result >= 0 && result <= c.size() && result == c.count(o) })
+    static int frequency(Collection c, Object o) {}
 }
