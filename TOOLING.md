@@ -49,8 +49,10 @@ per-element), `charAt`/`substring` bounds, and parse validity. The labelled kind
 `TRUSTED spec <fqn>#<m> @Ensures` (call-site assumption), `TRUSTED spec … admission axiom`
 (contract-position `@Pure` use), `TRUSTED survival fact ¬(cond) — …#… arm`, and
 `TRUSTED catch-entry fact (cond) — registry arms`; same-class callee ensures are labelled
-`callee …#… @Ensures` (attributable, not trusted). All noting is gated on the flag — the OFF path
-stays byte-identical.
+`callee …#… @Ensures` (attributable, not trusted). Pack axioms attribute too (Phase 232): every
+assertion a pack issues during dispatch is labelled `pack <name> axiom (<axiomsOnce key>)` — e.g. a
+divide obligation whose divisor is `Fib.of(n) + 1` reads out `also leaned on: pack number-theory
+axiom (numtheory.fib)`. All noting is gated on the flag — the OFF path stays byte-identical.
 
 **The trusted-spec ledger.** Proof-waiving is deliberately quiet at the use site — a spec-only
 `@ThrowsIf(woven = false, direct = false)` compiles without a warning, an external spec consumes silently — so the inventory is where
@@ -125,9 +127,13 @@ The verdict comes from **ablation** — remove one clause, re-prove at full stre
 exactly when its removal breaks the proof. Because it never uses Z3's weaker unsat-core mode it explains the
 *whole* fragment (quantifier and FP proofs included), and because it's a pure downstream read-out in a fresh
 solver it can't change a verify / refute. It's the most interactive of the three — O(n) re-proofs per obligation,
-so it's for the method you're studying, not a suite-wide sweep — and it currently covers the bounds and divide
-obligations. An obligation discharged without an authored `@Requires` (an inline guard, invariant, or path fact)
-says so, rather than inventing a clause.
+so it's for the method you're studying, not a suite-wide sweep — and it covers the full
+implicit-obligation family: array/list index bounds, divide-by-zero, null dereference (plain and
+per-element), `charAt`/`substring` bounds, and parse validity. An obligation discharged without an
+authored `@Requires` (an inline guard, invariant, or path fact) says so, rather than inventing a
+clause. Beyond your own clauses and the structural facts below, the read-out also attributes
+**trusted heritage** — registry specs, survival and catch-entry facts, pack axioms — see the
+trusted-heritage note beside the knob table above.
 
 It looks past your `@Requires`, too. A proof often leans on a **structural** fact you didn't write — a class
 invariant, or a JVM integer bound — and those surface as `also leaned on`. On the ring buffer, the bounds proof

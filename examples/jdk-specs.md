@@ -220,6 +220,22 @@ class C {
 }
 ```
 
+And the trust is visible *per proof*: under `VERIFY_EXPLAIN`, the bounds obligation's load-bearing
+ablation names its registry dependency alongside the authored clauses —
+
+```
+explain ✓ xs[i] in bounds
+    not load-bearing: @Requires (xs != null)
+    not load-bearing: @Requires (xs.size() > 0)
+    also leaned on:   TRUSTED spec java.util.List#indexOf @Ensures
+```
+
+— while the else-branch access (`xs[xs.size() - 1]`) leans on the authored size clause instead, the
+verdicts flipping with the path exactly as they should. Every registry consumption form carries such
+a label (`TRUSTED spec … admission axiom`, `TRUSTED survival fact ¬(cond) — …#… arm`,
+`TRUSTED catch-entry fact …`), and pack axioms attribute the same way
+(`pack number-theory axiom (numtheory.fib)`).
+
 The skeletons stay deliberately minimal on both types: `String`'s core surface and `List`'s
 `size`/`get`/`contains`/`isEmpty` are *natively* modelled — exact theory, no trust required — so a
 spec there would be a downgrade. And `java.util.Map` needs no skeleton at all: membership,
@@ -376,6 +392,7 @@ That refusal is the registry's one absolute rule made visible: **only provably-t
 — partial truths stay partial, wrap behaviour is guarded (`Long.sum`'s ensures holds only in the
 non-overflowing range, because the runtime wraps), and anything a spec doesn't state, the verifier
 doesn't invent. Trust that is visible is trust that gets reviewed: the harness prints the ledger
-beside its perf line, DocLint's trusted inventory lints every shipped skeleton, and the runtime rung
-grid-tests the proofs — with its spec-throw category type-checking any runtime throw against the very
-arms that predicted it.
+beside its perf line, DocLint's trusted inventory lints every shipped skeleton, the runtime rung
+grid-tests the proofs — its spec-throw category type-checking any runtime throw against the very
+arms that predicted it — and `VERIFY_EXPLAIN` names, per proof, exactly which trusted facts carried
+it: the per-proof twin of the build-level ledger.

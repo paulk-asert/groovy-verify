@@ -105,6 +105,40 @@ import org.codehaus.groovy.syntax.Types
 class Encoder implements TheoryApi {
 
     final SmtSession session
+
+    /** Phase 232 — pack-axiom attribution for VERIFY_EXPLAIN: the pack currently dispatched to (its
+     *  {@code name()}), the last {@code axiomsOnce} key it opened, and the attributing session wrapper
+     *  handed out through {@link #getSession} while a pack is on-stack. Encoder-internal code reads the
+     *  {@code session} FIELD directly, so only pack-issued assertions are labelled. */
+    String explainPackName
+    String explainLastAxiomKey
+    private SmtSession attributingSession
+
+    @Override
+    SmtSession getSession() {
+        if (Reporter.EXPLAIN && explainPackName != null) {
+            if (attributingSession == null) attributingSession = new PackAttributingSession(this, session)
+            return attributingSession
+        }
+        session
+    }
+
+    /** Phase 232 — a delegating session that labels every pack-issued assertion with its provenance
+     *  ({@code pack <name> axiom (<axiomsOnce key>)}), so the explain read-out's ablation can report a
+     *  pack axiom as load-bearing exactly like an authored clause. Only ever handed out when
+     *  {@code VERIFY_EXPLAIN} is on and a pack is dispatching. */
+    @CompileStatic
+    static class PackAttributingSession implements SmtSession {
+        @Delegate SmtSession target
+        private final Encoder owner
+        PackAttributingSession(Encoder owner, SmtSession target) { this.owner = owner; this.target = target }
+        @Override
+        void assertExpr(Object boolExpr) {
+            target.assertExpr(boolExpr)
+            String key = owner.explainLastAxiomKey
+            target.explainNoteFact("pack ${owner.explainPackName} axiom${key ? ' (' + key + ')' : ''}".toString(), boolExpr)
+        }
+    }
     /** Variable name in source scope -> SMT handle. */
     private final Map<String, Object> env = [:]
     /**
@@ -4011,8 +4045,11 @@ class Encoder implements TheoryApi {
             // field still wins), before the JDK-constant folds. E.g. UnitsPack models `X.value` (the
             // property form of getValue()) on a JSR 385 quantity here.
             for (EncodingPack p : PackRegistry.packs()) {
-                Object pv = p.translateProperty(this, pe, obj, prop)
-                if (!NO_MATCH.is(pv)) return pv
+                explainPackName = p.name()
+                try {
+                    Object pv = p.translateProperty(this, pe, obj, prop)
+                    if (!NO_MATCH.is(pv)) return pv
+                } finally { explainPackName = null }
             }
             // Phase 44 polish — JDK boxed-numeric range constants fold to their literal values, so a
             // user can write {@code @Requires({ n < Integer.MAX_VALUE })} (or the {@code Long}
@@ -4853,8 +4890,11 @@ class Encoder implements TheoryApi {
         // quantity-to-quantity `==`/`!=` here (dimension decides feasibility, SI magnitude settles the
         // value; a side unmodellable falls through to the loud skip exactly as before).
         for (EncodingPack pk : PackRegistry.packs()) {
-            Object pb = pk.translateBinary(this, be, op)
-            if (!NO_MATCH.is(pb)) return pb
+            explainPackName = pk.name()
+            try {
+                Object pb = pk.translateBinary(this, be, op)
+                if (!NO_MATCH.is(pb)) return pb
+            } finally { explainPackName = null }
         }
 
         // Phase 47 — String concatenation via the {@code +} operator. When both operands are
@@ -5227,7 +5267,7 @@ class Encoder implements TheoryApi {
     private final Set<String> packAxiomKeys = new HashSet<String>()
 
     @Override
-    boolean axiomsOnce(String key) { packAxiomKeys.add(key) }
+    boolean axiomsOnce(String key) { explainLastAxiomKey = key; packAxiomKeys.add(key) }
 
     private Object translateMethodCall(MethodCallExpression mce) {
         String m = mce.methodAsString
@@ -5732,8 +5772,11 @@ class Encoder implements TheoryApi {
      *  first migration — see {@code NumberTheoryPack}.) */
     private Object tmcPacks(MethodCallExpression mce, String m, Expression recv, List<Expression> args) {
         for (EncodingPack p : PackRegistry.packs()) {
-            Object r = p.translateCall(this, mce, m, recv, args)
-            if (!NO_MATCH.is(r)) return r
+            explainPackName = p.name()
+            try {
+                Object r = p.translateCall(this, mce, m, recv, args)
+                if (!NO_MATCH.is(r)) return r
+            } finally { explainPackName = null }
         }
         return NO_MATCH
     }

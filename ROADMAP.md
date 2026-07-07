@@ -10529,6 +10529,34 @@ obligation coverage.
 
 ---
 
+## Phase 232 — pack-axiom attribution: the explain-heritage story completes  *(shipped)*
+
+The recorded second step lands via the seam predicted: packs assert their defining axioms on the raw
+session inside `axiomsOnce`-gated blocks, so the attribution point is the **session itself** — a
+delegating `PackAttributingSession` (`@Delegate SmtSession` + one overridden `assertExpr`) handed out
+through `TheoryApi.getSession()` only while a pack is dispatching and `VERIFY_EXPLAIN` is on.
+Encoder-internal code reads the `session` *field* directly, so only pack-issued assertions are
+labelled; the three dispatch loops (`translateCall`/`translateProperty`/`translateBinary`) set and
+clear the current pack name, and `axiomsOnce` records its key for granularity. The label:
+`pack <name> axiom (<key>)`. Zero pack-side changes — all four packs attribute without touching them,
+and third-party packs inherit it for free.
+
+The demonstrator, pinned in the corpus (`P55 fib`): a divide obligation whose divisor is
+`Fib.of(n) + 1` —
+
+    explain ✓ (verification.Fib.of(n) + 1) != 0
+        load-bearing:     @Requires (0 <= n)
+        load-bearing:     @Requires (n <= 8)
+        also leaned on:   pack number-theory axiom (numtheory.fib)
+
+With this, every fact family a proof can lean on is attributable in the read-out: authored clauses,
+structural facts (invariants, JVM bounds), registry specs (ensures, admission, survival, catch-entry
+— all TRUSTED-labelled), same-class callee ensures, and pack axioms. The explain read-out is now the
+complete per-proof twin of the trusted ledger. Suite **1663/0** (+1) at the CI budget, rung
+**648/655** clean / 0 need review, docLint 0 drift.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

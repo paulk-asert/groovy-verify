@@ -62,5 +62,17 @@ class G146_p55_fib {
                             return a
                         }
                     }''')],
+        // Phase 232 — an implicit obligation carried by the pack's defining axioms: the divisor
+        // Fib.of(n) + 1 is nonzero because fib is non-negative on the bounded domain. Under
+        // VERIFY_EXPLAIN the read-out attributes it: `also leaned on: pack number-theory axiom
+        // (numtheory.fib)` beside the load-bearing @Requires bounds.
+        [group: 'P55 fib', name: 'divide obligation carried by the fib axioms (explain-attributable)', ok: true,
+         src: tc('''class C {
+                        @Requires({ 0 <= n && n <= 8 })
+                        @Ensures({ result >= 0 })
+                        static int f(int n) {
+                            return 100.intdiv(Fib.of(n) + 1)
+                        }
+                    }''')],
     ]
 }
