@@ -284,6 +284,21 @@ class C {
 }
 ```
 
+`Collections.frequency` is the registry speaking the corpus's own vocabulary — its spec says
+`result == c.count(o)`, and that exact fact links to the caller's own `count` spelling (get the
+needle wrong and it refutes):
+
+<!-- doclint:case p225-collections-specs/frequency-is-count-the-exact-fact-links-list-name-registration -->
+```groovy
+class C {
+    @Requires({ xs != null })
+    @Ensures({ result == xs.count(5) })
+    static int fives(List<Integer> xs) {
+        return Collections.frequency(xs, 5)
+    }
+}
+```
+
 And `Long.parseLong` joins `Integer.parseInt` as a one-directional arm whose survival contrapositive
 does real work — the call returned, so the string wasn't null:
 

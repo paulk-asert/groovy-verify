@@ -878,6 +878,10 @@ class Encoder implements TheoryApi {
     }
 
     /** Phase 41 — true if {@code name} is a List-typed parameter/field (use bcount, not count). */
+    /** Phase 228 — register a name as list-typed mid-session (a spec formal aliased to a list actual),
+     *  so list-name-dispatched translations (`count` → bounded {@code bcount}) match the caller's. */
+    void registerListName(String name) { if (name != null) listNames.add(name) }
+
     boolean isListName(String name) {
         if (name == null) return false
         // Strip old$ for snapshot keys — they still refer to a List.

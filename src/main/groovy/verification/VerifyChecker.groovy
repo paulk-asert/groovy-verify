@@ -9301,6 +9301,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 enc.bindArray(formals[i].name, enc.arrayFor(an))
                 enc.bindSize(formals[i].name, enc.sizeOf(an))
                 enc.bindNullity(formals[i].name, enc.nullityOf(an))
+                // Phase 228 — and REGISTER it as a list name: `c.count(o)` in the spec must take the
+                // same bounded-bcount encoding as the caller's `xs.count(5)` (the name-set dispatch
+                // otherwise routes the formal to the whole-array count UF, which never unifies)
+                enc.registerListName(formals[i].name)
                 if (h == null) h = enc.varFor(formals[i].name)   // placeholder scalar; the oracles carry the facts
             }
             if (h == null) return false   // can't faithfully substitute → don't assume

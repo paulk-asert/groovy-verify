@@ -58,8 +58,6 @@ class Collections {
     @Ensures({ coll.every { result <= it } })
     static Object min(Collection coll) {}
 
-    // The exact fact is stated (it is the spec); consumers today get the range half — linking the
-    // formal's count to the caller's spelling crosses the name-keyed count machinery (recorded).
     @Pure
     @Ensures({ result >= 0 && result <= c.size() && result == c.count(o) })
     static int frequency(Collection c, Object o) {}

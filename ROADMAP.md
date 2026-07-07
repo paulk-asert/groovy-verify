@@ -10399,6 +10399,28 @@ catalog regenerated with the new provenance keys.
 
 ---
 
+## Phase 228 — `frequency`'s exact count links: one registration, not a bridge axiom  *(shipped)*
+
+The Phase 226 gap closes, and the diagnosis sharpens en route: "the count machinery is name-keyed"
+was imprecise — the *bcount terms* were always array-handle-keyed; what was name-keyed is the
+**dispatch**. `a.count(v)` routes to the bounded `bcount(arr, v, 0, size)` encoding only when the
+receiver is a known *list name*; a spec formal (`c`) isn't in the caller's list-name set, so the
+spec's `c.count(o)` fell to the whole-array `count(arr, v)` UF — a different function family that
+never unifies with the caller's `xs.count(5)`, aliased arrays notwithstanding.
+
+The fix is one line at the aliasing site: `Encoder.registerListName(formalName)` when a
+`Collection`-typed formal is aliased to a named list actual — the spec's `count` then takes the same
+bounded-bcount encoding over the same aliased array/size handles, and the terms unify definitionally
+(no bridge axiom between the two count encodings needed). `frequency`'s spec drops its
+"not yet linkable" caveat; the corpus pins both directions (`result == xs.count(5)` proves;
+the wrong-needle twin refutes); the jdk-specs gallery gains the snippet — the registry speaking the
+corpus's own permutation-style vocabulary.
+
+`P225 collections specs` at 9 cases. Root suite **1655/0** (+1) at the CI budget, rung **642/649**
+clean / 0 need review, docLint 0 drift (126/126 snippet links).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
