@@ -200,6 +200,32 @@ class C {
 Drop the `if (i >= 0)` and the `-1` sentinel sails into `charAt` — refuted, with the sentinel as
 counterexample.
 
+The same shape closed the registry's last structural gap: the **`java.util.List` interface** carries
+the twin spec (`indexOf`/`lastIndexOf` ensure `result >= -1 && result < size()`), and it landed with
+*zero engine changes* — instance consumption, receiver-state substitution, and element tying had
+already composed to open the gate. The list idiom proves the same way, the native list-`get` bounds
+obligation discharged by the registry fact plus the found-check:
+
+<!-- doclint:case p230-list-interface-specs/indexof-then-get-the-native-bounds-obligation-discharged-by-the-registry-fact -->
+```groovy
+class C {
+    @Requires({ xs != null && xs.size() > 0 })
+    static int findOrLast(List<Integer> xs, int v) {
+        int i = xs.indexOf(v)
+        if (i >= 0) {
+            return xs[i]
+        }
+        return xs[xs.size() - 1]
+    }
+}
+```
+
+The skeletons stay deliberately minimal on both types: `String`'s core surface and `List`'s
+`size`/`get`/`contains`/`isEmpty` are *natively* modelled — exact theory, no trust required — so a
+spec there would be a downgrade. And `java.util.Map` needs no skeleton at all: membership,
+cardinality and `getOrDefault` are native, and the `keySet()`/`values()` projections are outside the
+fragment. Some gaps close by documentation.
+
 ## Survival facts — the call you moved past did not throw
 
 An *executed* call the program moved past didn't throw, so no `@ThrowsIf` arm's condition held — the

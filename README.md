@@ -487,7 +487,7 @@ the JDK's bodies — so every consumption is recorded in the **trusted-spec ledg
 across in-place spec-only contracts and registry facts, printed beside the harness perf line and
 linted by DocLint), and the runtime rung cross-checks the specs against the live JDK. Skeletons for
 the everyday JDK surface ship in the jar (`Math`, `Integer`, `Long`, `Character`, `Objects`,
-`Arrays`, `Collections`, `String`, `java.time`); the whole arc is worked through in
+`Arrays`, `Collections`, `List`, `String`, `java.time`); the whole arc is worked through in
 **[examples/jdk-specs.md](examples/jdk-specs.md)**.
 
 ### What about dynamic Groovy?

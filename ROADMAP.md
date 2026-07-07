@@ -10449,6 +10449,32 @@ remaining recorded item is the instance `List`/`Map` interfaces (receiver-oracle
 
 ---
 
+## Phase 230 — the `List` interface: the registry consumption story completes  *(shipped)*
+
+The last structural gap on the Collections front — "the instance `List`/`Map` interfaces, gated on
+receiver-oracle wiring" — closes with **zero engine changes**: the accumulated machinery (instance
+consumption from 220, receiver-state substitution from 221, element tying from 225) composed to open
+the recorded gate on its own. The slice is a skeleton and its corpus:
+
+- **`java.util.List`**: `indexOf`/`lastIndexOf(Object)` with the receiver-state range ensures
+  (`result >= -1 && result < size()`) — the String-indexOf twin, `size()` substituted onto the actual
+  receiver at each site. Deliberately nothing else: `size`/`get`/`contains`/`isEmpty` are native list
+  oracles, better than any trusted spec.
+- **`java.util.Map` needs no skeleton at all** — membership, cardinality and `getOrDefault` are
+  native; the `keySet()`/`values()` projections are outside the fragment. The recorded item closes
+  by documentation, which is its own small lesson: some gaps are inventory errors.
+- **The showpiece**: the list **indexOf-then-get idiom** — the native list-get bounds obligation
+  discharged by the registry fact plus the found-check; the `-1` sentinel refutes without it.
+
+`P230 list interface specs` (G298, 3 cases). Inventory **13 files / 54 methods / 0 broken**; root
+suite **1662/0** (+3) at the CI budget, rung **647/654** clean / 0 need review, docLint 0 drift.
+With this, every consumption shape the external-specs arc recorded is built: obligations,
+assumptions, admission, typed overloads, instance, receiver-state, survival, catch-entry, mutation,
+and the collection vocabulary — the registry's remaining frontier is populating skeletons, not
+machinery.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
