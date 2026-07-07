@@ -10475,6 +10475,60 @@ machinery.
 
 ---
 
+## Phase 231 — trusted heritage in `VERIFY_EXPLAIN`: the per-proof ledger  *(shipped)*
+
+The explain read-out's attributable set was authored `@Requires` conjuncts plus a few structural
+facts; every registry consumption sat in the held-fixed ablation base — so a proof leaning entirely
+on `Math.abs`'s trusted spec read as *"discharged without an authored @Requires"*, technically true
+and completely misleading. Exactly where a user decides whether to believe a proof, the trusted
+provenance was invisible.
+
+Five noting sites close it, all gated on `Reporter.EXPLAIN` (the OFF path stays byte-identical, per
+the knob's contract): call-site ensures assumptions (`TRUSTED spec <fqn>#<m> @Ensures`; same-class
+callees labelled `callee …` — attributable, not trusted), survival-fact contrapositives (both the
+`assumeCalleeEnsures` arms and the body-walk `assertSurvivalFacts`), catch-entry `SoftAssume`s, and
+the Encoder's `@Pure` admission axioms. The showpiece read-out, from the P230 idiom:
+
+    explain ✓ xs[i] in bounds
+        not load-bearing: @Requires (xs != null)
+        not load-bearing: @Requires (xs.size() > 0)
+        also leaned on:   TRUSTED spec java.util.List#indexOf @Ensures
+
+— and the sibling obligation (`xs[size - 1]`) correctly leans on the authored size clause instead.
+P222's checkIndex proof explains as survival fact + admission axiom, both labelled TRUSTED.
+
+Two scoping notes on record: the read-out fires only for index-bounds and divide obligations (the
+two existing `explainIfVerified` sites — extending to deref/charAt/parse obligations is the natural
+follow-up if wanted), and pack-axiom attribution (the `TheoryApi` seam) is the recorded second step.
+Labels are whitespace-collapsed to one line. Verified live with the daemon-env gotcha noted: the
+gradle daemon captures the environment at startup, so a stale daemon silently ignores the flag.
+
+Suite **1662/0** at the CI budget, docLint 0 drift; TOOLING documents the labelled kinds with the
+worked read-out.
+
+---
+
+## Housekeeping (post-231) — the explain read-out covers every implicit obligation  *(shipped)*
+
+The Phase 231 scoping note ("fires only for index-bounds and divide obligations") closes: the shared
+`dischargeObligationUnder` gains `explainIfVerified` at the remaining conclusions — **null
+dereference** (plain `recv != null` and the per-element `xs[i] != null` variant), **`charAt` /
+`substring` bounds**, and **parse validity** (`s parses as int`). The P221 showpiece now reads out in
+full:
+
+    explain ✓ s.charAt(i) in bounds
+        not load-bearing: @Requires (s != null)
+        not load-bearing: @Requires (s.length() > 0)
+        also leaned on:   TRUSTED spec java.lang.String#indexOf @Ensures
+
+— the deref obligations beside it correctly attribute their load-bearing authored clause
+(`@Requires (s != null)`), and the two size-clause verdicts flip between the found-branch and the
+else-branch exactly as path-sensitivity dictates. Remaining recorded: pack-axiom attribution through
+the `TheoryApi` seam. Suite **1662/0** at the CI budget, docLint 0 drift; TOOLING notes the full
+obligation coverage.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

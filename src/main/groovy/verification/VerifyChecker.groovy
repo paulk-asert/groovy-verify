@@ -2732,7 +2732,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 } else if (step instanceof SoftAssume) {
                     Object c = enc.translate(((SoftAssume) step).cond)   // Phase 223 — catch-entry fact
-                    if (c != null) s.assertExpr(c)
+                    if (c != null) {
+                        s.assertExpr(c)
+                        if (Reporter.EXPLAIN) {
+                            s.explainNoteFact("TRUSTED catch-entry fact (${((SoftAssume) step).cond.text.replaceAll(/\s+/, ' ')}) — registry arms".toString(), c)
+                        }
+                    }
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
@@ -3251,6 +3256,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(Reporter.formatNumberFormat(ps.arg.text, r), ps.node)
             }
+            explainIfVerified(s, r, "${ps.arg.text} parses as int")
             return
         }
         if (site instanceof DerefSite) {
@@ -3273,6 +3279,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(
                         "${df.receiver}[${df.indexExpr.text}]", df.method, r), r, 'NullPointerException'), df), df.node)
                 }
+                explainIfVerified(s, r, "${df.receiver}[${df.indexExpr.text}] != null")
                 return
             }
             // Obligation: ¬isNull(recv). Assert its negation, isNull(recv), and
@@ -3282,6 +3289,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status != CheckResult.Status.VERIFIED) {
                 addStaticTypeError(withSuggestion(withRepro(Reporter.formatNullDereference(df.receiver, df.method, r), r, 'NullPointerException'), df), df.node)
             }
+            explainIfVerified(s, r, "${df.receiver} != null")
         }
         if (site instanceof StringCharAtSite) {
             StringCharAtSite cs = (StringCharAtSite) site
@@ -3305,6 +3313,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 addStaticTypeError(withRepro(Reporter.formatIndexBounds(
                     cs.indexExpr.text, cs.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), cs.node)
             }
+            explainIfVerified(s, r, "${cs.receiver}.charAt(${cs.indexExpr.text}) in bounds")
             return
         }
         if (site instanceof StringSubstringSite) {
@@ -3342,6 +3351,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 addStaticTypeError(withRepro(Reporter.formatIndexBounds(
                     accessor, ss.receiver + '.length()', r), r, 'IndexOutOfBoundsException'), ss.node)
             }
+            explainIfVerified(s, r, "${ss.receiver}.substring(${ss.beginExpr.text}${ss.endExpr != null ? ', ' + ss.endExpr.text : ''}) in bounds")
             return
         }
         if (site instanceof OverflowSite) {
@@ -5612,7 +5622,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 } else if (step instanceof SoftAssume) {
                     // Phase 223 — catch-entry fact: assumed when expressible, dropped (soundly) when not.
                     Object c = enc.translate(((SoftAssume) step).cond)
-                    if (c != null) session.assertExpr(c)
+                    if (c != null) {
+                        session.assertExpr(c)
+                        if (Reporter.EXPLAIN) {
+                            session.explainNoteFact("TRUSTED catch-entry fact (${((SoftAssume) step).cond.text.replaceAll(/\s+/, ' ')}) — registry arms".toString(), c)
+                        }
+                    }
                 } else if (step instanceof Guard) {
                     Guard g = (Guard) step
                     Object c = enc.translate(g.cond)
@@ -8844,7 +8859,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     Expression c = (Expression) arm.get('cond')
                     if (!specContractReceiverIndependent(spec, c)) continue
                     Object ch = enc.translateWith(c, bindings)
-                    if (ch != null) s.assertExpr(s.not(ch))
+                    if (ch != null) {
+                        Object neg = s.not(ch)
+                        s.assertExpr(neg)
+                        if (Reporter.EXPLAIN) {
+                            s.explainNoteFact("TRUSTED survival fact ¬(${c.text.replaceAll(/\s+/, ' ')}) — ${owner.name}#${((MethodCall) call).methodAsString} arm".toString(), neg)
+                        }
+                    }
                 }
             }
         })
@@ -9423,7 +9444,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         savedMapKeys.each { String k, Object v -> if (v != null) enc.putMapKeys(k, v) }
 
         if (ensuresAst != null && post == null) return false   // @Ensures outside the fragment → skip
-        if (post != null) s.assertExpr(post)
+        boolean fromRegistry = callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null
+        String calleeLabel = "${callee.declaringClass?.name ?: '?'}#${callee.name}".toString()
+        if (post != null) {
+            s.assertExpr(post)
+            // Phase 231 — VERIFY_EXPLAIN heritage: a proof leaning on a spec's ensures should SAY so,
+            // with trusted provenance front and centre (the per-proof twin of the trusted ledger).
+            if (Reporter.EXPLAIN) {
+                s.explainNoteFact((fromRegistry ? "TRUSTED spec ${calleeLabel} @Ensures"
+                                                : "callee ${calleeLabel} @Ensures").toString(), post)
+            }
+        }
         // Phase 222 — the normal-return contrapositive: this call RETURNED, so no must-throw condition
         // held (valid for iff and one-directional arms alike — both promise cond ⟹ throws). parseInt(s)
         // surviving proves s != null; floorDiv(a, b) surviving proves b != 0. Receiver-dependent or
@@ -9432,7 +9463,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression c = (Expression) arm.get('cond')
             if (!specContractReceiverIndependent(callee, c)) continue
             Object ch = enc.translateWith(c, bindings)
-            if (ch != null) s.assertExpr(s.not(ch))
+            if (ch != null) {
+                Object neg = s.not(ch)
+                s.assertExpr(neg)
+                if (Reporter.EXPLAIN) {
+                    s.explainNoteFact("TRUSTED survival fact ¬(${c.text.replaceAll(/\s+/, ' ')}) — ${calleeLabel} arm".toString(), neg)
+                }
+            }
         }
         return true
     }

@@ -24,13 +24,33 @@ default path byte-identical.
 |------|--------------|
 | `VERIFY_REFUTATION=assert\|junit\|spock` | render a refutation's counterexample as a runnable repro test |
 | `VERIFY_SUGGEST=contract` | suggest the `@Requires` that would discharge a refuted implicit obligation |
-| `VERIFY_EXPLAIN` | on a *verified* obligation, show which authored `@Requires` clauses the proof used |
+| `VERIFY_EXPLAIN` | on a *verified* obligation, show which authored `@Requires` clauses the proof used — and, since Phase 231, which **trusted** facts it leaned on (`TRUSTED spec …#… @Ensures`, survival facts, catch-entry facts, admission axioms): the per-proof twin of the trusted ledger |
 | `VERIFY_VERBOSE` | print the full OpenJML-style diagnostic + counterexample behind each one-line result |
 | `VERIFY_CACHE_STATS` | print the in-process VC-cache hit / miss ratio |
 | `VERIFY_DUMP_SMT` | print every solver query as a self-contained SMT-LIB2 benchmark (pipe to cvc5/z3/yices) |
 | `VERIFY_PACKS` | select which [encoding packs](PACKS.md) run: `none` disables all, a comma-separated name list keeps only those — a bisection tool when triaging a suspect domain encoding (a deselected pack's vocabulary degrades to loud skips)  Since Phase 227 a deselected pack's DECLARED spec skeletons (`EncodingPack.specFqns()`) are deselected with it — lifecycle coherence for pack-shipped contracts |
 | `VERIFY_Z3_TIMEOUT_MS` | the per-check solver budget in milliseconds (default `2000`; also `-Dverify.z3.timeoutMs`). Refute-direction VCs are model searches and therefore hardware-speed sensitive: a refutation that is crisp on a dev laptop can come back `solver: timeout` on a slower CI runner. Raising the budget moves the decided-vs-undecided boundary only — it never changes what a returned verdict means. CI sets `8000` |
 | `VERIFY_SPECS` | a directory of external-spec skeletons overriding the classpath lookup (also `-Dverify.specs`) — JML's specspath analogue, for iterating on a spec before jarring it. Specs are TRUSTED axioms: the knob changes which trusted facts are consulted, so unlike the other knobs it can change what proves — every consumed spec is recorded (`SpecRegistry.consumed()`) for exactly that reason |
+
+**Trusted heritage in the explain read-out** (Phase 231). Every registry fact a proof leans on is
+labelled with its provenance and surfaced by the same load-bearing ablation as authored clauses:
+
+```
+explain ✓ xs[i] in bounds
+    not load-bearing: @Requires (xs != null)
+    not load-bearing: @Requires (xs.size() > 0)
+    also leaned on:   TRUSTED spec java.util.List#indexOf @Ensures
+```
+
+A proof that leans entirely on a trusted spec now *says so* — previously it read as "discharged
+without an authored @Requires", technically true and completely misleading. The read-out covers the
+full implicit-obligation family: array/list index bounds, divide-by-zero, null dereference (plain and
+per-element), `charAt`/`substring` bounds, and parse validity. The labelled kinds:
+`TRUSTED spec <fqn>#<m> @Ensures` (call-site assumption), `TRUSTED spec … admission axiom`
+(contract-position `@Pure` use), `TRUSTED survival fact ¬(cond) — …#… arm`, and
+`TRUSTED catch-entry fact (cond) — registry arms`; same-class callee ensures are labelled
+`callee …#… @Ensures` (attributable, not trusted). All noting is gated on the flag — the OFF path
+stays byte-identical.
 
 **The trusted-spec ledger.** Proof-waiving is deliberately quiet at the use site — a spec-only
 `@ThrowsIf(woven = false, direct = false)` compiles without a warning, an external spec consumes silently — so the inventory is where
