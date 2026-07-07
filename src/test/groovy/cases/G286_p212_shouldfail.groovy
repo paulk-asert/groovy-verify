@@ -29,6 +29,7 @@ class G286_p212_shouldfail {
         // ---------- Phase 212: shouldFail — the provable exceptional witness ----------
         [group: 'P212 shouldFail', name: 'closed witness verifies (guard-throw callee)', ok: true,
          src: tc('''class C {
+                        @ThrowsIf(value = { n < 0 }, exception = IllegalArgumentException, woven = false)
                         static int inc(int n) {
                             if (n < 0) throw new IllegalArgumentException('negative')
                             return n + 1
@@ -59,6 +60,7 @@ class G286_p212_shouldfail {
                     }''')],
         [group: 'P212 shouldFail', name: 'supertype expectation verifies (IAE is a RuntimeException)', ok: true,
          src: tc('''class C {
+                        @ThrowsIf(value = { n < 0 }, exception = IllegalArgumentException, woven = false)
                         static int inc(int n) {
                             if (n < 0) throw new IllegalArgumentException('negative')
                             return n + 1

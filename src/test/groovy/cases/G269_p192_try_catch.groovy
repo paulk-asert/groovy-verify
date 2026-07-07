@@ -87,6 +87,7 @@ class G269_p192_try_catch {
         [group: 'P192 try-catch', name: 'guard-throw prologue verifies', ok: true,
          src: tc('''class C {
              @Ensures({ result >= 1 })
+             @ThrowsIf(value = { n < 0 }, exception = IllegalArgumentException, woven = false)
              static int inc(int n) {
                  if (n < 0) throw new IllegalArgumentException('negative')
                  return n + 1

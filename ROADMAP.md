@@ -10274,6 +10274,24 @@ contracts.
 
 ---
 
+## Housekeeping (post-224) — the guard-throw divergences retire themselves  *(shipped)*
+
+The three guard-throw rung divergences (all `inc(-1)` — the P192 guard-throw prologue and P212's two
+shouldFail callees) are promoted to justified/in-domain by annotating the callee with the very
+annotation the arc built: `@ThrowsIf(value = { n < 0 }, exception = IllegalArgumentException,
+woven = false)` on each `inc`. The cases still verify (the body-mode must-throw proof finds the
+hand-written guard — exactly the P213 shape) and now demonstrate contract-complete specs: the
+postcondition for the normal path plus the exceptional arm for the guard. None of the three appears
+in any public example (checked — no `doclint:case` links), so the change is corpus-internal.
+
+Divergence ledger: **1** (637/643 clean) — the sole survivor is the P222 spec-throw entry
+(`checkIndex` throwing on an out-of-range grid input — the JDK guard method doing its job), which
+cannot be promoted the same way: justifying it would need the caller's grid arguments mapped onto the
+*callee's* arm condition, recorded as genuinely hard. The guard-throw category's machinery
+(source-scraped `throw new` type-checking) remains in the rung for the next unannotated guard case.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
