@@ -83,6 +83,19 @@ interface EncodingPack {
     default List<String> corpusGroups() { Collections.<String> emptyList() }
 
     /**
+     * The external-specification skeletons this pack contributes (Phase 227): fully-qualified class
+     * names whose {@code META-INF/groovy-verify/specs/<fqn>.groovy} resources ship in the pack's jar.
+     * Declaring them buys three things a bare classpath resource does not get: <b>lifecycle
+     * coherence</b> (deselecting the pack via {@code VERIFY_PACKS} also deselects its specs — an FQN
+     * declared by a discovered-but-disabled pack is never consumed), the <b>trusted-inventory lint</b>
+     * (each declared skeleton must parse and carry contracts, exactly as the core's do — a malformed
+     * pack spec is silent trust loss), and <b>catalog attribution</b>. The soundness obligation
+     * extends accordingly: a pack may only spec what is provably true of the library — the runtime
+     * rung's grid cross-checks apply to pack-shipped specs unchanged.
+     */
+    default List<String> specFqns() { Collections.<String> emptyList() }
+
+    /**
      * Try to translate a method call. {@code m} is the method name (non-null), {@code recv} the receiver
      * with any transparent immutability wrapper stripped, {@code args} the flat argument expressions.
      * Return {@link TheoryApi#NO_MATCH} when the guard does not fire, {@code null} for matched-but-

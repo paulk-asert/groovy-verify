@@ -273,11 +273,18 @@ empty bodies), discovered lazily at `META-INF/groovy-verify/specs/<fqn>.groovy` 
 site and its `@Ensures` is assumed for the result — `Math.abs(a)` proves `result >= 0` and refuses the
 unguarded `Integer.MIN_VALUE` edge, from a small skeleton. Every registry spec is **trusted** by
 definition (nobody proves the JDK's bodies) and its consumption recorded in the **trusted-spec
-ledger** (one inventory across in-place `trusted` contracts and registry consumption — printed beside
-the harness perf line, linted by DocLint's trusted-inventory section); `@Pure`-marked spec methods are admitted **into contract
+ledger** (one inventory across in-place spec-only contracts — `woven = false, direct = false` — and
+registry consumption, printed beside the harness perf line, linted by DocLint's trusted-inventory
+section); `@Pure`-marked spec methods are admitted **into contract
 positions** (Phase 218): `@Ensures({ result == Math.abs(a) })` models the call as an uninterpreted
 function axiomatised by the spec's own guarded contract — ensures-free specs stay opaque, unspecced
-methods stay loud skips, int-like signatures in v1. `@ThrowsIf` arms in skeletons are consumed three
+methods stay loud skips, int-like and boolean signatures. Collection-shaped consumption (Phases
+225/226): list/array **element contents tie across the call boundary** (so `Collections.binarySearch`'s
+sortedness precondition discharges from the caller's own), list-returning callees in assign position
+instantiate their `@Ensures` **directly over the assigned local** (`List l = Collections.emptyList()`
+carries `l != null && l.size() == 0`), and `Collection`-typed formals alias a named list actual's
+size/array/nullity oracles (`Collections.max`'s `coll.every { result >= it }` reaches the caller's
+elements). `@ThrowsIf` arms in skeletons are consumed three
 ways: at *verification* of the annotated method (both directions of the iff), as *survival facts*
 (Phase 222 — an executed call the program moved past did not throw, so no arm condition held;
 must-throw direction, valid in both modes), and as *catch-entry facts* (Phase 223 —

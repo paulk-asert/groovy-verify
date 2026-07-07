@@ -79,6 +79,7 @@ class SpecRegistry {
      */
     static MethodNode lookup(String fqn, String name, int arity, List<String> paramTypeNames = null) {
         if (fqn == null || name == null) return null
+        if (!PackRegistry.specAllowed(fqn)) return null   // Phase 227 — a disabled pack's specs are off
         Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
         if (!(entry instanceof ClassNode)) return null
         List<MethodNode> byArity = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
@@ -146,6 +147,7 @@ class SpecRegistry {
     /** True when a spec skeleton exists for the FQN (loads and caches on first ask). */
     static boolean hasSpec(String fqn) {
         if (fqn == null) return false
+        if (!PackRegistry.specAllowed(fqn)) return false
         Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
         entry instanceof ClassNode
     }
@@ -187,6 +189,7 @@ class SpecRegistry {
      *  the union over overloads: whichever one ran, its matching arm's condition held). */
     static List<MethodNode> overloads(String fqn, String name, int arity) {
         if (fqn == null || name == null) return Collections.<MethodNode> emptyList()
+        if (!PackRegistry.specAllowed(fqn)) return Collections.<MethodNode> emptyList()
         Object entry = CACHE.computeIfAbsent(fqn, { String k -> (load(k) ?: MISS) as Object })
         if (!(entry instanceof ClassNode)) return Collections.<MethodNode> emptyList()
         List<MethodNode> out = ((ClassNode) entry).getMethods(name).findAll { it.parameters.length == arity }
@@ -239,6 +242,9 @@ class SpecRegistry {
 
     /** Test hook: drop all cached parses (spec files edited under a live daemon). */
     static void reset() { CACHE.clear(); CONSUMED.clear() }
+
+    /** Lint-facing: the raw skeleton text for an FQN from the classpath (no gating, no cache). */
+    static String specTextFor(String fqn) { specText(fqn) }
 
     /** Lint-facing: parse spec TEXT exactly as {@link #lookup} would (no cache); null on failure. */
     static ClassNode parseForLint(String text, String fqn) {

@@ -64,9 +64,15 @@ class UnitsPack implements EncodingPack {
     @Override
     String name() { 'jsr385-units' }
 
+    /** Phase 227 — the pack's thin contract rim (nullity facts); the dimension/scale semantics stay
+     *  pack theory. Declaring them here gates them on the pack's enablement and puts them under the
+     *  trusted-inventory lint. */
+    @Override
+    List<String> specFqns() { ['javax.measure.Quantity', 'tech.units.indriya.quantity.Quantities'] }
+
     /** The CASES groups; the DSL surface is additionally pinned by UnitScaleTest and the examples-dsl suite. */
     @Override
-    List<String> corpusGroups() { ['P131 dimensions', 'P132 unit scale', 'P191 domain-typed names'] }
+    List<String> corpusGroups() { ['P131 dimensions', 'P132 unit scale', 'P191 domain-typed names', 'P227 pack specs'] }
 
     /** {@code X.getValue()} — the SI magnitude read back in X's current unit (Phase 132). A non-quantity
      *  or unmodellable receiver falls through (the old inline handler fell through identically). */

@@ -20,7 +20,8 @@ groovy-verify **proves your code can't hit whole classes of bug — at compile t
 it.** An array index out of bounds, a null dereference, a divide-by-zero, a broken class invariant,
 or simply *the wrong answer*: you say what should be true with stock
 [`groovy.contracts`](https://github.com/spockframework/groovy-contracts) annotations
-(`@Requires` / `@Ensures` / `@Invariant`), compile under
+(`@Requires` / `@Ensures` / `@Invariant` / `@ThrowsIf` — the last one an annotation this project
+prototyped and then contributed upstream as GROOVY-12135), compile under
 
 <!-- doclint:case pl-truth/truth-assert-non-zero-int-literal-verifies -->
 ```groovy
@@ -475,17 +476,18 @@ is pinned by its own verify/refute case groups (attributed in the generated `cat
 Where packs contribute a library's *vocabulary and axioms*, the **external-specification registry**
 contributes a library's *method contracts* — the same principle one level up, and JML's `.jml`-file
 idea in the project's own dialect. A spec is an ordinary Groovy **skeleton**: the target class
-re-declared with the same gc annotations user code carries (plus `@Pure` and `@ThrowsIf` arms) and
-empty bodies, discovered lazily as the classpath resource `META-INF/groovy-verify/specs/<fqn>.groovy`
+re-declared with the same gc annotations user code carries (`@ThrowsIf` arms included — the stock
+upstream annotation since GROOVY-12135, with `woven = false, direct = false` spelling a trusted
+third-party claim) and empty bodies, discovered lazily as the classpath resource `META-INF/groovy-verify/specs/<fqn>.groovy`
 and parsed AST-only — never compiled, never executed. Consumption is symmetric with in-code contracts
 (`@Requires` = call-site obligation, `@Ensures` = assumed result, `@Pure` = usable *inside* your own
 contracts, `@ThrowsIf` = survival and catch-entry facts), with typed overload matching and both
 instance and receiver-state forms. Every registry spec is **trusted by definition** — nobody proves
 the JDK's bodies — so every consumption is recorded in the **trusted-spec ledger** (one inventory
-across in-place `trusted` contracts and registry facts, printed beside the harness perf line and
+across in-place spec-only contracts and registry facts, printed beside the harness perf line and
 linted by DocLint), and the runtime rung cross-checks the specs against the live JDK. Skeletons for
 the everyday JDK surface ship in the jar (`Math`, `Integer`, `Long`, `Character`, `Objects`,
-`Arrays`, `String`, `java.time`); the whole arc is worked through in
+`Arrays`, `Collections`, `String`, `java.time`); the whole arc is worked through in
 **[examples/jdk-specs.md](examples/jdk-specs.md)**.
 
 ### What about dynamic Groovy?

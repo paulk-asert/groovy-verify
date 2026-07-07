@@ -2697,6 +2697,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         if (assumeCalleeEnsures(s, enc, a.rhs, node, null, hasDecreases(node), a.name)) continue
                     }
                     assertSurvivalFacts(s, enc, a.rhs, node)   // Phase 222 — executed call ⟹ no arm held
+                    // Phase 227 — `def d = q` on a reference: the local shares the source's nullity (a
+                    // downstream `d.m()` deref obligation must see the caller's `q != null`)
+                    if (a.rhs instanceof VariableExpression) {
+                        enc.bindNullity(a.name, enc.nullityOf(((VariableExpression) a.rhs).name))
+                    }
                     Object rhs = enc.translate(a.rhs)
                     if (rhs != null) { s.assertExpr(s.eq(enc.varFor(a.name), rhs)); continue }
                     // Phase 221 — scalar `i = call()` whose callee has consumable @Ensures (checkPath's

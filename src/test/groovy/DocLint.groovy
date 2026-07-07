@@ -139,13 +139,37 @@ class DocLint {
             if (contracted == 0) broken << "${f.name}: no contracted methods"
             methods += contracted
         }
+        // Phase 227 — pack-DECLARED specs: each enabled pack's specFqns must resolve to a parseable,
+        // contract-carrying skeleton (a pack shipping a malformed spec is the same silent trust loss),
+        // and no spec resource may be shadowed by a duplicate on the classpath (first-wins is the rule;
+        // a silent second copy is drift).
+        int packSpecs = 0
+        verification.PackRegistry.packs().each { pk ->
+            (pk.specFqns() ?: []).each { String fqn ->
+                String text = verification.SpecRegistry.specTextFor(fqn)
+                if (text == null) { broken << "${pk.name()}: spec '${fqn}' resource missing"; return }
+                def cn = verification.SpecRegistry.parseForLint(text, fqn)
+                if (cn == null) { broken << "${pk.name()}: spec '${fqn}' does not parse"; return }
+                if (cn.methods.count { verification.SpecRegistry.hasContractText(it) } == 0) {
+                    broken << "${pk.name()}: spec '${fqn}' has no contracted methods"; return
+                }
+                packSpecs++
+            }
+        }
+        List<String> dupes = []
+        files.each { File f ->
+            String res = 'META-INF/groovy-verify/specs/' + f.name
+            int n = Collections.list(DocLint.classLoader.getResources(res)).size()
+            if (n > 1) dupes << "${f.name} (${n} copies)"
+        }
+        broken.addAll(dupes.collect { "duplicate spec resource: ${it}" })
         // in-place spec-only contracts in the corpus are inventoried too (report-only count) —
         // the upstream spelling since Phase 224: woven = false, direct = false
         int inPlace = new File('src/test/groovy/cases').listFiles()
             .findAll { it.name.endsWith('.groovy') }
             .sum { File f -> f.text.count('direct = false') } as int
-        println "\n[5] trusted inventory — ${files.size()} shipped spec file(s), ${methods} contracted method(s); " +
-            "${inPlace} in-place trusted contract(s) in the corpus; ${broken.size()} broken"
+        println "\n[5] trusted inventory — ${files.size()} shipped spec file(s), ${methods} contracted method(s), " +
+            "${packSpecs} pack-declared; ${inPlace} in-place trusted contract(s) in the corpus; ${broken.size()} broken"
         if (broken) println "    BROKEN (${broken.size()}): " + broken.join(', ')
         broken.size()
     }

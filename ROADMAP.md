@@ -10359,6 +10359,46 @@ clean / 2 categorised / 0 need review, docLint 0 drift.
 
 ---
 
+## Phase 227 — pack-declared specs: `specFqns()` upgrades the analogy to architecture  *(shipped)*
+
+"Packs contribute a library's vocabulary and axioms; the registry contributes its method contracts —
+the same principle one level up" was an analogy; now it is an SPI surface. `EncodingPack.specFqns()`
+lets a pack declare the spec skeletons its jar ships, buying three things a bare classpath resource
+does not get:
+
+- **Lifecycle coherence**: an FQN declared by a discovered-but-disabled pack is never consumed —
+  deselecting a pack via `VERIFY_PACKS` also deselects its specs (`PackRegistry.specAllowed`, gating
+  all three registry consult points; the declaration maps are captured pre-selection so disabled
+  packs still *block* their FQNs).
+- **The trusted-inventory lint**: each declared skeleton must parse and carry contracts (a pack
+  shipping a malformed spec is the same silent trust loss), and no spec resource may be shadowed by
+  a classpath duplicate — first-wins is the rule, a silent second copy is drift.
+- **Catalog attribution**: `packSpecs` provenance beside the `pack:` key on pack-claimed groups.
+
+The demonstrator is the jsr385-units pack's deliberately **thin contract rim** —
+`Quantity.getValue`/`getUnit` and `Quantities.getQuantity` nullity facts — with the division of
+labour stated in PACKS.md: packs model what contracts *cannot* say (dimension algebra, SI magnitudes,
+scale — theory), spec skeletons say what they can (nullity, ranges, arms). The incommensurable-`to()`
+exception is deliberately unspecced: its condition is a dimension predicate, not a parameter closure —
+no false iffs. The soundness obligation extends: a pack may only spec what is provably true of the
+library, rung-monitored like every registry fact.
+
+**The ripple, third instance, this time with an engine fix**: the P191 "quantity parameter via local
+skips the postcondition" pin flipped — with `getValue` specced, the method no longer bails wholesale,
+and the nullity discipline (correctly) surfaced a real `d != null` obligation the old skip had masked.
+Fixing its discharge exposed a genuine propagation gap: `def d = q` on a reference local did not share
+`q`'s nullity in the obligation-replay walk — now tied on plain variable-copy assigns. The case is
+re-pinned to the honest new behaviour: nullity first, then the unknown magnitude *refuses* the
+specific-value claim rather than skipping silently. Registry growth keeps upgrading skips into real
+verdicts; that is the feature working.
+
+`P227 pack specs` (G297, 2 cases; the group added to the units pack's `corpusGroups`). Inventory
+**12 files / 49 methods, 2 pack-declared / 0 broken**; ledger **37 trusted facts (35 external)**.
+Root suite **1654/0** at the CI budget, rung **642/649** clean / 0 need review, docLint 0 drift,
+catalog regenerated with the new provenance keys.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

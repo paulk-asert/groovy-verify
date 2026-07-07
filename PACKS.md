@@ -65,13 +65,17 @@ value you know is yours (that is what `claimsExpression` exists to prevent — s
 | `resolveDynamicProperty(receiverType, pexp, enclosingClass)` | **STC time** (Phase 209): an unresolved property `@TypeChecked` would reject — return the type to store, or null to decline | `n.fizzBuzz` backed by a visible `metaClass` registration (MetaProgrammingPack) |
 | `resolveDynamicMethod(receiverType, name, argTypes, enclosingClass, enclosingClosure)` | **STC time** (Phase 209): a missing method — return a synthetic `MethodNode` with the resolved signature, or null | `Integer.multiply(String)` from `Integer.metaClass.multiply = { String s -> … }` |
 | `corpusGroups()` | provenance: the case groups that pin this pack | `['P131 dimensions', 'P132 unit scale']` |
+| `specFqns()` | the external-spec skeletons the pack's jar ships (Phase 227): declaring them gates them on the pack's enablement (`VERIFY_PACKS` deselection deselects the specs), puts each under the trusted-inventory lint (must parse + carry contracts; classpath duplicates are drift), and adds `packSpecs` catalog provenance | `['javax.measure.Quantity']` |
 
 The two `resolveDynamic*` surfaces are the **STC companion half**: they run inside the type checker
 (before any encoding), and they are the narrow gate through which slim dynamic-Groovy support returns to
 the `@TypeChecked` world. The obligation is absolute: **a pack may only bless what it can also faithfully
 model** (or whose model refuses loudly) — a blessing without a model is how silent unsoundness starts.
 The `MetaProgrammingPack` is the reference: same-class-visible `ExpandoMetaClass` registrations, typed
-from the registered closure's own signature and modelled by inlining that closure at each use site.
+from the registered closure's own signature and modelled by inlining that closure at each use site. The same discipline covers **pack-declared specs** (`specFqns()`): a pack may only *spec* what is
+provably true of the library — packs model what contracts *cannot* say (theory: dimension algebra,
+scale arithmetic), spec skeletons say what they can (nullity, ranges, exceptional arms) — and the
+runtime rung's grid cross-checks apply to pack-shipped specs unchanged.
 
 All but `translateCall` have no-op defaults — implement what your domain needs. The encoder-facing hooks
 receive `TheoryApi` (a live SMT session per VC); `checkMethod` receives `CheckerApi` (diagnostics + AST

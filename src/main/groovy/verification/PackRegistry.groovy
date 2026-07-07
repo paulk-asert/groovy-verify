@@ -34,6 +34,27 @@ class PackRegistry {
 
     private static volatile List<EncodingPack> loaded
 
+    /** FQN → owning pack name, across ALL discovered packs (pre-selection) — Phase 227. */
+    private static volatile Map<String, String> allDeclaredSpecs = Collections.emptyMap()
+    /** FQNs declared by the ENABLED packs — Phase 227. */
+    private static volatile Set<String> enabledDeclaredSpecs = Collections.emptySet()
+
+    /**
+     * Phase 227 — lifecycle coherence for pack-declared specs: an FQN declared by a discovered pack is
+     * consumable only while that pack is enabled (deselecting a pack via {@code VERIFY_PACKS} also
+     * deselects its specs). Undeclared FQNs — the core and application skeletons — are always allowed.
+     */
+    static boolean specAllowed(String fqn) {
+        packs()   // force discovery so the declaration maps are populated
+        !allDeclaredSpecs.containsKey(fqn) || enabledDeclaredSpecs.contains(fqn)
+    }
+
+    /** The owning pack's name for a declared spec FQN, or null (core/application spec). */
+    static String specOwner(String fqn) {
+        packs()
+        allDeclaredSpecs.get(fqn)
+    }
+
     static List<EncodingPack> packs() {
         List<EncodingPack> ps = loaded
         if (ps == null) {
@@ -50,6 +71,11 @@ class PackRegistry {
                     } catch (Throwable t) {
                         System.err.println("verification: EncodingPack discovery failed: ${t}")
                     }
+                    Map<String, String> declared = new HashMap<String, String>()
+                    for (EncodingPack p : out) {
+                        for (String f : (p.specFqns() ?: Collections.<String> emptyList())) declared.put(f, p.name())
+                    }
+                    allDeclaredSpecs = Collections.unmodifiableMap(declared)
                     String sel = System.getProperty('verify.packs', System.getenv('VERIFY_PACKS') ?: '').trim()
                     if (sel) {
                         if (sel == 'none') {
@@ -60,6 +86,9 @@ class PackRegistry {
                         }
                     }
                     out.sort { EncodingPack a, EncodingPack b -> (a.name() ?: '') <=> (b.name() ?: '') }
+                    Set<String> enabled = new HashSet<String>()
+                    for (EncodingPack p : out) enabled.addAll(p.specFqns() ?: Collections.<String> emptyList())
+                    enabledDeclaredSpecs = Collections.unmodifiableSet(enabled)
                     loaded = ps = Collections.unmodifiableList(out)
                 }
             }

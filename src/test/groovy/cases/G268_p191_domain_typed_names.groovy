@@ -33,9 +33,14 @@ class G268_p191_domain_typed_names {
         // A Quantity PARAMETER copied into a local: its magnitude/unit is unknown, so the value read-out
         // is outside the fragment — the postcondition skips loudly (and the deref obligations still fire:
         // f(null) genuinely throws). The P900 probe pinned this path before it became a case.
-        [group: 'P191 domain-typed names', name: 'quantity parameter via local skips the postcondition', expect: 'Skipped verification of postcondition for f',
+        // Phase 227 flip (the registry-growth ripple, third instance): the pack-declared
+        // Quantity.getValue spec means the method no longer bails wholesale — the nullity discipline
+        // now (correctly) demands q != null first, and under that guard the unknown-magnitude
+        // postcondition still refuses to prove rather than skipping silently.
+        [group: 'P191 domain-typed names', name: 'quantity parameter via local: nullity first, then the unknown magnitude refuses', expect: 'Cannot prove postcondition of f',
          src: HDR + UOM + UOM2 + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" +
-              'class C { @Ensures({ result == 5.0 })\n' +
+              'class C { @Requires({ q != null })\n' +
+              '          @Ensures({ result == 5.0 })\n' +
               '          static BigDecimal f(Quantity<Length> q) { def d = q\n' +
               '              d.to(METRE).getValue() as BigDecimal } }'],
         // TEETH for the Phase 191 translateBinary claim: two parameter quantities compared through locals.

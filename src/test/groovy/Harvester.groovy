@@ -90,6 +90,9 @@ class Harvester {
         // an agent reading the manifest sees which capabilities are pluggable-domain vs core).
         Map<String, String> packOfGroup = [:]
         verification.PackRegistry.packs().each { p -> p.corpusGroups().each { g -> packOfGroup[g] = p.name() } }
+        // Phase 227 — pack-declared external specs, attributed the same way corpus groups are
+        Map<String, List<String>> packSpecs = [:]
+        verification.PackRegistry.packs().each { p -> if (p.specFqns()) packSpecs[p.name()] = p.specFqns() }
 
         def catalog = byGroup.collect { String g, List recs ->
             [ group           : g,
@@ -101,7 +104,9 @@ class Harvester {
               annotations     : recs.collectMany { it.annotations }.unique().sort(),
               canonicalVerify : recs.find { it.outcome == 'verifies' }?.id,
               canonicalRefute : recs.find { it.outcome == 'refutes' }?.id,
-            ] + (packOfGroup.containsKey(g) ? [pack: packOfGroup[g]] : [:])   // only pack-claimed groups carry the key
+            ] + (packOfGroup.containsKey(g) ? [pack: packOfGroup[g]] : [:]) \
+              + (packOfGroup.containsKey(g) && packSpecs.containsKey(packOfGroup[g]) ?
+                  [packSpecs: packSpecs[packOfGroup[g]]] : [:])   // pack-claimed groups carry provenance keys
         }.sort { it.group }
         new File(work, 'catalog.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(catalog)) + '\n'
 
