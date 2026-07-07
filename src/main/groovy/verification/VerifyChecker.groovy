@@ -2703,9 +2703,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // scalar branch, mirrored): without this, a registry-spec'd call in the obligation
                     // replay leaves `i` unconstrained and a downstream `s.charAt(i)` bound can't discharge.
                     if (isCallExpr(a.rhs)) {
-                        Object fresh = s.intVar('specw$' + Integer.toHexString(System.identityHashCode(a.rhs)))
-                        if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
-                            s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                        if (calleeReturnsList(a.rhs, node)) {
+                            // Phase 225 — list-returning callee: the rename route (see checkPath), so the
+                            // callee's reference-oracle facts land on the local for downstream obligations
+                            listLocalFromCall(s, enc, a.name, a.rhs, node)
+                        } else {
+                            Object fresh = s.intVar('specw$' + Integer.toHexString(System.identityHashCode(a.rhs)))
+                            if (assumeCalleeEnsures(s, enc, a.rhs, node, fresh, hasDecreases(node))) {
+                                s.assertExpr(s.eq(enc.varFor(a.name), fresh))
+                            }
                         }
                     }
                 } else if (step instanceof FieldAssign) {
@@ -5754,6 +5760,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             throw new UnsupportedConstructException(
                                 "assignment '${a.name} = ${a.rhs.text}' is outside fragment")
                         }
+                    } else if (isCallExpr(rhsE) && calleeReturnsList(rhsE, node) &&
+                               listLocalFromCall(session, enc, a.name, rhsE, node)) {
+                        // Phase 225 — `List l = callee(...)`: establish l's fresh list oracles, then
+                        // instantiate the callee's @Ensures with `result` RENAMED to the local (the tuple
+                        // route, generalised), so `result != null` / `result.size() == n` constrain them —
+                        // the fresh-handle path below can't carry reference-oracle facts across.
                     } else if (isCallExpr(rhsE) &&
                                assumeCalleeEnsures(session, enc, rhsE, node, fresh, hasDecreases(node))) {
                         enc.bind(a.name, fresh)
@@ -8361,6 +8373,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     session.assertExpr(session.eq(
                         enc.nullityOf(formalName), enc.nullityOf(actualName)))
                 }
+                // Phase 225 — tie the ELEMENT CONTENTS too: a contract quantifying over a list/array
+                // formal (`list.indices.every { list[it - 1] <= list[it] }` — Collections#binarySearch's
+                // sortedness) reads the formal's element array, which without this stays a fresh
+                // unconstrained function and the caller's own sortedness can never discharge it.
+                Object formalArr = enc.peekArray(formalName)
+                Object actualArr = enc.peekArray(actualName)
+                if (formalArr != null && actualArr != null) {
+                    session.assertExpr(session.eq(formalArr, actualArr))
+                } else if (formalArr == null && actualArr != null) {
+                    enc.bindArray(formalName, actualArr)
+                }
             }
             formalKnownNullity.each { String formalName, Object knownNull ->
                 if (enc.hasNullityOracle(formalName)) {
@@ -8660,6 +8683,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 !SpecRegistry.throwsIfArms(spec).isEmpty())) return spec
         }
         null
+    }
+
+    /** Phase 225 — true when the call resolves to a contracted callee (registry or otherwise) whose
+     *  declared return type is list-like — the gate for the rename route below. */
+    private boolean calleeReturnsList(Expression call, MethodNode caller) {
+        if (!(call instanceof MethodCall)) return false
+        String name = ((MethodCall) call).methodAsString
+        List<Expression> actuals = collectArgumentExpressions((MethodCall) call)
+        if (name == null || actuals == null) return false
+        ClassNode forResolve = receiverCarrierType(call) ?: ownerCarrierType(call) ?:
+            staticOwnerType(call) ?: instanceReceiverType(call)
+        MethodNode callee = resolveContractedCallee(caller, name, actuals.size(), true, forResolve)
+        if (callee == null) return false
+        // a registry skeleton parses only to CONVERSION, so its return type may be the UNRESOLVED
+        // simple name ('List') — accept it alongside the resolved forms
+        callee.returnType?.name in ['List', 'ArrayList'] || isListType(callee.returnType)
+    }
+
+    /** Phase 225 — a list-typed local assigned from a contracted call: mint the local's fresh list
+     *  oracles (nullity, size, element array) so the callee's renamed {@code @Ensures} can constrain
+     *  them, then assume it. Returns false (caller falls through) when the callee has nothing usable. */
+    private boolean listLocalFromCall(SmtSession s, Encoder enc, String name, Expression call, MethodNode caller) {
+        Object savedNull = enc.peekNullity(name)
+        Object savedSize = enc.peekSize(name)
+        Object savedArr = enc.peekArray(name)
+        int v = ++havocCounter
+        enc.bindNullity(name, s.boolVar(name + '?null#lfc' + v))
+        enc.bindSize(name, s.intVar(name + '#size#lfc' + v))
+        enc.bindArray(name, s.arrayVar(name + '#arr#lfc' + v))
+        if (assumeCalleeEnsures(s, enc, call, caller, null, hasDecreases(caller), name)) return true
+        // nothing assumable: restore, so the fresh-handle fallback behaves exactly as before
+        if (savedNull != null) enc.bindNullity(name, savedNull)
+        if (savedSize != null) enc.bindSize(name, savedSize)
+        if (savedArr != null) enc.bindArray(name, savedArr)
+        return false
     }
 
     /** Phase 220 — the STC-inferred type of an instance call's receiver (`d.getMonthValue()`), so the

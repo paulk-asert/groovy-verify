@@ -252,6 +252,51 @@ JML-`signals` form — sufficient but not the whole story — which is what fina
 range" is outside the fragment, and a sloppy iff would have been *wrong*, which the rung's grid
 inputs would have flagged).
 
+## Collections — factories, and the List twin of binarySearch
+
+The `java.util.Collections` skeleton covers the static factory/query surface. Its `binarySearch` is
+the List twin of the `Arrays` true-precondition — and its discharge is machinery, not just a spec:
+the caller's own sortedness reaches the formal because element *contents* are tied across the call
+boundary, not merely sizes:
+
+<!-- doclint:case p225-collections-specs/binarysearch-obligation-discharged-element-contents-tied-across-the-boundary -->
+```groovy
+class C {
+    @Requires({ xs != null && xs.indices.every { it == 0 || xs[it - 1] <= xs[it] } })
+    static int find(List<Integer> xs, int key) {
+        return java.util.Collections.binarySearch(xs, key)
+    }
+}
+```
+
+The factories carry the facts callers actually use — non-null results and exact sizes — landing
+directly on the assigned local, so downstream dereferences and size claims discharge:
+
+<!-- doclint:case p225-collections-specs/ncopies-guarded-size-fact-object-wildcard-typed-lookup -->
+```groovy
+class C {
+    @Requires({ n >= 0 })
+    @Ensures({ result == n })
+    static int f(int n) {
+        List l = java.util.Collections.nCopies(n, 'x')
+        return l.size()
+    }
+}
+```
+
+And `Long.parseLong` joins `Integer.parseInt` as a one-directional arm whose survival contrapositive
+does real work — the call returned, so the string wasn't null:
+
+<!-- doclint:case p225-collections-specs/long-parselong-survival-proves-s-non-null-signals-arm -->
+```groovy
+class C {
+    static int f(String s) {
+        long v = Long.parseLong(s)
+        return s.length()
+    }
+}
+```
+
 ## Honest partiality — the specs refuse to over-claim
 
 The `Character` predicates are Unicode-aware, so their specs are **partial by design**: each fact

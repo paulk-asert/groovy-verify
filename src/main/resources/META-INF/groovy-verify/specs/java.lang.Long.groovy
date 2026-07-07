@@ -20,6 +20,7 @@
 package java.lang
 
 import groovy.contracts.Ensures
+import groovy.contracts.ThrowsIf
 import groovy.transform.Pure
 
 class Long {
@@ -46,4 +47,11 @@ class Long {
     @Pure
     @Ensures({ (a + b <= Long.MAX_VALUE && a + b >= Long.MIN_VALUE) ==> result == a + b })
     static long sum(long a, long b) {}
+
+    // One-directional (exhaustive = false), like Integer.parseInt: `s == null` is a true sufficient
+    // throw condition; the full condition (malformed or out of long range) is outside the fragment.
+    // Callers get the normal-return contrapositive: parseLong(s) surviving proves s != null.
+    @Pure
+    @ThrowsIf(value = { s == null }, exception = NumberFormatException, woven = false, direct = false, exhaustive = false)
+    static long parseLong(String s) {}
 }

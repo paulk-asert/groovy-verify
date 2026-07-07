@@ -10292,6 +10292,44 @@ cannot be promoted the same way: justifying it would need the caller's grid argu
 
 ---
 
+## Phase 225 — the Collections skeleton and `parseLong`: two consumption gaps closed en route  *(shipped)*
+
+The `java.util.Collections` static surface (`binarySearch`, `emptyList`, `singletonList`, `nCopies`)
+plus `Long.parseLong` (the `parseInt` mirror: one-directional arm, survival proves `s != null`). The
+specs were the easy half — both flagship consumers exposed real machinery gaps:
+
+- **Element contents now tie across the call boundary** (`verifyCallSite`): size and nullity oracles
+  were tied formal↔actual, but a contract quantifying over a list formal
+  (`list.indices.every { list[it - 1] <= list[it] }` — binarySearch's sortedness) read the formal's
+  element array, a fresh unconstrained function — so a caller's own sortedness could never discharge
+  the obligation. The `Arrays` version had worked only because an `int[]` actual binds as a whole
+  array handle.
+- **List-returning callees in assign position route through the RENAME instantiation** — the tuple
+  mechanism generalised: `List l = Collections.emptyList()` mints the local's fresh list oracles
+  (nullity, size, element array) and instantiates the callee's `@Ensures` with `result` renamed to
+  `l`, so `result != null` / `result.size() == 0` land where downstream obligations read them (the
+  fresh-handle path cannot carry reference-oracle facts across). Gated on the *callee's* declared
+  return type — declaration-typed locals are invisible to the scalar-type map, and the skeleton's
+  return type is the unresolved simple name `List` (the CONVERSION-parse lesson, again).
+- **The typed lookup gained the Object-formal wildcard**: `nCopies(n, 'x')` asked with
+  `[int, String]` against formals `[int, Object]` and missed — an `Object` formal now matches any
+  asked type (primitives box on the way in), with the uniqueness rule still declining genuinely
+  ambiguous overload sets.
+- Spec-authoring lesson worth keeping: list-factory ensures need `result != null` explicitly — the
+  size fact alone leaves the local's nullity unknown and the very next `l.size()` deref refutes.
+- Deliberately absent, recorded: the mutators (`sort`/`reverse` — `@Modifies`-shaped consumption),
+  `max`/`min`/`frequency` (Collection-typed formal matching), the instance `List`/`Map` interfaces
+  (receiver-oracle wiring). DocLint's in-place counter also updated to the post-migration spelling
+  (`direct = false`).
+
+`P225 collections specs` (G296, 5 cases); `examples/jdk-specs.md` gains the Collections section.
+Inventory **10 files / 43 methods / 0 broken**; ledger **32 trusted facts (30 external)**. Root suite
+**1649/0** (+5), rung **640/647** clean / 2 diverged (the newcomer: `parseLong` throwing NFE on
+non-numeric grid strings, categorised spec-throw against the very arm that predicted it) / 0 need
+review, docLint 0 drift, full `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

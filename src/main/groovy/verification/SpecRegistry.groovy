@@ -89,7 +89,11 @@ class SpecRegistry {
             List<MethodNode> hits = byArity.findAll { MethodNode c ->
                 List<String> specTypes = c.parameters.collect { simpleTypeName(it.type.name) }
                 List<String> asked = paramTypeNames.collect { it == null ? null : simpleTypeName(it) }
-                (0..<arity).every { int i -> asked.get(i) == null || asked.get(i) == specTypes.get(i) }
+                // an Object formal accepts ANY asked type (primitives box on the way in); the
+                // uniqueness rule below still declines genuinely ambiguous overload sets
+                (0..<arity).every { int i ->
+                    asked.get(i) == null || specTypes.get(i) == 'Object' || asked.get(i) == specTypes.get(i)
+                }
             }
             m = hits.size() == 1 ? hits.get(0) : null
         } else {

@@ -1707,6 +1707,8 @@ class Encoder implements TheoryApi {
     /** Current scalar/array binding, or null if unbound — for save/restore around a call's framing. */
     Object peekVar(String name) { env.get(name) }
     Object peekArray(String name) { arrEnv.get(name) }
+    Object peekSize(String name) { sizeEnv.get(name) }
+    Object peekNullity(String name) { nullEnv.get(name) }
 
     /**
      * Phase 45c — snapshot the encoder's mutable binding state so it can be restored after

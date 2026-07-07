@@ -139,10 +139,11 @@ class DocLint {
             if (contracted == 0) broken << "${f.name}: no contracted methods"
             methods += contracted
         }
-        // in-place trusted contracts in the corpus are inventoried too (report-only count)
+        // in-place spec-only contracts in the corpus are inventoried too (report-only count) —
+        // the upstream spelling since Phase 224: woven = false, direct = false
         int inPlace = new File('src/test/groovy/cases').listFiles()
             .findAll { it.name.endsWith('.groovy') }
-            .sum { File f -> f.text.count('trusted = true') } as int
+            .sum { File f -> f.text.count('direct = false') } as int
         println "\n[5] trusted inventory — ${files.size()} shipped spec file(s), ${methods} contracted method(s); " +
             "${inPlace} in-place trusted contract(s) in the corpus; ${broken.size()} broken"
         if (broken) println "    BROKEN (${broken.size()}): " + broken.join(', ')
