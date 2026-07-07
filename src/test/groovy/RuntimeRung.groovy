@@ -186,7 +186,9 @@ class RuntimeRung {
                 // Phase 213/214 — @ThrowsIf: a declared throw justified by SOME instance (type match +
                 // condition true) is the SPECIFIED behaviour — a positive cross-validation. A type-matching
                 // throw justified by NO instance violates the only-when direction.
-                if (throwsIfTypeMatches(m, cause)) {
+                if (!(cause instanceof VirtualMachineError) && throwsIfTypeMatches(m, cause)) {
+                    // VM resource conditions (OOME, StackOverflow) are outside contract semantics —
+                    // never judged against the arms, whatever their declared types (Phase 224 audit)
                     if (throwsIfJustifies(m, src, args, cause)) { inDomain++; continue }
                     // Phase 222 — a one-directional arm-set (any exhaustive = false) disclaims the
                     // only-when direction: an unlisted-reason throw is in-contract, not a violation.

@@ -286,7 +286,11 @@ JML-`signals` direction, gated on fully `exhaustive` matching arms, every try-bl
 arm-characterised, no native source of the caught type, and prefix-independent conditions).
 Catch-reachability leans on one documented convention: a registry skeleton's arm types are read as
 its complete throw-type story — the implicit `signals_only` of an external spec, true of every
-shipped skeleton and rung-monitored. User-method arm-sets make no such type claim. Instance-method
+shipped skeleton and rung-monitored. User-method arm-sets make no such type claim. And no `@ThrowsIf`
+claim, however `exhaustive`, reasons about VM resource conditions — an `OutOfMemoryError` or
+`StackOverflowError` is outside contract semantics entirely (the model has no resource limits;
+`@Decreases` termination reasoning is a separate mechanism), and the rung never judges a
+`VirtualMachineError` against the arms. Instance-method
 specs are consumed too (Phase 220), under the receiver-independence rule: an instance contract may
 state facts about `result` and the arguments only — the `java.time` value-getter ranges are the debut
 (`t.getHour()` is `0..23` wherever it flows); receiver-*state* ensures land in Phase 221:

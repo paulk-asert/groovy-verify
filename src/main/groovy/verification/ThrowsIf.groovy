@@ -92,7 +92,11 @@ import java.lang.annotation.Target
      * Note also what neither mode claims in general: {@code @ThrowsIf} is exhaustive (at most) over
      * the <i>conditions for the types it mentions</i>, never over exception <i>types</i> — there is
      * no JML-{@code signals_only} claim on user methods, and an undeclared exception type is
-     * unconstrained. The ONE deliberate exception: catch-reachability reads a <b>registry
+     * unconstrained. And no claim, however exhaustive, reasons about VM resource conditions: an
+     * {@code OutOfMemoryError} or {@code StackOverflowError} is outside contract semantics — the
+     * verifier's model has no resource limits (its termination reasoning, {@code @Decreases}, is a
+     * separate mechanism), and the runtime rung never judges a {@code VirtualMachineError} against
+     * the arms. The ONE deliberate exception: catch-reachability reads a <b>registry
      * skeleton's</b> arm types as its complete throw-type story (the implicit {@code signals_only}
      * of an external spec — true of every shipped skeleton and monitored by the rung's spec-throw
      * category); a spec file that lists arms is read as the whole exceptional contract, type-wise.
