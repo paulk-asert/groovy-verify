@@ -122,6 +122,12 @@ groovy-contracts live, then run over an input grid — the contract checks itsel
 certify**, and (since the corroboration step made it deterministic and the verifier soundness gaps it found are
 closed) it is **wired into `check`** — a new confirmed proof-vs-runtime divergence fails the build:
 
+**`VERIFY_RUNG_INDY=false`** recompiles every rung case with **classic call-site bytecode** instead of
+invokedynamic — a differential lever for the less-exercised legacy code generator: same corpus, same
+grid, same cross-validation, different codegen. First sweep (Groovy 6.0.0-SNAPSHOT, 655 runnable
+proofs): byte-identical headline to the indy run — no classic-codegen divergence surfaced. (Set with a
+fresh daemon: the gradle daemon captures the environment at startup.)
+
 ```sh
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation
 ```

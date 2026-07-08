@@ -436,8 +436,19 @@ class RuntimeRung {
      *  (which reference `result`) fail static type-checking. Dynamic Groovy leaves them inert. */
     static String contractsOffSrc(String src) { src.replaceAll(/@TypeChecked(\s*\([^)]*\))?/, '') }
 
+    /** VERIFY_RUNG_INDY=false — compile the rung's case classes with CLASSIC call-site bytecode
+     *  instead of invokedynamic (the default). A differential lever: the classic generator gets far
+     *  less test coverage these days, so running the whole cross-validation over it can surface
+     *  codegen regressions the indy path hides. Applied to every rung compile (cases, contracts-off
+     *  twin, self-test). */
+    static void applyIndyChoice(org.codehaus.groovy.control.CompilerConfiguration cfg) {
+        String v = System.getProperty('verify.rung.indy', System.getenv('VERIFY_RUNG_INDY'))
+        if ('false' == v) cfg.optimizationOptions['indy'] = false
+    }
+
     static GroovyClassLoader offLoader() {
         def cfg = new org.codehaus.groovy.control.CompilerConfiguration()
+        applyIndyChoice(cfg)
         cfg.disabledGlobalASTTransformations = ['org.apache.groovy.contracts.ast.GContractsASTTransformation',
             'org.apache.groovy.contracts.ast.ClosureExpressionEvaluationASTTransformation',
             'org.apache.groovy.contracts.ast.MethodVariantInheritanceASTTransformation'] as Set
@@ -608,7 +619,7 @@ class RuntimeRung {
     static void selfTest() {
         // Phase 213 — @ThrowsIf runtime helpers: the condition closure binds by name and evaluates;
         // the declared-type match walks the cause chain. Both directions of each must be exact.
-        def ticfg = new org.codehaus.groovy.control.CompilerConfiguration(); ticfg.parameters = true
+        def ticfg = new org.codehaus.groovy.control.CompilerConfiguration(); ticfg.parameters = true; applyIndyChoice(ticfg)
         def tigcl = new GroovyClassLoader(RuntimeRung.classLoader, ticfg)
         String tisrc = VerifyHarness.HDR + '''class TIST {
             @groovy.contracts.ThrowsIf(value = { int n -> n < 0 }, exception = IllegalArgumentException)
@@ -685,6 +696,7 @@ class RuntimeRung {
             // binds its typed params to the invocation args by name (Phase 213).
             def gclCfg = new org.codehaus.groovy.control.CompilerConfiguration()
             gclCfg.parameters = true
+            applyIndyChoice(gclCfg)
             def gcl = new GroovyClassLoader(Thread.currentThread().contextClassLoader ?: RuntimeRung.classLoader, gclCfg)
             List<Class> classes
             try {

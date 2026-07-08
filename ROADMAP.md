@@ -10557,6 +10557,21 @@ complete per-proof twin of the trusted ledger. Suite **1663/0** (+1) at the CI b
 
 ---
 
+## Housekeeping — the rung under classic bytecode (`VERIFY_RUNG_INDY=false`)  *(shipped)*
+
+A differential lever for the under-tested legacy code generator: the rung's three compile
+configurations (case classes, the contracts-off twin, the self-test) gain an env toggle that sets
+`optimizationOptions.indy = false`, recompiling the whole corpus with **classic call-site bytecode**
+instead of invokedynamic. The lever was verified real before trusting the result (a probe confirmed
+indy builds carry `java/lang/invoke` machinery and classic builds carry
+`org/codehaus/groovy/runtime/callsite` references — not an ignored flag). First sweep on
+6.0.0-SNAPSHOT: **byte-identical headline** — 648/655 clean, the same 2 spec-throw divergences,
+0 need review — so 655 proofs' worth of contract weaving, power-assert evaluation, and case-body
+execution behave identically under the classic generator on this corpus. Nothing surfaced; the knob
+stays (documented in BUILD.md's rung section) as a cheap recurring sweep whenever the snapshot moves.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
