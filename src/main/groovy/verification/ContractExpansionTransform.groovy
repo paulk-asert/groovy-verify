@@ -1330,7 +1330,15 @@ class ContractExpansionTransform implements ASTTransformation {
 
     /** The verbatim source text of {@code expr} (preserving string/char literals, which {@code getText()} drops),
      *  via power-assert's slicing — wrap the expression in a synthetic {@code AssertStatement} at its source
-     *  position and read {@link SourceText}. Falls back to AST reconstruction if the source can't be sliced. */
+     *  position and read {@link SourceText}.
+     *
+     *  <p>If the source cannot be sliced, this fails loudly rather than reconstructing the text from the AST.
+     *  The captured string is not cosmetic: {@link SpecRegistry} re-parses it back into an expression to encode,
+     *  so it must round-trip. {@code Expression.getText()} does not — {@code ConstantExpression.getText()} is
+     *  {@code value.toString()}, so {@code name != 'x'} would come back as {@code name != x}, which re-parses
+     *  cleanly as a <em>variable reference</em>: a different predicate, verified silently. A wrong proof is worse
+     *  than no proof, so a capture failure is an error, consistent with "loudly unsound outside the fragment".
+     *  (Empirically this never fires: 0 of 3479 captures across the suite fall through to it.) */
     static String verbatimText(Expression expr, SourceUnit source) {
         BooleanExpression be = new BooleanExpression(expr)
         be.setSourcePosition(expr)
@@ -1338,12 +1346,20 @@ class ContractExpansionTransform implements ASTTransformation {
         assertStmt.setSourcePosition(expr)
 
         Janitor janitor = new Janitor()
+        String sliced
         try {
-            return new SourceText(assertStmt, source, janitor).normalizedText
-        } catch (Throwable ignored) {
-            return expr.text   // fall back to AST reconstruction
+            sliced = new SourceText(assertStmt, source, janitor).normalizedText
+        } catch (Throwable t) {
+            sliced = null
         } finally {
             janitor.cleanup()
         }
+        if (sliced == null || sliced.trim().isEmpty()) {
+            source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
+                "could not capture the verbatim source of this contract expression; verification would otherwise " +
+                "proceed against a reconstruction that may not match what you wrote.", expr.lineNumber, expr.columnNumber), source))
+            return null
+        }
+        return sliced
     }
 }
