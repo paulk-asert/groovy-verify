@@ -1,0 +1,66 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// The from-jar consumer smoke — the artifact's JDK 17 floor, held honest on a REAL 17 toolchain.
+//
+// The root build compiles and tests on a JDK 25 toolchain no matter what JVM launches Gradle, so a
+// CI matrix over runner JDKs would test nothing. What the published artifact actually claims is
+// different: Java 17 bytecode, resolvable metadata (`org.gradle.jvm.version = 17`), and a checker —
+// Z3 natives included — that RUNS during a JDK 17 consumer's compile. This build is that claim,
+// executed: it resolves `io.github.paulk-asert:groovy-verify` from repository coordinates
+// (mavenLocal, freshly published by the CI job; never this repo's source) on a 17 toolchain.
+//
+// Two halves, both required:
+//   compileGroovy     — a correct contract must VERIFY (solver runs, proof discharges on 17)
+//   compileBadGroovy  — a broken contract must REFUTE with the counterexample diagnostic
+// The second half is the teeth: a smoke that only checks "it compiled" would also pass if the
+// extension silently failed to engage.
+//
+// `compileOnly` is deliberate — it is the scope BUILD.md tells consumers to use (the checker is
+// compile-time tooling; z3-turnkey's ~60 MB of natives must not leak into runtime graphs), so the
+// smoke exercises the recommended consumption verbatim.
+plugins { id 'groovy' }
+
+// Overridden by CI with the values extracted from the root build, so a version bump there can't
+// silently leave this smoke testing a stale artifact; the defaults keep it runnable by hand.
+def gvVersion = providers.gradleProperty('gvVersion').orElse('0.1.0').get()
+def groovyVer = providers.gradleProperty('groovyVersion').orElse('6.0.0-beta-1').get()
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(17) }   // the floor the artifact claims
+}
+
+repositories {
+    mavenLocal()     // the freshly-published artifact under test
+    mavenCentral()   // Groovy, groovy-contracts, and the artifact's z3 dependencies
+}
+
+// The must-refute half lives in its own source set so it gets its own compile task
+// (compileBadGroovy) — the CI step asserts that task FAILS with the expected diagnostic, which a
+// single source set can't express.
+sourceSets {
+    bad { groovy.srcDir 'src/bad/groovy' }
+}
+
+dependencies {
+    implementation "org.apache.groovy:groovy:$groovyVer"
+    implementation "org.apache.groovy:groovy-contracts:$groovyVer"
+    compileOnly "io.github.paulk-asert:groovy-verify:$gvVersion"
+
+    badImplementation "org.apache.groovy:groovy:$groovyVer"
+    badImplementation "org.apache.groovy:groovy-contracts:$groovyVer"
+    badCompileOnly "io.github.paulk-asert:groovy-verify:$gvVersion"
+}

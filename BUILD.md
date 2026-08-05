@@ -24,7 +24,11 @@ own build. For *what* it proves and *why*, see [README.md](README.md).
 Built using JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central; the published
 artifact targets **Java 17 bytecode** (Groovy 6's own floor), so consumers need JDK 17+, not 25 — the
 17 floor is held honest by a from-jar consumer smoke compile on a real JDK 17, since groovyc has no
-`--release`-style API fencing to catch a stray newer-JDK call at build time. The snapshot-tracking
+`--release`-style API fencing to catch a stray newer-JDK call at build time. That smoke is CI-enforced
+on every push: the `consumer-smoke` job publishes to mavenLocal and builds the standalone
+[`ci/consumer-smoke`](ci/consumer-smoke) fixture on a 17 toolchain — its good contract must verify and
+its broken one must refute (run it by hand with `./gradlew -p ci/consumer-smoke compileGroovy`; the
+must-refute half is `compileBadGroovy`, which is expected to fail). The snapshot-tracking
 period is over: the upstream `@ThrowsIf` exceptional contracts (GROOVY-12135), the `@Requires`
 `woven`/`direct` members (GROOVY-12136) and the groovy-contracts loop-annotation fixes
 (GROOVY-12128/12129/12130) — the reasons the build rode 6.0.0-SNAPSHOT, and what cleared eleven

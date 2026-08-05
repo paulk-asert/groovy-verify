@@ -15,9 +15,16 @@
 # The verification mesh, enforced on every push/PR:
 #   - `check`     — the 1400+-case proof suite (JUnit), the runtime differential-soundness oracle
 #                   (RuntimeRung, with its coverage canary), and the doc-drift asserts (DocLintTest),
-#                   plus the examples-dsl subproject's suite.
+#                   plus the examples-dsl subproject's suite. Runs on the JDK 25 toolchain the
+#                   project develops against.
 #   - `tlcCheck` / `tlcTicket` — the rung-2 exhaustive TLA+ models (the §VII buffer and the Leino
 #                   ticket lock), model-checked with TLC.
+#   - `consumer-smoke` — the published artifact's JDK 17 floor, held honest on a REAL 17 toolchain:
+#                   publish to mavenLocal, then consume the jar from coordinates (compileOnly scope,
+#                   as BUILD.md instructs) in the standalone ci/consumer-smoke build — the good
+#                   contract must verify and the broken one must refute. This is the 17 half of the
+#                   17-vs-25 coverage: a runner-JDK matrix on `check` would test nothing, because
+#                   the root build pins its 25 toolchain no matter what JVM launches Gradle.
 #
 # Deliberately NOT run here: the rung-3 real-bytecode tools (Lincheck, Fray, jcstress) — they are
 # slow, scheduler-dependent, and Fray provisions its own JDK; run them locally per CONCURRENCY.md
@@ -50,3 +57,56 @@ jobs:
           VERIFY_Z3_TIMEOUT_MS: '8000'
       - name: TLC exhaustive models (rung 2)
         run: ./gradlew tlcCheck tlcTicket --no-daemon
+
+  # The JDK 17 floor of the published artifact, exercised end to end: bytecode (class file 61),
+  # module-metadata resolvability (org.gradle.jvm.version = 17 — with only a toolchain configured
+  # Gradle stamps 25 and REFUSES 17 consumers, bytecode notwithstanding), and the checker + Z3
+  # natives actually solving during a JDK 17 compile. groovyc has no `--release`-style API fencing,
+  # so a stray post-17 java.base call in main would sail through the `check` job's 25 toolchain —
+  # this job is the guard that catches it.
+  consumer-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Both JDKs: 25 builds and publishes the artifact (the root toolchain), 17 consumes it. Which
+      # one lands in JAVA_HOME is irrelevant — every toolchain resolves through fromEnv below.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            25
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Publish the artifact under test to mavenLocal (25 toolchain)
+        run: >
+          ./gradlew publishToMavenLocal --no-daemon
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_25_X64
+      - name: Consume the jar on the JDK 17 floor — good verifies, bad refutes
+        run: |
+          # Versions extracted from the root build, so a bump there can't leave this smoke silently
+          # testing a stale artifact against a stale Groovy.
+          GV_VERSION=$(sed -n "s/^version = '\(.*\)'\$/\1/p" build.gradle)
+          GROOVY_VERSION=$(sed -n 's/^groovyVersion=//p' gradle.properties)
+          echo "artifact under test: groovy-verify $GV_VERSION against Groovy $GROOVY_VERSION"
+          # A bash ARRAY, not a scalar string: a scalar relies on word-splitting, which zsh (the
+          # shell a local reproduction likely runs under) doesn't do on unquoted expansion — the
+          # whole flag soup then arrives as one broken -p argument. The array form runs everywhere.
+          ARGS=(-p ci/consumer-smoke --no-daemon
+                -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_25_X64
+                -PgvVersion="$GV_VERSION" -PgroovyVersion="$GROOVY_VERSION")
+          # Half 1 — the correct contracts must VERIFY (Z3 loads and solves on the 17 toolchain).
+          ./gradlew "${ARGS[@]}" compileGroovy
+          # Half 2 — the broken contract must REFUTE with its counterexample diagnostic. This is
+          # what proves the extension engaged: a compile-only smoke would also pass if the checker
+          # silently sat inert.
+          if ./gradlew "${ARGS[@]}" compileBadGroovy > bad.log 2>&1; then
+            echo 'FAIL: the must-refute case compiled cleanly — the checker did not engage'
+            exit 1
+          fi
+          grep -q 'Possible NullPointerException' bad.log || {
+            echo 'FAIL: compile failed but without the expected refutation diagnostic:'
+            cat bad.log
+            exit 1
+          }
+          echo 'refuted with the expected diagnostic, as required'

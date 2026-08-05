@@ -10750,7 +10750,12 @@ module metadata's `org.gradle.jvm.version` attribute, and with only a toolchain 
 to resolve the artifact on a 17 toolchain regardless of bytecode — measured, not assumed). Since
 groovyc has no `--release`-style API fencing, the floor is held honest empirically: the consumer
 smoke compile runs on a **real JDK 17** — good case proves, bad case refutes with the full
-counterexample diagnostic, Z3 natives loading and solving on 17.
+counterexample diagnostic, Z3 natives loading and solving on 17. The smoke is now a committed
+fixture (`ci/consumer-smoke`, a deliberately standalone build so it can only consume the jar from
+repository coordinates, never this repo's source) and a per-push CI job (`consumer-smoke`:
+publish to mavenLocal on the 25 toolchain, consume on 17, assert both the verify and the refute
+halves) — the 17-vs-25 coverage split done the only way that means anything, since the root build
+pins its 25 toolchain regardless of the JVM launching Gradle.
 
 **Release mechanics hardened.** The `build/staging-deploy` repo *accretes* (a stale
 `0.1.0-SNAPSHOT` tree from an earlier run sat beside the fresh `0.1.0` — `jreleaserDeploy` uploads

@@ -172,8 +172,9 @@ java {
     // attribute says 25 and Gradle REFUSES to resolve the artifact on a 17 toolchain, bytecode
     // notwithstanding. Two caveats, on record: groovyc has no `--release`-style API fencing, so a
     // stray call into a post-17 java.base API would compile here and fail at a consumer — the
-    // from-jar consumer smoke compile on a real JDK 17 is the guard that matters; and the test /
-    // concurrent source sets inherit the 17 target too (harmless — they still run on 25).
+    // from-jar consumer smoke compile on a real JDK 17 is the guard that matters (CI-enforced per
+    // push: the `consumer-smoke` job over ci/consumer-smoke); and the test / concurrent source
+    // sets inherit the 17 target too (harmless — they still run on 25).
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
     withSourcesJar()
