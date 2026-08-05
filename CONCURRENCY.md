@@ -338,7 +338,7 @@ Two Groovy-specific gotchas were needed (both in `build.gradle` / the test):
 
 - **`-Dgroovy.indy.callsite.cleaner.inline=true`** — Fray seizes *every* thread, and Groovy's runtime
   `PIC-Cleaner` daemon (`CacheableCallSite`) parks forever on a queue, which Fray reads as a deadlock. The
-  flag (in the Groovy 6.0.0-SNAPSHOT on the ASF snapshot repo) cleans call sites inline so that thread is
+  flag (released in Groovy 6.0.0-beta-1) cleans call sites inline so that thread is
   never started. *Lincheck tolerates the Groovy runtime; Fray does not* — without it, Fray fails every Groovy test.
 - **`ignoreTimedBlock = true`** — treats a timed park as blocking, so a background `ForkJoinPool` worker's
   timed park doesn't keep Fray spinning (→ step-explosion OOM) while the app threads are deadlocked.

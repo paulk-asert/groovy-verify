@@ -515,9 +515,9 @@ simply remains outside.
 
 ## Building & using
 
-Built with JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the ASF snapshot repository
-(tracking the upstream `@ThrowsIf` / `@Requires(woven, direct)` contracts — GROOVY-12135/12136 —
-until the next Groovy 6 pre-release ships). `./gradlew verify`
+Built with JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central (which ships the
+upstream `@ThrowsIf` / `@Requires(woven, direct)` contracts — GROOVY-12135/12136 — the build
+previously tracked the ASF snapshot for). `./gradlew verify`
 runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
 JUnit 6 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
 Central yet — consume it via a local install, a Gradle composite build, or JitPack.

@@ -21,13 +21,14 @@ own build. For *what* it proves and *why*, see [README.md](README.md).
 
 ## Building & testing
 
-Built using JDK 25 against `org.apache.groovy:6.0.0-SNAPSHOT` from the ASF snapshot repository —
-currently tracking the snapshot to pick up the upstream `@ThrowsIf` exceptional contracts
-(GROOVY-12135) and the `@Requires` `woven`/`direct` members (GROOVY-12136), plus the groovy-contracts
-loop-annotation fixes; the swap also cleared eleven catalogued rung divergences that were awaiting
-these releases. When the next Groovy 6 pre-release ships, pin `groovyVersion` in `gradle.properties`
-back to it and re-comment the ASF snapshot repo in `build.gradle` (and `examples-dsl/build.gradle`);
-if a freshly-published snapshot looks stale, `--refresh-dependencies`.
+Built using JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central. The snapshot-tracking
+period is over: the upstream `@ThrowsIf` exceptional contracts (GROOVY-12135), the `@Requires`
+`woven`/`direct` members (GROOVY-12136) and the groovy-contracts loop-annotation fixes
+(GROOVY-12128/12129/12130) — the reasons the build rode 6.0.0-SNAPSHOT, and what cleared eleven
+catalogued rung divergences — are all in the beta-1 release. To ride upstream changes ahead of the
+next pre-release, set `groovyVersion` in `gradle.properties` to `6.0.0-SNAPSHOT` and un-comment the ASF
+snapshot repo in `build.gradle` (and `examples-dsl/build.gradle`); if a freshly-published snapshot looks
+stale, `--refresh-dependencies`.
 
 ```sh
 ./gradlew verify                          # compact console runner — one line per case, summary at the end
@@ -124,9 +125,14 @@ closed) it is **wired into `check`** — a new confirmed proof-vs-runtime diverg
 
 **`VERIFY_RUNG_INDY=false`** recompiles every rung case with **classic call-site bytecode** instead of
 invokedynamic — a differential lever for the less-exercised legacy code generator: same corpus, same
-grid, same cross-validation, different codegen. First sweep (Groovy 6.0.0-SNAPSHOT, 655 runnable
-proofs): byte-identical headline to the indy run — no classic-codegen divergence surfaced. (Set with a
-fresh daemon: the gradle daemon captures the environment at startup.)
+grid, same cross-validation, different codegen. Sweeps on 6.0.0-SNAPSHOT and again on 6.0.0-beta-1 (655
+runnable proofs) came back **byte-identical to the indy run** — no classic-codegen divergence surfaced.
+(Set with a fresh daemon: the gradle daemon captures the environment at startup.) Since GROOVY-12185,
+classic call sites live in the optional **`groovy-callsite`** module rather than core `groovy`, so the
+build carries it as a `testRuntimeOnly` dependency purely for this lever — without it the classic
+compile fails loudly with `ClassNotFoundException: …runtime.callsite.CallSiteArray` from
+`WriterController.requireClassicCallSiteRuntime`. The indy default never loads it, and test scope keeps
+it out of the published POM.
 
 ```sh
 ./gradlew runtimeRung      # cross-validate every proved contract against runtime execution of the same annotation

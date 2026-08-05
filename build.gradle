@@ -57,21 +57,24 @@ tasks.named('rat') {
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 
-// Everything this project needs from Groovy 6 shipped in the 6.0.0-alpha-2 release (on Central):
-// static @Ensures, method-level @Decreases (GROOVY-12060), nested closures in contract
-// conditions including @Ensures (GROOVY-12059 — enables the `any` / membership existential
+// Everything this project needs from Groovy 6 is in the 6.0.0-beta-1 release (on Central): the
+// 6.0.0-alpha-2 surface — static @Ensures, method-level @Decreases (GROOVY-12060), nested closures in
+// contract conditions including @Ensures (GROOVY-12059 — enables the `any` / membership existential
 // surface), the native primitive `int[]` GDK `isSorted()` overload the sortedness idiom
 // leans on (so no `verification.SortedExtensions` backfill), restored generic types in
 // @Ensures closures (GROOVY-12071 — so tuple slots / map values / generic-list elements need
 // no `(int)` cast in contracts), and imports reaching loop-level @Invariant/@Decreases closures
-// (GROOVY-12072 — so helper references inside them need no `verification.` FQN). So the build is
+// (GROOVY-12072 — so helper references inside them need no `verification.` FQN) — plus the
+// groovy-contracts fixes the runtime rung was waiting on: @ThrowsIf exceptional contracts
+// (GROOVY-12135), the @Requires `woven`/`direct` members (GROOVY-12136), and the loop-contract
+// firing-point / implicit-return / cached-constant fixes (GROOVY-12128/12129/12130). So the build is
 // self-contained: no hand-built Groovy in mavenLocal. (A Groovy core dev testing a *local* patch can
 // add mavenLocal() above. To ride upstream changes ahead of the next release, switch groovyVersion in
-// gradle.properties back to 6.0.0-SNAPSHOT (or -PgroovyVersion=… for a one-off) and re-enable the ASF
+// gradle.properties to 6.0.0-SNAPSHOT (or -PgroovyVersion=… for a one-off) and re-enable the ASF
 // snapshot repo below; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
-    maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
+    // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
 // groovyVersion comes from gradle.properties (shared with examples-dsl; -PgroovyVersion=… to override)
@@ -92,6 +95,14 @@ dependencies {
     testImplementation "org.apache.groovy:groovy-json:$groovyVersion"   // Harvester (agent catalog/corpus generation)
     testImplementation "org.apache.groovy:groovy-test:$groovyVersion"   // GroovyAssert.shouldFail — the provable exceptional-witness fragment (Phase 212)
     testImplementation "org.apache.groovy:groovy-contracts:$groovyVersion"
+
+    // Test-only: the classic call-site runtime, for the `VERIFY_RUNG_INDY=false` rung lever ONLY. Groovy
+    // 6.0.0-beta-1 moved `org.codehaus.groovy.runtime.callsite.*` out of core into this optional module
+    // (GROOVY-12185), so classic (non-invokedynamic) bytecode no longer runs on the core jar alone —
+    // `WriterController.requireClassicCallSiteRuntime` fails the compile with a ClassNotFoundException for
+    // `CallSiteArray`. The indy default never touches it; this is here so the differential codegen sweep in
+    // BUILD.md still works. Test scope isn't transitive, so it stays out of the published POM.
+    testRuntimeOnly "org.apache.groovy:groovy-callsite:$groovyVersion"
 
     // Test-only: Jakarta Bean Validation constraint annotations (@Positive, @Min, @Size, …). The engine reads
     // them as preconditions but matches by fully-qualified name — it never compiles or runs against this jar —
@@ -548,7 +559,7 @@ tasks.register('frayCheck', Test) {
     // Fray seizes every JVM thread, so Groovy's PIC-Cleaner daemon (CacheableCallSite) — which parks
     // forever on a queue — reads as a false deadlock. `inline = true` cleans call sites inline instead of on
     // a background thread (the static initializer then skips Thread.start()), so the only threads Fray sees
-    // are the application's. (The flag is in the Groovy 6.0.0-SNAPSHOT from the ASF snapshot repo.)
+    // are the application's. (The flag is released in Groovy 6.0.0-beta-1.)
     systemProperty 'groovy.indy.callsite.cleaner.inline', 'true'
 }
 
