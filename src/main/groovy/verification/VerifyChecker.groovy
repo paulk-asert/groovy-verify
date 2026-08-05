@@ -989,16 +989,34 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /**
+     * True if the {@code ClassNode} {@code t} carries one of {@code names} as a <em>type</em> annotation.
+     *
+     * <p>A {@code TYPE_USE}-targeted annotation ({@code List<@NonNull String>}, and everything JSpecify
+     * writes) does <strong>not</strong> land in {@link ClassNode#getAnnotations()} — Groovy keeps it in the
+     * separate {@link ClassNode#getTypeAnnotations()} list. Reading only the former is why this matcher
+     * looked like a Groovy limitation ("the AST doesn't preserve type-use annotations on generics") when it
+     * was an accessor bug: the data has been on {@code getTypeAnnotations()} since at least Groovy 5.0.8 for
+     * source-declared types, and since GROOVY-12206 (6.0.0-beta-1) for types read off <em>compiled</em>
+     * classes too — so a JSpecify-annotated Java dependency now matches as well. Both lists are consulted
+     * because a declaration-targeted annotation ({@code @NonNull String[] ys} where the annotation also
+     * targets {@code PARAMETER}) still arrives on the declaration.
+     */
+    private static boolean hasTypeAnnotationNamed(ClassNode t, Set<String> names) {
+        if (t == null) return false
+        return hasAnnotationNamed(t.annotations, names) || hasAnnotationNamed(t.typeAnnotations, names)
+    }
+
+    /**
      * For a list-typed {@code ClassNode}, return true if its element generic carries a non-null
      * annotation. Reads annotations off the element {@link GenericsType}'s inner ClassNode — the
-     * shape Groovy's parser leaves for {@code List<@NonNull String>}.
+     * shape Groovy's parser leaves for {@code List<@NonNull String>} — through
+     * {@link #hasTypeAnnotationNamed}, so the {@code TYPE_USE} spelling is seen.
      */
     private static boolean hasNonNullElementAnnotation(ClassNode listType) {
         try {
             def gens = listType?.genericsTypes
             if (gens == null || gens.length < 1) return false
-            ClassNode elemNode = gens[0]?.type
-            return elemNode != null && hasAnnotationNamed(elemNode.annotations, NON_NULL_ANNOTATION_NAMES)
+            return hasTypeAnnotationNamed(gens[0]?.type, NON_NULL_ANNOTATION_NAMES)
         } catch (Throwable ignored) {
             return false
         }
@@ -1011,14 +1029,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ClassNode rt = node.returnType
         if (rt == null || ClassHelper.isPrimitiveType(rt) || rt == ClassHelper.VOID_TYPE) return false
         return hasAnnotationNamed(node.annotations, NON_NULL_ANNOTATION_NAMES) ||
-               hasAnnotationNamed(rt.annotations, NON_NULL_ANNOTATION_NAMES)
+               hasTypeAnnotationNamed(rt, NON_NULL_ANNOTATION_NAMES)
     }
 
-    /** Same shape as {@link #hasNonNullElementAnnotation} but for the component type of an array. */
+    /**
+     * Same shape as {@link #hasNonNullElementAnnotation} but for the component type of an array.
+     *
+     * <p>Deliberately reads the <em>component</em> only, because only the component means "the
+     * <em>elements</em> are non-null" — the claim that suppresses the per-element obligation. The array
+     * ClassNode's own type annotations say the <em>array reference</em> is non-null, a different statement;
+     * consulting them here would suppress an element obligation the author never disclaimed.
+     *
+     * <p><b>Where each spelling lands differs by source language</b> (measured on 6.0.0-beta-1):
+     * <ul>
+     *   <li><b>javac</b> follows the JLS — {@code @NonNull String[] ys} annotates the component (elements),
+     *       {@code String @NonNull [] zs} the array type. So this matcher fires for a compiled
+     *       (e.g. JSpecify-annotated Java) signature, which is what GROOVY-12206 newly made readable.</li>
+     *   <li><b>Groovy source</b> puts a leading {@code @NonNull String[] xs} on the <em>parameter
+     *       declaration</em> even for a {@code TYPE_USE}-only annotation, and only the postfix
+     *       {@code String @NonNull []} on the array type. Neither is a component annotation — so in Groovy
+     *       source there is no spelling for array <em>element</em> nullity, and this matcher stays inert
+     *       there by design. {@code List<@NonNull String>} is the working source-level form; the
+     *       {@code @Requires} contract remains the general one.</li>
+     * </ul>
+     */
     private static boolean hasNonNullComponentAnnotation(ClassNode arrType) {
         try {
-            ClassNode comp = arrType?.componentType
-            return comp != null && hasAnnotationNamed(comp.annotations, NON_NULL_ANNOTATION_NAMES)
+            return hasTypeAnnotationNamed(arrType?.componentType, NON_NULL_ANNOTATION_NAMES)
         } catch (Throwable ignored) {
             return false
         }
@@ -2499,15 +2536,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     appendStep(steps, new Guard(cond, true)),
                     new HashSet<String>(assigned), out)
                 Statement elseBlk = ifs.elseBlock
-                if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
+                boolean hasElse = elseBlk != null && !(elseBlk instanceof EmptyStatement)
+                if (hasElse) {
                     collectVfObligations(topStatements(elseBlk),
                         appendStep(steps, new Guard(cond, false)),
                         new HashSet<String>(assigned), out)
+                }
+                // Early-exit narrowing. When an arm can't fall through, arriving here means the other arm
+                // was taken, so the continuation carries that arm's guard — the `if (x == null) return`
+                // idiom. Sound because the exiting arm's assignments are dead on this path (and the
+                // single-assignment discipline forbids rebinding the names `cond` mentions), so `cond`
+                // means at the continuation exactly what it meant at the `if`.
+                boolean thenExits = alwaysExits(ifs.ifBlock)
+                boolean elseExits = hasElse && alwaysExits(elseBlk)
+                if (thenExits && elseExits) return           // neither arm falls through — the rest is dead
+                if (thenExits || elseExits) {
+                    // Rebind `steps` (rather than recursing) so the remaining statements in THIS list —
+                    // and the in-place Assign/LemmaCall appends they make — build on the narrowed context.
+                    steps = appendStep(steps, new Guard(cond, elseExits))
                 }
                 continue
             }
             if (st instanceof ReturnStatement) {
                 scanObligations(((ReturnStatement) st).expression, steps, out)
+                return   // rest of this list is dead on this path
+            }
+            if (st instanceof ThrowStatement) {
+                // A throw ends the path exactly as a return does. Handled here (rather than falling through
+                // to the "outside the fragment" bail) so a guard-throw body — `if (x == null) throw …` —
+                // stays on the value-flow path and gets the narrowing above.
+                scanObligations(((ThrowStatement) st).expression, steps, out)
                 return   // rest of this list is dead on this path
             }
             if (st instanceof ExpressionStatement) {
@@ -2649,6 +2707,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static List<Object> appendStep(List<Object> base, Object step) {
         List<Object> r = new ArrayList<Object>(base); r.add(step); return r
     }
+
 
     private static VfObligation mkVf(Object site, List<Object> steps) {
         VfObligation v = new VfObligation()
@@ -3495,10 +3554,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 thenAssume.add(ifs.booleanExpression)
                 dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg, preceding, handleAsserts)
                 Statement elseBlk = ifs.elseBlock
-                if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
+                boolean hasElse = elseBlk != null && !(elseBlk instanceof EmptyStatement)
+                if (hasElse) {
                     List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
                     elseAssume.add(new NotExpression(ifs.booleanExpression))
                     dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg, preceding, handleAsserts)
+                }
+                // Early-exit narrowing, as in collectVfObligations — the same idiom has to work on the SSA
+                // fallback path (a body the value-flow pass bailed on: a re-assignment, a loop). Rebinding
+                // `assumePos` narrows every later site in this region; `preceding` is untouched, so the
+                // SSA replay still threads this `if` exactly as before.
+                boolean thenExits = alwaysExits(ifs.ifBlock)
+                boolean elseExits = hasElse && alwaysExits(elseBlk)
+                if (thenExits && elseExits) return           // neither arm falls through — the rest is dead
+                if (thenExits || elseExits) {
+                    List<Expression> cont = new ArrayList<Expression>(assumePos)
+                    cont.add(elseExits ? ifs.booleanExpression
+                                       : (Expression) new NotExpression(ifs.booleanExpression))
+                    assumePos = cont
                 }
                 continue
             }
@@ -9026,7 +9099,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         return false
     }
 
-    /** True if every path through {@code s} ends by returning or throwing. */
+    /**
+     * True if every path through {@code s} ends by returning or throwing.
+     *
+     * <p>Also the predicate behind <em>early-exit narrowing</em> in {@link #collectVfObligations} and
+     * {@link #dischargeRegion}: reaching the statement after {@code if (x == null) return} means the guard
+     * was false, so its negation is a true fact on the continuation. Deliberately conservative — an
+     * unrecognised shape answers {@code false}, which costs a fact we could have learned, never soundness.
+     */
     private static boolean alwaysExits(Statement s) {
         if (s instanceof ReturnStatement || s instanceof ThrowStatement) return true
         if (s instanceof BlockStatement) {

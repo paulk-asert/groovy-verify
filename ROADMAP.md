@@ -10572,6 +10572,121 @@ stays (documented in BUILD.md's rung section) as a cheap recurring sweep wheneve
 
 ---
 
+## Housekeeping — Groovy 6.0.0-beta-1  *(shipped)*
+
+`gradle.properties` pins `groovyVersion` to the released `org.apache.groovy:6.0.0-beta-1` on Maven
+Central and the ASF snapshot repository is commented out again in both build files. The
+snapshot-tracking period ends here: `@ThrowsIf` (GROOVY-12135), the `@Requires` `woven`/`direct`
+members (GROOVY-12136) and the groovy-contracts loop-contract fixes (GROOVY-12128/12129/12130) — the
+reasons the build rode the snapshot, and what cleared eleven catalogued rung divergences — are all in
+the release. Full gates on the release artifact: suite **1662/0**, rung **648/655** clean with the
+same 2 spec-throw divergences and 0 needing review, docLint 0 drift, TLC clean, Lincheck 4/4, Fray
+clean.
+
+One real regression, found by the classic-bytecode lever and fixed: **GROOVY-12185** moved
+`org.codehaus.groovy.runtime.callsite.*` out of core into the optional **`groovy-callsite`** module,
+so `VERIFY_RUNG_INDY=false` died with `ClassNotFoundException: …CallSiteArray` from the new
+`WriterController.requireClassicCallSiteRuntime` guard. The module is now a `testRuntimeOnly`
+dependency (test scope, so it stays out of the published POM) purely for that lever; the classic
+sweep then reproduced the byte-identical headline on beta-1.
+
+**Not** a beta-1 issue, but surfaced by the same sweep and left open: `./gradlew jcstressCheck`
+observes the FORBIDDEN torn read on `SeqLockJCStress.Correct`. An A/B says 6.0.0-alpha-2 fails it
+*more* often (8 observations vs 3, including one at default JIT settings with no `-XX:+Stress*`
+flags), so this is the long-standing Java-seqlock hazard, not a codegen change: a volatile read is an
+*acquire*, so `tryRead`'s plain reads of `x`/`y` may float past the second `seq` read — the reader
+needs an acquire fence between them. Rung 1 is unaffected (it reasons deliberately *above* the memory
+model), but CONCURRENCY.md's "never observed" / "lands in No matches" claims are currently false.
+`jcstressCheck` is not wired into `check`, which is why this went unnoticed.
+
+---
+
+## Phase 233 — early-exit guard narrowing  *(shipped)*
+
+Path facts came only from *inside* an `if`'s branches: `collectVfObligations` pushed a `Guard` into
+each arm and then continued the walk of the following statements with the **pre-`if`** context. So
+the fall-through of a guard-and-exit carried no fact, and the single most idiomatic guard shape in
+Groovy refuted while its semantically identical twin verified:
+
+```groovy
+if (s == null) { return 0 } else { return s.length() }   // verified
+if (s == null) return 0
+return s.length()                                        // REFUTED — obligation: s != null, f(null)
+```
+
+Same for bounds (`if (i < 0 || i >= a.length) return -1` … `a[i]`) and for `throw` in place of
+`return` — the latter for a second reason: `ThrowStatement` wasn't handled in the value-flow walk at
+all, so a guard-throw body bailed the whole method out to the value-flow-blind havoc pass.
+
+The fix is the existing `alwaysExits` predicate (already used by the early-return machinery) applied
+at the `if`: when one arm can't fall through, arriving at the continuation means the other arm was
+taken, so **that arm's guard is a true fact there**. When *both* arms exit, the rest is unreachable
+and is dropped rather than checked. Applied on the value-flow walk (rebinding `steps`, so the
+narrowed context also carries the in-place `Assign`/`LemmaCall` appends that follow) **and** on the
+`dischargeRegion` SSA fallback (rebinding `assumePos`, leaving `preceding` untouched so the replay is
+unchanged), because a body the value-flow pass bails on — a re-assignment, a loop — must get the same
+narrowing. `ThrowStatement` is now a path terminator beside `ReturnStatement`, so guard-throw bodies
+stay on the precise path.
+
+Sound because the exiting arm's writes are dead on the continuation and the single-assignment
+discipline forbids rebinding what the guard mentions, so the condition means the same thing at both
+points. Conservative by construction: `alwaysExits` answers `false` for anything it doesn't
+recognise, which costs a fact rather than soundness.
+
+The timing is not a coincidence — GROOVY-12208 broadened upstream `NullChecker` to recognise exactly
+this family (Groovy truth, `!x`, `&&`/`||` short-circuit, `instanceof`, `Objects.nonNull`, `assert`,
+`while`/ternary guards, each combined with early exit), so composing the two checkers had begun to
+show groovy-verify refuting where NullChecker was satisfied — the opposite of the complementary story
+`examples/checkers.md` tells.
+
+**Co-shipped tests** (12, group `P233 early exit`): early return and early throw for null, bounds and
+divide; the if/else control; stacked guards; the symmetric else-exits form; a narrowed fact surviving
+an intervening binding; and four teeth — a guard on a different variable, a half-guard, the wrong
+polarity, and a *non-exiting* arm — all still refuting. Still unrecognised (loud, not wrong):
+`instanceof` and `Objects.nonNull`/`isNull` as null guards, and `while`-guard facts. A bare
+`assert x != null` remains an obligation to *prove* rather than an assumption — a deliberate
+divergence from NullChecker, not a gap.
+
+---
+
+## Phase 234 — `TYPE_USE` `@NonNull`: the plumbing gap was an accessor bug  *(shipped)*
+
+Phase 37's "Annotation plumbing" note recorded the per-element suppression path as a no-op "out of
+our hands until Groovy preserves type-use annotations on generic type arguments". That diagnosis was
+wrong. A `TYPE_USE`-targeted annotation does not land in `ClassNode.getAnnotations()`; Groovy keeps
+it in the separate **`getTypeAnnotations()`** list. The three matchers
+(`hasNonNullElementAnnotation`, `hasNonNullComponentAnnotation`, `hasNonNullReturn`) read only the
+former, so they saw nothing — while the data was there all along.
+
+Probed across 5.0.8 / 6.0.0-alpha-2 / 6.0.0-beta-1: for a source-declared `List<@NonNull String>`,
+`genericsTypes[0].type.typeAnnotations` carries the annotation on **all three**. And GROOVY-12206
+(new in beta-1) extends the same to types read off **compiled** classes — a javac-built
+`List<@NonNull String>` now surfaces on both the decompiled and reflective routes, where alpha-2
+showed nothing — so a JSpecify-annotated Java dependency becomes readable too. Upstream
+`NullChecker.hasAnno` took the same step in the same release.
+
+A single shared `hasTypeAnnotationNamed` consults both lists. Two directions follow: the element
+suppression comes alive (`List<@NonNull String>` no longer raises the per-element NPE obligation, the
+unannotated twin still refutes), and the Phase 131 `@NonNull` **return** obligation is now *raised*
+where it was silently skipped — so this half makes the checker **stricter**, refuting a nullable-param
+return and proving a concatenation.
+
+**Arrays are asymmetric, and the slice stays honest about it.** Only a *component* annotation means
+"the elements are non-null"; the array ClassNode's own type annotations say the *array reference* is
+non-null, a different claim. Measured placement differs by source language: javac follows the JLS
+(`@NonNull String[]` → component, `String @NonNull []` → array type), but **Groovy source** puts a
+leading `@NonNull String[]` on the *parameter declaration* and only the postfix form on the array
+type — neither is a component annotation. So the matcher deliberately reads the component only: it
+fires against a compiled (JSpecify) signature and stays inert for Groovy-source arrays, where the
+`@Requires` contract remains the working interface. Conflating the two would suppress an element
+obligation the author never disclaimed.
+
+**Co-shipped tests** (7, group `P234 typeuse nonnull`): the `List<@NonNull String>` suppression and
+its unannotated twin; both array spellings pinned as *not* element-nullity; the `@Requires` form still
+discharging for arrays; and the `TYPE_USE` return obligation refuting and proving. Suite **1681/0**.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

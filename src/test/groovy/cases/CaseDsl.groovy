@@ -90,6 +90,18 @@ class CaseDsl {
         @interface NonNull {}
     '''.stripIndent()
 
+    /**
+     * A {@code TYPE_USE}-only @NonNull marker — the JSpecify / Checker Framework spelling, as opposed to
+     * {@link #NONNULL_ANN}'s declaration targets. Groovy keeps a TYPE_USE annotation in the ClassNode's
+     * separate {@code getTypeAnnotations()} list, so this is what the Phase 233 cases use to exercise the
+     * type-annotation reading path.
+     */
+    static final String NONNULL_TYPEUSE_ANN = '''
+        @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+        @java.lang.annotation.Target([java.lang.annotation.ElementType.TYPE_USE])
+        @interface NonNull {}
+    '''.stripIndent()
+
     /** JSR 385 imports for the dimensional-analysis (Phase 131) cases — the unit-api jar is a test dependency. */
     static final String UOM = 'import javax.measure.Quantity\nimport javax.measure.quantity.*\n'
 
