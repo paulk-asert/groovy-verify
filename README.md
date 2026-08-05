@@ -517,13 +517,16 @@ simply remains outside.
 
 Built with JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central (which ships the
 upstream `@ThrowsIf` / `@Requires(woven, direct)` contracts — GROOVY-12135/12136 — the build
-previously tracked the ASF snapshot for). `./gradlew verify`
+previously tracked the ASF snapshot for); the published artifact targets Java 17 bytecode, Groovy 6's
+own floor. `./gradlew verify`
 runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
-JUnit 6 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. It isn't on Maven
-Central yet — consume it via a local install, a Gradle composite build, or JitPack.
+JUnit 6 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. Consume it from
+Maven Central — `compileOnly 'io.github.paulk-asert:groovy-verify:0.1.0'` (it's compile-time tooling;
+you supply Groovy 6 and groovy-contracts) — or via a local install, a Gradle composite build, or JitPack.
 
 The full command set (verbose / cache-stats flags, the single-source `CASES` self-test design, the doc-drift
-gate) and the three ways to depend on it live in **[BUILD.md](BUILD.md)**.
+gate) and the consumption details (scope guidance, requirements, the global-transform note) live in
+**[BUILD.md](BUILD.md)**.
 
 ## Architecture
 

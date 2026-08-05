@@ -23,7 +23,8 @@
 // (via the z3-turnkey distribution, which bundles native libs for the
 // major platforms) runs at the consumer's compile time.
 //
-// Not on Maven Central yet, but consumable three ways without it (see README):
+// Released to Maven Central as io.github.paulk-asert:groovy-verify (use compileOnly scope — see
+// BUILD.md "Using it in your own build"); also consumable without a release, to ride HEAD:
 //   - composite build:  includeBuild('../groovy-verify')   (the groovy6-functional repo)
 //   - local install:    ./gradlew publishToMavenLocal      (io.github.paulk-asert:groovy-verify:…)
 //   - JitPack:          built from a GitHub tag/commit on demand
@@ -85,6 +86,15 @@ dependencies {
     // Exposed via `api` so it lands on the consumer's COMPILE classpath:
     // the type-checking extension runs Z3 while the consumer compiles.
     api 'tools.aqua:z3-turnkey:4.14.1'
+    // z3-turnkey scopes its own native-loader library (tools.aqua.turnkey.support.TurnKey, which
+    // com.microsoft.z3.Native's static initializer needs) as a RUNTIME dependency — right for the
+    // usual "solve at runtime" consumer, wrong for this one: the extension runs Z3 during the
+    // CONSUMER'S COMPILE, and runtime-scoped transitives never reach a compile classpath. Without
+    // this explicit `api` re-scope, a from-jar consumer dies with
+    // `NoClassDefFoundError: tools/aqua/turnkey/support/TurnKey` at the first solver call — invisible
+    // in-repo, where the harness compiles snippets at test *runtime* (the runtime graph has it).
+    // Keep the version in lockstep with what z3-turnkey's own POM declares.
+    api 'tools.aqua:turnkey-support:1.0.0'
 
     // The consumer brings its own Groovy + groovy-contracts; we only need
     // them to compile against (and at test time, to exercise the checker).
@@ -145,6 +155,7 @@ tasks.withType(GroovyCompile).configureEach {
     groovyOptions.parameters = true   // keep formal parameter names for the checker
 }
 
+
 // Apache-2.0 §4: every distributed artifact carries the license text (and the NOTICE) in META-INF.
 tasks.withType(Jar).configureEach {
     metaInf { from(rootProject.file('LICENSE'), rootProject.file('NOTICE')) }
@@ -154,19 +165,31 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
     }
+    // The PUBLISHED artifact targets Java 17 (class file 61) — the same floor as Groovy 6 itself —
+    // so it doesn't gratuitously restrict consumers to the JDK 25 this project builds and tests
+    // with. Extension-level (not per-task) on purpose: this is what stamps the published Gradle
+    // module metadata's `org.gradle.jvm.version` attribute — with only a toolchain set, that
+    // attribute says 25 and Gradle REFUSES to resolve the artifact on a 17 toolchain, bytecode
+    // notwithstanding. Two caveats, on record: groovyc has no `--release`-style API fencing, so a
+    // stray call into a post-17 java.base API would compile here and fail at a consumer — the
+    // from-jar consumer smoke compile on a real JDK 17 is the guard that matters; and the test /
+    // concurrent source sets inherit the 17 target too (harmless — they still run on 25).
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
     withSourcesJar()
     withJavadocJar()   // Maven Central requires a javadoc jar; empty for this pure-Groovy project, which satisfies it
 }
 
-// Get a consumable artifact without a Maven Central release:
-//   ./gradlew publishToMavenLocal   ->  io.github.paulk-asert:groovy-verify:0.1.0-SNAPSHOT in ~/.m2
+// Get a consumable artifact without waiting on Maven Central:
+//   ./gradlew publishToMavenLocal   ->  io.github.paulk-asert:groovy-verify:0.1.0 in ~/.m2
 // any local Gradle/Maven project can then depend on it. This is also what JitPack
 // runs to build the jar from a GitHub tag/commit on demand (the build is self-contained).
 //
-// For a Maven Central release (after Groovy 6 ships): `publish` stages the artifacts into
-// build/staging-deploy and `jreleaserDeploy` signs + uploads them to the Central Portal. The full
-// POM metadata below is what Central validation requires. `compileOnly` deps (Groovy, groovy-contracts)
-// are not transitive, so they never appear in the published POM — only the `api` dep (z3-turnkey) does.
+// For a Maven Central release: `publish` stages the artifacts into build/staging-deploy (wiped
+// first — see cleanStaging below) and `jreleaserDeploy` signs + uploads them to the Central Portal.
+// The full POM metadata below is what Central validation requires. `compileOnly` deps (Groovy,
+// groovy-contracts) are not transitive, so they never appear in the published POM — only the `api`
+// deps (z3-turnkey + its compile-time-needed turnkey-support re-scope) do.
 publishing {
     publications {
         maven(MavenPublication) {
@@ -206,11 +229,27 @@ publishing {
     }
 }
 
+// The staging repo ACCRETES across publishes — a maven-publish repository is append-only, so a
+// version bump leaves the previous tree beside the new one (a stale 0.1.0-SNAPSHOT deployment was
+// found sitting next to 0.1.0, and `jreleaserDeploy` uploads the WHOLE directory). Wipe it before
+// every staging publish so what gets deployed is exactly what the current `publish` produced.
+// Scoped by task type: PublishToMavenRepository is only the staging publish — `publishToMavenLocal`
+// is a different task type (PublishToMavenLocal) and keeps its normal ~/.m2 accumulation.
+def cleanStaging = tasks.register('cleanStaging', Delete) {
+    delete layout.buildDirectory.dir('staging-deploy')
+}
+tasks.withType(PublishToMavenRepository).configureEach { dependsOn cleanStaging }
+
 // Maven Central publishing via JReleaser — runs ONLY on its own tasks (`jreleaserDeploy` /
 // `jreleaserConfig`); inert during build / verify / check. Credentials come from env vars (never the
-// repo): JRELEASER_MAVENCENTRAL_USERNAME / _PASSWORD and JRELEASER_GPG_PASSPHRASE / _PUBLIC_KEY /
-// _SECRET_KEY — confirm exact names with `./gradlew jreleaserConfig`. Release day only: bump
-// `groovyVersion` to the released Groovy and `version` to a non-SNAPSHOT before deploying.
+// repo), the full set being:
+//   JRELEASER_MAVENCENTRAL_USERNAME / JRELEASER_MAVENCENTRAL_PASSWORD   (Central Portal token pair)
+//   JRELEASER_GPG_PUBLIC_KEY / JRELEASER_GPG_SECRET_KEY / JRELEASER_GPG_PASSPHRASE   (armored keys)
+//   JRELEASER_GITHUB_TOKEN   (the release step tags v<version> and creates the GitHub release —
+//                             JReleaser validates this even for the deploy, so it is NOT optional)
+// — the set is verified complete by `./gradlew jreleaserConfig` (it fails naming any missing one).
+// Release day: export the six, then `./gradlew publish jreleaserDeploy`. groovyVersion is already a
+// released Groovy and `version` a non-SNAPSHOT, so no version edits are part of the procedure.
 jreleaser {
     project {
         description = 'SMT-backed @TypeChecked verification extension for groovy.contracts'

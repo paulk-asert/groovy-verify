@@ -10731,6 +10731,49 @@ classic), Lincheck **9/9**, jcstress clean, docLint 0 drift.
 
 ---
 
+## Housekeeping — Maven Central readiness (0.1.0)  *(shipped)*
+
+The pre-publish audit, done the only way that counts: stage the artifacts, then **consume the jar
+the way a Central user would** — from `~/.m2` coordinates, not source substitution. That from-jar
+compile found the one real blocker: `NoClassDefFoundError: tools/aqua/turnkey/support/TurnKey` at
+the first solver call. z3-turnkey scopes its native-loader library **runtime-only** — right for the
+usual solve-at-runtime consumer, wrong for a checker that runs Z3 during the *consumer's compile*,
+where runtime-scoped transitives never arrive. Invisible in-repo because the harness compiles
+snippets at test *runtime* (that graph has it). Fix: an explicit `api 'tools.aqua:turnkey-support'`
+re-scope, so both the POM (compile scope, for Maven/GMavenPlus) and the Gradle module metadata
+(apiElements) carry it.
+
+**Java 17 bytecode.** The artifact shipped class-file 69 purely because of the JDK 25 toolchain —
+Groovy 6 itself ships 61, and main uses no post-17 API. Retargeted via extension-level
+`sourceCompatibility`/`targetCompatibility` (deliberately not per-task: that's what stamps the
+module metadata's `org.gradle.jvm.version` attribute, and with only a toolchain set Gradle *refuses*
+to resolve the artifact on a 17 toolchain regardless of bytecode — measured, not assumed). Since
+groovyc has no `--release`-style API fencing, the floor is held honest empirically: the consumer
+smoke compile runs on a **real JDK 17** — good case proves, bad case refutes with the full
+counterexample diagnostic, Z3 natives loading and solving on 17.
+
+**Release mechanics hardened.** The `build/staging-deploy` repo *accretes* (a stale
+`0.1.0-SNAPSHOT` tree from an earlier run sat beside the fresh `0.1.0` — `jreleaserDeploy` uploads
+the whole directory); a `cleanStaging` task now wipes it before every staging publish, scoped so
+`publishToMavenLocal` keeps its normal accumulation. The JReleaser env-var set was incomplete as
+documented — validation also demands `JRELEASER_GITHUB_TOKEN` (the release step tags and creates
+the GitHub release); the documented six-var set is now proven sufficient by running
+`jreleaserConfig` with dummy values.
+
+**Consumer docs** (BUILD.md "Using it in your own build"): Central coordinates with
+`compileOnly`/`provided` scope guidance — the checker is compile-time tooling, and z3-turnkey is a
+~60 MB natives bundle that `implementation` would leak into consumers' runtime graphs (verified
+z3-free under `compileOnly`); the JDK 17+ / Groovy 6.0.0-beta-1+ requirements; and the
+global-AST-transform disclosure (`ContractExpansionTransform` runs in every Groovy compile with the
+jar on the classpath — inert metadata capture for plain classes, but `@ThrowsIf(woven = true)`
+guard-weaving fires even without the extension enabled).
+
+Remaining before `jreleaserDeploy`, all external to the repo: the Central Portal token pair, the
+GPG keypair (public key on a keyserver), and a GitHub token. Gates on the retargeted artifact:
+suite **1681/0**, rung **656/663** clean / 0 need review, docLint 0 drift.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

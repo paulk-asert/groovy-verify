@@ -21,7 +21,10 @@ own build. For *what* it proves and *why*, see [README.md](README.md).
 
 ## Building & testing
 
-Built using JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central. The snapshot-tracking
+Built using JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central; the published
+artifact targets **Java 17 bytecode** (Groovy 6's own floor), so consumers need JDK 17+, not 25 — the
+17 floor is held honest by a from-jar consumer smoke compile on a real JDK 17, since groovyc has no
+`--release`-style API fencing to catch a stray newer-JDK call at build time. The snapshot-tracking
 period is over: the upstream `@ThrowsIf` exceptional contracts (GROOVY-12135), the `@Requires`
 `woven`/`direct` members (GROOVY-12136) and the groovy-contracts loop-annotation fixes
 (GROOVY-12128/12129/12130) — the reasons the build rode 6.0.0-SNAPSHOT, and what cleared eleven
@@ -199,8 +202,41 @@ So: add an example, then **link it** with `doclint:case` if it mirrors a test, o
 
 ## Using it in your own build
 
-It isn't on Maven Central yet, but you don't need to wait for that — there are three
-ways to consume `io.github.paulk-asert:groovy-verify:0.1.0-SNAPSHOT`:
+Released to Maven Central as `io.github.paulk-asert:groovy-verify` (first release: `0.1.0`).
+The checker is **compile-time tooling** — it does nothing at your application's runtime — so
+declare it in a compile-only scope:
+
+```groovy
+dependencies {
+    implementation "org.apache.groovy:groovy:6.0.0-beta-1"            // you supply Groovy …
+    implementation "org.apache.groovy:groovy-contracts:6.0.0-beta-1"  // … and groovy-contracts
+    compileOnly   "io.github.paulk-asert:groovy-verify:0.1.0"         // Maven: <scope>provided</scope>
+}
+```
+
+`compileOnly` (Gradle) / `provided` (Maven) is not just tidiness: the artifact pulls Z3 via
+z3-turnkey — a ~60 MB jar bundling native solver libraries for linux/mac/windows on amd64+aarch64 —
+onto the compile classpath, where the extension needs it. Under `implementation` all of that flows
+into your runtime dependency graph and fat jars; under `compileOnly` none of it does (verified: the
+consumer's `runtimeClasspath` is z3-free). The POM also carries `turnkey-support` at compile scope —
+z3-turnkey scopes its own native loader runtime-only, which suits solve-at-runtime consumers but
+not one that solves during *your* compile.
+
+**Requirements.** JDK **17+** (the artifact targets Java 17 bytecode, the same floor as Groovy 6;
+the project itself builds and tests on JDK 25) and **Groovy 6.0.0-beta-1 or newer** with the
+matching `groovy-contracts` (the `@ThrowsIf` / `@Requires(woven, direct)` surface landed there —
+you supply both, they are deliberately absent from the POM).
+
+**One behaviour to know about.** The jar registers a global AST transform
+(`verification.ContractExpansionTransform`, via `META-INF/services`), so it runs in every Groovy
+compile that has the jar on its classpath — including classes that never enable the checker. For
+classes without contract annotations it only stashes node metadata (inert). For a method carrying
+`@ThrowsIf` with the default `woven = true`, it weaves the generative guard-throw *even without*
+`extensions = 'verification.VerifyChecker'` — that weaving is the annotation's reference
+implementation, but it is a semantic effect of having the jar on the classpath, so it's stated here
+rather than discovered. With `compileOnly` scope none of this touches your runtime.
+
+Three ways to consume it **without** waiting on a Central release (e.g. to ride HEAD):
 
 - **Local install.** `./gradlew publishToMavenLocal` drops the jar into your `~/.m2`;
   then add `mavenLocal()` and the dependency to any Gradle/Maven project.
@@ -208,8 +244,8 @@ ways to consume `io.github.paulk-asert:groovy-verify:0.1.0-SNAPSHOT`:
   `includeBuild('../groovy-verify')` to your `settings.gradle` — Gradle substitutes the
   dependency with this project's output, so changes here are picked up without a publish.
   (The companion *groovy6-functional* repo consumes it this way.)
-- **JitPack.** Because the build is self-contained (ASF snapshot, no local patch), JitPack
-  can build it straight from a GitHub tag/commit — add the JitPack repo and depend on
+- **JitPack.** Because the build is self-contained (release Groovy from Central, no local patch),
+  JitPack can build it straight from a GitHub tag/commit — add the JitPack repo and depend on
   `com.github.<owner>:groovy-verify:<tag>`, no publishing step on your side.
 
 Either way the consumer compiles under `@TypeChecked(extensions = 'verification.VerifyChecker')`;
