@@ -10590,14 +10590,10 @@ so `VERIFY_RUNG_INDY=false` died with `ClassNotFoundException: …CallSiteArray`
 dependency (test scope, so it stays out of the published POM) purely for that lever; the classic
 sweep then reproduced the byte-identical headline on beta-1.
 
-**Not** a beta-1 issue, but surfaced by the same sweep and left open: `./gradlew jcstressCheck`
-observes the FORBIDDEN torn read on `SeqLockJCStress.Correct`. An A/B says 6.0.0-alpha-2 fails it
-*more* often (8 observations vs 3, including one at default JIT settings with no `-XX:+Stress*`
-flags), so this is the long-standing Java-seqlock hazard, not a codegen change: a volatile read is an
-*acquire*, so `tryRead`'s plain reads of `x`/`y` may float past the second `seq` read — the reader
-needs an acquire fence between them. Rung 1 is unaffected (it reasons deliberately *above* the memory
-model), but CONCURRENCY.md's "never observed" / "lands in No matches" claims are currently false.
-`jcstressCheck` is not wired into `check`, which is why this went unnoticed.
+**Not** a beta-1 issue, but surfaced by the same sweep: `./gradlew jcstressCheck` observed the
+FORBIDDEN torn read on `SeqLockJCStress.Correct`. An A/B said 6.0.0-alpha-2 failed it *more* often
+(8 observations vs 3, including one at default JIT settings with no `-XX:+Stress*` flags), so this
+was the long-standing Java-seqlock hazard, not a codegen change. Fixed in Phase 235 below.
 
 ---
 
@@ -10684,6 +10680,54 @@ obligation the author never disclaimed.
 **Co-shipped tests** (7, group `P234 typeuse nonnull`): the `List<@NonNull String>` suppression and
 its unannotated twin; both array spellings pinned as *not* element-nullity; the `@Requires` form still
 discharging for arrays; and the `TYPE_USE` return obligation refuting and proving. Suite **1681/0**.
+
+---
+
+## Phase 235 — the seqlock's memory fences: the rung that earned its keep  *(shipped)*
+
+`./gradlew jcstressCheck` was observing the **FORBIDDEN** torn read on the *validating* seqlock reader —
+falsifying CONCURRENCY.md's "never observed" / "lands in No matches" claims. Not a Groovy issue (an
+A/B on 6.0.0-alpha-2 failed it *more* often, including at default JIT settings): the protocol was
+correct as an algorithm and wrong as Java.
+
+**The bug, both sides.** A volatile read is an *acquire*: it stops later accesses drifting before it —
+which is why `tryRead`'s `rx`/`ry` can't float above the first `seq` sample — but it does **not** stop
+earlier accesses drifting *after* it. So the two plain data reads could be performed after `s2` was
+sampled, straddling a write that the `s1 == s2` check had already blessed: guard passes, pair torn.
+The writer had the mirror gap — a volatile write is a *release*, so nothing stopped `x = v` / `y = v`
+moving *above* the lock-taking bump, exposing a half-written record while `seq` still read even.
+
+**The fix** is the textbook pair: `VarHandle.releaseFence()` after taking the write lock,
+`VarHandle.acquireFence()` before re-sampling `seq` — the two barriers Linux's seqlock spells
+`smp_wmb()` / `smp_rmb()`, and the same `acquireFence()` that opens `StampedLock.validate`. jcstress
+now reports **No matches** for the forbidden outcome on `Correct` (only `0,0` / `1,1` / `-1,-1`), while
+`Leaky` still tears (`0,1` / `1,0`) — its bug is the missing validation, not a memory-model subtlety,
+so it stays the clean demonstrator. `SeqLockLeaky.write` takes the same fences deliberately, keeping
+the twin's only variable the reader.
+
+**The engine change this forced, and why it's honest.** Adding the fences made rung 1 *skip loudly*
+("standalone call `VarHandle.acquireFence()` has no usable `@Ensures`") — which would have traded a
+memory-model bug for a lost proof. So `Encoder.isMemoryFenceCall` recognises the five `VarHandle`
+fences (`acquire`/`release`/`loadLoad`/`storeStore`/`fullFence`) and the body replay ignores the
+statement, exactly as it already does for `await Awaitable.delay(ms)` (Phase 153). This is not an
+approximation: a fence takes no arguments, returns nothing, reads and writes no state, and constrains
+only *reordering* — which this engine deliberately does not model. A fenced body therefore proves
+identically to its unfenced twin, which is precisely the point.
+
+**The story it buys.** The fences are invisible to rung 1 by construction, and to Lincheck, whose
+model-check is sequentially consistent. Only rung 3c could see this. The seqlock was already the
+example where all three rungs do distinct work; it is now the example where a lower rung catches what
+the rungs above it *structurally cannot* — the proof was never wrong, only silent. A three-rung story
+where every rung always agrees would be decorative.
+
+**Co-shipped tests**: `SeqLockVerifyTest` gains `aFenceDoesNotLaunderABrokenProof` — the parity-skipping
+reader *with* the fence must still refute, so "ignore the statement" can't quietly become "ignore the
+method" — and a **drift guard** on the restated reader body. That restatement is a facsimile (a
+`result`-bearing `@Ensures` can't ride the bare `@CompileStatic` the runtime rungs compile), and this
+change is exactly the drift it invites: the real reader gained a fence while the copy would happily
+have gone on proving the old body. `assertReaderBodyMatchesSource` now pins every statement of the real
+`tryRead`, in order, against the restatement. Gates: suite **1681/0**, rung **656/663** clean (indy and
+classic), Lincheck **9/9**, jcstress clean, docLint 0 drift.
 
 ---
 

@@ -454,10 +454,33 @@ RESULT    SAMPLES     FREQ       EXPECT  DESCRIPTION  (SeqLockJCStress.Leaky, on
 ```
 
 The validating `Correct` actor only ever lands on `0,0` / `1,1` / `-1,-1` (contended → `tryRead` returned `null`, where
-a real reader retries); its torn outcome is `FORBIDDEN` and lands in "No matches". Same source, three rungs, each doing
+a real reader retries); its torn outcome is `FORBIDDEN` and lands in "No matches".
+
+> **This is the rung that earned its keep.** That last sentence used to be false. The parity protocol was correct as an
+> *algorithm* and wrong as *Java*: `tryRead` re-sampled `seq` with no fence between the two plain reads and the
+> re-sample. A volatile read is an **acquire** — it stops later accesses drifting *before* it (which is why `rx`/`ry`
+> can't float above `s1`), but it does **not** stop earlier accesses drifting *after* it. So the two data reads could
+> be performed after `s2` was sampled, straddling a write the `s1 == s2` check had already blessed: guard passes, pair
+> torn. The writer had the mirror gap — a volatile write is a **release**, so nothing stopped `x = v` / `y = v` moving
+> *above* the lock-taking bump, exposing a half-written record while `seq` still read even.
+>
+> jcstress caught it, and only jcstress could: the reordering is invisible to rung 1 by construction (it doesn't model
+> reordering) and to Lincheck, whose model-check is sequentially consistent. The fix is the textbook pair —
+> `VarHandle.releaseFence()` after taking the write lock, `VarHandle.acquireFence()` before re-sampling `seq` — the
+> same two barriers Linux's seqlock spells `smp_wmb()` / `smp_rmb()`, and the same `acquireFence()` that opens
+> `StampedLock.validate`. With them the FORBIDDEN outcome is gone; `Leaky` still tears exactly as above, because its
+> bug is the missing validation, not a memory-model subtlety.
+>
+> The fences are **invisible to rung 1** — a fenced body proves identically to its unfenced twin, since a fence has no
+> sequential semantics at all (the engine treats it as a no-op, and a test pins that it can't launder a broken proof
+> either). That asymmetry is the point: the proof was never *wrong*, it was *silent*, and the rung below it is what
+> speaks. A three-rung story where every rung always agrees would be decorative; this is the case where it isn't.
+
+Same source, three rungs, each doing
 distinct work: rung 1 proves the parity protocol *above* the memory model, Lincheck catches the *logic* torn read (the
 reader skipping its validation) under its sequentially-consistent model-check, and jcstress reaches the *empirical*
-grain on real JIT/hardware. **Why no Fray?** A seqlock is lock-free — the writer never blocks and the reader spins
+grain on real JIT/hardware — and, as above, catches what the two rungs above it structurally cannot.
+**Why no Fray?** A seqlock is lock-free — the writer never blocks and the reader spins
 without acquiring a blocking lock — so there is no lock graph to deadlock; Fray's specialty (deadlock / lock-ordering)
 finds nothing here, which is why the bank-transfer and dining-philosophers got Fray and the buffer and seqlock do not.
 Inspired by jcstress's samples, written ourselves — theirs is GPL, this repo Apache.

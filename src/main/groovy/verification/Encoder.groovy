@@ -4615,6 +4615,43 @@ class Encoder implements TheoryApi {
         return isAwaitableCall(arg, 'delay')
     }
 
+    /**
+     * True when {@code e} is a {@link java.lang.invoke.VarHandle} memory fence —
+     * {@code acquireFence} / {@code releaseFence} / {@code loadLoadFence} / {@code storeStoreFence} /
+     * {@code fullFence} — taken as a no-op for a logic proof, the same posture as {@link #isAwaitDelayCall}.
+     *
+     * <p>This is not an approximation. A fence has <em>no sequential semantics whatsoever</em>: it takes no
+     * arguments, returns nothing, reads and writes no state, and constrains only the <em>reordering</em> a
+     * concurrent execution may exhibit — which this engine deliberately does not model (it proves the
+     * thread-local half; interleavings and publication are the rungs in {@code CONCURRENCY.md}). So ignoring
+     * the statement is exactly faithful to the fragment, and a body that fences reads identically with and
+     * without it — which is the point: {@code SeqLock}'s fences are invisible to rung 1 and load-bearing at
+     * rung 3, and that split is what makes the three-rung story real rather than decorative.
+     *
+     * <p>Matched by receiver simple name plus method name, like the rest of the by-name recognisers; the
+     * engine never compiles against {@code java.lang.invoke}.
+     */
+    static boolean isMemoryFenceCall(Expression e) {
+        String recv = null, m = null
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) e
+            recv = sm.ownerType?.nameWithoutPackage; m = sm.method
+            if (!(sm.arguments instanceof TupleExpression) ||
+                !((TupleExpression) sm.arguments).expressions.isEmpty()) return false
+        } else if (e instanceof MethodCallExpression) {
+            MethodCallExpression mc = (MethodCallExpression) e
+            if (!(mc.objectExpression instanceof ClassExpression)) return false
+            recv = ((ClassExpression) mc.objectExpression).type?.nameWithoutPackage
+            m = mc.methodAsString
+            if (!(mc.arguments instanceof TupleExpression) ||
+                !((TupleExpression) mc.arguments).expressions.isEmpty()) return false
+        } else {
+            return false
+        }
+        return recv == 'VarHandle' &&
+            m in ['acquireFence', 'releaseFence', 'loadLoadFence', 'storeStoreFence', 'fullFence']
+    }
+
     /** If {@code e} is {@code AsyncSupport.await(arg)} over a safe async source, the read-out value (its body,
      *  translated); else null (skip). Called from both the method-call and static-call dispatch paths. */
     private Object tryTranslateAwait(Expression e) {

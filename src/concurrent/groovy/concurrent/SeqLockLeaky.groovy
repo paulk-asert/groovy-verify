@@ -18,6 +18,8 @@ package concurrent
 import groovy.transform.CompileStatic
 import groovy.transform.stc.POJO
 
+import java.lang.invoke.VarHandle
+
 /**
  * The seqlock <b>torn read</b> as a real interleaving bug — the reader that <em>skips the sequence validation</em>,
  * the analogue of {@link SpscBufferLeaky}'s publish-before-write (there the inversion is in the writer; here it is in
@@ -39,15 +41,19 @@ class SeqLockLeaky {
     private int x = 0
     private int y = 0
 
-    /** Writer side — the correct parity discipline (the bug here is purely on the reader). */
+    /** Writer side — the correct parity discipline, fence and all, byte-for-byte {@link SeqLock#write}. Kept in step
+     *  deliberately: the bug here must stay purely on the reader, so the twin isolates one variable. */
     void write(int v) {
         seq = seq + 1      // odd: write in progress
+        VarHandle.releaseFence()   // JMM: the lock is taken before any half of the record moves
         x = v
         y = v
         seq = seq + 1      // even: publish
     }
 
-    /** Reader side — BUG: reads both halves with no {@code seq} guard, so a snapshot taken mid-write escapes torn. */
+    /** Reader side — BUG: reads both halves with no {@code seq} guard, so a snapshot taken mid-write escapes torn.
+     *  (No {@link VarHandle#acquireFence} either — but that is not the bug: there is no re-sample to order it
+     *  against. This reader tears on plain interleaving, with or without a memory-model subtlety.) */
     List<Integer> tryRead() {
         int rx = x         // no `s1 = seq` snapshot…
         int ry = y         // …a writer can land between these two reads…

@@ -196,11 +196,17 @@ progress** — and that is exactly an *implication-guarded* class invariant:
 @Invariant({ seq % 2 == 0 ==> x == y })          // unlocked (even) ⟹ the record is consistent
 void write(int v) {
     seq = seq + 1      // odd: write in progress — the invariant's guard is now false, x/y may diverge
+    VarHandle.releaseFence()   // JMM: the lock is taken before any half of the record moves
     x = v
     y = v
     seq = seq + 1      // even: publish — x == y restored, the guarded invariant holds again
 }
 ```
+
+The `releaseFence` (and the `acquireFence` in `tryRead`, before it re-samples `seq`) is the **memory-model** half, and
+rung 1 cannot see it — a fence has no sequential semantics, so the verifier treats it as a no-op and this body proves
+exactly as it would without it. It is there because **jcstress caught its absence** as a real torn read; the story is
+in [`CONCURRENCY.md`](../CONCURRENCY.md#seqlock--the-torn-read-where-all-three-rungs-share-the-work).
 
 The odd state is a *token that licenses breaking* `x == y`: the verifier proves `write` restores the relation before it
 republishes (drops `seq` back to even), and that a successful reader — `tryRead`, whose guard `s1 == s2 && s1 % 2 == 0`
@@ -225,7 +231,10 @@ the caller** — which is also how the runtime rungs use it (their actors loop o
 sees it — *above* the memory model. That a torn read is genuinely impossible on real bytecode across real schedules is
 the structural half: **Lincheck** model-checks it (the validating read is linearizable; the unguarded read is caught)
 and **jcstress** observes the torn `(1, 0)` / `(0, 1)` empirically on the leaky reader and never on the validating one
-(`./gradlew lincheckTest jcstressCheck`). There is **no Fray** rung: a seqlock is lock-free, so there is no lock graph
+(`./gradlew lincheckTest jcstressCheck`). That "never" is *earned*, not assumed — jcstress once observed it on the
+validating reader too, because the fences above were missing, and neither rung 1 nor Lincheck (whose model-check is
+sequentially consistent) can see a reordering. It is the sharpest illustration in the repo of why the rungs don't
+subsume each other. There is **no Fray** rung: a seqlock is lock-free, so there is no lock graph
 to deadlock. The full three-rung writeup is in [`CONCURRENCY.md`](../CONCURRENCY.md#seqlock--the-torn-read-where-all-three-rungs-share-the-work).
 
 ### Agents & actors — the same invariant, a different paradigm

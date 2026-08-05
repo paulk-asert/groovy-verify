@@ -5958,6 +5958,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     } else if (Encoder.isAwaitDelayCall(call)) {
                         // Phase 153 — `await Awaitable.delay(ms)` is a non-blocking pause: no value, no state effect,
                         // a no-op for a logic proof (timing isn't modelled). Ignore the statement.
+                    } else if (Encoder.isMemoryFenceCall(call)) {
+                        // Phase 235 — a VarHandle memory fence has no sequential semantics at all: no value, no
+                        // state, it constrains only reordering, which this engine deliberately doesn't model.
+                        // Ignore the statement — a fenced body proves exactly as its unfenced twin does.
                     } else if (!applySetMutation(session, enc, call) &&
                         !applyMapPut(session, enc, call) &&
                         !applyListMutation(session, enc, call, countVals) &&
