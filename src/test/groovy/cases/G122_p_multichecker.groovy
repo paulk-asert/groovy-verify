@@ -81,8 +81,9 @@ class G122_p_multichecker {
                         static int f() { triple(10) }
                     }''')],
         // ----- NullChecker: groovy-verify proves/disproves the per-element non-nullness its model can't see.
-        // NullChecker (even in flow-sensitive `strict` mode) tracks the nullness of *variables* and annotations;
-        // it has no per-*element* nullity model, so it silently ASSUMES an array element `xs[0]` is non-null.
+        // NullChecker's element story is annotation-driven (since 6.0.0-beta-2/GROOVY-12252 a declared
+        // List<@Nullable String> makes get(0)/xs[0]/head() nullable); an UNANNOTATED element type — the plain
+        // String[] here — it silently ASSUMES non-null, even in flow-sensitive `strict` mode.
         // groovy-verify makes `xs[0].method()` an obligation `xs[0] != null` against its per-element oracle
         // (Phase 37). So on the SAME deref, groovy-verify discharges the condition NullChecker merely assumes —
         // here from a @Requires — and strict NullChecker is independently satisfied. Both pass:

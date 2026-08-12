@@ -17,7 +17,7 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P79 tuples' — 8 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P79 tuples' — 9 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G105_p79_tuples {
 
@@ -92,6 +92,18 @@ class G105_p79_tuples {
                         @Ensures({ result == 99 })
                         static int m() {
                             def (a, b) = [1, 2]
+                            a + b
+                        }
+                    }''')],
+        // Typed components: since Groovy 6.0.0-beta-2 (GROOVY-12228) STC honours each target's declared type
+        // (previously typed from the RHS component). The desugar is name-based and type-blind
+        // (BodyEncoder.tupleMultiAssign), so the proof is identical either way — this pins that the typed
+        // spelling stays green across the STC change.
+        [group: 'P79 tuples', name: 'multiple assignment with typed int components', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == 30 })
+                        static int m() {
+                            def (int a, int b) = Tuple.tuple(10, 20)
                             a + b
                         }
                     }''')],

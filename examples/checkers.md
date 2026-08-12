@@ -40,18 +40,21 @@ on the Checker Framework's Nullness Checker, and it answers *"could this be null
 solver. **groovy-verify treats nullity as a by-product** of proving richer properties: it asserts
 `¬(recv != null)` and asks Z3, so it catches a dereference when the surrounding logic or a
 `@Requires` makes non-nullness *provable* — and returns a refuting input (`g(null, 0)`). It has no
-`@Nullable` / `@NonNull` awareness in source positions Groovy's AST surfaces, does not model `?.`, and
-makes every named-receiver dereference *and* every indexed-element dereference (`xs[i].method()` /
-`xs.get(i).method()`, Phase 37) an unconditional obligation against per-element nullity oracles.
-**For dedicated null-safety, reach for `NullChecker`;** the residual boxed-element gap
-(`List<@Nullable String>` at the type-use position, which Groovy's AST doesn't reliably surface here)
-is exactly what its annotations express.
+`@Nullable` awareness, does not model `?.`, and — beyond the `@NonNull` forms it reads as contracts
+and suppressions (returns, fields, per-element; below) — makes every named-receiver dereference *and*
+every indexed-element dereference (`xs[i].method()` / `xs.get(i).method()`, Phase 37) an unconditional
+obligation against per-element nullity oracles.
+**For dedicated null-safety, reach for `NullChecker`;** the `@Nullable` direction — deliberately a
+no-op here, where an unannotated element already obligates — is exactly what its annotations express:
+since Groovy 6.0.0-beta-2 (GROOVY-12252) it acts on `@Nullable` type arguments reaching results
+through generics (`get(0)`, `xs[0]`, `head()`).
 
 Because both are just extensions, they **compose** — nullness-by-annotation and SMT functional
 verification in a single compile, each doing what it is best at. And there's a clean seam where
-groovy-verify proves a condition NullChecker can only *assume*. Even in flow-sensitive `strict` mode,
-NullChecker tracks the nullness of **variables** (and annotations); it has no per-**element** nullity model,
-so it silently assumes an array element `xs[0]` is non-null. groovy-verify makes that dereference an
+groovy-verify proves a condition NullChecker can only *assume*. NullChecker's element story is
+annotation-driven — since 6.0.0-beta-2 (GROOVY-12252) a declared `List<@Nullable String>` makes
+`get(0)` / `xs[0]` / `head()` nullable — but an *unannotated* element type, even in flow-sensitive
+`strict` mode, it silently assumes non-null. groovy-verify makes that dereference an
 obligation `xs[0] != null` against its per-element oracle (Phase 37) — so on the same code it **proves** what
 NullChecker assumes, or **refutes** it with a witness:
 
@@ -71,7 +74,10 @@ return is read as an implicit `result != null` postcondition groovy-verify **pro
 catching a nullable value that reaches the return through reasoning (arithmetic, contracts, a `@Requires`-only
 guarantee) NullChecker's flow model passes over. A `@NonNull` *field* becomes an implicit object invariant
 `field != null` that groovy-verify proves *establishment and preservation* for — every constructor leaves it
-non-null, no method nulls it — the design-by-contract lifecycle a flow checker doesn't frame. The two don't
+non-null, no method nulls it. NullChecker enforces the syntactic half of that story (a literal `null` store
+is flagged, and since 6.0.0-beta-2 `strict` mode flags a never-assigned `@NonNull` field — GROOVY-12251);
+the *value*-level half stays groovy-verify's: whether what a constructor or method actually assigns is
+provably non-null under its own `@Requires`. The two don't
 double-report: where NullChecker raises an obvious `return null`, groovy-verify skips it as outside its fragment;
 `null` passed to a `@NonNull` *parameter*, over source positions groovy-verify doesn't model, stays NullChecker's
 to raise. Same extension SPI, complementary ends of the same question.
@@ -91,9 +97,14 @@ class Greeter {
 ```
 
 Drop the constructor's `@Requires({ n != null })` and the field can no longer be established non-null —
-groovy-verify refutes the implicit invariant with `<init>(null)`; add a `void clear() { name = null }` and it
-refutes *preservation* at `clear`. NullChecker, which has no class-invariant lifecycle model, stays silent on
-both — the design-by-contract framing is groovy-verify's to supply.
+groovy-verify refutes the implicit invariant with `<init>(null)` while NullChecker stays silent, even with
+6.0.0-beta-2's definite-initialization check (GROOVY-12251): the field *is* assigned — it is the assigned
+*value* whose non-nullness has lost its warrant, a value-level question only the prover asks. Add a
+`void clear() { name = null }` and both speak, each from its own end: NullChecker flags the literal store
+(`Cannot assign null to @NonNull variable 'name'`), groovy-verify refutes invariant *preservation* at
+`clear` — and would still do so if the null arrived by flow (`void clear(String s) { name = s }`) where
+the literal-store check has nothing to see. The design-by-contract lifecycle framing is groovy-verify's
+to supply.
 
 ## Two checkers, one regex — syntax beside semantics
 

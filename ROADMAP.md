@@ -10639,9 +10639,12 @@ show groovy-verify refuting where NullChecker was satisfied — the opposite of 
 divide; the if/else control; stacked guards; the symmetric else-exits form; a narrowed fact surviving
 an intervening binding; and four teeth — a guard on a different variable, a half-guard, the wrong
 polarity, and a *non-exiting* arm — all still refuting. Still unrecognised (loud, not wrong):
-`instanceof` and `Objects.nonNull`/`isNull` as null guards, and `while`-guard facts. A bare
-`assert x != null` remains an obligation to *prove* rather than an assumption — a deliberate
-divergence from NullChecker, not a gap.
+`instanceof` and `Objects.nonNull`/`isNull` as null guards, `while`-guard facts, and the
+validator/assertion narrowing 6.0.0-beta-2's GROOVY-12250 added upstream — statement-position
+`Objects.requireNonNull(x)`, `assertNotNull(x)`, `assertThat(x).isNotNull()` (here `requireNonNull`
+narrows only inside the `@ThrowsIf` walk and, via Phase 222 survival facts, on an assignment RHS).
+A bare `assert x != null` is an obligation to *prove*, then threaded as a `Guard` assumption for
+what follows — a deliberate divergence from NullChecker (which only assumes it), not a gap.
 
 ---
 

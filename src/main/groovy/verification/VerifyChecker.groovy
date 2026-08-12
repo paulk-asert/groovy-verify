@@ -9669,10 +9669,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         walkClassInvariants(cn.superClass, out)
         ClassNode[] itfs = cn.interfaces
         if (itfs != null) for (ClassNode itf : itfs) walkClassInvariants(itf, out)
-        // Phase 132 — a @NonNull (reference) field is an implicit object invariant `field != null`, which the
-        // sibling NullChecker only *asserts*. With field-write nullity now flowing (this phase), the existing
-        // class-invariant machinery can prove establishment (every constructor leaves it non-null) and
-        // preservation (no method nulls it).
+        // Phase 132 — a @NonNull (reference) field is an implicit object invariant `field != null`. The sibling
+        // NullChecker enforces the syntactic half (a literal null store; since 6.0.0-beta-2/GROOVY-12251 also
+        // definite initialization, in strict mode). With field-write nullity flowing (this phase), the existing
+        // class-invariant machinery proves the value-level whole: establishment (every constructor leaves it
+        // non-null under its own preconditions) and preservation (no method nulls it, however the null flows).
         addNonNullFieldInvariants(cn, out)
         List<AnnotationNode> sources = cn.getAnnotations(CLASS_INVARIANT_SOURCE_TYPE)
         if (sources == null || sources.isEmpty()) return
