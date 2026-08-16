@@ -515,7 +515,7 @@ simply remains outside.
 
 ## Building & using
 
-Built with JDK 25 against `org.apache.groovy:6.0.0-beta-1` from Maven Central (which ships the
+Built with JDK 25 against `org.apache.groovy:6.0.0-beta-2` from Maven Central (which ships the
 upstream `@ThrowsIf` / `@Requires(woven, direct)` contracts — GROOVY-12135/12136 — the build
 previously tracked the ASF snapshot for); the published artifact targets Java 17 bytecode, Groovy 6's
 own floor. `./gradlew verify`

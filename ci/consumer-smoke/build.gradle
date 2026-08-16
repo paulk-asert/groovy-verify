@@ -37,7 +37,7 @@ plugins { id 'groovy' }
 // Overridden by CI with the values extracted from the root build, so a version bump there can't
 // silently leave this smoke testing a stale artifact; the defaults keep it runnable by hand.
 def gvVersion = providers.gradleProperty('gvVersion').orElse('0.1.0').get()
-def groovyVer = providers.gradleProperty('groovyVersion').orElse('6.0.0-beta-1').get()
+def groovyVer = providers.gradleProperty('groovyVersion').orElse('6.0.0-beta-2').get()
 
 java {
     toolchain { languageVersion = JavaLanguageVersion.of(17) }   // the floor the artifact claims

@@ -10782,6 +10782,26 @@ suite **1681/0**, rung **656/663** clean / 0 need review, docLint 0 drift.
 
 ---
 
+## Housekeeping — Groovy 6.0.0-beta-2  *(shipped)*
+
+`gradle.properties` moves `groovyVersion` to the released `org.apache.groovy:6.0.0-beta-2` on Maven
+Central. **No verifier code changes were needed** — the release was assessed against the staged
+artifacts while it was out for vote (same bits), and the only fallout was documentation: the
+NullChecker work in the release (GROOVY-12250/12251/12252) had overtaken some "stock Groovy stays
+silent here" claims, corrected in the "beta-2 tweaks" pass with each claim re-probed on both
+versions rather than assumed (plus a typed-tuple `def (int a, int b)` G105 case the probing
+suggested).
+
+Full gates on the release artifact: suite **1682/0**, rung **657/664** clean (the same 2
+categorised spec-throw divergences, 0 need review), docLint 0 drift; the `VERIFY_RUNG_INDY=false`
+classic-bytecode sweep's summary is line-for-line identical to the indy run's; TLC clean, Lincheck
+6/6, Fray clean, jcstress **272/272** with 0 forbidden observations — the Phase 235 seqlock fences
+holding under the `-XX:+Stress*` grid. The consumer smoke, run by hand from the mavenLocal jar on a
+real JDK 17 toolchain against beta-2: the good half proves, the bad half refutes with the full
+counterexample diagnostic (`fails on: oops(null)`).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

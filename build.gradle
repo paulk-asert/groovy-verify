@@ -58,7 +58,8 @@ tasks.named('rat') {
     excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
 }
 
-// Everything this project needs from Groovy 6 is in the 6.0.0-beta-1 release (on Central): the
+// Everything this project needs from Groovy 6 has been on Central since the 6.0.0-beta-1 release
+// (the build tracks 6.0.0-beta-2, which needed no verifier changes): the
 // 6.0.0-alpha-2 surface — static @Ensures, method-level @Decreases (GROOVY-12060), nested closures in
 // contract conditions including @Ensures (GROOVY-12059 — enables the `any` / membership existential
 // surface), the native primitive `int[]` GDK `isSorted()` overload the sortedness idiom
