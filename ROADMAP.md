@@ -10873,6 +10873,36 @@ two-argument `assertNotNull` deliberately learns nothing.
 
 ---
 
+## Phase 238 — `instanceof` yields its null fact  *(shipped)*
+
+The third NullChecker parity-gap slice. `instanceof` was entirely outside the fragment: a guard
+containing it failed translation, so `if (!(x instanceof Foo)) return` — the shape GROOVY-12242's
+flow typing makes idiomatic — got no Phase 233 narrowing at all, and any compound condition with an
+`instanceof` conjunct lost its *other* conjuncts too (a failed `translate` is all-or-nothing).
+
+The fix deliberately does **not** attempt type narrowing (heap typing stays outside the fragment,
+loudly). It extracts the one thing the test soundly implies: `x instanceof T` is never true of
+`null` — a JVM guarantee. One `translateBinary` case in the Encoder handles both
+`KEYWORD_INSTANCEOF` and the `!instanceof` spelling: mint a **fresh unconstrained boolean** `b`,
+assert the one-directional axiom `b ⟹ x != null` against the same `nullityOf` oracle the deref
+obligation uses, and return `b` (negated for `!instanceof`). Sound in every polarity with no
+polarity analysis — a negative occurrence asserts `¬b`, which constrains nothing (a failed type
+test doesn't imply null); a positive one yields exactly the null fact. Because the axiom rides an
+otherwise-unconstrained fresh boolean, a speculatively-translated-then-discarded occurrence leaves
+only a vacuous assertion — no soundness exposure from translate's new side effect. And since the
+encoding lives at the single translation choke point, every pipeline gets it at once: if-guards,
+Phase 233 early-exit continuations, short-circuit conjuncts, `dischargeRegion` assumptions, path
+facts. A non-variable LHS gets the free boolean with no axiom — nothing learned, nothing wrong.
+
+Cases (G302, new group, 8): the early-exit idiom proves on an `Object` param (STC flow-types the
+continuation, the verifier discharges the nullity), on a declared `String` (there the test is
+purely a null check), inside the positive branch, as a short-circuit left conjunct, and in the
+`!instanceof` spelling; teeth — a non-exiting arm narrows nothing, the negative arm's deref
+refutes (for a `String` param that arm is reachable only when `s` *is* null), and a test on a
+different variable refutes.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

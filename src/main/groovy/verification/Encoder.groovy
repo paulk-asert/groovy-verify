@@ -1856,6 +1856,7 @@ class Encoder implements TheoryApi {
     }
     private int havocCounter = 0
     private int storeLawCounter = 0
+    private int instanceofCounter = 0   // Phase 238 — fresh-boolean mints for `instanceof` tests
 
     /**
      * The size oracle: an integer constant {@code <recv>.size}, constrained
@@ -4767,6 +4768,25 @@ class Encoder implements TheoryApi {
         if (be.operation.text == '===' || be.operation.text == '!==') {
             Object idEq = refIdentityEq(be.leftExpression, be.rightExpression)
             if (idEq != null) return be.operation.text == '===' ? idEq : session.not(idEq)
+        }
+
+        // Phase 238 — `x instanceof T` (and `x !instanceof T`). The type test itself stays outside
+        // the fragment (no heap typing), but it is never true of null — a JVM guarantee, not a
+        // heuristic. Encode the test as a FRESH unconstrained boolean plus the one-directional axiom
+        // `b ⟹ x != null`: sound in every polarity with no polarity analysis — a negative occurrence
+        // asserts ¬b, which says nothing about x (right: a failed type test doesn't imply null),
+        // while a positive occurrence (an if-guard, a Phase 233 early-exit continuation, the left
+        // conjunct of a short-circuit) yields exactly the null fact, tied to the same nullity oracle
+        // the deref obligation asserts against. Side benefit: a compound condition containing
+        // instanceof no longer fails translation wholesale — the other conjuncts keep contributing.
+        // A non-variable LHS gets the free boolean with no axiom (nothing learned, nothing wrong).
+        if (op == Types.KEYWORD_INSTANCEOF || op == Types.COMPARE_NOT_INSTANCEOF) {
+            Object b = session.boolVar('instanceof$' + (instanceofCounter++))
+            if (be.leftExpression instanceof VariableExpression) {
+                Object isNull = nullityOf(((VariableExpression) be.leftExpression).name)
+                session.assertExpr(session.implies(b, session.not(isNull)))
+            }
+            return op == Types.KEYWORD_INSTANCEOF ? b : session.not(b)
         }
 
         // Phase 81 — component-wise tuple/list equality: `t1 == t2` (or `==` a tuple/list literal) folds to
