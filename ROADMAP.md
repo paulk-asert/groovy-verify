@@ -10837,6 +10837,42 @@ untyped-tuple corpus pin the unchanged paths.
 
 ---
 
+## Phase 237 — statement-position non-null asserters  *(shipped)*
+
+The second NullChecker parity-gap slice (GROOVY-12250's narrowing shapes). A bare
+`Objects.requireNonNull(x)` statement was knowledge the engine already held twice — the `@ThrowsIf`
+walk models the same call as `if (x == null) throw NPE`, and Phase 222 asserts survival facts for
+calls on an assignment RHS — but at statement position in an ordinary body it was a `LemmaCall`
+no-op in the value-flow pipeline and a loud "standalone call has no usable @Ensures" bail in the
+body proof. The survival argument is identical: the program moved past a guard-throw that didn't
+fire, so the target is non-null on every continuing path.
+
+One matcher, three hook points:
+
+- **`nonNullAssertedTarget`** recognises `Objects.requireNonNull(v[, msg])` (reusing the @ThrowsIf
+  walk's matcher), JUnit's single-argument `assertNotNull(v)`, and the AssertJ/Truth chain
+  `assertThat(v).isNotNull()` — the receiver matched through the `MethodCall` *interface*, because
+  STC rewrites an implicit-this static helper call to a `StaticMethodCallExpression` (found the
+  hard way: the concrete-class check silently missed the chain). Matching is by simple name — the
+  NullChecker trust model, with the caveat documented in CAPABILITIES. The two-argument JUnit
+  forms are deliberately unmatched (JUnit 4 message-first vs JUnit 5 message-last makes the target
+  ambiguous by name alone).
+- **Value-flow walk**: the fact is threaded as a `Guard(target != null)` step, so it is
+  program-point ordered — only obligations *after* the call see it.
+- **Body proof**: the `LemmaCall` handler asserts the translated fact (with `VERIFY_EXPLAIN`
+  provenance) instead of falling through to the loud bail; **replayed prefixes** (`replayPrefix`,
+  serving both `dischargeRegion` regions and callee-`@Requires` prefix discharge) assert it the
+  same way — which is what lets `requireNonNull(s); len(s)` discharge `len`'s
+  `@Requires({ x != null })`, the parity flagship.
+
+Cases (G301, new group, 10): both `requireNonNull` arities prove; the local-helper `assertNotNull`
+and `assertThat().isNotNull()` spellings prove (helpers defined in-case, so they honestly throw and
+the corpus stays classpath-independent); teeth — a deref *before* the asserter refutes, an asserter
+on a *different variable* refutes, the fact does **not** escape the branch it ran in, and the
+two-argument `assertNotNull` deliberately learns nothing.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

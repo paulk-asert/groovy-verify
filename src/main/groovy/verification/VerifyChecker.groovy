@@ -2638,6 +2638,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // discharge. Calls that don't match any apply-mutation handler are silently
                 // ignored at replay time — the LemmaCall is then a no-op.
                 scanObligations(e, steps, out)
+                // Phase 237 — a survived statement-position non-null asserter (Objects.requireNonNull,
+                // single-arg assertNotNull, assertThat(x).isNotNull()) is a guard-throw the program
+                // moved past: the target is non-null on every continuing path. The Phase 222 survival
+                // argument, threaded as a Guard step so only obligations AFTER the call see the fact —
+                // a deref BEFORE it still refutes.
+                Expression nnt = nonNullAssertedTarget(e)
+                if (nnt != null) steps.add(new Guard(nonNullFact(nnt), true))
                 if (e instanceof MethodCallExpression) {
                     steps.add(new LemmaCall(e))
                 }
@@ -5956,8 +5963,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // call: assume the callee's @Ensures (a self-call is the inductive hypothesis,
                     // enabled by @Decreases). An unmodelled effect with no usable @Ensures is outside
                     // the fragment.
-                    Object[] atom = atomicCellUpdate(enc, session, call)
-                    if (atom != null) {
+                    // Phase 237 — a survived non-null asserter: assert the target's non-nullity and move
+                    // on (the call has no other modelled effect). Previously this fell through the whole
+                    // cascade to the loud "no usable @Ensures" bail — the fact now replaces the failure.
+                    // An untranslatable target just loses the fact, sound.
+                    Expression nnt = nonNullAssertedTarget(call)
+                    Object[] atom = nnt == null ? atomicCellUpdate(enc, session, call) : null
+                    if (nnt != null) {
+                        Object f = enc.translate(nonNullFact(nnt))
+                        if (f != null) {
+                            session.assertExpr(f)
+                            if (Reporter.EXPLAIN) {
+                                session.explainNoteFact("TRUSTED survival fact (${nnt.text.replaceAll(/\s+/, ' ')} != null) — statement-position non-null asserter".toString(), f)
+                            }
+                        }
+                    } else if (atom != null) {
                         // AtomicInteger/AtomicLong mutator on a known cell: rebind the cell to its post-mutation
                         // value via the same SSA discipline a plain `count = count + 1` field write uses, so the
                         // exit @Invariant sees the updated value. (See Encoder.atomicNames / CONCURRENCY.md.)
@@ -6784,6 +6804,47 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ((ArgumentListExpression) ((StaticMethodCallExpression) e).arguments).expressions : null)
         if (args == null || args.isEmpty() || args.size() > 2) return null
         args.get(0)
+    }
+
+    /**
+     * Phase 237 — the target of a statement-position non-null ASSERTER, or null. Three spellings:
+     * {@code Objects.requireNonNull(v[, msg])} (any receiver spelling — the same call the @ThrowsIf
+     * walk above models as a guard-throw), JUnit's single-argument {@code assertNotNull(v)}, and
+     * AssertJ/Truth's {@code assertThat(v).isNotNull()}. Matched by simple name — the trust model
+     * NullChecker (GROOVY-12250) and the Jakarta-annotation matching already use; a user-defined
+     * method merely NAMED {@code assertNotNull} that doesn't actually throw would be trusted
+     * wrongly (documented in CAPABILITIES). The two-argument JUnit forms are deliberately NOT
+     * matched: JUnit 4 puts the message first and JUnit 5 puts it last, so which argument is the
+     * target is ambiguous by name alone — no fact beats a maybe-wrong fact.
+     */
+    private static Expression nonNullAssertedTarget(Expression e) {
+        Expression t = requireNonNullTarget(e)
+        if (t != null) return t
+        if (!(e instanceof MethodCall)) return null
+        String m = ((MethodCall) e).methodAsString
+        if (m == 'assertNotNull') {
+            List<Expression> args = collectArgumentExpressions((MethodCall) e)
+            return args.size() == 1 ? args.get(0) : null
+        }
+        if (m == 'isNotNull' && e instanceof MethodCallExpression) {
+            if (!collectArgumentExpressions((MethodCall) e).isEmpty()) return null
+            Expression recv = ((MethodCallExpression) e).objectExpression
+            // The receiver is `assertThat(v)` in either call shape — STC rewrites an implicit-this
+            // call on a static helper to a StaticMethodCallExpression, so match the MethodCall
+            // interface, not the concrete class.
+            if (recv instanceof MethodCall && ((MethodCall) recv).methodAsString == 'assertThat') {
+                List<Expression> rargs = collectArgumentExpressions((MethodCall) recv)
+                return rargs.size() == 1 ? rargs.get(0) : null
+            }
+        }
+        null
+    }
+
+    /** The `target != null` fact a survived non-null asserter establishes (Phase 237). */
+    private static Expression nonNullFact(Expression target) {
+        new BooleanExpression(new BinaryExpression(target,
+            Token.newSymbol(Types.COMPARE_NOT_EQUAL, target.lineNumber, target.columnNumber),
+            ConstantExpression.NULL))
     }
 
     /** True when the expression tree contains any method/constructor call. */
@@ -9179,6 +9240,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             Expression call = standaloneCallOf(st)
             if (call != null) {
+                // Phase 237 — a preceding survived non-null asserter narrows everything after it on
+                // this replay path (dischargeRegion regions, callee-@Requires prefixes): the call ran
+                // and didn't throw, so the target is non-null here.
+                Expression nnt = nonNullAssertedTarget(call)
+                if (nnt != null) {
+                    Object f = enc.translate(nonNullFact(nnt))
+                    if (f != null) s.assertExpr(f)
+                    continue
+                }
                 // Assume a preceding standalone call's @Ensures (and frame its @Modifies), in path order.
                 // Sound now that intervening mutations are threaded above — so this generalises the old
                 // immediate-predecessor-only rule to ANY preceding call, which is what lets a lemma proved
