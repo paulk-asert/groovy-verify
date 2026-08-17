@@ -357,9 +357,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 protected SourceUnit getSourceUnit() { null }
                 @Override void visitClosureExpression(ClosureExpression ce) { /* skip contract closures */ }
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
+                    for (VariableExpression v : declaredTargets(de)) {
+                        ClassNode t = v.originType ?: v.type
                         if (t != null && Encoder.isCarrier(t)) out.put(t.nameWithoutPackage, t)
                     }
                     super.visitDeclarationExpression(de)
@@ -1139,10 +1138,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
-                        String lname = ((VariableExpression) de.leftExpression).name
+                    for (VariableExpression v : declaredTargets(de)) {
+                        ClassNode t = v.originType ?: v.type
+                        String lname = v.name
                         if (t != null && isListType(t)) {
                             ClassNode elem = firstGenericOrInt(t)
                             if (!isIntElement(elem)) out.putIfAbsent(lname, elem)
@@ -1233,11 +1231,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
+                    for (VariableExpression v : declaredTargets(de)) {
+                        ClassNode t = v.originType ?: v.type
                         if (t != null && (isNonIntScalar(t) || Encoder.isCarrier(t))) {   // Phase 133 — carrier locals
-                            out.putIfAbsent(((VariableExpression) de.leftExpression).name, t)
+                            out.putIfAbsent(v.name, t)
                         }
                     }
                     super.visitDeclarationExpression(de)
@@ -1245,6 +1242,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             })
         } catch (Throwable ignored) {}
         out
+    }
+
+    /**
+     * Phase 236 — the variable targets a declaration binds: the single scalar LHS, or each component of
+     * a multiple-assignment `def (int a, String b) = …` (a {@link TupleExpression} LHS whose components
+     * are {@link VariableExpression}s, each carrying its own declared type on {@code originType} —
+     * GROOVY-12228 makes the typed spelling meaningful to STC, so the harvesters must see it too).
+     * Every declared-type harvester iterates this instead of matching the scalar shape directly; the
+     * untyped `def (a, b)` form yields components whose dynamic type fails each harvester's own type
+     * test, so behaviour there is unchanged.
+     */
+    private static List<VariableExpression> declaredTargets(DeclarationExpression de) {
+        Expression lhs = de.leftExpression
+        if (lhs instanceof VariableExpression) return Collections.singletonList((VariableExpression) lhs)
+        if (lhs instanceof TupleExpression) {
+            List<VariableExpression> out = new ArrayList<VariableExpression>()
+            for (Expression t : ((TupleExpression) lhs).expressions) {
+                if (t instanceof VariableExpression) out.add((VariableExpression) t)
+            }
+            return out
+        }
+        Collections.<VariableExpression> emptyList()
     }
 
     /** True if {@code t} is {@code java.util.concurrent.atomic.AtomicInteger} or {@code AtomicLong} — the two
@@ -1269,10 +1288,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 @Override void visitClosureExpression(ClosureExpression ce) { }
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
-                        if (isAtomicIntType(t)) out.add(((VariableExpression) de.leftExpression).name)
+                    for (VariableExpression v : declaredTargets(de)) {
+                        if (isAtomicIntType(v.originType ?: v.type)) out.add(v.name)
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1311,10 +1328,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 @Override void visitClosureExpression(ClosureExpression ce) { /* skip contract closures */ }
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
-                        if (isDecimalType(t)) out.add(((VariableExpression) de.leftExpression).name)
+                    for (VariableExpression v : declaredTargets(de)) {
+                        if (isDecimalType(v.originType ?: v.type)) out.add(v.name)
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1355,10 +1370,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 @Override void visitClosureExpression(ClosureExpression ce) {}
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
-                        if (isDoubleType(t)) out.put(((VariableExpression) de.leftExpression).name, isDoublePrecision(t))
+                    for (VariableExpression v : declaredTargets(de)) {
+                        ClassNode t = v.originType ?: v.type
+                        if (isDoubleType(t)) out.put(v.name, isDoublePrecision(t))
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1400,12 +1414,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 void visitClosureExpression(ClosureExpression ce) {}
                 @Override
                 void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
-                        if (isBooleanType(t)) {
-                            out.add(((VariableExpression) de.leftExpression).name)
-                        }
+                    for (VariableExpression v : declaredTargets(de)) {
+                        if (isBooleanType(v.originType ?: v.type)) out.add(v.name)
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -1438,11 +1448,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 protected SourceUnit getSourceUnit() { null }
                 @Override void visitClosureExpression(ClosureExpression ce) { }
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
-                    if (de.leftExpression instanceof VariableExpression) {
-                        ClassNode t = ((VariableExpression) de.leftExpression).originType
-                        if (t == null) t = de.leftExpression.type
+                    for (VariableExpression v : declaredTargets(de)) {
+                        ClassNode t = v.originType ?: v.type
                         if (t != null && t.nameWithoutPackage != null && t.nameWithoutPackage.matches('Tuple\\d+')) {
-                            out.put(((VariableExpression) de.leftExpression).name, t)
+                            out.put(v.name, t)
                         }
                     }
                     super.visitDeclarationExpression(de)
@@ -4717,7 +4726,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         body.visit(new CodeVisitorSupport() {
             @Override void visitVariableExpression(VariableExpression v) { mentioned.add(v.name) }
             @Override void visitDeclarationExpression(DeclarationExpression de) {
-                if (de.leftExpression instanceof VariableExpression) assigned.add(((VariableExpression) de.leftExpression).name)
+                for (VariableExpression v : declaredTargets(de)) assigned.add(v.name)
                 super.visitDeclarationExpression(de)
             }
             @Override void visitBinaryExpression(BinaryExpression be) {
@@ -9194,6 +9203,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object kn = enc.nullityOfExpr(de.rightExpression)   // Phase 142b — thread known nullity (a `new X(…)` local is non-null)
                 if (kn != null) enc.bindNullity(name, kn)
                 return true
+            }
+            // Phase 236 — a multiple-assignment declaration in a replayed prefix. Translate EVERY
+            // element against the pre-state first, then bind: that is the parallel semantics, so the
+            // shadowed-field `def (a, b) = [b, a]` shape needs no aliasing special-case here. Any
+            // element that doesn't translate drops to the generic havoc path below (sound — the
+            // components just stay unconstrained fresh handles).
+            if (de.leftExpression instanceof TupleExpression) {
+                List<Expression> targets = ((TupleExpression) de.leftExpression).expressions
+                List<Expression> elems = BodyEncoder.tupleElementExprs(de.rightExpression)
+                if (elems != null && elems.size() >= targets.size() &&
+                    targets.every { it instanceof VariableExpression }) {
+                    List<Object> vals = new ArrayList<Object>()
+                    for (int k = 0; k < targets.size(); k++) vals.add(enc.translate(elems.get(k)))
+                    if (!vals.contains(null)) {
+                        for (int k = 0; k < targets.size(); k++) {
+                            String tn = ((VariableExpression) targets.get(k)).name
+                            enc.bind(tn, vals.get(k))
+                            Object kn2 = enc.nullityOfExpr(elems.get(k))
+                            if (kn2 != null) enc.bindNullity(tn, kn2)
+                        }
+                        return true
+                    }
+                }
             }
             return false
         }

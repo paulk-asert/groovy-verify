@@ -672,7 +672,19 @@ class BodyEncoder {
         }
         Path np = copy(prefix)
         List<Expression> elems = tupleElementExprs(rhs)
-        if (elems != null && elems.size() >= lhs.size()) {
+        if (elems != null && elems.size() >= lhs.size() && !mentionsAny(elems, lhs)) {
+            // Phase 236 — no element expression mentions a target name, so the snapshot temps are
+            // unnecessary: direct in-order assigns have the same parallel semantics (nothing an
+            // element reads is being written). This matters for TYPED components
+            // (`def (int a, String s) = …`, meaningful to STC since GROOVY-12228): the component
+            // names carry harvested declared types so their SSA handles get the right Z3 sort, while
+            // a `__gvMA$` temp never does — a String routed through an int-sorted temp is a solver
+            // sort mismatch. The overlap shapes (`(a, b) = [b, a]` swap, shadowed fields) keep the
+            // temp dance below.
+            for (int k = 0; k < lhs.size(); k++) {
+                np.steps.add(new Assign(((VariableExpression) lhs.get(k)).name, elems.get(k)))
+            }
+        } else if (elems != null && elems.size() >= lhs.size()) {
             String base = '__gvMA$' + System.identityHashCode(node) + '$'
             for (int k = 0; k < lhs.size(); k++) np.steps.add(new Assign(base + k, elems.get(k)))
             for (int k = 0; k < lhs.size(); k++) {
@@ -691,9 +703,29 @@ class BodyEncoder {
         res
     }
 
+    /** True if any expression in {@code elems} mentions (as a variable read, however deeply nested —
+     *  closures included) the name of any target in {@code lhs}. The conservative gate for the
+     *  Phase 236 direct-assign path above: a false positive only costs the temp snapshot, never
+     *  correctness. */
+    private static boolean mentionsAny(List<Expression> elems, List<Expression> lhs) {
+        Set<String> targets = new HashSet<String>()
+        for (Expression t : lhs) targets.add(((VariableExpression) t).name)
+        boolean[] hit = [false]
+        CodeVisitorSupport scan = new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression v) {
+                if (targets.contains(v.name)) hit[0] = true
+                super.visitVariableExpression(v)
+            }
+        }
+        for (Expression e : elems) { e.visit(scan); if (hit[0]) return true }
+        false
+    }
+
     /** Element expressions of a list/tuple factory rhs (`[a, b]`, `Tuple.tuple(a, b)`, `List.of(a, b)`,
-     *  `new TupleN(a, b)`), or null if the rhs isn't a factory we can take apart. */
-    private static List<Expression> tupleElementExprs(Expression rhs) {
+     *  `new TupleN(a, b)`), or null if the rhs isn't a factory we can take apart. Package-visible:
+     *  {@code VerifyChecker.replayMutation} reuses it to bind tuple-declaration components in a
+     *  replayed prefix (Phase 236). */
+    static List<Expression> tupleElementExprs(Expression rhs) {
         if (rhs instanceof ListExpression) return ((ListExpression) rhs).expressions
         if (rhs instanceof MethodCallExpression) {
             String m = ((MethodCallExpression) rhs).methodAsString

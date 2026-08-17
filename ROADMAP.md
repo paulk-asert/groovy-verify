@@ -10802,6 +10802,41 @@ counterexample diagnostic (`fails on: oops(null)`).
 
 ---
 
+## Phase 236 — typed tuple components reach the declared-type harvesters  *(shipped)*
+
+The first NullChecker parity-gap slice from the beta-2 assessment. GROOVY-12228 (in beta-2) makes
+STC honour each target's declared type in `def (int a, String s) = …` — but the verifier's
+declared-type harvesters all opened with `if (de.leftExpression instanceof VariableExpression)`,
+so a tuple declaration's components skipped every one of them (scalar sorts, list element types,
+carrier/atomic/decimal/FP/boolean names, tuple-typed locals — eight sites), and the information-flow
+loop-effect collector missed them as assigned names. Worse, the harvest alone couldn't have fixed
+the flagship case: `tupleMultiAssign` routes every component through a `__gvMA$` snapshot temp,
+and the temps *never* have a declared type — a String element met an int-sorted fresh handle, the
+tuple sibling of the Phase 123 typed-local-array sort mismatch.
+
+Three coordinated changes:
+
+- **`declaredTargets(de)`** — one helper yielding the scalar LHS or each `TupleExpression`
+  component (each carries its own `originType`); all nine visitor sites iterate it. The untyped
+  `def (a, b)` form yields dynamic-typed components that fail every harvester's own type test —
+  behaviour unchanged there.
+- **Direct assigns when no RHS element mentions a target name** (`BodyEncoder.tupleMultiAssign`):
+  with no overlap, snapshot-then-write and direct in-order writes are the same parallel semantics,
+  so the temps are dropped and each component's SSA handle is minted under its harvested declared
+  sort. The overlap shapes — the `(a, b) = [b, a]` swap, shadowed fields — keep the temp dance,
+  so the Phase 90 parallel-swap guarantee is untouched (and non-Int components through that route
+  stay outside, loudly, as before).
+- **Replayed prefixes** (`replayMutation`): a tuple declaration now translates *every* element
+  against the pre-state and only then binds the components (parallel semantics with no aliasing
+  special-case); any untranslatable element falls back to the generic havoc path, sound as before.
+
+Cases (G105, 9 → 13): a typed String component flowing to the result proves, a typed boolean
+component keeps its Bool sort, a typed BigDecimal component takes the exact-Real path, and the
+teeth — returning the *other* String component still refutes. The existing swap (G106) and
+untyped-tuple corpus pin the unchanged paths.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

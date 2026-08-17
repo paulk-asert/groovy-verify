@@ -17,7 +17,7 @@ package cases
 
 import static cases.CaseDsl.*
 
-/** 'P79 tuples' — 9 case(s). Split per-group from the original VerifyHarness tables; the
+/** 'P79 tuples' — 13 case(s). Split per-group from the original VerifyHarness tables; the
  *  shared import header and @TypeChecked wrappers (HDR, tc, …) come from {@link CaseDsl}. */
 class G105_p79_tuples {
 
@@ -96,15 +96,53 @@ class G105_p79_tuples {
                         }
                     }''')],
         // Typed components: since Groovy 6.0.0-beta-2 (GROOVY-12228) STC honours each target's declared type
-        // (previously typed from the RHS component). The desugar is name-based and type-blind
-        // (BodyEncoder.tupleMultiAssign), so the proof is identical either way — this pins that the typed
-        // spelling stays green across the STC change.
+        // (previously typed from the RHS component). Since Phase 236 the verifier honours them too: the
+        // declared-type harvesters iterate tuple components, and the no-overlap desugar assigns each
+        // component directly (BodyEncoder.tupleMultiAssign) so its SSA handle gets the declared sort.
+        // For int components the proof is identical either way — this pins the typed spelling green.
         [group: 'P79 tuples', name: 'multiple assignment with typed int components', ok: true,
          src: tc('''class C {
                         @Ensures({ result == 30 })
                         static int m() {
                             def (int a, int b) = Tuple.tuple(10, 20)
                             a + b
+                        }
+                    }''')],
+        // Phase 236 — non-Int typed components. Before the harvest+direct-assign fix, a String routed
+        // through the int-sorted __gvMA$ temp was a Z3 sort mismatch (the tuple sibling of Phase 123's
+        // typed-local-array gap); now the component's declared type reaches its SSA handle.
+        [group: 'P79 tuples', name: 'typed String component flows to the result', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == name })
+                        static String m(int k, String name) {
+                            def (int n, String s) = [k, name]
+                            return s
+                        }
+                    }''')],
+        [group: 'P79 tuples', name: 'typed boolean component keeps its Bool sort', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == (x > 0) })
+                        static boolean m(int x) {
+                            def (int y, boolean pos) = [x, x > 0]
+                            return pos
+                        }
+                    }''')],
+        [group: 'P79 tuples', name: 'typed BigDecimal component takes the exact-Real path', ok: true,
+         src: tc('''class C {
+                        @Ensures({ result == price + price })
+                        static BigDecimal m(BigDecimal price, int n) {
+                            def (BigDecimal d, int k) = [price, n]
+                            d + d
+                        }
+                    }''')],
+        // Teeth — the harvest must type the components, not bless them: returning the OTHER String
+        // component still refutes.
+        [group: 'P79 tuples', name: 'typed String component: wrong component refutes', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == name })
+                        static String m(String name, String other) {
+                            def (String s, String t) = [name, other]
+                            return t
                         }
                     }''')],
     ]
