@@ -934,9 +934,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     ] as Set<String>
 
     /**
-     * Phase 37 — annotation simple-names that mark a type use as <em>nullable</em>. Currently no-op
-     * (the unannotated default already triggers the implicit obligation), but tracked so a future
-     * "non-null-by-default" mode could distinguish "explicitly nullable" from "unspecified".
+     * Phase 37 — annotation simple-names that mark a type use as <em>nullable</em>. Since Phase 239
+     * an explicit {@code @Nullable}/{@code @CheckForNull} at a position <b>defeats</b> any
+     * {@code @NonNull}-derived effect at that same position — the assumption sites (the param/field
+     * non-null assumption, the implicit field invariant, the element/component obligation
+     * suppression) and, uniformly, the Phase 131 return obligation: on a contradictory declaration
+     * the author's disclaimer wins, the standard nullable-wins tool posture. The unannotated default
+     * still carries the implicit obligation, so in the default mode {@code @Nullable} alone changes
+     * nothing — a "non-null-by-default" strict mode (the full GROOVY-12252 parity) remains a future
+     * phase, and this set is what it would key "explicitly nullable" off.
      */
     private static final Set<String> NULLABLE_ANNOTATION_NAMES = ['Nullable', 'CheckForNull'] as Set<String>
 
@@ -1015,7 +1021,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         try {
             def gens = listType?.genericsTypes
             if (gens == null || gens.length < 1) return false
-            return hasTypeAnnotationNamed(gens[0]?.type, NON_NULL_ANNOTATION_NAMES)
+            // Phase 239 — an explicit element @Nullable defeats the suppression (nullable wins).
+            return hasTypeAnnotationNamed(gens[0]?.type, NON_NULL_ANNOTATION_NAMES) &&
+                   !hasTypeAnnotationNamed(gens[0]?.type, NULLABLE_ANNOTATION_NAMES)
         } catch (Throwable ignored) {
             return false
         }
@@ -1027,8 +1035,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (node instanceof ConstructorNode) return false
         ClassNode rt = node.returnType
         if (rt == null || ClassHelper.isPrimitiveType(rt) || rt == ClassHelper.VOID_TYPE) return false
-        return hasAnnotationNamed(node.annotations, NON_NULL_ANNOTATION_NAMES) ||
-               hasTypeAnnotationNamed(rt, NON_NULL_ANNOTATION_NAMES)
+        // Phase 239 — a @Nullable on the same declaration defeats the obligation (nullable wins on a
+        // contradictory declaration; the author explicitly disclaimed the non-null claim).
+        boolean pos = hasAnnotationNamed(node.annotations, NON_NULL_ANNOTATION_NAMES) ||
+                      hasTypeAnnotationNamed(rt, NON_NULL_ANNOTATION_NAMES)
+        boolean veto = hasAnnotationNamed(node.annotations, NULLABLE_ANNOTATION_NAMES) ||
+                       hasTypeAnnotationNamed(rt, NULLABLE_ANNOTATION_NAMES)
+        return pos && !veto
     }
 
     /**
@@ -1054,7 +1067,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private static boolean hasNonNullComponentAnnotation(ClassNode arrType) {
         try {
-            return hasTypeAnnotationNamed(arrType?.componentType, NON_NULL_ANNOTATION_NAMES)
+            // Phase 239 — an explicit component @Nullable defeats the suppression (nullable wins).
+            return hasTypeAnnotationNamed(arrType?.componentType, NON_NULL_ANNOTATION_NAMES) &&
+                   !hasTypeAnnotationNamed(arrType?.componentType, NULLABLE_ANNOTATION_NAMES)
         } catch (Throwable ignored) {
             return false
         }
@@ -3050,7 +3065,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // A @NonNull-style annotation (the NullChecker / Checker Framework / JSR-305 vocabulary, matched by simple
         // name) on a reference parameter or field is a non-null precondition — assumed in the body, the same posture
         // as `@Requires({ x != null })`, with NullChecker enforcing it flow-sensitively at call sites.
-        if (type != null && !ClassHelper.isPrimitiveType(type) && hasAnnotationNamed(anns, NON_NULL_ANNOTATION_NAMES)) {
+        // Phase 239 — an explicit @Nullable on the same declaration (or its type use) defeats the
+        // assumption: assuming non-null over the author's own disclaimer would be the unsound direction.
+        if (type != null && !ClassHelper.isPrimitiveType(type) && hasAnnotationNamed(anns, NON_NULL_ANNOTATION_NAMES) &&
+            !hasAnnotationNamed(anns, NULLABLE_ANNOTATION_NAMES) && !hasTypeAnnotationNamed(type, NULLABLE_ANNOTATION_NAMES)) {
             assertFact(s, s.not(enc.nullityOf(name)), '@NonNull ' + name)
         }
         boolean numeric = isJvmInt(type) || isJvmLong(type)            // @Positive/@Min/… → bound on the value
@@ -9811,7 +9829,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (ft == null || ClassHelper.isPrimitiveType(ft)) continue
             boolean nonNull = hasAnnotationNamed(f.annotations, NON_NULL_ANNOTATION_NAMES) ||
                               hasAnnotationNamed(ft.annotations, NON_NULL_ANNOTATION_NAMES)
-            if (!nonNull) continue
+            // Phase 239 — an explicit @Nullable on the same field defeats the implicit invariant
+            // (it is both an exit obligation and an entry assumption; nullable wins on either).
+            boolean veto = hasAnnotationNamed(f.annotations, NULLABLE_ANNOTATION_NAMES) ||
+                           hasAnnotationNamed(ft.annotations, NULLABLE_ANNOTATION_NAMES)
+            if (!nonNull || veto) continue
             Expression parsed = parseContract(f.name + ' != null')
             if (parsed != null) out.add(parsed)
         }

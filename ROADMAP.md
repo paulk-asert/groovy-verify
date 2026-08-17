@@ -10903,6 +10903,40 @@ different variable refutes.
 
 ---
 
+## Phase 239 — `@Nullable` wins: the veto over `@NonNull` effects  *(shipped)*
+
+The last NullChecker parity-gap slice from the beta-2 assessment — the small half of GROOVY-12252.
+`NULLABLE_ANNOTATION_NAMES` had been a declared no-op since Phase 37 ("the unannotated default
+already triggers the implicit obligation"), which was true but incomplete: the set's real force in
+the default mode is *precedence*. `@NonNull` drives five distinct effects — the param/field
+non-null assumption (`assumeConstraintsFor`), the implicit `field != null` class invariant
+(`addNonNullFieldInvariants`, an exit obligation *and* an entry assumption), the element- and
+compiled-array-component obligation suppressions (Phase 37/234), and the Phase 131 return
+obligation — and on a declaration carrying both annotations, each of them silently ignored the
+author's explicit disclaimer.
+
+Now `@Nullable`/`@CheckForNull` at the same position (declaration or type use, mirroring exactly
+the lists each positive match reads) vetoes all five. Nullable-wins is applied *uniformly* —
+assumptions and obligations alike: dropping an assumption is the sound direction, dropping the
+return obligation just declines to enforce a claim the author disclaimed on the same line. In the
+default mode `@Nullable` alone still changes nothing (`List<@Nullable String>` refutes exactly as
+the unannotated twin does — now pinned by a case rather than implied by accident). The
+**non-null-by-default strict mode** — the full 12252 parity — remains deliberately parked as its
+own future phase; this wiring is what it will key "explicitly nullable" off.
+
+Cases (G303, new group, 8; a `NULLABLE_TYPEUSE_ANN` twin joins CaseDsl): the `@Nullable`-alone pin;
+both-annotations element still refutes where G300's `@NonNull`-only twin proves; the `@NonNull`
+param assumption proves and its both-annotations twin loses it; the both-annotations return drops
+the obligation G300 pins for `@NonNull` alone; and the field-invariant triple — `@NonNull` alone is
+*established* at the constructor exit by a Phase 237 `requireNonNull` survival fact and consumed in
+a reader, an unchecked store refutes it (`Cannot prove class invariant`, witness `new C(null)`),
+and the both-annotations twin compiles clean because there is no invariant left to prove. En route,
+one honest observation the failed first draft of the teeth forced: a bare field deref in a method
+carries no implicit obligation in this shape, so the veto's observable is the invariant's *proof*
+side, not a reader's deref.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -102,6 +102,13 @@ class CaseDsl {
         @interface NonNull {}
     '''.stripIndent()
 
+    /** The TYPE_USE @Nullable twin (Phase 239 — the nullable-wins veto cases compose it with the above). */
+    static final String NULLABLE_TYPEUSE_ANN = '''
+        @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+        @java.lang.annotation.Target([java.lang.annotation.ElementType.TYPE_USE])
+        @interface Nullable {}
+    '''.stripIndent()
+
     /** JSR 385 imports for the dimensional-analysis (Phase 131) cases — the unit-api jar is a test dependency. */
     static final String UOM = 'import javax.measure.Quantity\nimport javax.measure.quantity.*\n'
 
