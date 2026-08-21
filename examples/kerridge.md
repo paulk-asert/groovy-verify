@@ -1,0 +1,120 @@
+<!--
+  SPDX-License-Identifier: Apache-2.0
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+# The Kerridge gallery — CSP teaching shapes, certified
+
+Jon Kerridge's ["Using Concurrency and Parallelism Effectively" i & ii](https://github.com/JonKerridge/UCaPE)
+(free from bookboon.com, sources on GitHub) taught a generation of students process-oriented programming in
+Groovy over [JCSP](https://github.com/CSPforJAVA/jcsp) — the occam inheritance: processes, one2one channels,
+`PAR`, `ALT`, and the *plugAndPlay* process vocabulary (`GNumbers`, `GSquares`, `GPlus`, `GDelta`,
+`GPrint`, …). His [Groovy Parallel Patterns library](https://github.com/JonKerridge/GPP_Library)
+([arXiv 2103.12031](https://arxiv.org/abs/2103.12031)) carries the same tradition further: networks
+"guaranteed deadlock and livelock free … through the use of formal methods" — proofs made *offline*, in the
+Welch/Martin design-rule school.
+
+This gallery ports his teaching shapes onto Groovy 6's `groovy.concurrent` (channels as `AsyncChannel`,
+`PAR` arms as `async {}` tasks, the delta as `BroadcastChannel`) and runs them under the
+[SEQ/PAR ladder](concurrency.md) (Phases 240–246) — where the corresponding certificates are issued **in the
+compiler**: values proved end-to-end, deadlock-freedom as well-foundedness of the wait-for order, and the
+classic student mistakes surfacing as *named compile errors* rather than runtime hangs. The shapes are
+**inspired by UCaPE, written ourselves** — his repository carries no licence and JCSP is LGPL, so ideas are
+ported, never sources (the same rule as the jcstress-inspired examples).
+
+## The vocabulary, mapped
+
+| Kerridge / JCSP | groovy.concurrent | What the checker does with it |
+| --- | --- | --- |
+| `Channel.one2one()` | `AsyncChannel.create(n)` | one live process per end, checked (Phase 241) |
+| a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked (Phase 240) |
+| typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives (Phase 242) |
+| the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
+| poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error (Phase 245) |
+| `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
+| `ALT` | `ChannelSelect` | future work (locally a nondeterministic branch, like `Awaitable.any`) |
+
+## The one-shot shapes verify end to end
+
+The book's first network — c02's `RunHelloWorld`, a producer and consumer under `PAR` over a one2one
+channel — with the exchanged value *proved*:
+
+<!-- doclint:case p246-kerridge-gallery/c02-hello-world-the-one-message-exchange-proves -->
+```groovy
+@Ensures({ result == 'Hello' })
+static String helloWorld() {
+    groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(1)
+    async { connect.send('Hello'); connect.close() }
+    return connect.first()
+}
+```
+
+The plugAndPlay stages port the same way: **GSquares** is a `map { it * it }` stage whose per-element
+transform proves; **GPlus** joins one value from each of two input channels and proves the sum (fan-in done
+right: each producer owns its own channel); **GDelta** is `BroadcastChannel` fan-out, both branches proved
+to see the element; **GPrint**'s drain-until-end-of-stream is certified to finish because its `close()`
+dependency is satisfiable. And the shape his tradition cares most about — the **client–server exchange**,
+whose deadlock-freedom the Welch/Martin design rules argue by ordering — is certified here by the same
+theorem, mechanised (the wait-for order is well-founded), *and* its value proves:
+
+<!-- doclint:case p246-kerridge-gallery/client-server-request-reply-certified-and-proved -->
+```groovy
+@Ensures({ result == x + 1 })
+static int clientServer(int x) {
+    groovy.concurrent.AsyncChannel<Integer> request = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> reply = groovy.concurrent.AsyncChannel.create(1)
+    request.send(x)
+    async { int r = request.first(); reply.send(r + 1) }
+    return reply.first()
+}
+```
+
+## The student mistakes are named compile errors
+
+The book teaches deadlock by *running into it* — build the network, watch it hang, discuss. Here the same
+exercises refuse to compile, each with its cause spelled out:
+
+<!-- doclint:case p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
+```groovy
+static int deadlockExercise() {
+    groovy.concurrent.AsyncChannel<Integer> aToB = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> bToA = groovy.concurrent.AsyncChannel.create(1)
+    async { int x = bToA.first(); aToB.send(x) }
+    async { int y = aToB.first(); bToA.send(y) }
+    return 0
+}
+```
+
+> Process-network deadlock in 'deadlockExercise': circular wait: the receive on 'bToA' … which waits for
+> the send on 'bToA' … which waits for the receive on 'aToB' … which waits for the send on 'aToB' …
+> which waits for the first.
+
+The **missing poison pill** — a consumer draining a stream nobody ends — errors as *"the iteration over
+'stream' can never finish — no close()"*. And **two producers on one one2one channel** — the discipline
+JCSP polices at runtime — is a compile-time "Channel linearity violation": the element order is a race.
+
+## The honest boundaries, loudly
+
+Two ports are *deliberately* out of reach, and say so. The **literal c02 `ProduceHW`** writes two messages
+(`"Hello"`, then `"World"`) down one channel — beyond the checker's one-in-flight-element model, so it
+skips loudly with the channel named rather than proving anything FIFO-false. And **GNumbers** — the
+infinite generator behind every pipeline in the book — is *streaming*: loop traffic refuses the scalar
+model outright, so its value claims skip. That frontier is precisely the ladder's recorded next rung
+(session-typed channel protocols, symbolic send/receive counts carried by loop invariants) — which makes
+"pick a streaming example and see what certification takes" a research conversation, not a demo: the same
+guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
+
+As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
+the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory
+model, exactly as CSP's own semantics are.

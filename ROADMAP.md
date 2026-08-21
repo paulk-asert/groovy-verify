@@ -11209,6 +11209,43 @@ values, multi-element traffic, and the scheduler remain rungs 2/3 — the three-
 
 ---
 
+## Phase 246 — the Kerridge gallery: CSP teaching shapes, certified  *(shipped — the ladder's port gallery)*
+
+The SEQ/PAR ladder's outward-facing gallery, in the house port tradition (Dafny, OpenJML, HumanEval,
+Leino, jcstress): the teaching shapes from Jon Kerridge's *Using Concurrency and Parallelism
+Effectively* i & ii (bookboon; sources at github.com/JonKerridge/UCaPE) and the occam-heritage
+groovy_jcsp *plugAndPlay* vocabulary, ported to `groovy.concurrent` and run under Phases 240–245.
+**Inspired by UCaPE, written ourselves** — his repo carries no licence and JCSP is LGPL, so shapes are
+ported, never sources (the jcstress rule). The ports were grounded against the published originals
+(c02 `RunHelloWorld`/`ProduceHW`, c03's plugAndPlay pipeline runners) rather than reconstructed from
+memory.
+
+Three tiers, eleven cases (G310). **Verified end to end**: the c02 hello-world exchange (a
+`String`-element channel — see below), GSquares as a `map` stage (`x * x` proves), GPlus joining two
+channels (`x + y` — fan-in done right, each producer its own channel), GDelta as `BroadcastChannel`
+fan-out (both branches prove), the client–server request-reply (the Welch/Martin design-rule shape:
+deadlock-freedom mechanised as well-foundedness AND the reply value proved), and GPrint's
+drain-until-close (certified to finish). **The student mistakes as named compile errors**: the
+mutual-receive deadlock exercise (its circular wait spelled out), the missing poison pill ("the
+iteration over 'stream' can never finish — no close()"), and two producers racing a one2one channel
+(linearity). **The honest boundaries, loudly**: the *literal* two-write `ProduceHW` exceeds the
+one-in-flight-element model (named skip, never a FIFO-false proof), and the streaming `GNumbers`
+generator skips — the streaming frontier (session-typed protocols, symbolic counts) is the recorded
+next rung and the natural joint-work conversation, not a claim.
+
+One engine touch fell out: a channel LOCAL's scalar shadow (the desugared `def ch = v`) now takes the
+channel's **element type** when it is a non-Int scalar, so a `AsyncChannel<String>` exchange proves in
+the string theory instead of colliding with the Int default ("Sorts Int and String are incompatible" —
+caught by the hello-world port on first run). Registered `putIfAbsent` into `currentScalarTypes` from
+the Phase 242 harvest walk; int-element channels are untouched.
+
+Docs: `examples/kerridge.md` (the gallery page: the vocabulary mapping table — one2one →
+`AsyncChannel`, PAR arm → `async {}`, poison pill → `close()`, GDelta → `subscribe()`, ALT →
+`ChannelSelect` as future work — three linked cases, the error zoo, the frontier section), plus
+README/tour gallery bullets. Suite, docLint, check all green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

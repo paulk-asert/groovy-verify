@@ -5128,6 +5128,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         VariableExpression ve = (VariableExpression) de.leftExpression
                         List<long[]> b = channelElementBounds(ve.getOriginType(), ve.name, node)
                         if (b != null && !b.isEmpty()) bounds.put(ve.name, b)
+                        // Phase 246 — a channel LOCAL's scalar shadow (the desugared `def ch = v`)
+                        // takes the channel's ELEMENT type, so a String-element channel's value
+                        // proves in the string theory instead of colliding with the Int default.
+                        ClassNode elem = channelElementType(ve.getOriginType())
+                        if (elem != null && isNonIntScalar(elem) && !currentScalarTypes.containsKey(ve.name)) {
+                            currentScalarTypes.put(ve.name, elem)
+                        }
                     }
                     super.visitDeclarationExpression(de)
                 }
@@ -5135,6 +5142,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         currentChannelBounds = bounds
         currentChannelRecvParams = recvParams
+    }
+
+    /** The element type of an {@code AsyncChannel<T>} / {@code BroadcastChannel<T>} type, else null. */
+    private static ClassNode channelElementType(ClassNode t) {
+        if (t == null) return null
+        String cn = t.nameWithoutPackage
+        if (cn != 'AsyncChannel' && cn != 'BroadcastChannel') return null
+        GenericsType[] gts = t.genericsTypes
+        (gts != null && gts.length > 0) ? gts[0].type : null
     }
 
     /** The element bounds of a channel-typed declaration, or null when it isn't an int/long-element
