@@ -11164,6 +11164,51 @@ matching for PAR termination (slice 6).
 
 ---
 
+## Phase 245 — channel drain discipline: iteration blocks until close  *(shipped — slice 6, completing the SEQ/PAR ladder)*
+
+The ladder's last slice, honestly re-scoped on arrival: the planned "send/receive count matching for
+PAR termination" turned out largely subsumed — in the one-element fragment the model guard (241) plus
+the exact wait-for analysis (243) already certify that every blocking read completes. The REAL
+termination gap was the **drain side**: `for (v in ch)` and the drain ops (`toList`/`each`/`collect`)
+are whole-stream receives that block **until close**, and nothing modelled that — the classic
+forgotten-`close()` hang was invisible, and drain shapes drew spurious noise instead of analysis.
+
+Mechanics, riding the 240–243 machinery end to end. Iterations are recognised on both sides (a
+`ForStatement` over a direct channel var in the ordinal walk; the arm visitor's `visitForLoop`; the
+drain ops via the method-name recogniser) as RECV-kind uses with method `'iterate'` — so the Phase 241
+receiver-linearity rule covers concurrent iterators *unchanged*. In the wait-for graph they join the
+blocking set with one new dependency family: **an iteration depends on its root's `close()` event**
+(closes enter the graph as non-blocking events with the generic program-order dependencies). A root
+with no close → "the iteration over 'src' **can never finish**"; a close later in the same process, or
+in a task forked only after main blocks at the loop, closes a cycle the DFS spells out; a conditional
+close → the uncertifiable loud skip. The linearity gate split in two: RACE-class findings still
+suppress the network analysis, but **model-limit skips no longer do** — they refuse only the VALUE
+rewrite, and the blocking structure stays analysable (with multiple sends the single r→s edge
+under-detects but never over-claims).
+
+Three hardenings shipped alongside. The scalar-rewrite guard now refuses **loops and drains** outright
+(an end-use at loop depth, a drain op, a `for`-in over a channel) — a loop producer previously
+half-rewrote (create-decl dropped, send left raw); now its FIFO-false claim skips loudly, pinned by a
+case. **Locally-constructed channels** (`create()`/`subscribe()`/pipeline stages) are factory results
+and never null, so the raw un-rewritten calls in drain shapes carry no deref obligations — exempted at
+the single `dischargeObligationUnder` choke point, while channel *params* keep the honest `@NotNull`
+discharge (242). And the escape scan sanctions a `for`-in collection var — consuming a channel in
+place is not an escape (its absence silently voided the drain claims in the first case run).
+
+Cases (G309, new group, 8): the two certified drains (arm-side `for`-in with a closing producer;
+main-side `toList`); the forgotten-close hang; the two circular waits (close after the iteration in
+one process; the closer forked too late); the concurrent-iterators linearity freebie; the
+conditional-close skip; the loop-producer guard pin. Docs: the Phase 245 subsection in
+`examples/concurrency.md` (two linked cases), the CAPABILITIES row. With this the six-slice SEQ/PAR
+ladder is complete: PAR disjointness (240), channel-end linearity (241), channel contracts (242),
+network well-formedness (243), guarantee conformance (244), drain discipline (245) — the combined
+claim: in a clean one-shot network, every blocking operation provably completes, every send is
+contract-checked and every opaque receive contract-assumed, arms don't interfere outside the declared
+disciplines, and declared guarantees are honoured by their bodies. Per-task `@Decreases`, drained
+values, multi-element traffic, and the scheduler remain rungs 2/3 — the three-rung doctrine intact.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -3547,6 +3547,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (site instanceof DerefSite) {
             DerefSite df = (DerefSite) site
+            // Phase 245 — a locally-CONSTRUCTED channel (create()/subscribe()/a pipeline op) is a
+            // factory result and never null: an un-rewritten call on it (send/close/toList in a
+            // drain shape the scalar model refuses) carries no deref obligation. A channel PARAM
+            // stays obligated — it can be null, and @NotNull is its honest discharge (Phase 242).
+            if (currentChannelLocalNames.contains(df.receiver)) return
             if (df.indexExpr != null) {
                 // Phase 37 — indexed receiver (xs[i].method() / xs.get(i).method()): consult the
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
@@ -4210,6 +4215,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Integer> consumers = new HashMap<String, Integer>()
         boolean[] ok = [true]
         body.visit(new CodeVisitorSupport() {
+            private int loopDepth
             @Override void visitMethodCallExpression(MethodCallExpression m) {
                 // Count only at the DIRECT channel-var receiver — a pipeline chain consumes its
                 // base exactly once (the bottom-most op has the var receiver; a read off the top
@@ -4217,6 +4223,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression recv = stripCasts(m.objectExpression)
                 if (recv instanceof VariableExpression && ch.contains(((VariableExpression) recv).name)) {
                     String name = ((VariableExpression) recv).name
+                    // Phase 245 — an end-use inside a LOOP is unbounded traffic, and a drain op
+                    // consumes the whole stream: both are beyond the one-element scalar rewrite.
+                    if (loopDepth > 0 && m.methodAsString in ['send', 'first', 'receive']) ok[0] = false
+                    if (m.methodAsString in CHANNEL_DRAIN_OPS) ok[0] = false
                     if (m.methodAsString == 'send') bump(sends, name)
                     if (m.methodAsString == 'first' || m.methodAsString == 'receive') bump(consumers, name)
                     // A derivation consumes its source: def out = src.map{..} → src has its consumer.
@@ -4224,6 +4234,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (m.methodAsString in CHANNEL_PIPE_OPS && m.methodAsString != 'subscribe') bump(consumers, name)
                 }
                 super.visitMethodCallExpression(m)
+            }
+            @Override void visitForLoop(ForStatement st) {
+                // Phase 245 — `for (v in ch)` drains the stream: beyond the scalar rewrite.
+                Expression coll = stripCasts(st.collectionExpression)
+                if (coll instanceof VariableExpression && ch.contains(((VariableExpression) coll).name)) ok[0] = false
+                loopDepth++
+                try { super.visitForLoop(st) } finally { loopDepth-- }
+            }
+            @Override void visitWhileLoop(WhileStatement st) {
+                loopDepth++
+                try { super.visitWhileLoop(st) } finally { loopDepth-- }
+            }
+            @Override void visitDoWhileLoop(DoWhileStatement st) {
+                loopDepth++
+                try { super.visitDoWhileLoop(st) } finally { loopDepth-- }
             }
             private void bump(Map<String, Integer> counts, String name) {
                 Integer n = counts.get(name)
@@ -4506,14 +4531,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 245 — the drain ops: consume the WHOLE stream, blocking until the channel is closed. */
+    private static final List<String> CHANNEL_DRAIN_OPS = ['toList', 'each', 'collect'].asImmutable()
+
     /** Classify a channel end-use by method name: SEND, RECV, SUB, or -1 (neutral — isClosed etc.). */
     private static int chanUseKindOf(String method) {
         if (method == 'send' || method == 'close') return CHAN_SEND
         if (method == 'first' || method == 'receive') return CHAN_RECV
         if (method == 'subscribe') return CHAN_SUB
+        if (method in CHANNEL_DRAIN_OPS) return CHAN_RECV    // Phase 245 — a drain is a (whole-stream) receive
         if (method in CHANNEL_PIPE_OPS) return CHAN_RECV     // map/filter/tap/merge/split consume their source
         -1
     }
+
+    /** Phase 245 — a blocking-until-close consumption: a `for (v in ch)` (recorded as 'iterate') or a drain op. */
+    private static boolean isIterateUse(ChanUse u) { u.method == 'iterate' || u.method in CHANNEL_DRAIN_OPS }
 
     /** Record a channel end-use at a DIRECT channel-var receiver (a chain's base op has the var
      *  receiver, so a pipeline chain registers exactly one consumption of its source). */
@@ -4711,6 +4743,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 try { st.ifBlock?.visit(this); st.elseBlock?.visit(this) } finally { armCondDepth-- }
             }
             @Override void visitForLoop(ForStatement st) {
+                // Phase 245 — an arm-side `for (v in ch)` is a whole-stream receive (blocks until close).
+                Expression coll = stripCasts(st.collectionExpression)
+                if (coll instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) coll).name)) {
+                    ctx.chanUse(((VariableExpression) coll).name, 'iterate', CHAN_RECV, arm, arm.fork,
+                        coll.lineNumber, ++armSeq, arm.conditional || armCondDepth > 0, arm.anchor)
+                }
                 st.collectionExpression?.visit(this)
                 armCondDepth++
                 try { st.loopBlock?.visit(this) } finally { armCondDepth-- }
@@ -4769,6 +4807,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (st instanceof ForStatement) {
             ForStatement f = (ForStatement) st
+            // Phase 245 — `for (v in ch)` is a whole-stream receive that blocks until close.
+            Expression coll = stripCasts(f.collectionExpression)
+            if (coll instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) coll).name)) {
+                ctx.chanUse(((VariableExpression) coll).name, 'iterate', CHAN_RECV, null, ord,
+                    coll.lineNumber, ord, ctx.condDepth > 0, coll)
+            }
             parScanExpr(f.collectionExpression, ord, ctx)
             ctx.condDepth++
             try { parWalkStatement(f.loopBlock, ctx) } finally { ctx.condDepth-- }
@@ -4837,10 +4881,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans, chanParent)
         ParCtx ctx = new ParCtx(chanVars)
         parWalkStatement(body, ctx)
-        boolean chanErrors = checkChannelLinearity(node, ctx, derivedChans, broadcastChans)
-        // Phase 243 — the network well-formedness check: only when the ends are clean (a linearity
-        // or model-limit finding already re-shapes the network's meaning and got its own loud report).
-        if (!chanErrors) {
+        int chanFindings = checkChannelLinearity(node, ctx, derivedChans, broadcastChans)
+        // Phase 243/245 — the network well-formedness check: runs unless a RACE-class finding
+        // re-shaped the network's meaning (its own loud report stands). Model-limit skips only
+        // refuse the VALUE rewrite — the blocking structure is still analysable (Phase 245), and
+        // with multiple sends the single r→s edge under-detects but never over-claims.
+        if (chanFindings < 2) {
             try {
                 checkNetworkWellFormedness(node, ctx, (BlockStatement) body, chanParent, broadcastChans)
             } catch (Throwable ignored) {
@@ -4959,10 +5005,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * the scalar rewrite, so it SKIPS loudly here with the channel named (and desugarChannels'
      * guard independently refuses the rewrite, so nothing downstream can prove a FIFO-false value).
      */
-    private boolean checkChannelLinearity(MethodNode node, ParCtx ctx,
-                                          Set<String> derivedChans, Set<String> broadcastChans) {
+    private int checkChannelLinearity(MethodNode node, ParCtx ctx,
+                                      Set<String> derivedChans, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
-        if (uses.isEmpty()) return false
+        if (uses.isEmpty()) return 0
         Set<String> flagged = new HashSet<String>()          // per-channel per-rule dedupe
         Set<String> erroredChans = new HashSet<String>()     // channels with a concurrency error
         for (int i = 0; i < uses.size(); i++) {
@@ -5020,7 +5066,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     "has ${e.value} consumers (receives / pipeline stages)"), anchorFor(uses, e.key))
             }
         }
-        !flagged.isEmpty()
+        // 2 = race-class findings (they re-shape the network's meaning: the structural analysis
+        // must not run); 1 = model-limit skips only (value model refused, structure still analysable);
+        // 0 = clean.
+        !erroredChans.isEmpty() ? 2 : (!flagged.isEmpty() ? 1 : 0)
     }
 
     // ── Phase 242 — channel contracts: the element type is the protocol invariant ───────────────
@@ -5047,6 +5096,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Every channel-valued name in the method (params by declared type + locals by construction),
      *  regardless of element type — for exempting channels from collection-shaped obligations. */
     private Set<String> currentChannelNames = Collections.emptySet()
+    /** Phase 245 — the LOCAL subset of {@link #currentChannelNames} (constructed via create()/
+     *  subscribe()/pipeline ops — factory results, never null, so no deref obligation; a channel
+     *  PARAM stays out: it can be null, and @NotNull is its honest discharge). */
+    private Set<String> currentChannelLocalNames = Collections.emptySet()
 
     // Bound op codes (shared with Encoder.tryBindChannelReceive by value): ge / gt / le / lt.
     private static final long CB_GE = 0L, CB_GT = 1L, CB_LE = 2L, CB_LT = 3L
@@ -5063,8 +5116,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             recvParams.put(p.name, b)
             if (!b.isEmpty()) bounds.put(p.name, b)
         }
-        if (node.code instanceof BlockStatement) collectChannelVars((BlockStatement) node.code, names)
+        Set<String> localNames = new HashSet<String>()
+        if (node.code instanceof BlockStatement) collectChannelVars((BlockStatement) node.code, localNames)
+        names.addAll(localNames)
         currentChannelNames = names
+        currentChannelLocalNames = localNames
         if (node.code != null) {
             node.code.visit(new CodeVisitorSupport() {
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
@@ -5232,6 +5288,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (de.leftExpression instanceof VariableExpression) sanctioned.add(de.leftExpression)
                 de.rightExpression?.visit(this)
             }
+            @Override void visitForLoop(ForStatement st) {
+                // Phase 245 — `for (v in ch)` consumes the channel in place; it is not an escape.
+                Expression coll = stripCasts(st.collectionExpression)
+                if (coll instanceof VariableExpression) sanctioned.add(coll)
+                super.visitForLoop(st)
+            }
         })
         final Set<String> escaping = new HashSet<String>()
         body.visit(new CodeVisitorSupport() {
@@ -5254,7 +5316,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (ev instanceof ParArm) return "the await of the task forked at line ${((ParArm) ev).line}"
         ChanUse u = (ChanUse) ev
         String who = u.proc == null ? '' : " in the task forked at line ${u.proc.line}"
-        "the ${u.method == 'send' ? 'send' : 'receive'} on '${u.chan}' (line ${u.line}${who})"
+        String what = u.method == 'send' ? 'the send on' :
+                      u.method == 'close' ? 'the close of' :
+                      isIterateUse(u) ? 'the iteration over' : 'the receive on'
+        "${what} '${u.chan}' (line ${u.line}${who})"
     }
 
     /** The Phase 243 entry point — see the section comment above. Runs only when the linearity
@@ -5270,18 +5335,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Set<String> escaping = collectEscapingChannels(body, ctx.chanVars)
 
-        List<ChanUse> blockingReads = new ArrayList<ChanUse>()
+        List<ChanUse> blockingReads = new ArrayList<ChanUse>()   // single-element receives (first / awaited receive)
+        List<ChanUse> iterates = new ArrayList<ChanUse>()        // Phase 245 — whole-stream receives (block until close)
         List<ChanUse> sends = new ArrayList<ChanUse>()
+        List<ChanUse> closes = new ArrayList<ChanUse>()
         Map<String, ChanUse> sendByRoot = new HashMap<String, ChanUse>()
+        Map<String, ChanUse> closeByRoot = new HashMap<String, ChanUse>()
         ChanUse condUse = null
         for (ChanUse u : uses) {
             String root = chanBaseOf(u.chan, chanParent)
             if (paramChans.contains(root) || escaping.contains(root) || escaping.contains(u.chan)) continue
             boolean isSend = u.method == 'send'
+            boolean isClose = u.method == 'close'
             boolean isRead = u.method == 'first' || u.method == 'receive'
-            if (!isSend && !isRead) continue
+            boolean isIter = isIterateUse(u)
+            if (!isSend && !isClose && !isRead && !isIter) continue
             if (u.conditional || (u.proc != null && u.proc.conditional)) { condUse = u; continue }
             if (isSend) { sends.add(u); if (!sendByRoot.containsKey(root)) sendByRoot.put(root, u) }
+            else if (isClose) { closes.add(u); if (!closeByRoot.containsKey(root)) closeByRoot.put(root, u) }
+            else if (isIter) iterates.add(u)
             else blockingReads.add(u)
         }
         if (condUse != null) {
@@ -5290,9 +5362,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 "(inside an if / loop / catch)"), condUse.anchor)
             return
         }
-        if (blockingReads.isEmpty()) return          // nothing blocks → nothing to certify
+        List<ChanUse> blockers = new ArrayList<ChanUse>(blockingReads)   // ops a process stalls at
+        blockers.addAll(iterates)
+        if (blockers.isEmpty()) return               // nothing blocks → nothing to certify
 
-        // A read whose root channel is never sent to can never be satisfied.
+        // A read whose root channel is never sent to can never be satisfied; an iteration over a
+        // root that is never CLOSED can never finish (Phase 245 — the forgotten-close hang).
         for (ChanUse r : blockingReads) {
             String root = chanBaseOf(r.chan, chanParent)
             if (!sendByRoot.containsKey(root)) {
@@ -5303,27 +5378,39 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
         }
+        for (ChanUse it : iterates) {
+            String root = chanBaseOf(it.chan, chanParent)
+            if (!closeByRoot.containsKey(root)) {
+                addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                    "the iteration over '${it.chan}' (line ${it.line}) can never finish — no close() on " +
+                    (root == it.chan ? "'${root}'" : "its source channel '${root}'") +
+                    " anywhere in the method"), it.anchor)
+                return
+            }
+        }
 
-        // The wait-for graph: nodes are the channel ops plus each awaited arm's join.
+        // The wait-for graph: nodes are the channel ops (reads, iterations, sends, closes) plus
+        // each awaited arm's join.
         List<Object> evs = new ArrayList<Object>()
         Map<Object, Integer> id = new IdentityHashMap<Object, Integer>()
-        List<ChanUse> evUses = new ArrayList<ChanUse>(blockingReads)
+        List<ChanUse> evUses = new ArrayList<ChanUse>(blockers)
         evUses.addAll(sends)
+        evUses.addAll(closes)
         for (ChanUse u : evUses) { id.put(u, evs.size()); evs.add(u) }
         List<ParArm> joined = new ArrayList<ParArm>()
         for (ParArm a : ctx.arms) if (a.join != Integer.MAX_VALUE) { joined.add(a); id.put(a, evs.size()); evs.add(a) }
         List<List<Integer>> adj = new ArrayList<List<Integer>>()
         for (int i = 0; i < evs.size(); i++) adj.add(new ArrayList<Integer>())
 
-        // Main's blocking points before ordinal o: its blocking reads and the joins it has passed.
+        // Main's blocking points before ordinal o: its blockers and the joins it has passed.
         // (X → Y means "X cannot complete until Y has".)
         for (ChanUse u : evUses) {
             if (u.proc == null) {
-                for (ChanUse b : blockingReads) if (b.proc == null && b.ord < u.ord) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : blockers) if (b.proc == null && b.ord < u.ord) adj.get(id.get(u)).add(id.get(b))
                 for (ParArm a : joined) if (a.join < u.ord) adj.get(id.get(u)).add(id.get(a))
             } else {
-                for (ChanUse b : blockingReads) if (b.proc != null && b.proc.is(u.proc) && b.seq < u.seq) adj.get(id.get(u)).add(id.get(b))
-                for (ChanUse b : blockingReads) if (b.proc == null && b.ord < u.proc.fork) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : blockers) if (b.proc != null && b.proc.is(u.proc) && b.seq < u.seq) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : blockers) if (b.proc == null && b.ord < u.proc.fork) adj.get(id.get(u)).add(id.get(b))
                 for (ParArm a : joined) if (a.join < u.proc.fork) adj.get(id.get(u)).add(id.get(a))
             }
         }
@@ -5331,9 +5418,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ChanUse s = sendByRoot.get(chanBaseOf(r.chan, chanParent))
             if (s != null && !s.is(r)) adj.get(id.get(r)).add(id.get(s))
         }
+        for (ChanUse it : iterates) {                            // Phase 245 — an iteration finishes at close
+            ChanUse c = closeByRoot.get(chanBaseOf(it.chan, chanParent))
+            if (c != null && !c.is(it)) adj.get(id.get(it)).add(id.get(c))
+        }
         for (ParArm a : joined) {
             for (ChanUse u : evUses) if (u.proc != null && u.proc.is(a)) adj.get(id.get(a)).add(id.get(u))
-            for (ChanUse b : blockingReads) if (b.proc == null && b.ord < a.join) adj.get(id.get(a)).add(id.get(b))
+            for (ChanUse b : blockers) if (b.proc == null && b.ord < a.join) adj.get(id.get(a)).add(id.get(b))
             for (ParArm o : joined) if (!o.is(a) && o.join < a.join) adj.get(id.get(a)).add(id.get(o))
         }
 

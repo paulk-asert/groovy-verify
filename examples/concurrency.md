@@ -497,6 +497,46 @@ no local claim — the modular assumption, same as Phase 242's receives. The che
 linearity pass is silent (its findings already re-shape the network's meaning). What remains at rungs 2/3:
 per-task termination, conditional/multi-element networks, and the scheduler itself.
 
+### Drain discipline — iteration blocks until close (Phase 245)
+
+The last slice of the SEQ/PAR ladder closes the termination story's drain side. `for (v in ch)` and the
+drain ops (`toList()`, `each {}`, `collect {}`) are **whole-stream receives**: they block until the channel
+is *closed*, not until an element arrives — a new dependency family in the Phase 243 wait-for graph. An
+iteration completes only when its root channel's `close()` executes, so the classic forgotten-close hang is
+now a named compile error, and a close *behind* the iteration is a circular wait like any other. The
+well-ordered shape is certified silently:
+
+<!-- doclint:case p245-channel-drain/iterate-with-a-closing-producer-finishes -->
+```groovy
+static int drain() {
+    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+    src.send(1)
+    src.close()
+    async {
+        int total = 0
+        for (v in src) {
+            total = total + v
+        }
+    }
+    return 0
+}
+```
+
+Drop the `close()` and the checker names the hang — *"the iteration over 'src' can never finish — no
+close() on 'src' anywhere in the method"*; put the close *after* the iteration in the same process, or in a
+task forked only after main has blocked at the loop, and the circular wait is spelled out as a
+Process-network deadlock. A **conditional** close is uncertifiable (loud skip), and two concurrent iterators
+trip the Phase 241 receiver rule unchanged — an iteration is a receive-end use like any other.
+
+Two honest boundaries shipped with it. The **value** of drained traffic stays unmodelled: the scalar
+rewrite's guard now also refuses loops and drain ops outright, pinned by a loop-producer case whose
+FIFO-false claim *skips loudly* instead of proving. And locally-constructed channels (`create()`,
+`subscribe()`, pipeline stages) are recognised as factory results — never null, so the raw un-rewritten
+calls in drain shapes carry no spurious deref obligations, while a channel *parameter* keeps its honest
+`@NotNull` discharge. Together with Phase 243 this completes the ladder's termination claim: **in a clean
+one-shot network every blocking operation — read, iteration, join — provably completes**, with per-task
+loop termination (`@Decreases`) and the scheduler itself remaining rungs 2/3.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a
