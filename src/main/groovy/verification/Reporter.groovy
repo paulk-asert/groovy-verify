@@ -348,6 +348,17 @@ class Reporter {
         "(a receive or a pipeline stage). The method is allowed to proceed unchecked."
     }
 
+    // ---- Channel contracts (Phase 242) ----
+
+    /** Phase 242 — a channel element constraint outside the checkable vocabulary: loud skip, so the
+     *  author knows it is neither checked at sends nor assumed at receives. */
+    static String formatChannelConstraintSkipped(String methodName, String chan, String annotation) {
+        "Skipped channel-contract constraint ${annotation} on '${chan}' in ${methodName}. The channel " +
+        "contract fragment is numeric bounds on an int/long element (@Positive, @PositiveOrZero, " +
+        "@Negative, @NegativeOrZero, @Min, @Max; @NotNull is a no-op there). This constraint is " +
+        "neither checked at sends nor assumed at receives."
+    }
+
     // ---- Information flow (Phase L1) ----
 
     /**

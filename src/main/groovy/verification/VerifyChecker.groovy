@@ -2019,6 +2019,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentAtomicNames = collectAtomicNames(node)
+        collectChannelContracts(node)
         currentTupleTypes = collectTupleTypes(node)
         currentCombiners = collectCombiners(node)
         currentCarrierTypes = collectCarrierTypes(node)
@@ -2107,6 +2108,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } catch (Throwable ignored) {
             }
 
+            // Phase 242 — a constrained channel PARAM's statement send becomes its contract assert
+            // (`ch.send(e)` → `assert φ(e)`): the producer's half of the modular channel contract.
+            Statement deSend = desugarParamChannelSends(body)
+            if (!deSend.is(body)) {
+                node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deSend)
+                body = deSend
+            }
+
             // Phase 118 — desugar Groovy's dataflow constructs into plain single-assignment code: a
             // `DataflowVariable` is a write-once local, so `x << v` is `x = v`, `await(x)`/`x.get()`/`x.val`
             // is a read of `x`, and `async { … }` is transparent (sound — single-assignment makes the result
@@ -2125,7 +2134,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // to `f(ch)`, and receiving one element (`ch.first()`) is a read of `ch`. The pipeline collapses to
             // function composition (the combiner trick); FIFO ordering is the structural half we assume.
             // No-op unless the method actually builds a channel pipeline.
-            Statement deChan = desugarChannels(body)
+            Statement deChan = desugarChannels(body, currentChannelBounds)
             if (!deChan.is(body)) {
                 node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deChan)
                 body = deChan
@@ -2790,6 +2799,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     if (enc.tryRecordAwaitAll(a.name, a.rhs)) continue
                     if (enc.tryBindAwaitAny(a.name, a.rhs)) continue
+                    // Phase 242 — the modular channel receive (mirrors checkPath): a channel-typed
+                    // param's first()/awaited receive() binds a fresh value with the element bounds.
+                    if (enc.tryBindChannelReceive(a.name, a.rhs, currentChannelRecvParams)) continue
                     // Phase 113 — a tuple-returning call (`r = callee(...)`): constrain r's slots by the
                     // callee's @Ensures so a downstream `a[r.vN]` / call-arg obligation sees the slot bounds.
                     // Mirrors checkPath; without it r$vN is unconstrained here and the bound can't discharge.
@@ -3298,6 +3310,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             IndexSite ix = (IndexSite) site
             // m[k] on a map is a key lookup, not a bounds-checked array index — no obligation.
             if (currentMapTypes.containsKey(ix.receiver)) return
+            // Phase 242 — first()/head() on a CHANNEL is a receive: it BLOCKS until an element
+            // arrives (delivery is the assumed structural half), it never throws on "empty", and
+            // the type has no size() — the collection non-empty obligation would be factually
+            // wrong here. (The receive's value contract is handled by tryBindChannelReceive.)
+            if (currentChannelNames.contains(ix.receiver)) return
             Object idx = enc.translate(ix.index)
             if (idx == null) {
                 addStaticTypeError(Reporter.formatImplicitSkipped("array index",
@@ -3991,7 +4008,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  (`first()`) is a read. The pipeline collapses to function composition — FIFO ordering (the i-th value
      *  received is the i-th sent) is the structural half we assume. Pipeline-derived vars are resolved lazily
      *  at the receive site, so a producer in a trailing `async {}` still binds the right (post-send) value. */
-    private static Statement desugarChannels(Statement body) {
+    private static Statement desugarChannels(Statement body, Map<String, List<long[]>> bounds) {
         if (!(body instanceof BlockStatement)) return body
         Set<String> ch = new HashSet<String>()
         collectChannelVars((BlockStatement) body, ch)
@@ -4004,7 +4021,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!channelUseWithinModel((BlockStatement) body, ch)) return body
         List<Statement> out = new ArrayList<Statement>()
         Map<String, Expression> defs = new HashMap<String, Expression>()
-        rewriteChStatements(((BlockStatement) body).statements, ch, defs, out)
+        rewriteChStatements(((BlockStatement) body).statements, ch, defs, out, bounds)
         new BlockStatement(out, ((BlockStatement) body).variableScope)
     }
 
@@ -4116,24 +4133,39 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
-    private static void rewriteChStatements(List<Statement> stmts, Set<String> ch, Map<String, Expression> defs, List<Statement> out) {
+    private static void rewriteChStatements(List<Statement> stmts, Set<String> ch, Map<String, Expression> defs,
+                                            List<Statement> out, Map<String, List<long[]>> bounds) {
         for (Statement st : stmts) {
-            if (st instanceof BlockStatement) { rewriteChStatements(((BlockStatement) st).statements, ch, defs, out); continue }
+            if (st instanceof BlockStatement) { rewriteChStatements(((BlockStatement) st).statements, ch, defs, out, bounds); continue }
             if (st instanceof ExpressionStatement) {
                 Expression e = ((ExpressionStatement) st).expression
                 ClosureExpression cl = asyncClosure(e)                       // async { … } → flatten inline (transparent)
                 if (cl != null) {
-                    if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, ch, defs, out)
+                    if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, ch, defs, out, bounds)
                     continue
                 }
                 if (e instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) e
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'close') continue   // close → drop
-                    if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'send') {            // send(v) → ch = v
+                    if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'send' &&
+                        m.objectExpression instanceof VariableExpression) {     // send(v) → def ch = v
                         List<Expression> a = (m.arguments instanceof ArgumentListExpression) ?
                             ((ArgumentListExpression) m.arguments).expressions : Collections.<Expression>emptyList()
                         if (a.size() == 1) {
-                            out.add(new ExpressionStatement(bin(m.objectExpression, Types.ASSIGN, rewriteChExpr(a.get(0), ch, defs))))
+                            Expression val = rewriteChExpr(a.get(0), ch, defs)
+                            // Phase 242 — send-checked: a constrained channel's send carries its
+                            // contract assert (φ over the element), discharged with a counterexample.
+                            List<long[]> bs = bounds.get(((VariableExpression) m.objectExpression).name)
+                            if (bs != null && !bs.isEmpty()) out.add(boundsAssert(val, bs, m))
+                            // The send DECLARES the scalar (the create-decl below is dropped): the
+                            // rewritten body stays single-assignment, so the value-flow pass — and
+                            // with it the assert discharge — keeps the whole pipeline in fragment.
+                            // (The one-element guard admits at most one send per channel.)
+                            VariableExpression lhs = new VariableExpression(((VariableExpression) m.objectExpression).name)
+                            DeclarationExpression decl = new DeclarationExpression(
+                                lhs, Token.newSymbol(Types.ASSIGN, m.lineNumber, m.columnNumber), val)
+                            decl.setSourcePosition(m)
+                            out.add(new ExpressionStatement(decl))
                             continue
                         }
                     }
@@ -4142,9 +4174,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     DeclarationExpression de = (DeclarationExpression) e
                     String name = ((VariableExpression) de.leftExpression).name
                     if (isChannelCreate(de.rightExpression) || isBroadcastCreate(de.rightExpression)) {
-                        // def src = AsyncChannel.create(n) / def b = BroadcastChannel.create() → def src = 0
-                        VariableExpression lhs = new VariableExpression(name)
-                        out.add(new ExpressionStatement(new DeclarationExpression(lhs, de.operation, new ConstantExpression(Integer.valueOf(0)))))
+                        // def src = AsyncChannel.create(n) / def b = BroadcastChannel.create() → dropped:
+                        // the send declares the scalar (above). A channel that is never sent to has no
+                        // binding at all — a read of it stays unconstrained (a never-sent channel BLOCKS
+                        // at runtime; the old `def src = 0` placeholder modelled it as the value 0).
                         continue
                     }
                     if (isChannelExpr(de.rightExpression, ch)) {           // def out = src.map{..} → record pipeline, defer
@@ -4775,6 +4808,183 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     "has ${e.value} consumers (receives / pipeline stages)"), anchorFor(uses, e.key))
             }
         }
+    }
+
+    // ── Phase 242 — channel contracts: the element type is the protocol invariant ───────────────
+    //
+    // A channel's element type may carry Bean Validation bounds (TYPE_USE, the Phase 145
+    // vocabulary): `AsyncChannel<@PositiveOrZero Integer>`. That is the channel's CONTRACT —
+    // "every value sent satisfies φ" — the monitor-invariant reduction transplanted to channels
+    // (slice 3 of the SEQ/PAR ladder): φ is CHECKED at each send (an `assert` at the send site,
+    // discharged by the existing assert machinery with a counterexample) and ASSUMED at each
+    // receive from an OPAQUE channel — a channel-typed parameter, whose producer lives in another
+    // method and is checked by its own compilation. That is the compositional rule: producer and
+    // consumer verify separately against the type, no whole-network analysis. An unconstrained
+    // param channel still binds a fresh (unconstrained) receive value, so a postcondition stronger
+    // than the contract honestly REFUTES instead of skipping.
+    //
+    // Fragment: int/long elements; numeric bounds (@Positive/@PositiveOrZero/@Negative/
+    // @NegativeOrZero/@Min/@Max — @NotNull is a supported no-op for an int element). Any other
+    // jakarta constraint on a channel element skips loudly: neither checked nor assumed.
+
+    /** Constrained channels (params + locals): name → bounds, for send-site asserts. */
+    private Map<String, List<long[]>> currentChannelBounds = Collections.emptyMap()
+    /** Channel-typed params with an int/long element: name → bounds (maybe empty), for receive-binds. */
+    private Map<String, List<long[]>> currentChannelRecvParams = Collections.emptyMap()
+    /** Every channel-valued name in the method (params by declared type + locals by construction),
+     *  regardless of element type — for exempting channels from collection-shaped obligations. */
+    private Set<String> currentChannelNames = Collections.emptySet()
+
+    // Bound op codes (shared with Encoder.tryBindChannelReceive by value): ge / gt / le / lt.
+    private static final long CB_GE = 0L, CB_GT = 1L, CB_LE = 2L, CB_LT = 3L
+
+    private void collectChannelContracts(MethodNode node) {
+        Map<String, List<long[]>> bounds = new HashMap<String, List<long[]>>()
+        Map<String, List<long[]>> recvParams = new HashMap<String, List<long[]>>()
+        Set<String> names = new HashSet<String>()
+        for (Parameter p : node.parameters) {
+            String tn = p.type?.nameWithoutPackage
+            if (tn == 'AsyncChannel' || tn == 'BroadcastChannel') names.add(p.name)
+            List<long[]> b = channelElementBounds(p.type, p.name, node)
+            if (b == null) continue
+            recvParams.put(p.name, b)
+            if (!b.isEmpty()) bounds.put(p.name, b)
+        }
+        if (node.code instanceof BlockStatement) collectChannelVars((BlockStatement) node.code, names)
+        currentChannelNames = names
+        if (node.code != null) {
+            node.code.visit(new CodeVisitorSupport() {
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        VariableExpression ve = (VariableExpression) de.leftExpression
+                        List<long[]> b = channelElementBounds(ve.getOriginType(), ve.name, node)
+                        if (b != null && !b.isEmpty()) bounds.put(ve.name, b)
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        }
+        currentChannelBounds = bounds
+        currentChannelRecvParams = recvParams
+    }
+
+    /** The element bounds of a channel-typed declaration, or null when it isn't an int/long-element
+     *  channel. Unsupported jakarta constraints on the element skip loudly, per constraint. */
+    private List<long[]> channelElementBounds(ClassNode t, String name, MethodNode node) {
+        if (t == null) return null
+        String cn = t.nameWithoutPackage
+        if (cn != 'AsyncChannel' && cn != 'BroadcastChannel') return null
+        GenericsType[] gts = t.genericsTypes
+        if (gts == null || gts.length == 0 || gts[0].type == null) return null
+        ClassNode elem = gts[0].type
+        if (!isJvmInt(elem) && !isJvmLong(elem)) return null
+        List<long[]> out = new ArrayList<long[]>()
+        List<AnnotationNode> anns = new ArrayList<AnnotationNode>()
+        if (elem.annotations != null) anns.addAll(elem.annotations)
+        if (elem.typeAnnotations != null) anns.addAll(elem.typeAnnotations)
+        for (AnnotationNode a : anns) {
+            String fqn = a.classNode?.name
+            if (fqn == null ||
+                !(fqn.startsWith('jakarta.validation.constraints.') || fqn.startsWith('javax.validation.constraints.'))) {
+                continue
+            }
+            switch (a.classNode.nameWithoutPackage) {
+                case 'Positive':       out.add([CB_GT, 0L] as long[]); break
+                case 'PositiveOrZero': out.add([CB_GE, 0L] as long[]); break
+                case 'Negative':       out.add([CB_LT, 0L] as long[]); break
+                case 'NegativeOrZero': out.add([CB_LE, 0L] as long[]); break
+                case 'Min':            { Long n = longMember(a); if (n != null) out.add([CB_GE, n.longValue()] as long[]); break }
+                case 'Max':            { Long n = longMember(a); if (n != null) out.add([CB_LE, n.longValue()] as long[]); break }
+                case 'NotNull':        break        // supported no-op: an int-element value is never null
+                default:
+                    addStaticTypeError(Reporter.formatChannelConstraintSkipped(node.name, name,
+                        '@' + a.classNode.nameWithoutPackage), node)
+            }
+        }
+        out
+    }
+
+    /** The conjunction of a channel's bounds over {@code subject}, as an `assert` the existing
+     *  assert machinery discharges (with a counterexample on refutation) at the send site. */
+    private static Statement boundsAssert(Expression subject, List<long[]> bounds, ASTNode pos) {
+        Expression conj = null
+        for (long[] b : bounds) {
+            int tok
+            if (b[0] == CB_GE) tok = Types.COMPARE_GREATER_THAN_EQUAL
+            else if (b[0] == CB_GT) tok = Types.COMPARE_GREATER_THAN
+            else if (b[0] == CB_LE) tok = Types.COMPARE_LESS_THAN_EQUAL
+            else tok = Types.COMPARE_LESS_THAN
+            long n = b[1]
+            Expression lit = new ConstantExpression(
+                (n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE) ? (Object) Integer.valueOf((int) n)
+                                                                   : (Object) Long.valueOf(n))
+            Expression cmp = bin(subject, tok, lit)
+            cmp.setSourcePosition(pos)
+            conj = conj == null ? cmp : bin(conj, Types.LOGICAL_AND, cmp)
+        }
+        conj.setSourcePosition(pos)
+        AssertStatement st = new AssertStatement(new BooleanExpression(conj))
+        st.setSourcePosition(pos)
+        st
+    }
+
+    /** Phase 242 — a statement-position `ch.send(e)` (or `await ch.send(e)`) on a CONSTRAINED
+     *  channel PARAM becomes `assert φ(e)`: the send's contract obligation, checked here in the
+     *  producer while delivery stays the assumed structural half. (An unconstrained param send
+     *  keeps today's loud-skip path; local channels get their assert inside the Phase 119
+     *  rewrite, where the send also binds the representative element.) */
+    private Statement desugarParamChannelSends(Statement body) {
+        if (!(body instanceof BlockStatement) || currentChannelBounds.isEmpty()) return body
+        Set<String> paramChans = new HashSet<String>(currentChannelRecvParams.keySet())
+        paramChans.retainAll(currentChannelBounds.keySet())
+        if (paramChans.isEmpty()) return body
+        boolean[] changed = [false] as boolean[]
+        List<Statement> out = rewriteParamSends(((BlockStatement) body).statements, paramChans, changed)
+        changed[0] ? new BlockStatement(out, ((BlockStatement) body).variableScope) : body
+    }
+
+    private List<Statement> rewriteParamSends(List<Statement> stmts, Set<String> paramChans, boolean[] changed) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : stmts) {
+            if (st instanceof BlockStatement) {
+                out.add(new BlockStatement(
+                    rewriteParamSends(((BlockStatement) st).statements, paramChans, changed),
+                    ((BlockStatement) st).variableScope))
+                continue
+            }
+            if (st instanceof ExpressionStatement) {
+                Expression e = stripCasts(((ExpressionStatement) st).expression)
+                // `await ch.send(v)` — unwrap to the send (completion assumed, as for orTimeout)
+                if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'await') {
+                    List<Expression> aw = argListOf((MethodCallExpression) e)
+                    if (aw != null && aw.size() == 1) e = stripCasts(aw.get(0))
+                } else if (e instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) e).method == 'await' &&
+                           ((StaticMethodCallExpression) e).arguments instanceof ArgumentListExpression) {
+                    List<Expression> aw = ((ArgumentListExpression) ((StaticMethodCallExpression) e).arguments).expressions
+                    if (aw.size() == 1) e = stripCasts(aw.get(0))
+                }
+                if (e instanceof MethodCallExpression) {
+                    MethodCallExpression m = (MethodCallExpression) e
+                    Expression recv = stripCasts(m.objectExpression)
+                    if (m.methodAsString == 'send' && recv instanceof VariableExpression &&
+                        paramChans.contains(((VariableExpression) recv).name)) {
+                        List<Expression> a = argListOf(m)
+                        if (a != null && a.size() == 1) {
+                            out.add(boundsAssert(a.get(0),
+                                currentChannelBounds.get(((VariableExpression) recv).name), m))
+                            changed[0] = true
+                            continue
+                        }
+                    }
+                }
+            }
+            out.add(st)
+        }
+        out
+    }
+
+    private static List<Expression> argListOf(MethodCallExpression m) {
+        (m.arguments instanceof ArgumentListExpression) ? ((ArgumentListExpression) m.arguments).expressions : null
     }
 
     /** Drop the top-level `&&` conjuncts of {@code e} that contain a quantifier (`every`/`any`/closure);
@@ -6458,6 +6668,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // values, nondeterministically — an if/else over an unknown selector. Bind a to a fresh value
                     // disjoined over the winners, so the postcondition must hold for EVERY one (prove all branches).
                     if (enc.tryBindAwaitAny(a.name, a.rhs)) {
+                        continue
+                    }
+                    // Phase 242 — the modular channel receive: `v = ch.first()` / `v = await ch.receive()`
+                    // on a channel-typed param binds a fresh value carrying the channel's declared element
+                    // bounds — the consumer's half of the channel contract (the producer's sends are
+                    // checked in its own compilation; an unconstrained channel binds unconstrained fresh,
+                    // so a stronger postcondition honestly refutes).
+                    if (enc.tryBindChannelReceive(a.name, a.rhs, currentChannelRecvParams)) {
                         continue
                     }
                     // SSA: each assignment binds the name to a *fresh* version. The rhs is evaluated

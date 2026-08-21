@@ -398,6 +398,53 @@ per-method. Honest boundaries: uses are recognised at a direct channel-variable 
 not yet tracked, and those shapes already fall outside the value model. Delivery and termination remain the
 assumed structural half, as everywhere in this section.
 
+### Channel contracts — the element type is the protocol invariant (Phase 242)
+
+With the ends disciplined, the next rung is *what flows through them* (slice 3 of the SEQ/PAR ladder): a
+channel's element type may carry Bean Validation bounds — `AsyncChannel<@PositiveOrZero Integer>` — and that
+type IS the channel's contract, the monitor-invariant reduction transplanted to channels. The invariant is
+**checked at each send** (an assert at the send site, refuting with a counterexample) and **assumed at each
+receive from an opaque channel** — a channel-typed *parameter*, whose producer lives in another method and is
+checked by its own compilation. Producer and consumer verify **separately against the type**, with no
+whole-network analysis — the compositional rule in its simplest form:
+
+<!-- doclint:case p242-channel-contracts/producer-and-consumer-compose-through-the-channel-type -->
+```groovy
+class C {
+    static void produce(groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch, int x) {
+        ch.send(x * x)
+    }
+    @Ensures({ result >= 0 })
+    static int consume(@NotNull groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch) {
+        int v = ch.first()
+        return v
+    }
+}
+```
+
+`produce` discharges `x * x >= 0` at its send; `consume` binds its receive to a fresh value carrying the
+bound, and `result >= 0` proves from the channel type alone. A send that can violate the bound
+(`ch.send(x - 1)` on a `@Min(0)` channel, `ch.send(7)` on a `@Max(6)`) refutes with a counterexample; a
+two-sided `@Min(1) @Max(6)` "die" contract flows whole to the receiver; the awaited `await ch.receive()`
+spelling binds the same way. And the honesty case: an **unconstrained** channel has no contract to assume, so
+the same consumer postcondition *refutes* — the channel may deliver any value — rather than skipping.
+(`@NotNull` on the handle discharges the ordinary null-deref obligation; the handle's nullity is separate
+from the element contract.) Local pipeline channels get the identical send assert inside the Phase 119
+rewrite, so a `@Requires`-guarded producer proves and an unguarded one refutes.
+
+Two model repairs shipped with this: the channel rewrite is now **single-assignment** (the send *declares*
+the representative element; the old `def src = 0` placeholder is gone), which keeps whole pipelines — asserts
+included — inside the value-flow fragment, and closes a quiet hole: a **never-sent** channel read previously
+*proved* `result == 0`, the placeholder's value, where the runtime blocks forever; it now proves nothing.
+And a channel receive is exempt from the collection non-empty obligation (`first()` on a channel *blocks* —
+delivery is the assumed structural half; it never throws on "empty").
+
+Honest boundaries: int/long elements with numeric bounds (`@Positive`/`@PositiveOrZero`/`@Negative`/
+`@NegativeOrZero`/`@Min`/`@Max`; `@NotNull` is a no-op there) — any other jakarta constraint on a channel
+element **skips loudly**, neither checked nor assumed. Receives bind at a local assignment
+(`int v = ch.first()`); sends are checked at statement position. A bare `ch.receive()` without an await is an
+`Awaitable`, not a value, and does not bind. Delivery and termination remain rungs 2/3.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

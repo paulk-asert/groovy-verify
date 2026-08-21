@@ -11024,6 +11024,54 @@ termination stay rungs 2/3. Next on the ladder: channel invariants (send-checked
 
 ---
 
+## Phase 242 — channel contracts: the element type is the protocol invariant  *(shipped — slice 3 of the SEQ/PAR ladder)*
+
+The compositional slice: with the ends disciplined (Phase 241), give channels a *contract* — the
+monitor-invariant reduction transplanted, "every value sent satisfies φ", **checked at each send and
+assumed at each receive**. The spelling reuses stock machinery end-to-end (the house tenet): φ is Bean
+Validation bounds on the channel's **element type** — `AsyncChannel<@PositiveOrZero Integer>` — the
+TYPE_USE placement Phase 234 taught the checker to read and the Phase 145 vocabulary, on the Groovy
+side parsing out of the box. The type IS the contract, so producer and consumer verify **separately**
+against it: `produce(ch, x) { ch.send(x * x) }` discharges `x*x >= 0` at its send;
+`consume(ch) { int v = ch.first(); return v }` binds the receive to a fresh value carrying the bound
+and proves `result >= 0` from the type alone — no whole-network analysis, the modular rule the SEQ/PAR
+programme is for.
+
+Mechanics, three small surfaces. **Sends**: a statement-position `ch.send(e)` on a *constrained param*
+channel rewrites to `assert φ(e)` (`desugarParamChannelSends` — the send's delivery is the assumed
+structural half, exactly like `orTimeout`'s deadline); a *local* channel's send gets the same assert
+inside the Phase 119 rewrite. Both ride the existing assert machinery — "Assertion may not hold" with a
+counterexample. **Receives**: `v = ch.first()` / `v = await ch.receive()` on a channel-typed param
+binds a fresh value with the bounds asserted (`Encoder.tryBindChannelReceive`, mirrored in the implicit
+replay like every bind) — and an **unconstrained** channel binds *unconstrained* fresh, so a stronger
+postcondition honestly refutes instead of skipping. A bare un-awaited `receive()` is an `Awaitable`,
+not a value — no bind. **Harvest**: `collectChannelContracts` reads params + typed local declarations;
+int/long elements, @Positive/@PositiveOrZero/@Negative/@NegativeOrZero/@Min/@Max (@NotNull a no-op);
+any other jakarta constraint on a channel element **skips loudly** — neither checked nor assumed, so
+the two sides can never silently disagree about an unsupported spelling.
+
+Two model repairs the slice forced, both improvements beyond it. The injected assert exposed that the
+channel rewrite's `def src = 0; src = x` shape threw the value-flow pass out (its assert discharge
+skips loudly on re-assignment) — so the rewrite is now **single-assignment**: the send *declares* the
+representative element and the create-placeholder is gone. That keeps whole pipelines in the value-flow
+fragment — and closed a quiet hole: a **never-sent** channel read previously *proved* `result == 0`
+(the placeholder's value, where the runtime blocks forever; stash-verified against the pre-slice code);
+it now proves nothing (`counterexample: src = 1`). And a channel `first()` is exempt from the
+collection non-empty obligation (`0 < ch.size()` — a receive *blocks*, never throws on "empty", and
+the type has no `size()`), which had been firing as spurious bounds noise; the ordinary `ch != null`
+deref obligation stays (it is real — `consume(null)` NPEs) and is discharged by `@NotNull` on the
+handle, the nullity of the handle being separate from the element contract.
+
+Cases (G306, new group, 12): producer proves / refutes-with-counterexample / upper-bound refutes;
+consumer assumes (@Min, the @Min+@Max range, awaited `receive()`); the unconstrained-channel honesty
+refute; local pipeline send checked under `@Requires` and refuted without; the produce/consume
+compositional capstone; the never-sent-read pin; the unsupported-constraint loud skip. Docs: the Phase
+242 subsection in `examples/concurrency.md` (capstone linked), the CAPABILITIES row. Next on the
+ladder: the network-graph well-formedness checker (acyclicity / client-server ordering — the
+well-foundedness theorem's fourth appearance).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

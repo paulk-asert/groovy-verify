@@ -4751,6 +4751,53 @@ class Encoder implements TheoryApi {
         return true
     }
 
+    private int chanRecvCounter = 0
+    /**
+     * Phase 242 — the modular channel receive: {@code v = ch.first()} / {@code v = await ch.receive()}
+     * on a channel-typed PARAMETER binds {@code v} to a fresh value carrying the channel's declared
+     * element bounds — assumed here exactly as a callee's {@code @Ensures} is assumed at a call site,
+     * because the producer lives in another method and its sends are checked by ITS compilation.
+     * An unconstrained channel binds an unconstrained fresh value, so a postcondition stronger than
+     * the contract honestly refutes instead of skipping. Bound ops (by value, shared with the
+     * checker's harvest): 0 = ge, 1 = gt, 2 = le, 3 = lt, each against a long literal.
+     * A bare {@code ch.receive()} without an await is an {@code Awaitable}, not a value — no bind.
+     */
+    boolean tryBindChannelReceive(String name, Expression rhs, Map<String, List<long[]>> recvParams) {
+        if (recvParams == null || recvParams.isEmpty()) return false
+        Expression r = rhs
+        while (r instanceof CastExpression) r = ((CastExpression) r).expression
+        boolean awaited = false
+        if (isAsyncSupportCall(r, 'await')) {
+            List<Expression> aw = asyncCallArgs(r)
+            if (aw.size() != 1) return false
+            r = aw.get(0)
+            while (r instanceof CastExpression) r = ((CastExpression) r).expression
+            awaited = true
+        }
+        if (!(r instanceof MethodCallExpression)) return false
+        MethodCallExpression m = (MethodCallExpression) r
+        String mm = m.methodAsString
+        if (mm != 'first' && mm != 'receive') return false
+        if (mm == 'receive' && !awaited) return false
+        if (m.arguments instanceof ArgumentListExpression &&
+            !((ArgumentListExpression) m.arguments).expressions.isEmpty()) return false
+        Expression recv = m.objectExpression
+        while (recv instanceof CastExpression) recv = ((CastExpression) recv).expression
+        if (!(recv instanceof VariableExpression)) return false
+        List<long[]> boundsList = recvParams.get(((VariableExpression) recv).name)
+        if (boundsList == null) return false
+        Object fresh = session.intVar(name + '#recv#' + (++chanRecvCounter))
+        for (long[] b : boundsList) {
+            Object lit = session.intLit(b[1])
+            if (b[0] == 0L) session.assertExpr(session.ge(fresh, lit))
+            else if (b[0] == 1L) session.assertExpr(session.gt(fresh, lit))
+            else if (b[0] == 2L) session.assertExpr(session.le(fresh, lit))
+            else session.assertExpr(session.lt(fresh, lit))
+        }
+        bind(name, fresh)
+        return true
+    }
+
 
     private Object translateBinary(BinaryExpression be) {
         // Phase 8a — normalise-then-SMT: fold a closed numeric subexpression to a
