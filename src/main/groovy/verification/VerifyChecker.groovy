@@ -2096,6 +2096,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ContractExpansionTransform.ORIGINAL_BODY_KEY)
             if (body == null) body = node.code
 
+            // Phase 240 — PAR disjointness (fork-window interference), BEFORE the Phase 118/119
+            // desugaring flattens `async { … }` arms into the body: the safe-value model those
+            // phases apply is sound only when nothing an arm touches is concurrently written.
+            // Check that side condition and error loudly on a violation — without this, a
+            // stale-read race passes as a proof of the post-write value. Contained: an analysis
+            // failure never breaks the compile flow.
+            try {
+                checkParInterference(node, body)
+            } catch (Throwable ignored) {
+            }
+
             // Phase 118 — desugar Groovy's dataflow constructs into plain single-assignment code: a
             // `DataflowVariable` is a write-once local, so `x << v` is `x = v`, `await(x)`/`x.get()`/`x.val`
             // is a read of `x`, and `async { … }` is transparent (sound — single-assignment makes the result
@@ -4135,6 +4146,389 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         sub.transform(bodyE)
+    }
+
+    // ── Phase 240 — PAR disjointness: the fork-window interference check ────────────────────────
+    //
+    // The safe-value model for async arms (Phases 118/119/153–155) resolves an arm's captured reads
+    // against the bindings in scope AT THE READ-OUT SITE — sound only under the "safe async closure"
+    // discipline: nothing the arm touches is concurrently written. This check makes that side
+    // condition real (the Hoare/CSL PAR rule's disjointness premise — slice 1 of the SEQ/PAR
+    // ladder): between an arm's fork and its join, the enclosing body must not write anything the
+    // arm reads or writes, must not read anything it writes, and two arms whose fork-join windows
+    // overlap must have disjoint write-vs-touch sets. A violation is a genuine race — the arm may
+    // observe either state — and ERRORS loudly rather than skipping: without it the engine proves
+    // the post-write value (a stale-read race passes as a proof).
+    //
+    // The synchronisation media are exempt, exactly as channels are exempt in the CSP PAR rule:
+    // DataflowVariable locals (write-once, reads block until the bind), AsyncChannel pipeline vars
+    // (FIFO), and the Awaitable handles themselves. A declared interference discipline
+    // (@Rely/@Guarantee/@UnderRely on the method or class) suppresses the check — that machinery
+    // models interference deliberately.
+    //
+    // Boundaries (documented, not silent): the join is the first statement mentioning the arm's
+    // handle after the fork (any use — an await, an orTimeout wrapper, a gather — counts); an arm
+    // never mentioned again joins at end-of-body (conservative). Accesses are name-grained over the
+    // outer universe (params, body locals, fields of the enclosing class); statics and foreign
+    // receivers are out of scope, like the rest of the fragment. Effects hidden behind operators
+    // (`sb << x` on a shared builder) are not writes here — those arms already fall out of the
+    // value model elsewhere.
+
+    private static class ParArm {
+        int fork
+        int join = Integer.MAX_VALUE
+        int line
+        String handle              // the local the Awaitable is bound to, or null
+        Expression anchor          // the async call (diagnostic anchor — an in-body expression)
+        final Set<String> reads = new HashSet<String>()
+        final Set<String> writes = new HashSet<String>()
+    }
+
+    private static class ParAccess {
+        final int ord, line
+        ParAccess(int ord, int line) { this.ord = ord; this.line = line }
+    }
+
+    private static class ParCtx {
+        int counter
+        final List<ParArm> arms = new ArrayList<ParArm>()
+        final Map<String, List<ParAccess>> mainWrites = new HashMap<String, List<ParAccess>>()
+        final Map<String, List<ParAccess>> mainReads = new HashMap<String, List<ParAccess>>()
+        void write(String n, int ord, int line) { record(mainWrites, n, ord, line) }
+        void read(String n, int ord, int line) {
+            record(mainReads, n, ord, line)
+            // The first mention of an arm's handle after its fork is its join (await/gather/wrapper).
+            for (ParArm a : arms) if (n.equals(a.handle) && ord > a.fork && a.join == Integer.MAX_VALUE) a.join = ord
+        }
+        private static void record(Map<String, List<ParAccess>> m, String n, int ord, int line) {
+            List<ParAccess> l = m.get(n)
+            if (l == null) { l = new ArrayList<ParAccess>(); m.put(n, l) }
+            l.add(new ParAccess(ord, line))
+        }
+    }
+
+    /** Peel casts (STC/lowering wrappers) off an expression. */
+    private static Expression stripCasts(Expression e) {
+        Expression a = e
+        while (a instanceof CastExpression) a = ((CastExpression) a).expression
+        a
+    }
+
+    private static boolean isThisRef(Expression e) {
+        e instanceof VariableExpression && ((VariableExpression) e).isThisExpression()
+    }
+
+    /** The root name a store targets: `v = …`/`v[i] = …` → v, `this.f = …` → f, else null. */
+    private static String lhsRootName(Expression lhs) {
+        Expression e = lhs
+        while (true) {
+            if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET) {
+                e = ((BinaryExpression) e).leftExpression; continue
+            }
+            if (e instanceof CastExpression) { e = ((CastExpression) e).expression; continue }
+            break
+        }
+        if (e instanceof VariableExpression) return ((VariableExpression) e).name
+        if (e instanceof PropertyExpression && isThisRef(((PropertyExpression) e).objectExpression)) {
+            return ((PropertyExpression) e).propertyAsString
+        }
+        null
+    }
+
+    /** Per-statement expression scan: records arms (async closures — not descended into as main
+     *  code), main-body reads/writes at this statement's ordinal, and handle mentions (joins). */
+    private static class ParScanner extends CodeVisitorSupport {
+        final int ord
+        final ParCtx ctx
+        private int awaitDepth      // > 0 while inside an `await(...)` — an arm forked there joins in place
+        ParScanner(int ord, ParCtx ctx) { this.ord = ord; this.ctx = ctx }
+
+        @Override void visitMethodCallExpression(MethodCallExpression call) {
+            ClosureExpression cl = asyncClosure(call)
+            if (cl != null) { recordArm(call, cl, null); return }
+            boolean isAwait = call.methodAsString == 'await'
+            if (isAwait) awaitDepth++
+            try { super.visitMethodCallExpression(call) } finally { if (isAwait) awaitDepth-- }
+        }
+
+        @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+            ClosureExpression cl = asyncClosure(call)
+            if (cl != null) { recordArm(call, cl, null); return }
+            boolean isAwait = call.method == 'await'
+            if (isAwait) awaitDepth++
+            try { super.visitStaticMethodCallExpression(call) } finally { if (isAwait) awaitDepth-- }
+        }
+
+        @Override void visitDeclarationExpression(DeclarationExpression de) {
+            Expression rhs = stripCasts(de.rightExpression)
+            ClosureExpression cl = asyncClosure(rhs)
+            if (cl != null && de.leftExpression instanceof VariableExpression) {
+                recordArm(rhs, cl, ((VariableExpression) de.leftExpression).name)
+                return
+            }
+            de.rightExpression?.visit(this)     // the LHS is a fresh binding, not a shared-state write
+        }
+
+        @Override void visitBinaryExpression(BinaryExpression be) {
+            int t = be.operation.type
+            if (t == Types.ASSIGN || Types.ofType(t, Types.ASSIGNMENT_OPERATOR)) {
+                Expression rhs = stripCasts(be.rightExpression)
+                ClosureExpression cl = (t == Types.ASSIGN) ? asyncClosure(rhs) : null
+                if (cl != null && be.leftExpression instanceof VariableExpression) {
+                    recordArm(rhs, cl, ((VariableExpression) be.leftExpression).name)
+                    return
+                }
+                String root = lhsRootName(be.leftExpression)
+                if (root != null) {
+                    ctx.write(root, ord, be.lineNumber)
+                    if (t != Types.ASSIGN) ctx.read(root, ord, be.lineNumber)     // compound also reads
+                }
+                if (be.leftExpression instanceof BinaryExpression) {              // a[i] = v — the index is read
+                    ((BinaryExpression) be.leftExpression).rightExpression?.visit(this)
+                }
+                if (be.leftExpression instanceof PropertyExpression) {            // o.f = v — a non-this receiver is read
+                    Expression o = ((PropertyExpression) be.leftExpression).objectExpression
+                    if (!isThisRef(o)) o.visit(this)
+                }
+                be.rightExpression.visit(this)
+                return
+            }
+            super.visitBinaryExpression(be)
+        }
+
+        @Override void visitPostfixExpression(PostfixExpression e) {
+            String root = lhsRootName(e.expression)
+            if (root != null) ctx.write(root, ord, e.lineNumber)
+            super.visitPostfixExpression(e)
+        }
+
+        @Override void visitPrefixExpression(PrefixExpression e) {
+            String root = lhsRootName(e.expression)
+            if (root != null) ctx.write(root, ord, e.lineNumber)
+            super.visitPrefixExpression(e)
+        }
+
+        @Override void visitVariableExpression(VariableExpression ve) { ctx.read(ve.name, ord, ve.lineNumber) }
+
+        @Override void visitPropertyExpression(PropertyExpression pe) {
+            if (isThisRef(pe.objectExpression)) ctx.read(pe.propertyAsString, ord, pe.lineNumber)
+            else super.visitPropertyExpression(pe)
+        }
+
+        private void recordArm(Expression call, ClosureExpression cl, String handle) {
+            ParArm a = new ParArm()
+            a.fork = ord
+            a.line = call.lineNumber
+            a.handle = handle
+            a.anchor = call
+            if (awaitDepth > 0) a.join = ord      // `await async { … }` — forked and joined in place
+            collectArmAccesses(cl, a.reads, a.writes)
+            ctx.arms.add(a)
+        }
+    }
+
+    /** Collect an arm's captured accesses: outer names read/written inside the closure (closure
+     *  params and closure-local declarations excluded; nested closures included as arm code). */
+    private static void collectArmAccesses(ClosureExpression cl, Set<String> reads, Set<String> writes) {
+        final Set<String> local = new HashSet<String>()
+        local.add('it')
+        if (cl.parameters != null) for (Parameter p : cl.parameters) local.add(p.name)
+        Statement code = cl.code
+        if (code == null) return
+        code.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    local.add(((VariableExpression) de.leftExpression).name)
+                } else if (de.leftExpression instanceof TupleExpression) {
+                    for (Expression t : ((TupleExpression) de.leftExpression).expressions) {
+                        if (t instanceof VariableExpression) local.add(((VariableExpression) t).name)
+                    }
+                }
+                de.rightExpression?.visit(this)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int t = be.operation.type
+                if (t == Types.ASSIGN || Types.ofType(t, Types.ASSIGNMENT_OPERATOR)) {
+                    String root = lhsRootName(be.leftExpression)
+                    if (root != null && !local.contains(root)) {
+                        writes.add(root)
+                        if (t != Types.ASSIGN) reads.add(root)
+                    }
+                    if (be.leftExpression instanceof BinaryExpression) {
+                        ((BinaryExpression) be.leftExpression).rightExpression?.visit(this)
+                    }
+                    be.rightExpression.visit(this)
+                    return
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression e) {
+                String root = lhsRootName(e.expression)
+                if (root != null && !local.contains(root)) writes.add(root)
+                super.visitPostfixExpression(e)
+            }
+            @Override void visitPrefixExpression(PrefixExpression e) {
+                String root = lhsRootName(e.expression)
+                if (root != null && !local.contains(root)) writes.add(root)
+                super.visitPrefixExpression(e)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (!local.contains(ve.name)) reads.add(ve.name)
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (isThisRef(pe.objectExpression)) reads.add(pe.propertyAsString)
+                else super.visitPropertyExpression(pe)
+            }
+            @Override void visitClosureExpression(ClosureExpression c2) {
+                if (c2.parameters != null) for (Parameter p : c2.parameters) local.add(p.name)
+                super.visitClosureExpression(c2)
+            }
+        })
+    }
+
+    /** Method-body local declarations (closure interiors excluded) — part of the outer universe. */
+    private static void collectBodyLocalNames(BlockStatement body, Set<String> out) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    out.add(((VariableExpression) de.leftExpression).name)
+                } else if (de.leftExpression instanceof TupleExpression) {
+                    for (Expression t : ((TupleExpression) de.leftExpression).expressions) {
+                        if (t instanceof VariableExpression) out.add(((VariableExpression) t).name)
+                    }
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitClosureExpression(ClosureExpression e) { }   // closure-locals are not outer names
+        })
+    }
+
+    /** Ordinal walk: each statement gets a fresh ordinal; nested statements their own; whole
+     *  subtrees of unhandled statement kinds scan coarsely at the enclosing ordinal. */
+    private static void parWalkStatement(Statement st, ParCtx ctx) {
+        if (st == null || st instanceof EmptyStatement) return
+        if (st instanceof BlockStatement) {
+            for (Statement s : ((BlockStatement) st).statements) parWalkStatement(s, ctx)
+            return
+        }
+        int ord = ++ctx.counter
+        if (st instanceof IfStatement) {
+            IfStatement i = (IfStatement) st
+            parScanExpr(i.booleanExpression, ord, ctx)
+            parWalkStatement(i.ifBlock, ctx)
+            parWalkStatement(i.elseBlock, ctx)
+            return
+        }
+        if (st instanceof ForStatement) {
+            ForStatement f = (ForStatement) st
+            parScanExpr(f.collectionExpression, ord, ctx)
+            parWalkStatement(f.loopBlock, ctx)
+            return
+        }
+        if (st instanceof WhileStatement) {
+            WhileStatement w = (WhileStatement) st
+            parScanExpr(w.booleanExpression, ord, ctx)
+            parWalkStatement(w.loopBlock, ctx)
+            return
+        }
+        if (st instanceof DoWhileStatement) {
+            DoWhileStatement w = (DoWhileStatement) st
+            parWalkStatement(w.loopBlock, ctx)
+            parScanExpr(w.booleanExpression, ord, ctx)
+            return
+        }
+        if (st instanceof org.codehaus.groovy.ast.stmt.TryCatchStatement) {
+            org.codehaus.groovy.ast.stmt.TryCatchStatement t = (org.codehaus.groovy.ast.stmt.TryCatchStatement) st
+            parWalkStatement(t.tryStatement, ctx)
+            for (org.codehaus.groovy.ast.stmt.CatchStatement c : t.catchStatements) parWalkStatement(c.code, ctx)
+            parWalkStatement(t.finallyStatement, ctx)
+            return
+        }
+        st.visit(new ParScanner(ord, ctx))
+    }
+
+    private static void parScanExpr(Expression e, int ord, ParCtx ctx) {
+        if (e != null) e.visit(new ParScanner(ord, ctx))
+    }
+
+    private static ParAccess firstInWindow(List<ParAccess> accesses, ParArm a) {
+        if (accesses == null) return null
+        for (ParAccess x : accesses) if (x.ord > a.fork && x.ord < a.join) return x
+        null
+    }
+
+    /** A name {@code w} writes that {@code other} also touches (deterministic: sorted), else null. */
+    private static String armConflict(ParArm w, ParArm other, Set<String> outer, Set<String> exempt) {
+        List<String> ws = new ArrayList<String>(w.writes)
+        Collections.sort(ws)
+        for (String v : ws) {
+            if (!outer.contains(v) || exempt.contains(v)) continue
+            if (other.reads.contains(v) || other.writes.contains(v)) return v
+        }
+        null
+    }
+
+    /** The Phase 240 entry point — see the section comment above. Runs on the ORIGINAL body,
+     *  before the Phase 118/119 desugaring flattens the arms away. */
+    private void checkParInterference(MethodNode node, Statement body) {
+        if (!(body instanceof BlockStatement)) return
+        if (methodOrClassHasAnnotation(node, 'UnderRely') || methodOrClassHasAnnotation(node, 'Rely') ||
+            methodOrClassHasAnnotation(node, 'Guarantee')) return       // declared interference discipline
+        ParCtx ctx = new ParCtx()
+        parWalkStatement(body, ctx)
+        if (ctx.arms.isEmpty()) return
+
+        // The synchronisation media, exempt from conflicts (the "channels" of the PAR rule).
+        Set<String> exempt = new HashSet<String>()
+        collectDataflowVars((BlockStatement) body, exempt)
+        collectChannelVars((BlockStatement) body, exempt)
+        for (ParArm a : ctx.arms) if (a.handle != null) exempt.add(a.handle)
+
+        // The outer universe accesses are resolved against: params, body locals, fields.
+        Set<String> outer = new HashSet<String>()
+        for (Parameter p : node.parameters) outer.add(p.name)
+        collectBodyLocalNames((BlockStatement) body, outer)
+        if (node.declaringClass != null) for (FieldNode f : node.declaringClass.fields) outer.add(f.name)
+
+        Set<String> reported = new HashSet<String>()
+        for (ParArm a : ctx.arms) {
+            Set<String> touched = new TreeSet<String>(a.reads)
+            touched.addAll(a.writes)
+            touched.retainAll(outer)
+            touched.removeAll(exempt)
+            for (String v : touched) {
+                ParAccess w = firstInWindow(ctx.mainWrites.get(v), a)
+                if (w != null && reported.add(a.line + ':' + v)) {
+                    addStaticTypeError(Reporter.formatParInterference(node.name, v,
+                        "the async task forked at line ${a.line} captures '${v}', which the body writes " +
+                        "at line ${w.line} before the task's join"), a.anchor)
+                }
+            }
+            Set<String> armWrites = new TreeSet<String>(a.writes)
+            armWrites.retainAll(outer)
+            armWrites.removeAll(exempt)
+            for (String v : armWrites) {
+                ParAccess r = firstInWindow(ctx.mainReads.get(v), a)
+                if (r != null && reported.add(a.line + ':' + v)) {
+                    addStaticTypeError(Reporter.formatParInterference(node.name, v,
+                        "the async task forked at line ${a.line} writes '${v}', which the body reads " +
+                        "at line ${r.line} before the task's join"), a.anchor)
+                }
+            }
+        }
+        for (int i = 0; i < ctx.arms.size(); i++) {
+            for (int j = i + 1; j < ctx.arms.size(); j++) {
+                ParArm a = ctx.arms.get(i), b = ctx.arms.get(j)
+                if (a.fork > b.join || b.fork > a.join) continue     // sequential: one joined before the other forked
+                String v = armConflict(a, b, outer, exempt)
+                if (v == null) v = armConflict(b, a, outer, exempt)
+                if (v != null && reported.add(a.line + '&' + b.line + ':' + v)) {
+                    addStaticTypeError(Reporter.formatParInterference(node.name, v,
+                        "concurrent async tasks forked at lines ${a.line} and ${b.line} conflict on " +
+                        "'${v}' (a write in one, a read or write in the other)"), b.anchor)
+                }
+            }
+        }
     }
 
     /** Drop the top-level `&&` conjuncts of {@code e} that contain a quantifier (`every`/`any`/closure);

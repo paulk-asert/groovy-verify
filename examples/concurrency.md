@@ -36,7 +36,7 @@ features, each assuming a different structural guarantee:
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
 | Channels | FIFO delivery | each element gets the right per-element transform |
-| `async`/`await` | safe (pure-value) tasks complete without interfering | the value an awaited task computes |
+| `async`/`await` | safe (pure-value) tasks complete | the value an awaited task computes — and, since Phase 240, that nothing a task touches is concurrently written (fork-window disjointness, checked not assumed) |
 
 What we *never* prove is the structural half itself — no mutual exclusion, no deadlock-freedom, no delivery or
 termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
@@ -430,4 +430,66 @@ closure that *mutates shared state* (the unsafe pattern the docs warn against) i
 half, Lincheck/Fray territory, not this proof. That half is exercised for real in [the structural rungs](../CONCURRENCY.md):
 a Lincheck stress test confirms the safe fan-out/gather is deterministic on actual threads, and catches the
 shared-mutation race on the unsafe twin.
+
+### PAR disjointness — the fork-window interference check (Phase 240)
+
+"The tasks don't interfere" stopped being an assumption and became a **checked side condition** — the
+disjointness premise of the Hoare/CSL PAR rule, and slice 1 of the SEQ/PAR ladder. The safe-value model above
+resolves a task's captured reads against the bindings in scope *at the read-out site*; if the enclosing body
+writes a captured variable **between the task's fork and its join**, that model is unsound — the task may run
+before or after the write, so its value is scheduler-dependent. Before this phase the checker quietly *proved*
+the post-write value on that shape. Now it errors:
+
+<!-- doclint:case p240-par-interference/stale-read-body-writes-a-captured-local-between-fork-and-await -->
+```groovy
+@Ensures({ result == 101 })
+static int stale() {
+    int s = 0
+    def fa = async { s + 1 }
+    s = 100
+    int a = await fa
+    return a
+}
+```
+
+> Parallel interference in 'stale': the async task forked at line 5 captures 's', which the body writes at
+> line 6 before the task's join…
+
+This is an **error, not a skip** — the race is a bug in the code, not a limit of the model. The check is
+window-precise: the join is the first mention of the task's handle after its fork, so the same write placed
+*after* the join — or between one task's join and the next task's fork — is ordinary sequential code and still
+proves:
+
+<!-- doclint:case p240-par-interference/a-write-between-sequential-fork-join-pairs-is-safe-proves -->
+```groovy
+@Ensures({ result == 102 })
+static int sequentialPairs() {
+    int s = 0
+    def fa = async { s + 1 }
+    int a = await fa
+    s = 100
+    def fb = async { s + 1 }
+    int b = await fb
+    return a + b
+}
+```
+
+`fa` reads `s` at 0, `fb` reads it at 100 — `a == 1`, `b == 101`, and `102` proves, because each write falls
+outside every live task's fork-join window.
+
+All four interference directions are covered: the body writing what a live task reads (above), the body
+*reading* what a live task **writes**, and two tasks with overlapping windows conflicting write-vs-write
+(the `RacyGather` shape rung 3 catches at runtime — two concurrent `s = s + 1` — now refuted at compile
+time) or write-vs-read. The **synchronisation media are exempt**, exactly as channels are exempt in the CSP
+PAR rule: `DataflowVariable` locals (write-once, reads block until the bind), `AsyncChannel` pipeline vars
+(FIFO), and the `Awaitable` handles themselves — so the dataflow and channel examples above pass unchanged.
+A method (or class) declaring `@Rely`/`@Guarantee`/`@UnderRely` suppresses the check: that machinery models
+interference *deliberately*.
+
+Honest boundaries: the join is the first handle mention after the fork (any use counts — an `await`, a
+gather, an `orTimeout` wrapper); a task never mentioned again is treated as live to the end of the body
+(conservative). Accesses are name-grained over params, body locals, and fields of the enclosing class —
+effects behind foreign receivers or operators (`sb << x` on a shared builder) are not tracked, and such
+arms already fall outside the safe-value model. What remains assumed is **completion** (every forked task
+finishes) — the deadline/liveness half, which stays rung 2/3 territory.
 

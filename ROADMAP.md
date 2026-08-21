@@ -10937,6 +10937,51 @@ side, not a reader's deref.
 
 ---
 
+## Phase 240 — PAR disjointness: the fork-window interference check  *(shipped — soundness fix; slice 1 of the SEQ/PAR ladder)*
+
+The first slice of the SEQ/PAR programme (the process-network direction opened by the Groovy 6
+`groovy.concurrent` assessment): make the **disjointness side condition of the Hoare/CSL PAR rule** real
+for the async constructs the engine already models. The safe-value model (the dataflow/channel desugars
+and the async/await read-out) resolves an `async {}` arm's captured reads against the bindings in scope
+*at the read-out site* — sound only under the "safe async closure" discipline, which was **assumed, not
+checked**. Probing showed the assumption was load-bearing: on the stale-read shape
+`def fa = async { s + 1 }; s = 100; int a = await fa` the checker quietly **proved `a == 101`** — the
+post-write value of a scheduler-dependent read (same shape on a field; through a gather it surfaced only
+as accidental `r[0]` bounds noise). A real unsoundness, now a loud error.
+
+`checkParInterference` (VerifyChecker) runs per method on the ORIGINAL body — before the Phase 118/119
+desugaring flattens arms away. One ordinal-stamped walk collects the **arms** (each `async(closure)`,
+bare or `AsyncSupport`-lowered, with the local it's bound to) and the main body's per-statement
+reads/writes; each arm's closure yields its captured read/write sets (closure params/locals excluded,
+name-grained). An arm's **window** runs from its fork to its **join** — the first statement mentioning
+its handle after the fork (an `await`, a gather, an `orTimeout` wrapper; an inline `await async {…}`
+joins in place; never-mentioned arms stay live to end of body, conservative). Three obligation families,
+all reported as "**Parallel interference**" with fork/write/read line numbers via
+`Reporter.formatParInterference`: the body writes inside a window what the arm reads or writes; the body
+reads inside a window what the arm writes; two arms with **overlapping windows** conflict write-vs-touch.
+The **synchronisation media are exempt**, exactly as channels are exempt in the CSP PAR rule —
+`DataflowVariable` locals, `AsyncChannel` pipeline vars (both reusing the existing collectors), and the
+`Awaitable` handles themselves — so the whole dataflow/channel/async corpus passes unchanged. A declared
+interference discipline (`@Rely`/`@Guarantee`/`@UnderRely` on method or class) suppresses the check.
+It's an **error, not a skip**: the race is a bug in the code (the RacyGather shape rung 3 catches at
+runtime, refuted at compile time), not a modelling limit. Errors anchor on the arm's call expression
+(in-body anchors, per the MethodNode-anchor caution).
+
+Cases (G304, new group, 10): the three stale-read refutations (local, field, gather — the first two
+previously *proved*); arm-vs-arm write-write and write-read; the body-read-vs-arm-write mirror; window
+precision — a write after the join proves, a write between *sequential* fork-join pairs proves
+(`a == 1, b == 101`, `102` proves), a window write to disjoint state proves; and the boundary pin — an
+arm write only read after the join is no interference (`refute: 'Parallel interference'`) but stays the
+pre-existing loud model skip. Docs: the Phase 240 subsection in `examples/concurrency.md` (two linked
+cases), the CAPABILITIES row, and the async/await row of the concurrency-lite table now says
+"disjointness checked, not assumed". Honest boundaries: name-grained (foreign receivers / `<<` operator
+effects untracked — those arms already fall outside the value model); **completion** still assumed (the
+liveness half, rungs 2/3). Next slices on the ladder: channel-end linearity over a declarative network
+shape, channel invariants (send-checked/receive-assumed), the network-graph acyclicity/client-server
+checker, auto-generated rely/guarantee compatibility, and send/receive count matching.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

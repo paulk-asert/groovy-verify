@@ -288,6 +288,10 @@ every run is the linearizability witness.
 `SafeGather` confirms the structural half groovy-verify *assumes* genuinely holds when the tasks run for real.
 `RacyGather` is the counterpoint: the unsafe pattern the safe-value discipline excludes is a real race, and the
 runtime checker catches it — the same safe-vs-unsafe split as the lock-guarded vs racy accounts below.
+(Since Phase 240 the *disjointness* half of that discipline is also checked at rung 1: an async task whose
+captured state is concurrently written — the RacyGather shape in checker-visible source — refutes at compile
+time as "Parallel interference", so what remains for this rung is completion and the real scheduler; see
+[the fork-window check](examples/concurrency.md#par-disjointness--the-fork-window-interference-check-phase-240).)
 
 ### The locks example — both disclaimed halves
 

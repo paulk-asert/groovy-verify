@@ -305,6 +305,24 @@ class Reporter {
         "linear int arithmetic). The method is allowed to proceed unchecked."
     }
 
+    // ---- Parallel interference (Phase 240) ----
+
+    /**
+     * Phase 240 — the PAR disjointness side condition refuted: an async task and a concurrent
+     * accessor touch the same captured state inside the task's fork-to-join window, so the value
+     * the task computes is not sequentially determined. This is a genuine race in the code (the
+     * RacyGather shape), not a modelling limit — which is why it is an error, not a skip: without
+     * the check the safe-value model would resolve the task's reads against whichever binding is
+     * in scope at the read-out site and *prove* a scheduler-dependent value.
+     */
+    static String formatParInterference(String methodName, String var, String detail) {
+        "Parallel interference in '${methodName}': ${detail}. Between its fork and its join an " +
+        "async task runs concurrently with the enclosing body, so '${var}' may be observed in " +
+        "either state and the task's value is not sequentially determined. Keep the captured " +
+        "state disjoint (move the conflicting access before the fork or after the join), or " +
+        "declare the interference discipline with @Rely/@Guarantee/@UnderRely."
+    }
+
     // ---- Information flow (Phase L1) ----
 
     /**
