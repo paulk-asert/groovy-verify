@@ -310,6 +310,62 @@ intersection is **machine-checked**, both properties on one class.
 > *verified* rather than assumed.
 
 
+### Guarantee conformance — the bodies checked against their own guarantees (Phase 244)
+
+The §IV story above had one obligation left to hand-inspection: the compatibility lemmas certify that each
+guarantee *implies* the peers' relies, and the `@UnderRely` proofs certify each body stays safe *under* its
+rely — but nothing checked that a body actually **does what its own guarantee says**. The lemma chain closes
+only if it does: the consumer's rely is justified by the producer's guarantee, which is justified by nothing
+unless `produce` really keeps `head` fixed. Phase 244 (slice 5 of the SEQ/PAR ladder) makes that a checked
+obligation: `@Guarantee('Role')` placed **on a body method** declares that its transitions honour the Role's
+guarantee predicate, discharged on a synthesised twin — the body minus the `@UnderRely` env step, with the
+`@Requires` kept and `@Ensures pred(old.fields, fields)` over the fields the predicate's post-state
+parameters name. The minimal pair:
+
+<!-- doclint:case p244-guarantee-conformance/an-increment-honours-the-monotonic-guarantee -->
+```groovy
+@Invariant({ count >= 0 })
+class Counter {
+   int count
+   @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }
+   @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count }
+   @Guarantee('Me')
+   void bump() { count = count + 1 }
+}
+```
+
+`bump` proves `gMe(old.count, count)`; swap in `count = count - 1` and it refutes with a counterexample
+("Guarantee conformance does not hold"). On the buffer, a producer that also moves `head`, or a consumer that
+moves `tail`, is caught the same way — and the **real §VII `Buffer` source** now carries `@Guarantee` on both
+`produce` and `consume`, so the shared-source capstone checks the whole chain: predicates compatible, bodies
+safe under interference, and bodies honouring their guarantees.
+
+The conformance transition is the thread's **own step** — the env step is excluded, which is what
+rely/guarantee semantics require and the checker pins with a case that proves *only* for that reason:
+
+<!-- doclint:case p244-guarantee-conformance/conformance-covers-the-own-step-not-the-env-step -->
+```groovy
+@Invariant({ count >= 0 })
+class Counter {
+   int count
+   @Rely('Other')   static boolean rOther(int oldCount, int count) { oldCount <= count }
+   @Guarantee('Me') static boolean gMe(int oldCount, int count)    { oldCount <= count && count <= oldCount + 1 }
+   @UnderRely('Other')
+   @Guarantee('Me')
+   void bump() { count = count + 1 }
+}
+```
+
+Under the monotonic rely the *entry-to-exit* change can be arbitrarily large (the environment runs first);
+the at-most-one-increment guarantee holds of the own step alone. Wiring completeness comes with it: in a
+class that adopts the conformance discipline, a rely assumed via `@UnderRely` with **no other role declaring
+a `@Guarantee` predicate** errors as an *unbacked rely* (the collapsed-roles smell); a `@Guarantee` naming no
+predicate, or a predicate whose post-state parameters name no fields, **skips loudly**. Classes without
+body-level `@Guarantee` keep the modular single-sided posture — a rely there is an interface assumption,
+justified outside the class, exactly like a `@Requires` at a boundary. (The `@Requires` on a conformance twin
+stands in for any reachable post-env state — rely-stability of the precondition remains the documented
+assumption it always was.)
+
 ## §VII — The capstone: info-flow × rely/guarantee, verified together
 
 

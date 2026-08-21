@@ -140,7 +140,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static final ClassNode LABEL_TYPE = ClassHelper.make(Label)   // Phase L1 — security classification
     private static final ClassNode RELY_TYPE = ClassHelper.make(Rely)         // Phase L1 — rely/guarantee well-formedness
     private static final ClassNode GUARANTEE_TYPE = ClassHelper.make(Guarantee)
+    private static final ClassNode UNDERRELY_TYPE = ClassHelper.make(UnderRely)   // Phase 244 — wiring completeness
     private static final String RG_LAW_KEY = 'verification.relyGuaranteeLaw'
+    /** Phase 244 — metadata on a synthesized guarantee-conformance twin: {@code [methodName, predName, role]}. */
+    private static final String RG_CONF_KEY = 'verification.guaranteeConformance'
     private static final ClassNode CONTRACT_SOURCE_TYPE = ClassHelper.make(ContractSource)
     private static final ClassNode CLASS_INVARIANT_SOURCE_TYPE = ClassHelper.make(ClassInvariantSource)
     /** Phase 130 — metadata on a synthesized @Reducer/@Associative law lemma: {@code [combinerName, lawName]}. */
@@ -612,7 +615,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (rt != null) relies.add([rt, m] as Object[])
             if (gt != null) guars.add([gt, m] as Object[])
         }
-        if (relies.isEmpty() && guars.isEmpty()) return
+        // (No early return on empty predicate lists: the Phase 244 passes below must still see a
+        // body-level @Guarantee with no predicate, and report it loudly.)
 
         for (Object[] r : relies) {
             MethodNode m = (MethodNode) r[1]
@@ -633,6 +637,167 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     pairParams(gm), implicationText(gm, rm))
             }
         }
+
+        // Phase 244 — guarantee CONFORMANCE (slice 5 of the SEQ/PAR ladder): a @Guarantee('Role') on a
+        // BODY method (a non-predicate) declares that the method's own-step transitions honour the
+        // Role's guarantee predicate — the obligation the §VII argument had left to hand-inspection.
+        // Discharged on a synthesised twin: the method's body MINUS the prepended env step (the
+        // `$rely$…` call @UnderRely inserts — the guarantee covers the thread's OWN step, not the
+        // environment's), with @Requires kept (the rely-stable precondition stands in for any
+        // reachable post-env state) and @Ensures `pred(old.f…, f…)` over the fields the predicate's
+        // post-state parameters name.
+        boolean conformanceAdopted = false
+        for (MethodNode m : new ArrayList<MethodNode>(classNode.methods)) {
+            if (isRgPredicate(m)) continue
+            String role = rgThread(m, GUARANTEE_TYPE)
+            if (role == null) continue
+            conformanceAdopted = true
+            MethodNode pred = null
+            for (Object[] g : guars) if (g[0] == role) { pred = (MethodNode) g[1]; break }
+            runGuaranteeConformance(classNode, m, role, pred)
+        }
+
+        // Phase 244 — unbacked relies, in classes that ADOPT the conformance discipline (some body
+        // method declares @Guarantee): a role-based @UnderRely assumes its @Rely predicate holds of
+        // the environment, and the existing G ⟹ R lemmas justify that from the peers' guarantees —
+        // but only if a peer role DECLARES a guarantee. With no other-role @Guarantee predicate the
+        // assumption has nothing in the class justifying it: loudly. A class with no body-level
+        // @Guarantee keeps the modular posture (a single-sided rely is an interface assumption,
+        // justified outside the class — like a @Requires at a boundary); an @UnderRely naming a
+        // hand-written rely-step METHOD is likewise untouched (its own @Ensures is its backing).
+        if (!conformanceAdopted) return
+        Set<String> underRoles = new LinkedHashSet<String>()
+        Map<String, MethodNode> roleAnchor = new HashMap<String, MethodNode>()
+        for (MethodNode m : classNode.methods) {
+            for (String role : underRelyRolesOf(m)) {
+                underRoles.add(role)
+                if (!roleAnchor.containsKey(role)) roleAnchor.put(role, m)
+            }
+        }
+        for (String role : underRoles) {
+            MethodNode relyPred = null
+            for (Object[] r : relies) if (r[0] == role) { relyPred = (MethodNode) r[1]; break }
+            if (relyPred == null) continue
+            boolean backed = false
+            for (Object[] g : guars) if (g[0] != role) { backed = true; break }
+            if (!backed) {
+                MethodNode anchor = roleAnchor.get(role)
+                addStaticTypeError(Reporter.formatUnbackedRely(classNode.nameWithoutPackage,
+                    relyPred.name, role, anchor.name), anchor)
+            }
+        }
+    }
+
+    /** The role names an {@code @UnderRely} on {@code m} carries (a single string or a list). */
+    private static List<String> underRelyRolesOf(MethodNode m) {
+        List<AnnotationNode> anns = m.getAnnotations(UNDERRELY_TYPE)
+        if (anns == null || anns.isEmpty()) return Collections.emptyList()
+        List<String> out = new ArrayList<String>()
+        for (AnnotationNode a : anns) {
+            Expression v = a.getMember('value')
+            if (v instanceof ConstantExpression && ((ConstantExpression) v).value != null) {
+                out.add(((ConstantExpression) v).value.toString())
+            } else if (v instanceof ListExpression) {
+                for (Expression e : ((ListExpression) v).expressions) {
+                    if (e instanceof ConstantExpression && ((ConstantExpression) e).value != null) {
+                        out.add(((ConstantExpression) e).value.toString())
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /**
+     * Phase 244 — synthesise and discharge the guarantee-conformance twin of {@code m}: the method's
+     * own-step transition must satisfy the {@code @Guarantee(role)} predicate. See the caller's
+     * comment for the semantics; loud skips where the shape is outside the fragment (no predicate
+     * for the role, a static method, predicate post-state parameters that don't name fields).
+     */
+    private void runGuaranteeConformance(ClassNode cn, MethodNode m, String role, MethodNode pred) {
+        // Anchor every conformance diagnostic at the @Guarantee ANNOTATION's own position: STC
+        // dedups errors per source position (StaticTypeCheckingVisitor.addError keys on
+        // line<<16+column), so an anchor shared with the real method's other diagnostics would be
+        // silently dropped — the live form of the Phase 94 hazard.
+        List<AnnotationNode> gAnns = m.getAnnotations(GUARANTEE_TYPE)
+        ASTNode at = (gAnns != null && !gAnns.isEmpty() && gAnns.get(0).lineNumber > 0) ? gAnns.get(0) : m
+        try {
+            runGuaranteeConformance0(cn, m, role, pred, at)
+        } catch (Throwable t) {
+            // A declared conformance must never pass silently: if the twin cannot be built or
+            // verified, say so loudly rather than let the class sweep swallow it.
+            addStaticTypeError(Reporter.formatGuaranteeConformanceSkipped(m.name,
+                "the conformance twin could not be verified (${t.class.simpleName}: ${t.message})"), at)
+        }
+    }
+
+    private void runGuaranteeConformance0(ClassNode cn, MethodNode m, String role, MethodNode pred, ASTNode at) {
+        if (pred == null) {
+            addStaticTypeError(Reporter.formatGuaranteeConformanceSkipped(m.name,
+                "no @Guarantee('${role}') predicate method in the class to conform to"), at)
+            return
+        }
+        if (m.isStatic()) {
+            addStaticTypeError(Reporter.formatGuaranteeConformanceSkipped(m.name,
+                "a static method has no instance transition to check against '${pred.name}'"), at)
+            return
+        }
+        int n = pred.parameters.length.intdiv(2)
+        List<String> fields = new ArrayList<String>()
+        for (int i = 0; i < n; i++) {
+            String fn = pred.parameters[n + i].name
+            if (cn.getField(fn) == null) {
+                addStaticTypeError(Reporter.formatGuaranteeConformanceSkipped(m.name,
+                    "predicate '${pred.name}' post-state parameter '${fn}' names no field of ${cn.nameWithoutPackage}"), at)
+                return
+            }
+            fields.add(fn)
+        }
+        StringBuilder call = new StringBuilder(pred.name).append('(')
+        for (int i = 0; i < n; i++) { if (i > 0) call.append(', '); call.append('old.').append(fields.get(i)) }
+        for (int i = 0; i < n; i++) call.append(', ').append(fields.get(i))
+        call.append(')')
+
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = m.code
+        if (!(body instanceof BlockStatement)) {
+            addStaticTypeError(Reporter.formatGuaranteeConformanceSkipped(m.name,
+                "the method body is not a plain block (${body?.class?.simpleName})"), at)
+            return
+        }
+        // Drop the `$rely$…` env step(s) wherever they sit in the top-level list: the guarantee
+        // covers the thread's OWN step, not the environment's. DEEP-COPY the rest — the real
+        // method's verification annotates the shared nodes, and a twin re-walk over them breaks.
+        List<Statement> kept = new ArrayList<Statement>()
+        for (Statement st : ((BlockStatement) body).statements) if (!isRelyStepCall(st)) kept.add(st)
+        BlockStatement twinBody = (BlockStatement) ContractExpansionTransform.copyBody(
+            new BlockStatement(kept, ((BlockStatement) body).variableScope), false)
+
+        MethodNode twin = new MethodNode(m.name + '$guarantee$' + role, m.modifiers, m.returnType,
+            m.parameters, ClassNode.EMPTY_ARRAY, twinBody)
+        twin.declaringClass = cn
+        twin.addAnnotation(new AnnotationNode(ENSURES_TYPE))
+        AnnotationNode cs = new AnnotationNode(CONTRACT_SOURCE_TYPE)
+        cs.addMember('ensures', new ConstantExpression(call.toString()))
+        String reqText = findContractText(m, 'requires')
+        if (reqText != null) {
+            twin.addAnnotation(new AnnotationNode(REQUIRES_TYPE))
+            cs.addMember('requires', new ConstantExpression(reqText))
+        }
+        twin.addAnnotation(cs)
+        twin.setSourcePosition(at)      // the @Guarantee annotation's line — a position no other diagnostic owns
+        twin.putNodeMetaData(RG_CONF_KEY, [m.name, pred.name, role] as String[])
+        beforeVisitMethod(twin)
+        afterVisitMethod(twin)
+    }
+
+    /** A statement that is a call to a synthesised {@code $rely$<Role>} env step. */
+    private static boolean isRelyStepCall(Statement st) {
+        if (!(st instanceof ExpressionStatement)) return false
+        Expression e = ((ExpressionStatement) st).expression
+        if (e instanceof MethodCallExpression) return ((MethodCallExpression) e).methodAsString?.startsWith('$rely$')
+        if (e instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) e).method?.startsWith('$rely$')
+        false
     }
 
     /** A {@code @Rely}/{@code @Guarantee} condition: a boolean method with an even, non-zero parameter count
@@ -7282,6 +7447,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String[] rgLaw = (String[]) node.getNodeMetaData(RG_LAW_KEY)
             if (rgLaw != null) {
                 addStaticTypeError(Reporter.formatRelyGuaranteeFailure(rgLaw[0], r), anchor)
+                return
+            }
+            String[] rgConf = (String[]) node.getNodeMetaData(RG_CONF_KEY)
+            if (rgConf != null) {
+                addStaticTypeError(Reporter.formatGuaranteeConformanceFailure(rgConf[0], rgConf[1], rgConf[2], r), anchor)
                 return
             }
             if (r.status == CheckResult.Status.UNKNOWN && postAst != null) {

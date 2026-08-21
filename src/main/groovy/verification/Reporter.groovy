@@ -426,6 +426,38 @@ class Reporter {
             "Could not decide rely/guarantee compatibility: ${law}", result)
     }
 
+    // ---- Guarantee conformance (Phase 244) ----
+
+    /**
+     * Phase 244 — a body method does not honour the guarantee it declares: the method's own-step
+     * transition (env step excluded) violates the {@code @Guarantee(role)} predicate. This is the
+     * obligation that makes the peers' rely assumptions justified — the §VII lemma chain closes
+     * only if each thread actually does what its guarantee says.
+     */
+    static String formatGuaranteeConformanceFailure(String methodName, String predName, String role,
+                                                    CheckResult result) {
+        implicit("Guarantee conformance does not hold: '${methodName}' violates its declared " +
+                 "guarantee '${predName}' (${role})",
+            "${predName}(old-state, new-state) at every exit of ${methodName}",
+            "Could not decide guarantee conformance of '${methodName}' against '${predName}' (${role})",
+            result)
+    }
+
+    /** Phase 244 — a conformance declaration outside the checkable shape: loud skip. */
+    static String formatGuaranteeConformanceSkipped(String methodName, String reason) {
+        "Skipped guarantee-conformance check for ${methodName} (${reason}). A checkable declaration " +
+        "is @Guarantee('Role') on an instance method of a class whose @Guarantee('Role') predicate's " +
+        "post-state parameters name its fields. The declaration is neither checked nor assumed."
+    }
+
+    /** Phase 244 — a rely assumed via @UnderRely with no peer @Guarantee predicate to justify it. */
+    static String formatUnbackedRely(String className, String relyName, String role, String methodName) {
+        "Unbacked rely in '${className}': '${methodName}' assumes the rely '${relyName}' (${role}) " +
+        "via @UnderRely, but no other role declares a @Guarantee predicate — nothing in the class " +
+        "justifies the assumption. Declare the peer's @Guarantee: the existing lemmas then check it " +
+        "implies this rely, and @Guarantee-annotated methods are checked to honour it."
+    }
+
     /** An information-flow obligation the verifier cannot model (unlabelled source, no lattice, …) — skipped loudly. */
     static String formatLeakSkipped(String methodName, String reason) {
         "Skipped information-flow check for ${methodName} (${reason}). " +

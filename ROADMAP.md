@@ -11116,6 +11116,54 @@ count matching for PAR termination (slice 6).
 
 ---
 
+## Phase 244 — guarantee conformance: bodies checked against their own guarantees  *(shipped — slice 5 of the SEQ/PAR ladder)*
+
+Mechanising the obligation the §VII argument left to hand-inspection. Phase L1's lemmas certify the
+rely/guarantee *conditions* compose (reflexive/transitive relies, reflexive guarantees, `G_i ⟹ R_j`
+pairwise), and the `@UnderRely` proofs certify each body stays safe *under* its rely — but nothing
+checked that a body actually **does what its own guarantee says**, so the peers' justified-rely chain
+rested on unverified conformance. Exploring the corpus first surfaced a real design constraint: an
+`@UnderRely` value names the *rely predicate to assume*, and the corpus uses both naming conventions
+(the Buffer's own-role names vs G030's env-role 'Other'), so the method's own guarantee is NOT
+derivable from it. Hence the declaration is explicit and reuses the stock annotation in its second
+natural position: **`@Guarantee('Role')` on a body method**.
+
+Discharge is a synthesised twin (the `runRgLaw` pattern, with the REAL body): the method's statements
+minus the `$rely$…` env step the transform prepends — the guarantee covers the thread's **own step**,
+which a pinned case proves is load-bearing (an at-most-one-increment guarantee under a monotonic rely
+proves *only* because the env step is excluded) — deep-copied via the transform's `copyBody` (shared
+AST nodes carry the real method's verification metadata and break a re-walk), with `@Requires` carried
+over (the rely-stable precondition stands in for any reachable post-env state — the documented
+assumption it always was) and `@Ensures pred(old.f…, f…)` over the fields the predicate's post-state
+parameter names map to. Failures report via `RG_CONF_KEY` metadata as "**Guarantee conformance does
+not hold**" with a counterexample; every unbuildable/unverifiable twin path reports loudly (a declared
+conformance never passes silently). Two debugging finds worth recording: the transform's
+`copyBody` requirement above, and — the live form of the Phase 94 hazard — **STC dedups errors per
+source position** (`StaticTypeCheckingVisitor.addError` keys on line<<16+column), so a twin anchored at
+the method declaration was silently swallowed whenever the real method had any error at the same
+position; conformance diagnostics therefore anchor at the `@Guarantee` **annotation's** own line.
+
+Wiring completeness rides along, gated on adoption: in a class with body-level `@Guarantee`, a
+role-based `@UnderRely` rely with **no other-role `@Guarantee` predicate** errors as an "Unbacked
+rely" (the collapsed-roles smell); classes without body-level `@Guarantee` keep the modular
+single-sided posture — a rely there is an interface assumption justified outside the class, like a
+`@Requires` at a boundary (the first draft fired unconditionally and correctly broke five single-sided
+P-ring teaching cases — the gate is the honest scope). The **real §VII `Buffer.groovy`** now carries
+`@Guarantee` on `produce` and `consume` and passes (`SpscBufferVerifyTest` re-run fresh), closing the
+shared-source capstone's chain end to end: predicates compatible, bodies safe under interference,
+bodies honouring their guarantees, no leak.
+
+Cases (G308, new group, 9): the flagship buffer with both conformant methods proves; producer-moves-
+head and consumer-moves-tail refute with counterexamples; the counter minimal pair (bump proves, drop
+refutes); the own-step semantics pin; the unbacked-rely error; the no-predicate and
+params-name-no-fields loud skips. Docs: the Phase 244 subsection in `examples/smith.md` §IV (two
+linked cases), the CAPABILITIES row, the Buffer javadoc. Honest boundaries: conformance is per-method
+own-step over int-fragment fields named by the predicate's post-state params; statics skip loudly;
+rely-stability of `@Requires` assumed as documented. Next (last) on the ladder: send/receive count
+matching for PAR termination (slice 6).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

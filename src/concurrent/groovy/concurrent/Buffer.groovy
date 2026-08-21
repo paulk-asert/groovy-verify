@@ -33,9 +33,12 @@ import verification.Declassify
  * argument, not just the bounds:
  *
  * <ul>
- *   <li><b>groovy-verify</b> (rung 1) proves the bounds @Invariant under each thread's @UnderRely interference AND
- *       the no-leak information-flow property (the {@code @Label}/{@code level} region discipline, the §III-A
- *       secure-update at {@code tail++}). {@code BufferVerifyTest} reads <i>this exact file</i> and runs the checker.</li>
+ *   <li><b>groovy-verify</b> (rung 1) proves the bounds @Invariant under each thread's @UnderRely interference, the
+ *       no-leak information-flow property (the {@code @Label}/{@code level} region discipline, the §III-A
+ *       secure-update at {@code tail++}), AND — Phase 244 — that each body honours its declared {@code @Guarantee}
+ *       (the method-level {@code @Guarantee} annotations below: produce keeps {@code head} fixed, consume keeps
+ *       {@code tail} fixed, so the peers' relies are justified end to end).
+ *       {@code BufferVerifyTest} reads <i>this exact file</i> and runs the checker.</li>
  *   <li><b>Lincheck</b> (rung 3) model-checks the ACTUAL bytecode for linearizability across interleavings.</li>
  * </ul>
  *
@@ -84,6 +87,7 @@ class Buffer {
     /** Consumer side. @Requires is the rely-stable proof precondition; the guard is its live runtime twin. */
     @Requires({ head < tail })
     @UnderRely('Consumer')
+    @Guarantee('Consumer')
     Integer consume() {
         if (tail - head == 0) return null
         int v = values[head]            // in [head, tail) → Low; in bounds under the rely
@@ -95,6 +99,7 @@ class Buffer {
     /** Producer side. Declassify, write the slot, THEN publish by advancing tail (the §III-A secure-update). */
     @Requires({ tail < values.length })
     @UnderRely('Producer')
+    @Guarantee('Producer')
     boolean produce(@Label('High') int secret) {
         if (tail - values.length == 0) return false
         int msg = Declassify.to('Low', secret)   // §III-E controlled release: the slot's datum becomes Low

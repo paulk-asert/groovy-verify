@@ -716,7 +716,7 @@ class ContractExpansionTransform implements ASTTransformation {
      *  and their bodies are isolated separately by {@link #loopBodyCopy}). Node metadata and source position
      *  are preserved. When {@code freshen}, each variable access is rebuilt via {@link #freshenVars} (needed
      *  only for @TailRecursive, whose rename mutates the shared VariableExpression nodes). */
-    private static Statement copyBody(Statement s, boolean freshen) {
+    /* package */ static Statement copyBody(Statement s, boolean freshen) {    // also used by Phase 244's conformance twin
         if (s == null) return null
         // Only rebuild the *containers* groovy-contracts restructures in place: a BlockStatement (whose
         // statement LIST it rewrites — replacing a return with `def result=…; try{assert}; return result`)
