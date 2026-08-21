@@ -134,10 +134,11 @@ class G306_p242_channel_contracts {
                             return v
                         }
                     }""")],
-        // A never-sent local channel has no element: the read is unconstrained (the runtime BLOCKS
-        // forever there). Before this phase the scalar placeholder `def src = 0` PROVED result == 0 —
-        // a proof about a value that never exists. Now it honestly refutes.
-        [group: 'P242 channel contracts', name: 'a never-sent channel read proves nothing', expect: 'Cannot prove postcondition',
+        // A never-sent local channel has no element — the runtime BLOCKS forever at the read.
+        // Before Phase 242 the scalar placeholder `def src = 0` PROVED result == 0, a proof about a
+        // value that never exists; Phase 242 made it refute, and Phase 243's network check now names
+        // the real problem: the receive can never be satisfied.
+        [group: 'P242 channel contracts', name: 'a never-sent channel read proves nothing', expect: 'can never be satisfied',
          src: tc("""class C {
                         @Ensures({ result == 0 })
                         static int neverSent() {

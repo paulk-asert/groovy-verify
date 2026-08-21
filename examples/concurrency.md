@@ -445,6 +445,58 @@ element **skips loudly**, neither checked nor assumed. Receives bind at a local 
 (`int v = ch.first()`); sends are checked at statement position. A bare `ch.receive()` without an await is an
 `Awaitable`, not a value, and does not bind. Delivery and termination remain rungs 2/3.
 
+### Network well-formedness — deadlock-freedom as well-foundedness (Phase 243)
+
+Slice 4 closes the structural claim the section kept disclaiming — for the fragment where it can actually be
+*exact*. In the one-element model a method's channel network is a tiny wait-for system: the **blocking**
+operations are receives (`first()`, awaited `receive()`) and joins (`await t`) — a statement-position send
+discards its `Awaitable` and does not block. A blocking read completes only after its root channel's send has
+executed; an op runs only after its process passes its earlier blocking points (an arm's ops additionally
+need main to reach the fork); a join completes only when the whole arm has. **The network is deadlock-free
+exactly when that wait-for order is well-founded** — the same argument as `@Decreases` and the
+dining-philosophers resource hierarchy, in its fourth appearance. So a cycle is not a "can't certify": it is
+a **guaranteed deadlock**, and the checker spells it out:
+
+<!-- doclint:case p243-network-well-formedness/awaiting-the-consumer-before-the-send -->
+```groovy
+static int joinWait() {
+    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+    def t = async { src.first() }
+    await t
+    src.send(1)
+    return 0
+}
+```
+
+> Process-network deadlock in 'joinWait': circular wait: the receive on 'src' (line 3, in the task forked at
+> line 3), which waits for the send on 'src' (line 5), which waits for the await of the task forked at
+> line 3, which waits for the first…
+
+The other refuted shapes: a receive before the only send **in the same process**; a receive before the
+producer task is even **forked**; two tasks in a **mutual receive cycle** (each reads from the other before
+writing); and a receive whose root channel — directly or through a pipeline derivation — is **never sent to**
+("can never be satisfied", the precise name for what Phase 242's never-sent repair could only refute). The
+well-ordered twin verifies end to end — send the request (non-blocking), fork the replier, then block:
+
+<!-- doclint:case p243-network-well-formedness/request-reply-in-the-right-order-proves -->
+```groovy
+@Ensures({ result == x + 1 })
+static int reqReply(int x) {
+    groovy.concurrent.AsyncChannel<Integer> q = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> r = groovy.concurrent.AsyncChannel.create(1)
+    q.send(x)
+    async { int v = q.first(); r.send(v + 1) }
+    return r.first()
+}
+```
+
+The certificate covers exactly what it says, loudly at the edges: a **conditional** channel op (inside an
+if/loop/catch) makes the network uncertifiable — loud skip, no claim either way; an **escaping** channel (a
+call argument, a return, an alias) and a channel-typed **parameter** may be served elsewhere, so they carry
+no local claim — the modular assumption, same as Phase 242's receives. The check runs only when the Phase 241
+linearity pass is silent (its findings already re-shape the network's meaning). What remains at rungs 2/3:
+per-task termination, conditional/multi-element networks, and the scheduler itself.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

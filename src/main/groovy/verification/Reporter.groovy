@@ -359,6 +359,28 @@ class Reporter {
         "neither checked at sends nor assumed at receives."
     }
 
+    // ---- Network well-formedness (Phase 243) ----
+
+    /**
+     * Phase 243 — the wait-for order of a one-shot channel network is not well-founded: a circular
+     * wait among receives, sends, and joins (a guaranteed deadlock at this action grain), or a
+     * receive no send can ever satisfy. The same well-foundedness argument as @Decreases and the
+     * dining-philosophers resource hierarchy, applied to the network's blocking structure.
+     */
+    static String formatNetworkDeadlock(String methodName, String detail) {
+        "Process-network deadlock in '${methodName}': ${detail}. A one-shot channel network is " +
+        "deadlock-free exactly when its wait-for order is well-founded; this one blocks forever. " +
+        "Move the send before the blocking receive, fork the producer before awaiting its " +
+        "consumer, or let a concurrent task serve the channel."
+    }
+
+    /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */
+    static String formatNetworkSkipped(String methodName, String reason) {
+        "Skipped network well-formedness check for ${methodName} (${reason}). The deadlock-freedom " +
+        "certificate covers one-shot networks of unconditional sends and receives on local " +
+        "channels; outside that the network is neither certified nor refuted."
+    }
+
     // ---- Information flow (Phase L1) ----
 
     /**

@@ -11072,6 +11072,50 @@ well-foundedness theorem's fourth appearance).
 
 ---
 
+## Phase 243 — network well-formedness: deadlock-freedom as well-foundedness  *(shipped — slice 4 of the SEQ/PAR ladder)*
+
+The structural claim the concurrency docs kept disclaiming — deadlock-freedom — delivered for the
+fragment where it is *exact*, not a design heuristic. The key observation: in this API a
+statement-position `send` discards its `Awaitable` and never blocks, so the blocking operations are
+precisely receives (`first()`, awaited `receive()`) and joins (`await t`). With the ends linear
+(Phase 241) and one element in flight per channel, a method's network is a tiny wait-for system: a
+blocking read completes only after its root channel's send has executed (roots resolved through the
+pipeline-derivation parents); an op runs only after its process passes its earlier blocking points
+(an arm's ops additionally need main to reach the fork, i.e. main's blocking points before it); a
+join completes only when the whole arm has. **Deadlock-free ⟺ that wait-for order is well-founded** —
+the `@Decreases` / dining-philosophers argument in its fourth appearance, now on the network's
+blocking structure. So the planned "acyclic-network design rule" became something stronger: a cycle
+is a *guaranteed* deadlock, refuted with the circular wait spelled out
+(`Reporter.formatNetworkDeadlock` — "the receive on 'src' (line 3, in the task forked at line 3),
+which waits for the send on 'src' (line 5), which waits for the await of the task forked at line 3,
+which waits for the first"), and a well-ordered cyclic *data-flow* (request-reply) correctly passes —
+which the naive acyclicity rule would have flagged.
+
+Mechanics: the Phase 240/241 walk now stamps each channel op with its process-local sequence and a
+`conditional` flag (`condDepth` in the ordinal walk; if/loop tracking inside arm closures), and
+`classifyChannelVars` records each derived channel's parent. `checkNetworkWellFormedness` (run only
+when the linearity pass is silent — its findings already re-shape the network) builds the event graph
+over blocking reads, sends, and awaited joins, adds the three dependency families, and DFSes for a
+cycle. A read whose root has no send errors as **"can never be satisfied"** — the precise name for
+the never-sent hole Phase 242 could only refute (G306's case upgraded to expect it). The certificate
+scopes itself loudly: a conditional channel op → `formatNetworkSkipped` (uncertifiable, no claim);
+escaping channels (anything but a method-call receiver or its own declaration, by identity-set scan)
+and channel-typed params carry no local claim — the modular assumption, matching Phase 242's
+receives.
+
+Cases (G307, new group, 8): four circular waits (same-process receive-before-send; await-the-consumer-
+then-send; receive-before-the-producer-forks; the two-task mutual receive cycle), the derived-receive
+never-satisfied error, the conditional-send loud skip, and two passes — request-reply in the right
+order (certified silently AND `result == x + 1` proves end-to-end) and the escaping-channel
+no-claim pin. Docs: the Phase 243 subsection in `examples/concurrency.md` (deadlock + request-reply
+linked), the CAPABILITIES row. Honest boundaries: one-shot unconditional networks only; awaited
+sends not modelled as blocking (irrelevant while the one-element guard holds and capacities are ≥ 1 —
+the corpus's shapes); per-task termination, multi-element traffic, and the scheduler stay rungs 2/3.
+Next on the ladder: auto-generated rely/guarantee pairwise compatibility (slice 5), send/receive
+count matching for PAR termination (slice 6).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

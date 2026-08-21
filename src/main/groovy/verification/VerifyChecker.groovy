@@ -4287,6 +4287,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         int fork
         int join = Integer.MAX_VALUE
         int line
+        boolean conditional        // forked inside an if-branch / loop — execution not guaranteed
         String handle              // the local the Awaitable is bound to, or null
         Expression anchor          // the async call (diagnostic anchor — an in-body expression)
         final Set<String> reads = new HashSet<String>()
@@ -4306,11 +4307,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String chan; String method; int kind
         ParArm proc            // null = the main body
         int ord; int line
+        int seq                // program-order position WITHIN its process (main: ord; arm: op counter)
+        boolean conditional    // inside an if-branch / loop / catch — execution not guaranteed
         Expression anchor
     }
 
     private static class ParCtx {
         int counter
+        int condDepth          // > 0 while walking statements whose execution is not guaranteed
         final Set<String> chanVars
         final List<ParArm> arms = new ArrayList<ParArm>()
         final List<ChanUse> chanUses = new ArrayList<ChanUse>()
@@ -4323,10 +4327,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // The first mention of an arm's handle after its fork is its join (await/gather/wrapper).
             for (ParArm a : arms) if (n.equals(a.handle) && ord > a.fork && a.join == Integer.MAX_VALUE) a.join = ord
         }
-        void chanUse(String chan, String method, int kind, ParArm proc, int ord, int line, Expression anchor) {
+        void chanUse(String chan, String method, int kind, ParArm proc, int ord, int line, int seq,
+                     boolean conditional, Expression anchor) {
             ChanUse u = new ChanUse()
             u.chan = chan; u.method = method; u.kind = kind; u.proc = proc
-            u.ord = ord; u.line = line; u.anchor = anchor
+            u.ord = ord; u.line = line; u.seq = seq; u.conditional = conditional; u.anchor = anchor
             chanUses.add(u)
         }
         private static void record(Map<String, List<ParAccess>> m, String n, int ord, int line) {
@@ -4347,13 +4352,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Record a channel end-use at a DIRECT channel-var receiver (a chain's base op has the var
      *  receiver, so a pipeline chain registers exactly one consumption of its source). */
-    private static void recordChanUseIfAny(MethodCallExpression call, ParCtx ctx, ParArm proc, int ord, Expression anchor) {
+    private static void recordChanUseIfAny(MethodCallExpression call, ParCtx ctx, ParArm proc, int ord,
+                                           int seq, boolean conditional, Expression anchor) {
         Expression recv = stripCasts(call.objectExpression)
         if (!(recv instanceof VariableExpression)) return
         String name = ((VariableExpression) recv).name
         if (!ctx.chanVars.contains(name)) return
         int k = chanUseKindOf(call.methodAsString)
-        if (k >= 0) ctx.chanUse(name, call.methodAsString, k, proc, ord, call.lineNumber, anchor)
+        if (k >= 0) ctx.chanUse(name, call.methodAsString, k, proc, ord, call.lineNumber, seq, conditional, anchor)
     }
 
     /** Peel casts (STC/lowering wrappers) off an expression. */
@@ -4395,7 +4401,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         @Override void visitMethodCallExpression(MethodCallExpression call) {
             ClosureExpression cl = asyncClosure(call)
             if (cl != null) { recordArm(call, cl, null); return }
-            recordChanUseIfAny(call, ctx, null, ord, call)      // Phase 241 — a main-body channel end-use
+            // Phase 241 — a main-body channel end-use (seq = the statement ordinal)
+            recordChanUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
             boolean isAwait = call.methodAsString == 'await'
             if (isAwait) awaitDepth++
             try { super.visitMethodCallExpression(call) } finally { if (isAwait) awaitDepth-- }
@@ -4469,6 +4476,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ParArm a = new ParArm()
             a.fork = ord
             a.line = call.lineNumber
+            a.conditional = ctx.condDepth > 0
             a.handle = handle
             a.anchor = call
             if (awaitDepth > 0) a.join = ord      // `await async { … }` — forked and joined in place
@@ -4524,9 +4532,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (root != null && !local.contains(root)) writes.add(root)
                 super.visitPrefixExpression(e)
             }
+            private int armSeq = 0
+            private int armCondDepth = 0
             @Override void visitMethodCallExpression(MethodCallExpression call) {
-                recordChanUseIfAny(call, ctx, arm, arm.fork, arm.anchor)   // Phase 241 — an arm-side end-use
+                // Phase 241 — an arm-side end-use; seq is the arm's own op order (Phase 243 needs it)
+                recordChanUseIfAny(call, ctx, arm, arm.fork, ++armSeq,
+                    arm.conditional || armCondDepth > 0, call)
                 super.visitMethodCallExpression(call)
+            }
+            @Override void visitIfElse(IfStatement st) {
+                st.booleanExpression.visit(this)
+                armCondDepth++
+                try { st.ifBlock?.visit(this); st.elseBlock?.visit(this) } finally { armCondDepth-- }
+            }
+            @Override void visitForLoop(ForStatement st) {
+                st.collectionExpression?.visit(this)
+                armCondDepth++
+                try { st.loopBlock?.visit(this) } finally { armCondDepth-- }
+            }
+            @Override void visitWhileLoop(WhileStatement st) {
+                st.booleanExpression.visit(this)
+                armCondDepth++
+                try { st.loopBlock?.visit(this) } finally { armCondDepth-- }
             }
             @Override void visitVariableExpression(VariableExpression ve) {
                 if (!local.contains(ve.name)) reads.add(ve.name)
@@ -4571,32 +4598,37 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (st instanceof IfStatement) {
             IfStatement i = (IfStatement) st
             parScanExpr(i.booleanExpression, ord, ctx)
-            parWalkStatement(i.ifBlock, ctx)
-            parWalkStatement(i.elseBlock, ctx)
+            ctx.condDepth++
+            try { parWalkStatement(i.ifBlock, ctx); parWalkStatement(i.elseBlock, ctx) } finally { ctx.condDepth-- }
             return
         }
         if (st instanceof ForStatement) {
             ForStatement f = (ForStatement) st
             parScanExpr(f.collectionExpression, ord, ctx)
-            parWalkStatement(f.loopBlock, ctx)
+            ctx.condDepth++
+            try { parWalkStatement(f.loopBlock, ctx) } finally { ctx.condDepth-- }
             return
         }
         if (st instanceof WhileStatement) {
             WhileStatement w = (WhileStatement) st
             parScanExpr(w.booleanExpression, ord, ctx)
-            parWalkStatement(w.loopBlock, ctx)
+            ctx.condDepth++
+            try { parWalkStatement(w.loopBlock, ctx) } finally { ctx.condDepth-- }
             return
         }
         if (st instanceof DoWhileStatement) {
             DoWhileStatement w = (DoWhileStatement) st
-            parWalkStatement(w.loopBlock, ctx)
+            ctx.condDepth++                                  // a do-while body RE-runs — not one-shot
+            try { parWalkStatement(w.loopBlock, ctx) } finally { ctx.condDepth-- }
             parScanExpr(w.booleanExpression, ord, ctx)
             return
         }
         if (st instanceof org.codehaus.groovy.ast.stmt.TryCatchStatement) {
             org.codehaus.groovy.ast.stmt.TryCatchStatement t = (org.codehaus.groovy.ast.stmt.TryCatchStatement) st
             parWalkStatement(t.tryStatement, ctx)
-            for (org.codehaus.groovy.ast.stmt.CatchStatement c : t.catchStatements) parWalkStatement(c.code, ctx)
+            ctx.condDepth++
+            try { for (org.codehaus.groovy.ast.stmt.CatchStatement c : t.catchStatements) parWalkStatement(c.code, ctx) }
+            finally { ctx.condDepth-- }
             parWalkStatement(t.finallyStatement, ctx)
             return
         }
@@ -4636,10 +4668,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         collectChannelVars((BlockStatement) body, chanVars)
         Set<String> createdChans = new HashSet<String>(), derivedChans = new HashSet<String>(),
                     broadcastChans = new HashSet<String>()
-        classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans)
+        Map<String, String> chanParent = new HashMap<String, String>()
+        classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans, chanParent)
         ParCtx ctx = new ParCtx(chanVars)
         parWalkStatement(body, ctx)
-        checkChannelLinearity(node, ctx, derivedChans, broadcastChans)
+        boolean chanErrors = checkChannelLinearity(node, ctx, derivedChans, broadcastChans)
+        // Phase 243 — the network well-formedness check: only when the ends are clean (a linearity
+        // or model-limit finding already re-shapes the network's meaning and got its own loud report).
+        if (!chanErrors) {
+            try {
+                checkNetworkWellFormedness(node, ctx, (BlockStatement) body, chanParent, broadcastChans)
+            } catch (Throwable ignored) {
+            }
+        }
         if (ctx.arms.isEmpty()) return
 
         // The synchronisation media, exempt from state conflicts (the "channels" of the PAR rule) —
@@ -4697,16 +4738,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Split the channel vars by provenance (Phase 241): created (`AsyncChannel.create`), broadcast
-     *  (`BroadcastChannel.create`), derived (a pipeline op or `subscribe` on a channel expr). */
+     *  (`BroadcastChannel.create`), derived (a pipeline op or `subscribe` on a channel expr) — the
+     *  derived var's base channel recorded in {@code parent} (Phase 243 resolves reads to roots). */
     private static void classifyChannelVars(BlockStatement body, Set<String> ch, Set<String> created,
-                                            Set<String> derived, Set<String> broadcast) {
+                                            Set<String> derived, Set<String> broadcast,
+                                            Map<String, String> parent) {
         body.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 if (de.leftExpression instanceof VariableExpression) {
                     String n = ((VariableExpression) de.leftExpression).name
                     if (isChannelCreate(de.rightExpression)) created.add(n)
                     else if (isBroadcastCreate(de.rightExpression)) broadcast.add(n)
-                    else if (isChannelExpr(de.rightExpression, ch)) derived.add(n)
+                    else if (isChannelExpr(de.rightExpression, ch)) {
+                        derived.add(n)
+                        String base = chanRoot(de.rightExpression, ch)
+                        if (base != null && base != n) parent.put(n, base)
+                    }
                 }
                 super.visitDeclarationExpression(de)
             }
@@ -4747,10 +4794,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * the scalar rewrite, so it SKIPS loudly here with the channel named (and desugarChannels'
      * guard independently refuses the rewrite, so nothing downstream can prove a FIFO-false value).
      */
-    private void checkChannelLinearity(MethodNode node, ParCtx ctx,
-                                       Set<String> derivedChans, Set<String> broadcastChans) {
+    private boolean checkChannelLinearity(MethodNode node, ParCtx ctx,
+                                          Set<String> derivedChans, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
-        if (uses.isEmpty()) return
+        if (uses.isEmpty()) return false
         Set<String> flagged = new HashSet<String>()          // per-channel per-rule dedupe
         Set<String> erroredChans = new HashSet<String>()     // channels with a concurrency error
         for (int i = 0; i < uses.size(); i++) {
@@ -4808,6 +4855,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     "has ${e.value} consumers (receives / pipeline stages)"), anchorFor(uses, e.key))
             }
         }
+        !flagged.isEmpty()
     }
 
     // ── Phase 242 — channel contracts: the element type is the protocol invariant ───────────────
@@ -4985,6 +5033,185 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     private static List<Expression> argListOf(MethodCallExpression m) {
         (m.arguments instanceof ArgumentListExpression) ? ((ArgumentListExpression) m.arguments).expressions : null
+    }
+
+    // ── Phase 243 — network well-formedness: deadlock-freedom as well-foundedness ───────────────
+    //
+    // With the ends linear (Phase 241) and one element in flight per channel, a method's channel
+    // network is a tiny, EXACT dependency system. The blocking operations are receives (`first` /
+    // awaited `receive`) and joins (`await t`); a statement-position send discards its Awaitable
+    // and does not block. So: a blocking read completes only after its root channel's send has
+    // executed; an op executes only after its process passes its earlier blocking points (an arm's
+    // ops additionally need main to reach the fork — i.e. main's blocking points before it); a
+    // join completes only when the whole arm has. The network is deadlock-free EXACTLY when this
+    // wait-for order is well-founded — the same argument as @Decreases and the dining-philosophers
+    // resource hierarchy, in its fourth appearance. A cycle is a guaranteed deadlock (error, with
+    // the circular wait spelled out); a blocking read whose root channel is never sent to can
+    // never be satisfied (error). The certificate covers exactly what it says: every op
+    // unconditional (an op inside an if/loop/catch → loud skip), channels local and non-escaping
+    // (a channel passed out or received as a parameter may be served elsewhere — the modular
+    // assumption, silent), the one-element model enforced upstream.
+
+    /** Channel names that ESCAPE the method: appear anywhere other than as a method-call receiver
+     *  or their own declaration LHS (a call argument, a return value, an alias, a field store). */
+    private static Set<String> collectEscapingChannels(BlockStatement body, Set<String> chanNames) {
+        if (chanNames.isEmpty()) return Collections.emptySet()
+        final Set<Expression> sanctioned = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                Expression recv = stripCasts(m.objectExpression)
+                if (recv instanceof VariableExpression) sanctioned.add(recv)
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) sanctioned.add(de.leftExpression)
+                de.rightExpression?.visit(this)
+            }
+        })
+        final Set<String> escaping = new HashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (chanNames.contains(ve.name) && !sanctioned.contains(ve)) escaping.add(ve.name)
+            }
+        })
+        escaping
+    }
+
+    /** Follow the derivation chain to the base channel: {@code out → src}, {@code s1 → b}. */
+    private static String chanBaseOf(String c, Map<String, String> parent) {
+        String r = c
+        int guard = 0
+        while (parent.containsKey(r) && guard++ < 100) r = parent.get(r)
+        r
+    }
+
+    private static String describeChanEvent(Object ev) {
+        if (ev instanceof ParArm) return "the await of the task forked at line ${((ParArm) ev).line}"
+        ChanUse u = (ChanUse) ev
+        String who = u.proc == null ? '' : " in the task forked at line ${u.proc.line}"
+        "the ${u.method == 'send' ? 'send' : 'receive'} on '${u.chan}' (line ${u.line}${who})"
+    }
+
+    /** The Phase 243 entry point — see the section comment above. Runs only when the linearity
+     *  pass was silent, so the one-sender/one-receiver/one-element discipline holds. */
+    private void checkNetworkWellFormedness(MethodNode node, ParCtx ctx, BlockStatement body,
+                                            Map<String, String> chanParent, Set<String> broadcastChans) {
+        List<ChanUse> uses = ctx.chanUses
+        if (uses.isEmpty()) return
+        Set<String> paramChans = new HashSet<String>()
+        for (Parameter p : node.parameters) {
+            String tn = p.type?.nameWithoutPackage
+            if (tn == 'AsyncChannel' || tn == 'BroadcastChannel') paramChans.add(p.name)
+        }
+        Set<String> escaping = collectEscapingChannels(body, ctx.chanVars)
+
+        List<ChanUse> blockingReads = new ArrayList<ChanUse>()
+        List<ChanUse> sends = new ArrayList<ChanUse>()
+        Map<String, ChanUse> sendByRoot = new HashMap<String, ChanUse>()
+        ChanUse condUse = null
+        for (ChanUse u : uses) {
+            String root = chanBaseOf(u.chan, chanParent)
+            if (paramChans.contains(root) || escaping.contains(root) || escaping.contains(u.chan)) continue
+            boolean isSend = u.method == 'send'
+            boolean isRead = u.method == 'first' || u.method == 'receive'
+            if (!isSend && !isRead) continue
+            if (u.conditional || (u.proc != null && u.proc.conditional)) { condUse = u; continue }
+            if (isSend) { sends.add(u); if (!sendByRoot.containsKey(root)) sendByRoot.put(root, u) }
+            else blockingReads.add(u)
+        }
+        if (condUse != null) {
+            addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                "the channel operation on '${condUse.chan}' (line ${condUse.line}) is conditional " +
+                "(inside an if / loop / catch)"), condUse.anchor)
+            return
+        }
+        if (blockingReads.isEmpty()) return          // nothing blocks → nothing to certify
+
+        // A read whose root channel is never sent to can never be satisfied.
+        for (ChanUse r : blockingReads) {
+            String root = chanBaseOf(r.chan, chanParent)
+            if (!sendByRoot.containsKey(root)) {
+                addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                    "the receive on '${r.chan}' (line ${r.line}) can never be satisfied — no send on " +
+                    (root == r.chan ? "'${root}'" : "its source channel '${root}'") +
+                    " anywhere in the method"), r.anchor)
+                return
+            }
+        }
+
+        // The wait-for graph: nodes are the channel ops plus each awaited arm's join.
+        List<Object> evs = new ArrayList<Object>()
+        Map<Object, Integer> id = new IdentityHashMap<Object, Integer>()
+        List<ChanUse> evUses = new ArrayList<ChanUse>(blockingReads)
+        evUses.addAll(sends)
+        for (ChanUse u : evUses) { id.put(u, evs.size()); evs.add(u) }
+        List<ParArm> joined = new ArrayList<ParArm>()
+        for (ParArm a : ctx.arms) if (a.join != Integer.MAX_VALUE) { joined.add(a); id.put(a, evs.size()); evs.add(a) }
+        List<List<Integer>> adj = new ArrayList<List<Integer>>()
+        for (int i = 0; i < evs.size(); i++) adj.add(new ArrayList<Integer>())
+
+        // Main's blocking points before ordinal o: its blocking reads and the joins it has passed.
+        // (X → Y means "X cannot complete until Y has".)
+        for (ChanUse u : evUses) {
+            if (u.proc == null) {
+                for (ChanUse b : blockingReads) if (b.proc == null && b.ord < u.ord) adj.get(id.get(u)).add(id.get(b))
+                for (ParArm a : joined) if (a.join < u.ord) adj.get(id.get(u)).add(id.get(a))
+            } else {
+                for (ChanUse b : blockingReads) if (b.proc != null && b.proc.is(u.proc) && b.seq < u.seq) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : blockingReads) if (b.proc == null && b.ord < u.proc.fork) adj.get(id.get(u)).add(id.get(b))
+                for (ParArm a : joined) if (a.join < u.proc.fork) adj.get(id.get(u)).add(id.get(a))
+            }
+        }
+        for (ChanUse r : blockingReads) {
+            ChanUse s = sendByRoot.get(chanBaseOf(r.chan, chanParent))
+            if (s != null && !s.is(r)) adj.get(id.get(r)).add(id.get(s))
+        }
+        for (ParArm a : joined) {
+            for (ChanUse u : evUses) if (u.proc != null && u.proc.is(a)) adj.get(id.get(a)).add(id.get(u))
+            for (ChanUse b : blockingReads) if (b.proc == null && b.ord < a.join) adj.get(id.get(a)).add(id.get(b))
+            for (ParArm o : joined) if (!o.is(a) && o.join < a.join) adj.get(id.get(a)).add(id.get(o))
+        }
+
+        // Well-foundedness: DFS for a cycle, reporting the circular wait it finds.
+        int[] color = new int[evs.size()]                 // 0 white, 1 grey, 2 black
+        List<Integer> stack = new ArrayList<Integer>()
+        List<Integer> cycle = findWaitCycle(adj, color, stack)
+        if (cycle != null) {
+            List<String> parts = new ArrayList<String>()
+            for (Integer i : cycle) parts.add(describeChanEvent(evs.get(i)))
+            Object first = evs.get(cycle.get(0))
+            Expression anchor = first instanceof ChanUse ? ((ChanUse) first).anchor : ((ParArm) first).anchor
+            addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first'), anchor)
+        }
+    }
+
+    /** DFS over the wait-for graph; returns the node cycle if one exists, else null. */
+    private static List<Integer> findWaitCycle(List<List<Integer>> adj, int[] color, List<Integer> stack) {
+        for (int s = 0; s < adj.size(); s++) {
+            if (color[s] != 0) continue
+            List<Integer> found = waitDfs(s, adj, color, stack)
+            if (found != null) return found
+        }
+        null
+    }
+
+    private static List<Integer> waitDfs(int v, List<List<Integer>> adj, int[] color, List<Integer> stack) {
+        color[v] = 1
+        stack.add(v)
+        for (Integer w : adj.get(v)) {
+            if (color[w] == 1) {
+                int at = stack.indexOf(w)
+                return new ArrayList<Integer>(stack.subList(at, stack.size()))
+            }
+            if (color[w] == 0) {
+                List<Integer> found = waitDfs(w, adj, color, stack)
+                if (found != null) return found
+            }
+        }
+        stack.remove(stack.size() - 1)
+        color[v] = 2
+        null
     }
 
     /** Drop the top-level `&&` conjuncts of {@code e} that contain a quantifier (`every`/`any`/closure);
