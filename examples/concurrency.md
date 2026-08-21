@@ -18,6 +18,9 @@
 
 > The **structural** half these proofs *assume* — mutual exclusion, interleaving-freedom, deadlock-freedom,
 > delivery — is checked separately by Lincheck / TLA+ TLC / Fray / jcstress. See **[CONCURRENCY.md](../CONCURRENCY.md)**.
+> Since the SEQ/PAR ladder (Phases 240–245, the later sections of this page), a substantial part of that
+> structural half is **checked at compile time** for the one-shot channel fragment: task disjointness,
+> channel-end linearity, channel contracts, deadlock-freedom, guarantee conformance, and drain termination.
 
 
 groovy-verify is a *sequential* SMT-backed checker — it reasons about no thread interleavings, races, or
@@ -38,9 +41,15 @@ features, each assuming a different structural guarantee:
 | Channels | FIFO delivery | each element gets the right per-element transform — and, since Phase 241, that each channel end has one live process (channel linearity, checked not assumed; `BroadcastChannel` fan-out proves) |
 | `async`/`await` | safe (pure-value) tasks complete | the value an awaited task computes — and, since Phase 240, that nothing a task touches is concurrently written (fork-window disjointness, checked not assumed) |
 
-What we *never* prove is the structural half itself — no mutual exclusion, no deadlock-freedom, no delivery or
-termination; that needs concurrent separation logic, out of scope for a sequential checker. These are honest
-"prove half the property" results: the half SMT can discharge, which is usually the functional one.
+For the eight rows above these are honest "prove half the property" results: the half SMT can discharge,
+which is usually the functional one. The line has moved since they were written, though. What still stays
+out is **mutual exclusion itself**, the **scheduler**, and the **JMM** — concurrent-separation-logic and
+runtime-rung territory. But for the **one-shot channel fragment** the structural half is now *checked, not
+assumed*: the SEQ/PAR ladder (Phases 240–245, the sections after the gallery) certifies task disjointness
+(240), one live process per channel end (241), element contracts at every send and opaque receive (242),
+**deadlock-freedom as well-foundedness of the wait-for order** (243), bodies honouring their declared
+guarantees (244), and drain termination — every blocking operation in a clean network provably completes
+(245). Outside that fragment the disclaimers above stand, loudly.
 
 Groovy's **rely/guarantee** support goes further than the eight above — proving *both* halves on a concurrent
 buffer, and combining with an information-flow lattice (Graeme Smith's Dafny approach):
@@ -292,8 +301,9 @@ straight-line **SSA**: `new DataflowVariable()` drops out, `x << v` is the singl
 `x.get()` (or `await(x)`) is just `x`. The `async {}` blocks flatten inline — sound *precisely because*
 single-assignment makes the schedule irrelevant. The functional value `a + b` then proves sequentially, and a
 wrong claim (`result == a`) still refutes with a counterexample. As with locks and actors, we assume the
-structural guarantee (here, that each variable really is bound once) and never prove deadlock-freedom or
-termination — only the value the network computes, given that it computes one.
+structural guarantee (here, that each variable really is bound once) and prove no deadlock-freedom or
+termination for *dataflow* networks — only the value the network computes, given that it computes one.
+(*Channel* networks are different since Phase 243: their deadlock-freedom is checked — see below.)
 
 > [!NOTE]
 > **The straight-line form the verifier actually sees.** That desugaring isn't pseudocode — the whole concurrent

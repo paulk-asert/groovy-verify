@@ -125,7 +125,10 @@ the engine proves end-to-end, not "point it at anything":
   proved from an annotation alone.
 - **Past where most tools stop** — information-flow security (no secret reaches a public sink), lock-free
   rely/guarantee concurrency, a mutual-exclusion protocol proved safe **and live** (Leino's ticket lock — the
-  fair-schedule "a hungry process eventually enters", at any process count, with each round's progress derived from the transition relation), dimensional analysis of
+  fair-schedule "a hungry process eventually enters", at any process count, with each round's progress derived from the transition relation), **process-network
+  certification** over Groovy 6's `groovy.concurrent` channels (one live process per channel end, the element
+  type as the channel's contract, deadlock-freedom proved as well-foundedness of the wait-for order — a cycle
+  or a forgotten `close()` is a named compile error), dimensional analysis of
   JSR 385 units, and termination.
 
 Concretely, the engine proves these kinds of property at **compile time** — and when it can't, it **refutes with a
@@ -140,7 +143,9 @@ concrete counterexample** (Dafny/Verus-style) rather than passing silently:
 - **Memory & arithmetic safety** — array indices in bounds, dereferences non-null, divisors non-zero, and — opt-in
   — no integer overflow: the implicit obligations, discharged from the contracts in scope.
 - **Rely/guarantee** — under concurrent interference each thread's steps uphold its `@Guarantee` while tolerating
-  the others' `@Rely`, so a shared buffer stays in bounds without a lock.
+  the others' `@Rely`, so a shared buffer stays in bounds without a lock — and a body declaring `@Guarantee` is
+  *checked* to honour it (its own-step transition proved against the predicate, a violation refuted with a
+  counterexample).
 - **Information flow** — no secret (`@Label('High')`) reaches a public sink (noninterference), with explicit
   `Declassify` for controlled release.
 - **Dimensional analysis** — a JSR 385 `Quantity`'s dimension (its `[Length, Mass, Time]` exponents) is propagated
@@ -326,7 +331,7 @@ Read **[the five-act tour](examples/tour.md)** for all of it. More worked-and-ve
 - **[HumanEval](examples/humaneval.md)** — an external benchmark (Verus' suite) of LeetCode-shape problems we didn't pick.
 - **[Dafny ports & cross-tool credentials](examples/dafny.md)** — `SumMax` (VSComp'10), `Find`, `BinarySearch`; Hillel Wayne's *Theorem Prover Showdown* with full specs (leftpad — imperative **and** functional-by-induction — fulcrum's argmin, unique with a bidirectional spec); mergesort's `merge` proved sorted *and* a permutation (math-comp's `path.v`); and Leino's *Modeling Concurrency in Dafny* ticket lock, reproduced end to end: mutual exclusion in both of the paper's formulations (enum-bounded and symbolic-N), the fair-schedule liveness at any process count with per-round progress derived from the transition relation, and a TLA+/TLC model as the second rung.
 - **[OpenJML ports](examples/openjml.md)** — `Max by elimination` and `ChangeCase`, from the JVM's closest prior art (CC BY-NC).
-- **[Concurrency](examples/concurrency.md)** — the *local* half of locks, agents, dataflow, channels, and rely/guarantee; the *structural* half (Lincheck / TLA+ TLC / Fray) is the [three rungs](CONCURRENCY.md).
+- **[Concurrency](examples/concurrency.md)** — the *local* half of locks, agents, dataflow, and rely/guarantee — and, for **channel networks**, the *structural* half too: the SEQ/PAR ladder (Phases 240–245) checks task disjointness, channel-end linearity, element contracts, **deadlock-freedom as well-foundedness**, guarantee conformance, and drain termination at compile time; the runtime rungs (Lincheck / TLA+ TLC / Fray) remain the [three rungs](CONCURRENCY.md).
 - **[Units of measurement](examples/units.md)** — the Mars-orbiter bug, three ways: JSR 385 dimensions (the unchecked `as Quantity<K>` cast), JSR 385 value/scale, and a bespoke `record` units type with verified `+`.
 - **[Bean Validation](examples/validation.md)** — `jakarta.validation` / `javax.validation` constraints (`@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty`) read as compile-time preconditions, discharged for free from annotations you already wrote.
 - **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, and invariant inference.

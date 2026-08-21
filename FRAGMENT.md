@@ -383,3 +383,20 @@ solver returns *UNKNOWN* on a
 postcondition (a quantifier/recurrence-axiom timeout), a bounded property-based pass runs the
 executable contract over a small grid of integer inputs and reports any concrete failing input as a
 best-effort `fails on:` repro (Phase 62). See `Encoder` and the roadmap for the exact boundaries.
+
+Groovy 6's **concurrency sugar** has its own fragment, structural as well as value-level (the SEQ/PAR
+ladder, Phases 240–245 — full treatment in [the concurrency gallery](examples/concurrency.md) and the
+per-phase [CAPABILITIES](CAPABILITIES.md) rows). The value model is deliberately small: a *safe* `async { e }`
+reads out as `e` (gathers as the value list, racing combinators as a nondeterministic choice), a
+`DataflowVariable` as a write-once scalar, and an `AsyncChannel` pipeline as function composition over **one
+representative element** — one send and one consumer per channel, sends *declaring* the element (a never-sent
+channel read proves nothing), with loops, drains, and multi-element traffic refusing the rewrite loudly. The
+structural rules are checked on top of it, not assumed: concurrent tasks must not touch what another task
+or the enclosing fork-join window writes (240); each channel end has one live process, with
+`BroadcastChannel.subscribe()` the sanctioned fan-out (241); Bean Validation bounds on the element type are
+the channel's contract — checked at sends, assumed at a channel-typed parameter's receives (242); the
+one-shot network's wait-for order must be **well-founded** — a cycle, an unsatisfiable receive, or an
+iteration over a never-closed channel is a named error, with conditional ops, escaping channels, and channel
+parameters excluded from the claim (243, 245); and a body-level `@Guarantee` is proved against its
+predicate (244). The scheduler, the JMM, atomicity, and everything outside the one-shot fragment stay with
+the runtime rungs in [CONCURRENCY.md](CONCURRENCY.md).

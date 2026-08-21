@@ -53,6 +53,16 @@ argument: each thread, run under an *assumed* rely, stays in bounds and leaks no
 rely/guarantee abstraction is faithful to a real interleaved execution — the scheduler, the atomicity grain,
 and liveness. That is a different class of tool.
 
+Rung 1's reach has grown since that division was first drawn, without changing it in kind. The **SEQ/PAR
+ladder** (Phases 240–245 — see the [concurrency gallery](examples/concurrency.md)) moved a slice of the
+*structural* half into the compile-time rung for the **one-shot channel fragment**: async tasks are checked
+disjoint (or under a declared rely/guarantee), each channel end has one live process, element contracts are
+checked at sends and assumed at opaque receives, the network's wait-for order is proved **well-founded**
+(a cycle is a reported deadlock, a forgotten `close()` a reported hang), and each body is checked to honour
+its declared `@Guarantee` — closing the §VII lemma chain end to end on the real `Buffer.groovy`. All of it
+is still *action-grained and above the memory model*: the scheduler, atomicity, the JMM, and everything
+outside that fragment remain exactly what rungs 2 and 3 exist for.
+
 ## Rung 2 — Exhaustive model
 
 The smallest honest artifact for that other half is a **TLA+** model of the §VII buffer that an exhaustive
