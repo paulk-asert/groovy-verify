@@ -35,7 +35,7 @@ features, each assuming a different structural guarantee:
 | Seqlock (optimistic read) | read-side snapshot atomicity (a validated read reflects a real consistent state under the JMM) | the parity protocol: a write restores `x == y` before republishing, a validated read returns a consistent snapshot |
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
-| Channels | FIFO delivery | each element gets the right per-element transform |
+| Channels | FIFO delivery | each element gets the right per-element transform — and, since Phase 241, that each channel end has one live process (channel linearity, checked not assumed; `BroadcastChannel` fan-out proves) |
 | `async`/`await` | safe (pure-value) tasks complete | the value an awaited task computes — and, since Phase 240, that nothing a task touches is concurrently written (fork-window disjointness, checked not assumed) |
 
 What we *never* prove is the structural half itself — no mutual exclusion, no deadlock-freedom, no delivery or
@@ -337,6 +337,66 @@ stages resolve lazily at the receive site, so a producer in a trailing `async {}
 value.) The functional transform `(x + 1) * 2` proves; claim `result == x + 1` instead and it refutes with a
 counterexample. As everywhere in this section, FIFO delivery is the assumed half — we prove *what each element
 becomes*, not that the channel delivers or terminates.
+
+### Channel-end linearity — one process per end (Phase 241)
+
+The per-element proof above has its own side condition, and Phase 241 makes it real (slice 2 of the SEQ/PAR
+ladder, the channel sibling of [the Phase 240 fork-window check](#par-disjointness--the-fork-window-interference-check-phase-240)):
+a point-to-point channel has **one live process per end**. Two concurrent senders interleave
+nondeterministically; two concurrent receivers split the stream (each element is delivered to exactly one).
+Before this phase the scalar rewrite quietly *proved* scheduler-dependent values on both shapes — racing
+senders proved the flatten order:
+
+<!-- doclint:case p241-channel-linearity/two-concurrent-senders-race-the-element-order -->
+```groovy
+@Ensures({ result == 2 })
+static int race() {
+    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+    async { src.send(1) }
+    async { src.send(2) }
+    return src.first()
+}
+```
+
+> Channel linearity violation in 'race': two concurrent senders on 'src' — the async tasks forked at lines 5
+> and 6 both use its send-end, so the element order is a race…
+
+Conflicts are judged over the same fork-join windows as Phase 240, so *sequential* uses by two processes
+stay legal, and the errors cover the whole discipline: send/send, receive/receive, a send into a
+**pipeline-derived** channel (its upstream stage owns that end), and — for broadcasts — a `subscribe()`
+while a sender is live (a late subscriber may miss elements). Errors, not skips: each is a race in the code.
+
+Distinct from those races is the model's own capacity: the scalar rewrite carries **one in-flight element
+per channel** — one send, one consumer (a receive or a pipeline stage). Sequential over-use is fine code the
+model can't follow (two sends then `first()` would prove last-write-wins where the runtime is FIFO-first —
+which is exactly what it *did* prove before this phase), so it now **skips loudly** with the channel named,
+and the desugar refuses the rewrite so nothing downstream can prove a FIFO-false value.
+
+**`BroadcastChannel` is the sanctioned one-to-many form, and it now proves.** Broadcast delivery means every
+subscriber sees every element, so `subscribe()` is the identity stage for the representative element — and
+legal fan-out verifies end-to-end:
+
+<!-- doclint:case p241-channel-linearity/broadcast-fan-out-every-subscriber-sees-the-element -->
+```groovy
+@Ensures({ result == x + x })
+static int fanOut(int x) {
+    def b = groovy.concurrent.BroadcastChannel.<Integer>create()
+    groovy.concurrent.AsyncChannel<Integer> s1 = b.subscribe()
+    groovy.concurrent.AsyncChannel<Integer> s2 = b.subscribe()
+    async { b.send(x); b.close() }
+    int r1 = s1.first()
+    int r2 = s2.first()
+    return r1 + r2
+}
+```
+
+Both subscribers read the broadcast element, `x + x` proves; a subscriber channel is an ordinary channel, so
+it can feed a `map` pipeline and the composition proves too. The point-to-point fan-out alternative — each
+producer owning its **own** channel — also stays green, pinning that the linearity rules are per-channel, not
+per-method. Honest boundaries: uses are recognised at a direct channel-variable receiver (`send`/`close`,
+`first`/`receive`, the pipeline ops, `subscribe`); `merge`/`tap` argument-side ends and channel iteration are
+not yet tracked, and those shapes already fall outside the value model. Delivery and termination remain the
+assumed structural half, as everywhere in this section.
 
 ### async/await — the value a task computes
 

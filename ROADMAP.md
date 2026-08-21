@@ -10982,6 +10982,48 @@ checker, auto-generated rely/guarantee compatibility, and send/receive count mat
 
 ---
 
+## Phase 241 — channel-end linearity: one process per end, and the one-element model made honest  *(shipped — soundness fix; slice 2 of the SEQ/PAR ladder)*
+
+The channel sibling of Phase 240. Probing the channel fragment the same way found **three more shapes
+that proved scheduler-dependent or FIFO-false values**: two *concurrent* arm senders proved the flatten
+order (`async { src.send(1) }; async { src.send(2) }` proved `first() == 2`); two *sequential* sends
+proved last-write-wins (`send(1); send(2); first()` proved `2` where FIFO delivers `1`); and two
+receives of a single element proved duplicate delivery (`a = first(); b = first()` proved `a + b == x + x`).
+A fourth family — every `BroadcastChannel` shape — was refused with accidental null-obligation noise.
+
+Two mechanisms, split by what's actually wrong. **Races error** (`Reporter.formatChannelLinearity` —
+"Channel linearity violation…"): `checkChannelLinearity` rides the Phase 240 walk, recording each channel
+END use — SEND (`send`/`close`), RECV (`first`/`receive`, or a pipeline op consuming its source), SUB
+(`subscribe`) — at direct channel-var receivers, attributed to main (point ordinal) or an arm (its
+fork-join window). Concurrent same-end uses by distinct processes error: send/send, receive/receive
+(each element goes to exactly one receiver), plus a send into a pipeline-**derived** channel (its
+upstream stage owns that end) and a `subscribe` inside a live sender's window (a late subscriber may
+miss elements). **Model limits skip loudly** (`formatChannelModelSkipped`, with the channel named): the
+scalar rewrite carries ONE in-flight element per channel — at most one send and one consumer — and
+`desugarChannels` now *refuses the rewrite* (`channelUseWithinModel`, counting at direct-var receivers
+so a `map{}.map{}` chain consumes its base once) when a channel exceeds it, so the sequential shapes
+skip downstream instead of proving FIFO-false values. Both mechanisms are per-channel: independent
+producers on independent channels stay green.
+
+**BroadcastChannel enters the fragment** (create/send/close/subscribe): broadcast delivery means every
+subscriber sees every element, so `subscribe()` is the **identity stage** for the representative element
+(`rewriteChExpr` resolves it to the broadcast's value; `subscribe` is exempt from consumer counting, and
+subscriber channels count individually). Legal fan-out now *proves*: two subscribers each read the
+broadcast element (`x + x`), and a subscriber feeds an ordinary `map` pipeline (`x * 2`). The
+`CHANNEL_PIPE_OPS` list (map/filter/tap/merge/split/subscribe) unifies the derivation recognisers.
+
+Cases (G305, new group, 10): five errors (concurrent senders, body-sends-while-arm-live,
+concurrent receivers, send-into-derived, late subscribe), two model-limit skips (sequential two-send,
+two-receive — both previously *proved*), three proofs (broadcast fan-out, independent channels,
+subscriber-into-pipeline). Docs: the Phase 241 subsection + channels table row in
+`examples/concurrency.md` (two linked cases), the CAPABILITIES row. Honest boundaries: uses recognised
+at direct channel-var receivers; `merge`/`tap` argument-side ends and channel iteration untracked (those
+shapes already fall outside the value model); `create()`'s rendezvous/self-loop semantics unprobed
+(no rule on same-process send+receive; the buffered corpus shapes are unaffected); delivery and
+termination stay rungs 2/3. Next on the ladder: channel invariants (send-checked / receive-assumed).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

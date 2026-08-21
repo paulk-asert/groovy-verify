@@ -3996,19 +3996,71 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> ch = new HashSet<String>()
         collectChannelVars((BlockStatement) body, ch)
         if (ch.isEmpty()) return body
+        // Phase 241 — the one-in-flight-element guard: the scalar rewrite carries ONE element per
+        // channel (a send is `ch = v`, a receive/stage is a read), so a second send would model
+        // last-write-wins where the runtime is FIFO-first, and a second consumer would model
+        // duplicate delivery where the runtime distributes elements. Refuse the rewrite (the body
+        // then skips loudly downstream); checkParInterference explains which channel and why.
+        if (!channelUseWithinModel((BlockStatement) body, ch)) return body
         List<Statement> out = new ArrayList<Statement>()
         Map<String, Expression> defs = new HashMap<String, Expression>()
         rewriteChStatements(((BlockStatement) body).statements, ch, defs, out)
         new BlockStatement(out, ((BlockStatement) body).variableScope)
     }
 
-    /** A var is a channel var if declared from `AsyncChannel.create(...)` or from a pipeline op whose source is
-     *  already a channel var. Single forward pass — declarations are in source order. */
+    /** The base channel var an end-use targets, walking pipeline ops down to the variable:
+     *  {@code src.map{f}.first()} → {@code src}; a non-channel receiver → null. (Phase 241) */
+    private static String chanRoot(Expression recv, Set<String> ch) {
+        Expression e = stripCasts(recv)
+        while (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in CHANNEL_PIPE_OPS) {
+            e = stripCasts(((MethodCallExpression) e).objectExpression)
+        }
+        (e instanceof VariableExpression && ch.contains(((VariableExpression) e).name)) ? ((VariableExpression) e).name : null
+    }
+
+    /** Phase 241 — true when every channel stays within the one-element model: at most one `send`
+     *  and at most one consumer (a `first()`/`receive()` read, or one derived pipeline stage /
+     *  subscriber counts against its OWN channel, the derivation against the source). Broadcast
+     *  vars are the exception on the consumer side: every subscriber sees every element, so
+     *  `subscribe()` calls are not counted (their per-subscriber channels are counted normally). */
+    private static boolean channelUseWithinModel(BlockStatement body, Set<String> ch) {
+        Map<String, Integer> sends = new HashMap<String, Integer>()
+        Map<String, Integer> consumers = new HashMap<String, Integer>()
+        boolean[] ok = [true]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                // Count only at the DIRECT channel-var receiver — a pipeline chain consumes its
+                // base exactly once (the bottom-most op has the var receiver; a read off the top
+                // of a chain is that same consumption, not a second one).
+                Expression recv = stripCasts(m.objectExpression)
+                if (recv instanceof VariableExpression && ch.contains(((VariableExpression) recv).name)) {
+                    String name = ((VariableExpression) recv).name
+                    if (m.methodAsString == 'send') bump(sends, name)
+                    if (m.methodAsString == 'first' || m.methodAsString == 'receive') bump(consumers, name)
+                    // A derivation consumes its source: def out = src.map{..} → src has its consumer.
+                    // (`subscribe` is exempt — broadcast delivers every element to every subscriber.)
+                    if (m.methodAsString in CHANNEL_PIPE_OPS && m.methodAsString != 'subscribe') bump(consumers, name)
+                }
+                super.visitMethodCallExpression(m)
+            }
+            private void bump(Map<String, Integer> counts, String name) {
+                Integer n = counts.get(name)
+                counts.put(name, n == null ? 1 : n + 1)
+                if (counts.get(name) > 1) ok[0] = false
+            }
+        })
+        ok[0]
+    }
+
+    /** A var is a channel var if declared from `AsyncChannel.create(...)` / `BroadcastChannel.create(...)` or
+     *  from a pipeline op whose source is already a channel var. Single forward pass — declarations are in
+     *  source order. */
     private static void collectChannelVars(BlockStatement body, Set<String> ch) {
         body.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 if (de.leftExpression instanceof VariableExpression &&
-                    (isChannelCreate(de.rightExpression) || isChannelExpr(de.rightExpression, ch))) {
+                    (isChannelCreate(de.rightExpression) || isBroadcastCreate(de.rightExpression) ||
+                     isChannelExpr(de.rightExpression, ch))) {
                     ch.add(((VariableExpression) de.leftExpression).name)
                 }
                 super.visitDeclarationExpression(de)
@@ -4037,12 +4089,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
-    /** A channel-valued expression: a channel var, or a pipeline op (`map`/`filter`/`tap`) on one. */
+    /** `BroadcastChannel.create(...)` — one-to-many delivery; each `subscribe()` hands the receiver its own
+     *  per-subscriber `AsyncChannel` (Phase 241). Same AST shapes as {@link #isChannelCreate}. */
+    private static boolean isBroadcastCreate(Expression e) {
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression m = (StaticMethodCallExpression) e
+            return m.method == 'create' && m.ownerType?.nameWithoutPackage == 'BroadcastChannel'
+        }
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) e
+            return m.methodAsString == 'create' && channelOwnerName(m.objectExpression) == 'BroadcastChannel'
+        }
+        false
+    }
+
+    /** The pipeline/derivation ops that yield a channel from a channel (Phase 119; `subscribe` Phase 241). */
+    private static final List<String> CHANNEL_PIPE_OPS = ['map', 'filter', 'tap', 'merge', 'split', 'subscribe'].asImmutable()
+
+    /** A channel-valued expression: a channel var, or a pipeline/derivation op on one. */
     private static boolean isChannelExpr(Expression e, Set<String> ch) {
         if (e instanceof VariableExpression) return ch.contains(((VariableExpression) e).name)
         if (e instanceof MethodCallExpression) {
             MethodCallExpression m = (MethodCallExpression) e
-            return (m.methodAsString in ['map', 'filter', 'tap']) && isChannelExpr(m.objectExpression, ch)
+            return (m.methodAsString in CHANNEL_PIPE_OPS) && isChannelExpr(m.objectExpression, ch)
         }
         false
     }
@@ -4072,7 +4141,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
                     DeclarationExpression de = (DeclarationExpression) e
                     String name = ((VariableExpression) de.leftExpression).name
-                    if (isChannelCreate(de.rightExpression)) {              // def src = AsyncChannel.create(n) → def src = 0
+                    if (isChannelCreate(de.rightExpression) || isBroadcastCreate(de.rightExpression)) {
+                        // def src = AsyncChannel.create(n) / def b = BroadcastChannel.create() → def src = 0
                         VariableExpression lhs = new VariableExpression(name)
                         out.add(new ExpressionStatement(new DeclarationExpression(lhs, de.operation, new ConstantExpression(Integer.valueOf(0)))))
                         continue
@@ -4114,6 +4184,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     if (m.methodAsString == 'first' && isChannelExpr(m.objectExpression, ch) && noArgs(m)) {
                         return transform(m.objectExpression)                              // receive one element
+                    }
+                    // Phase 241 — a broadcast `subscribe()` is the identity stage for the representative
+                    // element: every subscriber's channel carries every sent element, so the subscriber's
+                    // value IS the broadcast value. (`subscribe(int)`'s capacity arg is irrelevant here.)
+                    if (m.methodAsString == 'subscribe' && isChannelExpr(m.objectExpression, ch)) {
+                        return transform(m.objectExpression)
                     }
                 }
                 expr.transformExpression(this)
@@ -4189,22 +4265,62 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ParAccess(int ord, int line) { this.ord = ord; this.line = line }
     }
 
+    // Phase 241 — a channel END use: who (main = null proc / an arm) touched which end of which
+    // channel, where. Kinds: SEND (`send`/`close`), RECV (`first`/`receive`, or a pipeline
+    // derivation consuming its source), SUB (`subscribe` on a broadcast).
+    private static final int CHAN_SEND = 0, CHAN_RECV = 1, CHAN_SUB = 2
+    private static class ChanUse {
+        String chan; String method; int kind
+        ParArm proc            // null = the main body
+        int ord; int line
+        Expression anchor
+    }
+
     private static class ParCtx {
         int counter
+        final Set<String> chanVars
         final List<ParArm> arms = new ArrayList<ParArm>()
+        final List<ChanUse> chanUses = new ArrayList<ChanUse>()
         final Map<String, List<ParAccess>> mainWrites = new HashMap<String, List<ParAccess>>()
         final Map<String, List<ParAccess>> mainReads = new HashMap<String, List<ParAccess>>()
+        ParCtx(Set<String> chanVars) { this.chanVars = chanVars }
         void write(String n, int ord, int line) { record(mainWrites, n, ord, line) }
         void read(String n, int ord, int line) {
             record(mainReads, n, ord, line)
             // The first mention of an arm's handle after its fork is its join (await/gather/wrapper).
             for (ParArm a : arms) if (n.equals(a.handle) && ord > a.fork && a.join == Integer.MAX_VALUE) a.join = ord
         }
+        void chanUse(String chan, String method, int kind, ParArm proc, int ord, int line, Expression anchor) {
+            ChanUse u = new ChanUse()
+            u.chan = chan; u.method = method; u.kind = kind; u.proc = proc
+            u.ord = ord; u.line = line; u.anchor = anchor
+            chanUses.add(u)
+        }
         private static void record(Map<String, List<ParAccess>> m, String n, int ord, int line) {
             List<ParAccess> l = m.get(n)
             if (l == null) { l = new ArrayList<ParAccess>(); m.put(n, l) }
             l.add(new ParAccess(ord, line))
         }
+    }
+
+    /** Classify a channel end-use by method name: SEND, RECV, SUB, or -1 (neutral — isClosed etc.). */
+    private static int chanUseKindOf(String method) {
+        if (method == 'send' || method == 'close') return CHAN_SEND
+        if (method == 'first' || method == 'receive') return CHAN_RECV
+        if (method == 'subscribe') return CHAN_SUB
+        if (method in CHANNEL_PIPE_OPS) return CHAN_RECV     // map/filter/tap/merge/split consume their source
+        -1
+    }
+
+    /** Record a channel end-use at a DIRECT channel-var receiver (a chain's base op has the var
+     *  receiver, so a pipeline chain registers exactly one consumption of its source). */
+    private static void recordChanUseIfAny(MethodCallExpression call, ParCtx ctx, ParArm proc, int ord, Expression anchor) {
+        Expression recv = stripCasts(call.objectExpression)
+        if (!(recv instanceof VariableExpression)) return
+        String name = ((VariableExpression) recv).name
+        if (!ctx.chanVars.contains(name)) return
+        int k = chanUseKindOf(call.methodAsString)
+        if (k >= 0) ctx.chanUse(name, call.methodAsString, k, proc, ord, call.lineNumber, anchor)
     }
 
     /** Peel casts (STC/lowering wrappers) off an expression. */
@@ -4246,6 +4362,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         @Override void visitMethodCallExpression(MethodCallExpression call) {
             ClosureExpression cl = asyncClosure(call)
             if (cl != null) { recordArm(call, cl, null); return }
+            recordChanUseIfAny(call, ctx, null, ord, call)      // Phase 241 — a main-body channel end-use
             boolean isAwait = call.methodAsString == 'await'
             if (isAwait) awaitDepth++
             try { super.visitMethodCallExpression(call) } finally { if (isAwait) awaitDepth-- }
@@ -4322,14 +4439,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             a.handle = handle
             a.anchor = call
             if (awaitDepth > 0) a.join = ord      // `await async { … }` — forked and joined in place
-            collectArmAccesses(cl, a.reads, a.writes)
             ctx.arms.add(a)
+            collectArmAccesses(cl, a.reads, a.writes, ctx, a)
         }
     }
 
     /** Collect an arm's captured accesses: outer names read/written inside the closure (closure
-     *  params and closure-local declarations excluded; nested closures included as arm code). */
-    private static void collectArmAccesses(ClosureExpression cl, Set<String> reads, Set<String> writes) {
+     *  params and closure-local declarations excluded; nested closures included as arm code) —
+     *  plus its channel end-uses (Phase 241), recorded against the arm's fork-join window. */
+    private static void collectArmAccesses(ClosureExpression cl, Set<String> reads, Set<String> writes,
+                                           ParCtx ctx, ParArm arm) {
         final Set<String> local = new HashSet<String>()
         local.add('it')
         if (cl.parameters != null) for (Parameter p : cl.parameters) local.add(p.name)
@@ -4371,6 +4490,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String root = lhsRootName(e.expression)
                 if (root != null && !local.contains(root)) writes.add(root)
                 super.visitPrefixExpression(e)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                recordChanUseIfAny(call, ctx, arm, arm.fork, arm.anchor)   // Phase 241 — an arm-side end-use
+                super.visitMethodCallExpression(call)
             }
             @Override void visitVariableExpression(VariableExpression ve) {
                 if (!local.contains(ve.name)) reads.add(ve.name)
@@ -4474,14 +4597,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!(body instanceof BlockStatement)) return
         if (methodOrClassHasAnnotation(node, 'UnderRely') || methodOrClassHasAnnotation(node, 'Rely') ||
             methodOrClassHasAnnotation(node, 'Guarantee')) return       // declared interference discipline
-        ParCtx ctx = new ParCtx()
+        // Channel vars are classified up front (Phase 241): the walk records end-uses against them,
+        // and the created/derived/broadcast split drives the linearity rules below.
+        Set<String> chanVars = new HashSet<String>()
+        collectChannelVars((BlockStatement) body, chanVars)
+        Set<String> createdChans = new HashSet<String>(), derivedChans = new HashSet<String>(),
+                    broadcastChans = new HashSet<String>()
+        classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans)
+        ParCtx ctx = new ParCtx(chanVars)
         parWalkStatement(body, ctx)
+        checkChannelLinearity(node, ctx, derivedChans, broadcastChans)
         if (ctx.arms.isEmpty()) return
 
-        // The synchronisation media, exempt from conflicts (the "channels" of the PAR rule).
+        // The synchronisation media, exempt from state conflicts (the "channels" of the PAR rule) —
+        // their ENDS get their own discipline in checkChannelLinearity above.
         Set<String> exempt = new HashSet<String>()
         collectDataflowVars((BlockStatement) body, exempt)
-        collectChannelVars((BlockStatement) body, exempt)
+        exempt.addAll(chanVars)
         for (ParArm a : ctx.arms) if (a.handle != null) exempt.add(a.handle)
 
         // The outer universe accesses are resolved against: params, body locals, fields.
@@ -4527,6 +4659,120 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         "concurrent async tasks forked at lines ${a.line} and ${b.line} conflict on " +
                         "'${v}' (a write in one, a read or write in the other)"), b.anchor)
                 }
+            }
+        }
+    }
+
+    /** Split the channel vars by provenance (Phase 241): created (`AsyncChannel.create`), broadcast
+     *  (`BroadcastChannel.create`), derived (a pipeline op or `subscribe` on a channel expr). */
+    private static void classifyChannelVars(BlockStatement body, Set<String> ch, Set<String> created,
+                                            Set<String> derived, Set<String> broadcast) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    String n = ((VariableExpression) de.leftExpression).name
+                    if (isChannelCreate(de.rightExpression)) created.add(n)
+                    else if (isBroadcastCreate(de.rightExpression)) broadcast.add(n)
+                    else if (isChannelExpr(de.rightExpression, ch)) derived.add(n)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    /** Neither both-main (sequential by definition) nor the same arm. */
+    private static boolean distinctProcs(ChanUse a, ChanUse b) {
+        if (a.proc == null && b.proc == null) return false
+        if (a.proc != null && b.proc != null && a.proc.is(b.proc)) return false
+        true
+    }
+
+    /** Do the two uses' windows overlap? A main use is the point [ord, ord] and must fall strictly
+     *  inside the arm's fork-join window; two arms overlap on their windows (slice-1 convention). */
+    private static boolean usesConcurrent(ChanUse a, ChanUse b) {
+        if (a.proc == null) return b.proc != null && b.proc.fork < a.ord && a.ord < b.proc.join
+        if (b.proc == null) return a.proc.fork < b.ord && b.ord < a.proc.join
+        a.proc.fork <= b.proc.join && b.proc.fork <= a.proc.join
+    }
+
+    private static String procDesc(ChanUse u) {
+        u.proc == null ? "the enclosing body (line ${u.line})" : "the async task forked at line ${u.proc.line}"
+    }
+
+    private static Expression anchorFor(List<ChanUse> uses, String chan) {
+        for (ChanUse u : uses) if (u.chan == chan) return u.anchor
+        null
+    }
+
+    /**
+     * Phase 241 — channel-end linearity over the recorded uses (slice 2 of the SEQ/PAR ladder).
+     * Concurrent same-end users ERROR — that is a race in the code: two live senders interleave
+     * nondeterministically, two live receivers split the stream. A send into a pipeline-derived
+     * channel ERRORS (its upstream stage owns that end), and a `subscribe` inside a live sender's
+     * window ERRORS (a late subscriber may miss elements). Sequential over-use of the one-element
+     * model — a second send or a second consumer by the same process — is NOT a race but is beyond
+     * the scalar rewrite, so it SKIPS loudly here with the channel named (and desugarChannels'
+     * guard independently refuses the rewrite, so nothing downstream can prove a FIFO-false value).
+     */
+    private void checkChannelLinearity(MethodNode node, ParCtx ctx,
+                                       Set<String> derivedChans, Set<String> broadcastChans) {
+        List<ChanUse> uses = ctx.chanUses
+        if (uses.isEmpty()) return
+        Set<String> flagged = new HashSet<String>()          // per-channel per-rule dedupe
+        Set<String> erroredChans = new HashSet<String>()     // channels with a concurrency error
+        for (int i = 0; i < uses.size(); i++) {
+            for (int j = i + 1; j < uses.size(); j++) {
+                ChanUse a = uses.get(i), b = uses.get(j)
+                if (a.chan != b.chan || !distinctProcs(a, b) || !usesConcurrent(a, b)) continue
+                if (a.kind == CHAN_SEND && b.kind == CHAN_SEND && flagged.add(a.chan + ':ss')) {
+                    erroredChans.add(a.chan)
+                    addStaticTypeError(Reporter.formatChannelLinearity(node.name, a.chan,
+                        "two concurrent senders on '${a.chan}' — ${procDesc(a)} and ${procDesc(b)} " +
+                        "both use its send-end, so the element order is a race"), b.anchor)
+                } else if (a.kind == CHAN_RECV && b.kind == CHAN_RECV && !broadcastChans.contains(a.chan) &&
+                           flagged.add(a.chan + ':rr')) {
+                    erroredChans.add(a.chan)
+                    addStaticTypeError(Reporter.formatChannelLinearity(node.name, a.chan,
+                        "two concurrent receivers on '${a.chan}' — ${procDesc(a)} and ${procDesc(b)} " +
+                        "both consume it, and each element is delivered to only one of them"), b.anchor)
+                } else if (((a.kind == CHAN_SUB && b.kind == CHAN_SEND) || (a.kind == CHAN_SEND && b.kind == CHAN_SUB)) &&
+                           flagged.add(a.chan + ':sub')) {
+                    erroredChans.add(a.chan)
+                    ChanUse sub = a.kind == CHAN_SUB ? a : b
+                    ChanUse snd = a.kind == CHAN_SUB ? b : a
+                    addStaticTypeError(Reporter.formatChannelLinearity(node.name, a.chan,
+                        "${procDesc(sub)} subscribes to '${a.chan}' while a sender " +
+                        "(${procDesc(snd)}) is live — a late subscriber may miss elements; " +
+                        "subscribe before any sender starts"), sub.anchor)
+                }
+            }
+        }
+        // A derived channel's send-end belongs to the stage that produces it.
+        for (ChanUse u : uses) {
+            if (u.kind == CHAN_SEND && derivedChans.contains(u.chan) && flagged.add(u.chan + ':derived')) {
+                erroredChans.add(u.chan)
+                addStaticTypeError(Reporter.formatChannelLinearity(node.name, u.chan,
+                    "'${u.chan}' is a pipeline-derived channel — its upstream stage is its producer, " +
+                    "but ${procDesc(u)} uses its send-end"), u.anchor)
+            }
+        }
+        // Sequential over-use of the one-element model: name the channel instead of a bare skip.
+        Map<String, Integer> sends = new HashMap<String, Integer>()
+        Map<String, Integer> consumers = new HashMap<String, Integer>()
+        for (ChanUse u : uses) {
+            if (u.method == 'send') { Integer n = sends.get(u.chan); sends.put(u.chan, n == null ? 1 : n + 1) }
+            if (u.kind == CHAN_RECV) { Integer n = consumers.get(u.chan); consumers.put(u.chan, n == null ? 1 : n + 1) }
+        }
+        for (Map.Entry<String, Integer> e : sends.entrySet()) {
+            if (e.value > 1 && !erroredChans.contains(e.key) && flagged.add(e.key + ':model')) {
+                addStaticTypeError(Reporter.formatChannelModelSkipped(node.name, e.key,
+                    "has ${e.value} sends"), anchorFor(uses, e.key))
+            }
+        }
+        for (Map.Entry<String, Integer> e : consumers.entrySet()) {
+            if (e.value > 1 && !erroredChans.contains(e.key) && flagged.add(e.key + ':model')) {
+                addStaticTypeError(Reporter.formatChannelModelSkipped(node.name, e.key,
+                    "has ${e.value} consumers (receives / pipeline stages)"), anchorFor(uses, e.key))
             }
         }
     }

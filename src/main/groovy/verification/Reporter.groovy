@@ -323,6 +323,31 @@ class Reporter {
         "declare the interference discipline with @Rely/@Guarantee/@UnderRely."
     }
 
+    // ---- Channel linearity (Phase 241) ----
+
+    /**
+     * Phase 241 — the point-to-point channel discipline refuted: two concurrent processes on the
+     * same channel end (send/send or receive/receive), a send into a pipeline-derived channel, or
+     * a subscriber joining a broadcast while a sender is live. An error, not a skip: the conflict
+     * is a race in the code — without the check, the one-element scalar model proved a
+     * scheduler-dependent value (flatten-order for racing senders, duplicate delivery for racing
+     * receivers).
+     */
+    static String formatChannelLinearity(String methodName, String chan, String detail) {
+        "Channel linearity violation in '${methodName}': ${detail}. A point-to-point channel has " +
+        "one live process per end — one sender, one receiver (FIFO per-element reasoning depends " +
+        "on it). Make the conflicting uses sequential, give each producer its own channel, or use " +
+        "a BroadcastChannel (subscribing before any sender starts) for one-to-many delivery."
+    }
+
+    /** Phase 241 — a channel used beyond the one-in-flight-element model: a loud skip, with the
+     *  channel named (the scalar rewrite would prove last-write-wins where the runtime is FIFO). */
+    static String formatChannelModelSkipped(String methodName, String chan, String reason) {
+        "Skipped channel verification for ${methodName} (channel '${chan}' ${reason}). The channel " +
+        "model carries a single in-flight element per channel — at most one send and one consumer " +
+        "(a receive or a pipeline stage). The method is allowed to proceed unchecked."
+    }
+
     // ---- Information flow (Phase L1) ----
 
     /**
