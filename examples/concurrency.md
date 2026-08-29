@@ -850,6 +850,70 @@ spec or a unit counter, or twice per iteration on one channel, is named — as b
 variable the guard tests. The ALT multiplexer as a *looping* process stays the frontier: its per-iteration
 choice is the one-shot ALT's, but its readiness across iterations is not a count.
 
+### The looping ALT — the multiplexer (Phase 253)
+
+The last shape the gallery had left open. A specified unit-counter loop whose body takes one element per
+iteration from whichever of its streaming inputs has one — `Result r = await ChannelSelect.from(a, b).select()`
+— is the **multiplexer**. Readiness now changes per iteration, so the model gives each branch a **ghost
+cursor** (`a$c`, `b$c`, declared before the loop): the choice ranges over the branches whose cursor is below
+their list's size, the value is the element at the chosen cursor, the chosen cursor steps, and the injected
+invariant `0 ≤ a$c ≤ |a| ∧ 0 ≤ b$c ≤ |b| ∧ a$c + b$c == i − a₀` ties the cursors to the iterations. "No branch
+has an element left" is the block-forever obligation, asserted before every choice:
+
+<!-- doclint:case p253-looping-alt/the-multiplexer-merges-every-element-count-na-nb -->
+```groovy
+@Requires({ na >= 0 && nb >= 0 })
+@Ensures({ result.size() == na + nb })
+static List<Integer> merge(int na, int nb) {
+    groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(4)
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= na })
+        @Decreases({ na - i })
+        while (i < na) {
+            a.send(i)
+            i = i + 1
+        }
+        a.close()
+    }
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= nb })
+        @Decreases({ nb - i })
+        while (i < nb) {
+            b.send(i + 100)
+            i = i + 1
+        }
+        b.close()
+    }
+    groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(8)
+    int j = 0
+    @Invariant({ 0 <= j && j <= na + nb })
+    @Decreases({ na + nb - j })
+    while (j < na + nb) {
+        groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+        int v = (int) r.value
+        out.send(v)
+        j = j + 1
+    }
+    out.close()
+    return out.toList()
+}
+```
+
+The merged count proves for symbolic `na`, `nb`; a forwarded element contract (`AsyncChannel<@PositiveOrZero
+Integer> out`) proves *through* the choice, whichever branch it takes, and one an input violates is refuted;
+one iteration too many is *"the ALT over 'a', 'b' (line N) may block forever — no branch may have an element
+left"*. And the **order** claim `result[0] == 0` is refuted — honestly: the interleaving is nondeterministic,
+and the model says exactly that (per-iteration nondeterminism, the ALT's own semantics, is what a merged
+*order* would need a fairness assumption to sharpen). The `$channelSelect` marker terms now translate inside
+loop bodies too, so the loop engine's VCs see the choice directly.
+
+What remains after this rung is a different kind of boundary: the **non-terminating** process
+(`while (true)`), whose properties are safety-per-iteration and *liveness under fairness* — not a count, and
+not something a `@Decreases` can carry.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

@@ -47,6 +47,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified (Phase 250); the drained sequence proves element by element — the channel is the list the loop builds (Phase 251) |
 | a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" (Phase 252) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
+| `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253) |
 
 ## The one-shot shapes verify end to end
 
@@ -215,6 +216,52 @@ static int alt(int x, int y) {
 }
 ```
 
+And the **multiplexer** — `ALT` *in a loop*, the shape every merging process and fair server in the books is
+built on — over two generators: the merged count proves for symbolic counts, the interleaving stays what it
+is (an order claim is refuted, honestly), and one iteration too many is the named hang (Phase 253):
+
+<!-- doclint:case p246-kerridge-gallery/the-multiplexer-alt-in-a-loop-merges-two-generators-count-proved -->
+```groovy
+@Requires({ na >= 0 && nb >= 0 })
+@Ensures({ result.size() == na + nb })
+static List<Integer> multiplex(int na, int nb) {
+    groovy.concurrent.AsyncChannel<Integer> left = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> right = groovy.concurrent.AsyncChannel.create(4)
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= na })
+        @Decreases({ na - i })
+        while (i < na) {
+            left.send(i)
+            i = i + 1
+        }
+        left.close()
+    }
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= nb })
+        @Decreases({ nb - i })
+        while (i < nb) {
+            right.send(i)
+            i = i + 1
+        }
+        right.close()
+    }
+    groovy.concurrent.AsyncChannel<Integer> merged = groovy.concurrent.AsyncChannel.create(8)
+    int j = 0
+    @Invariant({ 0 <= j && j <= na + nb })
+    @Decreases({ na + nb - j })
+    while (j < na + nb) {
+        groovy.concurrent.ChannelSelect.Result taken = await groovy.concurrent.ChannelSelect.from(left, right).select()
+        int v = (int) taken.value
+        merged.send(v)
+        j = j + 1
+    }
+    merged.close()
+    return merged.toList()
+}
+```
+
 ## The student mistakes are named compile errors
 
 The book teaches deadlock by *running into it* — build the network, watch it hang, discuss. Here the same
@@ -250,10 +297,12 @@ variable the guard tests): the generator's termination (Phase 250) and sequence 
 consumer's reads with their block-forever obligations (Phase 252). A `while (true)` process, a range
 `for`-in with a symbolic bound, two sends or two receives of one channel per iteration, or a `first()`
 outside such a loop refuses the value model with the reason named; the accumulating `for (v in ch)` drain
-is the loop engine's own boundary, so drained values are spelled `toList()` or collected in a loop. What
-remains is the **looping `ALT`** — the multiplexer, the fair server, `while (true) { select … }`: its
-per-iteration choice is the one-shot ALT's, but which guard is ready across iterations is not a count, and
-the process never terminates — a research conversation, not a demo, on the same guarantees GPP establishes
+is the loop engine's own boundary, so drained values are spelled `toList()` or collected in a loop. The
+looping `ALT` — the multiplexer — is covered too (Phase 253), with the interleaving left exactly as
+nondeterministic as it is. What remains is the **non-terminating process**: `while (true) { … }`, the
+book's actual generators and servers, whose properties are safety per iteration and *liveness under a
+fairness assumption* — not a count, and not something a `@Decreases` carries. That, and the session-typed
+protocol view of a channel, is the research conversation, not a demo: the same guarantees GPP establishes
 offline by formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain

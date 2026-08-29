@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, and since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, and since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -280,6 +280,52 @@ class G310_p246_kerridge_gallery {
                                 j = j + 1
                             }
                             return printed
+                        }
+                    }""")],
+
+        // ---------- the multiplexer: ALT in a loop (Phase 253) ----------
+        // The book's merging process — a loop taking whichever input is ready — over two generators.
+        // Count matching proves for symbolic counts; the interleaving is nondeterministic (an order
+        // claim is refuted, honestly); the block-forever obligation names one iteration too many.
+        [group: 'P246 Kerridge gallery', name: 'the multiplexer: ALT in a loop merges two generators, count proved', ok: true,
+         src: tc("""class C {
+                        @Requires({ na >= 0 && nb >= 0 })
+                        @Ensures({ result.size() == na + nb })
+                        static List<Integer> multiplex(int na, int nb) {
+                            groovy.concurrent.AsyncChannel<Integer> left = groovy.concurrent.AsyncChannel.create(4)
+                            groovy.concurrent.AsyncChannel<Integer> right = groovy.concurrent.AsyncChannel.create(4)
+                            async {
+                                int i = 0
+                                @Invariant({ 0 <= i && i <= na })
+                                @Decreases({ na - i })
+                                while (i < na) {
+                                    left.send(i)
+                                    i = i + 1
+                                }
+                                left.close()
+                            }
+                            async {
+                                int i = 0
+                                @Invariant({ 0 <= i && i <= nb })
+                                @Decreases({ nb - i })
+                                while (i < nb) {
+                                    right.send(i)
+                                    i = i + 1
+                                }
+                                right.close()
+                            }
+                            groovy.concurrent.AsyncChannel<Integer> merged = groovy.concurrent.AsyncChannel.create(8)
+                            int j = 0
+                            @Invariant({ 0 <= j && j <= na + nb })
+                            @Decreases({ na + nb - j })
+                            while (j < na + nb) {
+                                groovy.concurrent.ChannelSelect.Result taken = await groovy.concurrent.ChannelSelect.from(left, right).select()
+                                int v = (int) taken.value
+                                merged.send(v)
+                                j = j + 1
+                            }
+                            merged.close()
+                            return merged.toList()
                         }
                     }""")],
 

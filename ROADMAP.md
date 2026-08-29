@@ -11541,6 +11541,44 @@ process never terminates — is what remains).
 
 ---
 
+## Phase 253 — the looping ALT: the multiplexer  *(shipped — slice 13 of the SEQ/PAR ladder)*
+
+The rung `examples/kerridge.md` had left after Phase 252. A CONSUMER LOOP (Phase 252's specified
+unit-counter loop) with exactly one `Result r = await ChannelSelect.from(a, b).select()` at its body's top
+level, every branch a stream var not otherwise received in that loop (`scanStreams`: `ConsumerInfo.altVar
+/ altChans / altFrom`, `sanctionedFroms`), is the MULTIPLEXER. Readiness changes per iteration, so the
+rewrite (`loopingAlt`) gives each branch a GHOST CURSOR (`int a$c = 0` emitted before the loop) and spells
+each iteration as: the block-forever assert `a$c < a$q.size() || b$c < b$q.size()` ("the ALT over 'a',
+'b' (line N) may block forever — no branch may have an element left (the multiplexer loop reads past what
+its producers send)"), `def r$index = $channelSelect.ready(0, a$q, a$c, 1, b$q, b$c)` — a fresh value
+disjoined over the branches whose cursor is below their list's size — `def r$value =
+$channelSelect.valueAt(r$index, …)` — the ite chain over `select(arrayFor(list), cursor)`, an array
+select so the branches not taken raise no bounds obligation — and `if (r$index == i) { c$c = c$c + 1 }` per
+branch. The injected invariant `0 <= a$c && a$c <= a$q.size() && … && a$c + b$c == i - a₀` ties the
+cursors to the iterations; the producers' facts arrive transitively as before. The marker terms moved into
+`Encoder.translateChannelSelect`, reachable from `translate()` (`translateMethodCall`'s first line), so
+the loop engine — which translates a declaration's RHS directly, bypassing the value-flow bind hooks —
+sees the choice inside loop bodies; `tryBindChannelSelect` now delegates to it.
+
+What it certifies, and what it honestly does not. The merged COUNT proves for symbolic counts
+(`result.size() == na + nb`); a forwarded element contract on the output proves THROUGH the choice
+(`AsyncChannel<@PositiveOrZero Integer>` — `r$value` is the ite over the branches' elements, each with its
+producer's relation), and one an input violates is refuted; one iteration too many is the named
+block-forever. An ORDER claim (`result[0] == 0`) is REFUTED — the interleaving is nondeterministic and the
+model says exactly that; sharpening it would need a fairness assumption the checker does not make. The
+structural walk drops a sanctioned ALT's uses (its `from()` call is the anchor) like sanctioned receives —
+the value obligation decides. The verdict visitor exempts a sanctioned looping ALT from "not one-shot"; a
+later receive on a branch is still "after an ALT".
+
+Cases (G317, new group, 6): the count, the over-read, the forwarded contract (proves / refuted), the
+order claim refuted, the unspecified-loop ALT (loud). G310 gains the multiplexer over two generators.
+Docs: the Phase 253 subsection in `examples/concurrency.md` (the merge, linked), the CAPABILITIES row,
+the README ladder + gallery bullets, `examples/kerridge.md` (the looping-ALT vocabulary row, the
+multiplexer in the verified tier, the boundary section: what remains is the NON-TERMINATING process —
+`while (true)`, liveness under fairness, not a count — and the session-typed protocol view).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

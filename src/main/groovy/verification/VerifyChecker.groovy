@@ -4215,6 +4215,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         rw.streams.putAll(scan.streams)
         rw.consumers.putAll(scan.consumers)
         rw.sanctionedReceives.addAll(scan.sanctionedReceives)
+        rw.sanctionedFroms.addAll(scan.sanctionedFroms)
         for (StreamInfo info : rw.streams.values()) rw.sendTotals.remove(info.root)
         List<Statement> out = new ArrayList<Statement>()
         rewriteChStatements(((BlockStatement) body).statements, rw, out)
@@ -4250,6 +4251,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<Statement, ConsumerInfo> consumers = new IdentityHashMap<Statement, ConsumerInfo>()   // Phase 252
         final Map<Statement, List<String>> producedBy = new IdentityHashMap<Statement, List<String>>()  // rewritten loop → its streams
         final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        final Set<Expression> sanctionedFroms = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         ConsumerInfo curConsumer                                                 // while rewriting a consumer loop's body
         /** The shadow list a streaming root or its map stage is drained from, else null. */
         String streamListOf(String v) {
@@ -4548,13 +4550,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 List<Expression> alt = awaitedSelectArgs(de.rightExpression)
                 if (alt != null && de.leftExpression instanceof VariableExpression) {
+                    Expression x0 = stripCasts(de.rightExpression)
+                    Expression inner0 = x0 instanceof MethodCallExpression ? ((MethodCallExpression) x0).arguments : ((StaticMethodCallExpression) x0).arguments
+                    Expression sel0 = stripCasts(((TupleExpression) inner0).expressions.get(0))
+                    boolean loopingAlt = streamScan.sanctionedFroms.contains(stripCasts(((MethodCallExpression) sel0).objectExpression))   // Phase 253
                     String first = null
                     for (Expression a : alt) {
                         Expression x = stripCasts(a)
                         String name = (x instanceof VariableExpression && ch.contains(((VariableExpression) x).name)) ? ((VariableExpression) x).name : null
                         if (name == null) { if (first != null) flag(first, 'is in an ALT with a non-channel-variable branch (declare each stage as a variable first)'); continue }
                         if (first == null) first = name
-                        if (condDepth > 0) flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${de.lineNumber})")
+                        if (condDepth > 0 && !loopingAlt) flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${de.lineNumber})")
                         afterSelect(name)
                         owner(name, recvProcs, 'receive'); family(name, 'reads')
                         selected.add(name)
@@ -4862,6 +4868,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<StreamInfo> infos = new ArrayList<StreamInfo>()
                 for (StreamInfo info : rw.streams.values()) if (info.loop.is(st)) infos.add(info)
                 if (!infos.isEmpty() || rw.consumers.containsKey(st)) {
+                    ConsumerInfo ci0 = rw.consumers.get(st)
+                    if (ci0 != null && ci0.altVar != null) {                     // Phase 253 — the branches' ghost cursors
+                        for (String c : ci0.altChans) {
+                            DeclarationExpression cur = new DeclarationExpression(new VariableExpression(c + '$c', ClassHelper.int_TYPE),
+                                Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), new ConstantExpression(0, true))
+                            cur.setSourcePosition(st)
+                            rw.emit(out, new ExpressionStatement(cur))
+                        }
+                    }
                     Statement loop = rewriteStreamLoop((LoopingStatement) st, infos, rw)
                     rw.streamLoops.add(loop)
                     List<String> roots = new ArrayList<String>()
@@ -5332,6 +5347,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression counterInit
         final Map<MethodCallExpression, String> receives = new IdentityHashMap<MethodCallExpression, String>()   // call → stream var
         final Set<String> chans = new HashSet<String>()                  // the stream vars read (one receive each per iteration)
+        String altVar                                                    // Phase 253 — the loop's ALT result var (at most one ALT per iteration)
+        final List<String> altChans = new ArrayList<String>()            // its branches (stream vars), in from() order
+        Expression altFrom                                               // the from() call (identity, for the walks)
         /** The stream var a call receives from — by SHAPE (`x.first()` / `x.receive()`), so a copied body still matches. */
         String readOf(MethodCallExpression m) {
             if (!(m.methodAsString == 'first' || m.methodAsString == 'receive') || !noArgs(m)) return null
@@ -5348,6 +5366,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Set<Expression> sanctionedSends = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final Map<Statement, ConsumerInfo> consumers = new IdentityHashMap<Statement, ConsumerInfo>()
         final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        final Set<Expression> sanctionedFroms = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())   // Phase 253
         String streamVarRoot(String v, Map<String, String> parent) {
             String r = v; int g = 0
             while (parent.containsKey(r) && g++ < 100) r = parent.get(r)
@@ -5597,7 +5616,34 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     @Override void visitDoWhileLoop(DoWhileStatement f) { cond++; try { super.visitDoWhileLoop(f) } finally { cond-- } }
                     @Override void visitClosureExpression(ClosureExpression c) { cond++; try { super.visitClosureExpression(c) } finally { cond-- } }
                 })
-                if (perChan.isEmpty()) continue
+                // Phase 253 — the looping ALT: one `Result r = await ChannelSelect.from(a, b).select()` at the
+                // body's top level, every branch a stream var not otherwise received in this loop.
+                Statement lb0 = ((LoopingStatement) st).loopBlock
+                List<Statement> top0 = lb0 instanceof BlockStatement ? ((BlockStatement) lb0).statements : Collections.singletonList(lb0)
+                String altVar = null; List<String> altChans = null; Expression altFrom = null; int altCount = 0
+                for (Statement inner : top0) {
+                    if (!(inner instanceof ExpressionStatement) || !(((ExpressionStatement) inner).expression instanceof DeclarationExpression)) continue
+                    DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) inner).expression
+                    List<Expression> alt = awaitedSelectArgs(de.rightExpression)
+                    if (alt == null || !(de.leftExpression instanceof VariableExpression)) continue
+                    altCount++
+                    List<String> chans = new ArrayList<String>()
+                    for (Expression a : alt) {
+                        Expression x = stripCasts(a)
+                        String v = x instanceof VariableExpression ? ((VariableExpression) x).name : null
+                        if (v == null || scan.streamVarRoot(v, parent) == null || perChan.containsKey(v)) { chans = null; break }
+                        chans.add(v)
+                    }
+                    if (chans == null || chans.isEmpty()) continue
+                    altVar = ((VariableExpression) de.leftExpression).name
+                    altChans = chans
+                    Expression x = stripCasts(de.rightExpression)
+                    Expression inner2 = x instanceof MethodCallExpression ? ((MethodCallExpression) x).arguments : ((StaticMethodCallExpression) x).arguments
+                    Expression sel = stripCasts(((TupleExpression) inner2).expressions.get(0))
+                    altFrom = stripCasts(((MethodCallExpression) sel).objectExpression)
+                }
+                if (altCount != 1) { altVar = null }
+                if (perChan.isEmpty() && altVar == null) continue
                 ConsumerInfo ci = new ConsumerInfo()
                 ci.loop = (LoopingStatement) st; ci.counter = (String) cnt[0]; ci.counterInit = (Expression) cnt[1]
                 for (Map.Entry<String, List<MethodCallExpression>> e : perChan.entrySet()) {
@@ -5606,7 +5652,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     ci.chans.add(e.key)
                     scan.sanctionedReceives.add(e.value.get(0))
                 }
-                if (!ci.receives.isEmpty()) scan.consumers.put((Statement) st, ci)
+                if (altVar != null) {
+                    ci.altVar = altVar; ci.altChans.addAll(altChans); ci.altFrom = altFrom
+                    scan.sanctionedFroms.add(altFrom)
+                }
+                if (!ci.receives.isEmpty() || ci.altVar != null) scan.consumers.put((Statement) st, ci)
             }
         }
         // Phase 252 — a loop that both receives and sends (a stage as a process): the sent expression may
@@ -5755,10 +5805,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // loop's own invariants, its injected sequence facts and ¬guard hold throughout (nothing here
             // writes the producer's counter or its list) — the element-exists obligations discharge on them.
             if (consumer != null) {
+                // Phase 253 — the looping ALT's cursors: each within its list, and together they count the iterations
+                if (consumer.altVar != null) {
+                    List<String> parts = new ArrayList<String>()
+                    List<String> sum = new ArrayList<String>()
+                    for (String c : consumer.altChans) {
+                        parts.add("0 <= ${c}\$c && ${c}\$c <= ${c}\$q.size()".toString())
+                        sum.add(c + '$c')
+                    }
+                    parts.add("${sum.join(' + ')} == ${consumer.counter} - ${entryText(consumer.counterInit)}".toString())
+                    Expression inv = ContractExpansionTransform.reparse(parts.join(' && '))
+                    if (inv != null) s2.invariants.add(norm(inv, rw))
+                }
                 // transitively: a stage's facts relate its list to the stream IT consumed, whose facts are needed too
                 Set<String> seen = new HashSet<String>()
                 List<String> todo = new ArrayList<String>()
                 for (String v : consumer.receives.values()) todo.add(rw.rootOf(v))
+                for (String v : consumer.altChans) todo.add(rw.rootOf(v))
                 while (!todo.isEmpty()) {
                     String root = todo.remove(0)
                     StreamInfo p = rw.streams.get(root)
@@ -5777,6 +5840,58 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         out
         } finally { rw.curConsumer = savedConsumer }
+    }
+
+    /** Phase 253 — the looping ALT, per iteration: the block-forever assert (some branch has an element left),
+     *  the choice among the branches with an element left (`$channelSelect.ready`), the value at the chosen
+     *  branch's cursor (`valueAt`), and the chosen cursor's step. */
+    private static List<Statement> loopingAlt(DeclarationExpression de, ChanRewrite rw) {
+        ConsumerInfo ci = rw.curConsumer
+        List<Statement> out = new ArrayList<Statement>()
+        String r = ci.altVar
+        List<String> ready = new ArrayList<String>()
+        for (String c : ci.altChans) ready.add("${c}\$c < ${c}\$q.size()".toString())
+        Expression cond = ContractExpansionTransform.reparse(ready.join(' || '))
+        if (cond != null) {
+            AssertStatement a = new AssertStatement(new BooleanExpression(cond))
+            a.setSourcePosition(de)
+            a.putNodeMetaData(ASSERT_LABEL_KEY, ("the ALT over ${ci.altChans.collect { "'" + it + "'" }.join(', ')} (line ${de.lineNumber}) may block forever — " +
+                "no branch may have an element left (the multiplexer loop reads past what its producers send)").toString())
+            out.add(a)
+        }
+        VariableExpression marker = new VariableExpression(Encoder.CHANNEL_SELECT_MARKER)
+        List<Expression> readyArgs = new ArrayList<Expression>()
+        List<Expression> valueArgs = new ArrayList<Expression>()
+        valueArgs.add(new VariableExpression(r + '$index'))
+        for (int i = 0; i < ci.altChans.size(); i++) {
+            String c = ci.altChans.get(i)
+            for (List<Expression> l : [readyArgs, valueArgs]) {
+                l.add(new ConstantExpression(i, true)); l.add(new VariableExpression(c + '$q')); l.add(new VariableExpression(c + '$c'))
+            }
+        }
+        MethodCallExpression readyCall = new MethodCallExpression(marker, 'ready', new ArgumentListExpression(readyArgs))
+        readyCall.setSourcePosition(de)
+        DeclarationExpression d1 = new DeclarationExpression(new VariableExpression(r + '$index'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), readyCall)
+        d1.setSourcePosition(de)
+        out.add(new ExpressionStatement(d1))
+        MethodCallExpression valueCall = new MethodCallExpression(marker, 'valueAt', new ArgumentListExpression(valueArgs))
+        valueCall.setSourcePosition(de)
+        DeclarationExpression d2 = new DeclarationExpression(new VariableExpression(r + '$value'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), valueCall)
+        d2.setSourcePosition(de)
+        out.add(new ExpressionStatement(d2))
+        for (int i = 0; i < ci.altChans.size(); i++) {                       // the chosen branch's cursor steps
+            String c = ci.altChans.get(i)
+            Expression guard = ContractExpansionTransform.reparse("${r}\$index == ${i}")
+            Expression bump = ContractExpansionTransform.reparse("${c}\$c = ${c}\$c + 1")
+            if (guard == null || bump == null) continue
+            ExpressionStatement bs = new ExpressionStatement(bump)
+            bs.setSourcePosition(de)
+            IfStatement ifs = new IfStatement(new BooleanExpression(guard), new BlockStatement([bs] as List<Statement>, null), EmptyStatement.INSTANCE)
+            ifs.setSourcePosition(de)
+            out.add(ifs)
+        }
+        rw.selectVars.add(r)
+        out
     }
 
     /** Phase 252 — the shadow-list read a sanctioned receive becomes inside its consumer loop: `x$q[i - a]`. */
@@ -5893,6 +6008,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (st instanceof ExpressionStatement) {
                 Expression e = ((ExpressionStatement) st).expression
+                if (rw.curConsumer != null && rw.curConsumer.altVar != null && e instanceof DeclarationExpression &&
+                    ((DeclarationExpression) e).leftExpression instanceof VariableExpression &&
+                    ((VariableExpression) ((DeclarationExpression) e).leftExpression).name == rw.curConsumer.altVar &&
+                    awaitedSelectArgs(((DeclarationExpression) e).rightExpression) != null) {
+                    out.addAll(loopingAlt((DeclarationExpression) e, rw))       // Phase 253
+                    continue
+                }
                 for (MethodCallExpression r : sanctionedReceivesIn(e, rw)) {   // Phase 252 — the element must exist
                     Statement a = consumerAssert(r, rw)
                     if (a != null) out.add(a)
@@ -7170,7 +7292,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Map<String, String> parent = new HashMap<String, String>()
             Set<String> subscribers = new HashSet<String>()
             collectChannelParents(body, ctx.chanVars, parent, subscribers)
-            sanctionedReceives.addAll(scanStreams(body, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes).sanctionedReceives)
+            StreamScan sc = scanStreams(body, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes)
+            sanctionedReceives.addAll(sc.sanctionedReceives)
+            sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
         } catch (Throwable ignored) {
         }
         Set<String> paramChans = new HashSet<String>()
@@ -7200,7 +7324,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean isIter = isIterateUse(u)
             boolean isSelect = u.method == 'select'
             if (!isSend && !isClose && !isRead && !isIter && !isSelect) continue
-            if (isRead && sanctionedReceives.contains(u.anchor)) continue     // Phase 252
+            if ((isRead || isSelect) && sanctionedReceives.contains(u.anchor)) continue     // Phase 252/253
             if (u.conditional || (u.proc != null && u.proc.conditional)) {
                 // Phase 250 — a conditional SEND (inside a loop / if / catch) never blocks and stalls
                 // nobody: it only makes its root's element COUNT non-static. It leaves the graph, and

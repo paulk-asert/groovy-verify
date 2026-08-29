@@ -4768,38 +4768,86 @@ class Encoder implements TheoryApi {
     boolean tryBindChannelSelect(String name, Expression rhs) {
         Expression r = rhs
         while (r instanceof CastExpression) r = ((CastExpression) r).expression
-        if (!(r instanceof MethodCallExpression)) return false
-        MethodCallExpression m = (MethodCallExpression) r
-        if (!(m.objectExpression instanceof VariableExpression) ||
-            ((VariableExpression) m.objectExpression).name != CHANNEL_SELECT_MARKER) return false
+        if (!isChannelSelectMarker(r)) return false
+        Object t = translateChannelSelect((MethodCallExpression) r)
+        if (t == null) return false
+        bind(name, t)
+        true
+    }
+
+    static boolean isChannelSelectMarker(Expression e) {
+        e instanceof MethodCallExpression && ((MethodCallExpression) e).objectExpression instanceof VariableExpression &&
+            ((VariableExpression) ((MethodCallExpression) e).objectExpression).name == CHANNEL_SELECT_MARKER
+    }
+
+    /**
+     * The marker calls as TERMS — reachable from {@link #translate} too, so a looping ALT's per-iteration
+     * choice is modelled inside a loop body (Phase 253). {@code index(i…)}: a fresh value disjoined over the
+     * branch indices. {@code ready(i, list, cursor, …)}: a fresh value disjoined over the branches whose
+     * cursor is below their list's size — the branches with an element left. {@code value(idx, i, h, …)}: the
+     * ite chain over the indices. {@code valueAt(idx, i, list, cursor, …)}: the ite chain over the element at
+     * each branch's cursor (read as an array select, so no bounds obligation on the branches not taken).
+     */
+    private Object translateChannelSelect(MethodCallExpression m) {
         List<Expression> args = argList(m)
-        if (m.methodAsString == 'index') {
-            Object fresh = session.intVar(name + '#select#' + (++selectCounter))
+        String mm = m.methodAsString
+        if (mm == 'index' || mm == 'ready') {
+            Object fresh = session.intVar('select#' + (++selectCounter))
             List<Object> disj = new ArrayList<Object>()
-            for (Expression a : args) {
-                Object t = translate(a)
-                if (t == null) return false
-                disj.add(session.eq(fresh, t))
+            if (mm == 'index') {
+                for (Expression a : args) {
+                    Object t = translate(a)
+                    if (t == null) return null
+                    disj.add(session.eq(fresh, t))
+                }
+            } else {
+                if (args.size() % 3 != 0) return null
+                for (int i = 0; i < args.size(); i += 3) {
+                    Object c = translate(args.get(i))
+                    String list = listName(args.get(i + 1))
+                    Object cur = translate(args.get(i + 2))
+                    if (c == null || list == null || cur == null) return null
+                    disj.add(session.and([session.eq(fresh, c), session.lt(cur, sizeOf(list))]))
+                }
             }
             if (!disj.isEmpty()) session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
-            bind(name, fresh)
-            return true
+            return fresh
         }
-        if (m.methodAsString == 'value') {                 // value(idx, i0, h0, i1, h1, …)
-            if (args.size() < 3 || (args.size() - 1) % 2 != 0) return false
+        if (mm == 'value') {                 // value(idx, i0, h0, i1, h1, …)
+            if (args.size() < 3 || (args.size() - 1) % 2 != 0) return null
             Object idx = translate(args.get(0))
-            if (idx == null) return false
+            if (idx == null) return null
             Object v = null
             for (int i = args.size() - 2; i >= 1; i -= 2) {
                 Object c = translate(args.get(i))
                 Object h = translate(args.get(i + 1))
-                if (c == null || h == null) return false
+                if (c == null || h == null) return null
                 v = (v == null) ? h : session.ite(session.eq(idx, c), h, v)
             }
-            bind(name, v)
-            return true
+            return v
         }
-        false
+        if (mm == 'valueAt') {               // valueAt(idx, i0, list0, cursor0, i1, list1, cursor1, …)
+            if (args.size() < 4 || (args.size() - 1) % 3 != 0) return null
+            Object idx = translate(args.get(0))
+            if (idx == null) return null
+            Object v = null
+            for (int i = args.size() - 3; i >= 1; i -= 3) {
+                Object c = translate(args.get(i))
+                String list = listName(args.get(i + 1))
+                Object cur = translate(args.get(i + 2))
+                if (c == null || list == null || cur == null) return null
+                Object h = session.select(arrayFor(list), cur)
+                v = (v == null) ? h : session.ite(session.eq(idx, c), h, v)
+            }
+            return v
+        }
+        null
+    }
+
+    private static String listName(Expression e) {
+        Expression x = e
+        while (x instanceof CastExpression) x = ((CastExpression) x).expression
+        x instanceof VariableExpression ? ((VariableExpression) x).name : null
     }
 
     private int chanRecvCounter = 0
@@ -5425,6 +5473,7 @@ class Encoder implements TheoryApi {
     boolean axiomsOnce(String key) { explainLastAxiomKey = key; packAxiomKeys.add(key) }
 
     private Object translateMethodCall(MethodCallExpression mce) {
+        if (isChannelSelectMarker(mce)) return translateChannelSelect(mce)     // Phase 249/253 — the ALT marker
         String m = mce.methodAsString
         if (m == null) return null
         // Phase 102 — a switch EXPRESSION desugars to `{ -> <SwitchStatement> }.call()` (an IIFE closure).
