@@ -175,10 +175,11 @@ One port stays *deliberately* out of reach, and says so. **GNumbers** as the boo
 **bounded FIFO** whose element count is static (Phase 247), and only a *literal* loop bound unrolls into it
 (Phase 248 — bounded model checking, ≤ 32 iterations). A `while (true)` generator or a `for (i in 0..<n)`
 with symbolic `n` refuses the model outright and its value claims skip loudly — and the same line divides
-the one-shot `ALT` (certified) from the looping multiplexer (`while (true) { select … }`, the frontier). That frontier is precisely the ladder's recorded next rung
-(symbolic send/receive counts carried by loop invariants; session-typed channel protocols) — which makes
-"pick a streaming example and see what certification takes" a research conversation, not a demo: the same
-guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
+the one-shot `ALT` (certified) from the looping multiplexer (`while (true) { select … }`, the frontier).
+That frontier is precisely the ladder's recorded next rung (symbolic send/receive counts carried by loop
+invariants; session-typed channel protocols) — which makes "pick a streaming example and see what
+certification takes" a research conversation, not a demo: the same guarantees GPP establishes offline by
+formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory
