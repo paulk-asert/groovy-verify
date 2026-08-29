@@ -44,6 +44,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error (Phase 245) |
 | `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
 | `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
+| `GNumbers(n)`, symbolic | a `for (i in 0..<n)` producer loop + `close()` | termination certified — the drain waits for the close, not a count (Phase 250); values are the frontier |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 
 ## The one-shot shapes verify end to end
@@ -174,10 +175,13 @@ One port stays *deliberately* out of reach, and says so. **GNumbers** as the boo
 (or symbolically bounded) generator behind every pipeline — is *streaming*: the checker's channel model is a
 **bounded FIFO** whose element count is static (Phase 247), and only a *literal* loop bound unrolls into it
 (Phase 248 — bounded model checking, ≤ 32 iterations). A `while (true)` generator or a `for (i in 0..<n)`
-with symbolic `n` refuses the model outright and its value claims skip loudly — and the same line divides
-the one-shot `ALT` (certified) from the looping multiplexer (`while (true) { select … }`, the frontier).
-That frontier is precisely the ladder's recorded next rung (symbolic send/receive counts carried by loop
-invariants; session-typed channel protocols) — which makes "pick a streaming example and see what
+with symbolic `n` refuses the *value* model outright and its value claims skip loudly — and the same line
+divides the one-shot `ALT` (certified) from the looping multiplexer (`while (true) { select … }`, the
+frontier). What *is* certified for the symbolic generator is its **termination** (Phase 250): a send never
+blocks, so `GNumbers(n) → GPrint` with `close()` after the loop is deadlock-free for every `n`, and the
+forgotten close stays the named hang. That leaves the value half — symbolic send/receive counts carried by
+loop invariants, the channel as a sequence the producer's invariant describes; session-typed protocols
+behind it — as the ladder's recorded next rung, which makes "pick a streaming example and see what
 certification takes" a research conversation, not a demo: the same guarantees GPP establishes offline by
 formal methods, issued incrementally by the compiler.
 

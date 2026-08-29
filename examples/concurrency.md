@@ -704,6 +704,42 @@ consumed the element depends on its choice), two ALTs over one channel, a `Chann
 or a result used beyond `.index` / `.value` all skip with the channel and the reason named. The looping
 multiplexer — `while (true) { alt.select() … }` — is the streaming frontier again.
 
+### Streaming termination — a loop send never blocks (Phase 250)
+
+The structural half of the streaming frontier, taken on its own. Phases 243/245 voided the network
+certificate for *any* channel operation inside a loop or `if`; but a **send never blocks** — it stalls
+nobody — so a conditional send only makes its channel's element *count* non-static. Phase 250 drops it from
+the wait-for graph and remembers the root: an **iteration** (`for (v in ch)`, `toList()`), which waits for
+the *close*, not for a count, is unaffected — so the book's generator as the book means it, `GNumbers(n)`
+with symbolic `n`, feeding `GPrint`, is certified to terminate for every `n`, deadlock-freedom included:
+
+<!-- doclint:case p250-streaming-termination/a-symbolic-producer-loop-with-a-close-certifies-its-drain -->
+```groovy
+static int numbersToPrint(int n) {
+    groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+    async {
+        for (i in 0..<n) {
+            out.send(i)
+        }
+        out.close()
+    }
+    int seen = 0
+    for (v in out) {
+        seen = seen + 1
+    }
+    return seen
+}
+```
+
+The forgotten close is still the named hang, a close *inside* the loop is still conditional (uncertifiable),
+and a blocking `first()` on a channel whose count is not static — `n` may be zero — is a named skip rather
+than a silent pass or a spurious "no send" error: *"the receive on 'out' is served by a send inside a loop —
+the element count is not static, so the receive cannot be paired with a send"* (an ALT branch on such a
+channel likewise). What this certificate does **not** say is anything about the drained *values*: the value
+model still refuses loop traffic loudly (`Skipped channel verification … not one-shot`), and carrying the
+count symbolically — the channel as a sequence the producer's loop invariant describes — is the value half
+of the frontier, now the only half left.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

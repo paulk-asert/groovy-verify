@@ -11400,6 +11400,41 @@ only (the structural certificate is unchanged and still decides deadlocks).
 
 ---
 
+## Phase 250 — streaming termination: a loop send never blocks  *(shipped — slice 10 of the SEQ/PAR ladder; the structural half of symbolic streaming)*
+
+The next rung, chosen deliberately (2026-08-29): of the three frontiers left after Phase 249 — symbolic
+streaming, the looping ALT multiplexer, session types — symbolic streaming is where every Kerridge
+pipeline lives, and its STRUCTURAL half needs no new theory at all. Phases 243/245 voided the network
+certificate for any channel op inside a loop / if / catch ("conditional"). But a send never blocks and
+stalls nobody: a conditional send only makes its root's element COUNT non-static. `checkNetworkWellFormedness`
+now drops such sends from the graph and records the root in `unknownCount`. Iterations are unaffected —
+they wait for the CLOSE (Phase 245), not for a count — so a symbolic-count producer loop plus an
+unconditional close certifies its drain: `GNumbers(n) → GPrint` terminates for every `n`, deadlock-freedom
+included, and the forgotten close is still "can never finish". A blocking `first()` on a non-static count
+is a NAMED uncertifiable skip ("the receive on 'out' is served by a send inside a loop / if (line N) — the
+element count … is not static, so the receive cannot be paired with a send") — `n` may be zero — rather
+than a spurious "no send" error or a silent pass; an ALT branch on such a channel likewise. A close inside
+the loop, and every other conditional op, still voids the certificate as before.
+
+What it honestly is: the certificate is about blocking, not values. The value model keeps refusing loop
+traffic loudly (the Phase 247 verdict "not one-shot"), so a streaming method compiles with the network
+certificate SILENT and the value skip LOUD — the cases pin exactly that (`expect: 'Skipped channel
+verification'`, `refute: 'network'`). The remaining frontier is now precisely the value half: the channel
+as a symbolic sequence the producer's loop invariant describes (`sent.size() == i`, element facts), with
+`result.size() == n`-style claims — possibly the ladder's first genuine theory addition (sequences) if the
+existing list model cannot carry it; probe before designing.
+
+Cases (G314, new group, 6): the symbolic producer + for-in drain certified; through a map stage with
+`toList()`; the forgotten close (named hang, unchanged); the close inside the loop (still conditional);
+the blocking `first()` on a non-static count (named skip); an `if`-send before a closed drain
+(certified). G307's conditional-send pin passes for the sharper reason (the receive on it). Docs: the
+Phase 250 subsection in `examples/concurrency.md` (one linked case), the CAPABILITIES row, the README
+ladder bullet, `examples/kerridge.md` (the vocabulary table's symbolic `GNumbers(n)` row; the boundary
+paragraph now states what IS certified for the symbolic generator — termination — and names the value
+half as the only half left).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

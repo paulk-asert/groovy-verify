@@ -6319,6 +6319,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, List<ChanUse>> sendsByRoot = new HashMap<String, List<ChanUse>>()   // Phase 247 — in FIFO order
         Map<String, ChanUse> closeByRoot = new HashMap<String, ChanUse>()
         Set<String> selectedChans = new HashSet<String>()
+        Map<String, ChanUse> unknownCount = new HashMap<String, ChanUse>()   // Phase 250 — roots with a loop / if send
         ChanUse condUse = null
         for (ChanUse u : uses) {
             String root = chanBaseOf(u.chan, chanParent)
@@ -6329,7 +6330,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean isIter = isIterateUse(u)
             boolean isSelect = u.method == 'select'
             if (!isSend && !isClose && !isRead && !isIter && !isSelect) continue
-            if (u.conditional || (u.proc != null && u.proc.conditional)) { condUse = u; continue }
+            if (u.conditional || (u.proc != null && u.proc.conditional)) {
+                // Phase 250 — a conditional SEND (inside a loop / if / catch) never blocks and stalls
+                // nobody: it only makes its root's element COUNT non-static. It leaves the graph, and
+                // the root is remembered — a blocking receive on it cannot be paired with a send
+                // (uncertifiable, named below), while an iteration, which waits for the CLOSE, is
+                // unaffected: a symbolic-count producer loop plus an unconditional close certifies
+                // its drain. Every other conditional op still voids the certificate.
+                if (isSend) { if (!unknownCount.containsKey(root)) unknownCount.put(root, u); continue }
+                condUse = u; continue
+            }
             if (isSend) {
                 sends.add(u)
                 List<ChanUse> l = sendsByRoot.get(root)
@@ -6396,6 +6406,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             int j = (seen == null ? 0 : seen) + 1
             readOrdinal.put(r.chan, j)
             String where = root == r.chan ? "'${root}'" : "its source channel '${root}'"
+            ChanUse loopSend = unknownCount.get(root)
+            if (loopSend != null) {                                  // Phase 250 — count not static: no pairing
+                addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                    "the receive on '${r.chan}' (line ${r.line}) is served by a send inside a loop / if (line " +
+                    "${loopSend.line}) — the element count of " + where + " is not static, so the receive cannot " +
+                    "be paired with a send (a drain — for-in / toList — waits for the close instead and is certifiable)"), r.anchor)
+                return
+            }
             if (ss == null) {
                 addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
                     "the receive on '${r.chan}' (line ${r.line}) can never be satisfied — no send on " +
@@ -6427,6 +6445,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (ChanUse sel : selects) {
             List<ChanUse> alts = new ArrayList<ChanUse>()
             for (String c : sel.alts) {
+                ChanUse loopSend = unknownCount.get(chanBaseOf(c, chanParent))
+                if (loopSend != null) {                              // Phase 250 — a branch with a non-static count
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        describeChanEvent(sel) + " has a branch ('${c}') served by a send inside a loop / if (line " +
+                        "${loopSend.line}) — its readiness is not static"), sel.anchor)
+                    return
+                }
                 List<ChanUse> ss = sendsByRoot.get(chanBaseOf(c, chanParent))
                 Integer seen = readOrdinal.get(c)
                 int j = (seen == null ? 0 : seen) + 1

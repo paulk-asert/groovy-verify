@@ -82,7 +82,9 @@ class G307_p243_network_wellformedness {
                     }""")],
 
         // ---------- outside the certificate: loud skip, no claim ----------
-        // A conditional send may or may not run — the one-shot certificate does not apply.
+        // A conditional send may or may not run. Since Phase 250 the send itself no longer voids the
+        // certificate (it never blocks) — but the RECEIVE served by it cannot be paired with a send
+        // (the count is not static), so the network skip is still the named outcome.
         [group: 'P243 network well-formedness', name: 'a conditional send is uncertifiable', expect: 'Skipped network well-formedness',
          src: tc("""class C {
                         static int maybeSend(int x) {
