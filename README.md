@@ -206,7 +206,10 @@ you write:
 - **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
   nested) with `@Invariant` / `@Decreases`; the `xs.each { x -> … }` / `xs.eachWithIndex { x, i -> … }` iteration
   forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant); early
-  `return`; and `switch` *expressions* — the arrow form (`case 1 -> …`) with literal / range labels; plus
+  `return`; and `switch` *expressions* — the arrow form (`case 1 -> …`, a block with `yield` too) with literal /
+  range labels (since Groovy 6.0.0-beta-3 static type checking requires a switch expression to be exhaustive —
+  a `default`, or an enum subject with every constant covered — and the verifier's part is knowing when that
+  `default` is *dead* under the precondition); plus
   side-effecting assignment, `++` / `--`, and parallel swap; and `try` / `catch` (no `finally`) — the
   happy path walked exactly, each handler entered with sound catch-entry state (and, when the try's
   throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
@@ -521,7 +524,7 @@ simply remains outside.
 
 ## Building & using
 
-Built with JDK 25 against `org.apache.groovy:6.0.0-beta-2` from Maven Central (which ships the
+Built with JDK 25 against `org.apache.groovy:6.0.0-beta-3` from Maven Central (which ships the
 upstream `@ThrowsIf` / `@Requires(woven, direct)` contracts — GROOVY-12135/12136 — the build
 previously tracked the ASF snapshot for); the published artifact targets Java 17 bytecode, Groovy 6's
 own floor. `./gradlew verify`

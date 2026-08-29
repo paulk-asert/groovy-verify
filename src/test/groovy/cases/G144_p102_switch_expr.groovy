@@ -25,24 +25,27 @@ class G144_p102_switch_expr {
     static final String DESCRIPTION = 'A switch expression (arrow form, int/String/range labels) folds to an ite-chain; an unmatched case or a false branch claim refutes.'
 
     static final List<Map> CASES = [
-        // Phase 102 — switch EXPRESSIONS (arrow form, simple literal labels) lower to an ite-chain. A switch
-        // expr desugars to `{ -> switch }.call()`; the encoder recognises that and builds
-        // ite(subj==l1,v1, ite(subj==l2,v2, ... default-or-fresh)). int and String subjects; no-default/no-match
-        // is a fresh value (Groovy yields null) so an uncovered case refutes conservatively.
+        // Phase 102 — switch EXPRESSIONS (arrow form, simple literal labels) lower to an ite-chain
+        // ite(subj==l1,v1, ite(subj==l2,v2, ... default-or-fresh)). Up to Groovy 6.0.0-beta-2 a switch expr
+        // desugared to `{ -> switch }.call()` (still recognised); since beta-3 it is a first-class
+        // SwitchExpression node, AND static type checking requires it to be exhaustive — a `default` unless
+        // the subject is an enum whose constants are all covered. So every case here carries a default; the
+        // verifier's contribution is knowing when that default is DEAD (the precondition covers the labels —
+        // the proof goes through) and when it is not (i in 1..4 reaches 'z' — refuted with i = 4).
         [group: 'P102 switch expr', name: 'target: switch i->letter proves', ok: true,
          src: tc('''class C {
                         @Requires({ i in 1..3 })
                         @Ensures({ result in 'a'..'c' })
                         static String letter(int i) {
-                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' }
+                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c'; default -> 'z' }
                         }
                     }''')],
-        [group: 'P102 switch expr', name: 'soundness: i in 1..4 unmatched refutes (i=4)', ok: false, expect: 'postcondition',
+        [group: 'P102 switch expr', name: 'soundness: i in 1..4 reaches the default refutes (i=4)', ok: false, expect: 'postcondition',
          src: tc('''class C {
                         @Requires({ i in 1..4 })
                         @Ensures({ result in 'a'..'c' })
                         static String letter(int i) {
-                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' }
+                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c'; default -> 'z' }
                         }
                     }''')],
         [group: 'P102 switch expr', name: 'false postcondition refutes (case 3 gives c)', ok: false, expect: 'postcondition',
@@ -50,7 +53,7 @@ class G144_p102_switch_expr {
                         @Requires({ i in 1..3 })
                         @Ensures({ result in 'a'..'b' })
                         static String letter(int i) {
-                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c' }
+                            switch(i) { case 1 -> 'a'; case 2 -> 'b'; case 3 -> 'c'; default -> 'z' }
                         }
                     }''')],
         [group: 'P102 switch expr', name: 'default covers all cases, proves with no precondition', ok: true,
@@ -60,12 +63,21 @@ class G144_p102_switch_expr {
                             switch(i) { case 1 -> 'a'; default -> 'z' }
                         }
                     }''')],
+        // A block-bodied arrow case with an explicit `yield` (beta-3's spelling) reads the same way.
+        [group: 'P102 switch expr', name: 'a yield-bodied case proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ i in 1..2 })
+                        @Ensures({ result == i * 10 })
+                        static int tens(int i) {
+                            switch(i) { case 1 -> { yield 10 }; case 2 -> 20; default -> 0 }
+                        }
+                    }''')],
         [group: 'P102 switch expr', name: 'string subject switch proves', ok: true,
          src: tc('''class C {
                         @Requires({ s in 'x'..'y' })
                         @Ensures({ result == 1 || result == 2 })
                         static int code(String s) {
-                            switch(s) { case 'x' -> 1; case 'y' -> 2 }
+                            switch(s) { case 'x' -> 1; case 'y' -> 2; default -> 0 }
                         }
                     }''')],
     ]

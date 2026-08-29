@@ -11756,6 +11756,41 @@ the large and the session-typed view).
 
 ---
 
+## Housekeeping — Groovy 6.0.0-beta-3  *(shipped)*
+
+`gradle.properties` moves `groovyVersion` to the released `org.apache.groovy:6.0.0-beta-3` on Maven
+Central (2026-08-30), with the built-against wording refreshed (README, BUILD.md, the build.gradle
+comment, the consumer-smoke fallback) and the ChannelSelect reading annotated as beta-3-verified. Two
+upstream changes touched the verifier, both in switch EXPRESSIONS:
+
+1. A switch expression is now a first-class `org.codehaus.groovy.ast.expr.SwitchExpression` node all the
+   way to class generation (`SwitchExpressionWriter`), with arrow-case bodies spelled
+   `Block(Yield(e))` and an `EmptyStatement` default when absent — up to beta-2 the parser desugared it
+   at CONVERSION into the `{ -> switch }.call()` IIFE the Phase 102 recogniser matched. `Encoder.translate`
+   now lowers the node directly (`translateSwitchExpr(SwitchExpression)`, sharing the ite-chain core with
+   the legacy closure-call path, which is kept), and `caseValueExpr` reads `yield` bodies through the
+   double block wrap. Without this every switch expression skipped as "outside fragment".
+2. Static type checking now REQUIRES a switch expression to be exhaustive
+   (`StaticTypeCheckingVisitor.checkSwitchExpressionExhaustiveness`: a non-empty `default`, or an enum
+   subject with every constant covered — "the switch expression does not cover all possible input
+   values"). The three Phase 102 cases that relied on a `@Requires` to make a default-less switch total
+   are language errors under STC now; they carry a `default -> 'z'` and keep their point — the
+   verifier knows when that default is DEAD (`i in 1..3` proves) and when it is not (`i in 1..4`
+   refutes with `i = 4`). A `yield`-bodied case joins the group.
+
+Gates on the beta-3 artifacts, all green: suite 1878/1878; `check` 1901 tests, 0 failures — on a fresh
+daemon with `VERIFY_Z3_TIMEOUT_MS=8000` (the default-budget run tripped three solver timeouts on the
+known-heavy NIA / Dutch-flag / FP cases, the documented load sensitivity, plus the perf budget's
+check-call ceiling, re-based 6,000 → 7,000 and distinct VCs 4,000 → 4,500 for this session's ~100 new
+cases, and one RAT header on the new JIRA draft); runtime rung 672/679 clean (the same 2 spec-throw,
+0 review) with the classic `VERIFY_RUNG_INDY=false` sweep identical to indy; docLint 0 drift (162/162
+links); TLC "No error has been found"; Lincheck 10/10; Fray clean; jcstress no failed or error tests;
+consumer smoke on JDK 17 — the good contract verifies, the bad one refutes (Possible
+NullPointerException). ChannelSelect is bytecode-identical to beta-2 (the reproduction and the JIRA
+drafts under `repro/` stand as written).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

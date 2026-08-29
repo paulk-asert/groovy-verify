@@ -61,6 +61,8 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.SwitchStatement
+import org.codehaus.groovy.ast.stmt.YieldStatement
+import org.codehaus.groovy.ast.expr.SwitchExpression
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 
@@ -3855,6 +3857,8 @@ class Encoder implements TheoryApi {
         Expression declassified = declassifyValue(expr)
         if (declassified != null) return translate(declassified)
 
+        if (expr instanceof SwitchExpression) return translateSwitchExpr((SwitchExpression) expr)   // beta-3: first-class node
+
         if (expr instanceof ConstantExpression) {
             Object v = ((ConstantExpression) expr).value
             if (v instanceof Integer || v instanceof Long || v instanceof Short || v instanceof Byte) {
@@ -5397,17 +5401,20 @@ class Encoder implements TheoryApi {
         (stmts.size() == 1 && stmts.get(0) instanceof SwitchStatement) ? (SwitchStatement) stmts.get(0) : null
     }
 
-    /** The yielded value expression of a switch case/default body — a lone {@code return e} / {@code e}
-     *  (possibly block-wrapped), else null (a multi-statement / complex body is out of fragment). */
+    /** The yielded value expression of a switch case/default body — a lone {@code return e} / {@code e} /
+     *  {@code yield e} (possibly block-wrapped, possibly twice: Groovy 6.0.0-beta-3's first-class
+     *  {@code SwitchExpression} wraps an arrow case's value as {@code Block(Yield(e))}), else null (a
+     *  multi-statement / complex body is out of fragment). */
     private static Expression caseValueExpr(Statement code) {
         Statement st = code
-        if (st instanceof BlockStatement) {
+        for (int depth = 0; depth < 2 && st instanceof BlockStatement; depth++) {
             List<Statement> ss = ((BlockStatement) st).statements
             if (ss.size() != 1) return null
             st = ss.get(0)
         }
         if (st instanceof ReturnStatement) return ((ReturnStatement) st).expression
         if (st instanceof ExpressionStatement) return ((ExpressionStatement) st).expression
+        if (st instanceof YieldStatement) return ((YieldStatement) st).expression
         null
     }
 
@@ -5421,18 +5428,27 @@ class Encoder implements TheoryApi {
      * through. Skips (null) on a non-literal label, a complex case body, or a sort it can't model.
      */
     private Object translateSwitchExpr(SwitchStatement sw) {
-        List<CaseStatement> cases = sw.caseStatements
+        translateSwitchExpr(sw.expression, sw.caseStatements, sw.defaultStatement)
+    }
+
+    /** Groovy 6.0.0-beta-3 — a switch expression is a first-class {@code SwitchExpression} node (no IIFE
+     *  desugaring any more); same lowering over its parts. */
+    private Object translateSwitchExpr(SwitchExpression sw) {
+        translateSwitchExpr(sw.expression, sw.caseStatements, sw.defaultStatement)
+    }
+
+    private Object translateSwitchExpr(Expression subject, List<CaseStatement> cases, Statement defaultStatement) {
         if (cases == null || cases.isEmpty()) return null
-        Object subjH = translate(sw.expression)
+        Object subjH = translate(subject)
         if (subjH == null) return null
-        boolean stringSubj = isStringReceiver(sw.expression)
+        boolean stringSubj = isStringReceiver(subject)
         if (!stringSubj && session.isReal(subjH)) return null     // decimal subject not modelled
         Object strSort = session.declareSort('String')
         Expression firstVal = caseValueExpr(cases.get(0).code)
         if (firstVal == null) return null
         boolean stringResult = isStringReceiver(firstVal)
-        Expression defExpr = (sw.defaultStatement == null || sw.defaultStatement instanceof EmptyStatement)
-                             ? null : caseValueExpr(sw.defaultStatement)
+        Expression defExpr = (defaultStatement == null || defaultStatement instanceof EmptyStatement)
+                             ? null : caseValueExpr(defaultStatement)
         try {
             Object acc
             if (defExpr != null) {
@@ -5447,7 +5463,7 @@ class Encoder implements TheoryApi {
                 Expression val = caseValueExpr(c.code)
                 if (val == null) return null
                 Object cond = stringSubj
-                    ? session.eq(translateInSort(sw.expression, strSort), translateInSort(c.expression, strSort))
+                    ? session.eq(translateInSort(subject, strSort), translateInSort(c.expression, strSort))
                     : session.eq(subjH, translate(c.expression))
                 Object valH = translate(val)
                 if (cond == null || valH == null) return null

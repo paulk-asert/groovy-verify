@@ -1032,7 +1032,7 @@ straight-line code.
 ### Selection semantics — the runtime's ALT, modelled as it is (Phase 256)
 
 The rung that was to be "fairness of the ALT's choice" turned into something more useful: reading what
-`ChannelSelect.select()` actually does (Groovy 6.0.0-beta-2). It issues a `receive()` on every branch and
+`ChannelSelect.select()` actually does (Groovy 6.0.0-beta-3; bytecode-identical in beta-2). It issues a `receive()` on every branch and
 completes with the first; when several are ready the **lowest index wins** (priority by list order), and a
 losing branch's consumed element is **re-sent to the back of its queue** — no loss, but "may reorder values
 within a channel". Fair selection is therefore not an assumption the checker can make; it models the runtime:
