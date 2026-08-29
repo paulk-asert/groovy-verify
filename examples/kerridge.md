@@ -43,6 +43,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
 | poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error (Phase 245) |
 | `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
+| `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
 | `ALT` | `ChannelSelect` | future work (locally a nondeterministic branch, like `Awaitable.any`) |
 
 ## The one-shot shapes verify end to end
@@ -80,7 +81,31 @@ The plugAndPlay stages port the same way: **GSquares** is a `map { it * it }` st
 transform proves; **GPlus** joins one value from each of two input channels and proves the sum (fan-in done
 right: each producer owns its own channel); **GDelta** is `BroadcastChannel` fan-out, both branches proved
 to see the element; **GPrint**'s drain-until-end-of-stream is certified to finish because its `close()`
-dependency is satisfiable. And the shape his tradition cares most about — the **client–server exchange**,
+dependency is satisfiable. With a *literal* trip count the whole c03 network certifies: `GNumbers` as a `for (n in 1..3)` producer loop
+unrolls (Phase 248), `GSquares` composes, and `GPrint`'s drain proves the printed sum — deadlock-freedom
+included, since the drain's `close()` dependency is satisfiable:
+
+<!-- doclint:case p246-kerridge-gallery/c03-gnumbers-gsquares-gprint-bounded-the-sum-proves -->
+```groovy
+@Ensures({ result == 14 })
+static int squaresPipeline() {
+    groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> s2p = n2s.map { it * it }
+    async {
+        for (n in 1..3) {
+            n2s.send(n)
+        }
+        n2s.close()
+    }
+    int printed = 0
+    for (v in s2p) {
+        printed = printed + v
+    }
+    return printed
+}
+```
+
+And the shape his tradition cares most about — the **client–server exchange**,
 whose deadlock-freedom the Welch/Martin design rules argue by ordering — is certified here by the same
 theorem, mechanised (the wait-for order is well-founded), *and* its value proves:
 
@@ -125,10 +150,11 @@ forever, and the FIFO pairing knows it.
 
 ## The honest boundary, loudly
 
-One port stays *deliberately* out of reach, and says so. **GNumbers** — the infinite generator behind every
-pipeline in the book — is *streaming*: the checker's channel model is a **bounded FIFO** whose element
-count is static (Phase 247 — every send unconditional, every receive one-shot), so loop traffic refuses the
-model outright and its value claims skip loudly. That frontier is precisely the ladder's recorded next rung
+One port stays *deliberately* out of reach, and says so. **GNumbers** as the book means it — the *infinite*
+(or symbolically bounded) generator behind every pipeline — is *streaming*: the checker's channel model is a
+**bounded FIFO** whose element count is static (Phase 247), and only a *literal* loop bound unrolls into it
+(Phase 248 — bounded model checking, ≤ 32 iterations). A `while (true)` generator or a `for (i in 0..<n)`
+with symbolic `n` refuses the model outright and its value claims skip loudly. That frontier is precisely the ladder's recorded next rung
 (symbolic send/receive counts carried by loop invariants; session-typed channel protocols) — which makes
 "pick a streaming example and see what certification takes" a research conversation, not a demo: the same
 guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.

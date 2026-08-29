@@ -2268,6 +2268,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Check that side condition and error loudly on a violation — without this, a
             // stale-read race passes as a proof of the post-write value. Contained: an analysis
             // failure never breaks the compile flow.
+            // Phase 248 — literal-bounded channel loops unroll first, so the structural walk and the
+            // channel rewrite both see one-shot traffic (a symbolic bound stays a loop: the frontier).
+            Set<String> streamChans = new HashSet<String>()
+            if (body instanceof BlockStatement) collectChannelVars((BlockStatement) body, streamChans)
+            if (!streamChans.isEmpty()) {
+                Statement unrolled = unrollLiteralChannelLoops(body, streamChans)
+                if (!unrolled.is(body)) {
+                    node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, unrolled)
+                    body = unrolled
+                }
+            }
             try {
                 checkParInterference(node, body)
             } catch (Throwable ignored) {
@@ -4610,24 +4621,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             DeclarationExpression decl = new DeclarationExpression(lhs, Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), elem)
             decl.setSourcePosition(st)
             out.add(new ExpressionStatement(decl))
-            Map<String, String> ren = new HashMap<String, String>()
-            ren.put(loopVar.name, vi)
-            for (String l : bodyLocals) ren.put(l, l + '$' + i)
+            Map<String, Expression> ren = new HashMap<String, Expression>()
+            ren.put(loopVar.name, new VariableExpression(vi))
+            for (String l : bodyLocals) ren.put(l, new VariableExpression(l + '$' + i))
             Statement copy = copyRenamed(st.loopBlock, ren)
             if (copy == null) { out.add(st); return }    // guarded by unrollableLoopBody; defensive
             rewriteChStatements(copy instanceof BlockStatement ? ((BlockStatement) copy).statements : Collections.singletonList(copy), rw, out)
         }
     }
 
-    /** A deep copy of a loop body with variable names substituted (declarations included); null for a
-     *  statement kind outside the unrolling fragment. Source positions are kept for diagnostics. */
-    private static Statement copyRenamed(Statement s, Map<String, String> ren) {
+    /** A deep copy of a loop body with variables substituted — a rename (to a fresh `VariableExpression`)
+     *  or a frozen literal index (Phase 248) — declarations included; null for a statement kind outside
+     *  the unrolling fragment. Source positions are kept for diagnostics. */
+    private static Statement copyRenamed(Statement s, Map<String, Expression> ren) {
         if (s == null) return null
         ExpressionTransformer sub = new ExpressionTransformer() {
             @Override Expression transform(Expression expr) {
                 if (expr instanceof VariableExpression && ren.containsKey(((VariableExpression) expr).name)) {
                     VariableExpression ve = (VariableExpression) expr
-                    VariableExpression r = new VariableExpression(ren.get(ve.name), ve.originType)
+                    Expression rep = ren.get(ve.name)
+                    Expression r = rep instanceof VariableExpression ?
+                        new VariableExpression(((VariableExpression) rep).name, ve.originType) :
+                        new ConstantExpression(((ConstantExpression) rep).value, true)
                     r.setSourcePosition(ve)
                     return r
                 }
@@ -4658,6 +4673,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Statement b = i.elseBlock == null ? null : copyRenamed(i.elseBlock, ren)
             if (a == null || (i.elseBlock != null && b == null)) return null
             out = new IfStatement(new BooleanExpression(sub.transform(i.booleanExpression.expression)), a, b == null ? EmptyStatement.INSTANCE : b)
+        } else if (s instanceof ForStatement) {                    // Phase 248 — a nested loop travels with its copy
+            ForStatement f = (ForStatement) s
+            Statement lb = copyRenamed(f.loopBlock, ren)
+            if (lb == null) return null
+            out = new ForStatement(f.variable, sub.transform(f.collectionExpression), lb)
         } else {
             return null
         }
@@ -4806,6 +4826,229 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         sub.transform(bodyE)
+    }
+
+    // ── Phase 248 — bounded streaming: literal-bounded channel loops unroll ────────────────────
+    //
+    // A loop that carries channel traffic is "not one-shot" to the ladder: its ops are conditional
+    // to the structural walk (Phase 243) and beyond the bounded FIFO (Phase 247). When the loop's
+    // bound is a LITERAL — `for (i in 0..<3)`, `for (i in 1..3)`, `for (int i = 0; i < 3; i++)` —
+    // the trip count is static, and unrolling it (body copied per iteration, the index a constant,
+    // the body's locals renamed apart) turns the stream into straight-line one-shot traffic that
+    // every later pass certifies exactly: the sends are indexed, the receives paired, the drains
+    // unrolled, the wait-for order well-founded. Runs BEFORE the structural walk on a fresh copy of
+    // the body (async arms rebuilt, never mutated — their nodes are shared with the live AST).
+    // Honest boundary: literal bounds only, up to CHANNEL_UNROLL_LIMIT — a symbolic bound (`0..<n`)
+    // is the streaming frontier proper (symbolic counts carried by loop invariants), not unrolled.
+
+    /** The unrolling ceiling — bounded model checking, kept small enough to stay a compile-time proof. */
+    private static final int CHANNEL_UNROLL_LIMIT = 32
+
+    /** A new body with every literal-bounded channel loop unrolled; the SAME body when there is none. */
+    private static Statement unrollLiteralChannelLoops(Statement body, Set<String> ch) {
+        if (!(body instanceof BlockStatement) || ch.isEmpty()) return body
+        boolean[] changed = [false]
+        BlockStatement out = unrollBlock((BlockStatement) body, ch, changed, 0)
+        changed[0] ? out : body
+    }
+
+    private static BlockStatement unrollBlock(BlockStatement b, Set<String> ch, boolean[] changed, int depth) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : b.statements) unrollInto(st, ch, changed, out, depth)
+        BlockStatement nb = new BlockStatement(out, b.variableScope)
+        nb.setSourcePosition(b); nb.copyNodeMetaData(b)
+        nb
+    }
+
+    private static void unrollInto(Statement st, Set<String> ch, boolean[] changed, List<Statement> out, int depth) {
+        if (depth <= 8 && st instanceof ForStatement && mentionsChannelOp(st, ch)) {
+            List<Statement> copies = unrollLiteralLoop((ForStatement) st, ch)
+            if (copies != null) {
+                changed[0] = true
+                for (Statement c : copies) unrollInto(c, ch, changed, out, depth + 1)   // nested literal loops
+                return
+            }
+        }
+        if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            Expression call = e
+            if (e instanceof DeclarationExpression) call = stripCasts(((DeclarationExpression) e).rightExpression)
+            else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) call = stripCasts(((BinaryExpression) e).rightExpression)
+            ClosureExpression cl = asyncClosure(call)
+            if (cl != null && cl.code instanceof BlockStatement && mentionsChannelOp(cl.code, ch)) {
+                boolean[] inner = [false]
+                BlockStatement nb = unrollBlock((BlockStatement) cl.code, ch, inner, depth)
+                if (inner[0]) {
+                    changed[0] = true
+                    Expression rebuilt = rebuildAsyncCall(call, cl, nb)
+                    Expression ne
+                    if (e instanceof DeclarationExpression) {
+                        DeclarationExpression de = (DeclarationExpression) e
+                        ne = new DeclarationExpression(de.leftExpression, de.operation, rebuilt)
+                    } else if (e instanceof BinaryExpression) {
+                        BinaryExpression be = (BinaryExpression) e
+                        ne = new BinaryExpression(be.leftExpression, be.operation, rebuilt)
+                    } else {
+                        ne = rebuilt
+                    }
+                    ne.setSourcePosition(e); ne.copyNodeMetaData(e)
+                    ExpressionStatement ns = new ExpressionStatement(ne)
+                    ns.setSourcePosition(st); ns.copyNodeMetaData(st)
+                    out.add(ns)
+                    return
+                }
+            }
+        }
+        out.add(st)
+    }
+
+    /** The `async { … }` call with its closure's code replaced — both post-STC shapes. */
+    private static Expression rebuildAsyncCall(Expression call, ClosureExpression cl, BlockStatement code) {
+        ClosureExpression ncl = new ClosureExpression(cl.parameters, code)
+        ncl.setVariableScope(cl.variableScope)
+        ncl.setSourcePosition(cl); ncl.copyNodeMetaData(cl)
+        ArgumentListExpression args = new ArgumentListExpression(ncl)
+        Expression out
+        if (call instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) call
+            out = new StaticMethodCallExpression(sm.ownerType, sm.method, args)
+        } else {
+            MethodCallExpression m = (MethodCallExpression) call
+            MethodCallExpression nm = new MethodCallExpression(m.objectExpression, m.method, args)
+            nm.setImplicitThis(m.implicitThis)
+            out = nm
+        }
+        out.setSourcePosition(call); out.copyNodeMetaData(call)
+        out
+    }
+
+    /** True when the statement performs any channel end-use: a call on a channel var, or a for-in over one. */
+    private static boolean mentionsChannelOp(Statement s, Set<String> ch) {
+        if (s == null) return false
+        boolean[] found = [false]
+        s.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                Expression recv = stripCasts(m.objectExpression)
+                if (recv instanceof VariableExpression && ch.contains(((VariableExpression) recv).name)) found[0] = true
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitForLoop(ForStatement f) {
+                Expression coll = stripCasts(f.collectionExpression)
+                if (coll instanceof VariableExpression && ch.contains(((VariableExpression) coll).name)) found[0] = true
+                super.visitForLoop(f)
+            }
+        })
+        found[0]
+    }
+
+    /** The unrolled copies of a literal-bounded loop, or null when it is not one (symbolic bound,
+     *  descending / non-integer range, over the limit, a body that writes the index, or a body shape
+     *  outside the copying fragment). */
+    private static List<Statement> unrollLiteralLoop(ForStatement f, Set<String> ch) {
+        Object[] lit = literalLoopRange(f)
+        if (lit == null) return null
+        String index = (String) lit[0]
+        int from = (Integer) lit[1], to = (Integer) lit[2]
+        if (to < from - 1) return null                            // a descending range iterates backwards — out
+        int n = to - from + 1
+        if (n > CHANNEL_UNROLL_LIMIT) return null
+        Statement body = f.loopBlock
+        if (!unrollableStreamBody(body) || writesVar(body, index)) return null
+        BlockStatement block = body instanceof BlockStatement ? (BlockStatement) body :
+            new BlockStatement(Collections.singletonList(body), null)
+        Set<String> locals = new HashSet<String>()
+        collectBodyLocalNames(block, locals)
+        List<Statement> out = new ArrayList<Statement>()
+        for (int k = 0; k < n; k++) {
+            Map<String, Expression> ren = new HashMap<String, Expression>()
+            ren.put(index, new ConstantExpression(from + k, true))
+            for (String l : locals) ren.put(l, new VariableExpression(l + '$' + (k + 1)))
+            Statement copy = copyRenamed(block, ren)
+            if (copy == null) return null
+            out.addAll(((BlockStatement) copy).statements)
+        }
+        out
+    }
+
+    /** `[indexName, from, to]` (inclusive) for `for (i in a..b)`, `for (i in a..<b)` and
+     *  `for (int i = a; i < b; i++)` / `i <= b` with literal int bounds; null otherwise. */
+    private static Object[] literalLoopRange(ForStatement f) {
+        Expression coll = stripCasts(f.collectionExpression)
+        if (coll instanceof RangeExpression) {
+            RangeExpression r = (RangeExpression) coll
+            Integer a = intLiteral(r.from), b = intLiteral(r.to)
+            if (a == null || b == null || f.variable == null) return null
+            return [f.variable.name, a, r.inclusive ? b : b - 1] as Object[]
+        }
+        if (coll instanceof ClosureListExpression) {
+            List<Expression> parts = ((ClosureListExpression) coll).expressions
+            if (parts.size() != 3) return null
+            Expression init = stripCasts(parts.get(0)), cond = stripCasts(parts.get(1)), upd = stripCasts(parts.get(2))
+            if (!(init instanceof DeclarationExpression) || !(((DeclarationExpression) init).leftExpression instanceof VariableExpression)) return null
+            String i = ((VariableExpression) ((DeclarationExpression) init).leftExpression).name
+            Integer a = intLiteral(((DeclarationExpression) init).rightExpression)
+            if (a == null || !(cond instanceof BinaryExpression)) return null
+            BinaryExpression c = (BinaryExpression) cond
+            if (!(stripCasts(c.leftExpression) instanceof VariableExpression) || ((VariableExpression) stripCasts(c.leftExpression)).name != i) return null
+            Integer b = intLiteral(c.rightExpression)
+            if (b == null) return null
+            int t = c.operation.type
+            int to = t == Types.COMPARE_LESS_THAN ? b - 1 : (t == Types.COMPARE_LESS_THAN_EQUAL ? b : Integer.MIN_VALUE)
+            if (to == Integer.MIN_VALUE) return null
+            Expression target = upd instanceof PostfixExpression ? ((PostfixExpression) upd).expression :
+                                upd instanceof PrefixExpression ? ((PrefixExpression) upd).expression : null
+            int op = upd instanceof PostfixExpression ? ((PostfixExpression) upd).operation.type :
+                     upd instanceof PrefixExpression ? ((PrefixExpression) upd).operation.type : -1
+            if (op != Types.PLUS_PLUS || !(stripCasts(target) instanceof VariableExpression) ||
+                ((VariableExpression) stripCasts(target)).name != i) return null
+            return [i, a, to] as Object[]
+        }
+        null
+    }
+
+    private static Integer intLiteral(Expression e) {
+        Expression x = stripCasts(e)
+        if (x instanceof ConstantExpression && ((ConstantExpression) x).value instanceof Integer) return (Integer) ((ConstantExpression) x).value
+        null
+    }
+
+    /** The loop-body shapes the stream unroller copies: blocks, expressions, returns, if/else — and
+     *  nested `for` loops (a literal inner loop unrolls in turn; any other stays a loop, and its
+     *  channel ops stay conditional — a loud skip, never a wrong count). */
+    private static boolean unrollableStreamBody(Statement s) {
+        if (s == null || s instanceof EmptyStatement) return true
+        if (s instanceof BlockStatement) {
+            for (Statement st : ((BlockStatement) s).statements) if (!unrollableStreamBody(st)) return false
+            return true
+        }
+        if (s instanceof IfStatement) {
+            IfStatement i = (IfStatement) s
+            return unrollableStreamBody(i.ifBlock) && unrollableStreamBody(i.elseBlock)
+        }
+        if (s instanceof ForStatement) return unrollableStreamBody(((ForStatement) s).loopBlock)
+        s instanceof ExpressionStatement || s instanceof ReturnStatement
+    }
+
+    /** True when the body assigns / increments the named variable (an index the copies could not freeze). */
+    private static boolean writesVar(Statement s, String name) {
+        boolean[] w = [false]
+        s.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int t = be.operation.type
+                if ((t == Types.ASSIGN || Types.ofType(t, Types.ASSIGNMENT_OPERATOR)) &&
+                    be.leftExpression instanceof VariableExpression && ((VariableExpression) be.leftExpression).name == name) w[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression e) {
+                if (e.expression instanceof VariableExpression && ((VariableExpression) e.expression).name == name) w[0] = true
+                super.visitPostfixExpression(e)
+            }
+            @Override void visitPrefixExpression(PrefixExpression e) {
+                if (e.expression instanceof VariableExpression && ((VariableExpression) e.expression).name == name) w[0] = true
+                super.visitPrefixExpression(e)
+            }
+        })
+        w[0]
     }
 
     // ── Phase 240 — PAR disjointness: the fork-window interference check ────────────────────────

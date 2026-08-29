@@ -11303,6 +11303,41 @@ ahead of its producer reads an unbound element — unconstrained, refute-only, a
 
 ---
 
+## Phase 248 — bounded streaming: literal-bounded channel loops unroll  *(shipped — slice 8 of the SEQ/PAR ladder)*
+
+The second Kerridge boundary — `GNumbers`, the generator loop behind every book pipeline — split in two.
+With a LITERAL trip count it is bounded traffic in disguise, and a pre-pass makes that literal: before
+the structural walk, `unrollLiteralChannelLoops` copies the body of every literal-bounded loop that
+carries channel traffic once per iteration (`for (i in a..b)` / `a..<b` / the C-style
+`for (int i = a; i < b; i++)` and `<=`; nested loops unroll in turn, the outer copies re-scanned), the
+index frozen to its constant (`copyRenamed` now substitutes a `ConstantExpression` as well as a rename)
+and the body's locals renamed apart, up to `CHANNEL_UNROLL_LIMIT` (32). Async arms are REBUILT, never
+mutated (`rebuildAsyncCall` — the closure's nodes are shared with the live AST; both post-STC call
+shapes, and the `def t = async {}` / `t = async {}` forms), and the pass returns the SAME body when
+nothing unrolls. Everything downstream then sees one-shot traffic: Phase 243 certifies the order,
+Phase 247 indexes the sends, pairs the receives and unrolls the drains. A body that writes its index,
+a descending range, a bound over the limit, or a body shape outside the copying fragment stays a loop —
+and its traffic stays a loud "not one-shot" skip. The engine's founding conclusion holds a third time:
+no new solver theory, one AST pass.
+
+What this buys: the book's c03 network — `GNumbers → GSquares → GPrint` with `for (n in 1..3)` — proves
+its printed sum (14) AND is certified deadlock-free; a generator's drained list proves element by
+element; a C-style producer drains to its sum; nested 2×2 loops give four elements in order; a consumer
+loop reads in order; and a producer loop of two against a consumer loop of three is Phase 247's named
+deadlock ("the 3rd receive … only 2 sends"). What it honestly is: bounded model checking in the compiler,
+and the docs say so — a SYMBOLIC bound (`0..<n`) stays a loop and skips loudly, pinned by a case: that is
+the streaming frontier proper, where the count would be carried by a loop invariant rather than counted.
+
+Cases (G312, new group, 10): four generator proofs (literal range; the index in the sent expression;
+C-style; nested), the pipeline sum and its refuted twin, the consumer loop, the loop-count-mismatch
+deadlock, and two loud frontier pins (symbolic bound; over the limit). G310 gains the bounded c03
+pipeline. Docs: the Phase 248 subsection in `examples/concurrency.md` (one linked case), the
+CAPABILITIES row, the README ladder + gallery bullets, `examples/kerridge.md` (the bounded pipeline
+joins the verified tier with its own case; the vocabulary table's `GNumbers` row; the boundary section
+now names the symbolic/infinite generator precisely). Next rung: `ALT` as `ChannelSelect`.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -602,6 +602,44 @@ count-changing stage (`filter` / `split` / `merge` / `tap`), or an `each {}` dra
 carries no invariant — use `for (v in ch)` or `toList()`). The counts are *static*: a producer **loop** is
 still the streaming frontier.
 
+### Bounded streaming — literal-bounded channel loops unroll (Phase 248)
+
+A loop that carries channel traffic is "not one-shot" to the ladder: its operations are conditional to the
+structural walk and beyond the bounded FIFO. When the loop's bound is a **literal** — `for (i in 0..<3)`,
+`for (i in 1..3)`, `for (int i = 0; i < 3; i++)`, nested — the trip count is static, and Phase 248 unrolls
+it *before* the structural walk: the body is copied per iteration with the index frozen to its constant and
+the body's locals renamed apart (async arms are rebuilt, never mutated — their nodes are shared with the
+live AST). The stream becomes straight-line traffic that every later pass certifies exactly — the sends
+indexed, the receives paired, the drains unrolled, the wait-for order well-founded. The book's first
+plugAndPlay network, generator → squares → drain, proves its sum and is certified deadlock-free:
+
+<!-- doclint:case p248-bounded-streaming/generator-squares-drain-the-pipeline-sum-proves -->
+```groovy
+@Ensures({ result == 5 })
+static int pipeline() {
+    groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> squares = nums.map { it * it }
+    async {
+        for (i in 0..<3) {
+            nums.send(i)
+        }
+        nums.close()
+    }
+    int sum = 0
+    for (v in squares) {
+        sum = sum + v
+    }
+    return sum
+}
+```
+
+A consumer loop unrolls the same way (`for (i in 0..<2) acc = 10 * acc + src.first()` reads the two
+elements in order), and a producer loop of two against a consumer loop of three is the FIFO pairing's named
+deadlock — *"the 3rd receive on 'src' can never be satisfied — only 2 sends"*. This is bounded model
+checking in the compiler, and says so: literal bounds only, up to 32 iterations; a **symbolic** bound
+(`for (i in 0..<n)`) stays a loop and skips loudly — the streaming frontier proper, where the send/receive
+count would have to be carried by a loop invariant rather than counted.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

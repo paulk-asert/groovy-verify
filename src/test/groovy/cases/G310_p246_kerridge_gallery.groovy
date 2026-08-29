@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted). The honest boundary is LOUD: the streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), and since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -185,6 +185,30 @@ class G310_p246_kerridge_gallery {
                             String first = connect.first()
                             String second = connect.first()
                             return second + ' ' + first
+                        }
+                    }""")],
+
+        // ---------- c03's pipeline, bounded (Phase 248) ----------
+        // The book's first plugAndPlay network — GNumbers → GSquares → GPrint — with the generator's
+        // trip count a literal: the loops unroll, the stages compose, and the printed sum proves,
+        // with the network certified deadlock-free (the drain's close dependency is satisfiable).
+        [group: 'P246 Kerridge gallery', name: 'c03 GNumbers → GSquares → GPrint, bounded: the sum proves', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == 14 })
+                        static int squaresPipeline() {
+                            groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
+                            groovy.concurrent.AsyncChannel<Integer> s2p = n2s.map { it * it }
+                            async {
+                                for (n in 1..3) {
+                                    n2s.send(n)
+                                }
+                                n2s.close()
+                            }
+                            int printed = 0
+                            for (v in s2p) {
+                                printed = printed + v
+                            }
+                            return printed
                         }
                     }""")],
 
