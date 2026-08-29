@@ -163,7 +163,12 @@ class VerifyHarness {
     static void main(String[] args) {
         int passed = 0, failed = 0
         String currentGroup = null
+        // -Dverify.only=<substring> (./gradlew verify -Pcases=<substring>): run the matching subset only —
+        // the same filter the JUnit view offers, for quick iteration on one group. Case numbering is kept.
+        String only = (System.getProperty('verify.only') ?: '').trim().toLowerCase()
+        if (only) println "filter '${only}': running the matching subset of ${CASES.size()} cases"
         CASES.eachWithIndex { Map c, int i ->
+            if (only && !"${c.group} :: ${c.name}".toLowerCase().contains(only)) return
             if (c.group != currentGroup) {
                 currentGroup = c.group
                 println "\n── ${currentGroup} ${'─' * (60 - currentGroup.size())}"

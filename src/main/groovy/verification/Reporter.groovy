@@ -340,12 +340,13 @@ class Reporter {
         "a BroadcastChannel (subscribing before any sender starts) for one-to-many delivery."
     }
 
-    /** Phase 241 — a channel used beyond the one-in-flight-element model: a loud skip, with the
-     *  channel named (the scalar rewrite would prove last-write-wins where the runtime is FIFO). */
+    /** Phase 241/247 — a channel used beyond the bounded-FIFO model: a loud skip, with the channel
+     *  and the reason named (the rewrite would otherwise prove an order- or count-dependent value). */
     static String formatChannelModelSkipped(String methodName, String chan, String reason) {
         "Skipped channel verification for ${methodName} (channel '${chan}' ${reason}). The channel " +
-        "model carries a single in-flight element per channel — at most one send and one consumer " +
-        "(a receive or a pipeline stage). The method is allowed to proceed unchecked."
+        "model carries a bounded FIFO per channel — a statically known sequence of one-shot sends " +
+        "from one process, matched in order by one-shot receives (or one drain / pipeline stage) " +
+        "from one process. The method is allowed to proceed unchecked."
     }
 
     // ---- Channel contracts (Phase 242) ----

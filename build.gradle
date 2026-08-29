@@ -289,6 +289,8 @@ def verifyTask = tasks.register('verify', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
     mainClass = 'VerifyHarness'
     jvmArgs = ['--enable-native-access=ALL-UNNAMED']  // quiet the JDK25 native-access warning from z3
+    // ./gradlew verify -Pcases='kerridge'  -> run only the cases whose "group :: name" contains the substring
+    if (project.hasProperty('cases')) systemProperty 'verify.only', project.property('cases')
 }
 
 // Harvest the agent-facing capability corpus + catalog from VerifyHarness.CASES (the single source of truth).

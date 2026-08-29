@@ -21,7 +21,7 @@ import static cases.CaseDsl.*
 class G305_p241_channel_linearity {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 241 channel-end linearity: a point-to-point AsyncChannel has one live process per end, checked over the Phase 240 fork-join windows — two concurrent senders, two concurrent receivers, a send into a pipeline-derived channel, and a subscribe while a sender is live all error as "Channel linearity violation" (each previously PROVED a scheduler-dependent value or surfaced only as accidental noise). Sequential over-use of the one-in-flight-element model (a second send or consumer by the same process) skips loudly with the channel named, and desugarChannels\' guard refuses the scalar rewrite so nothing downstream proves a FIFO-false value. BroadcastChannel is modelled (create/send/close; subscribe() is the identity stage — every subscriber sees every element), so legal fan-out PROVES: two subscribers each read the broadcast element, and a subscriber feeds an ordinary map pipeline.'
+    static final String DESCRIPTION = 'Phase 241 channel-end linearity: a point-to-point AsyncChannel has one live process per end, checked over the Phase 240 fork-join windows — two concurrent senders, two concurrent receivers, a send into a pipeline-derived channel, and a subscribe while a sender is live all error as "Channel linearity violation" (each previously PROVED a scheduler-dependent value or surfaced only as accidental noise). Sequential over-use of the one-in-flight-element model originally skipped loudly; since Phase 247 (bounded FIFO) those shapes are decided — last-write-wins is refuted and a receive past the last send is a named deadlock — and the guard still refuses any traffic beyond the model so nothing downstream proves a FIFO-false value. BroadcastChannel is modelled (create/send/close; subscribe() is the identity stage — every subscriber sees every element), so legal fan-out PROVES: two subscribers each read the broadcast element, and a subscriber feeds an ordinary map pipeline.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -85,10 +85,11 @@ class G305_p241_channel_linearity {
                         }
                     }""")],
 
-        // ---------- sequential over-use: the one-element model SKIPS loudly ----------
-        // Before this phase the scalar rewrite PROVED result == 2 (last write wins) where the
-        // runtime first() is 1 (FIFO). Not a race — the code is fine — so it skips, not errors.
-        [group: 'P241 channel linearity', name: 'two sequential sends exceed the one-element model', expect: 'single in-flight element',
+        // ---------- sequential over-use: the one-element model refused; Phase 247's FIFO decides ----------
+        // Before Phase 241 the scalar rewrite PROVED result == 2 (last write wins) where the runtime
+        // first() is 1 (FIFO); 241 skipped loudly. Under Phase 247's bounded FIFO the claim is REFUTED
+        // (the first receive is the first send) — the FIFO-false value still never proves.
+        [group: 'P241 channel linearity', name: 'two sequential sends: last-write-wins is refuted', expect: 'Cannot prove postcondition',
          src: tc("""class C {
                         @Ensures({ result == 2 })
                         static int twoSends() {
@@ -98,9 +99,10 @@ class G305_p241_channel_linearity {
                             return src.first()
                         }
                     }""")],
-        // Before this phase both reads resolved to the same scalar and result == x + x PROVED;
-        // the runtime second first() has no second element to take.
-        [group: 'P241 channel linearity', name: 'two receives exceed the one-element model', expect: 'single in-flight element',
+        // Before Phase 241 both reads resolved to the same scalar and result == x + x PROVED; 241
+        // skipped. Phase 247's FIFO pairing names the real defect: the second first() has no second
+        // element to take — the process blocks forever (a network deadlock, spelled out).
+        [group: 'P241 channel linearity', name: 'a second receive with no second send is a named deadlock', expect: '2nd receive',
          src: tc("""class C {
                         @Ensures({ result == x + x })
                         static int twoReceives(int x) {

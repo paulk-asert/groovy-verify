@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). The honest boundaries are LOUD: the literal two-write ProduceHW exceeds the one-in-flight-element model, and the streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted). The honest boundary is LOUD: the streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -161,18 +161,34 @@ class G310_p246_kerridge_gallery {
                         }
                     }""")],
 
-        // ---------- the honest boundaries, loudly ----------
-        // The LITERAL c02 ProduceHW writes TWO messages ("Hello", then "World") down one channel:
-        // beyond the one-in-flight-element model, so it skips loudly with the channel named —
-        // refused, never mis-proved.
-        [group: 'P246 Kerridge gallery', name: 'the literal two-write ProduceHW exceeds the model (loud)', expect: 'single in-flight element',
+        // ---------- the literal ProduceHW: two messages, FIFO-true (Phase 247) ----------
+        // The LITERAL c02 ProduceHW writes TWO messages ("Hello", then "World") down one channel and
+        // ConsumeHW reads both. Phase 246 could only refuse it (one in-flight element); the bounded
+        // FIFO of Phase 247 proves the exchange end to end, in order.
+        [group: 'P246 Kerridge gallery', name: 'the literal two-write ProduceHW / ConsumeHW proves in order', ok: true,
          src: tc("""class C {
+                        @Ensures({ result == 'Hello World' })
                         static String produceHW() {
                             groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(2)
                             async { connect.send('Hello'); connect.send('World'); connect.close() }
-                            return connect.first()
+                            String first = connect.first()
+                            String second = connect.first()
+                            return first + ' ' + second
                         }
                     }""")],
+        [group: 'P246 Kerridge gallery', name: 'ConsumeHW read in the wrong order is refuted', expect: 'Cannot prove postcondition',
+         src: tc("""class C {
+                        @Ensures({ result == 'Hello World' })
+                        static String produceHW() {
+                            groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(2)
+                            async { connect.send('Hello'); connect.send('World'); connect.close() }
+                            String first = connect.first()
+                            String second = connect.first()
+                            return second + ' ' + first
+                        }
+                    }""")],
+
+        // ---------- the honest boundary, loudly ----------
         // GNumbers is an infinite generator loop — the streaming frontier. The value claim skips
         // loudly (loop traffic never half-rewrites); certifying streaming networks is the ladder's
         // recorded next rung, not a claim made here.

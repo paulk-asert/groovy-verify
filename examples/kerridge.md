@@ -37,7 +37,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 
 | Kerridge / JCSP | groovy.concurrent | What the checker does with it |
 | --- | --- | --- |
-| `Channel.one2one()` | `AsyncChannel.create(n)` | one live process per end, checked (Phase 241) |
+| `Channel.one2one()` | `AsyncChannel.create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
 | a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked (Phase 240) |
 | typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives (Phase 242) |
 | the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
@@ -57,6 +57,22 @@ static String helloWorld() {
     groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(1)
     async { connect.send('Hello'); connect.close() }
     return connect.first()
+}
+```
+
+The *literal* `ProduceHW` / `ConsumeHW` pair — two messages, `"Hello"` then `"World"`, down one channel — was
+the gallery's first named boundary; the bounded FIFO of Phase 247 proves it end to end, **in order** (read
+them back the other way round and the claim is refuted with a counterexample):
+
+<!-- doclint:case p246-kerridge-gallery/the-literal-two-write-producehw-consumehw-proves-in-order -->
+```groovy
+@Ensures({ result == 'Hello World' })
+static String produceHW() {
+    groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(2)
+    async { connect.send('Hello'); connect.send('World'); connect.close() }
+    String first = connect.first()
+    String second = connect.first()
+    return first + ' ' + second
 }
 ```
 
@@ -101,17 +117,19 @@ static int deadlockExercise() {
 > which waits for the first.
 
 The **missing poison pill** — a consumer draining a stream nobody ends — errors as *"the iteration over
-'stream' can never finish — no close()"*. And **two producers on one one2one channel** — the discipline
-JCSP polices at runtime — is a compile-time "Channel linearity violation": the element order is a race.
+'stream' can never finish — no close()"*. **Two producers on one one2one channel** — the discipline
+JCSP polices at runtime — is a compile-time "Channel linearity violation": the element order is a race. And
+**reading more than was written** — a consumer that takes a second message from a producer that sent one —
+is *"the 2nd receive on 'src' can never be satisfied — only 1 send"* (Phase 247): the process would block
+forever, and the FIFO pairing knows it.
 
-## The honest boundaries, loudly
+## The honest boundary, loudly
 
-Two ports are *deliberately* out of reach, and say so. The **literal c02 `ProduceHW`** writes two messages
-(`"Hello"`, then `"World"`) down one channel — beyond the checker's one-in-flight-element model, so it
-skips loudly with the channel named rather than proving anything FIFO-false. And **GNumbers** — the
-infinite generator behind every pipeline in the book — is *streaming*: loop traffic refuses the scalar
-model outright, so its value claims skip. That frontier is precisely the ladder's recorded next rung
-(session-typed channel protocols, symbolic send/receive counts carried by loop invariants) — which makes
+One port stays *deliberately* out of reach, and says so. **GNumbers** — the infinite generator behind every
+pipeline in the book — is *streaming*: the checker's channel model is a **bounded FIFO** whose element
+count is static (Phase 247 — every send unconditional, every receive one-shot), so loop traffic refuses the
+model outright and its value claims skip loudly. That frontier is precisely the ladder's recorded next rung
+(symbolic send/receive counts carried by loop invariants; session-typed channel protocols) — which makes
 "pick a streaming example and see what certification takes" a research conversation, not a demo: the same
 guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
 

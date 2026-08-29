@@ -547,6 +547,61 @@ calls in drain shapes carry no spurious deref obligations, while a channel *para
 one-shot network every blocking operation — read, iteration, join — provably completes**, with per-task
 loop termination (`@Decreases`) and the scheduler itself remaining rungs 2/3.
 
+### Bounded FIFO traffic — the k-th send is the k-th receive (Phase 247)
+
+The ladder's first rung *past* the one-shot fragment. Phases 119–246 carried **one in-flight element** per
+channel and refused everything else; the Kerridge gallery's literal two-message `ProduceHW` was its named
+boundary. Phase 247 widens the channel model to a **bounded FIFO**: the *k*-th send on a channel declares
+its *k*-th element, the *k*-th receive on a stream reads it, a `map {}` stage transforms whichever element
+flows through, and every broadcast subscriber has its own cursor over the same sequence. The pairing is
+*exact* — FIFO delivery is the channel's contract — whenever one process owns each end and every
+operation is one-shot, which is precisely what the guard admits. Multi-message exchanges now prove
+FIFO-**true** values (and last-write-wins is refuted, with a counterexample):
+
+<!-- doclint:case p247-bounded-fifo/two-receives-read-the-two-elements-in-order -->
+```groovy
+@Ensures({ result == 10 * x + y })
+static int twoReceives(int x, int y) {
+    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+    async { src.send(x); src.send(y); src.close() }
+    int a = src.first()
+    int b = src.first()
+    return 10 * a + b
+}
+```
+
+Drains yield the sequence itself — the "drained values" boundary Phase 245 recorded. `toList()` and
+`collect {}` become the element list; `for (v in ch)` **unrolls** over the known sequence, the body copied
+once per element with its locals renamed apart — so an accumulating drain proves its sum with no loop
+invariant at all (exact for a closed, bounded stream; the drain's *blocking* until `close()` is still
+certified separately, by Phase 245 on the original body):
+
+<!-- doclint:case p247-bounded-fifo/an-accumulating-for-in-drain-proves-its-sum -->
+```groovy
+@Ensures({ result == x + y + z })
+static int total(int x, int y, int z) {
+    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+    async { src.send(x); src.send(y); src.send(z); src.close() }
+    int sum = 0
+    for (v in src) {
+        int d = v
+        sum = sum + d
+    }
+    return sum
+}
+```
+
+The wait-for graph pairs the same way: the *j*-th receive on a stream waits for the *j*-th send on its
+root, so a receive past the last send is no longer "beyond the model" but a named deadlock — *"the 2nd
+receive on 'src' can never be satisfied — only 1 send on 'src' anywhere in the method"* — and a two-round
+request–reply (two requests queued, the server answering each in turn) is certified deadlock-free *and*
+proves both replies. What stays outside is still loud, now with the reason: a **conditional** send or
+receive (inside an `if` / loop / catch / non-async closure), an end used by **two processes**, **two
+consumer families** on one channel (direct receives *and* a derived stage), a drain through a
+count-changing stage (`filter` / `split` / `merge` / `tap`), or an `each {}` drain (an accumulating `each`
+carries no invariant — use `for (v in ch)` or `toList()`). The counts are *static*: a producer **loop** is
+still the streaming frontier.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

@@ -11246,6 +11246,63 @@ README/tour gallery bullets. Suite, docLint, check all green.
 
 ---
 
+## Phase 247 — bounded FIFO traffic: the k-th send is the k-th receive  *(shipped — slice 7 of the SEQ/PAR ladder; the first rung past the one-shot fragment)*
+
+Prompted by the Kerridge conversation (2026-08-29): he read the gallery's "honest boundaries" and asked
+for the frontier pushed. The first boundary — the literal two-message `ProduceHW` — fell to a model
+widening, not new theory. Since Phase 119 a channel was ONE write-once scalar, and Phase 241's guard
+refused anything beyond it (a second send would have proved last-write-wins where the runtime is
+FIFO-first). The channel is now a **bounded FIFO**: the *k*-th send on a channel declares its *k*-th
+element (`src.send(v)` → `def src$k = v`), the *k*-th receive on a stream (`first()` / an awaited
+`receive()`) reads it, `map {}` beta-reduces over whichever element flows through, and a broadcast
+subscriber keeps its own cursor over the shared sequence (`streamOf` — the nearest `subscribe()` var,
+else the root). FIFO pairing is EXACT when one process owns each end and every op is one-shot — which is
+what the widened guard admits — so the flattened program order is the FIFO order and every generated VC
+stays in the sequential fragment (the ladder's founding conclusion holds: no new solver theory).
+
+The guard is now a verdict map (`channelModelVerdicts`: channel → reason), shared by `desugarChannels`
+(refuse the rewrite) and `checkChannelLinearity` (report it, anchored at the channel's DECLARATION —
+STC's per-position error dedup would otherwise swallow the Phase 243 network skip anchored at the same
+conditional op). Beyond the model, each named: an op that is not one-shot (inside an if / loop / catch /
+switch / non-async closure — `async {}` arms are `StaticMethodCallExpression`s post-STC, the first-run
+trip), sends or receives from more than one process, more than one consumer family (direct receives
+and/or derived stages), a drain through a count-changing stage (`filter`/`split`/`merge`/`tap` — only
+`map`/`subscribe` are element-exact), an `each {}` drain, an inline-pipeline `for`-in, or a drain-loop
+body outside the unrolling fragment.
+
+**Drained values** land (the boundary Phase 245 recorded): `toList()` / `collect {}` become the element
+list (`ListExpression`, each element through its stages), and `for (v in ch)` **unrolls** over the known
+sequence — the body deep-copied per element (`copyRenamed`: blocks / expressions / returns / if-else),
+the loop var and the body's own locals renamed apart (`v$i`, `d$i`), then re-run through the channel
+rewrite. Exact for a closed bounded stream; the drain's blocking-until-close is still certified by
+Phase 245 on the ORIGINAL body (the structural walk must keep seeing the iteration — unrolling before it
+would turn the forgotten-close hang into k satisfiable reads). Element names take the channel's
+registered element type (`registerType`, riding Phase 246's non-Int shadow), so String channels prove.
+
+The wait-for graph pairs the same way: `sendsByRoot` is the FIFO-ordered send list per root (uses are
+recorded in program order; a race-free network's receives on one stream are sequential), the *j*-th
+receive on a stream depends on the *j*-th send, and a receive past the last send is a NAMED deadlock —
+"the 2nd receive on 'src' (line N) can never be satisfied — only 1 send on 'src' anywhere in the method"
+(`ordinalWord`) — where Phase 241 could only say "beyond the model".
+
+Cases (G311, new group, 15): six proofs (two sends FIFO-first; two receives in order; through a map
+stage; per-subscriber broadcast cursors; the two-round request–reply certified AND proved; `toList()` is
+the sent sequence), `collect {}`, the accumulating `for`-in drain (sum proves, no invariant) and its
+map-stage twin, two refutations (last-write-wins; a wrong drained sum), the over-receive deadlock, and
+three loud skips (conditional send; senders split across processes; a `filter` drain). Upgraded: G305's
+two model-skip pins are now decided (last-write-wins REFUTED; the second receive a NAMED deadlock);
+G310's `ProduceHW` proves `'Hello World'` in order and the wrong order refutes. Harness: `./gradlew
+verify -Pcases=<substring>` runs a subset (the JUnit `-Dverify.only` filter, now on the console runner
+too). Docs: the Phase 247 subsection in `examples/concurrency.md` (two linked cases), the CAPABILITIES
+row, the README ladder + gallery bullets, `examples/kerridge.md` (ProduceHW moves from boundary to
+proof; the over-receive joins the error zoo; the boundary section is now GNumbers alone). Honest
+boundaries: counts are STATIC — a producer loop is still the streaming frontier (next rung); `receive()`
+outside an `await` and `merge`/`filter` values stay raw (skip, never a wrong count); the flattened
+source order must put a stream's sends before its reads for the value to bind (a consumer arm textually
+ahead of its producer reads an unbound element — unconstrained, refute-only, as before).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

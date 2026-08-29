@@ -2299,7 +2299,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // to `f(ch)`, and receiving one element (`ch.first()`) is a read of `ch`. The pipeline collapses to
             // function composition (the combiner trick); FIFO ordering is the structural half we assume.
             // No-op unless the method actually builds a channel pipeline.
-            Statement deChan = desugarChannels(body, currentChannelBounds)
+            Statement deChan = desugarChannels(body, currentChannelBounds, currentScalarTypes)
             if (!deChan.is(body)) {
                 node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deChan)
                 body = deChan
@@ -4172,27 +4172,70 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     // ── Phase 119 — async-channel pipeline desugaring ───────────────────────────────────────────
-    /** Rewrite an `AsyncChannel` pipeline into the composed per-element transform; returns the body unchanged
-     *  if it builds no channel. A source channel becomes a write-once scalar (`src.send(x)` is `src = x`); a
-     *  `map { f }` stage is the pure transform `f` applied to the upstream value; receiving one element
-     *  (`first()`) is a read. The pipeline collapses to function composition — FIFO ordering (the i-th value
-     *  received is the i-th sent) is the structural half we assume. Pipeline-derived vars are resolved lazily
-     *  at the receive site, so a producer in a trailing `async {}` still binds the right (post-send) value. */
-    private static Statement desugarChannels(Statement body, Map<String, List<long[]>> bounds) {
+    /** Rewrite an `AsyncChannel` network into plain single-assignment code; returns the body unchanged
+     *  if it builds no channel or exceeds the model (the guard's verdicts are reported loudly by
+     *  {@link #checkChannelLinearity}). Phase 247 — the channel is a BOUNDED FIFO: the k-th send on
+     *  a channel declares its k-th element (`src.send(v)` is `def src$k = v`), the k-th receive on a
+     *  stream (`first()` / awaited `receive()`) reads it, a `map { f }` stage is the pure transform `f`
+     *  applied to whichever element flows through it, and a drain (`toList()` / `collect {}` /
+     *  `for (v in ch)`) unrolls over the whole known sequence. FIFO delivery (the i-th value received
+     *  is the i-th sent) is exact when one process owns each end and every op is unconditional —
+     *  precisely what the guard admits. Pipeline-derived vars resolve lazily at the receive site. */
+    private static Statement desugarChannels(Statement body, Map<String, List<long[]>> bounds,
+                                             Map<String, ClassNode> scalarTypes) {
         if (!(body instanceof BlockStatement)) return body
         Set<String> ch = new HashSet<String>()
         collectChannelVars((BlockStatement) body, ch)
         if (ch.isEmpty()) return body
-        // Phase 241 — the one-in-flight-element guard: the scalar rewrite carries ONE element per
-        // channel (a send is `ch = v`, a receive/stage is a read), so a second send would model
-        // last-write-wins where the runtime is FIFO-first, and a second consumer would model
-        // duplicate delivery where the runtime distributes elements. Refuse the rewrite (the body
-        // then skips loudly downstream); checkParInterference explains which channel and why.
-        if (!channelUseWithinModel((BlockStatement) body, ch)) return body
+        // Phase 241/247 — the bounded-FIFO guard: refuse the rewrite for any body with a channel
+        // beyond the model (the body then skips loudly downstream; checkChannelLinearity names the
+        // channel and the reason), so nothing proves an order-dependent or count-dependent value.
+        if (!channelModelVerdicts((BlockStatement) body, ch).isEmpty()) return body
+        ChanRewrite rw = new ChanRewrite()
+        rw.ch = ch; rw.bounds = bounds; rw.scalarTypes = scalarTypes
+        collectChannelParents((BlockStatement) body, ch, rw.parent, rw.subscribers)
+        countChannelSends((BlockStatement) body, ch, rw.sendTotals)
         List<Statement> out = new ArrayList<Statement>()
-        Map<String, Expression> defs = new HashMap<String, Expression>()
-        rewriteChStatements(((BlockStatement) body).statements, ch, defs, out, bounds)
+        rewriteChStatements(((BlockStatement) body).statements, rw, out)
         new BlockStatement(out, ((BlockStatement) body).variableScope)
+    }
+
+    /** Phase 247 — the state of one channel rewrite: the var classes, and the per-channel element
+     *  counters that make the FIFO pairing explicit (send k ↔ receive k). */
+    private static class ChanRewrite {
+        Set<String> ch
+        Map<String, List<long[]>> bounds
+        Map<String, ClassNode> scalarTypes
+        final Map<String, Expression> defs = new HashMap<String, Expression>()   // derived var → its definition
+        final Map<String, String> parent = new HashMap<String, String>()         // derived/subscriber var → source var
+        final Set<String> subscribers = new HashSet<String>()                    // vars declared from subscribe()
+        final Map<String, Integer> sendTotals = new HashMap<String, Integer>()   // channel var → number of sends
+        final Map<String, Integer> sendIdx = new HashMap<String, Integer>()      // channel var → sends rewritten so far
+        final Map<String, Integer> recvIdx = new HashMap<String, Integer>()      // stream var → receives rewritten so far
+        String subRoot, subName                                                  // active element substitution
+        /** The created channel a var derives from ({@code out → src}, {@code branch1 → b}). */
+        String rootOf(String v) { String r = v; int g = 0; while (parent.containsKey(r) && g++ < 100) r = parent.get(r); r }
+        /** The stream a receive on {@code v} consumes: the nearest subscriber var (each subscriber
+         *  sees every broadcast element from its own cursor), else the root. */
+        String streamOf(String v) {
+            String r = v; int g = 0
+            while (!subscribers.contains(r) && parent.containsKey(r) && g++ < 100) r = parent.get(r)
+            r
+        }
+        int next(Map<String, Integer> m, String k) { Integer n = m.get(k); int v = (n == null ? 0 : n) + 1; m.put(k, v); v }
+        int total(String root) { Integer n = sendTotals.get(root); n == null ? 0 : n }
+        String element(String root, int k) { root + '$' + k }
+        /** Run {@code body} with the root's occurrences standing for the given element. */
+        Expression withElement(String root, String name, Closure<Expression> body) {
+            String sr = subRoot, sn = subName
+            subRoot = root; subName = name
+            try { return body.call() } finally { subRoot = sr; subName = sn }
+        }
+        /** An element name takes its channel's registered element type (Phase 246: non-Int scalars). */
+        void registerType(String root, String name) {
+            ClassNode t = scalarTypes.get(root)
+            if (t != null && !scalarTypes.containsKey(name)) scalarTypes.put(name, t)
+        }
     }
 
     /** The base channel var an end-use targets, walking pipeline ops down to the variable:
@@ -4205,58 +4248,206 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         (e instanceof VariableExpression && ch.contains(((VariableExpression) e).name)) ? ((VariableExpression) e).name : null
     }
 
-    /** Phase 241 — true when every channel stays within the one-element model: at most one `send`
-     *  and at most one consumer (a `first()`/`receive()` read, or one derived pipeline stage /
-     *  subscriber counts against its OWN channel, the derivation against the source). Broadcast
-     *  vars are the exception on the consumer side: every subscriber sees every element, so
-     *  `subscribe()` calls are not counted (their per-subscriber channels are counted normally). */
-    private static boolean channelUseWithinModel(BlockStatement body, Set<String> ch) {
-        Map<String, Integer> sends = new HashMap<String, Integer>()
-        Map<String, Integer> consumers = new HashMap<String, Integer>()
-        boolean[] ok = [true]
+    /** The pipeline ops applied between {@code recv} and its base var, bottom-up. */
+    private static List<String> chanChainOps(Expression recv) {
+        List<String> ops = new ArrayList<String>()
+        Expression e = stripCasts(recv)
+        while (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in CHANNEL_PIPE_OPS) {
+            ops.add(0, ((MethodCallExpression) e).methodAsString)
+            e = stripCasts(((MethodCallExpression) e).objectExpression)
+        }
+        ops
+    }
+
+    /** Phase 247 — derivation edges: {@code def out = src.map{..}} records {@code out → src}; a var whose
+     *  chain includes {@code subscribe()} is a subscriber (its own receive cursor). */
+    private static void collectChannelParents(BlockStatement body, Set<String> ch, Map<String, String> parent,
+                                              Set<String> subscribers) {
         body.visit(new CodeVisitorSupport() {
-            private int loopDepth
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && isChannelExpr(de.rightExpression, ch) &&
+                    !(de.rightExpression instanceof VariableExpression)) {
+                    String name = ((VariableExpression) de.leftExpression).name
+                    String base = chanRoot(de.rightExpression, ch)
+                    if (base != null) parent.put(name, base)
+                    if (chanChainOps(de.rightExpression).contains('subscribe')) subscribers.add(name)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    /** Phase 247 — sends per channel var (the guard has already required every send unconditional). */
+    private static void countChannelSends(BlockStatement body, Set<String> ch, Map<String, Integer> totals) {
+        body.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression m) {
-                // Count only at the DIRECT channel-var receiver — a pipeline chain consumes its
-                // base exactly once (the bottom-most op has the var receiver; a read off the top
-                // of a chain is that same consumption, not a second one).
+                Expression recv = stripCasts(m.objectExpression)
+                if (m.methodAsString == 'send' && recv instanceof VariableExpression &&
+                    ch.contains(((VariableExpression) recv).name)) {
+                    String name = ((VariableExpression) recv).name
+                    Integer n = totals.get(name)
+                    totals.put(name, n == null ? 1 : n + 1)
+                }
+                super.visitMethodCallExpression(m)
+            }
+        })
+    }
+
+    /** The stage kinds through which element identity (and count) is exact: a map is a per-element
+     *  transform, a subscribe is the identity. filter/split/merge/tap change the count or interleave. */
+    private static final List<String> CHANNEL_EXACT_OPS = ['map', 'subscribe'].asImmutable()
+
+    /**
+     * Phase 247 — the bounded-FIFO model's verdicts: channel var → the reason it is beyond the model
+     * (empty when every channel is in). In the model a channel carries a statically-known sequence:
+     * every send, receive, drain and derivation is UNCONDITIONAL (not inside an if / loop / catch /
+     * switch / non-async closure), all sends come from ONE process and all receives from ONE process
+     * (the flattened program order is then the FIFO order), a channel has at most ONE consumer family
+     * (direct receives, or one derived stage), and a drain runs over an exact chain (map/subscribe
+     * only) with an unrollable loop body. Everything else refuses the value rewrite — the runtime
+     * would be FIFO-first / count-dependent where the rewrite would prove last-write-wins.
+     * (Phase 241 introduced the guard as one-in-flight; Phase 247 widened it to the bounded FIFO.)
+     */
+    private static Map<String, String> channelModelVerdicts(BlockStatement body, Set<String> ch) {
+        final Map<String, String> verdict = new LinkedHashMap<String, String>()
+        final Map<String, Set<Object>> sendProcs = new HashMap<String, Set<Object>>()
+        final Map<String, Set<Object>> recvProcs = new HashMap<String, Set<Object>>()
+        final Map<String, Set<String>> families = new HashMap<String, Set<String>>()
+        final Map<String, String> parent = new HashMap<String, String>()
+        final Set<String> subscribers = new HashSet<String>()
+        final Map<String, Boolean> exactVar = new HashMap<String, Boolean>()   // derived var → chain exact so far
+        collectChannelParents(body, ch, parent, subscribers)
+        body.visit(new CodeVisitorSupport() {
+            private int condDepth
+            private Object proc = 'main'
+            private void flag(String name, String reason) { if (!verdict.containsKey(name)) verdict.put(name, reason) }
+            private void owner(String name, Map<String, Set<Object>> procs, String end) {
+                Set<Object> s = procs.get(name)
+                if (s == null) { s = new HashSet<Object>(); procs.put(name, s) }
+                s.add(proc)
+                if (s.size() > 1) flag(name, "has ${end}s from more than one process")
+            }
+            private void family(String name, String key) {
+                Set<String> f = families.get(name)
+                if (f == null) { f = new HashSet<String>(); families.put(name, f) }
+                f.add(key)
+                if (f.size() > 1) flag(name, 'has more than one consumer (direct receives and/or pipeline stages)')
+            }
+            private boolean exactChain(String name) {
+                String r = name; int g = 0
+                while (parent.containsKey(r) && g++ < 100) {
+                    if (exactVar.get(r) == Boolean.FALSE) return false
+                    r = parent.get(r)
+                }
+                true
+            }
+            private void visitArm(ClosureExpression arm) {   // an async arm: its own process, one-shot
+                Object saved = proc
+                proc = arm
+                try { arm.code?.visit(this) } finally { proc = saved }
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && parent.containsKey(((VariableExpression) de.leftExpression).name)) {
+                    List<String> ops = chanChainOps(de.rightExpression)
+                    boolean exact = true
+                    for (String op : ops) if (!(op in CHANNEL_EXACT_OPS)) exact = false
+                    exactVar.put(((VariableExpression) de.leftExpression).name, exact)
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) {
+                ClosureExpression arm = asyncClosure(m)
+                if (arm != null) { visitArm(arm); return }
+                super.visitStaticMethodCallExpression(m)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                ClosureExpression arm = asyncClosure(m)
+                if (arm != null) { visitArm(arm); return }
                 Expression recv = stripCasts(m.objectExpression)
                 if (recv instanceof VariableExpression && ch.contains(((VariableExpression) recv).name)) {
                     String name = ((VariableExpression) recv).name
-                    // Phase 245 — an end-use inside a LOOP is unbounded traffic, and a drain op
-                    // consumes the whole stream: both are beyond the one-element scalar rewrite.
-                    if (loopDepth > 0 && m.methodAsString in ['send', 'first', 'receive']) ok[0] = false
-                    if (m.methodAsString in CHANNEL_DRAIN_OPS) ok[0] = false
-                    if (m.methodAsString == 'send') bump(sends, name)
-                    if (m.methodAsString == 'first' || m.methodAsString == 'receive') bump(consumers, name)
-                    // A derivation consumes its source: def out = src.map{..} → src has its consumer.
-                    // (`subscribe` is exempt — broadcast delivers every element to every subscriber.)
-                    if (m.methodAsString in CHANNEL_PIPE_OPS && m.methodAsString != 'subscribe') bump(consumers, name)
+                    String mm = m.methodAsString
+                    boolean isSend = mm == 'send'
+                    boolean isRead = mm == 'first' || mm == 'receive'
+                    boolean isDrain = mm in CHANNEL_DRAIN_OPS
+                    boolean isDerive = mm in CHANNEL_PIPE_OPS && mm != 'subscribe'
+                    if (isSend || isRead || isDrain || isDerive) {
+                        if (condDepth > 0) {
+                            flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${m.lineNumber})")
+                        }
+                        if (isSend) owner(name, sendProcs, 'send')
+                        if (isRead || isDrain) { owner(name, recvProcs, 'receive'); family(name, 'reads') }
+                        if (isDerive) family(name, "stage@${m.lineNumber}:${m.columnNumber}")
+                        if (isDrain && (mm == 'each' || !exactChain(name))) {
+                            flag(name, mm == 'each' ? "is drained by each {} (an accumulating each carries no invariant — use for (v in ch) or toList())" :
+                                 'is drained through a filter / split / merge / tap stage (element count unknown)')
+                        }
+                    }
                 }
                 super.visitMethodCallExpression(m)
             }
             @Override void visitForLoop(ForStatement st) {
-                // Phase 245 — `for (v in ch)` drains the stream: beyond the scalar rewrite.
                 Expression coll = stripCasts(st.collectionExpression)
-                if (coll instanceof VariableExpression && ch.contains(((VariableExpression) coll).name)) ok[0] = false
-                loopDepth++
-                try { super.visitForLoop(st) } finally { loopDepth-- }
+                String base = chanRoot(coll, ch)
+                if (base != null) {                       // for (v in ch) — a drain, unrolled over the sequence
+                    String name = coll instanceof VariableExpression ? base : null
+                    if (name == null) flag(base, "is iterated through an inline pipeline expression (declare the stage as a variable first)")
+                    else {
+                        if (condDepth > 0) flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${coll.lineNumber})")
+                        owner(name, recvProcs, 'receive'); family(name, 'reads')
+                        if (!exactChain(name)) flag(name, 'is drained through a filter / split / merge / tap stage (element count unknown)')
+                        if (!unrollableLoopBody(st.loopBlock)) flag(name, "is drained by a loop whose body is beyond the unrolling fragment (nested loop / try / switch / break)")
+                    }
+                } else {
+                    st.collectionExpression?.visit(this)
+                }
+                condDepth++
+                try { st.loopBlock?.visit(this) } finally { condDepth-- }
             }
             @Override void visitWhileLoop(WhileStatement st) {
-                loopDepth++
-                try { super.visitWhileLoop(st) } finally { loopDepth-- }
+                st.booleanExpression?.visit(this)
+                condDepth++
+                try { st.loopBlock?.visit(this) } finally { condDepth-- }
             }
             @Override void visitDoWhileLoop(DoWhileStatement st) {
-                loopDepth++
-                try { super.visitDoWhileLoop(st) } finally { loopDepth-- }
+                condDepth++
+                try { st.loopBlock?.visit(this) } finally { condDepth-- }
+                st.booleanExpression?.visit(this)
             }
-            private void bump(Map<String, Integer> counts, String name) {
-                Integer n = counts.get(name)
-                counts.put(name, n == null ? 1 : n + 1)
-                if (counts.get(name) > 1) ok[0] = false
+            @Override void visitIfElse(IfStatement st) {
+                st.booleanExpression?.visit(this)
+                condDepth++
+                try { st.ifBlock?.visit(this); st.elseBlock?.visit(this) } finally { condDepth-- }
+            }
+            @Override void visitTryCatchFinally(org.codehaus.groovy.ast.stmt.TryCatchStatement st) {
+                condDepth++
+                try { super.visitTryCatchFinally(st) } finally { condDepth-- }
+            }
+            @Override void visitSwitch(org.codehaus.groovy.ast.stmt.SwitchStatement st) {
+                condDepth++
+                try { super.visitSwitch(st) } finally { condDepth-- }
+            }
+            @Override void visitClosureExpression(ClosureExpression c) {      // a non-async closure's interior
+                condDepth++
+                try { super.visitClosureExpression(c) } finally { condDepth-- }
             }
         })
-        ok[0]
+        verdict
+    }
+
+    /** Phase 247 — a drain-loop body the unroller can copy: blocks, expression statements, returns and
+     *  if/else (no nested loops, try, switch, break/continue — those need the loop's own semantics). */
+    private static boolean unrollableLoopBody(Statement s) {
+        if (s == null || s instanceof EmptyStatement) return true
+        if (s instanceof BlockStatement) {
+            for (Statement st : ((BlockStatement) s).statements) if (!unrollableLoopBody(st)) return false
+            return true
+        }
+        if (s instanceof IfStatement) {
+            IfStatement i = (IfStatement) s
+            return unrollableLoopBody(i.ifBlock) && unrollableLoopBody(i.elseBlock)
+        }
+        s instanceof ExpressionStatement || s instanceof ReturnStatement
     }
 
     /** A var is a channel var if declared from `AsyncChannel.create(...)` / `BroadcastChannel.create(...)` or
@@ -4323,35 +4514,38 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
-    private static void rewriteChStatements(List<Statement> stmts, Set<String> ch, Map<String, Expression> defs,
-                                            List<Statement> out, Map<String, List<long[]>> bounds) {
+    private static void rewriteChStatements(List<Statement> stmts, ChanRewrite rw, List<Statement> out) {
+        Set<String> ch = rw.ch
         for (Statement st : stmts) {
-            if (st instanceof BlockStatement) { rewriteChStatements(((BlockStatement) st).statements, ch, defs, out, bounds); continue }
+            if (st instanceof BlockStatement) { rewriteChStatements(((BlockStatement) st).statements, rw, out); continue }
             if (st instanceof ExpressionStatement) {
                 Expression e = ((ExpressionStatement) st).expression
                 ClosureExpression cl = asyncClosure(e)                       // async { … } → flatten inline (transparent)
                 if (cl != null) {
-                    if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, ch, defs, out, bounds)
+                    if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, rw, out)
                     continue
                 }
                 if (e instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) e
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'close') continue   // close → drop
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'send' &&
-                        m.objectExpression instanceof VariableExpression) {     // send(v) → def ch = v
+                        m.objectExpression instanceof VariableExpression) {     // k-th send(v) → def ch$k = v
                         List<Expression> a = (m.arguments instanceof ArgumentListExpression) ?
                             ((ArgumentListExpression) m.arguments).expressions : Collections.<Expression>emptyList()
                         if (a.size() == 1) {
-                            Expression val = rewriteChExpr(a.get(0), ch, defs)
+                            String name = ((VariableExpression) m.objectExpression).name
+                            Expression val = rewriteChExpr(a.get(0), rw)
                             // Phase 242 — send-checked: a constrained channel's send carries its
                             // contract assert (φ over the element), discharged with a counterexample.
-                            List<long[]> bs = bounds.get(((VariableExpression) m.objectExpression).name)
+                            List<long[]> bs = rw.bounds.get(name)
                             if (bs != null && !bs.isEmpty()) out.add(boundsAssert(val, bs, m))
-                            // The send DECLARES the scalar (the create-decl below is dropped): the
+                            // The send DECLARES its element (the create-decl below is dropped): the
                             // rewritten body stays single-assignment, so the value-flow pass — and
                             // with it the assert discharge — keeps the whole pipeline in fragment.
-                            // (The one-element guard admits at most one send per channel.)
-                            VariableExpression lhs = new VariableExpression(((VariableExpression) m.objectExpression).name)
+                            // Phase 247 — the k-th send declares element k; the k-th receive reads it.
+                            String elem = rw.element(name, rw.next(rw.sendIdx, name))
+                            rw.registerType(name, elem)
+                            VariableExpression lhs = new VariableExpression(elem)
                             DeclarationExpression decl = new DeclarationExpression(
                                 lhs, Token.newSymbol(Types.ASSIGN, m.lineNumber, m.columnNumber), val)
                             decl.setSourcePosition(m)
@@ -4365,36 +4559,140 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     String name = ((VariableExpression) de.leftExpression).name
                     if (isChannelCreate(de.rightExpression) || isBroadcastCreate(de.rightExpression)) {
                         // def src = AsyncChannel.create(n) / def b = BroadcastChannel.create() → dropped:
-                        // the send declares the scalar (above). A channel that is never sent to has no
+                        // the sends declare the elements (above). A channel that is never sent to has no
                         // binding at all — a read of it stays unconstrained (a never-sent channel BLOCKS
                         // at runtime; the old `def src = 0` placeholder modelled it as the value 0).
                         continue
                     }
                     if (isChannelExpr(de.rightExpression, ch)) {           // def out = src.map{..} → record pipeline, defer
-                        defs.put(name, de.rightExpression)
+                        rw.defs.put(name, de.rightExpression)
                         continue
                     }
                 }
-                out.add(new ExpressionStatement(rewriteChExpr(e, ch, defs)))
+                out.add(new ExpressionStatement(rewriteChExpr(e, rw)))
                 continue
             }
             if (st instanceof ReturnStatement) {
                 Expression r = ((ReturnStatement) st).expression
-                out.add(new ReturnStatement(r == null ? r : rewriteChExpr(r, ch, defs)))
+                out.add(new ReturnStatement(r == null ? r : rewriteChExpr(r, rw)))
+                continue
+            }
+            if (st instanceof ForStatement && isChannelExpr(stripCasts(((ForStatement) st).collectionExpression), ch)) {
+                unrollChannelDrain((ForStatement) st, rw, out)                 // Phase 247 — for (v in ch) over the sequence
                 continue
             }
             out.add(st)
         }
     }
 
+    /** Phase 247 — `for (v in ch) { body }` over a channel with k known sends becomes k copies of the
+     *  body, the i-th with `v` bound to the i-th element (through any map stages) and the body's own
+     *  locals renamed apart. Exact for the drain of a closed bounded stream; the drain's blocking
+     *  (until close) is certified separately by the Phase 245 wait-for analysis on the original body. */
+    private static void unrollChannelDrain(ForStatement st, ChanRewrite rw, List<Statement> out) {
+        Expression coll = stripCasts(st.collectionExpression)
+        String base = chanBaseVar(coll, rw)
+        if (base == null) { out.add(st); return }
+        String root = rw.rootOf(base)
+        int n = rw.total(root)
+        Parameter loopVar = st.variable
+        Set<String> bodyLocals = new HashSet<String>()
+        collectBodyLocalNames(st.loopBlock instanceof BlockStatement ? (BlockStatement) st.loopBlock :
+            new BlockStatement(Collections.singletonList(st.loopBlock), null), bodyLocals)
+        for (int i = 1; i <= n; i++) {
+            Expression elem = rw.withElement(root, rw.element(root, i)) { rewriteChExpr(coll, rw) }
+            String vi = loopVar.name + '$' + i
+            if (coll instanceof VariableExpression) rw.registerType(root, vi)
+            else if (!ClassHelper.isDynamicTyped(loopVar.type) && isNonIntScalar(loopVar.type) && !rw.scalarTypes.containsKey(vi)) {
+                rw.scalarTypes.put(vi, loopVar.type)
+            }
+            VariableExpression lhs = new VariableExpression(vi, loopVar.type)
+            DeclarationExpression decl = new DeclarationExpression(lhs, Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), elem)
+            decl.setSourcePosition(st)
+            out.add(new ExpressionStatement(decl))
+            Map<String, String> ren = new HashMap<String, String>()
+            ren.put(loopVar.name, vi)
+            for (String l : bodyLocals) ren.put(l, l + '$' + i)
+            Statement copy = copyRenamed(st.loopBlock, ren)
+            if (copy == null) { out.add(st); return }    // guarded by unrollableLoopBody; defensive
+            rewriteChStatements(copy instanceof BlockStatement ? ((BlockStatement) copy).statements : Collections.singletonList(copy), rw, out)
+        }
+    }
+
+    /** A deep copy of a loop body with variable names substituted (declarations included); null for a
+     *  statement kind outside the unrolling fragment. Source positions are kept for diagnostics. */
+    private static Statement copyRenamed(Statement s, Map<String, String> ren) {
+        if (s == null) return null
+        ExpressionTransformer sub = new ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                if (expr instanceof VariableExpression && ren.containsKey(((VariableExpression) expr).name)) {
+                    VariableExpression ve = (VariableExpression) expr
+                    VariableExpression r = new VariableExpression(ren.get(ve.name), ve.originType)
+                    r.setSourcePosition(ve)
+                    return r
+                }
+                if (expr == null) return null
+                Expression t = expr.transformExpression(this)
+                if (!t.is(expr)) t.setSourcePosition(expr)
+                t
+            }
+        }
+        Statement out
+        if (s instanceof EmptyStatement) return s
+        if (s instanceof BlockStatement) {
+            List<Statement> o = new ArrayList<Statement>()
+            for (Statement st : ((BlockStatement) s).statements) {
+                Statement c = copyRenamed(st, ren)
+                if (c == null) return null
+                o.add(c)
+            }
+            out = new BlockStatement(o, ((BlockStatement) s).variableScope)
+        } else if (s instanceof ExpressionStatement) {
+            out = new ExpressionStatement(sub.transform(((ExpressionStatement) s).expression))
+        } else if (s instanceof ReturnStatement) {
+            Expression r = ((ReturnStatement) s).expression
+            out = new ReturnStatement(r == null ? null : sub.transform(r))
+        } else if (s instanceof IfStatement) {
+            IfStatement i = (IfStatement) s
+            Statement a = copyRenamed(i.ifBlock, ren)
+            Statement b = i.elseBlock == null ? null : copyRenamed(i.elseBlock, ren)
+            if (a == null || (i.elseBlock != null && b == null)) return null
+            out = new IfStatement(new BooleanExpression(sub.transform(i.booleanExpression.expression)), a, b == null ? EmptyStatement.INSTANCE : b)
+        } else {
+            return null
+        }
+        out.setSourcePosition(s)
+        out
+    }
+
+    /** The channel VAR an expression's chain bottoms out at, expanding derived vars through their
+     *  recorded definitions — the direct var for {@code branch1.first()}, the derived var's own name
+     *  for a receive on it (its stream/root are resolved via the parent map). */
+    private static String chanBaseVar(Expression e, ChanRewrite rw) {
+        Expression x = stripCasts(e)
+        while (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString in CHANNEL_PIPE_OPS) {
+            x = stripCasts(((MethodCallExpression) x).objectExpression)
+        }
+        (x instanceof VariableExpression && rw.ch.contains(((VariableExpression) x).name)) ? ((VariableExpression) x).name : null
+    }
+
     /** Resolve a channel-valued expression to its scalar value: expand a pipeline-derived var to its recorded
-     *  definition, beta-reduce each `map { f }` over its upstream value, and drop `first()`/receive reads. */
-    private static Expression rewriteChExpr(Expression e, Set<String> ch, Map<String, Expression> defs) {
+     *  definition, beta-reduce each `map { f }` over its upstream value, and read receives / drains as the
+     *  indexed elements (Phase 247). */
+    private static Expression rewriteChExpr(Expression e, ChanRewrite rw) {
         if (e == null) return e
+        Set<String> ch = rw.ch
         ExpressionTransformer t = new ExpressionTransformer() {
             @Override Expression transform(Expression expr) {
-                if (expr instanceof VariableExpression && defs.containsKey(((VariableExpression) expr).name)) {
-                    return transform(defs.get(((VariableExpression) expr).name))         // expand derived var lazily
+                if (expr instanceof VariableExpression) {
+                    String name = ((VariableExpression) expr).name
+                    if (rw.defs.containsKey(name)) return transform(rw.defs.get(name))   // expand derived var lazily
+                    if (rw.subRoot != null && name == rw.subRoot) {                    // the element flowing through
+                        VariableExpression ve = new VariableExpression(rw.subName)
+                        ve.setSourcePosition(expr)
+                        return ve
+                    }
+                    return expr
                 }
                 if (expr instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) expr
@@ -4405,17 +4703,80 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             if (reduced != null) return reduced
                         }
                     }
-                    if (m.methodAsString == 'first' && isChannelExpr(m.objectExpression, ch) && noArgs(m)) {
-                        return transform(m.objectExpression)                              // receive one element
+                    if ((m.methodAsString == 'first' || m.methodAsString == 'receive') &&
+                        isChannelExpr(m.objectExpression, ch) && noArgs(m)) {
+                        Expression r = receiveElement(m.objectExpression)                 // the k-th element
+                        if (r != null) return r
                     }
-                    // Phase 241 — a broadcast `subscribe()` is the identity stage for the representative
-                    // element: every subscriber's channel carries every sent element, so the subscriber's
-                    // value IS the broadcast value. (`subscribe(int)`'s capacity arg is irrelevant here.)
+                    if (m.methodAsString == 'await' && isAwaitedReceive(m.arguments)) {  // await ch.receive()
+                        Expression r = receiveElement(((MethodCallExpression) singleArg(m.arguments)).objectExpression)
+                        if (r != null) return r
+                    }
+                    // Phase 241 — a broadcast `subscribe()` is the identity stage for the element flowing
+                    // through: every subscriber's channel carries every sent element. (`subscribe(int)`'s
+                    // capacity arg is irrelevant here.)
                     if (m.methodAsString == 'subscribe' && isChannelExpr(m.objectExpression, ch)) {
                         return transform(m.objectExpression)
                     }
+                    // Phase 247 — drains over the whole known sequence.
+                    if (m.methodAsString == 'toList' && isChannelExpr(m.objectExpression, ch) && noArgs(m)) {
+                        List<Expression> elems = elementsOf(m.objectExpression)
+                        if (elems != null) { ListExpression le = new ListExpression(elems); le.setSourcePosition(m); return le }
+                    }
+                    if (m.methodAsString == 'collect' && isChannelExpr(m.objectExpression, ch)) {
+                        ClosureExpression cl = singleClosureArg(m)
+                        List<Expression> elems = cl == null ? null : elementsOf(m.objectExpression)
+                        if (elems != null) {
+                            List<Expression> mapped = new ArrayList<Expression>()
+                            for (Expression x : elems) {
+                                Expression y = betaReduce(cl, x)
+                                if (y == null) { mapped = null; break }
+                                mapped.add(y)
+                            }
+                            if (mapped != null) { ListExpression le = new ListExpression(mapped); le.setSourcePosition(m); return le }
+                        }
+                    }
+                }
+                if (expr instanceof StaticMethodCallExpression) {
+                    StaticMethodCallExpression sm = (StaticMethodCallExpression) expr
+                    if (sm.method == 'await' && isAwaitedReceive(sm.arguments)) {
+                        Expression r = receiveElement(((MethodCallExpression) singleArg(sm.arguments)).objectExpression)
+                        if (r != null) return r
+                    }
                 }
                 expr.transformExpression(this)
+            }
+            private boolean isAwaitedReceive(Expression args) {
+                Expression a = singleArg(args)
+                a instanceof MethodCallExpression && ((MethodCallExpression) a).methodAsString == 'receive' &&
+                    noArgs((MethodCallExpression) a) && isChannelExpr(((MethodCallExpression) a).objectExpression, ch)
+            }
+            private Expression singleArg(Expression args) {
+                if (!(args instanceof ArgumentListExpression)) return null
+                List<Expression> a = ((ArgumentListExpression) args).expressions
+                a.size() == 1 ? stripCasts(a.get(0)) : null
+            }
+            /** The next element of the stream this receiver consumes, run through its stages. */
+            private Expression receiveElement(Expression recv) {
+                String base = chanBaseVar(recv, rw)
+                if (base == null) return null
+                String root = rw.rootOf(base)
+                String elem = rw.element(root, rw.next(rw.recvIdx, rw.streamOf(base)))
+                rw.registerType(root, elem)
+                rw.withElement(root, elem) { transform(recv) }
+            }
+            /** Every element of the (closed, bounded) stream, each through its stages. */
+            private List<Expression> elementsOf(Expression recv) {
+                String base = chanBaseVar(recv, rw)
+                if (base == null) return null
+                String root = rw.rootOf(base)
+                List<Expression> elems = new ArrayList<Expression>()
+                for (int i = 1; i <= rw.total(root); i++) {
+                    String elem = rw.element(root, i)
+                    rw.registerType(root, elem)
+                    elems.add(rw.withElement(root, elem) { transform(recv) })
+                }
+                elems
             }
         }
         t.transform(e)
@@ -4881,7 +5242,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans, chanParent)
         ParCtx ctx = new ParCtx(chanVars)
         parWalkStatement(body, ctx)
-        int chanFindings = checkChannelLinearity(node, ctx, derivedChans, broadcastChans)
+        int chanFindings = checkChannelLinearity(node, ctx, (BlockStatement) body, derivedChans, broadcastChans)
         // Phase 243/245 — the network well-formedness check: runs unless a RACE-class finding
         // re-shaped the network's meaning (its own loud report stands). Model-limit skips only
         // refuse the VALUE rewrite — the blocking structure is still analysable (Phase 245), and
@@ -4990,6 +5351,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         u.proc == null ? "the enclosing body (line ${u.line})" : "the async task forked at line ${u.proc.line}"
     }
 
+    /** The declaration of a channel local (`def ch = AsyncChannel.create(..)` / a derived stage), or null. */
+    private static Expression chanDeclAnchor(BlockStatement body, String chan) {
+        final Expression[] found = [null]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (found[0] == null && de.leftExpression instanceof VariableExpression &&
+                    ((VariableExpression) de.leftExpression).name == chan) found[0] = de
+                super.visitDeclarationExpression(de)
+            }
+        })
+        found[0]
+    }
+
     private static Expression anchorFor(List<ChanUse> uses, String chan) {
         for (ChanUse u : uses) if (u.chan == chan) return u.anchor
         null
@@ -5005,7 +5379,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * the scalar rewrite, so it SKIPS loudly here with the channel named (and desugarChannels'
      * guard independently refuses the rewrite, so nothing downstream can prove a FIFO-false value).
      */
-    private int checkChannelLinearity(MethodNode node, ParCtx ctx,
+    private int checkChannelLinearity(MethodNode node, ParCtx ctx, BlockStatement body,
                                       Set<String> derivedChans, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
         if (uses.isEmpty()) return 0
@@ -5047,23 +5421,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     "but ${procDesc(u)} uses its send-end"), u.anchor)
             }
         }
-        // Sequential over-use of the one-element model: name the channel instead of a bare skip.
-        Map<String, Integer> sends = new HashMap<String, Integer>()
-        Map<String, Integer> consumers = new HashMap<String, Integer>()
-        for (ChanUse u : uses) {
-            if (u.method == 'send') { Integer n = sends.get(u.chan); sends.put(u.chan, n == null ? 1 : n + 1) }
-            if (u.kind == CHAN_RECV) { Integer n = consumers.get(u.chan); consumers.put(u.chan, n == null ? 1 : n + 1) }
-        }
-        for (Map.Entry<String, Integer> e : sends.entrySet()) {
-            if (e.value > 1 && !erroredChans.contains(e.key) && flagged.add(e.key + ':model')) {
-                addStaticTypeError(Reporter.formatChannelModelSkipped(node.name, e.key,
-                    "has ${e.value} sends"), anchorFor(uses, e.key))
-            }
-        }
-        for (Map.Entry<String, Integer> e : consumers.entrySet()) {
-            if (e.value > 1 && !erroredChans.contains(e.key) && flagged.add(e.key + ':model')) {
-                addStaticTypeError(Reporter.formatChannelModelSkipped(node.name, e.key,
-                    "has ${e.value} consumers (receives / pipeline stages)"), anchorFor(uses, e.key))
+        // Phase 247 — beyond the bounded-FIFO model (conditional traffic, an end shared by two
+        // processes, two consumer families, an inexact drain): name the channel and the reason
+        // instead of a bare skip. The same verdicts make desugarChannels refuse the rewrite.
+        // Anchored at the channel's DECLARATION: STC dedups errors per source position, and the
+        // Phase 243 network skip may anchor at the very same conditional op (Phase 244's finding).
+        for (Map.Entry<String, String> e : channelModelVerdicts(body, ctx.chanVars).entrySet()) {
+            if (!erroredChans.contains(e.key) && flagged.add(e.key + ':model')) {
+                Expression anchor = chanDeclAnchor(body, e.key)
+                if (anchor == null) anchor = anchorFor(uses, e.key)
+                addStaticTypeError(Reporter.formatChannelModelSkipped(node.name, e.key, e.value),
+                    anchor != null ? anchor : (ASTNode) node)
             }
         }
         // 2 = race-class findings (they re-shape the network's meaning: the structural analysis
@@ -5355,7 +5723,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<ChanUse> iterates = new ArrayList<ChanUse>()        // Phase 245 — whole-stream receives (block until close)
         List<ChanUse> sends = new ArrayList<ChanUse>()
         List<ChanUse> closes = new ArrayList<ChanUse>()
-        Map<String, ChanUse> sendByRoot = new HashMap<String, ChanUse>()
+        Map<String, List<ChanUse>> sendsByRoot = new HashMap<String, List<ChanUse>>()   // Phase 247 — in FIFO order
         Map<String, ChanUse> closeByRoot = new HashMap<String, ChanUse>()
         ChanUse condUse = null
         for (ChanUse u : uses) {
@@ -5367,7 +5735,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean isIter = isIterateUse(u)
             if (!isSend && !isClose && !isRead && !isIter) continue
             if (u.conditional || (u.proc != null && u.proc.conditional)) { condUse = u; continue }
-            if (isSend) { sends.add(u); if (!sendByRoot.containsKey(root)) sendByRoot.put(root, u) }
+            if (isSend) {
+                sends.add(u)
+                List<ChanUse> l = sendsByRoot.get(root)
+                if (l == null) { l = new ArrayList<ChanUse>(); sendsByRoot.put(root, l) }
+                l.add(u)
+            }
             else if (isClose) { closes.add(u); if (!closeByRoot.containsKey(root)) closeByRoot.put(root, u) }
             else if (isIter) iterates.add(u)
             else blockingReads.add(u)
@@ -5384,15 +5757,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         // A read whose root channel is never sent to can never be satisfied; an iteration over a
         // root that is never CLOSED can never finish (Phase 245 — the forgotten-close hang).
+        // Phase 247 — FIFO pairing: the j-th receive on a stream is satisfied by the j-th send on its
+        // root (uses are recorded in program order, and a race-free network's receives on one stream
+        // are sequential), so a receive past the last send can never be satisfied either.
+        Map<String, Integer> readOrdinal = new HashMap<String, Integer>()
+        Map<ChanUse, ChanUse> pairedSend = new IdentityHashMap<ChanUse, ChanUse>()
         for (ChanUse r : blockingReads) {
             String root = chanBaseOf(r.chan, chanParent)
-            if (!sendByRoot.containsKey(root)) {
+            List<ChanUse> ss = sendsByRoot.get(root)
+            Integer seen = readOrdinal.get(r.chan)
+            int j = (seen == null ? 0 : seen) + 1
+            readOrdinal.put(r.chan, j)
+            String where = root == r.chan ? "'${root}'" : "its source channel '${root}'"
+            if (ss == null) {
                 addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
                     "the receive on '${r.chan}' (line ${r.line}) can never be satisfied — no send on " +
-                    (root == r.chan ? "'${root}'" : "its source channel '${root}'") +
-                    " anywhere in the method"), r.anchor)
+                    where + " anywhere in the method"), r.anchor)
                 return
             }
+            if (j > ss.size()) {
+                addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                    "the ${ordinalWord(j)} receive on '${r.chan}' (line ${r.line}) can never be satisfied — only " +
+                    "${ss.size()} send${ss.size() == 1 ? '' : 's'} on " + where + " anywhere in the method"), r.anchor)
+                return
+            }
+            pairedSend.put(r, ss.get(j - 1))
         }
         for (ChanUse it : iterates) {
             String root = chanBaseOf(it.chan, chanParent)
@@ -5430,8 +5819,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (ParArm a : joined) if (a.join < u.proc.fork) adj.get(id.get(u)).add(id.get(a))
             }
         }
-        for (ChanUse r : blockingReads) {
-            ChanUse s = sendByRoot.get(chanBaseOf(r.chan, chanParent))
+        for (ChanUse r : blockingReads) {                       // the j-th receive waits for the j-th send
+            ChanUse s = pairedSend.get(r)
             if (s != null && !s.is(r)) adj.get(id.get(r)).add(id.get(s))
         }
         for (ChanUse it : iterates) {                            // Phase 245 — an iteration finishes at close
@@ -5456,6 +5845,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
                 'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first'), anchor)
         }
+    }
+
+    /** 1st, 2nd, 3rd, 4th … (Phase 247 — the FIFO position of a receive in a diagnostic). */
+    private static String ordinalWord(int n) {
+        int m = n % 100
+        String sfx = (m >= 11 && m <= 13) ? 'th' : (n % 10 == 1 ? 'st' : n % 10 == 2 ? 'nd' : n % 10 == 3 ? 'rd' : 'th')
+        n + sfx
     }
 
     /** DFS over the wait-for graph; returns the node cycle if one exists, else null. */
