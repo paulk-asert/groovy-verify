@@ -33,7 +33,7 @@ class G318_p254_forever {
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
     static final String GEN = """
-                            val out = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -91,8 +91,8 @@ class G318_p254_forever {
         [group: 'P254 non-terminating processes', name: 'GNumbers → GSquares → GPrint, all forever: safety proved, liveness certified under weak fairness', ok: true,
          src: tc("""class C {
                         static void network() {
-                            val nums = AsyncChannel.<Integer>create(4)
-                            val sq = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> sq = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -123,8 +123,8 @@ class G318_p254_forever {
         [group: 'P254 non-terminating processes', name: 'a broken stage in the forever network refutes GPrint\'s invariant', expect: 'Cannot prove loop invariant',
          src: tc("""class C {
                         static void network() {
-                            val nums = AsyncChannel.<Integer>create(4)
-                            val sq = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> sq = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -208,7 +208,7 @@ class G318_p254_forever {
          src: tc("""class C {
                         @Requires({ n >= 0 })
                         static void printer(int n) {
-                            val out = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -234,8 +234,8 @@ class G318_p254_forever {
         [group: 'P254 non-terminating processes', name: 'a forever multiplexer over two infinite generators: the contract forwards, the second branch may starve', expect: 'may starve', refute: 'Assertion may not hold',
          src: tc("""class C {
                         static void mux() {
-                            val a = AsyncChannel.<Integer>create(4)
-                            val b = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })

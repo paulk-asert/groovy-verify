@@ -78,7 +78,7 @@ class G305_p241_channel_linearity {
         [group: 'P241 channel linearity', name: 'subscribing while a sender is live', expect: 'Channel linearity',
          src: tc("""class C {
                         static int lateSubscribe(int x) {
-                            def b = BroadcastChannel.<Integer>create()
+                            BroadcastChannel<Integer> b = BroadcastChannel.create()
                             async { b.send(x); b.close() }
                             AsyncChannel<Integer> s1 = b.subscribe()
                             return s1.first()
@@ -122,7 +122,7 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == x + x })
                         static int fanOut(int x) {
-                            def b = BroadcastChannel.<Integer>create()
+                            BroadcastChannel<Integer> b = BroadcastChannel.create()
                             AsyncChannel<Integer> s1 = b.subscribe()
                             AsyncChannel<Integer> s2 = b.subscribe()
                             async { b.send(x); b.close() }
@@ -150,7 +150,7 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == x * 2 })
                         static int broadcastPipeline(int x) {
-                            def b = BroadcastChannel.<Integer>create()
+                            BroadcastChannel<Integer> b = BroadcastChannel.create()
                             AsyncChannel<Integer> s1 = b.subscribe()
                             AsyncChannel<Integer> out = s1.map { it * 2 }
                             async { b.send(x); b.close() }

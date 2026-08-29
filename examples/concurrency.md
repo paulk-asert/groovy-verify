@@ -390,7 +390,7 @@ legal fan-out verifies end-to-end:
 ```groovy
 @Ensures({ result == x + x })
 static int fanOut(int x) {
-    def b = BroadcastChannel.<Integer>create()
+    BroadcastChannel<Integer> b = BroadcastChannel.create()
     AsyncChannel<Integer> s1 = b.subscribe()
     AsyncChannel<Integer> s2 = b.subscribe()
     async { b.send(x); b.close() }
@@ -931,8 +931,8 @@ fairness argument applies — as it does here). The book's network, as the book 
 <!-- doclint:case p254-non-terminating-processes/gnumbers-gsquares-gprint-all-forever-safety-proved-liveness-certified-under-weak-fairness -->
 ```groovy
 static void network() {
-    val nums = AsyncChannel.<Integer>create(4)
-    val sq = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> nums = AsyncChannel.create(4)
+    AsyncChannel<Integer> sq = AsyncChannel.create(4)
     async {
         int i = 0
         @Invariant({ i >= 0 })
@@ -991,8 +991,8 @@ has a cycle**. That is the existing DFS, on a graph whose nodes are `(loop, oper
 <!-- doclint:case p255-liveness/a-forever-client-server-loop-is-live-the-request-precedes-the-wait-for-its-reply -->
 ```groovy
 static void clientServer() {
-    val request = AsyncChannel.<Integer>create(4)
-    val reply = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> request = AsyncChannel.create(4)
+    AsyncChannel<Integer> reply = AsyncChannel.create(4)
     async {                                              // the server
         int j = 0
         @Invariant({ j >= 0 })
@@ -1054,9 +1054,9 @@ certified live, and an ALT whose every branch waits on its own output is a circu
 <!-- doclint:case p256-selection/an-alt-whose-branches-all-wait-on-its-own-output-circular-wait-in-every-iteration -->
 ```groovy
 static void knot() {
-    val a = AsyncChannel.<Integer>create(4)
-    val b = AsyncChannel.<Integer>create(4)
-    val out = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> a = AsyncChannel.create(4)
+    AsyncChannel<Integer> b = AsyncChannel.create(4)
+    AsyncChannel<Integer> out = AsyncChannel.create(4)
     async {                                              // one stage feeds both branches from the ALT's own output
         int i = 0
         @Invariant({ i >= 0 })

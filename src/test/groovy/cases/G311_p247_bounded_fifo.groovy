@@ -88,7 +88,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 2 * (x + y) })
                         static int fanOut(int x, int y) {
-                            def b = BroadcastChannel.<Integer>create()
+                            BroadcastChannel<Integer> b = BroadcastChannel.create()
                             AsyncChannel<Integer> s1 = b.subscribe()
                             AsyncChannel<Integer> s2 = b.subscribe()
                             async { b.send(x); b.send(y); b.close() }
@@ -133,6 +133,33 @@ class G311_p247_bounded_fifo {
                             async { int a = src.first(); int b = src.first(); out.send(10 * a + b) }
                             async { src.send(x); src.send(y); src.close() }
                             return out.first()
+                        }
+                    }""")],
+
+        // ---------- the inferred-declaration spelling, pinned ----------
+        // `def` / `var` / `val` with the factory's type witness works — the element type is read from the
+        // witness, since the harvest runs before STC stamps inferred types — but the gallery spells channels
+        // with the type on the left (`AsyncChannel<String> c = AsyncChannel.create(1)`), which is the idiom.
+        // These pins exist so the witness path does not silently rot.
+        [group: 'P247 bounded FIFO', name: 'val with a type witness: a String channel proves (element type from the witness)', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == 'Hello World' })
+                        static String hello() {
+                            val connect = AsyncChannel.<String>create(2)
+                            async { connect.send('Hello'); connect.send('World'); connect.close() }
+                            String first = connect.first()
+                            String second = connect.first()
+                            return first + ' ' + second
+                        }
+                    }""")],
+        [group: 'P247 bounded FIFO', name: 'def with a type witness: an int stage proves', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == x * x })
+                        static int squares(int x) {
+                            def nums = AsyncChannel.<Integer>create(1)
+                            def sq = nums.map { it * it }
+                            async { nums.send(x); nums.close() }
+                            return sq.first()
                         }
                     }""")],
 

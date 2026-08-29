@@ -37,7 +37,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 
 | Kerridge / JCSP | groovy.concurrent | What the checker does with it |
 | --- | --- | --- |
-| `Channel.one2one()` | `val c = AsyncChannel.<Integer>create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
+| `Channel.one2one()` | `AsyncChannel<Integer> c = AsyncChannel.create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
 | a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked (Phase 240) |
 | typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives (Phase 242) |
 | the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
@@ -51,12 +51,14 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
 | `fairSelect` / `priSelect` | — | no counterpart in `ChannelSelect` yet: the fair server's per-client liveness is withheld with that reason (Phase 256) |
 
-A note on spelling: the ports use Groovy 6's `val` (or `def` / `var`) with the factory's **type witness** —
-`val c = AsyncChannel.<Integer>create(n)`. The witness is what tells static type checking (and the checker)
-the element type; a bare `AsyncChannel.create(n)` under `def` is an `AsyncChannel<Object>` and neither can
-say anything about its elements. Two places still want a declared type: an element *contract*
-(`AsyncChannel<@PositiveOrZero Integer> c = …`, Phase 242 — the constraint has to sit on the generic), and an
-ALT's result (`ChannelSelect.Result r = await …`, Phase 249).
+A note on spelling: the ports declare their channels with the **element type on the left** —
+`AsyncChannel<Integer> c = AsyncChannel.create(n)` — because that is what tells static type checking (and
+the checker) what flows through the channel: `create(n)` has no argument that could fix `T`, so a bare
+`def c = AsyncChannel.create(n)` is an `AsyncChannel<Object>` and neither side can say anything about its
+elements. (`def` / `var` / `val` with a type witness, `val c = AsyncChannel.<Integer>create(n)`, is supported
+and pinned by a case, but it is nobody's idiom; and an element *contract* — `AsyncChannel<@PositiveOrZero
+Integer>`, Phase 242 — has to sit on a declared generic anyway.) The one place a declared type is required
+rather than merely idiomatic is an ALT's result, `ChannelSelect.Result r = await …` (Phase 249).
 
 ## The one-shot shapes verify end to end
 
@@ -67,7 +69,7 @@ channel — with the exchanged value *proved*:
 ```groovy
 @Ensures({ result == 'Hello' })
 static String helloWorld() {
-    val connect = AsyncChannel.<String>create(1)
+    AsyncChannel<String> connect = AsyncChannel.create(1)
     async { connect.send('Hello'); connect.close() }
     return connect.first()
 }
@@ -81,7 +83,7 @@ them back the other way round and the claim is refuted with a counterexample):
 ```groovy
 @Ensures({ result == 'Hello World' })
 static String produceHW() {
-    val connect = AsyncChannel.<String>create(2)
+    AsyncChannel<String> connect = AsyncChannel.create(2)
     async { connect.send('Hello'); connect.send('World'); connect.close() }
     String first = connect.first()
     String second = connect.first()
@@ -101,8 +103,8 @@ included, since the drain's `close()` dependency is satisfiable:
 ```groovy
 @Ensures({ result == 14 })
 static int squaresPipeline() {
-    val n2s = AsyncChannel.<Integer>create(4)
-    val s2p = n2s.map { it * it }
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = n2s.map { it * it }
     async {
         for (n in 1..3) {
             n2s.send(n)
@@ -127,8 +129,8 @@ own `@Invariant` / `@Decreases`:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
 static List<Integer> squares(int n) {
-    val n2s = AsyncChannel.<Integer>create(4)
-    val s2p = n2s.map { it * it }
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = n2s.map { it * it }
     async {
         int i = 1
         @Invariant({ 1 <= i && i <= n + 1 })
@@ -153,8 +155,8 @@ receive, and the renaming-apart of the three loops' counters are the checker's:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
 static List<Integer> network(int n) {
-    val n2s = AsyncChannel.<Integer>create(4)
-    val s2p = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = AsyncChannel.create(4)
     async {                                              // GNumbers
         int i = 1
         @Invariant({ 1 <= i && i <= n + 1 })
@@ -198,8 +200,8 @@ alone is not claimed; none is meant:
 <!-- doclint:case p246-kerridge-gallery/c03-forever-gnumbers-gsquares-and-gprint-as-non-terminating-processes-safety-proved -->
 ```groovy
 static void network() {
-    val n2s = AsyncChannel.<Integer>create(4)
-    val s2p = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = AsyncChannel.create(4)
     async {                                              // GNumbers
         int i = 1
         @Invariant({ i >= 1 })
@@ -236,8 +238,8 @@ wait before asking and it is the mutual-receive deadlock — *in every iteration
 <!-- doclint:case p246-kerridge-gallery/client-and-server-forever-live-under-weak-fairness -->
 ```groovy
 static void clientServer() {
-    val request = AsyncChannel.<Integer>create(4)
-    val reply = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> request = AsyncChannel.create(4)
+    AsyncChannel<Integer> reply = AsyncChannel.create(4)
     async {                                              // the server
         int j = 0
         @Invariant({ j >= 0 })
@@ -265,8 +267,8 @@ theorem, mechanised (the wait-for order is well-founded), *and* its value proves
 ```groovy
 @Ensures({ result == x + 1 })
 static int clientServer(int x) {
-    val request = AsyncChannel.<Integer>create(1)
-    val reply = AsyncChannel.<Integer>create(1)
+    AsyncChannel<Integer> request = AsyncChannel.create(1)
+    AsyncChannel<Integer> reply = AsyncChannel.create(1)
     request.send(x)
     async { int r = request.first(); reply.send(r + 1) }
     return reply.first()
@@ -283,8 +285,8 @@ a deadlock only if *every* guard is stuck:
 ```groovy
 @Ensures({ result == x || result == y })
 static int alt(int x, int y) {
-    val left = AsyncChannel.<Integer>create(1)
-    val right = AsyncChannel.<Integer>create(1)
+    AsyncChannel<Integer> left = AsyncChannel.create(1)
+    AsyncChannel<Integer> right = AsyncChannel.create(1)
     async { left.send(x); left.close() }
     async { right.send(y); right.close() }
     ChannelSelect.Result chosen = await ChannelSelect.from(left, right).select()
@@ -302,8 +304,8 @@ is (an order claim is refuted, honestly), and one iteration too many is the name
 @Requires({ na >= 0 && nb >= 0 })
 @Ensures({ result.size() == na + nb })
 static List<Integer> multiplex(int na, int nb) {
-    val left = AsyncChannel.<Integer>create(4)
-    val right = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> left = AsyncChannel.create(4)
+    AsyncChannel<Integer> right = AsyncChannel.create(4)
     async {
         int i = 0
         @Invariant({ 0 <= i && i <= na })
@@ -324,7 +326,7 @@ static List<Integer> multiplex(int na, int nb) {
         }
         right.close()
     }
-    val merged = AsyncChannel.<Integer>create(8)
+    AsyncChannel<Integer> merged = AsyncChannel.create(8)
     int j = 0
     @Invariant({ 0 <= j && j <= na + nb })
     @Decreases({ na + nb - j })
@@ -348,10 +350,10 @@ So the checker models exactly that and *withholds* per-client liveness with the 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
 ```groovy
 static void fairServer() {
-    val reqA = AsyncChannel.<Integer>create(4)
-    val reqB = AsyncChannel.<Integer>create(4)
-    val replyA = AsyncChannel.<Integer>create(4)
-    val replyB = AsyncChannel.<Integer>create(4)
+    AsyncChannel<Integer> reqA = AsyncChannel.create(4)
+    AsyncChannel<Integer> reqB = AsyncChannel.create(4)
+    AsyncChannel<Integer> replyA = AsyncChannel.create(4)
+    AsyncChannel<Integer> replyB = AsyncChannel.create(4)
     async {                                              // client A
         int i = 0
         @Invariant({ i >= 0 })
@@ -398,8 +400,8 @@ exercises refuse to compile, each with its cause spelled out:
 <!-- doclint:case p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
 ```groovy
 static int deadlockExercise() {
-    val aToB = AsyncChannel.<Integer>create(1)
-    val bToA = AsyncChannel.<Integer>create(1)
+    AsyncChannel<Integer> aToB = AsyncChannel.create(1)
+    AsyncChannel<Integer> bToA = AsyncChannel.create(1)
     async { int x = bToA.first(); aToB.send(x) }
     async { int y = aToB.first(); bToA.send(y) }
     return 0

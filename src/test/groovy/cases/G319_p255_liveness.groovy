@@ -39,8 +39,8 @@ class G319_p255_liveness {
         [group: 'P255 liveness', name: 'two forever loops that each receive before sending: circular wait in every iteration', expect: 'circular wait in every iteration',
          src: tc("""class C {
                         static void mutual() {
-                            val aToB = AsyncChannel.<Integer>create(4)
-                            val bToA = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> aToB = AsyncChannel.create(4)
+                            AsyncChannel<Integer> bToA = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -63,8 +63,8 @@ class G319_p255_liveness {
         [group: 'P255 liveness', name: 'a forever client–server loop is live: the request precedes the wait for its reply', ok: true,
          src: tc("""class C {
                         static void clientServer() {
-                            val request = AsyncChannel.<Integer>create(4)
-                            val reply = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> request = AsyncChannel.create(4)
+                            AsyncChannel<Integer> reply = AsyncChannel.create(4)
                             async {                                              // the server
                                 int j = 0
                                 @Invariant({ j >= 0 })
@@ -87,8 +87,8 @@ class G319_p255_liveness {
         [group: 'P255 liveness', name: 'a priming send before one loop makes the receive-first cycle live', ok: true,
          src: tc("""class C {
                         static void primed() {
-                            val aToB = AsyncChannel.<Integer>create(4)
-                            val bToA = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> aToB = AsyncChannel.create(4)
+                            AsyncChannel<Integer> bToA = AsyncChannel.create(4)
                             async {
                                 aToB.send(0)                                     // one message ahead
                                 int i = 0
@@ -112,9 +112,9 @@ class G319_p255_liveness {
         [group: 'P255 liveness', name: 'a three-process ring with no priming send deadlocks in every iteration', expect: 'circular wait in every iteration',
          src: tc("""class C {
                         static void ring() {
-                            val ab = AsyncChannel.<Integer>create(4)
-                            val bc = AsyncChannel.<Integer>create(4)
-                            val ca = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> ab = AsyncChannel.create(4)
+                            AsyncChannel<Integer> bc = AsyncChannel.create(4)
+                            AsyncChannel<Integer> ca = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -145,9 +145,9 @@ class G319_p255_liveness {
         [group: 'P255 liveness', name: 'the same ring with one priming send is live (a token goes round)', ok: true,
          src: tc("""class C {
                         static void ring() {
-                            val ab = AsyncChannel.<Integer>create(4)
-                            val bc = AsyncChannel.<Integer>create(4)
-                            val ca = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> ab = AsyncChannel.create(4)
+                            AsyncChannel<Integer> bc = AsyncChannel.create(4)
+                            AsyncChannel<Integer> ca = AsyncChannel.create(4)
                             async {
                                 ab.send(0)                                       // the token
                                 int i = 0
@@ -182,9 +182,9 @@ class G319_p255_liveness {
         [group: 'P255 liveness', name: 'a forever ALT over branches fed by a dependent stage is live', ok: true,
          src: tc("""class C {
                         static void mux() {
-                            val nums = AsyncChannel.<Integer>create(4)
-                            val a = AsyncChannel.<Integer>create(4)
-                            val b = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -218,7 +218,7 @@ class G319_p255_liveness {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n + 1 && result[0] == -1 && Forall.range(1, result.size(), { int k -> result[k] == k - 1 }) })
                         static List<Integer> primed(int n) {
-                            val out = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 out.send(-1)
                                 int i = 0

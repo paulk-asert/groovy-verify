@@ -11592,9 +11592,13 @@ a `val connect = AsyncChannel.<String>create(1)` collided in the Int sort ("Sort
 incompatible"). STC's inferred types are not yet stamped when that harvest runs, so the fix reads the
 witness from the AST (`witnessedChannelType`: the `create` call's explicit generics, pre-STC shape) and
 uses it wherever the origin type is dynamic — for the String shadow AND for the bounds harvest. The Kerridge
-gallery (G310 + `examples/kerridge.md`) now spells its channels with `val` and the witness — the two
-shapes that still want a declared type, an element contract on the generic and an ALT's `Result`, are
-noted on the page. The boundary section was rewritten around the `while (true)` frontier: safety per
+gallery briefly spelled its channels with `val` and the witness; REVERTED the same day at Paul's
+prompting: `val c = AsyncChannel.<Integer>create(n)` is nobody's idiom either (GROOVY-12115's
+`@ClassTag` cannot help — it reifies a type argument the checker already knows from a RECEIVER, and a
+static factory whose argument does not fix `T` has neither receiver nor target). The gallery and every
+case group declare the element type on the left, `AsyncChannel<Integer> c = AsyncChannel.create(n)`;
+the witness path stays supported and is pinned by two G311 cases (`val` String channel, `def` int stage)
+so it does not rot; the kerridge.md note says why the declared type is the idiom. The boundary section was rewritten around the `while (true)` frontier: safety per
 iteration (within reach — a non-termination declaration is what is missing) versus liveness under
 fairness (not a count, not an invariant: the research half).
 

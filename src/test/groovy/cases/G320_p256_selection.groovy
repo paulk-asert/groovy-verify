@@ -39,9 +39,9 @@ class G320_p256_selection {
         [group: 'P256 selection', name: 'an ALT whose branches all wait on its own output: circular wait in every iteration', expect: 'circular wait in every iteration',
          src: tc("""class C {
                         static void knot() {
-                            val a = AsyncChannel.<Integer>create(4)
-                            val b = AsyncChannel.<Integer>create(4)
-                            val out = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {                                              // one stage feeds both branches from the ALT's own output
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -66,9 +66,9 @@ class G320_p256_selection {
         [group: 'P256 selection', name: 'the same knot with one generator branch is live', ok: true,
          src: tc("""class C {
                         static void knot() {
-                            val a = AsyncChannel.<Integer>create(4)
-                            val b = AsyncChannel.<Integer>create(4)
-                            val out = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -101,8 +101,8 @@ class G320_p256_selection {
         [group: 'P256 selection', name: 'a branch behind an always-ready generator may starve', expect: 'Selection starvation hazard',
          src: tc("""class C {
                         static void mux() {
-                            val fast = AsyncChannel.<Integer>create(4)
-                            val slow = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> fast = AsyncChannel.create(4)
+                            AsyncChannel<Integer> slow = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ i >= 0 })
@@ -134,8 +134,8 @@ class G320_p256_selection {
                         @Requires({ na >= 0 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
                         static List<Integer> merge(int na, int nb) {
-                            val a = AsyncChannel.<Integer>create(4)
-                            val b = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= na })
@@ -156,7 +156,7 @@ class G320_p256_selection {
                                 }
                                 b.close()
                             }
-                            val out = AsyncChannel.<Integer>create(8)
+                            AsyncChannel<Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
                             @Decreases({ na + nb - j })
@@ -175,10 +175,10 @@ class G320_p256_selection {
         [group: 'P256 selection', name: 'a server replying on the chosen client\'s channel: the client\'s liveness is not certified', expect: 'served only when the ALT',
          src: tc("""class C {
                         static void fairServer() {
-                            val reqA = AsyncChannel.<Integer>create(4)
-                            val reqB = AsyncChannel.<Integer>create(4)
-                            val replyA = AsyncChannel.<Integer>create(4)
-                            val replyB = AsyncChannel.<Integer>create(4)
+                            AsyncChannel<Integer> reqA = AsyncChannel.create(4)
+                            AsyncChannel<Integer> reqB = AsyncChannel.create(4)
+                            AsyncChannel<Integer> replyA = AsyncChannel.create(4)
+                            AsyncChannel<Integer> replyB = AsyncChannel.create(4)
                             async {                                              // client A
                                 int i = 0
                                 @Invariant({ i >= 0 })
