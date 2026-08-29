@@ -419,31 +419,46 @@ forever, and the FIFO pairing knows it.
 
 ## The honest boundary, loudly
 
-What stays out of reach says so. Streaming is covered on both sides for **specified unit-counter loops**
-(`while (i < n) … i = i + 1`, or C-style, carrying the loop's `@Invariant` / `@Decreases`, the counter the
-variable the guard tests): the generator's termination (Phase 250) and sequence (Phase 251), and the looping
-consumer's reads with their block-forever obligations (Phase 252). A `while (true)` process, a range
-`for`-in with a symbolic bound, two sends or two receives of one channel per iteration, or a `first()`
-outside such a loop refuses the value model with the reason named; the accumulating `for (v in ch)` drain
-is the loop engine's own boundary, so drained values are spelled `toList()` or collected in a loop. The
-looping `ALT` — the multiplexer — is covered too (Phase 253), with the interleaving left exactly as
-nondeterministic as it is.
+Every teaching shape above carries a certificate, and every certificate stops somewhere it can name. The
+stops are of three kinds.
 
-The **non-terminating process** — `while (true) { … }`, which is how the book actually writes `GNumbers`,
-`GPrint` and every server — is covered on both halves. Its **safety** (Phase 254): the loop's invariant
-preserved per iteration, every send meeting its channel contract, every received value carrying its
-producer's relation. Its **liveness** (Phase 255), under one stated assumption — *weak fairness*, a process
-whose next operation is enabled eventually executes it: no operation waits, in every iteration, on something
-that waits on itself in the same iteration; a receive-first cycle is named as a circular wait in every
-iteration, a priming send breaks it, the forever client–server is live. What is still not claimed is now a fact about the *runtime*, and the checker says so. Groovy 6's
-`ChannelSelect` prefers the lowest ready index and re-sends losers' elements to the back of their queues
-(Phase 256 models exactly that): a branch behind an always-ready one is a named **starvation hazard**, and
-the **fair server** — every client eventually *chosen* — cannot be certified because no fair selection
-exists to certify it against; a rotating-priority select and a select that does not consume from losing
-branches would close that gap in the runtime, not the checker. **Starvation-freedom in the large** — served
-within a bound — stays a quantitative property beyond "eventually". Those, and the session-typed protocol
-view of a channel, are the research conversation, not a demo: the same guarantees GPP establishes offline by
-formal methods, issued incrementally by the compiler.
+**The checker's own fragment.** A streaming process is a *specified unit-counter loop* — `while (i < n)`,
+`while (true)` or C-style, stepping one variable the guard tests (or the only stepped one, for `while (true)`)
+by exactly one, carrying its `@Invariant` (and `@Decreases` when it ends) — with one send per channel per
+iteration, one receive per channel per iteration or one `ALT`, `int` elements, and the pipeline's map stages
+declared as variables. Anything else refuses the value model *with the reason named*: a range `for`-in over a
+symbolic bound, two sends or two receives of one channel in an iteration, a `first()` outside such a loop, a
+send under an `if` that is not the `ALT`-guarded reply shape, a drain through a `filter`. The accumulating
+`for (v in ch)` drain is the loop engine's own boundary, so drained values are spelled `toList()` or collected
+in a loop. Inside the fragment the certificates rest on three stated facts: sends never block (an
+`AsyncChannel` send is queued, its `Awaitable` discarded), the base case of every loop is the straight-line
+code before it, and — for liveness — *weak fairness* of the scheduler: a process whose next operation is
+enabled eventually executes it. Nothing about ordering across processes is assumed; the interleaving of a
+multiplexer is left exactly as nondeterministic as it is.
+
+**The runtime's.** Groovy 6's `ChannelSelect` (6.0.0-beta-3) is not the book's `ALT`. It races a `receive()`
+on every branch and completes with the first: when several are ready the lowest index wins, a losing
+branch's consumed element is re-sent to the *back* of its queue, every select leaves a pending receiver on
+each branch that was empty, and a select over channels that are all closed never completes — all four
+observed, not read, by [`repro/ChannelSelectRepro.groovy`](../repro/ChannelSelectRepro.groovy) (100/100
+wins for index 0 in either listing order; `[b1, b2]` delivered as `[b2, b1]`; a thousand pending receivers
+and one element bounced a thousand times; a 500 ms timeout). The checker models exactly that (Phase 256), so
+three things it *could* say it withholds instead: positional claims through a contended `ALT` branch (the
+value taken is *some* remaining element — counts and element-wise contracts still prove); a branch listed
+after an always-ready one is a named **starvation hazard**; and the **fair server** — every client
+eventually *chosen* — has its per-client liveness withheld with the runtime's reason, because there is no
+fair selection to certify it against. The fix belongs to the runtime, and is drafted:
+[`repro/GROOVY-ChannelSelect-jira-draft.md`](../repro/GROOVY-ChannelSelect-jira-draft.md) — a claim-based
+select that never consumes from losing branches, and a `fair()` policy with rotating priority. With those,
+the fair server is a day's work on the checker: the request stays ready until taken, rotating priority
+bounds the wait, and the same wait-for argument closes.
+
+**Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
+eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the
+*session-typed* view of a channel — a protocol of message kinds and directions, not a sequence of ints — is
+a different specification language from `@Invariant` altogether. Those two are the research conversation,
+not a demo: the same guarantees GPP establishes offline by formal methods, issued incrementally by the
+compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory
