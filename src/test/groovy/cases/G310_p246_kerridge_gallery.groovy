@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, and since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count, and since Phase 254 c03 as the book ACTUALLY writes it — every process while (true) — is certified for safety (every printed value a square), termination not claimed and liveness reported as the assumption it is. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -280,6 +280,44 @@ class G310_p246_kerridge_gallery {
                                 j = j + 1
                             }
                             return printed
+                        }
+                    }""")],
+
+        // ---------- c03 as the book ACTUALLY writes it: every process runs forever (Phase 254) ----------
+        // GNumbers counts forever, GSquares squares forever, GPrint prints forever. Nothing terminates and
+        // nothing is claimed to: the certificate is SAFETY — every value GPrint accumulates is a square (its
+        // own invariant, preserved per iteration through the two stages' relations) — and that each receive
+        // is eventually served is reported as the liveness assumption it is.
+        [group: 'P246 Kerridge gallery', name: 'c03 forever: GNumbers, GSquares and GPrint as non-terminating processes, safety proved', expect: 'liveness property, not claimed', refute: 'Cannot prove',
+         src: tc("""class C {
+                        static void network() {
+                            val n2s = AsyncChannel.<Integer>create(4)
+                            val s2p = AsyncChannel.<Integer>create(4)
+                            async {                                              // GNumbers
+                                int i = 1
+                                @Invariant({ i >= 1 })
+                                while (true) {
+                                    n2s.send(i)
+                                    i = i + 1
+                                }
+                            }
+                            async {                                              // GSquares
+                                int i = 0
+                                @Invariant({ i >= 0 })
+                                while (true) {
+                                    int v = n2s.first()
+                                    s2p.send(v * v)
+                                    i = i + 1
+                                }
+                            }
+                            List<Integer> printed = []                           // GPrint
+                            int j = 0
+                            @Invariant({ printed != null && j >= 0 && printed.size() == j && Forall.range(0, printed.size(), { int k -> printed[k] == (k + 1) * (k + 1) }) })
+                            while (true) {
+                                int s = s2p.first()
+                                printed.add(s)
+                                j = j + 1
+                            }
                         }
                     }""")],
 

@@ -11600,6 +11600,54 @@ fairness (not a count, not an invariant: the research half).
 
 ---
 
+## Phase 254 — non-terminating processes: the safety half of `while (true)`  *(shipped — slice 14 of the SEQ/PAR ladder)*
+
+The half of the `while (true)` frontier the boundary section called "within reach". The loop engine
+already accepted a `while (true)` with an `@Invariant` and no `@Decreases` (preservation proved,
+non-preservation refuted — the probe's first surprise); what it also did was treat everything AFTER
+such a loop as vacuous (`inv ∧ ¬true` — `result == n + 1` PROVED after an infinite loop: the probe's
+second finding). Right for the method's own unreachable tail; unsound for the flattened channel model,
+where the statements after an infinite producer are the OTHER processes. So the rewrite gives an
+infinite loop a FREE GUARD: `rewriteStreamLoop` rebuilds `while (true)` as `while (loop$fuelN > 0)` —
+an unassigned name, havoc-by-default — in both the loop and its LoopSpec, so the process may be observed
+at any iteration boundary and what follows is reasoned about under its invariant alone; the injected
+producer facts likewise omit `¬guard` for an infinite producer (`StreamInfo.infinite`, `isForever`).
+`unitCounter` accepts `while (true)` with the unique unit-stepped variable as its counter (no guard
+to test). A consumer's element-exists obligation on an infinite producer becomes ASSUME-ONLY
+(`ASSUME_ONLY_KEY` on the synthesized assert: `symExec` still assumes it, `dischargeStatementShortCircuit`
+skips discharging it, the fallback assertion listing ignores it), and the network check reports it —
+once per channel — as "served by a non-terminating producer (the while (true) at line M) — that it is
+eventually served is a liveness property, not claimed; the safety of the values received is certified
+under that assumption". The looping ALT likewise: a branch with an infinite producer makes its
+block-forever assert an assumption.
+
+One more fact was needed, and it is general: a consumer's READ BOUND — `counter - a <= in$q.size()`,
+the elements read so far exist — injected into the consumer's own spec and passed on transitively
+(`consumerBoundInvariants`). With a finite producer it followed from the exit fact `size == n`; an
+infinite producer has no exit fact, and without it GSquares' output count was unbounded by its input
+count (GPrint's preservation failed on `sq$q.size() = 1, nums$q.size() = 0`). Established at 0,
+preserved by the read's element-exists fact each iteration — asserted or assumed.
+
+What it certifies: a `while (true)` producer's invariant and send contract per iteration (`send(i)` under
+`i >= 0` proves against `@PositiveOrZero`; `send(i - 1)` refutes at the first iteration); a finite
+consumer's received values (`result[k] == k` from the infinite counter); the book's network AS THE BOOK
+WRITES IT — all three `while (true)` — GPrint's invariant "every printed value is a square" preserved
+through the stages, a broken stage refuted; the forever multiplexer forwarding its contract. What it
+honestly refuses: nothing is claimed to terminate, and liveness is an assumption in a note. Soundness
+pins: a false claim after an infinite producer is REFUTED (not vacuous); an infinite consumer of a
+FINITE producer is still "may block forever" — the classic hang.
+
+Cases (G318, new group, 8): the infinite generator with a finite consumer (values prove, liveness noted),
+the vacuity pin, the all-forever network (safety proved) and its broken twin, the send contract (holds /
+refuted), the infinite consumer of a finite producer, the forever multiplexer. The cases pin the honest
+shape with `expect: 'liveness property, not claimed'` + `refute: 'Cannot prove'`. G310 gains c03 as the
+book actually writes it. Docs: the Phase 254 subsection in `examples/concurrency.md` (the network,
+linked), the CAPABILITIES row, the README ladder + gallery bullets, `examples/kerridge.md` (the
+vocabulary row, the forever network in the verified tier, the boundary section: the safety half is
+covered; what remains is liveness under fairness and the session-typed view).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

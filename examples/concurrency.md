@@ -914,6 +914,66 @@ What remains after this rung is a different kind of boundary: the **non-terminat
 (`while (true)`), whose properties are safety-per-iteration and *liveness under fairness* — not a count, and
 not something a `@Decreases` can carry.
 
+### Non-terminating processes — the safety half of `while (true)` (Phase 254)
+
+The book's processes do not stop: `GNumbers` counts forever, `GPrint` prints forever, a server answers
+forever. A `while (true)` loop with an `@Invariant` (no `@Decreases` — none is possible) is now certified for
+**safety**: its invariant is preserved per iteration, its send-side channel contract is checked per
+iteration, and what its consumers receive carries its element relation. Termination is not claimed, and the
+one thing a consumer of an infinite stream cannot be *proved* — that its next receive is eventually served —
+is **assumed and said so**, as a network note: *"the receive on 'sq' (line N) is served by a non-terminating
+producer — that it is eventually served is a liveness property, not claimed; the safety of the values
+received is certified under that assumption"*. The book's network, as the book writes it:
+
+<!-- doclint:case p254-non-terminating-processes/gnumbers-gsquares-gprint-all-forever-safety-proved-liveness-noted -->
+```groovy
+static void network() {
+    val nums = AsyncChannel.<Integer>create(4)
+    val sq = AsyncChannel.<Integer>create(4)
+    async {
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            nums.send(i)
+            i = i + 1
+        }
+    }
+    async {
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            int v = nums.first()
+            sq.send(v * v)
+            i = i + 1
+        }
+    }
+    List<Integer> printed = []
+    int j = 0
+    @Invariant({ printed != null && j >= 0 && printed.size() == j && Forall.range(0, printed.size(), { int k -> printed[k] == k * k }) })
+    while (true) {
+        int s = sq.first()
+        printed.add(s)
+        j = j + 1
+    }
+}
+```
+
+Every value `GPrint` accumulates is a square — `GPrint`'s own invariant, preserved through the two stages'
+relations; make `GSquares` send `v * v + 1` and that invariant is refuted. The soundness point is the
+**flattened model**: after a `while (true)` the loop engine's summary is `inv ∧ ¬true`, i.e. *false* — fine
+for the method's own unreachable tail, unsound for the *other processes* the flattening places after the
+loop. So in the rewrite an infinite loop gets a **free guard** (`loop$fuel > 0`, an unassigned name): the
+process may be observed at any iteration boundary, and what follows is reasoned about under its invariant
+alone — a false claim after an infinite producer is refuted, never vacuously proved (pinned). Two more facts
+travel with it: a consumer's *read bound* (`counter − a ≤ in$q.size()`, so a stage's output count is bounded
+by its input count without any exit fact), and the classic hang is still caught the other way round — an
+**infinite consumer of a finite producer** "may block forever". The forever multiplexer forwards its output
+contract through the choice as before.
+
+What is left after this is the **liveness** half proper — eventual delivery, a server answering every
+client, network-wide deadlock-freedom over infinite runs — which needs a fairness assumption about the
+scheduler and about `ALT`, and a temporal argument the sequential fragment has no word for.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

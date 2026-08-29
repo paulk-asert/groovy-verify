@@ -46,6 +46,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
 | `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified (Phase 250); the drained sequence proves element by element — the channel is the list the loop builds (Phase 251) |
 | a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" (Phase 252) |
+| a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values; termination not claimed; liveness reported as the assumption it is (Phase 254) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253) |
 
@@ -187,6 +188,44 @@ static List<Integer> network(int n) {
 }
 ```
 
+And c03 **as the book actually writes it** — every process `while (true)`, nothing ever stopping — is
+certified for **safety** (Phase 254): every value `GPrint` accumulates is a square, `GPrint`'s own invariant
+preserved through `GSquares`' and `GNumbers`' relations; termination is not claimed, and that each receive is
+eventually served is reported, loudly, as the liveness assumption it is:
+
+<!-- doclint:case p246-kerridge-gallery/c03-forever-gnumbers-gsquares-and-gprint-as-non-terminating-processes-safety-proved -->
+```groovy
+static void network() {
+    val n2s = AsyncChannel.<Integer>create(4)
+    val s2p = AsyncChannel.<Integer>create(4)
+    async {                                              // GNumbers
+        int i = 1
+        @Invariant({ i >= 1 })
+        while (true) {
+            n2s.send(i)
+            i = i + 1
+        }
+    }
+    async {                                              // GSquares
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            int v = n2s.first()
+            s2p.send(v * v)
+            i = i + 1
+        }
+    }
+    List<Integer> printed = []                           // GPrint
+    int j = 0
+    @Invariant({ printed != null && j >= 0 && printed.size() == j && Forall.range(0, printed.size(), { int k -> printed[k] == (k + 1) * (k + 1) }) })
+    while (true) {
+        int s = s2p.first()
+        printed.add(s)
+        j = j + 1
+    }
+}
+```
+
 And the shape his tradition cares most about — the **client–server exchange**,
 whose deadlock-freedom the Welch/Martin design rules argue by ordering — is certified here by the same
 theorem, mechanised (the wait-for order is well-founded), *and* its value proves:
@@ -308,21 +347,18 @@ is the loop engine's own boundary, so drained values are spelled `toList()` or c
 looping `ALT` — the multiplexer — is covered too (Phase 253), with the interleaving left exactly as
 nondeterministic as it is.
 
-What remains is the **non-terminating process** — `while (true) { … }`, which is how the book actually
-writes `GNumbers`, `GPrint` and every server: the generator that counts forever, the printer that drains
-forever, the fair server that answers forever. Nothing above applies to it, for a precise reason: every
-certificate on this page is built on a *count* — a `@Decreases` that bounds the loop, a sequence whose
-length the invariant carries, a cursor that reaches the end of a list — and an infinite process has none.
-Its correctness splits in two. The **safety** half — every iteration preserves its invariant, every send
-meets its channel contract, the k-th element of an infinite stream is what the generator's invariant says
-— is within reach of the machinery here (the loop engine already proves per-iteration preservation; what
-is missing is a way to *declare* a loop non-terminating and be certified for safety alone, termination
-honestly not claimed). The **liveness** half — every element sent is eventually received, the server
-eventually answers every client, the network as a whole never deadlocks — is not a count and not an
-invariant: it needs a *fairness* assumption about the scheduler and about `ALT`'s choice, and a temporal
-argument (the "eventually") that the sequential fragment has no word for. That, and the session-typed
-protocol view of a channel, is the research conversation, not a demo: the same guarantees GPP establishes
-offline by formal methods, issued incrementally by the compiler.
+The **non-terminating process** — `while (true) { … }`, which is how the book actually writes `GNumbers`,
+`GPrint` and every server — is covered for its **safety half** (Phase 254): the loop's invariant preserved
+per iteration, every send meeting its channel contract, every received value carrying its producer's
+relation; termination is not claimed, and the one thing that cannot be proved this way — that a receive from
+an infinite producer is *eventually served* — is assumed and said so in a network note. Every certificate on
+this page rests on a count or an invariant, and that is exactly the line. What remains is the **liveness**
+half: every element sent is eventually received, the server eventually answers every client, the network
+as a whole never deadlocks over an infinite run. That is not a count and not an invariant: it needs a
+*fairness* assumption about the scheduler and about `ALT`'s choice, and a temporal argument (the
+"eventually") that the sequential fragment has no word for. That, and the session-typed protocol view of a
+channel, is the research conversation, not a demo: the same guarantees GPP establishes offline by formal
+methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

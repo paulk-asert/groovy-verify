@@ -2554,6 +2554,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // The fallback passes don't discharge user `assert`s, so any in this body go unchecked here — say so
             // loudly rather than skip silently (and they are not assumed in the postcondition: trusted stays false).
             for (AssertStatement as : collectAssertStatements(body)) {
+                if (as.getNodeMetaData(ASSUME_ONLY_KEY) != null) continue
                 addStaticTypeError(Reporter.formatImplicitSkipped("assertion",
                     "the method body is outside the value-flow fragment (a re-assignment or loop)"), as)
             }
@@ -3896,6 +3897,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 reqAst, assumePos, assumeNeg, preceding)
             return
         }
+        if (handleAsserts && st instanceof AssertStatement && st.getNodeMetaData(ASSUME_ONLY_KEY) != null) return   // Phase 254 — assumed, reported elsewhere
         if (handleAsserts && st instanceof AssertStatement) {
             // An in-loop `assert P` (e.g. the masking-fix class-invariant assert after a shared write): prove P
             // holds under the loop invariant ∧ guard ∧ the replayed preceding body. First discharge any obligations
@@ -4253,6 +4255,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final Set<Expression> sanctionedFroms = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         ConsumerInfo curConsumer                                                 // while rewriting a consumer loop's body
+        int fuelCounter                                                          // Phase 254 — free guards for while (true) loops
         /** The shadow list a streaming root or its map stage is drained from, else null. */
         String streamListOf(String v) {
             String r = rootOf(v)
@@ -5337,6 +5340,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean elementRelation
         final List<String> derived = new ArrayList<String>()
         final Map<String, MethodCallExpression> aliases = new HashMap<String, MethodCallExpression>()   // Phase 252 — `def v = in.first()` in the same loop
+        boolean infinite                                                     // Phase 254 — produced by a `while (true)`
     }
 
     /** Phase 252 — a consumer loop: a specified unit-counter loop reading one element per iteration from
@@ -5418,12 +5422,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (writesVar(body, counter)) { why[0] = "writes its counter '${counter}' in the body"; return null }
         } else if (loop instanceof WhileStatement) {
             Set<String> guardNames = varNames(((WhileStatement) loop).booleanExpression)
+            boolean forever = isForever(loop)                                // Phase 254 — `while (true)`: no guard to test
             for (Statement st : top) {
                 if (!(st instanceof ExpressionStatement)) continue
                 Expression e = ((ExpressionStatement) st).expression
                 String v = unitIncrementTarget(e)
-                if (v == null || !guardNames.contains(v)) continue          // the counter is the stepped var the guard tests
-                if (counter != null) { why[0] = 'steps two guard counters'; return null }
+                if (v == null || (!forever && !guardNames.contains(v))) continue   // the counter is the stepped var the guard tests
+                if (counter != null) { why[0] = forever ? 'steps two counters (a while (true) needs exactly one)' : 'steps two guard counters'; return null }
                 counter = v
             }
             if (counter == null) { why[0] = 'has no unit counter (a single i = i + 1 per iteration on a variable the guard tests)'; return null }
@@ -5459,6 +5464,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     private static boolean isUnitIncrement(Expression e, String v) { unitIncrementTarget(e) == v }
+
+    /** Phase 254 — `while (true)`: the non-terminating process's loop. */
+    private static boolean isForever(LoopingStatement loop) {
+        if (!(loop instanceof WhileStatement)) return false
+        Expression g = stripCasts(((WhileStatement) loop).booleanExpression.expression)
+        g instanceof ConstantExpression && Boolean.TRUE.equals(((ConstantExpression) g).value)
+    }
 
     /** `i++` / `++i` / `i += 1` / `i = i + 1` → `i`; else null. */
     private static String unitIncrementTarget(Expression e) {
@@ -5549,6 +5561,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 else {
                     StreamInfo info = new StreamInfo()
                     info.root = c; info.loop = (LoopingStatement) ls[0]; info.sendCall = (MethodCallExpression) ls[2]
+                    info.infinite = isForever(info.loop)
                     List<Expression> a = (info.sendCall.arguments instanceof TupleExpression) ? ((TupleExpression) info.sendCall.arguments).expressions : Collections.<Expression>emptyList()
                     if (a.size() != 1) why = 'has a send that is not single-argument'
                     else {
@@ -5789,14 +5802,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         BlockStatement block = new BlockStatement(rewriteStreamStmts(blockIn, rw), lb instanceof BlockStatement ? ((BlockStatement) lb).variableScope : null)
         block.setSourcePosition(lb)
         Statement out
-        if (loop instanceof WhileStatement) out = new WhileStatement(((WhileStatement) loop).booleanExpression, block)
+        // Phase 254 — a `while (true)` process in the flattened model gets a FREE guard (`loop$fuelN > 0`, an
+        // unassigned name — havoc-by-default): the process may be observed at any iteration boundary, so
+        // what follows it (the OTHER processes) is reasoned about under its invariant alone, never under
+        // the vacuous ¬true. Its own safety VCs (establishment, preservation) are unchanged.
+        Expression fuelGuard = isForever(loop) ? ContractExpansionTransform.reparse("loop\$fuel${++rw.fuelCounter} > 0") : null
+        if (loop instanceof WhileStatement) out = new WhileStatement(fuelGuard != null ? new BooleanExpression(fuelGuard) : ((WhileStatement) loop).booleanExpression, block)
         else if (loop instanceof DoWhileStatement) out = new DoWhileStatement(((DoWhileStatement) loop).booleanExpression, block)
         else { ForStatement f = (ForStatement) loop; out = new ForStatement(f.variable, f.collectionExpression, block) }
         out.setSourcePosition((Statement) loop); out.copyNodeMetaData((Statement) loop)
         if (spec != null) {
             LoopSpec s2 = new LoopSpec()
             s2.invariants = new ArrayList<Expression>(spec.invariants)
-            s2.variant = spec.variant; s2.guard = spec.guard; s2.init = spec.init
+            s2.variant = spec.variant; s2.guard = fuelGuard != null ? fuelGuard : spec.guard; s2.init = spec.init
             s2.forInVar = spec.forInVar; s2.forInBind = spec.forInBind
             s2.isDoWhile = spec.isDoWhile; s2.autoInvariantOnly = spec.autoInvariantOnly
             s2.body = rewriteStreamStmts(spec.body, rw)
@@ -5805,6 +5823,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // loop's own invariants, its injected sequence facts and ¬guard hold throughout (nothing here
             // writes the producer's counter or its list) — the element-exists obligations discharge on them.
             if (consumer != null) {
+                // Phase 254 — the elements read so far exist: `counter - a <= x$q.size()` per consumed stream.
+                // With a finite producer this followed from its exit fact; an infinite producer has none, and
+                // a stage's output count must still be bounded by its input count (established at 0, preserved
+                // by the read's element-exists fact — asserted or assumed — each iteration).
+                s2.invariants.addAll(consumerBoundInvariants(consumer, rw))
                 // Phase 253 — the looping ALT's cursors: each within its list, and together they count the iterations
                 if (consumer.altVar != null) {
                     List<String> parts = new ArrayList<String>()
@@ -5829,11 +5852,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     LoopSpec ps = (LoopSpec) ((Statement) p.loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
                     if (ps != null) {
                         s2.invariants.addAll(ps.invariants)
-                        s2.invariants.add(new NotExpression(ps.guard))
+                        if (!p.infinite) s2.invariants.add(new NotExpression(ps.guard))   // Phase 254 — an infinite producer has no exit fact
                     }
                     s2.invariants.addAll(streamInvariants(p, rw))
                     ConsumerInfo pc = rw.consumers.get((Statement) p.loop)
-                    if (pc != null) for (String v : pc.receives.values()) todo.add(rw.rootOf(v))
+                    if (pc != null) {
+                        s2.invariants.addAll(consumerBoundInvariants(pc, rw))       // Phase 254 — the stage's own read bounds
+                        for (String v : pc.receives.values()) todo.add(rw.rootOf(v))
+                        for (String v : pc.altChans) todo.add(rw.rootOf(v))
+                    }
                 }
             }
             out.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, s2)
@@ -5857,6 +5884,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             a.setSourcePosition(de)
             a.putNodeMetaData(ASSERT_LABEL_KEY, ("the ALT over ${ci.altChans.collect { "'" + it + "'" }.join(', ')} (line ${de.lineNumber}) may block forever — " +
                 "no branch may have an element left (the multiplexer loop reads past what its producers send)").toString())
+            for (String c : ci.altChans) {                                    // Phase 254 — an infinite branch can always serve
+                StreamInfo p = rw.streams.get(rw.rootOf(c))
+                if (p != null && p.infinite) a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)
+            }
             out.add(a)
         }
         VariableExpression marker = new VariableExpression(Encoder.CHANNEL_SELECT_MARKER)
@@ -5894,6 +5925,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /** Phase 254 — a consumer loop's read bounds: the elements it has read so far exist in each consumed stream. */
+    private static List<Expression> consumerBoundInvariants(ConsumerInfo ci, ChanRewrite rw) {
+        List<Expression> out = new ArrayList<Expression>()
+        Set<String> seen = new HashSet<String>()
+        for (String v : ci.receives.values()) {
+            if (!seen.add(v)) continue
+            Expression e = ContractExpansionTransform.reparse("${ci.counter} - ${entryText(ci.counterInit)} <= ${v}\$q.size()")
+            if (e != null) out.add(norm(e, rw))
+        }
+        out
+    }
+
     /** Phase 252 — the shadow-list read a sanctioned receive becomes inside its consumer loop: `x$q[i - a]`. */
     private static Expression consumerRead(MethodCallExpression recv, ChanRewrite rw) {
         ConsumerInfo ci = rw.curConsumer
@@ -5915,6 +5958,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         a.setSourcePosition(recv)
         a.putNodeMetaData(ASSERT_LABEL_KEY, ("the receive on '${v}' (line ${recv.lineNumber}) may block forever — " +
             "the element it reads may never be sent (the consumer loop reads past what the producer loop sends)").toString())
+        StreamInfo p = rw.streams.get(rw.rootOf(v))
+        if (p != null && p.infinite) a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)   // Phase 254 — liveness: assumed, reported
         a
     }
 
@@ -6135,6 +6180,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 252 — node metadata on a synthesized {@code assert}: the sentence the diagnostic reports instead of the condition text. */
     static final String ASSERT_LABEL_KEY = 'verification.assertLabel'
+    /** Phase 254 — node metadata on a synthesized {@code assert} that is ASSUMED, not discharged: a liveness fact
+     *  (an element of a non-terminating producer's stream exists) that the network check reports as not claimed. */
+    static final String ASSUME_ONLY_KEY = 'verification.assumeOnly'
 
     /** A new body with every literal-bounded channel loop unrolled; the SAME body when there is none. */
     private static Statement unrollLiteralChannelLoops(Statement body, Set<String> ch) {
@@ -7313,6 +7361,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 252 — a consumer loop's sanctioned receives are decided by the value model (the element-exists
         // obligation under the producer's summary), not by the wait-for graph: they leave it here.
         Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        Map<String, StreamInfo> infiniteProducers = new HashMap<String, StreamInfo>()
         try {
             Map<String, String> parent = new HashMap<String, String>()
             Set<String> subscribers = new HashSet<String>()
@@ -7320,8 +7369,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             StreamScan sc = scanStreams(body, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes)
             sanctionedReceives.addAll(sc.sanctionedReceives)
             sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
+            for (StreamInfo p : sc.streams.values()) if (p.infinite) infiniteProducers.put(p.root, p)   // Phase 254
         } catch (Throwable ignored) {
         }
+        Set<String> livenessNoted = new HashSet<String>()
         Set<String> paramChans = new HashSet<String>()
         for (Parameter p : node.parameters) {
             String tn = p.type?.nameWithoutPackage
@@ -7349,7 +7400,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean isIter = isIterateUse(u)
             boolean isSelect = u.method == 'select'
             if (!isSend && !isClose && !isRead && !isIter && !isSelect) continue
-            if ((isRead || isSelect) && sanctionedReceives.contains(u.anchor)) continue     // Phase 252/253
+            if ((isRead || isSelect) && sanctionedReceives.contains(u.anchor)) {           // Phase 252/253
+                // Phase 254 — served by a non-terminating producer: that it IS served is liveness, not claimed.
+                StreamInfo p = infiniteProducers.get(root)
+                if (p != null && livenessNoted.add(root)) {
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        "the ${isSelect ? 'ALT' : 'receive'} on '${u.chan}' (line ${u.line}) is served by a non-terminating producer " +
+                        "(the while (true) at line ${((Statement) p.loop).lineNumber}) — that it is eventually served is a liveness " +
+                        "property, not claimed; the safety of the values received is certified under that assumption"), u.anchor)
+                }
+                continue
+            }
             if (u.conditional || (u.proc != null && u.proc.conditional)) {
                 // Phase 250 — a conditional SEND (inside a loop / if / catch) never blocks and stalls
                 // nobody: it only makes its root's element COUNT non-static. It leaves the graph, and
