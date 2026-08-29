@@ -26,7 +26,7 @@ import static cases.CaseDsl.*
 class G312_p248_bounded_streaming {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 248 bounded streaming (slice 8 of the SEQ/PAR ladder): a loop with a LITERAL bound that carries channel traffic — for (i in 0..<3), for (i in 1..3), for (int i = 0; i < 3; i++), nested — is unrolled before the structural walk (body copied per iteration, the index frozen to its constant, the body\'s locals renamed apart; async arms rebuilt, never mutated), so a generator loop, a consumer loop and a whole generator → map → drain pipeline certify end to end: values PROVE (the drained list, the pipeline sum), a wrong sum is refuted, and a count mismatch between a producer loop and a consumer loop is a NAMED deadlock ("the 3rd receive … only 2 sends"). Honest boundary: literal bounds only, up to 32 iterations — a symbolic bound (0..<n) stays a loop and skips loudly as the streaming frontier.'
+    static final String DESCRIPTION = 'Phase 248 bounded streaming (slice 8 of the SEQ/PAR ladder): a loop with a LITERAL bound that carries channel traffic — for (i in 0..<3), for (i in 1..3), for (int i = 0; i < 3; i++), nested — is unrolled before the structural walk (body copied per iteration, the index frozen to its constant, the body\'s locals renamed apart; async arms rebuilt, never mutated), so a generator loop, a consumer loop and a whole generator → map → drain pipeline certify end to end: values PROVE (the drained list, the pipeline sum), a wrong sum is refuted, and a count mismatch between a producer loop and a consumer loop is a NAMED deadlock ("the 3rd receive … only 2 sends"). Honest boundary: literal bounds only, up to 32 iterations — a symbolic bound (0..<n) stays a loop and skips loudly (since Phase 251 with the streaming model\'s reason: a range for-in is not the unit-counter while / C-style loop the symbolic model rides).'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -168,7 +168,10 @@ class G312_p248_bounded_streaming {
                     }""")],
 
         // ---------- the frontier, loudly ----------
-        [group: 'P248 bounded streaming', name: 'a symbolic bound stays a loop: the streaming frontier skips', expect: 'not one-shot',
+        // A symbolic bound does not unroll. (Since Phase 251 the loud reason is the streaming model's: a
+        // range for-in is not the unit-counter loop it rides — write `while (i < n) … i = i + 1` with an
+        // @Invariant / @Decreases and the symbolic stream PROVES.)
+        [group: 'P248 bounded streaming', name: 'a symbolic bound stays a loop: the streaming frontier skips', expect: 'streaming model takes a while / C-style',
          src: tc("""class C {
                         @Ensures({ result.size() == n })
                         static List<Integer> symbolic(int n) {
@@ -180,7 +183,7 @@ class G312_p248_bounded_streaming {
                             return out.toList()
                         }
                     }""")],
-        [group: 'P248 bounded streaming', name: 'a bound over the unrolling limit skips', expect: 'not one-shot',
+        [group: 'P248 bounded streaming', name: 'a bound over the unrolling limit skips', expect: 'streaming model takes a while / C-style',
          src: tc("""class C {
                         @Ensures({ result.size() == 40 })
                         static List<Integer> big() {

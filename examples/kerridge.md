@@ -44,7 +44,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error (Phase 245) |
 | `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
 | `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
-| `GNumbers(n)`, symbolic | a `for (i in 0..<n)` producer loop + `close()` | termination certified — the drain waits for the close, not a count (Phase 250); values are the frontier |
+| `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified (Phase 250); the drained sequence proves element by element — the channel is the list the loop builds (Phase 251) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 
 ## The one-shot shapes verify end to end
@@ -103,6 +103,32 @@ static int squaresPipeline() {
         printed = printed + v
     }
     return printed
+}
+```
+
+And with a *symbolic* count — `GNumbers(n)` as the book means it, `n` a parameter — the same network proves
+its drained sequence element by element (Phase 251): the channel is modelled as the list the generator loop
+builds, its size and element facts injected into the loop's spec, so the author writes only the generator's
+own `@Invariant` / `@Decreases`:
+
+<!-- doclint:case p246-kerridge-gallery/c03-gnumbers-n-gsquares-symbolic-the-k-th-square-proves -->
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
+static List<Integer> squares(int n) {
+    groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> s2p = n2s.map { it * it }
+    async {
+        int i = 1
+        @Invariant({ 1 <= i && i <= n + 1 })
+        @Decreases({ n + 1 - i })
+        while (i <= n) {
+            n2s.send(i)
+            i = i + 1
+        }
+        n2s.close()
+    }
+    return s2p.toList()
 }
 ```
 
@@ -171,19 +197,16 @@ forever, and the FIFO pairing knows it.
 
 ## The honest boundary, loudly
 
-One port stays *deliberately* out of reach, and says so. **GNumbers** as the book means it — the *infinite*
-(or symbolically bounded) generator behind every pipeline — is *streaming*: the checker's channel model is a
-**bounded FIFO** whose element count is static (Phase 247), and only a *literal* loop bound unrolls into it
-(Phase 248 — bounded model checking, ≤ 32 iterations). A `while (true)` generator or a `for (i in 0..<n)`
-with symbolic `n` refuses the *value* model outright and its value claims skip loudly — and the same line
-divides the one-shot `ALT` (certified) from the looping multiplexer (`while (true) { select … }`, the
-frontier). What *is* certified for the symbolic generator is its **termination** (Phase 250): a send never
-blocks, so `GNumbers(n) → GPrint` with `close()` after the loop is deadlock-free for every `n`, and the
-forgotten close stays the named hang. That leaves the value half — symbolic send/receive counts carried by
-loop invariants, the channel as a sequence the producer's invariant describes; session-typed protocols
-behind it — as the ladder's recorded next rung, which makes "pick a streaming example and see what
-certification takes" a research conversation, not a demo: the same guarantees GPP establishes offline by
-formal methods, issued incrementally by the compiler.
+What stays out of reach says so. The generator side is now covered on both halves — termination (Phase 250)
+and the drained sequence (Phase 251) — for a **specified unit-counter loop** (`while (i < n) … i = i + 1`,
+or C-style, carrying the loop's `@Invariant` / `@Decreases`); a `while (true)` generator, a range `for`-in
+with a symbolic bound, a producer with two sends per iteration, or a one-at-a-time `first()` on a stream
+refuses the value model with the reason named. On the consumer side, the *accumulating* drain
+(`for (v in ch) { sum += v }`) is the loop engine's own boundary — a loop after a list-building loop — so
+drained values are spelled `toList()`. And the same line divides the one-shot `ALT` (certified) from the
+**looping consumer** proper — the multiplexer, the fair server, `while (true) { select … }` — which is now
+the ladder's recorded next rung: a research conversation, not a demo, on the same guarantees GPP establishes
+offline by formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

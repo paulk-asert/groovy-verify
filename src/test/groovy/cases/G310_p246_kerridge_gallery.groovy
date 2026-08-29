@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, and since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, and since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -209,6 +209,31 @@ class G310_p246_kerridge_gallery {
                                 printed = printed + v
                             }
                             return printed
+                        }
+                    }""")],
+
+        // ---------- c03's pipeline, symbolic (Phase 251) ----------
+        // GNumbers as the book means it — a counter loop with a symbolic bound — through GSquares to a
+        // drain: the drained list's size and every element prove, with the user writing only the
+        // generator loop's own @Invariant / @Decreases (the channel's sequence facts are injected).
+        [group: 'P246 Kerridge gallery', name: 'c03 GNumbers(n) → GSquares, symbolic: the k-th square proves', ok: true,
+         src: tc("""class C {
+                        @Requires({ n >= 0 })
+                        @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
+                        static List<Integer> squares(int n) {
+                            groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
+                            groovy.concurrent.AsyncChannel<Integer> s2p = n2s.map { it * it }
+                            async {
+                                int i = 1
+                                @Invariant({ 1 <= i && i <= n + 1 })
+                                @Decreases({ n + 1 - i })
+                                while (i <= n) {
+                                    n2s.send(i)
+                                    i = i + 1
+                                }
+                                n2s.close()
+                            }
+                            return s2p.toList()
                         }
                     }""")],
 

@@ -740,6 +740,53 @@ model still refuses loop traffic loudly (`Skipped channel verification … not o
 count symbolically — the channel as a sequence the producer's loop invariant describes — is the value half
 of the frontier, now the only half left.
 
+### Symbolic streaming — the channel as the sequence its producer loop builds (Phase 251)
+
+The value half of the streaming frontier, and the last rung of the ladder's second run. A channel whose
+*only* send is the send statement of a unit-counter loop carrying `@Invariant` / `@Decreases` is modelled as
+the **list that loop builds**: `send` appends, a `map {}` stage appends its transform in lockstep, `toList()`
+reads the list, `close()` is the marker drains are scheduled behind. The sequence facts are **injected into
+the loop's spec** — `size == counter − entry` and, when the sent expression is a function of the counter and
+loop constants, the *k*-th element's value — so the user writes only the generator loop's own invariant and
+never names the shadow list. `GNumbers(n)` as the book means it, with `n` a parameter, proves its drained
+list element by element, through `GSquares`:
+
+<!-- doclint:case p251-symbolic-streaming/gnumbers-n-gsquares-drained-the-k-th-element-is-k-squared -->
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k * k }) })
+static List<Integer> squares(int n) {
+    groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> sq = nums.map { it * it }
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= n })
+        @Decreases({ n - i })
+        while (i < n) {
+            nums.send(i)
+            i = i + 1
+        }
+        nums.close()
+    }
+    return sq.toList()
+}
+```
+
+Everything else is the loop engine's own proof, unchanged: the user's invariant carries the counter's bounds,
+the loop VCs verify the body — the send-side channel contract included, so `AsyncChannel<@PositiveOrZero
+Integer>` with `send(i - 1)` refutes at the first iteration — and the drained list's claims follow (a wrong
+size refutes; a parameter start `int i = lo` proves `n − lo`; a C-style producer in the body works the same).
+Two details earned their comments: a loop's spec inside an `async {}` arm is now captured at CONVERSION (the
+flattening puts the arm's loop at the body's top level), and the injected text never spells `(entry) + k` —
+Groovy parses a parenthesised bare identifier before an operand as a *cast*.
+
+The boundaries, loud and named: a one-at-a-time `first()` on a streaming channel ("drain it instead"), a
+producer loop without a spec, a second send, a non-unit counter or a range `for`-in (the model rides a
+`while` / C-style unit-counter loop), a non-int element type — and the accumulating `for (v in ch)` drain of
+a stream, which is the loop engine's own "a loop after a list-building loop" skip: `toList()` is the
+drained-value spelling. What the ladder has *not* modelled remains the looping consumer proper — the ALT
+multiplexer, the fair server — where the count is not the whole story.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

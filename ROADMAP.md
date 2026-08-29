@@ -11435,6 +11435,63 @@ half as the only half left).
 
 ---
 
+## Phase 251 — symbolic streaming: the channel as the sequence its producer loop builds  *(shipped — slice 11 of the SEQ/PAR ladder; the value half of the streaming frontier)*
+
+Slice 2 of the plan chosen after Phase 249. The probe came first, as promised: a plain list built by a
+`while` loop with `@Invariant({ q != null && 0 <= i && i <= n && q.size() == i && Forall.range(0,
+q.size(), { int k -> q[k] == k * k }) })` PROVES `result.size() == n` and the element relation in the
+existing list model — so no sequence theory was needed, and the design became a rewrite plus injected
+invariants. Two probe findings shaped it: a prefix ghost (`int i0 = i`) is havoced by the loop VCs (the
+entry value must be a literal or a parameter expression, spelled directly), and the invariant needs
+`q != null`.
+
+**The model.** A channel whose ONLY send is the send statement of a unit-counter loop carrying a LoopSpec
+(`scanStreams`: exactly one send, at the top level of a top-level loop — main's or an arm's; a created
+channel with int elements; `unitCounter`: C-style `int i = a; i < …; i++` or a `while` whose body steps
+one var by one exactly once, its entry value the last plain declaration/assignment before the loop, a
+literal or parameter expression) is rewritten to the list the loop builds: `List<Integer> c$q = []` at
+the create site, `c.send(E)` → `c$q.add(E)` (the Phase 242 bounds assert kept in front — checked per
+iteration by the loop VC), a map-only derived stage `d` → `d$q.add(f(E))` in lockstep (stage fusion,
+exact for a pure per-element transform; `derivedValue` composes the chain), `c.toList()` → `c$q`,
+`c.close()` → `def c$closed = true`, the marker the Phase 249 scheduler orders every reader of the shadow
+lists behind (`listOwner`). The loop statement is REBUILT (`rewriteStreamLoop` — never mutated: the arm's
+loop node is the live AST, and groovy-contracts' `@Decreases` instrumentation was visible in the flattened
+dump) with a rebuilt LoopSpec: `spec.body` rewritten the same way, and the sequence facts appended
+(`streamInvariants`): `c$q != null && c$q.size() == i - a` and, when E depends only on the counter and
+loop-constant names, `Forall.range(0, c$q.size(), { int k -> c$q[k] == E[i := k + a] })`; per stage
+`d$q.size() == c$q.size()` and its own relation. The user never names a shadow list.
+
+**Three finds.** (1) Loop specs inside `async {}` arms were never captured — `captureLoopsStmt` now
+descends into arm closures (the flattening puts the arm's loop at the body's top level, where
+`findLoopSites` looks). (2) `ClosureExpression.transformExpression` does not transform the closure's
+code, so the `__E__` placeholder inside the quantifier closure survived substitution — `substituteVar`
+rebuilds closure bodies. (3) `(lo) + k` is a CAST in Groovy (`(lo)(+k)`): the injected text spells the
+offset `k + lo`. `reparse` is package-visible; the injected invariants go through `ContractNormalizer`
+like the user's. `rewriteChStatements` handles the producer loop, the create/stage declarations, the
+close marker and `for (v in c)` over a stream (`streamDrainLoop`: the same loop over `c$q`, its spec
+renamed — the loop engine then decides); `rewriteChExpr` maps `toList()` / `collect {}` on a stream.
+
+**Verdicts.** The streaming send is sanctioned; every other loop-send channel carries its reason
+(`whyNot`, shape before spec: a range `for`-in "is a for-in (the streaming model takes a while / C-style
+unit-counter loop)", no spec, two sends, a non-unit counter, a non-int element); `first()` on a stream
+"is received one element at a time from a streaming producer (drain it instead)"; `each`/`collect` on a
+stream named. `desugarChannels` / `channelModelVerdicts` take the method's parameter names (and the
+MethodNode) for the entry-value and normalisation checks.
+
+Cases (G315, new group, 12): `GNumbers(n)` drained — size, the k-th element, through `GSquares` (k²), a
+C-style producer, a parameter start (`n − lo`), a wrong size refuted; the element contract under the
+loop invariant (proves) and refuted at the first iteration; the loud boundaries (one-at-a-time receive;
+no spec; non-unit counter; the accumulating `for`-in drain = the loop engine's "nested loop writes a
+collection" skip — `toList()` is the drained-value spelling). G310 gains the symbolic c03 pipeline
+(`result[k] == (k + 1)²`); G312's two frontier pins now expect the streaming reason. Docs: the Phase 251
+subsection in `examples/concurrency.md` (one linked case), the CAPABILITIES row, the README ladder +
+gallery bullets, `examples/kerridge.md` (the symbolic pipeline joins the verified tier with its case; the
+vocabulary row; the boundary section rewritten — the generator side is covered on both halves for a
+specified unit-counter loop, the accumulating drain is the loop engine's boundary, and the looping
+consumer — multiplexer, fair server — is the recorded next rung).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

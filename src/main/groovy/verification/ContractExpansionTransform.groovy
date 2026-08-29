@@ -32,7 +32,10 @@ import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
 import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.CastExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
@@ -836,8 +839,29 @@ class ContractExpansionTransform implements ASTTransformation {
             // finds a loop by this metadata, not by node type), non-destructively (the AST still compiles to `.each`).
             LoopSpec spec = eachLoopSpec((ExpressionStatement) st, source, inferLoops, mn)
             if (spec != null) { st.setNodeMetaData(LOOP_SPEC_KEY, spec); found = true }
+            // Phase 251 — a loop inside an `async { … }` arm: the SEQ/PAR channel rewrite flattens the arm into
+            // the body, so a producer loop's @Invariant/@Decreases must be captured here too (the closure's
+            // statements are shared nodes, so the metadata is seen after the flattening).
+            ClosureExpression arm = asyncArmClosure(((ExpressionStatement) st).expression)
+            if (arm != null && arm.code instanceof BlockStatement) {
+                found |= captureLoopsIn(((BlockStatement) arm.code).statements, source, inferLoops, mn)
+            }
         }
         found
+    }
+
+    /** The closure of an `async { … }` call (either call shape; also `def t = async { … }` / `t = async { … }`). */
+    private static ClosureExpression asyncArmClosure(Expression e) {
+        Expression x = e
+        if (x instanceof DeclarationExpression) x = ((DeclarationExpression) x).rightExpression
+        else if (x instanceof BinaryExpression && ((BinaryExpression) x).operation.type == Types.ASSIGN) x = ((BinaryExpression) x).rightExpression
+        while (x instanceof CastExpression) x = ((CastExpression) x).expression
+        Expression args = null
+        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'async') args = ((MethodCallExpression) x).arguments
+        else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'async') args = ((StaticMethodCallExpression) x).arguments
+        if (!(args instanceof TupleExpression)) return null
+        List<Expression> a = ((TupleExpression) args).expressions
+        (a.size() == 1 && a.get(0) instanceof ClosureExpression) ? (ClosureExpression) a.get(0) : null
     }
 
     /** {@code xs.each { x -> body }} (or {@code xs.eachWithIndex { x, i -> body }}) modelled as the for-in
@@ -1174,7 +1198,7 @@ class ContractExpansionTransform implements ASTTransformation {
     }
 
     /** Re-parse a captured contract expression's text into a fresh CONVERSION AST. */
-    private static Expression reparse(String text) {
+    /* package */ static Expression reparse(String text) {    // also used by Phase 251's streaming invariants
         if (text == null) return null
         try {
             List<ASTNode> nodes = new AstBuilder().buildFromString(CompilePhase.CONVERSION, true, text)
