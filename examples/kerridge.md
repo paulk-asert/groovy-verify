@@ -37,7 +37,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 
 | Kerridge / JCSP | groovy.concurrent | What the checker does with it |
 | --- | --- | --- |
-| `Channel.one2one()` | `AsyncChannel.create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
+| `Channel.one2one()` | `val c = AsyncChannel.<Integer>create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
 | a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked (Phase 240) |
 | typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives (Phase 242) |
 | the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
@@ -49,6 +49,13 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253) |
 
+A note on spelling: the ports use Groovy 6's `val` (or `def` / `var`) with the factory's **type witness** —
+`val c = AsyncChannel.<Integer>create(n)`. The witness is what tells static type checking (and the checker)
+the element type; a bare `AsyncChannel.create(n)` under `def` is an `AsyncChannel<Object>` and neither can
+say anything about its elements. Two places still want a declared type: an element *contract*
+(`AsyncChannel<@PositiveOrZero Integer> c = …`, Phase 242 — the constraint has to sit on the generic), and an
+ALT's result (`ChannelSelect.Result r = await …`, Phase 249).
+
 ## The one-shot shapes verify end to end
 
 The book's first network — c02's `RunHelloWorld`, a producer and consumer under `PAR` over a one2one
@@ -58,7 +65,7 @@ channel — with the exchanged value *proved*:
 ```groovy
 @Ensures({ result == 'Hello' })
 static String helloWorld() {
-    AsyncChannel<String> connect = AsyncChannel.create(1)
+    val connect = AsyncChannel.<String>create(1)
     async { connect.send('Hello'); connect.close() }
     return connect.first()
 }
@@ -72,7 +79,7 @@ them back the other way round and the claim is refuted with a counterexample):
 ```groovy
 @Ensures({ result == 'Hello World' })
 static String produceHW() {
-    AsyncChannel<String> connect = AsyncChannel.create(2)
+    val connect = AsyncChannel.<String>create(2)
     async { connect.send('Hello'); connect.send('World'); connect.close() }
     String first = connect.first()
     String second = connect.first()
@@ -92,8 +99,8 @@ included, since the drain's `close()` dependency is satisfiable:
 ```groovy
 @Ensures({ result == 14 })
 static int squaresPipeline() {
-    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
-    AsyncChannel<Integer> s2p = n2s.map { it * it }
+    val n2s = AsyncChannel.<Integer>create(4)
+    val s2p = n2s.map { it * it }
     async {
         for (n in 1..3) {
             n2s.send(n)
@@ -118,8 +125,8 @@ own `@Invariant` / `@Decreases`:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
 static List<Integer> squares(int n) {
-    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
-    AsyncChannel<Integer> s2p = n2s.map { it * it }
+    val n2s = AsyncChannel.<Integer>create(4)
+    val s2p = n2s.map { it * it }
     async {
         int i = 1
         @Invariant({ 1 <= i && i <= n + 1 })
@@ -144,8 +151,8 @@ receive, and the renaming-apart of the three loops' counters are the checker's:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
 static List<Integer> network(int n) {
-    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
-    AsyncChannel<Integer> s2p = AsyncChannel.create(4)
+    val n2s = AsyncChannel.<Integer>create(4)
+    val s2p = AsyncChannel.<Integer>create(4)
     async {                                              // GNumbers
         int i = 1
         @Invariant({ 1 <= i && i <= n + 1 })
@@ -188,8 +195,8 @@ theorem, mechanised (the wait-for order is well-founded), *and* its value proves
 ```groovy
 @Ensures({ result == x + 1 })
 static int clientServer(int x) {
-    AsyncChannel<Integer> request = AsyncChannel.create(1)
-    AsyncChannel<Integer> reply = AsyncChannel.create(1)
+    val request = AsyncChannel.<Integer>create(1)
+    val reply = AsyncChannel.<Integer>create(1)
     request.send(x)
     async { int r = request.first(); reply.send(r + 1) }
     return reply.first()
@@ -206,8 +213,8 @@ a deadlock only if *every* guard is stuck:
 ```groovy
 @Ensures({ result == x || result == y })
 static int alt(int x, int y) {
-    AsyncChannel<Integer> left = AsyncChannel.create(1)
-    AsyncChannel<Integer> right = AsyncChannel.create(1)
+    val left = AsyncChannel.<Integer>create(1)
+    val right = AsyncChannel.<Integer>create(1)
     async { left.send(x); left.close() }
     async { right.send(y); right.close() }
     ChannelSelect.Result chosen = await ChannelSelect.from(left, right).select()
@@ -225,8 +232,8 @@ is (an order claim is refuted, honestly), and one iteration too many is the name
 @Requires({ na >= 0 && nb >= 0 })
 @Ensures({ result.size() == na + nb })
 static List<Integer> multiplex(int na, int nb) {
-    AsyncChannel<Integer> left = AsyncChannel.create(4)
-    AsyncChannel<Integer> right = AsyncChannel.create(4)
+    val left = AsyncChannel.<Integer>create(4)
+    val right = AsyncChannel.<Integer>create(4)
     async {
         int i = 0
         @Invariant({ 0 <= i && i <= na })
@@ -247,7 +254,7 @@ static List<Integer> multiplex(int na, int nb) {
         }
         right.close()
     }
-    AsyncChannel<Integer> merged = AsyncChannel.create(8)
+    val merged = AsyncChannel.<Integer>create(8)
     int j = 0
     @Invariant({ 0 <= j && j <= na + nb })
     @Decreases({ na + nb - j })
@@ -270,8 +277,8 @@ exercises refuse to compile, each with its cause spelled out:
 <!-- doclint:case p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
 ```groovy
 static int deadlockExercise() {
-    AsyncChannel<Integer> aToB = AsyncChannel.create(1)
-    AsyncChannel<Integer> bToA = AsyncChannel.create(1)
+    val aToB = AsyncChannel.<Integer>create(1)
+    val bToA = AsyncChannel.<Integer>create(1)
     async { int x = bToA.first(); aToB.send(x) }
     async { int y = aToB.first(); bToA.send(y) }
     return 0
@@ -299,9 +306,21 @@ consumer's reads with their block-forever obligations (Phase 252). A `while (tru
 outside such a loop refuses the value model with the reason named; the accumulating `for (v in ch)` drain
 is the loop engine's own boundary, so drained values are spelled `toList()` or collected in a loop. The
 looping `ALT` — the multiplexer — is covered too (Phase 253), with the interleaving left exactly as
-nondeterministic as it is. What remains is the **non-terminating process**: `while (true) { … }`, the
-book's actual generators and servers, whose properties are safety per iteration and *liveness under a
-fairness assumption* — not a count, and not something a `@Decreases` carries. That, and the session-typed
+nondeterministic as it is.
+
+What remains is the **non-terminating process** — `while (true) { … }`, which is how the book actually
+writes `GNumbers`, `GPrint` and every server: the generator that counts forever, the printer that drains
+forever, the fair server that answers forever. Nothing above applies to it, for a precise reason: every
+certificate on this page is built on a *count* — a `@Decreases` that bounds the loop, a sequence whose
+length the invariant carries, a cursor that reaches the end of a list — and an infinite process has none.
+Its correctness splits in two. The **safety** half — every iteration preserves its invariant, every send
+meets its channel contract, the k-th element of an infinite stream is what the generator's invariant says
+— is within reach of the machinery here (the loop engine already proves per-iteration preservation; what
+is missing is a way to *declare* a loop non-terminating and be certified for safety alone, termination
+honestly not claimed). The **liveness** half — every element sent is eventually received, the server
+eventually answers every client, the network as a whole never deadlocks — is not a count and not an
+invariant: it needs a *fairness* assumption about the scheduler and about `ALT`'s choice, and a temporal
+argument (the "eventually") that the sequential fragment has no word for. That, and the session-typed
 protocol view of a channel, is the research conversation, not a demo: the same guarantees GPP establishes
 offline by formal methods, issued incrementally by the compiler.
 

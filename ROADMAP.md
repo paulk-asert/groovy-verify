@@ -11579,6 +11579,27 @@ multiplexer in the verified tier, the boundary section: what remains is the NON-
 
 ---
 
+## Housekeeping — `def` / `var` / `val` channel locals: the type witness  *(shipped)*
+
+Prompted by Paul (2026-08-30): does the idiomatic `val n2s = AsyncChannel.create(4)` work? Probed with
+`def` / `var` / `val` over the hello-world exchange (a String channel), the squares pipeline and the
+symbolic stream. Two separate answers. A BARE `create(4)` under an inferred declaration is Groovy's own
+`AsyncChannel<Object>` — STC rejects `it * it` on the stage and `int r = ch.first()` — so the idiom needs
+the factory's type witness, `val n2s = AsyncChannel.<Integer>create(4)`, with which every probe passes
+(`val` parses fine under Groovy 6). With the witness the checker had one gap of its own: the Phase 242/246
+harvest read the ELEMENT type from the declaration's origin type (dynamic for `def` / `var` / `val`), so
+a `val connect = AsyncChannel.<String>create(1)` collided in the Int sort ("Sorts Int and String are
+incompatible"). STC's inferred types are not yet stamped when that harvest runs, so the fix reads the
+witness from the AST (`witnessedChannelType`: the `create` call's explicit generics, pre-STC shape) and
+uses it wherever the origin type is dynamic — for the String shadow AND for the bounds harvest. The Kerridge
+gallery (G310 + `examples/kerridge.md`) now spells its channels with `val` and the witness — the two
+shapes that still want a declared type, an element contract on the generic and an ALT's `Result`, are
+noted on the page. The boundary section was rewritten around the `while (true)` frontier: safety per
+iteration (within reach — a non-termination declaration is what is missing) versus liveness under
+fairness (not a count, not an invariant: the research half).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

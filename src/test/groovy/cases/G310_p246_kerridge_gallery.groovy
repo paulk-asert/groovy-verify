@@ -42,7 +42,7 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == 'Hello' })
                         static String helloWorld() {
-                            AsyncChannel<String> connect = AsyncChannel.create(1)
+                            val connect = AsyncChannel.<String>create(1)
                             async { connect.send('Hello'); connect.close() }
                             return connect.first()
                         }
@@ -53,8 +53,8 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == x * x })
                         static int squares(int x) {
-                            AsyncChannel<Integer> n2s = AsyncChannel.create(1)
-                            AsyncChannel<Integer> s2p = n2s.map { it * it }
+                            val n2s = AsyncChannel.<Integer>create(1)
+                            val s2p = n2s.map { it * it }
                             async { n2s.send(x); n2s.close() }
                             return s2p.first()
                         }
@@ -65,8 +65,8 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == x + y })
                         static int plus(int x, int y) {
-                            AsyncChannel<Integer> inA = AsyncChannel.create(1)
-                            AsyncChannel<Integer> inB = AsyncChannel.create(1)
+                            val inA = AsyncChannel.<Integer>create(1)
+                            val inB = AsyncChannel.<Integer>create(1)
                             async { inA.send(x); inA.close() }
                             async { inB.send(y); inB.close() }
                             return inA.first() + inB.first()
@@ -78,7 +78,7 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == x + x })
                         static int delta(int x) {
-                            def b = BroadcastChannel.<Integer>create()
+                            val b = BroadcastChannel.<Integer>create()
                             AsyncChannel<Integer> branch1 = b.subscribe()
                             AsyncChannel<Integer> branch2 = b.subscribe()
                             async { b.send(x); b.close() }
@@ -94,8 +94,8 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == x + 1 })
                         static int clientServer(int x) {
-                            AsyncChannel<Integer> request = AsyncChannel.create(1)
-                            AsyncChannel<Integer> reply = AsyncChannel.create(1)
+                            val request = AsyncChannel.<Integer>create(1)
+                            val reply = AsyncChannel.<Integer>create(1)
                             request.send(x)
                             async { int r = request.first(); reply.send(r + 1) }
                             return reply.first()
@@ -107,7 +107,7 @@ class G310_p246_kerridge_gallery {
         [group: 'P246 Kerridge gallery', name: 'GPrint: drain-until-close is certified to finish', ok: true,
          src: tc("""class C {
                         static int gPrint() {
-                            AsyncChannel<Integer> toPrint = AsyncChannel.create(4)
+                            val toPrint = AsyncChannel.<Integer>create(4)
                             toPrint.send(1)
                             toPrint.close()
                             async {
@@ -127,8 +127,8 @@ class G310_p246_kerridge_gallery {
         [group: 'P246 Kerridge gallery', name: 'the deadlock exercise: a mutual receive cycle is refuted', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int deadlockExercise() {
-                            AsyncChannel<Integer> aToB = AsyncChannel.create(1)
-                            AsyncChannel<Integer> bToA = AsyncChannel.create(1)
+                            val aToB = AsyncChannel.<Integer>create(1)
+                            val bToA = AsyncChannel.<Integer>create(1)
                             async { int x = bToA.first(); aToB.send(x) }
                             async { int y = aToB.first(); bToA.send(y) }
                             return 0
@@ -138,7 +138,7 @@ class G310_p246_kerridge_gallery {
         [group: 'P246 Kerridge gallery', name: 'the missing end-of-stream: an unclosed drain is refuted', expect: 'can never finish',
          src: tc("""class C {
                         static int missingPoison() {
-                            AsyncChannel<Integer> stream = AsyncChannel.create(4)
+                            val stream = AsyncChannel.<Integer>create(4)
                             stream.send(1)
                             async {
                                 int seen = 0
@@ -154,7 +154,7 @@ class G310_p246_kerridge_gallery {
         [group: 'P246 Kerridge gallery', name: 'two producers race a one2one channel: refuted', expect: 'Channel linearity',
          src: tc("""class C {
                         static int notOne2One() {
-                            AsyncChannel<Integer> connect = AsyncChannel.create(2)
+                            val connect = AsyncChannel.<Integer>create(2)
                             async { connect.send(1) }
                             async { connect.send(2) }
                             return connect.first()
@@ -169,7 +169,7 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == 'Hello World' })
                         static String produceHW() {
-                            AsyncChannel<String> connect = AsyncChannel.create(2)
+                            val connect = AsyncChannel.<String>create(2)
                             async { connect.send('Hello'); connect.send('World'); connect.close() }
                             String first = connect.first()
                             String second = connect.first()
@@ -180,7 +180,7 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == 'Hello World' })
                         static String produceHW() {
-                            AsyncChannel<String> connect = AsyncChannel.create(2)
+                            val connect = AsyncChannel.<String>create(2)
                             async { connect.send('Hello'); connect.send('World'); connect.close() }
                             String first = connect.first()
                             String second = connect.first()
@@ -196,8 +196,8 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == 14 })
                         static int squaresPipeline() {
-                            AsyncChannel<Integer> n2s = AsyncChannel.create(4)
-                            AsyncChannel<Integer> s2p = n2s.map { it * it }
+                            val n2s = AsyncChannel.<Integer>create(4)
+                            val s2p = n2s.map { it * it }
                             async {
                                 for (n in 1..3) {
                                     n2s.send(n)
@@ -221,8 +221,8 @@ class G310_p246_kerridge_gallery {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
                         static List<Integer> squares(int n) {
-                            AsyncChannel<Integer> n2s = AsyncChannel.create(4)
-                            AsyncChannel<Integer> s2p = n2s.map { it * it }
+                            val n2s = AsyncChannel.<Integer>create(4)
+                            val s2p = n2s.map { it * it }
                             async {
                                 int i = 1
                                 @Invariant({ 1 <= i && i <= n + 1 })
@@ -247,8 +247,8 @@ class G310_p246_kerridge_gallery {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
                         static List<Integer> network(int n) {
-                            AsyncChannel<Integer> n2s = AsyncChannel.create(4)
-                            AsyncChannel<Integer> s2p = AsyncChannel.create(4)
+                            val n2s = AsyncChannel.<Integer>create(4)
+                            val s2p = AsyncChannel.<Integer>create(4)
                             async {                                              // GNumbers
                                 int i = 1
                                 @Invariant({ 1 <= i && i <= n + 1 })
@@ -292,8 +292,8 @@ class G310_p246_kerridge_gallery {
                         @Requires({ na >= 0 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
                         static List<Integer> multiplex(int na, int nb) {
-                            AsyncChannel<Integer> left = AsyncChannel.create(4)
-                            AsyncChannel<Integer> right = AsyncChannel.create(4)
+                            val left = AsyncChannel.<Integer>create(4)
+                            val right = AsyncChannel.<Integer>create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= na })
@@ -314,7 +314,7 @@ class G310_p246_kerridge_gallery {
                                 }
                                 right.close()
                             }
-                            AsyncChannel<Integer> merged = AsyncChannel.create(8)
+                            val merged = AsyncChannel.<Integer>create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
                             @Decreases({ na + nb - j })
@@ -337,8 +337,8 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == x || result == y })
                         static int alt(int x, int y) {
-                            AsyncChannel<Integer> left = AsyncChannel.create(1)
-                            AsyncChannel<Integer> right = AsyncChannel.create(1)
+                            val left = AsyncChannel.<Integer>create(1)
+                            val right = AsyncChannel.<Integer>create(1)
                             async { left.send(x); left.close() }
                             async { right.send(y); right.close() }
                             ChannelSelect.Result chosen = await ChannelSelect.from(left, right).select()
@@ -355,7 +355,7 @@ class G310_p246_kerridge_gallery {
          src: tc("""class C {
                         @Ensures({ result == 0 })
                         static int gNumbers() {
-                            AsyncChannel<Integer> out = AsyncChannel.create(4)
+                            val out = AsyncChannel.<Integer>create(4)
                             int n = 0
                             while (n < 3) {
                                 out.send(n)

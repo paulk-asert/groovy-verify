@@ -7057,12 +7057,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
                     if (de.leftExpression instanceof VariableExpression) {
                         VariableExpression ve = (VariableExpression) de.leftExpression
-                        List<long[]> b = channelElementBounds(ve.getOriginType(), ve.name, node)
+                        // A `def` / `var` / `val` channel local carries no declared generics: the element type
+                        // is the factory call's explicit type witness — `val ch = AsyncChannel.<String>create(1)`
+                        // — which is also what lets STC type the channel (this harvest runs before STC has
+                        // stamped inferred types, so the witness in the AST is the only source).
+                        ClassNode declared = ve.getOriginType()
+                        if (declared == null || ClassHelper.isDynamicTyped(declared) || ClassHelper.OBJECT_TYPE.equals(declared)) {
+                            ClassNode w = witnessedChannelType(de.rightExpression)
+                            if (w != null) declared = w
+                        }
+                        List<long[]> b = channelElementBounds(declared, ve.name, node)
                         if (b != null && !b.isEmpty()) bounds.put(ve.name, b)
                         // Phase 246 — a channel LOCAL's scalar shadow (the desugared `def ch = v`)
                         // takes the channel's ELEMENT type, so a String-element channel's value
                         // proves in the string theory instead of colliding with the Int default.
-                        ClassNode elem = channelElementType(ve.getOriginType())
+                        ClassNode elem = channelElementType(declared)
                         if (elem != null && isNonIntScalar(elem) && !currentScalarTypes.containsKey(ve.name)) {
                             currentScalarTypes.put(ve.name, elem)
                         }
@@ -7076,6 +7085,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** The element type of an {@code AsyncChannel<T>} / {@code BroadcastChannel<T>} type, else null. */
+    /** `AsyncChannel.<T>create(..)` / `BroadcastChannel.<T>create()` → the channel type with T as its element
+     *  generic (from the call's explicit type arguments); null when there is no witness. */
+    private static ClassNode witnessedChannelType(Expression rhs) {
+        Expression e = stripCasts(rhs)
+        GenericsType[] gts = null
+        String owner = null
+        if (e instanceof MethodCallExpression) {          // the pre-STC shape (a static call carries no witness)
+            MethodCallExpression m = (MethodCallExpression) e
+            if (m.methodAsString == 'create') { gts = m.genericsTypes; owner = channelOwnerName(m.objectExpression) }
+        }
+        if (gts == null || gts.length != 1 || gts[0].type == null || owner == null) return null
+        if (owner != 'AsyncChannel' && owner != 'BroadcastChannel') return null
+        ClassNode base = ClassHelper.make('groovy.concurrent.' + owner)
+        GenericsUtils.makeClassSafeWithGenerics(base, new GenericsType(gts[0].type))
+    }
+
     private static ClassNode channelElementType(ClassNode t) {
         if (t == null) return null
         String cn = t.nameWithoutPackage
