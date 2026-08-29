@@ -4335,8 +4335,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 listOwner.put(info.root + '$q', info.root)
                 for (String d : info.derived) listOwner.put(d + '$q', info.root)
             }
+            Map<String, Object> producerTag = new HashMap<String, Object>()          // Phase 255 — a stream's producing process
+            for (int i = 0; i < out.size(); i++) if (producedBy.containsKey(out.get(i))) for (String r : producedBy.get(out.get(i))) producerTag.put(r, tags.get(i))
             List<Set<String>> uses = new ArrayList<Set<String>>(), defs = new ArrayList<Set<String>>()
-            for (Statement st : out) {
+            for (int si = 0; si < out.size(); si++) {
+                Statement st = out.get(si)
+                final Object myTag = tags.get(si)
                 final Set<String> u = new HashSet<String>(), d = new HashSet<String>()
                 final Collection<String> ownStreams = producedBy.containsKey(st) ? producedBy.get(st) : Collections.<String>emptyList()
                 st.visit(new CodeVisitorSupport() {
@@ -4350,7 +4354,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     @Override void visitVariableExpression(VariableExpression ve) {
                         if (elements.contains(ve.name)) u.add(ve.name)
-                        if (listOwner.containsKey(ve.name) && !ownStreams.contains(listOwner.get(ve.name))) u.add(listOwner.get(ve.name) + '$produced')
+                        if (listOwner.containsKey(ve.name) && !ownStreams.contains(listOwner.get(ve.name)) &&
+                            !(producerTag.containsKey(listOwner.get(ve.name)) && producerTag.get(listOwner.get(ve.name)) == myTag)) {
+                            u.add(listOwner.get(ve.name) + '$produced')
+                        }
                     }
                 })
                 uses.add(u); defs.add(d)
@@ -4804,6 +4811,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (e instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) e
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'close') continue   // close → drop
+                    if (m.methodAsString == 'send' && m.objectExpression instanceof VariableExpression &&
+                        rw.streams.containsKey(((VariableExpression) m.objectExpression).name)) {   // Phase 255 — a priming send appends
+                        String c = ((VariableExpression) m.objectExpression).name
+                        StreamInfo info = rw.streams.get(c)
+                        List<Expression> a = (m.arguments instanceof ArgumentListExpression) ?
+                            ((ArgumentListExpression) m.arguments).expressions : Collections.<Expression>emptyList()
+                        if (a.size() == 1) {
+                            Expression val = rewriteChExpr(a.get(0), rw)
+                            List<long[]> bs = rw.bounds.get(c)
+                            if (bs != null && !bs.isEmpty()) rw.emit(out, boundsAssert(val, bs, m))
+                            rw.emit(out, addStmt(c + '$q', val, m))
+                            for (String d : info.derived) rw.emit(out, addStmt(d + '$q', derivedValue(d, val, rw), m))
+                            continue
+                        }
+                    }
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'send' &&
                         m.objectExpression instanceof VariableExpression) {     // k-th send(v) → def ch$k = v
                         List<Expression> a = (m.arguments instanceof ArgumentListExpression) ?
@@ -5341,6 +5363,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final List<String> derived = new ArrayList<String>()
         final Map<String, MethodCallExpression> aliases = new HashMap<String, MethodCallExpression>()   // Phase 252 — `def v = in.first()` in the same loop
         boolean infinite                                                     // Phase 254 — produced by a `while (true)`
+        int pre                                                              // Phase 255 — priming sends before the loop, same process
+        final List<Expression> preValues = new ArrayList<Expression>()       // their sent expressions, in order
     }
 
     /** Phase 252 — a consumer loop: a specified unit-counter loop reading one element per iteration from
@@ -5549,8 +5573,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!anyInLoop) continue                                   // one-shot traffic: Phase 247's model
             Object[] ls = loopSend.get(c)
             String why = null
+            int pre = 0
+            List<Expression> preValues = new ArrayList<Expression>()
+            if (ls != null) {                                                 // Phase 255 — priming sends: one-shot, same process, before the loop
+                List<Statement> blk = (List<Statement>) ls[1]
+                for (Statement st : blk) {
+                    if (st.is((Statement) ls[0])) break
+                    MethodCallExpression pc = sendCallOf(st, ch)
+                    if (pc != null && ((VariableExpression) stripCasts(pc.objectExpression)).name == c) {
+                        pre++
+                        List<Expression> pa = (pc.arguments instanceof TupleExpression) ? ((TupleExpression) pc.arguments).expressions : Collections.<Expression>emptyList()
+                        preValues.add(pa.size() == 1 ? pa.get(0) : null)
+                    }
+                }
+            }
             if (ls == null) why = 'has a loop send that is not at the top level of a top-level loop'
-            else if (e.value.size() != 1) why = "has ${e.value.size()} sends (the streaming model takes exactly one, in the producer loop)"
+            else if (e.value.size() != 1 + pre) why = "has ${e.value.size() - 1 - pre} send(s) outside its producer loop and the one-shot priming sends before it (the streaming model takes exactly one send per iteration, plus priming sends in the same process)"
             else if (parent.containsKey(c) || subscribers.contains(c)) why = 'is a derived / subscriber channel (the streaming model is for a created channel)'
             else if (scalarTypes.containsKey(c)) why = 'has a non-int element type (the streaming model is int-element only)'
             if (why == null) {
@@ -5562,6 +5600,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     StreamInfo info = new StreamInfo()
                     info.root = c; info.loop = (LoopingStatement) ls[0]; info.sendCall = (MethodCallExpression) ls[2]
                     info.infinite = isForever(info.loop)
+                    info.pre = pre
+                    info.preValues.addAll(preValues)
                     List<Expression> a = (info.sendCall.arguments instanceof TupleExpression) ? ((TupleExpression) info.sendCall.arguments).expressions : Collections.<Expression>emptyList()
                     if (a.size() != 1) why = 'has a send that is not single-argument'
                     else {
@@ -5984,33 +6024,51 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // The entry value as source text. NB: never `(name) + k` — Groovy parses a parenthesised bare
         // identifier before an operand as a CAST (`(lo) +k`); the counter offset is spelled `k + entry`.
         String initText = entryText(info.counterInit)
-        Expression size = ContractExpansionTransform.reparse("${q} != null && ${q}.size() == ${info.counter} - ${initText}")
+        String preText = info.pre == 0 ? '' : " + ${info.pre}"
+        Expression size = ContractExpansionTransform.reparse("${q} != null && ${q}.size() == ${info.counter} - ${initText}${preText}")
         String k = info.counter == 'k' ? 'kk' : 'k'
         Expression rel = null
         Expression sendE = aliasedSend(info, k, initText, rw)
         if (info.elementRelation) {
-            // E[i := a + k], a receive alias `v = in.first()` in the same loop standing for in$q[(k + a) - a_c]
-            Expression atK = ContractExpansionTransform.reparse("(${k} + ${initText})")
+            // E[i := a + (k - pre)], a receive alias `v = in.first()` in the same loop standing for in$q[(k + a) - a_c]
+            Expression atK = ContractExpansionTransform.reparse(info.pre == 0 ? "(${k} + ${initText})" : "(${k} - ${info.pre} + ${initText})")
             Expression elem = atK == null ? null : substituteVar(sendE, info.counter, atK)
-            Expression shape = ContractExpansionTransform.reparse("Forall.range(0, ${q}.size(), { int ${k} -> ${q}[${k}] == __E__ })")
+            Expression shape = ContractExpansionTransform.reparse("Forall.range(${info.pre}, ${q}.size(), { int ${k} -> ${q}[${k}] == __E__ })")
             if (elem != null && shape != null) rel = substituteVar(shape, '__E__', elem)
         }
         if (size != null && rel != null) out.add(norm(new BinaryExpression(size, Token.newSymbol(Types.LOGICAL_AND, -1, -1), rel), rw))
         else if (size != null) out.add(norm(size, rw))
+        // Phase 255 — the priming elements' values survive the loop's summary only through its invariant
+        for (int j = 0; j < info.preValues.size(); j++) {
+            Expression pv = info.preValues.get(j)
+            if (pv == null || !loopConstant(pv, info, rw)) continue
+            Expression at = ContractExpansionTransform.reparse("${q}[${j}]")
+            if (at != null) out.add(norm(new BinaryExpression(at, Token.newSymbol(Types.COMPARE_EQUAL, -1, -1), rewriteChExpr(pv, rw)), rw))
+            for (String d : info.derived) {
+                Expression dat = ContractExpansionTransform.reparse("${d}\$q[${j}]")
+                if (dat != null) out.add(norm(new BinaryExpression(dat, Token.newSymbol(Types.COMPARE_EQUAL, -1, -1), derivedValue(d, rewriteChExpr(pv, rw), rw)), rw))
+            }
+        }
         for (String d : info.derived) {
             String dq = d + '$q'
             Expression ds = ContractExpansionTransform.reparse("${dq} != null && ${dq}.size() == ${q}.size()")
             Expression drel = null
             if (info.elementRelation) {
-                Expression atK = ContractExpansionTransform.reparse("(${k} + ${initText})")
+                Expression atK = ContractExpansionTransform.reparse(info.pre == 0 ? "(${k} + ${initText})" : "(${k} - ${info.pre} + ${initText})")
                 Expression elem = atK == null ? null : substituteVar(sendE, info.counter, atK)
-                Expression shape = ContractExpansionTransform.reparse("Forall.range(0, ${dq}.size(), { int ${k} -> ${dq}[${k}] == __E__ })")
+                Expression shape = ContractExpansionTransform.reparse("Forall.range(${info.pre}, ${dq}.size(), { int ${k} -> ${dq}[${k}] == __E__ })")
                 if (elem != null && shape != null) drel = substituteVar(shape, '__E__', derivedValue(d, elem, rw))
             }
             if (ds != null && drel != null) out.add(norm(new BinaryExpression(ds, Token.newSymbol(Types.LOGICAL_AND, -1, -1), drel), rw))
             else if (ds != null) out.add(norm(ds, rw))
         }
         out
+    }
+
+    /** True when the expression's names are not written by the producer loop (nor channel vars) — a loop constant. */
+    private static boolean loopConstant(Expression e, StreamInfo info, ChanRewrite rw) {
+        for (String n : varNames(e)) if (rw.ch.contains(n) || writesVar(info.loop.loopBlock, n)) return false
+        true
     }
 
     /** Phase 252 — the sent expression with each receive alias (`def v = in.first()` in the same loop) replaced
@@ -6021,7 +6079,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Map.Entry<String, MethodCallExpression> al : info.aliases.entrySet()) {
             String v = ci == null ? null : ci.readOf(al.value)
             if (v == null) continue
-            Expression read = ContractExpansionTransform.reparse("${v}\$q[(${k} + ${initText}) - ${entryText(ci.counterInit)}]")
+            Expression read = ContractExpansionTransform.reparse(info.pre == 0 ?
+                "${v}\$q[(${k} + ${initText}) - ${entryText(ci.counterInit)}]" :
+                "${v}\$q[(${k} - ${info.pre} + ${initText}) - ${entryText(ci.counterInit)}]")
             if (read != null) sendE = substituteVar(sendE, al.key, read)
         }
         sendE
@@ -7362,6 +7422,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // obligation under the producer's summary), not by the wait-for graph: they leave it here.
         Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         Map<String, StreamInfo> infiniteProducers = new HashMap<String, StreamInfo>()
+        Map<String, String> loopLiveness = new HashMap<String, String>()     // Phase 255 — root → why its liveness is undecided
         try {
             Map<String, String> parent = new HashMap<String, String>()
             Set<String> subscribers = new HashSet<String>()
@@ -7370,6 +7431,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             sanctionedReceives.addAll(sc.sanctionedReceives)
             sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
             for (StreamInfo p : sc.streams.values()) if (p.infinite) infiniteProducers.put(p.root, p)   // Phase 254
+            loopLiveness = analyseLoopLiveness(node, body, sc, parent)       // Phase 255 — liveness under weak fairness
         } catch (Throwable ignored) {
         }
         Set<String> livenessNoted = new HashSet<String>()
@@ -7403,11 +7465,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if ((isRead || isSelect) && sanctionedReceives.contains(u.anchor)) {           // Phase 252/253
                 // Phase 254 — served by a non-terminating producer: that it IS served is liveness, not claimed.
                 StreamInfo p = infiniteProducers.get(root)
-                if (p != null && livenessNoted.add(root)) {
+                // Phase 255 — the note stands only where the loop-liveness analysis could not certify the root
+                if (p != null && loopLiveness.containsKey(root) && livenessNoted.add(root)) {
                     addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
                         "the ${isSelect ? 'ALT' : 'receive'} on '${u.chan}' (line ${u.line}) is served by a non-terminating producer " +
                         "(the while (true) at line ${((Statement) p.loop).lineNumber}) — that it is eventually served is a liveness " +
-                        "property, not claimed; the safety of the values received is certified under that assumption"), u.anchor)
+                        "property, not certified here (${loopLiveness.get(root)}); the safety of the values received is certified " +
+                        "under that assumption"), u.anchor)
                 }
                 continue
             }
@@ -7644,6 +7708,129 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
         }
+    }
+
+    // ── Phase 255 — liveness of a looping network under weak fairness ─────────────────────────
+    //
+    // ASSUMPTION (weak fairness): a process whose next operation is enabled eventually executes it.
+    // Under it, the looping network is live — every receive eventually served, every process
+    // making progress forever or to its own end — exactly when no operation waits, in every
+    // iteration, on something that transitively waits on itself in the SAME iteration. Lift the
+    // Phase 243 wait-for graph to the iteration index: a receive of element k on channel c waits on
+    // the producer's iteration k − pre (pre = its priming sends before the loop), program order
+    // within an iteration has weight 0, and the wrap to the previous iteration weight −1. Every
+    // weight is ≤ 0, so a cycle of weight ≥ 0 — a real deadlock — exists iff the WEIGHT-0 subgraph
+    // has a cycle: the mutual receive-first loops ("no message is ever ahead of the cycle"), while
+    // the client–server loop (send then receive) and the primed cycle are live. An ALT is live when
+    // some branch is fed by a pure generator (a producer loop with no receives of its own); ALTs
+    // over dependent branches only are left undecided, loudly — fairness of the ALT's CHOICE is not
+    // assumed. Sends never block (Phase 243), one-shot receives are the Phase 252 element-exists
+    // obligations, and the base case — iteration 0 — is the pre-loop straight-line code.
+
+    private static class LoopOp { int kind; String chan; int pos; int line; List<String> alts }
+    private static class LoopProc { LoopingStatement loop; List<Statement> block; int line; final List<LoopOp> ops = new ArrayList<LoopOp>(); boolean generator }
+
+    /** Returns root → reason for every stream whose liveness is NOT certified (deadlocks are reported here). */
+    private Map<String, String> analyseLoopLiveness(MethodNode node, BlockStatement body, StreamScan sc, Map<String, String> parent) {
+        Map<String, String> undecided = new LinkedHashMap<String, String>()
+        List<LoopProc> procs = new ArrayList<LoopProc>()
+        Map<String, LoopProc> producerOf = new HashMap<String, LoopProc>()
+        Map<String, Integer> sendPos = new HashMap<String, Integer>()
+        for (List<Statement> block : topLevelBlocks(body)) {
+            for (Statement st : block) {
+                if (!(st instanceof LoopingStatement)) continue
+                List<StreamInfo> produced = new ArrayList<StreamInfo>()
+                for (StreamInfo info : sc.streams.values()) if (info.loop.is(st)) produced.add(info)
+                ConsumerInfo ci = sc.consumers.get(st)
+                if (produced.isEmpty() && ci == null) continue
+                LoopProc lp = new LoopProc()
+                lp.loop = (LoopingStatement) st; lp.block = block; lp.line = st.lineNumber
+                Statement lb = lp.loop.loopBlock
+                List<Statement> top = lb instanceof BlockStatement ? ((BlockStatement) lb).statements : Collections.singletonList(lb)
+                for (int pos = 0; pos < top.size(); pos++) {
+                    Statement inner = top.get(pos)
+                    MethodCallExpression sendCall = sendCallOf(inner, sc.streams.keySet())
+                    if (sendCall != null) {
+                        String c = ((VariableExpression) stripCasts(sendCall.objectExpression)).name
+                        LoopOp op = new LoopOp(); op.kind = CHAN_SEND; op.chan = c; op.pos = pos; op.line = inner.lineNumber
+                        lp.ops.add(op); producerOf.put(c, lp); sendPos.put(c, pos)
+                    }
+                    if (ci != null) {
+                        final List<String> reads = new ArrayList<String>()
+                        inner.visit(new CodeVisitorSupport() {
+                            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                                String v = ci.readOf(m)                          // first() or (awaited) receive()
+                                if (v != null) reads.add(v)
+                                super.visitMethodCallExpression(m)
+                            }
+                        })
+                        for (String v : reads) {
+                            LoopOp op = new LoopOp(); op.kind = CHAN_RECV; op.chan = rootVia(v, parent); op.pos = pos; op.line = inner.lineNumber
+                            lp.ops.add(op)
+                        }
+                        if (ci.altVar != null && inner instanceof ExpressionStatement && ((ExpressionStatement) inner).expression instanceof DeclarationExpression &&
+                            ((DeclarationExpression) ((ExpressionStatement) inner).expression).leftExpression instanceof VariableExpression &&
+                            ((VariableExpression) ((DeclarationExpression) ((ExpressionStatement) inner).expression).leftExpression).name == ci.altVar) {
+                            LoopOp op = new LoopOp(); op.kind = CHAN_SUB; op.pos = pos; op.line = inner.lineNumber
+                            op.alts = new ArrayList<String>()
+                            for (String c : ci.altChans) op.alts.add(rootVia(c, parent))
+                            lp.ops.add(op)
+                        }
+                    }
+                }
+                lp.generator = ci == null
+                procs.add(lp)
+            }
+        }
+        if (procs.isEmpty()) return undecided
+        // Nodes: (proc, op) in op order; the weight-0 edges.
+        List<Object[]> nodes = new ArrayList<Object[]>()
+        Map<LoopProc, Integer> base = new IdentityHashMap<LoopProc, Integer>()
+        for (LoopProc lp : procs) { base.put(lp, nodes.size()); for (LoopOp op : lp.ops) nodes.add([lp, op] as Object[]) }
+        List<List<Integer>> adj = new ArrayList<List<Integer>>()
+        for (int i = 0; i < nodes.size(); i++) adj.add(new ArrayList<Integer>())
+        for (LoopProc lp : procs) {
+            int b = base.get(lp)
+            for (int i = 1; i < lp.ops.size(); i++) adj.get(b + i).add(b + i - 1)      // program order, same iteration (weight 0)
+            for (int i = 0; i < lp.ops.size(); i++) {
+                LoopOp op = lp.ops.get(i)
+                if (op.kind == CHAN_RECV) {
+                    LoopProc prod = producerOf.get(op.chan)
+                    StreamInfo info = sc.streams.get(op.chan)
+                    if (prod == null || info == null) continue                          // a one-shot producer: Phase 252's obligation decides
+                    if (info.pre > 0) continue                                          // primed: weight −pre, never part of a 0-cycle
+                    adj.get(b + i).add(base.get(prod) + prod.ops.indexOf(prod.ops.find { LoopOp o -> o.kind == CHAN_SEND && o.chan == op.chan }))
+                } else if (op.kind == CHAN_SUB) {
+                    boolean served = false
+                    for (String c : op.alts) { LoopProc prod = producerOf.get(c); if (prod != null && prod.generator) served = true }
+                    if (!served) for (String c : op.alts) undecided.put(c, "the ALT over ${op.alts.collect { "'" + it + "'" }.join(', ')} (line ${op.line}) has no branch fed by a pure generator — its liveness would need a fairness assumption about the ALT's own choice".toString())
+                }
+            }
+        }
+        int[] color = new int[nodes.size()]
+        List<Integer> cycle = findWaitCycle(adj, color, new ArrayList<Integer>())
+        if (cycle != null) {
+            List<String> parts = new ArrayList<String>()
+            Set<String> roots = new HashSet<String>()
+            for (Integer i : cycle) {
+                LoopProc lp = (LoopProc) nodes.get(i)[0]; LoopOp op = (LoopOp) nodes.get(i)[1]
+                String what = op.kind == CHAN_SEND ? "the send on '${op.chan}'" : "the receive on '${op.chan}'"
+                parts.add("${what} (line ${op.line}, in the loop at line ${lp.line})".toString())
+                if (op.chan != null) roots.add(op.chan)
+            }
+            LoopProc first = (LoopProc) nodes.get(cycle.get(0))[0]
+            addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                'circular wait in every iteration: ' + parts.join(', which waits for ') + ', which waits for the first — ' +
+                'no message is ever ahead of this cycle (a priming send before one of the loops would break it)'), (Statement) first.loop)
+            for (String r : roots) undecided.put(r, 'deadlocked, reported above')
+        }
+        undecided
+    }
+
+    private static String rootVia(String v, Map<String, String> parent) {
+        String r = v; int g = 0
+        while (parent.containsKey(r) && g++ < 100) r = parent.get(r)
+        r
     }
 
     /** 1st, 2nd, 3rd, 4th … (Phase 247 — the FIFO position of a receive in a diagnostic). */

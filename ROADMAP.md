@@ -11648,6 +11648,52 @@ covered; what remains is liveness under fairness and the session-typed view).
 
 ---
 
+## Phase 255 — liveness under weak fairness: the lifted wait-for graph  *(shipped — slice 15 of the SEQ/PAR ladder; the liveness half)*
+
+The half the boundary section called research. It became a graph check once the assumption was stated.
+ASSUMPTION — weak fairness: a process whose next operation is enabled eventually executes it. Under it
+the looping network is live (every receive eventually served, every process progressing forever or to
+its own end) exactly when no operation waits, in every iteration, on something that transitively waits
+on itself in the SAME iteration. `analyseLoopLiveness` lifts the Phase 243 wait-for graph to the
+iteration index over `(loop, operation)` nodes — one per send / sanctioned receive / ALT of each stream
+producer or consumer loop, in body order: a receive of element k waits on the producer's iteration
+k − pre (pre = its priming sends before the loop), program order within an iteration weighs 0, the wrap
+to the previous iteration −1. Every weight is ≤ 0, so a cycle of weight ≥ 0 — a real deadlock — exists
+iff the WEIGHT-0 SUBGRAPH has a cycle: the receive-first mutual loops ("circular wait in every
+iteration: … which waits for the first — no message is ever ahead of this cycle (a priming send before
+one of the loops would break it)"), while the client–server loop (send, then receive: the wrap edge)
+and a primed cycle (weight −pre) are live; a three-process ring deadlocks bare and is live with one
+token. The existing `findWaitCycle` DFS does the work. A looping ALT is live when a branch is fed by a
+PURE GENERATOR (a producer loop with no receives of its own); over dependent branches only it is left
+undecided, loudly — that would need a fairness assumption about the ALT's CHOICE, which is not made.
+Sends never block (Phase 243), one-shot receives are Phase 252's element-exists obligations, the base
+case is the pre-loop straight-line code.
+
+Where certified, the Phase 254 "liveness not claimed" note is DISCHARGED (`loopLiveness`: root → reason
+only for the undecided; the note now reads "not certified here (reason)"): the forever
+`GNumbers → GSquares → GPrint` compiles CLEAN — safety per iteration and liveness under weak fairness,
+termination alone unclaimed because none is meant. G318's four acyclic pins and G310's forever c03 flip
+to `ok: true`.
+
+PRIMING SENDS enter the stream model (they are the delay that makes cycles live): `scanStreams` allows
+one-shot sends on a stream in the producer's own process BEFORE its loop (`StreamInfo.pre`,
+`preValues`); the rewrite appends them (`c$q.add`, map stages in lockstep); the injected invariant becomes
+`size == i − a + pre` with the relation over `Forall.range(pre, size, …)` and E[i := a + (k − pre)]; the
+priming elements' VALUES are injected as `q[j] == V_j` conjuncts when loop-constant (the first run lost
+`result[0] == -1` to the loop's havoc); the scheduler exempts the producer's own process from waiting on
+its stream's `$produced` marker (`producerTag`).
+
+Cases (G319, new group, 7): the mutual receive-first deadlock, the forever client–server (live), the
+primed cycle (live), the ring bare (deadlock) and primed (live), the ALT over dependent stages
+(undecided, loud), the priming-send values. G310 gains the forever client–server and its receive-first
+twin. Docs: the Phase 255 subsection in `examples/concurrency.md` (the client–server, linked), the
+CAPABILITIES row, the README ladder + gallery bullets, `examples/kerridge.md` (the vocabulary row, the
+server in the verified tier, the boundary section: both halves of the non-terminating process covered;
+what is still withheld — fairness of the ALT's own choice, starvation-freedom in the large — and the
+session-typed view).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

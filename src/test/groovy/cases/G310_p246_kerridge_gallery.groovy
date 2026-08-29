@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count, and since Phase 254 c03 as the book ACTUALLY writes it — every process while (true) — is certified for safety (every printed value a square), termination not claimed and liveness reported as the assumption it is. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count, since Phase 254 c03 as the book ACTUALLY writes it — every process while (true) — is certified for safety (every printed value a square), and since Phase 255 for LIVENESS under weak fairness (no receive waits on itself within an iteration); the forever client–server is live, its receive-first twin a circular wait in every iteration. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -286,9 +286,10 @@ class G310_p246_kerridge_gallery {
         // ---------- c03 as the book ACTUALLY writes it: every process runs forever (Phase 254) ----------
         // GNumbers counts forever, GSquares squares forever, GPrint prints forever. Nothing terminates and
         // nothing is claimed to: the certificate is SAFETY — every value GPrint accumulates is a square (its
-        // own invariant, preserved per iteration through the two stages' relations) — and that each receive
-        // is eventually served is reported as the liveness assumption it is.
-        [group: 'P246 Kerridge gallery', name: 'c03 forever: GNumbers, GSquares and GPrint as non-terminating processes, safety proved', expect: 'liveness property, not claimed', refute: 'Cannot prove',
+        // own invariant, preserved per iteration through the two stages' relations) — and, under weak
+        // fairness, LIVENESS (Phase 255): no receive waits on itself within an iteration, so every one is
+        // eventually served. Termination alone is not claimed — none is meant.
+        [group: 'P246 Kerridge gallery', name: 'c03 forever: GNumbers, GSquares and GPrint as non-terminating processes, safety proved', ok: true,
          src: tc("""class C {
                         static void network() {
                             val n2s = AsyncChannel.<Integer>create(4)
@@ -317,6 +318,57 @@ class G310_p246_kerridge_gallery {
                                 int s = s2p.first()
                                 printed.add(s)
                                 j = j + 1
+                            }
+                        }
+                    }""")],
+
+        // ---------- the server, forever: liveness under weak fairness (Phase 255) ----------
+        // A client that sends a request then waits for the reply, a server that waits for a request then
+        // replies — both forever. Live: the request is always one message ahead of the wait for its
+        // reply. Swap the client's two lines and it is the mutual-receive deadlock, in every iteration.
+        [group: 'P246 Kerridge gallery', name: 'client and server forever: live under weak fairness', ok: true,
+         src: tc("""class C {
+                        static void clientServer() {
+                            val request = AsyncChannel.<Integer>create(4)
+                            val reply = AsyncChannel.<Integer>create(4)
+                            async {                                              // the server
+                                int j = 0
+                                @Invariant({ j >= 0 })
+                                while (true) {
+                                    int q = request.first()
+                                    reply.send(q + 1)
+                                    j = j + 1
+                                }
+                            }
+                            int i = 0
+                            @Invariant({ i >= 0 })
+                            while (true) {                                       // the client
+                                request.send(i)
+                                int r = reply.first()
+                                i = i + 1
+                            }
+                        }
+                    }""")],
+        [group: 'P246 Kerridge gallery', name: 'client and server forever, both receive-first: circular wait in every iteration', expect: 'circular wait in every iteration',
+         src: tc("""class C {
+                        static void clientServer() {
+                            val request = AsyncChannel.<Integer>create(4)
+                            val reply = AsyncChannel.<Integer>create(4)
+                            async {                                              // the server
+                                int j = 0
+                                @Invariant({ j >= 0 })
+                                while (true) {
+                                    int q = request.first()
+                                    reply.send(q + 1)
+                                    j = j + 1
+                                }
+                            }
+                            int i = 0
+                            @Invariant({ i >= 0 })
+                            while (true) {                                       // a client that waits before asking
+                                int r = reply.first()
+                                request.send(i)
+                                i = i + 1
                             }
                         }
                     }""")],

@@ -47,8 +47,9 @@ class G318_p254_forever {
 
         // ---------- the infinite generator, consumed finitely ----------
         // GNumbers as the book writes it. A finite consumer's received values prove; that each receive is
-        // served is the liveness note (assumed, loud), never a silent claim.
-        [group: 'P254 non-terminating processes', name: 'an infinite generator feeds a finite consumer: the received values prove', expect: 'liveness property, not claimed', refute: 'Cannot prove',
+        // served is liveness — certified under weak fairness since Phase 255 (the generator has no
+        // receives of its own, so nothing it waits on can wait on it).
+        [group: 'P254 non-terminating processes', name: 'an infinite generator feeds a finite consumer: the received values prove', ok: true,
          src: tc("""class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k }) })
@@ -85,8 +86,9 @@ class G318_p254_forever {
         // ---------- the network as the book writes it: every process runs forever ----------
         // GNumbers → GSquares → GPrint, all `while (true)`. Nothing terminates and nothing is claimed to;
         // what IS certified is that every value GPrint accumulates is a square — GPrint's own invariant,
-        // preserved per iteration through GSquares' and GNumbers' relations. (Two liveness notes.)
-        [group: 'P254 non-terminating processes', name: 'GNumbers → GSquares → GPrint, all forever: safety proved, liveness noted', expect: 'liveness property, not claimed', refute: 'Cannot prove',
+        // preserved per iteration through GSquares' and GNumbers' relations — and, since Phase 255, that
+        // the pipeline is live under weak fairness (no receive waits on itself within an iteration).
+        [group: 'P254 non-terminating processes', name: 'GNumbers → GSquares → GPrint, all forever: safety proved, liveness certified under weak fairness', ok: true,
          src: tc("""class C {
                         static void network() {
                             val nums = AsyncChannel.<Integer>create(4)
@@ -152,7 +154,7 @@ class G318_p254_forever {
                     }""")],
 
         // ---------- the send contract of an infinite producer ----------
-        [group: 'P254 non-terminating processes', name: 'an infinite producer\'s send contract holds under its invariant', expect: 'liveness property, not claimed', refute: 'Assertion may not hold',
+        [group: 'P254 non-terminating processes', name: 'an infinite producer\'s send contract holds under its invariant', ok: true,
          src: tc("""class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result == n })
@@ -227,7 +229,7 @@ class G318_p254_forever {
                     }""")],
 
         // ---------- the forever multiplexer ----------
-        [group: 'P254 non-terminating processes', name: 'a forever multiplexer over two infinite generators forwards the contract', expect: 'liveness property, not claimed', refute: 'Assertion may not hold',
+        [group: 'P254 non-terminating processes', name: 'a forever multiplexer over two infinite generators forwards the contract', ok: true,
          src: tc("""class C {
                         static void mux() {
                             val a = AsyncChannel.<Integer>create(4)

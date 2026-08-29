@@ -46,7 +46,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
 | `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified (Phase 250); the drained sequence proves element by element — the channel is the list the loop builds (Phase 251) |
 | a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" (Phase 252) |
-| a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values; termination not claimed; liveness reported as the assumption it is (Phase 254) |
+| a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values (Phase 254); liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it (Phase 255) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253) |
 
@@ -190,8 +190,9 @@ static List<Integer> network(int n) {
 
 And c03 **as the book actually writes it** — every process `while (true)`, nothing ever stopping — is
 certified for **safety** (Phase 254): every value `GPrint` accumulates is a square, `GPrint`'s own invariant
-preserved through `GSquares`' and `GNumbers`' relations; termination is not claimed, and that each receive is
-eventually served is reported, loudly, as the liveness assumption it is:
+preserved through `GSquares`' and `GNumbers`' relations — and for **liveness under weak fairness** (Phase 255):
+no receive in the pipeline waits on itself within an iteration, so every one is eventually served. Termination
+alone is not claimed; none is meant:
 
 <!-- doclint:case p246-kerridge-gallery/c03-forever-gnumbers-gsquares-and-gprint-as-non-terminating-processes-safety-proved -->
 ```groovy
@@ -222,6 +223,35 @@ static void network() {
         int s = s2p.first()
         printed.add(s)
         j = j + 1
+    }
+}
+```
+
+And the **server that answers forever** — the client sending a request then waiting for its reply, the
+server waiting for a request then replying, both `while (true)` — is certified **live under weak
+fairness** (Phase 255): the request is always one message ahead of the wait for its reply. Let the client
+wait before asking and it is the mutual-receive deadlock — *in every iteration*, spelled out:
+
+<!-- doclint:case p246-kerridge-gallery/client-and-server-forever-live-under-weak-fairness -->
+```groovy
+static void clientServer() {
+    val request = AsyncChannel.<Integer>create(4)
+    val reply = AsyncChannel.<Integer>create(4)
+    async {                                              // the server
+        int j = 0
+        @Invariant({ j >= 0 })
+        while (true) {
+            int q = request.first()
+            reply.send(q + 1)
+            j = j + 1
+        }
+    }
+    int i = 0
+    @Invariant({ i >= 0 })
+    while (true) {                                       // the client
+        request.send(i)
+        int r = reply.first()
+        i = i + 1
     }
 }
 ```
@@ -348,17 +378,19 @@ looping `ALT` — the multiplexer — is covered too (Phase 253), with the inter
 nondeterministic as it is.
 
 The **non-terminating process** — `while (true) { … }`, which is how the book actually writes `GNumbers`,
-`GPrint` and every server — is covered for its **safety half** (Phase 254): the loop's invariant preserved
-per iteration, every send meeting its channel contract, every received value carrying its producer's
-relation; termination is not claimed, and the one thing that cannot be proved this way — that a receive from
-an infinite producer is *eventually served* — is assumed and said so in a network note. Every certificate on
-this page rests on a count or an invariant, and that is exactly the line. What remains is the **liveness**
-half: every element sent is eventually received, the server eventually answers every client, the network
-as a whole never deadlocks over an infinite run. That is not a count and not an invariant: it needs a
-*fairness* assumption about the scheduler and about `ALT`'s choice, and a temporal argument (the
-"eventually") that the sequential fragment has no word for. That, and the session-typed protocol view of a
-channel, is the research conversation, not a demo: the same guarantees GPP establishes offline by formal
-methods, issued incrementally by the compiler.
+`GPrint` and every server — is covered on both halves. Its **safety** (Phase 254): the loop's invariant
+preserved per iteration, every send meeting its channel contract, every received value carrying its
+producer's relation. Its **liveness** (Phase 255), under one stated assumption — *weak fairness*, a process
+whose next operation is enabled eventually executes it: no operation waits, in every iteration, on something
+that waits on itself in the same iteration; a receive-first cycle is named as a circular wait in every
+iteration, a priming send breaks it, the forever client–server is live. Two things are still not claimed,
+and say so. **Fairness of `ALT`'s own choice**: a looping `ALT` is certified live only when a branch is fed
+by a pure generator; over dependent branches — the fair server proper, where every client must eventually
+be *chosen* — the certificate is withheld, loudly, because that needs an assumption about the selection, not
+the scheduler. And **starvation-freedom in the large** — that a particular client is served within any bound
+— is a quantitative property beyond "eventually". Those, and the session-typed protocol view of a channel,
+are the research conversation, not a demo: the same guarantees GPP establishes offline by formal methods,
+issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

@@ -920,12 +920,13 @@ The book's processes do not stop: `GNumbers` counts forever, `GPrint` prints for
 forever. A `while (true)` loop with an `@Invariant` (no `@Decreases` — none is possible) is now certified for
 **safety**: its invariant is preserved per iteration, its send-side channel contract is checked per
 iteration, and what its consumers receive carries its element relation. Termination is not claimed, and the
-one thing a consumer of an infinite stream cannot be *proved* — that its next receive is eventually served —
-is **assumed and said so**, as a network note: *"the receive on 'sq' (line N) is served by a non-terminating
-producer — that it is eventually served is a liveness property, not claimed; the safety of the values
-received is certified under that assumption"*. The book's network, as the book writes it:
+one thing a consumer of an infinite stream cannot be *proved* by safety alone — that its next receive is
+eventually served — is **assumed and said so**, as a network note: *"… is served by a non-terminating
+producer — that it is eventually served is a liveness property, not certified here (…); the safety of the
+values received is certified under that assumption"* (Phase 255, next, discharges that note wherever its
+fairness argument applies — as it does here). The book's network, as the book writes it:
 
-<!-- doclint:case p254-non-terminating-processes/gnumbers-gsquares-gprint-all-forever-safety-proved-liveness-noted -->
+<!-- doclint:case p254-non-terminating-processes/gnumbers-gsquares-gprint-all-forever-safety-proved-liveness-certified-under-weak-fairness -->
 ```groovy
 static void network() {
     val nums = AsyncChannel.<Integer>create(4)
@@ -973,6 +974,58 @@ contract through the choice as before.
 What is left after this is the **liveness** half proper — eventual delivery, a server answering every
 client, network-wide deadlock-freedom over infinite runs — which needs a fairness assumption about the
 scheduler and about `ALT`, and a temporal argument the sequential fragment has no word for.
+
+### Liveness under weak fairness — the lifted wait-for graph (Phase 255)
+
+The last half. **Assumption:** *weak fairness* — a process whose next operation is enabled eventually
+executes it. Under it, a looping network is live — every receive eventually served, every process making
+progress forever or to its own end — exactly when no operation waits, *in every iteration*, on something that
+transitively waits on itself in the same iteration. Lift the Phase 243 wait-for graph to the iteration
+index: a receive of element *k* waits on the producer's iteration *k − pre* (*pre* = the producer's priming
+sends before its loop), program order within an iteration has weight 0, the wrap to the previous iteration
+weight −1. Every weight is ≤ 0, so a cycle of weight ≥ 0 — a deadlock — exists iff the **weight-0 subgraph
+has a cycle**. That is the existing DFS, on a graph whose nodes are `(loop, operation)`:
+
+<!-- doclint:case p255-liveness/a-forever-client-server-loop-is-live-the-request-precedes-the-wait-for-its-reply -->
+```groovy
+static void clientServer() {
+    val request = AsyncChannel.<Integer>create(4)
+    val reply = AsyncChannel.<Integer>create(4)
+    async {                                              // the server
+        int j = 0
+        @Invariant({ j >= 0 })
+        while (true) {
+            int q = request.first()
+            reply.send(q + 1)
+            j = j + 1
+        }
+    }
+    int i = 0
+    @Invariant({ i >= 0 })
+    while (true) {                                       // the client
+        request.send(i)
+        int r = reply.first()
+        i = i + 1
+    }
+}
+```
+
+The client's wait for reply *k* depends on the server's iteration *k*, which depends on request *k* — sent
+*before* the wait, weight −1 through the wrap: live. Let the client wait before asking and the cycle closes
+at weight 0 — *"circular wait in every iteration: the receive on 'reply' … which waits for the send on
+'reply' … which waits for the receive on 'request' … which waits for the send on 'request' …, which waits
+for the first — no message is ever ahead of this cycle (a priming send before one of the loops would break
+it)"*. A three-process ring deadlocks bare and is live with one token sent before a loop; **priming sends**
+now enter the stream model too (element *k* of the loop is list index *k + pre*, the priming element's
+value carried by the invariant). A looping `ALT` is live when a branch is fed by a *pure generator* — a
+producer loop with no receives of its own; over dependent branches only it is left undecided, loudly,
+because that would need a fairness assumption about the ALT's *choice*, which is not made.
+
+Where the analysis certifies, the Phase 254 "liveness not claimed" note is discharged: the book's forever
+`GNumbers → GSquares → GPrint` now compiles clean — safety per iteration *and* liveness under weak
+fairness, with termination alone unclaimed because none is meant. What the certificate rests on is stated
+in one line: the scheduler is weakly fair, sends never block, and the base case is the pre-loop
+straight-line code.
 
 ### async/await — the value a task computes
 
