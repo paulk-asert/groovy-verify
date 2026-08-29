@@ -787,6 +787,69 @@ a stream, which is the loop engine's own "a loop after a list-building loop" ski
 drained-value spelling. What the ladder has *not* modelled remains the looping consumer proper — the ALT
 multiplexer, the fair server — where the count is not the whole story.
 
+### Streaming consumers — the looping process (Phase 252)
+
+The rung the gallery named last: the **looping consumer**. A specified unit-counter loop that receives once
+per iteration from a streaming channel reads element *k* of the shadow list (`x.first()` → `x$q[i − a]`),
+with the **block-forever obligation** asserted before it — the element it reads must exist — and the producer
+loop's invariants, sequence facts and `¬guard` injected into the consumer's spec as *frame facts* (nothing in
+the consumer writes the producer's counter or its list). A loop that both receives and sends is a **stage as
+a process**: its sent expression's element relation goes through the receive. So the book's network as the
+book writes it — a `PAR` of three looping processes, `GSquares` receiving and sending — proves the printed
+list element by element, for symbolic `n`, each process carrying only its own `@Invariant` / `@Decreases`:
+
+<!-- doclint:case p252-streaming-consumers/gnumbers-gsquares-gprint-as-three-looping-processes -->
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k * k }) })
+static List<Integer> network(int n) {
+    groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> sq = groovy.concurrent.AsyncChannel.create(4)
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= n })
+        @Decreases({ n - i })
+        while (i < n) {
+            nums.send(i)
+            i = i + 1
+        }
+        nums.close()
+    }
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= n })
+        @Decreases({ n - i })
+        while (i < n) {
+            int v = nums.first()
+            sq.send(v * v)
+            i = i + 1
+        }
+        sq.close()
+    }
+    List<Integer> printed = []
+    int j = 0
+    @Invariant({ printed != null && 0 <= j && j <= n && printed.size() == j && Forall.range(0, printed.size(), { int k -> printed[k] == k * k }) })
+    @Decreases({ n - j })
+    while (j < n) {
+        int s = sq.first()
+        printed.add(s)
+        j = j + 1
+    }
+    return printed
+}
+```
+
+Read one element more than the producer sends and the diagnostic is the runtime's hang, spelled: *"the
+receive on 'out' (line N) may block forever — the element it reads may never be sent (the consumer loop
+reads past what the producer loop sends)"*. Two enablers fell out. The loop engine can now summarise a loop
+**after a list-building loop** (Phase 207's sequential loops had refused a predecessor that mutates a
+collection: size and contents are havoc'd, then its invariant characterises the list), and **arm locals are
+renamed apart** before the flattening — both loops naturally count with `i`, and the flattened
+single-assignment model had conflated them since Phase 119. Loud boundary: a receive in a loop without a
+spec or a unit counter, or twice per iteration on one channel, is named — as before, the counter is the
+variable the guard tests. The ALT multiplexer as a *looping* process stays the frontier: its per-iteration
+choice is the one-shot ALT's, but its readiness across iterations is not a count.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

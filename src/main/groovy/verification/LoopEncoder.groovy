@@ -173,7 +173,8 @@ class LoopEncoder {
     static void summarizeInner(LoopSpec inner, Encoder enc, SmtSession s) {
         Set<String> scalars = new HashSet<String>()
         Set<String> arrays = new HashSet<String>()
-        if (!innerFrame(inner.body, scalars, arrays)) {
+        Set<String> lists = new HashSet<String>()
+        if (!innerFrame(inner.body, scalars, arrays, lists)) {
             throw new UnsupportedConstructException(
                 "nested loop writes a field/collection or unbounded construct — not yet supported")
         }
@@ -181,6 +182,10 @@ class LoopEncoder {
         // Phase 186 — a written subscript target may be a MAP, whose havoc must refresh both the value
         // array and the key-set (an Int-sorted havocArray on a non-Int-keyed map sort-crashes).
         for (String nm : arrays) { if (enc.isMapName(nm)) enc.havocMap(nm) else enc.havocArray(nm) }
+        // Phase 252 — a LIST-BUILDING loop (`q.add(x)` / `clear` / `removeLast` / `pop`) changes both the
+        // contents and the length: havoc both oracles, then its invariant ∧ ¬guard characterises the list
+        // (a producer loop's `q.size() == i - a` and its element relation survive into the loop after it).
+        for (String nm : lists) { enc.havocArray(nm); enc.havocSize(nm) }
         s.assertExpr(conj(enc, s, inner.invariants))
         s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
     }
@@ -189,19 +194,34 @@ class LoopEncoder {
      *  anything that isn't a plain scalar local or an `a[idx] = v` array element (so havocking the two
      *  sets is a complete account of the inner loop's effect). */
     static boolean innerFrame(List<Statement> stmts, Set<String> scalars, Set<String> arrays) {
+        innerFrame(stmts, scalars, arrays, new HashSet<String>())
+    }
+    /** As above, with list mutators accepted into {@code lists} (Phase 252 — size-changing writes). */
+    static boolean innerFrame(List<Statement> stmts, Set<String> scalars, Set<String> arrays, Set<String> lists) {
         if (stmts == null) return true
-        for (Statement st : stmts) if (!innerFrameStmt(st, scalars, arrays)) return false
+        for (Statement st : stmts) if (!innerFrameStmt(st, scalars, arrays, lists)) return false
         true
     }
-    private static boolean innerFrameStmt(Statement st, Set<String> scalars, Set<String> arrays) {
+    private static final List<String> LIST_MUTATORS = ['add', 'clear', 'removeLast', 'pop'].asImmutable()
+    private static boolean innerFrameStmt(Statement st, Set<String> scalars, Set<String> arrays, Set<String> lists) {
         if (st == null || st instanceof EmptyStatement) return true
-        if (st instanceof BlockStatement) return innerFrame(((BlockStatement) st).statements, scalars, arrays)
+        if (st instanceof BlockStatement) return innerFrame(((BlockStatement) st).statements, scalars, arrays, lists)
         if (st instanceof IfStatement) {
             IfStatement ifs = (IfStatement) st
-            return innerFrameStmt(ifs.ifBlock, scalars, arrays) &&
-                   (ifs.elseBlock == null || innerFrameStmt(ifs.elseBlock, scalars, arrays))
+            return innerFrameStmt(ifs.ifBlock, scalars, arrays, lists) &&
+                   (ifs.elseBlock == null || innerFrameStmt(ifs.elseBlock, scalars, arrays, lists))
         }
-        if (st instanceof ExpressionStatement) return innerFrameExpr(((ExpressionStatement) st).expression, scalars, arrays)
+        if (st instanceof AssertStatement) return true      // Phase 252 — an in-loop assert writes nothing
+        if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof MethodCallExpression) {          // Phase 252 — a list mutator statement
+                MethodCallExpression m = (MethodCallExpression) e
+                if (m.objectExpression instanceof VariableExpression && m.methodAsString in LIST_MUTATORS) {
+                    lists.add(((VariableExpression) m.objectExpression).name); return true
+                }
+            }
+            return innerFrameExpr(e, scalars, arrays)
+        }
         // Phase 109 — a `return` inside the inner loop writes nothing to the *outer* state (it transfers
         // control out of the method). On the fall-through path — the only one where the outer loop continues
         // past the inner loop — the inner loop completed without returning, so the summary (inner_inv ∧

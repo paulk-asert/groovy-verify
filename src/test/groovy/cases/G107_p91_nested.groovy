@@ -324,8 +324,11 @@ class G107_p91_nested {
                             a
                         }
                     }''')],
-        // BOUNDARY E — an inner loop with a COLLECTION MUTATOR (size-changing) still skips loudly.
-        [group: 'P91 nested', name: 'inner loop list mutator skips loudly', expect: 'field/collection',
+        // BOUNDARY E, retired by Phase 252 — an inner loop with a COLLECTION MUTATOR (size-changing) is now
+        // SUMMARISED: the list's size and contents are havoc'd and the inner invariant ∧ ¬guard assumed, so
+        // the outer loop verifies. The summary is honest: nothing the inner invariant does not say about
+        // the list survives it (the twin below cannot prove a post-loop size claim).
+        [group: 'P91 nested', name: 'inner loop list mutator is summarised (size and contents havoc\'d)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 && xs != null })
                         static void f(int n, List<Integer> xs) {
@@ -339,6 +342,24 @@ class G107_p91_nested {
                                 while (j < n) { xs.add(0); j = j + 1 }
                                 i = i + 1
                             }
+                        }
+                    }''')],
+        [group: 'P91 nested', name: 'inner loop list mutator: a size claim the inner invariant does not carry is refuted', expect: 'Cannot prove postcondition',
+         src: tc('''class C {
+                        @Requires({ n >= 0 && xs != null })
+                        @Ensures({ result == n })
+                        static int f(int n, List<Integer> xs) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= 1 })
+                            @Decreases({ 1 - i })
+                            while (i < 1) {
+                                int j = 0
+                                @Invariant({ 0 <= j && j <= n })
+                                @Decreases({ n - j })
+                                while (j < n) { xs.add(0); j = j + 1 }
+                                i = i + 1
+                            }
+                            return xs.size()
                         }
                     }''')],
     ]

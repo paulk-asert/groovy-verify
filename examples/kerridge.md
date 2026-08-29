@@ -45,6 +45,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
 | `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
 | `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified (Phase 250); the drained sequence proves element by element — the channel is the list the loop builds (Phase 251) |
+| a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" (Phase 252) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 
 ## The one-shot shapes verify end to end
@@ -132,6 +133,52 @@ static List<Integer> squares(int n) {
 }
 ```
 
+And c03 **as the book writes it** — a `PAR` of three *looping* processes, each with its own loop, `GSquares`
+receiving *and* sending — proves the printed squares for symbolic `n` (Phase 252): every process carries
+only its own `@Invariant` / `@Decreases`; the channels' sequence facts, the block-forever obligation on each
+receive, and the renaming-apart of the three loops' counters are the checker's:
+
+<!-- doclint:case p246-kerridge-gallery/c03-as-three-looping-processes-symbolic-the-printed-squares-prove -->
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
+static List<Integer> network(int n) {
+    groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
+    groovy.concurrent.AsyncChannel<Integer> s2p = groovy.concurrent.AsyncChannel.create(4)
+    async {                                              // GNumbers
+        int i = 1
+        @Invariant({ 1 <= i && i <= n + 1 })
+        @Decreases({ n + 1 - i })
+        while (i <= n) {
+            n2s.send(i)
+            i = i + 1
+        }
+        n2s.close()
+    }
+    async {                                              // GSquares
+        int i = 0
+        @Invariant({ 0 <= i && i <= n })
+        @Decreases({ n - i })
+        while (i < n) {
+            int v = n2s.first()
+            s2p.send(v * v)
+            i = i + 1
+        }
+        s2p.close()
+    }
+    List<Integer> printed = []                           // GPrint
+    int j = 0
+    @Invariant({ printed != null && 0 <= j && j <= n && printed.size() == j && Forall.range(0, printed.size(), { int k -> printed[k] == (k + 1) * (k + 1) }) })
+    @Decreases({ n - j })
+    while (j < n) {
+        int s = s2p.first()
+        printed.add(s)
+        j = j + 1
+    }
+    return printed
+}
+```
+
 And the shape his tradition cares most about — the **client–server exchange**,
 whose deadlock-freedom the Welch/Martin design rules argue by ordering — is certified here by the same
 theorem, mechanised (the wait-for order is well-founded), *and* its value proves:
@@ -197,15 +244,16 @@ forever, and the FIFO pairing knows it.
 
 ## The honest boundary, loudly
 
-What stays out of reach says so. The generator side is now covered on both halves — termination (Phase 250)
-and the drained sequence (Phase 251) — for a **specified unit-counter loop** (`while (i < n) … i = i + 1`,
-or C-style, carrying the loop's `@Invariant` / `@Decreases`); a `while (true)` generator, a range `for`-in
-with a symbolic bound, a producer with two sends per iteration, or a one-at-a-time `first()` on a stream
-refuses the value model with the reason named. On the consumer side, the *accumulating* drain
-(`for (v in ch) { sum += v }`) is the loop engine's own boundary — a loop after a list-building loop — so
-drained values are spelled `toList()`. And the same line divides the one-shot `ALT` (certified) from the
-**looping consumer** proper — the multiplexer, the fair server, `while (true) { select … }` — which is now
-the ladder's recorded next rung: a research conversation, not a demo, on the same guarantees GPP establishes
+What stays out of reach says so. Streaming is covered on both sides for **specified unit-counter loops**
+(`while (i < n) … i = i + 1`, or C-style, carrying the loop's `@Invariant` / `@Decreases`, the counter the
+variable the guard tests): the generator's termination (Phase 250) and sequence (Phase 251), and the looping
+consumer's reads with their block-forever obligations (Phase 252). A `while (true)` process, a range
+`for`-in with a symbolic bound, two sends or two receives of one channel per iteration, or a `first()`
+outside such a loop refuses the value model with the reason named; the accumulating `for (v in ch)` drain
+is the loop engine's own boundary, so drained values are spelled `toList()` or collected in a loop. What
+remains is the **looping `ALT`** — the multiplexer, the fair server, `while (true) { select … }`: its
+per-iteration choice is the one-shot ALT's, but which guard is ready across iterations is not a count, and
+the process never terminates — a research conversation, not a demo, on the same guarantees GPP establishes
 offline by formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain

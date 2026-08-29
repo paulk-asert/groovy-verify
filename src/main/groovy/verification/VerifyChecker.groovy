@@ -3481,7 +3481,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // If the assertion is over a method parameter, it is usually a caller precondition written as a
                 // runtime check; nudge toward @Requires, which documents it and is checked at every call site.
                 boolean overParam = referencesParameter(asite.cond, currentMethod)
-                addStaticTypeError(withRepro(Reporter.formatAssertion(asite.cond.text, r, overParam), r, 'AssertionError'), asite.node)
+                String label = (String) asite.node.getNodeMetaData(ASSERT_LABEL_KEY)   // Phase 252 — a synthesized assert's own wording
+                addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : asite.cond.text, r, overParam), r, 'AssertionError'), asite.node)
             }
             return
         }
@@ -4205,11 +4206,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // beyond the model (the body then skips loudly downstream; checkChannelLinearity names the
         // channel and the reason), so nothing proves an order-dependent or count-dependent value.
         if (!channelModelVerdicts((BlockStatement) body, ch, params, scalarTypes).isEmpty()) return body
+        body = alphaRenameArms((BlockStatement) body)                   // Phase 252 — arm locals apart from the body's
         ChanRewrite rw = new ChanRewrite()
         rw.ch = ch; rw.bounds = bounds; rw.scalarTypes = scalarTypes; rw.method = method
         collectChannelParents((BlockStatement) body, ch, rw.parent, rw.subscribers)
         countChannelSends((BlockStatement) body, ch, rw.sendTotals)
-        rw.streams.putAll(scanStreams((BlockStatement) body, ch, rw.parent, rw.subscribers, params, scalarTypes).streams)   // Phase 251
+        StreamScan scan = scanStreams((BlockStatement) body, ch, rw.parent, rw.subscribers, params, scalarTypes)   // Phase 251/252
+        rw.streams.putAll(scan.streams)
+        rw.consumers.putAll(scan.consumers)
+        rw.sanctionedReceives.addAll(scan.sanctionedReceives)
         for (StreamInfo info : rw.streams.values()) rw.sendTotals.remove(info.root)
         List<Statement> out = new ArrayList<Statement>()
         rewriteChStatements(((BlockStatement) body).statements, rw, out)
@@ -4242,6 +4247,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<String, StreamInfo> streams = new LinkedHashMap<String, StreamInfo>()   // Phase 251 — streaming roots
         MethodNode method                                                        // for ContractNormalizer on injected invariants
         final Set<Statement> streamLoops = Collections.newSetFromMap(new IdentityHashMap<Statement, Boolean>())
+        final Map<Statement, ConsumerInfo> consumers = new IdentityHashMap<Statement, ConsumerInfo>()   // Phase 252
+        final Map<Statement, List<String>> producedBy = new IdentityHashMap<Statement, List<String>>()  // rewritten loop → its streams
+        final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        ConsumerInfo curConsumer                                                 // while rewriting a consumer loop's body
         /** The shadow list a streaming root or its map stage is drained from, else null. */
         String streamListOf(String v) {
             String r = rootOf(v)
@@ -4312,17 +4321,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String root = rootOf(e.key)
                 for (int k = 1; k <= e.value; k++) elements.add(element(root, k))
             }
-            // Phase 251 — a stream's drains wait for its close marker; its shadow lists name the stream.
+            // Phase 251/252 — a stream's readers wait for its `$produced` marker (emitted after the producer
+            // loop — the loop is atomic in the model); its shadow lists name the stream. A loop's own
+            // produced streams are exempt (a stage as a process reads one stream and builds another).
             Map<String, String> listOwner = new HashMap<String, String>()
             for (StreamInfo info : streams.values()) {
-                elements.add(info.root + '$closed')
+                elements.add(info.root + '$produced')
                 listOwner.put(info.root + '$q', info.root)
                 for (String d : info.derived) listOwner.put(d + '$q', info.root)
             }
             List<Set<String>> uses = new ArrayList<Set<String>>(), defs = new ArrayList<Set<String>>()
             for (Statement st : out) {
                 final Set<String> u = new HashSet<String>(), d = new HashSet<String>()
-                final boolean producer = streamLoops.contains(st)
+                final Collection<String> ownStreams = producedBy.containsKey(st) ? producedBy.get(st) : Collections.<String>emptyList()
                 st.visit(new CodeVisitorSupport() {
                     @Override void visitDeclarationExpression(DeclarationExpression de) {
                         if (de.leftExpression instanceof VariableExpression) {
@@ -4334,7 +4345,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                     @Override void visitVariableExpression(VariableExpression ve) {
                         if (elements.contains(ve.name)) u.add(ve.name)
-                        if (!producer && listOwner.containsKey(ve.name)) u.add(listOwner.get(ve.name) + '$closed')
+                        if (listOwner.containsKey(ve.name) && !ownStreams.contains(listOwner.get(ve.name))) u.add(listOwner.get(ve.name) + '$produced')
                     }
                 })
                 uses.add(u); defs.add(d)
@@ -4612,8 +4623,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         boolean streaming = streamScan.streams.containsKey(name) || streamScan.streams.containsKey(parentRoot(name))
                         if (isSend && streamScan.sanctionedSends.contains(m)) {
                             // Phase 251 — the producer loop's send: the streaming model's own shape
+                        } else if (isRead && streamScan.sanctionedReceives.contains(m)) {
+                            // Phase 252 — a consumer loop's receive: element k of the stream
                         } else if (isRead && streaming) {
-                            flag(name, "is received one element at a time from a streaming producer (drain it — toList() / for (v in ch) — instead)")
+                            flag(name, "is received one element at a time from a streaming producer outside a specified unit-counter consumer loop (drain it — toList() — or read it once per iteration in a while / C-style loop with an @Invariant / @Decreases)")
                         } else if (isDrain && streaming && mm != 'toList') {
                             flag(name, "is drained by ${mm} {} from a streaming producer (toList() is the drained-value spelling)")
                         } else if (condDepth > 0 && isSend && streamScan.whyNot.containsKey(name)) {
@@ -4781,15 +4794,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 if (e instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) e
-                    if (m.methodAsString == 'close' && m.objectExpression instanceof VariableExpression &&
-                        rw.streams.containsKey(((VariableExpression) m.objectExpression).name)) {     // Phase 251 — the drain-ordering marker
-                        String c = ((VariableExpression) m.objectExpression).name
-                        DeclarationExpression closed = new DeclarationExpression(new VariableExpression(c + '$closed'),
-                            Token.newSymbol(Types.ASSIGN, m.lineNumber, m.columnNumber), new ConstantExpression(true))
-                        closed.setSourcePosition(m)
-                        rw.emit(out, new ExpressionStatement(closed))
-                        continue
-                    }
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'close') continue   // close → drop
                     if (isChannelExpr(m.objectExpression, ch) && m.methodAsString == 'send' &&
                         m.objectExpression instanceof VariableExpression) {     // k-th send(v) → def ch$k = v
@@ -4854,13 +4858,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 rw.emit(out, new ReturnStatement(r == null ? r : rewriteChExpr(r, rw)))
                 continue
             }
-            if (st instanceof LoopingStatement && !rw.streams.isEmpty()) {     // Phase 251 — a producer loop
+            if (st instanceof LoopingStatement && !rw.streams.isEmpty()) {     // Phase 251/252 — a producer and/or consumer loop
                 List<StreamInfo> infos = new ArrayList<StreamInfo>()
                 for (StreamInfo info : rw.streams.values()) if (info.loop.is(st)) infos.add(info)
-                if (!infos.isEmpty()) {
+                if (!infos.isEmpty() || rw.consumers.containsKey(st)) {
                     Statement loop = rewriteStreamLoop((LoopingStatement) st, infos, rw)
                     rw.streamLoops.add(loop)
+                    List<String> roots = new ArrayList<String>()
+                    for (StreamInfo info : infos) roots.add(info.root)
+                    rw.producedBy.put(loop, roots)
                     rw.emit(out, loop)
+                    for (StreamInfo info : infos) {                              // the stream is complete: readers may run
+                        DeclarationExpression done = new DeclarationExpression(new VariableExpression(info.root + '$produced'),
+                            Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), new ConstantExpression(true))
+                        done.setSourcePosition(st)
+                        rw.emit(out, new ExpressionStatement(done))
+                    }
                     continue
                 }
             }
@@ -5006,7 +5019,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** A deep copy of a loop body with variables substituted — a rename (to a fresh `VariableExpression`)
      *  or a frozen literal index (Phase 248) — declarations included; null for a statement kind outside
      *  the unrolling fragment. Source positions are kept for diagnostics. */
-    private static Statement copyRenamed(Statement s, Map<String, Expression> ren) {
+    private static Statement copyRenamed(Statement s, Map<String, Expression> ren) { copyRenamed(s, ren, false) }
+
+    /** As above; {@code lenient} keeps a statement kind outside the copying fragment SHARED (unrenamed) instead of
+     *  failing — for the arm renamer, whose live closures carry groovy-contracts' runtime-check plumbing. */
+    private static Statement copyRenamed(Statement s, Map<String, Expression> ren, boolean lenient) {
         if (s == null) return null
         ExpressionTransformer sub = new ExpressionTransformer() {
             @Override Expression transform(Expression expr) {
@@ -5030,7 +5047,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (s instanceof BlockStatement) {
             List<Statement> o = new ArrayList<Statement>()
             for (Statement st : ((BlockStatement) s).statements) {
-                Statement c = copyRenamed(st, ren)
+                Statement c = copyRenamed(st, ren, lenient)
                 if (c == null) return null
                 o.add(c)
             }
@@ -5042,20 +5059,55 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             out = new ReturnStatement(r == null ? null : sub.transform(r))
         } else if (s instanceof IfStatement) {
             IfStatement i = (IfStatement) s
-            Statement a = copyRenamed(i.ifBlock, ren)
-            Statement b = i.elseBlock == null ? null : copyRenamed(i.elseBlock, ren)
+            Statement a = copyRenamed(i.ifBlock, ren, lenient)
+            Statement b = i.elseBlock == null ? null : copyRenamed(i.elseBlock, ren, lenient)
             if (a == null || (i.elseBlock != null && b == null)) return null
             out = new IfStatement(new BooleanExpression(sub.transform(i.booleanExpression.expression)), a, b == null ? EmptyStatement.INSTANCE : b)
         } else if (s instanceof ForStatement) {                    // Phase 248 — a nested loop travels with its copy
             ForStatement f = (ForStatement) s
-            Statement lb = copyRenamed(f.loopBlock, ren)
+            Statement lb = copyRenamed(f.loopBlock, ren, lenient)
             if (lb == null) return null
             out = new ForStatement(f.variable, sub.transform(f.collectionExpression), lb)
+        } else if (s instanceof WhileStatement) {                  // Phase 252 — arm loops rename with their spec
+            WhileStatement w = (WhileStatement) s
+            Statement lb = copyRenamed(w.loopBlock, ren, lenient)
+            if (lb == null) return null
+            out = new WhileStatement(new BooleanExpression(sub.transform(w.booleanExpression.expression)), lb)
+        } else if (s instanceof DoWhileStatement) {
+            DoWhileStatement w = (DoWhileStatement) s
+            Statement lb = copyRenamed(w.loopBlock, ren, lenient)
+            if (lb == null) return null
+            out = new DoWhileStatement(new BooleanExpression(sub.transform(w.booleanExpression.expression)), lb)
+        } else if (s instanceof AssertStatement) {
+            AssertStatement a = (AssertStatement) s
+            out = new AssertStatement(new BooleanExpression(sub.transform(a.booleanExpression.expression)), a.messageExpression)
+            out.copyNodeMetaData(s)
         } else {
-            return null
+            return lenient ? s : null
+        }
+        if (s instanceof LoopingStatement) {
+            out.copyNodeMetaData(s)
+            LoopSpec spec = (LoopSpec) s.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+            if (spec != null) out.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, renameSpec(spec, ren))
         }
         out.setSourcePosition(s)
         out
+    }
+
+    /** Phase 252 — a LoopSpec with its expressions and statements renamed (the loop-engine view of a renamed loop). */
+    private static LoopSpec renameSpec(LoopSpec spec, Map<String, Expression> ren) {
+        LoopSpec s2 = new LoopSpec()
+        s2.invariants = new ArrayList<Expression>()
+        for (Expression inv : spec.invariants) s2.invariants.add(substituteVars(inv, ren))
+        s2.variant = spec.variant == null ? null : substituteVars(spec.variant, ren)
+        s2.guard = spec.guard == null ? null : substituteVars(spec.guard, ren)
+        s2.init = spec.init == null ? null : spec.init.collect { Statement x -> copyRenamed(x, ren) ?: x }
+        s2.body = spec.body.collect { Statement x -> copyRenamed(x, ren) ?: x }
+        Expression fv = spec.forInVar == null ? null : ren.get(spec.forInVar)
+        s2.forInVar = fv instanceof VariableExpression ? ((VariableExpression) fv).name : spec.forInVar
+        s2.forInBind = spec.forInBind == null ? null : (copyRenamed(spec.forInBind, ren) ?: spec.forInBind)
+        s2.isDoWhile = spec.isDoWhile; s2.autoInvariantOnly = spec.autoInvariantOnly
+        s2
     }
 
     /** The channel VAR an expression's chain bottoms out at, expanding derived vars through their
@@ -5116,6 +5168,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             if (reduced != null) return reduced
                         }
                     }
+                    Expression cr = consumerRead(m, rw)                                  // Phase 252 — x$q[i - a]
+                    if (cr != null) return cr
+                    if (m.methodAsString == 'await' && isAwaitedReceive(m.arguments)) {
+                        Expression cr2 = consumerRead((MethodCallExpression) singleArg(m.arguments), rw)
+                        if (cr2 != null) return cr2
+                    }
                     if ((m.methodAsString == 'first' || m.methodAsString == 'receive') &&
                         isChannelExpr(m.objectExpression, ch) && noArgs(m)) {
                         Expression r = receiveElement(m.objectExpression)                 // the k-th element
@@ -5164,6 +5222,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (expr instanceof StaticMethodCallExpression) {
                     StaticMethodCallExpression sm = (StaticMethodCallExpression) expr
                     if (sm.method == 'await' && isAwaitedReceive(sm.arguments)) {
+                        Expression cr = consumerRead((MethodCallExpression) singleArg(sm.arguments), rw)   // Phase 252
+                        if (cr != null) return cr
                         Expression r = receiveElement(((MethodCallExpression) singleArg(sm.arguments)).objectExpression)
                         if (r != null) return r
                     }
@@ -5261,6 +5321,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Expression counterInit
         boolean elementRelation
         final List<String> derived = new ArrayList<String>()
+        final Map<String, MethodCallExpression> aliases = new HashMap<String, MethodCallExpression>()   // Phase 252 — `def v = in.first()` in the same loop
+    }
+
+    /** Phase 252 — a consumer loop: a specified unit-counter loop reading one element per iteration from
+     *  a streaming channel (or its map stage) — the k-th receive reads element k of the shadow list. */
+    private static class ConsumerInfo {
+        LoopingStatement loop
+        String counter
+        Expression counterInit
+        final Map<MethodCallExpression, String> receives = new IdentityHashMap<MethodCallExpression, String>()   // call → stream var
+        final Set<String> chans = new HashSet<String>()                  // the stream vars read (one receive each per iteration)
+        /** The stream var a call receives from — by SHAPE (`x.first()` / `x.receive()`), so a copied body still matches. */
+        String readOf(MethodCallExpression m) {
+            if (!(m.methodAsString == 'first' || m.methodAsString == 'receive') || !noArgs(m)) return null
+            Expression x = stripCasts(m.objectExpression)
+            String v = x instanceof VariableExpression ? ((VariableExpression) x).name : null
+            (v != null && chans.contains(v)) ? v : null
+        }
     }
 
     /** A loop-send's eligibility verdicts: streaming roots, and the reason each other loop-send channel is out. */
@@ -5268,6 +5346,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<String, StreamInfo> streams = new LinkedHashMap<String, StreamInfo>()
         final Map<String, String> whyNot = new LinkedHashMap<String, String>()
         final Set<Expression> sanctionedSends = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        final Map<Statement, ConsumerInfo> consumers = new IdentityHashMap<Statement, ConsumerInfo>()
+        final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        String streamVarRoot(String v, Map<String, String> parent) {
+            String r = v; int g = 0
+            while (parent.containsKey(r) && g++ < 100) r = parent.get(r)
+            StreamInfo info = streams.get(r)
+            (info != null && (v == r || info.derived.contains(v))) ? r : null
+        }
     }
 
     /** Top-level statement lists of the body and of each async arm (the flattening puts them all at top level). */
@@ -5312,13 +5398,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (!isUnitIncrement(upd, counter)) { why[0] = "does not step its counter '${counter}' by one"; return null }
             if (writesVar(body, counter)) { why[0] = "writes its counter '${counter}' in the body"; return null }
         } else if (loop instanceof WhileStatement) {
+            Set<String> guardNames = varNames(((WhileStatement) loop).booleanExpression)
             for (Statement st : top) {
                 if (!(st instanceof ExpressionStatement)) continue
                 Expression e = ((ExpressionStatement) st).expression
                 String v = unitIncrementTarget(e)
-                if (v != null) { if (counter != null) { why[0] = 'steps two counters'; return null }; counter = v }
+                if (v == null || !guardNames.contains(v)) continue          // the counter is the stepped var the guard tests
+                if (counter != null) { why[0] = 'steps two guard counters'; return null }
+                counter = v
             }
-            if (counter == null) { why[0] = 'has no unit counter (a single i = i + 1 per iteration)'; return null }
+            if (counter == null) { why[0] = 'has no unit counter (a single i = i + 1 per iteration on a variable the guard tests)'; return null }
             int writes = 0
             for (Statement st : top) if (writesVar(st, counter)) writes++
             if (writes != 1) { why[0] = "writes its counter '${counter}' more than once per iteration"; return null }
@@ -5465,7 +5554,105 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (why != null) scan.whyNot.put(c, why)
         }
+        // Phase 252 — consumer loops: a specified unit-counter loop whose body receives (first() / awaited
+        // receive()) from a streaming channel or its map stage, at most once per channel per iteration,
+        // unconditionally (not under an if / nested loop). Each such receive is sanctioned: the k-th
+        // iteration reads element k of the shadow list, the block-forever obligation asserted before it.
+        for (List<Statement> block : topLevelBlocks(body)) {
+            for (Statement st : block) {
+                if (!(st instanceof LoopingStatement)) continue
+                if (((Statement) st).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) == null) continue
+                String[] w = [null]
+                Object[] cnt = unitCounter((LoopingStatement) st, block, params, w)
+                if (cnt == null) continue
+                final Map<String, List<MethodCallExpression>> perChan = new LinkedHashMap<String, List<MethodCallExpression>>()
+                ((LoopingStatement) st).loopBlock.visit(new CodeVisitorSupport() {
+                    private int cond
+                    private void take(MethodCallExpression m, Expression recv) {
+                        Expression x = stripCasts(recv)
+                        if (!(x instanceof VariableExpression) || cond > 0) return
+                        String v = ((VariableExpression) x).name
+                        if (scan.streamVarRoot(v, parent) == null) return
+                        List<MethodCallExpression> l = perChan.get(v)
+                        if (l == null) { l = new ArrayList<MethodCallExpression>(); perChan.put(v, l) }
+                        l.add(m)
+                    }
+                    private void takeAwait(Expression args) {
+                        if (!(args instanceof TupleExpression) || ((TupleExpression) args).expressions.size() != 1) return
+                        Expression a = stripCasts(((TupleExpression) args).expressions.get(0))
+                        if (a instanceof MethodCallExpression && ((MethodCallExpression) a).methodAsString == 'receive' && noArgs((MethodCallExpression) a)) take((MethodCallExpression) a, ((MethodCallExpression) a).objectExpression)
+                    }
+                    @Override void visitMethodCallExpression(MethodCallExpression m) {
+                        if (m.methodAsString == 'first' && noArgs(m)) take(m, m.objectExpression)
+                        if (m.methodAsString == 'await') takeAwait(m.arguments)
+                        super.visitMethodCallExpression(m)
+                    }
+                    @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) {
+                        if (m.method == 'await') takeAwait(m.arguments)
+                        super.visitStaticMethodCallExpression(m)
+                    }
+                    @Override void visitIfElse(IfStatement i) { i.booleanExpression.visit(this); cond++; try { i.ifBlock?.visit(this); i.elseBlock?.visit(this) } finally { cond-- } }
+                    @Override void visitForLoop(ForStatement f) { cond++; try { super.visitForLoop(f) } finally { cond-- } }
+                    @Override void visitWhileLoop(WhileStatement f) { cond++; try { super.visitWhileLoop(f) } finally { cond-- } }
+                    @Override void visitDoWhileLoop(DoWhileStatement f) { cond++; try { super.visitDoWhileLoop(f) } finally { cond-- } }
+                    @Override void visitClosureExpression(ClosureExpression c) { cond++; try { super.visitClosureExpression(c) } finally { cond-- } }
+                })
+                if (perChan.isEmpty()) continue
+                ConsumerInfo ci = new ConsumerInfo()
+                ci.loop = (LoopingStatement) st; ci.counter = (String) cnt[0]; ci.counterInit = (Expression) cnt[1]
+                for (Map.Entry<String, List<MethodCallExpression>> e : perChan.entrySet()) {
+                    if (e.value.size() != 1) continue                       // two receives per iteration: unsanctioned (flagged)
+                    ci.receives.put(e.value.get(0), e.key)
+                    ci.chans.add(e.key)
+                    scan.sanctionedReceives.add(e.value.get(0))
+                }
+                if (!ci.receives.isEmpty()) scan.consumers.put((Statement) st, ci)
+            }
+        }
+        // Phase 252 — a loop that both receives and sends (a stage as a process): the sent expression may
+        // name a local declared from a sanctioned receive in the same body — an alias of the read element,
+        // so the element relation still holds through it.
+        for (StreamInfo info : scan.streams.values()) {
+            ConsumerInfo ci = scan.consumers.get((Statement) info.loop)
+            if (ci == null) continue
+            Statement lb = info.loop.loopBlock
+            List<Statement> top = lb instanceof BlockStatement ? ((BlockStatement) lb).statements : Collections.singletonList(lb)
+            for (Statement st : top) {
+                if (!(st instanceof ExpressionStatement) || !(((ExpressionStatement) st).expression instanceof DeclarationExpression)) continue
+                DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) st).expression
+                if (!(de.leftExpression instanceof VariableExpression)) continue
+                MethodCallExpression rc = receiveCallOf(de.rightExpression)
+                if (rc != null && ci.readOf(rc) != null) {
+                    info.aliases.put(((VariableExpression) de.leftExpression).name, rc)
+                }
+            }
+            boolean rel = true
+            for (String n : varNames(info.sendExpr)) {
+                if (n == info.counter || info.aliases.containsKey(n)) continue
+                if (ch.contains(n) || writesVar(info.loop.loopBlock, n)) rel = false
+            }
+            info.elementRelation = rel
+        }
         scan
+    }
+
+    /** The receive call behind `x.first()` or `await x.receive()` (either await shape), else null. */
+    private static MethodCallExpression receiveCallOf(Expression e) {
+        Expression x = stripCasts(e)
+        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'first') return (MethodCallExpression) x
+        Expression args = null
+        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'await') args = ((MethodCallExpression) x).arguments
+        else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'await') args = ((StaticMethodCallExpression) x).arguments
+        if (!(args instanceof TupleExpression) || ((TupleExpression) args).expressions.size() != 1) return null
+        Expression a = stripCasts(((TupleExpression) args).expressions.get(0))
+        (a instanceof MethodCallExpression && ((MethodCallExpression) a).methodAsString == 'receive') ? (MethodCallExpression) a : null
+    }
+
+    /** The entry value of a counter as source text (a literal or a parameter name; anything else parenthesised). */
+    private static String entryText(Expression counterInit) {
+        Expression ci = stripCasts(counterInit)
+        ci instanceof ConstantExpression ? String.valueOf(((ConstantExpression) ci).value) :
+        ci instanceof VariableExpression ? ((VariableExpression) ci).name : "(${ci.text})".toString()
     }
 
     /** True when the call sits inside any loop of the body (at any depth, arms included). */
@@ -5502,10 +5689,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** {@code e} with every occurrence of the variable {@code name} replaced by {@code by} — closure bodies
      *  included (a `ClosureExpression` does not transform its code by itself, so quantifier closures are rebuilt). */
     private static Expression substituteVar(Expression e, String name, Expression by) {
+        substituteVars(e, Collections.singletonMap(name, by))
+    }
+
+    /** Multi-name substitution; a `VariableExpression` replacement is re-minted per occurrence. */
+    private static Expression substituteVars(Expression e, Map<String, Expression> ren) {
         ExpressionTransformer t = new ExpressionTransformer() {
             @Override Expression transform(Expression x) {
                 if (x == null) return null
-                if (x instanceof VariableExpression && ((VariableExpression) x).name == name) return by
+                if (x instanceof VariableExpression && ren.containsKey(((VariableExpression) x).name)) {
+                    Expression by = ren.get(((VariableExpression) x).name)
+                    if (by instanceof VariableExpression) {
+                        VariableExpression nv = new VariableExpression(((VariableExpression) by).name, ((VariableExpression) x).originType)
+                        nv.setSourcePosition(x)
+                        return nv
+                    }
+                    return by
+                }
                 if (x instanceof ClosureExpression) {
                     ClosureExpression c = (ClosureExpression) x
                     if (!(c.code instanceof BlockStatement)) return x
@@ -5530,6 +5730,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  LoopSpec is rebuilt over the rewritten body with the sequence invariants appended. */
     private static Statement rewriteStreamLoop(LoopingStatement loop, List<StreamInfo> infos, ChanRewrite rw) {
         LoopSpec spec = (LoopSpec) ((Statement) loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        ConsumerInfo consumer = rw.consumers.get((Statement) loop)
+        ConsumerInfo savedConsumer = rw.curConsumer
+        rw.curConsumer = consumer
+        try {
         Statement lb = loop.loopBlock
         List<Statement> blockIn = lb instanceof BlockStatement ? ((BlockStatement) lb).statements : Collections.singletonList(lb)
         BlockStatement block = new BlockStatement(rewriteStreamStmts(blockIn, rw), lb instanceof BlockStatement ? ((BlockStatement) lb).variableScope : null)
@@ -5547,8 +5751,68 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             s2.isDoWhile = spec.isDoWhile; s2.autoInvariantOnly = spec.autoInvariantOnly
             s2.body = rewriteStreamStmts(spec.body, rw)
             for (StreamInfo info : infos) s2.invariants.addAll(streamInvariants(info, rw))
+            // Phase 252 — a consumer loop knows its producers' post-state as FRAME facts: the producer
+            // loop's own invariants, its injected sequence facts and ¬guard hold throughout (nothing here
+            // writes the producer's counter or its list) — the element-exists obligations discharge on them.
+            if (consumer != null) {
+                // transitively: a stage's facts relate its list to the stream IT consumed, whose facts are needed too
+                Set<String> seen = new HashSet<String>()
+                List<String> todo = new ArrayList<String>()
+                for (String v : consumer.receives.values()) todo.add(rw.rootOf(v))
+                while (!todo.isEmpty()) {
+                    String root = todo.remove(0)
+                    StreamInfo p = rw.streams.get(root)
+                    if (p == null || p.loop.is(loop) || !seen.add(root)) continue
+                    LoopSpec ps = (LoopSpec) ((Statement) p.loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                    if (ps != null) {
+                        s2.invariants.addAll(ps.invariants)
+                        s2.invariants.add(new NotExpression(ps.guard))
+                    }
+                    s2.invariants.addAll(streamInvariants(p, rw))
+                    ConsumerInfo pc = rw.consumers.get((Statement) p.loop)
+                    if (pc != null) for (String v : pc.receives.values()) todo.add(rw.rootOf(v))
+                }
+            }
             out.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, s2)
         }
+        out
+        } finally { rw.curConsumer = savedConsumer }
+    }
+
+    /** Phase 252 — the shadow-list read a sanctioned receive becomes inside its consumer loop: `x$q[i - a]`. */
+    private static Expression consumerRead(MethodCallExpression recv, ChanRewrite rw) {
+        ConsumerInfo ci = rw.curConsumer
+        String v = ci == null ? null : ci.readOf(recv)
+        if (v == null) return null
+        Expression e = ContractExpansionTransform.reparse("${v}\$q[${ci.counter} - ${entryText(ci.counterInit)}]")
+        if (e != null) e.setSourcePosition(recv)
+        e
+    }
+
+    /** Phase 252 — the block-forever obligation of a sanctioned receive: the element it reads must exist. */
+    private static Statement consumerAssert(MethodCallExpression recv, ChanRewrite rw) {
+        ConsumerInfo ci = rw.curConsumer
+        String v = ci.readOf(recv)
+        if (v == null) return null
+        Expression cond = ContractExpansionTransform.reparse("${ci.counter} - ${entryText(ci.counterInit)} < ${v}\$q.size()")
+        if (cond == null) return null
+        AssertStatement a = new AssertStatement(new BooleanExpression(cond))
+        a.setSourcePosition(recv)
+        a.putNodeMetaData(ASSERT_LABEL_KEY, ("the receive on '${v}' (line ${recv.lineNumber}) may block forever — " +
+            "the element it reads may never be sent (the consumer loop reads past what the producer loop sends)").toString())
+        a
+    }
+
+    /** The sanctioned receives inside an expression, in evaluation order. */
+    private static List<MethodCallExpression> sanctionedReceivesIn(Expression e, ChanRewrite rw) {
+        final List<MethodCallExpression> out = new ArrayList<MethodCallExpression>()
+        if (e == null || rw.curConsumer == null) return out
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if (rw.curConsumer.readOf(m) != null) out.add(m)
+                super.visitMethodCallExpression(m)
+            }
+        })
         out
     }
 
@@ -5559,16 +5823,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String q = info.root + '$q'
         // The entry value as source text. NB: never `(name) + k` — Groovy parses a parenthesised bare
         // identifier before an operand as a CAST (`(lo) +k`); the counter offset is spelled `k + entry`.
-        Expression ci = stripCasts(info.counterInit)
-        String initText = ci instanceof ConstantExpression ? String.valueOf(((ConstantExpression) ci).value) :
-                          ci instanceof VariableExpression ? ((VariableExpression) ci).name : "(${ci.text})"
+        String initText = entryText(info.counterInit)
         Expression size = ContractExpansionTransform.reparse("${q} != null && ${q}.size() == ${info.counter} - ${initText}")
         String k = info.counter == 'k' ? 'kk' : 'k'
         Expression rel = null
+        Expression sendE = aliasedSend(info, k, initText, rw)
         if (info.elementRelation) {
-            // E[i := a + k]
+            // E[i := a + k], a receive alias `v = in.first()` in the same loop standing for in$q[(k + a) - a_c]
             Expression atK = ContractExpansionTransform.reparse("(${k} + ${initText})")
-            Expression elem = atK == null ? null : substituteVar(rewriteChExpr(info.sendExpr, rw), info.counter, atK)
+            Expression elem = atK == null ? null : substituteVar(sendE, info.counter, atK)
             Expression shape = ContractExpansionTransform.reparse("Forall.range(0, ${q}.size(), { int ${k} -> ${q}[${k}] == __E__ })")
             if (elem != null && shape != null) rel = substituteVar(shape, '__E__', elem)
         }
@@ -5580,7 +5843,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression drel = null
             if (info.elementRelation) {
                 Expression atK = ContractExpansionTransform.reparse("(${k} + ${initText})")
-                Expression elem = atK == null ? null : substituteVar(rewriteChExpr(info.sendExpr, rw), info.counter, atK)
+                Expression elem = atK == null ? null : substituteVar(sendE, info.counter, atK)
                 Expression shape = ContractExpansionTransform.reparse("Forall.range(0, ${dq}.size(), { int ${k} -> ${dq}[${k}] == __E__ })")
                 if (elem != null && shape != null) drel = substituteVar(shape, '__E__', derivedValue(d, elem, rw))
             }
@@ -5588,6 +5851,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             else if (ds != null) out.add(norm(ds, rw))
         }
         out
+    }
+
+    /** Phase 252 — the sent expression with each receive alias (`def v = in.first()` in the same loop) replaced
+     *  by the element it read, `in$q[(k + a) - a_c]` — spelled over the relation's index {@code k}. */
+    private static Expression aliasedSend(StreamInfo info, String k, String initText, ChanRewrite rw) {
+        Expression sendE = rewriteChExpr(info.sendExpr, rw)
+        ConsumerInfo ci = rw.consumers.get((Statement) info.loop)
+        for (Map.Entry<String, MethodCallExpression> al : info.aliases.entrySet()) {
+            String v = ci == null ? null : ci.readOf(al.value)
+            if (v == null) continue
+            Expression read = ContractExpansionTransform.reparse("${v}\$q[(${k} + ${initText}) - ${entryText(ci.counterInit)}]")
+            if (read != null) sendE = substituteVar(sendE, al.key, read)
+        }
+        sendE
     }
 
     /** The same normalisation the user's captured invariants get (ContractNormalizer against the method). */
@@ -5616,6 +5893,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (st instanceof ExpressionStatement) {
                 Expression e = ((ExpressionStatement) st).expression
+                for (MethodCallExpression r : sanctionedReceivesIn(e, rw)) {   // Phase 252 — the element must exist
+                    Statement a = consumerAssert(r, rw)
+                    if (a != null) out.add(a)
+                }
                 if (e instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) e
                     Expression recv = stripCasts(m.objectExpression)
@@ -5664,19 +5945,54 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (spec != null) {
             Map<String, Expression> ren = new HashMap<String, Expression>()
             ren.put(c, new VariableExpression(q))
-            LoopSpec s2 = new LoopSpec()
-            s2.invariants = new ArrayList<Expression>()
-            for (Expression inv : spec.invariants) s2.invariants.add(substituteVar(inv, c, new VariableExpression(q)))
-            s2.variant = spec.variant == null ? null : substituteVar(spec.variant, c, new VariableExpression(q))
-            s2.guard = substituteVar(spec.guard, c, new VariableExpression(q))
-            s2.init = spec.init == null ? null : spec.init.collect { Statement x -> copyRenamed(x, ren) ?: x }
-            s2.body = spec.body.collect { Statement x -> copyRenamed(x, ren) ?: x }
-            s2.forInVar = spec.forInVar
-            s2.forInBind = spec.forInBind == null ? null : (copyRenamed(spec.forInBind, ren) ?: spec.forInBind)
-            s2.isDoWhile = spec.isDoWhile; s2.autoInvariantOnly = spec.autoInvariantOnly
-            out.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, s2)
+            out.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, renameSpec(spec, ren))
         }
         out
+    }
+
+    /** Phase 252 — arm locals renamed apart from the body's (and earlier arms') locals before the flattening:
+     *  two loops naturally both count with `i`, and the flattened single-assignment model would conflate them.
+     *  Arms are rebuilt, never mutated; an arm whose body the renamer cannot copy is left as is. */
+    private static BlockStatement alphaRenameArms(BlockStatement body) {
+        Set<String> taken = new HashSet<String>()
+        collectBodyLocalNames(body, taken)
+        List<Statement> out = new ArrayList<Statement>()
+        boolean changed = false
+        int armNo = 0
+        for (Statement st : body.statements) {
+            Expression call = null, e = null
+            if (st instanceof ExpressionStatement) {
+                e = ((ExpressionStatement) st).expression
+                call = e
+                if (e instanceof DeclarationExpression) call = stripCasts(((DeclarationExpression) e).rightExpression)
+                else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) call = stripCasts(((BinaryExpression) e).rightExpression)
+            }
+            ClosureExpression cl = call == null ? null : asyncClosure(call)
+            if (cl == null || !(cl.code instanceof BlockStatement)) { out.add(st); continue }
+            armNo++
+            Set<String> locals = new HashSet<String>()
+            collectBodyLocalNames((BlockStatement) cl.code, locals)
+            Map<String, Expression> ren = new HashMap<String, Expression>()
+            for (String l : locals) if (taken.contains(l)) ren.put(l, new VariableExpression(l + '$a' + armNo))
+            for (String l : locals) taken.add(ren.containsKey(l) ? ((VariableExpression) ren.get(l)).name : l)
+            if (ren.isEmpty()) { out.add(st); continue }
+            Statement copy = copyRenamed(cl.code, ren, true)
+            if (!(copy instanceof BlockStatement)) { out.add(st); continue }
+            Expression rebuilt = rebuildAsyncCall(call, cl, (BlockStatement) copy)
+            Expression ne
+            if (e instanceof DeclarationExpression) ne = new DeclarationExpression(((DeclarationExpression) e).leftExpression, ((DeclarationExpression) e).operation, rebuilt)
+            else if (e instanceof BinaryExpression) ne = new BinaryExpression(((BinaryExpression) e).leftExpression, ((BinaryExpression) e).operation, rebuilt)
+            else ne = rebuilt
+            ne.setSourcePosition(e); ne.copyNodeMetaData(e)
+            ExpressionStatement ns = new ExpressionStatement(ne)
+            ns.setSourcePosition(st); ns.copyNodeMetaData(st)
+            out.add(ns)
+            changed = true
+        }
+        if (!changed) return body
+        BlockStatement nb = new BlockStatement(out, body.variableScope)
+        nb.setSourcePosition(body); nb.copyNodeMetaData(body)
+        nb
     }
 
     // ── Phase 248 — bounded streaming: literal-bounded channel loops unroll ────────────────────
@@ -5694,6 +6010,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** The unrolling ceiling — bounded model checking, kept small enough to stay a compile-time proof. */
     private static final int CHANNEL_UNROLL_LIMIT = 32
+
+    /** Phase 252 — node metadata on a synthesized {@code assert}: the sentence the diagnostic reports instead of the condition text. */
+    static final String ASSERT_LABEL_KEY = 'verification.assertLabel'
 
     /** A new body with every literal-bounded channel loop unrolled; the SAME body when there is none. */
     private static Statement unrollLiteralChannelLoops(Statement body, Set<String> ch) {
@@ -6844,6 +7163,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                             Map<String, String> chanParent, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
         if (uses.isEmpty()) return
+        // Phase 252 — a consumer loop's sanctioned receives are decided by the value model (the element-exists
+        // obligation under the producer's summary), not by the wait-for graph: they leave it here.
+        Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        try {
+            Map<String, String> parent = new HashMap<String, String>()
+            Set<String> subscribers = new HashSet<String>()
+            collectChannelParents(body, ctx.chanVars, parent, subscribers)
+            sanctionedReceives.addAll(scanStreams(body, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes).sanctionedReceives)
+        } catch (Throwable ignored) {
+        }
         Set<String> paramChans = new HashSet<String>()
         for (Parameter p : node.parameters) {
             String tn = p.type?.nameWithoutPackage
@@ -6871,6 +7200,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean isIter = isIterateUse(u)
             boolean isSelect = u.method == 'select'
             if (!isSend && !isClose && !isRead && !isIter && !isSelect) continue
+            if (isRead && sanctionedReceives.contains(u.anchor)) continue     // Phase 252
             if (u.conditional || (u.proc != null && u.proc.conditional)) {
                 // Phase 250 — a conditional SEND (inside a loop / if / catch) never blocks and stalls
                 // nobody: it only makes its root's element COUNT non-static. It leaves the graph, and

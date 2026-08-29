@@ -11492,6 +11492,55 @@ consumer — multiplexer, fair server — is the recorded next rung).
 
 ---
 
+## Phase 252 — streaming consumers: the looping process  *(shipped — slice 12 of the SEQ/PAR ladder; the looping consumer)*
+
+The rung `examples/kerridge.md` named after Phase 251. A CONSUMER LOOP — a specified unit-counter loop
+receiving once per channel per iteration from a streaming channel or its map stage, unconditionally
+(`scanStreams`' second pass; `ConsumerInfo`, sanctioned receives) — reads element k of the shadow list:
+`x.first()` / `await x.receive()` → `x$q[i - a]` (`consumerRead`, matched by SHAPE — channel + method —
+because the loop's spec body is a renamed COPY of its block, so identity would miss it: the first-run
+`nums$1` fall-through). Before each such receive a labelled `assert i - a < x$q.size()` carries the
+block-forever obligation (`consumerAssert`; `ASSERT_LABEL_KEY` metadata lets a synthesized assert report
+its own sentence — "the receive on 'out' (line N) may block forever — the element it reads may never be
+sent (the consumer loop reads past what the producer loop sends)"). The consumer's rebuilt LoopSpec gets
+its producers' post-state as FRAME facts — the producer loop's own invariants, its injected sequence
+facts, `¬guard` — transitively through stages (GPrint needs `nums`' facts through `sq`'s producer: the
+second first-run refutation). A loop that both receives and sends is a STAGE AS A PROCESS: a body-top
+`def v = in.first()` is an alias of the read element, so the sent expression's element relation goes
+through it (`aliasedSend`: `v` ↦ `in$q[(k + a) - a_c]`).
+
+**Two enablers, both general.** (1) `LoopEncoder.summarizeInner` now summarises a preceding loop that
+BUILDS A LIST (`add` / `clear` / `removeLast` / `pop` as statements — `innerFrame`'s new `lists` set):
+size AND contents havoc'd, then `inv ∧ ¬guard` characterises the list — Phase 207's sequential loops had
+refused any collection-writing predecessor (the Phase 251 probe's "nested loop writes a field/collection"
+skip). (2) `alphaRenameArms`: arm locals colliding with the body's (or an earlier arm's) locals are
+renamed apart (`i` → `i$a2`) before flattening — both loops naturally count with `i`, and the flattened
+single-assignment model had conflated them since Phase 119 (latent). Arms are rebuilt; `copyRenamed`
+grew While/DoWhile/Assert and renames a loop's LoopSpec with it (`renameSpec`, also used by the drain
+loop); a LENIENT mode keeps groovy-contracts' runtime-check plumbing in the live arm shared rather than
+giving up (the third first-run find — the renamer had silently bailed on it). The unit counter is now the
+stepped variable THE GUARD TESTS (`seen = seen + 1` alongside `i = i + 1` made the first version see two
+counters). The `$closed` scheduling marker became `$produced`, emitted after the producer loop (readers of a
+shadow list wait for it; a loop's own produced streams are exempt so a stage can read one and build
+another). Structurally (Phase 243/250), a sanctioned receive leaves the wait-for graph — the value
+model's obligation decides it.
+
+Cases (G316, new group, 6): the counting consumer (`count == n`, both loops on `i`), the over-read
+("may block forever"), the collecting consumer (the k-th received is the k-th sent), the last element,
+the THREE-PROCESS network (`GNumbers → GSquares → GPrint`, squares proved for symbolic `n`), and the loud
+unspecified-loop receive. G310 gains c03 as the book writes it — a PAR of three looping processes.
+G107's Phase 91 boundary E ("inner loop list mutator skips loudly") is RETIRED by enabler (1): the pin
+now expects the summarised outer loop to verify, with a twin showing the summary is honest (a post-loop
+size claim the inner invariant does not carry is refuted, not proved) — caught by the full run, not the
+subset: a reminder that a loop-engine change is a whole-corpus change.
+Docs: the Phase 252 subsection in `examples/concurrency.md` (the network, linked), the CAPABILITIES row,
+the README ladder + gallery bullets, `examples/kerridge.md` (the vocabulary row for a looping process,
+the network case in the verified tier, the boundary section: streaming covered on both sides for
+specified unit-counter loops; the looping ALT — readiness across iterations is not a count, and the
+process never terminates — is what remains).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
