@@ -38,7 +38,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result.size() == 3 && result[0] == 0 && result[2] == 2 })
                         static List<Integer> numbers() {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             for (i in 0..<3) {
                                 out.send(i)
                             }
@@ -50,7 +50,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result.size() == 3 && result[1] == 2 && result[2] == 4 })
                         static List<Integer> evens() {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             for (i in 0..<3) {
                                 int twice = i * 2
                                 out.send(twice)
@@ -63,7 +63,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result == 6 })
                         static int cStyle() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async {
                                 for (int i = 1; i <= 3; i++) {
                                     src.send(i)
@@ -81,7 +81,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result.size() == 4 && result[1] == 1 && result[3] == 11 })
                         static List<Integer> nested() {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             for (i in 0..<2) {
                                 for (j in 0..<2) {
                                     out.send(10 * i + j)
@@ -99,8 +99,8 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result == 5 })
                         static int pipeline() {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-                            groovy.concurrent.AsyncChannel<Integer> squares = nums.map { it * it }
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> squares = nums.map { it * it }
                             async {
                                 for (i in 0..<3) {
                                     nums.send(i)
@@ -118,8 +118,8 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result == 6 })
                         static int pipeline() {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-                            groovy.concurrent.AsyncChannel<Integer> squares = nums.map { it * it }
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> squares = nums.map { it * it }
                             async {
                                 for (i in 0..<3) {
                                     nums.send(i)
@@ -139,7 +139,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result == 10 * x + y })
                         static int consumer(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(x); src.send(y); src.close() }
                             int acc = 0
                             for (i in 0..<2) {
@@ -152,7 +152,7 @@ class G312_p248_bounded_streaming {
         [group: 'P248 bounded streaming', name: 'a count mismatch between loops is a named deadlock', expect: '3rd receive',
          src: tc("""class C {
                         static int mismatch() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async {
                                 for (i in 0..<2) {
                                     src.send(i)
@@ -175,7 +175,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result.size() == n })
                         static List<Integer> symbolic(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             for (i in 0..<n) {
                                 out.send(i)
                             }
@@ -187,7 +187,7 @@ class G312_p248_bounded_streaming {
          src: tc("""class C {
                         @Ensures({ result.size() == 40 })
                         static List<Integer> big() {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(64)
+                            AsyncChannel<Integer> out = AsyncChannel.create(64)
                             for (i in 0..<40) {
                                 out.send(i)
                             }

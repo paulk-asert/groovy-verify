@@ -32,8 +32,8 @@ class G317_p253_looping_alt {
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
     static final String PRODUCERS = """
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(4)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= na })
@@ -65,12 +65,12 @@ class G317_p253_looping_alt {
                         @Requires({ na >= 0 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
                         static List<Integer> merge(int na, int nb) {${PRODUCERS}
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(8)
+                            AsyncChannel<Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
                             @Decreases({ na + nb - j })
                             while (j < na + nb) {
-                                groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                                ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                                 int v = (int) r.value
                                 out.send(v)
                                 j = j + 1
@@ -85,12 +85,12 @@ class G317_p253_looping_alt {
                         @Requires({ na >= 0 && nb >= 0 })
                         @Ensures({ result.size() == na + nb + 1 })
                         static List<Integer> merge(int na, int nb) {${PRODUCERS}
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(8)
+                            AsyncChannel<Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb + 1 })
                             @Decreases({ na + nb + 1 - j })
                             while (j < na + nb + 1) {
-                                groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                                ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                                 int v = (int) r.value
                                 out.send(v)
                                 j = j + 1
@@ -106,12 +106,12 @@ class G317_p253_looping_alt {
                         @Requires({ na >= 0 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
                         static List<Integer> merge(int na, int nb) {${PRODUCERS}
-                            groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> out = groovy.concurrent.AsyncChannel.create(8)
+                            AsyncChannel<@PositiveOrZero Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
                             @Decreases({ na + nb - j })
                             while (j < na + nb) {
-                                groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                                ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                                 int v = (int) r.value
                                 out.send(v)
                                 j = j + 1
@@ -125,12 +125,12 @@ class G317_p253_looping_alt {
                         @Requires({ na >= 1 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
                         static List<Integer> merge(int na, int nb) {${PRODUCERS}
-                            groovy.concurrent.AsyncChannel<@Positive Integer> out = groovy.concurrent.AsyncChannel.create(8)
+                            AsyncChannel<@Positive Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
                             @Decreases({ na + nb - j })
                             while (j < na + nb) {
-                                groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                                ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                                 int v = (int) r.value
                                 out.send(v)
                                 j = j + 1
@@ -145,12 +145,12 @@ class G317_p253_looping_alt {
                         @Requires({ na >= 1 && nb >= 1 })
                         @Ensures({ result.size() == na + nb && result[0] == 0 })
                         static List<Integer> merge(int na, int nb) {${PRODUCERS}
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(8)
+                            AsyncChannel<Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
                             @Decreases({ na + nb - j })
                             while (j < na + nb) {
-                                groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                                ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                                 int v = (int) r.value
                                 out.send(v)
                                 j = j + 1
@@ -166,10 +166,10 @@ class G317_p253_looping_alt {
                         @Requires({ na >= 0 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
                         static List<Integer> merge(int na, int nb) {${PRODUCERS}
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(8)
+                            AsyncChannel<Integer> out = AsyncChannel.create(8)
                             int j = 0
                             while (j < na + nb) {
-                                groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                                ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                                 int v = (int) r.value
                                 out.send(v)
                                 j = j + 1

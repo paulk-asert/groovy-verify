@@ -39,10 +39,10 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x })
                         static int oneReady(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.close() }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             int v = (int) r.value
                             return v
                         }
@@ -52,11 +52,11 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x || result == y })
                         static int either(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.close() }
                             async { b.send(y); b.close() }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             int v = (int) r.value
                             return v
                         }
@@ -65,11 +65,11 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x })
                         static int either(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.close() }
                             async { b.send(y); b.close() }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             int v = (int) r.value
                             return v
                         }
@@ -79,11 +79,11 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x + 1 || result == y - 1 })
                         static int branchwise(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.close() }
                             async { b.send(y); b.close() }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             int v = (int) r.value
                             if (r.index == 0) {
                                 return v + 1
@@ -95,12 +95,12 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x * x || result == y })
                         static int getters(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> sq = a.map { it * it }
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> sq = a.map { it * it }
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.close() }
                             async { b.send(y); b.close() }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(sq, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(sq, b).select()
                             int v = (int) r.getValue()
                             int i = r.getIndex()
                             return i >= 0 ? v : -1
@@ -112,11 +112,11 @@ class G313_p249_alt_select {
         [group: 'P249 ALT select', name: 'a cycle through an ALT with every branch stuck is a deadlock', expect: 'ALT over',
          src: tc("""class C {
                         static int stuck() {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> c = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
+                            AsyncChannel<Integer> c = AsyncChannel.create(1)
                             async { int v = c.first(); a.send(v); b.send(v) }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             c.send(1)
                             return 0
                         }
@@ -128,12 +128,12 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == 2 })
                         static int freeBranch() {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> c = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
+                            AsyncChannel<Integer> c = AsyncChannel.create(1)
                             async { int v = c.first(); a.send(v) }
                             async { b.send(2) }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             c.send(1)
                             int v = (int) r.value
                             return v
@@ -142,9 +142,9 @@ class G313_p249_alt_select {
         [group: 'P249 ALT select', name: 'an ALT no branch of which is ever sent to can never be satisfied', expect: 'no send left on any of its channels',
          src: tc("""class C {
                         static int never() {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             return 0
                         }
                     }""")],
@@ -154,10 +154,10 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x + y })
                         static int afterAlt(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(2)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(2)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.send(y); a.close() }
-                            groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+                            ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
                             int v = (int) r.value
                             int w = a.first()
                             return v + w
@@ -167,11 +167,11 @@ class G313_p249_alt_select {
          src: tc("""class C {
                         @Ensures({ result == x })
                         static int held(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> a = AsyncChannel.create(1)
+                            AsyncChannel<Integer> b = AsyncChannel.create(1)
                             async { a.send(x); a.close() }
-                            def sel = groovy.concurrent.ChannelSelect.from(a, b)
-                            groovy.concurrent.ChannelSelect.Result r = await sel.select()
+                            def sel = ChannelSelect.from(a, b)
+                            ChannelSelect.Result r = await sel.select()
                             int v = (int) r.value
                             return v
                         }

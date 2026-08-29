@@ -33,7 +33,7 @@ class G307_p243_network_wellformedness {
         [group: 'P243 network well-formedness', name: 'receive before the send in one process', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int selfWait() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             int v = src.first()
                             src.send(5)
                             return v
@@ -43,7 +43,7 @@ class G307_p243_network_wellformedness {
         [group: 'P243 network well-formedness', name: 'awaiting the consumer before the send', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int joinWait() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             def t = async { src.first() }
                             await t
                             src.send(1)
@@ -54,7 +54,7 @@ class G307_p243_network_wellformedness {
         [group: 'P243 network well-formedness', name: 'receiving before the producer is forked', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int forkLate() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             int v = src.first()
                             async { src.send(1) }
                             return v
@@ -64,8 +64,8 @@ class G307_p243_network_wellformedness {
         [group: 'P243 network well-formedness', name: 'two tasks in a mutual receive cycle', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int mutual() {
-                            groovy.concurrent.AsyncChannel<Integer> c1 = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> c2 = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> c1 = AsyncChannel.create(1)
+                            AsyncChannel<Integer> c2 = AsyncChannel.create(1)
                             async { int x = c2.first(); c1.send(x) }
                             async { int y = c1.first(); c2.send(y) }
                             return 0
@@ -75,8 +75,8 @@ class G307_p243_network_wellformedness {
         [group: 'P243 network well-formedness', name: 'a derived receive with no send on its source', expect: 'can never be satisfied',
          src: tc("""class C {
                         static int noSource() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
+                            AsyncChannel<Integer> out = src.map { it + 1 }
                             return out.first()
                         }
                     }""")],
@@ -88,7 +88,7 @@ class G307_p243_network_wellformedness {
         [group: 'P243 network well-formedness', name: 'a conditional send is uncertifiable', expect: 'Skipped network well-formedness',
          src: tc("""class C {
                         static int maybeSend(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             if (x > 0) {
                                 src.send(x)
                             }
@@ -103,8 +103,8 @@ class G307_p243_network_wellformedness {
          src: tc("""class C {
                         @Ensures({ result == x + 1 })
                         static int reqReply(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> q = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> r = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> q = AsyncChannel.create(1)
+                            AsyncChannel<Integer> r = AsyncChannel.create(1)
                             q.send(x)
                             async { int v = q.first(); r.send(v + 1) }
                             return r.first()
@@ -114,10 +114,10 @@ class G307_p243_network_wellformedness {
         // send, but no deadlock claim either (and no error).
         [group: 'P243 network well-formedness', name: 'an escaping channel carries no deadlock claim', ok: true,
          src: tc("""class C {
-                        static void feed(groovy.concurrent.AsyncChannel<Integer> ch) {
+                        static void feed(AsyncChannel<Integer> ch) {
                         }
                         static int escaped() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             feed(src)
                             int v = src.first()
                             return v

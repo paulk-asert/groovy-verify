@@ -41,9 +41,9 @@ class G226_p118_dataflow {
          src: tc("""class C {
                         @Ensures({ result == a + b })
                         static int dataflowSum(int a, int b) {
-                            groovy.concurrent.DataflowVariable<Integer> x = new groovy.concurrent.DataflowVariable<Integer>()
-                            groovy.concurrent.DataflowVariable<Integer> y = new groovy.concurrent.DataflowVariable<Integer>()
-                            groovy.concurrent.DataflowVariable<Integer> z = new groovy.concurrent.DataflowVariable<Integer>()
+                            DataflowVariable<Integer> x = new DataflowVariable<Integer>()
+                            DataflowVariable<Integer> y = new DataflowVariable<Integer>()
+                            DataflowVariable<Integer> z = new DataflowVariable<Integer>()
                             async { x << a }
                             async { y << b }
                             async { z << x.get() + y.get() }
@@ -56,9 +56,9 @@ class G226_p118_dataflow {
          src: tc("""class C {
                         @Ensures({ result == a })
                         static int dataflowSum(int a, int b) {
-                            groovy.concurrent.DataflowVariable<Integer> x = new groovy.concurrent.DataflowVariable<Integer>()
-                            groovy.concurrent.DataflowVariable<Integer> y = new groovy.concurrent.DataflowVariable<Integer>()
-                            groovy.concurrent.DataflowVariable<Integer> z = new groovy.concurrent.DataflowVariable<Integer>()
+                            DataflowVariable<Integer> x = new DataflowVariable<Integer>()
+                            DataflowVariable<Integer> y = new DataflowVariable<Integer>()
+                            DataflowVariable<Integer> z = new DataflowVariable<Integer>()
                             async { x << a }
                             async { y << b }
                             async { z << x.get() + y.get() }
@@ -71,8 +71,8 @@ class G226_p118_dataflow {
          src: tc("""class C {
                         @Ensures({ result == a * b })
                         static int dataflowProd(int a, int b) {
-                            groovy.concurrent.DataflowVariable<Integer> x = new groovy.concurrent.DataflowVariable<Integer>()
-                            groovy.concurrent.DataflowVariable<Integer> y = new groovy.concurrent.DataflowVariable<Integer>()
+                            DataflowVariable<Integer> x = new DataflowVariable<Integer>()
+                            DataflowVariable<Integer> y = new DataflowVariable<Integer>()
                             async { x << a }
                             async { y << b }
                             return x.get() * y.get()

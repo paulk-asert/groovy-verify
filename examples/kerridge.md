@@ -58,7 +58,7 @@ channel — with the exchanged value *proved*:
 ```groovy
 @Ensures({ result == 'Hello' })
 static String helloWorld() {
-    groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<String> connect = AsyncChannel.create(1)
     async { connect.send('Hello'); connect.close() }
     return connect.first()
 }
@@ -72,7 +72,7 @@ them back the other way round and the claim is refuted with a counterexample):
 ```groovy
 @Ensures({ result == 'Hello World' })
 static String produceHW() {
-    groovy.concurrent.AsyncChannel<String> connect = groovy.concurrent.AsyncChannel.create(2)
+    AsyncChannel<String> connect = AsyncChannel.create(2)
     async { connect.send('Hello'); connect.send('World'); connect.close() }
     String first = connect.first()
     String second = connect.first()
@@ -92,8 +92,8 @@ included, since the drain's `close()` dependency is satisfiable:
 ```groovy
 @Ensures({ result == 14 })
 static int squaresPipeline() {
-    groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> s2p = n2s.map { it * it }
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = n2s.map { it * it }
     async {
         for (n in 1..3) {
             n2s.send(n)
@@ -118,8 +118,8 @@ own `@Invariant` / `@Decreases`:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
 static List<Integer> squares(int n) {
-    groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> s2p = n2s.map { it * it }
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = n2s.map { it * it }
     async {
         int i = 1
         @Invariant({ 1 <= i && i <= n + 1 })
@@ -144,8 +144,8 @@ receive, and the renaming-apart of the three loops' counters are the checker's:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == (k + 1) * (k + 1) }) })
 static List<Integer> network(int n) {
-    groovy.concurrent.AsyncChannel<Integer> n2s = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> s2p = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> n2s = AsyncChannel.create(4)
+    AsyncChannel<Integer> s2p = AsyncChannel.create(4)
     async {                                              // GNumbers
         int i = 1
         @Invariant({ 1 <= i && i <= n + 1 })
@@ -188,8 +188,8 @@ theorem, mechanised (the wait-for order is well-founded), *and* its value proves
 ```groovy
 @Ensures({ result == x + 1 })
 static int clientServer(int x) {
-    groovy.concurrent.AsyncChannel<Integer> request = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> reply = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> request = AsyncChannel.create(1)
+    AsyncChannel<Integer> reply = AsyncChannel.create(1)
     request.send(x)
     async { int r = request.first(); reply.send(r + 1) }
     return reply.first()
@@ -206,11 +206,11 @@ a deadlock only if *every* guard is stuck:
 ```groovy
 @Ensures({ result == x || result == y })
 static int alt(int x, int y) {
-    groovy.concurrent.AsyncChannel<Integer> left = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> right = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> left = AsyncChannel.create(1)
+    AsyncChannel<Integer> right = AsyncChannel.create(1)
     async { left.send(x); left.close() }
     async { right.send(y); right.close() }
-    groovy.concurrent.ChannelSelect.Result chosen = await groovy.concurrent.ChannelSelect.from(left, right).select()
+    ChannelSelect.Result chosen = await ChannelSelect.from(left, right).select()
     int v = (int) chosen.value
     return v
 }
@@ -225,8 +225,8 @@ is (an order claim is refuted, honestly), and one iteration too many is the name
 @Requires({ na >= 0 && nb >= 0 })
 @Ensures({ result.size() == na + nb })
 static List<Integer> multiplex(int na, int nb) {
-    groovy.concurrent.AsyncChannel<Integer> left = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> right = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> left = AsyncChannel.create(4)
+    AsyncChannel<Integer> right = AsyncChannel.create(4)
     async {
         int i = 0
         @Invariant({ 0 <= i && i <= na })
@@ -247,12 +247,12 @@ static List<Integer> multiplex(int na, int nb) {
         }
         right.close()
     }
-    groovy.concurrent.AsyncChannel<Integer> merged = groovy.concurrent.AsyncChannel.create(8)
+    AsyncChannel<Integer> merged = AsyncChannel.create(8)
     int j = 0
     @Invariant({ 0 <= j && j <= na + nb })
     @Decreases({ na + nb - j })
     while (j < na + nb) {
-        groovy.concurrent.ChannelSelect.Result taken = await groovy.concurrent.ChannelSelect.from(left, right).select()
+        ChannelSelect.Result taken = await ChannelSelect.from(left, right).select()
         int v = (int) taken.value
         merged.send(v)
         j = j + 1
@@ -270,8 +270,8 @@ exercises refuse to compile, each with its cause spelled out:
 <!-- doclint:case p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
 ```groovy
 static int deadlockExercise() {
-    groovy.concurrent.AsyncChannel<Integer> aToB = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> bToA = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> aToB = AsyncChannel.create(1)
+    AsyncChannel<Integer> bToA = AsyncChannel.create(1)
     async { int x = bToA.first(); aToB.send(x) }
     async { int y = aToB.first(); bToA.send(y) }
     return 0

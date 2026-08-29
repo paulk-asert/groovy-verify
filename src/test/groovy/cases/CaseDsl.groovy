@@ -34,6 +34,7 @@ class CaseDsl {
         import groovy.contracts.Modifies
         import groovy.contracts.ThrowsIf
         import jakarta.validation.constraints.*
+        import groovy.concurrent.*
         import groovy.test.GroovyAssert
         import static groovy.test.GroovyAssert.shouldFail
         import verification.Forall

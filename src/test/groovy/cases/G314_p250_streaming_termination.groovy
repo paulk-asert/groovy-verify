@@ -40,7 +40,7 @@ class G314_p250_streaming_termination {
         [group: 'P250 streaming termination', name: 'a symbolic producer loop with a close certifies its drain', expect: 'Skipped channel verification', refute: 'network',
          src: tc("""class C {
                         static int numbersToPrint(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 for (i in 0..<n) {
                                     out.send(i)
@@ -58,8 +58,8 @@ class G314_p250_streaming_termination {
         [group: 'P250 streaming termination', name: 'a symbolic pipeline drained by toList certifies', expect: 'Skipped channel verification', refute: 'network',
          src: tc("""class C {
                         static List<Integer> squares(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-                            groovy.concurrent.AsyncChannel<Integer> sq = nums.map { it * it }
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> sq = nums.map { it * it }
                             async {
                                 for (i in 0..<n) {
                                     nums.send(i)
@@ -73,7 +73,7 @@ class G314_p250_streaming_termination {
         [group: 'P250 streaming termination', name: 'a symbolic producer loop without a close: the drain never finishes', expect: 'can never finish',
          src: tc("""class C {
                         static int noClose(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 for (i in 0..<n) {
                                     out.send(i)
@@ -90,7 +90,7 @@ class G314_p250_streaming_termination {
         [group: 'P250 streaming termination', name: 'a close inside the loop stays uncertifiable', expect: 'Skipped network well-formedness',
          src: tc("""class C {
                         static int closeInLoop(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 for (i in 0..<n) {
                                     out.send(i)
@@ -109,7 +109,7 @@ class G314_p250_streaming_termination {
         [group: 'P250 streaming termination', name: 'a blocking receive on a non-static count is uncertifiable', expect: 'element count',
          src: tc("""class C {
                         static int firstOf(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 for (i in 0..<n) {
                                     out.send(i)
@@ -124,7 +124,7 @@ class G314_p250_streaming_termination {
         [group: 'P250 streaming termination', name: 'an if-send before a closed drain certifies', expect: 'Skipped channel verification', refute: 'network',
          src: tc("""class C {
                         static int maybeOne(boolean flag) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             if (flag) out.send(1)
                             out.close()
                             int seen = 0

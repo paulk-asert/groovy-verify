@@ -34,7 +34,7 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == 2 })
                         static int race() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(1) }
                             async { src.send(2) }
                             return src.first()
@@ -45,7 +45,7 @@ class G305_p241_channel_linearity {
         [group: 'P241 channel linearity', name: 'the body sends while a producer task is live', expect: 'Channel linearity',
          src: tc("""class C {
                         static int mixed() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             def t = async { src.send(5) }
                             src.send(7)
                             await t
@@ -56,7 +56,7 @@ class G305_p241_channel_linearity {
         [group: 'P241 channel linearity', name: 'two concurrent receivers split the stream', expect: 'Channel linearity',
          src: tc("""class C {
                         static int splitStream(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(x); src.close() }
                             async { src.first() }
                             async { src.first() }
@@ -68,8 +68,8 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == 9 })
                         static int intoDerived(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
+                            AsyncChannel<Integer> out = src.map { it + 1 }
                             out.send(9)
                             return out.first()
                         }
@@ -78,9 +78,9 @@ class G305_p241_channel_linearity {
         [group: 'P241 channel linearity', name: 'subscribing while a sender is live', expect: 'Channel linearity',
          src: tc("""class C {
                         static int lateSubscribe(int x) {
-                            def b = groovy.concurrent.BroadcastChannel.<Integer>create()
+                            def b = BroadcastChannel.<Integer>create()
                             async { b.send(x); b.close() }
-                            groovy.concurrent.AsyncChannel<Integer> s1 = b.subscribe()
+                            AsyncChannel<Integer> s1 = b.subscribe()
                             return s1.first()
                         }
                     }""")],
@@ -93,7 +93,7 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == 2 })
                         static int twoSends() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             src.send(1)
                             src.send(2)
                             return src.first()
@@ -106,7 +106,7 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == x + x })
                         static int twoReceives(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(x); src.close() }
                             int a = src.first()
                             int b = src.first()
@@ -122,9 +122,9 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == x + x })
                         static int fanOut(int x) {
-                            def b = groovy.concurrent.BroadcastChannel.<Integer>create()
-                            groovy.concurrent.AsyncChannel<Integer> s1 = b.subscribe()
-                            groovy.concurrent.AsyncChannel<Integer> s2 = b.subscribe()
+                            def b = BroadcastChannel.<Integer>create()
+                            AsyncChannel<Integer> s1 = b.subscribe()
+                            AsyncChannel<Integer> s2 = b.subscribe()
                             async { b.send(x); b.close() }
                             int r1 = s1.first()
                             int r2 = s2.first()
@@ -136,8 +136,8 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == x + x + 1 })
                         static int twoChannels(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> c1 = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> c2 = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> c1 = AsyncChannel.create(1)
+                            AsyncChannel<Integer> c2 = AsyncChannel.create(1)
                             async { c1.send(x); c1.close() }
                             async { c2.send(x + 1); c2.close() }
                             int a = c1.first()
@@ -150,9 +150,9 @@ class G305_p241_channel_linearity {
          src: tc("""class C {
                         @Ensures({ result == x * 2 })
                         static int broadcastPipeline(int x) {
-                            def b = groovy.concurrent.BroadcastChannel.<Integer>create()
-                            groovy.concurrent.AsyncChannel<Integer> s1 = b.subscribe()
-                            groovy.concurrent.AsyncChannel<Integer> out = s1.map { it * 2 }
+                            def b = BroadcastChannel.<Integer>create()
+                            AsyncChannel<Integer> s1 = b.subscribe()
+                            AsyncChannel<Integer> out = s1.map { it * 2 }
                             async { b.send(x); b.close() }
                             return out.first()
                         }

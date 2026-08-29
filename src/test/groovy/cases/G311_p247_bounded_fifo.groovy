@@ -41,7 +41,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 1 })
                         static int twoSends() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             src.send(1)
                             src.send(2)
                             return src.first()
@@ -52,7 +52,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 2 })
                         static int twoSends() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             src.send(1)
                             src.send(2)
                             return src.first()
@@ -63,7 +63,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 10 * x + y })
                         static int twoReceives(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(x); src.send(y); src.close() }
                             int a = src.first()
                             int b = src.first()
@@ -75,8 +75,8 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == x * x + y * y })
                         static int squares(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(2)
-                            groovy.concurrent.AsyncChannel<Integer> sq = nums.map { it * it }
+                            AsyncChannel<Integer> nums = AsyncChannel.create(2)
+                            AsyncChannel<Integer> sq = nums.map { it * it }
                             async { nums.send(x); nums.send(y); nums.close() }
                             int a = sq.first()
                             int b = sq.first()
@@ -88,9 +88,9 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 2 * (x + y) })
                         static int fanOut(int x, int y) {
-                            def b = groovy.concurrent.BroadcastChannel.<Integer>create()
-                            groovy.concurrent.AsyncChannel<Integer> s1 = b.subscribe()
-                            groovy.concurrent.AsyncChannel<Integer> s2 = b.subscribe()
+                            def b = BroadcastChannel.<Integer>create()
+                            AsyncChannel<Integer> s1 = b.subscribe()
+                            AsyncChannel<Integer> s2 = b.subscribe()
                             async { b.send(x); b.send(y); b.close() }
                             int a1 = s1.first()
                             int a2 = s1.first()
@@ -105,8 +105,8 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 10 * (x + 1) + (y + 1) })
                         static int twoRounds(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> request = groovy.concurrent.AsyncChannel.create(2)
-                            groovy.concurrent.AsyncChannel<Integer> reply = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> request = AsyncChannel.create(2)
+                            AsyncChannel<Integer> reply = AsyncChannel.create(2)
                             request.send(x)
                             request.send(y)
                             async {
@@ -128,8 +128,8 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 10 * x + y })
                         static int readerFirst(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
+                            AsyncChannel<Integer> out = AsyncChannel.create(1)
                             async { int a = src.first(); int b = src.first(); out.send(10 * a + b) }
                             async { src.send(x); src.send(y); src.close() }
                             return out.first()
@@ -141,7 +141,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result.size() == 2 && result[0] == x && result[1] == y })
                         static List<Integer> drained(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             src.send(x)
                             src.send(y)
                             src.close()
@@ -152,7 +152,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result.size() == 2 && result[0] == x + 1 && result[1] == y + 1 })
                         static List<Integer> collected(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(x); src.send(y); src.close() }
                             return src.collect { it + 1 }
                         }
@@ -163,7 +163,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == x + y + z })
                         static int total(int x, int y, int z) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async { src.send(x); src.send(y); src.send(z); src.close() }
                             int sum = 0
                             for (v in src) {
@@ -177,7 +177,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == x + y })
                         static int total(int x, int y, int z) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async { src.send(x); src.send(y); src.send(z); src.close() }
                             int sum = 0
                             for (v in src) {
@@ -191,8 +191,8 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == x * x + y * y })
                         static int sumSquares(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(2)
-                            groovy.concurrent.AsyncChannel<Integer> sq = nums.map { it * it }
+                            AsyncChannel<Integer> nums = AsyncChannel.create(2)
+                            AsyncChannel<Integer> sq = nums.map { it * it }
                             async { nums.send(x); nums.send(y); nums.close() }
                             int sum = 0
                             for (v in sq) {
@@ -208,7 +208,7 @@ class G311_p247_bounded_fifo {
         [group: 'P247 bounded FIFO', name: 'a receive past the last send can never be satisfied', expect: '2nd receive',
          src: tc("""class C {
                         static int overReceive(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             async { src.send(x); src.close() }
                             int a = src.first()
                             int b = src.first()
@@ -221,7 +221,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 1 })
                         static int conditional(boolean flag) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             if (flag) src.send(0)
                             src.send(1)
                             src.close()
@@ -232,7 +232,7 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result == 1 })
                         static int splitSenders() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
                             src.send(1)
                             def t = async { src.send(2) }
                             await t
@@ -243,8 +243,8 @@ class G311_p247_bounded_fifo {
          src: tc("""class C {
                         @Ensures({ result.size() == 2 })
                         static List<Integer> filtered(int x, int y) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
-                            groovy.concurrent.AsyncChannel<Integer> pos = src.filter { it > 0 }
+                            AsyncChannel<Integer> src = AsyncChannel.create(2)
+                            AsyncChannel<Integer> pos = src.filter { it > 0 }
                             async { src.send(x); src.send(y); src.close() }
                             return pos.toList()
                         }

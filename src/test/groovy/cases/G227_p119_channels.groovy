@@ -39,8 +39,8 @@ class G227_p119_channels {
          src: tc("""class C {
                         @Ensures({ result == (x + 1) * 2 })
                         static int pipe(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }.map { it * 2 }
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
+                            AsyncChannel<Integer> out = src.map { it + 1 }.map { it * 2 }
                             async { src.send(x); src.close() }
                             return out.first()
                         }
@@ -51,8 +51,8 @@ class G227_p119_channels {
          src: tc("""class C {
                         @Ensures({ result == x + 1 })
                         static int pipe(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }.map { it * 2 }
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
+                            AsyncChannel<Integer> out = src.map { it + 1 }.map { it * 2 }
                             async { src.send(x); src.close() }
                             return out.first()
                         }
@@ -62,10 +62,10 @@ class G227_p119_channels {
          src: tc("""class C {
                         @Ensures({ result == x * 3 })
                         static int triple(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             src.send(x)
                             src.close()
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it * 3 }
+                            AsyncChannel<Integer> out = src.map { it * 3 }
                             return out.first()
                         }
                     }""")],

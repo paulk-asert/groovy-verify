@@ -33,21 +33,21 @@ class G306_p242_channel_contracts {
         // which proves — the producer's compilation carries its half of the contract.
         [group: 'P242 channel contracts', name: 'producer send proves the element bound', ok: true,
          src: tc("""class C {
-                        static void produce(groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch, int x) {
+                        static void produce(AsyncChannel<@PositiveOrZero Integer> ch, int x) {
                             ch.send(x * x)
                         }
                     }""")],
         // Soundness: a send that can violate the bound refutes with a counterexample.
         [group: 'P242 channel contracts', name: 'producer send refutes with a counterexample', expect: 'Assertion may not hold',
          src: tc("""class C {
-                        static void produce(groovy.concurrent.AsyncChannel<@Min(0L) Integer> ch, int x) {
+                        static void produce(AsyncChannel<@Min(0L) Integer> ch, int x) {
                             ch.send(x - 1)
                         }
                     }""")],
         // An upper bound is checked the same way: 7 can't go down a @Max(6) channel.
         [group: 'P242 channel contracts', name: 'producer send over the upper bound refutes', expect: 'Assertion may not hold',
          src: tc("""class C {
-                        static void roll(groovy.concurrent.AsyncChannel<@Min(1L) @Max(6L) Integer> ch) {
+                        static void roll(AsyncChannel<@Min(1L) @Max(6L) Integer> ch) {
                             ch.send(7)
                         }
                     }""")],
@@ -58,7 +58,7 @@ class G306_p242_channel_contracts {
         [group: 'P242 channel contracts', name: 'consumer receive assumes the element bound', ok: true,
          src: tc("""class C {
                         @Ensures({ result >= 0 })
-                        static int consume(@NotNull groovy.concurrent.AsyncChannel<@Min(0L) Integer> ch) {
+                        static int consume(@NotNull AsyncChannel<@Min(0L) Integer> ch) {
                             int v = ch.first()
                             return v
                         }
@@ -68,7 +68,7 @@ class G306_p242_channel_contracts {
         [group: 'P242 channel contracts', name: 'unconstrained channel receive refutes a stronger claim', expect: 'Cannot prove postcondition',
          src: tc("""class C {
                         @Ensures({ result >= 0 })
-                        static int consume(@NotNull groovy.concurrent.AsyncChannel<Integer> ch) {
+                        static int consume(@NotNull AsyncChannel<Integer> ch) {
                             int v = ch.first()
                             return v
                         }
@@ -79,7 +79,7 @@ class G306_p242_channel_contracts {
         [group: 'P242 channel contracts', name: 'awaited receive() assumes the element bound', ok: true,
          src: tc("""class C {
                         @Ensures({ result >= 1 })
-                        static int take(@NotNull groovy.concurrent.AsyncChannel<@Positive Integer> ch) {
+                        static int take(@NotNull AsyncChannel<@Positive Integer> ch) {
                             int v = await ch.receive()
                             return v
                         }
@@ -88,7 +88,7 @@ class G306_p242_channel_contracts {
         [group: 'P242 channel contracts', name: 'range contract assumed at the receive', ok: true,
          src: tc("""class C {
                         @Ensures({ 1 <= result && result <= 6 })
-                        static int roll(@NotNull groovy.concurrent.AsyncChannel<@Min(1L) @Max(6L) Integer> ch) {
+                        static int roll(@NotNull AsyncChannel<@Min(1L) @Max(6L) Integer> ch) {
                             int v = ch.first()
                             return v
                         }
@@ -102,8 +102,8 @@ class G306_p242_channel_contracts {
                         @Requires({ x > 0 })
                         @Ensures({ result == x + 1 })
                         static int localPipe(int x) {
-                            groovy.concurrent.AsyncChannel<@Positive Integer> src = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }
+                            AsyncChannel<@Positive Integer> src = AsyncChannel.create(1)
+                            AsyncChannel<Integer> out = src.map { it + 1 }
                             async { src.send(x); src.close() }
                             return out.first()
                         }
@@ -113,8 +113,8 @@ class G306_p242_channel_contracts {
          src: tc("""class C {
                         @Ensures({ result == x + 1 })
                         static int localPipe(int x) {
-                            groovy.concurrent.AsyncChannel<@Positive Integer> src = groovy.concurrent.AsyncChannel.create(1)
-                            groovy.concurrent.AsyncChannel<Integer> out = src.map { it + 1 }
+                            AsyncChannel<@Positive Integer> src = AsyncChannel.create(1)
+                            AsyncChannel<Integer> out = src.map { it + 1 }
                             async { src.send(x); src.close() }
                             return out.first()
                         }
@@ -125,11 +125,11 @@ class G306_p242_channel_contracts {
         // rule: no whole-network analysis, the type is the contract.
         [group: 'P242 channel contracts', name: 'producer and consumer compose through the channel type', ok: true,
          src: tc("""class C {
-                        static void produce(groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch, int x) {
+                        static void produce(AsyncChannel<@PositiveOrZero Integer> ch, int x) {
                             ch.send(x * x)
                         }
                         @Ensures({ result >= 0 })
-                        static int consume(@NotNull groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch) {
+                        static int consume(@NotNull AsyncChannel<@PositiveOrZero Integer> ch) {
                             int v = ch.first()
                             return v
                         }
@@ -142,7 +142,7 @@ class G306_p242_channel_contracts {
          src: tc("""class C {
                         @Ensures({ result == 0 })
                         static int neverSent() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+                            AsyncChannel<Integer> src = AsyncChannel.create(1)
                             return src.first()
                         }
                     }""")],
@@ -150,7 +150,7 @@ class G306_p242_channel_contracts {
         [group: 'P242 channel contracts', name: 'unsupported element constraint skips loudly', expect: 'Skipped channel-contract constraint',
          src: tc("""class C {
                         @Ensures({ result >= 0 })
-                        static int consume(@NotNull groovy.concurrent.AsyncChannel<@Digits(integer = 3, fraction = 0) Integer> ch) {
+                        static int consume(@NotNull AsyncChannel<@Digits(integer = 3, fraction = 0) Integer> ch) {
                             int v = ch.first()
                             return v
                         }

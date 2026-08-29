@@ -34,7 +34,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'iterate with a closing producer finishes', ok: true,
          src: tc("""class C {
                         static int drain() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             src.send(1)
                             src.close()
                             async {
@@ -51,7 +51,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'toList with a closing producer finishes', ok: true,
          src: tc("""class C {
                         static int drainList() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async { src.send(7); src.close() }
                             def all = src.toList()
                             return 0
@@ -63,7 +63,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'iterating a never-closed channel hangs', expect: 'can never finish',
          src: tc("""class C {
                         static int forgotClose() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async { src.send(1) }
                             int total = 0
                             for (v in src) {
@@ -77,7 +77,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'closing after the iteration is a circular wait', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int closeAfter() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             src.send(1)
                             async {
                                 for (v in src) {
@@ -91,7 +91,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'forking the closer after the iteration is a circular wait', expect: 'Process-network deadlock',
          src: tc("""class C {
                         static int closerTooLate() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             src.send(1)
                             for (v in src) {
                             }
@@ -105,7 +105,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'two concurrent iterators split the stream', expect: 'Channel linearity',
          src: tc("""class C {
                         static int twoIterators() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async { src.send(1); src.close() }
                             async { for (v in src) { } }
                             for (w in src) {
@@ -117,7 +117,7 @@ class G309_p245_channel_drain {
         [group: 'P245 channel drain', name: 'a conditional close is uncertifiable', expect: 'Skipped network well-formedness',
          src: tc("""class C {
                         static int maybeClose(int x) {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             async {
                                 src.send(1)
                                 if (x > 0) {
@@ -137,7 +137,7 @@ class G309_p245_channel_drain {
          src: tc("""class C {
                         @Ensures({ result == 3 })
                         static int loopSend() {
-                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> src = AsyncChannel.create(4)
                             int i = 0
                             while (i < 3) {
                                 src.send(i)

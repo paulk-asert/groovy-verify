@@ -361,7 +361,7 @@ senders proved the flatten order:
 ```groovy
 @Ensures({ result == 2 })
 static int race() {
-    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+    AsyncChannel<Integer> src = AsyncChannel.create(2)
     async { src.send(1) }
     async { src.send(2) }
     return src.first()
@@ -390,9 +390,9 @@ legal fan-out verifies end-to-end:
 ```groovy
 @Ensures({ result == x + x })
 static int fanOut(int x) {
-    def b = groovy.concurrent.BroadcastChannel.<Integer>create()
-    groovy.concurrent.AsyncChannel<Integer> s1 = b.subscribe()
-    groovy.concurrent.AsyncChannel<Integer> s2 = b.subscribe()
+    def b = BroadcastChannel.<Integer>create()
+    AsyncChannel<Integer> s1 = b.subscribe()
+    AsyncChannel<Integer> s2 = b.subscribe()
     async { b.send(x); b.close() }
     int r1 = s1.first()
     int r2 = s2.first()
@@ -421,11 +421,11 @@ whole-network analysis — the compositional rule in its simplest form:
 <!-- doclint:case p242-channel-contracts/producer-and-consumer-compose-through-the-channel-type -->
 ```groovy
 class C {
-    static void produce(groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch, int x) {
+    static void produce(AsyncChannel<@PositiveOrZero Integer> ch, int x) {
         ch.send(x * x)
     }
     @Ensures({ result >= 0 })
-    static int consume(@NotNull groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> ch) {
+    static int consume(@NotNull AsyncChannel<@PositiveOrZero Integer> ch) {
         int v = ch.first()
         return v
     }
@@ -470,7 +470,7 @@ a **guaranteed deadlock**, and the checker spells it out:
 <!-- doclint:case p243-network-well-formedness/awaiting-the-consumer-before-the-send -->
 ```groovy
 static int joinWait() {
-    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> src = AsyncChannel.create(1)
     def t = async { src.first() }
     await t
     src.send(1)
@@ -492,8 +492,8 @@ well-ordered twin verifies end to end — send the request (non-blocking), fork 
 ```groovy
 @Ensures({ result == x + 1 })
 static int reqReply(int x) {
-    groovy.concurrent.AsyncChannel<Integer> q = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> r = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> q = AsyncChannel.create(1)
+    AsyncChannel<Integer> r = AsyncChannel.create(1)
     q.send(x)
     async { int v = q.first(); r.send(v + 1) }
     return r.first()
@@ -519,7 +519,7 @@ well-ordered shape is certified silently:
 <!-- doclint:case p245-channel-drain/iterate-with-a-closing-producer-finishes -->
 ```groovy
 static int drain() {
-    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> src = AsyncChannel.create(4)
     src.send(1)
     src.close()
     async {
@@ -562,7 +562,7 @@ FIFO-**true** values (and last-write-wins is refuted, with a counterexample):
 ```groovy
 @Ensures({ result == 10 * x + y })
 static int twoReceives(int x, int y) {
-    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+    AsyncChannel<Integer> src = AsyncChannel.create(2)
     async { src.send(x); src.send(y); src.close() }
     int a = src.first()
     int b = src.first()
@@ -580,7 +580,7 @@ certified separately, by Phase 245 on the original body):
 ```groovy
 @Ensures({ result == x + y + z })
 static int total(int x, int y, int z) {
-    groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> src = AsyncChannel.create(4)
     async { src.send(x); src.send(y); src.send(z); src.close() }
     int sum = 0
     for (v in src) {
@@ -617,8 +617,8 @@ plugAndPlay network, generator → squares → drain, proves its sum and is cert
 ```groovy
 @Ensures({ result == 5 })
 static int pipeline() {
-    groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> squares = nums.map { it * it }
+    AsyncChannel<Integer> nums = AsyncChannel.create(4)
+    AsyncChannel<Integer> squares = nums.map { it * it }
     async {
         for (i in 0..<3) {
             nums.send(i)
@@ -654,11 +654,11 @@ claim proves:
 ```groovy
 @Ensures({ result == x + 1 || result == y - 1 })
 static int branchwise(int x, int y) {
-    groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> a = AsyncChannel.create(1)
+    AsyncChannel<Integer> b = AsyncChannel.create(1)
     async { a.send(x); a.close() }
     async { b.send(y); b.close() }
-    groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+    ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
     int v = (int) r.value
     if (r.index == 0) {
         return v + 1
@@ -684,12 +684,12 @@ makes a cycle a deadlock only if *every* branch is stuck:
 ```groovy
 @Ensures({ result == 2 })
 static int freeBranch() {
-    groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
-    groovy.concurrent.AsyncChannel<Integer> c = groovy.concurrent.AsyncChannel.create(1)
+    AsyncChannel<Integer> a = AsyncChannel.create(1)
+    AsyncChannel<Integer> b = AsyncChannel.create(1)
+    AsyncChannel<Integer> c = AsyncChannel.create(1)
     async { int v = c.first(); a.send(v) }
     async { b.send(2) }
-    groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+    ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
     c.send(1)
     int v = (int) r.value
     return v
@@ -716,7 +716,7 @@ with symbolic `n`, feeding `GPrint`, is certified to terminate for every `n`, de
 <!-- doclint:case p250-streaming-termination/a-symbolic-producer-loop-with-a-close-certifies-its-drain -->
 ```groovy
 static int numbersToPrint(int n) {
-    groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> out = AsyncChannel.create(4)
     async {
         for (i in 0..<n) {
             out.send(i)
@@ -756,8 +756,8 @@ list element by element, through `GSquares`:
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k * k }) })
 static List<Integer> squares(int n) {
-    groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> sq = nums.map { it * it }
+    AsyncChannel<Integer> nums = AsyncChannel.create(4)
+    AsyncChannel<Integer> sq = nums.map { it * it }
     async {
         int i = 0
         @Invariant({ 0 <= i && i <= n })
@@ -803,8 +803,8 @@ list element by element, for symbolic `n`, each process carrying only its own `@
 @Requires({ n >= 0 })
 @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k * k }) })
 static List<Integer> network(int n) {
-    groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> sq = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> nums = AsyncChannel.create(4)
+    AsyncChannel<Integer> sq = AsyncChannel.create(4)
     async {
         int i = 0
         @Invariant({ 0 <= i && i <= n })
@@ -865,8 +865,8 @@ has an element left" is the block-forever obligation, asserted before every choi
 @Requires({ na >= 0 && nb >= 0 })
 @Ensures({ result.size() == na + nb })
 static List<Integer> merge(int na, int nb) {
-    groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(4)
-    groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(4)
+    AsyncChannel<Integer> a = AsyncChannel.create(4)
+    AsyncChannel<Integer> b = AsyncChannel.create(4)
     async {
         int i = 0
         @Invariant({ 0 <= i && i <= na })
@@ -887,12 +887,12 @@ static List<Integer> merge(int na, int nb) {
         }
         b.close()
     }
-    groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(8)
+    AsyncChannel<Integer> out = AsyncChannel.create(8)
     int j = 0
     @Invariant({ 0 <= j && j <= na + nb })
     @Decreases({ na + nb - j })
     while (j < na + nb) {
-        groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+        ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
         int v = (int) r.value
         out.send(v)
         j = j + 1

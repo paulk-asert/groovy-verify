@@ -41,7 +41,7 @@ class G316_p252_streaming_consumers {
                         @Requires({ n >= 0 })
                         @Ensures({ result == n })
                         static int count(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -70,7 +70,7 @@ class G316_p252_streaming_consumers {
                         @Requires({ n >= 0 })
                         @Ensures({ result == n + 1 })
                         static int overRead(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -99,7 +99,7 @@ class G316_p252_streaming_consumers {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k }) })
                         static List<Integer> collect(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -128,7 +128,7 @@ class G316_p252_streaming_consumers {
                         @Requires({ n >= 1 })
                         @Ensures({ result == n - 1 })
                         static int last(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -159,8 +159,8 @@ class G316_p252_streaming_consumers {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k * k }) })
                         static List<Integer> network(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-                            groovy.concurrent.AsyncChannel<Integer> sq = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> sq = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -201,7 +201,7 @@ class G316_p252_streaming_consumers {
                         @Requires({ n >= 0 })
                         @Ensures({ result == n })
                         static int count(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })

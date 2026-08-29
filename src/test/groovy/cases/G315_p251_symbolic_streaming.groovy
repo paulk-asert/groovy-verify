@@ -40,7 +40,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -59,7 +59,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k }) })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -79,8 +79,8 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == k * k }) })
                         static List<Integer> squares(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> nums = groovy.concurrent.AsyncChannel.create(4)
-                            groovy.concurrent.AsyncChannel<Integer> sq = nums.map { it * it }
+                            AsyncChannel<Integer> nums = AsyncChannel.create(4)
+                            AsyncChannel<Integer> sq = nums.map { it * it }
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -99,7 +99,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n && Forall.range(0, result.size(), { int k -> result[k] == 2 * k }) })
                         static List<Integer> evens(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             @Invariant({ 0 <= i && i <= n })
                             @Decreases({ n - i })
                             for (int i = 0; i < n; i++) {
@@ -114,7 +114,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ 0 <= lo && lo <= n })
                         @Ensures({ result.size() == n - lo && Forall.range(0, result.size(), { int k -> result[k] == lo + k }) })
                         static List<Integer> range(int lo, int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = lo
                                 @Invariant({ lo <= i && i <= n })
@@ -133,7 +133,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n + 1 })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -154,7 +154,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<@PositiveOrZero Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -173,7 +173,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<@PositiveOrZero Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<@PositiveOrZero Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -194,7 +194,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 1 })
                         @Ensures({ result == 0 })
                         static int firstOf(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -213,7 +213,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 while (i < n) {
@@ -230,7 +230,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result.size() == n })
                         static List<Integer> numbers(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
@@ -251,7 +251,7 @@ class G315_p251_symbolic_streaming {
                         @Requires({ n >= 0 })
                         @Ensures({ result == n })
                         static int count(int n) {
-                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(4)
+                            AsyncChannel<Integer> out = AsyncChannel.create(4)
                             async {
                                 int i = 0
                                 @Invariant({ 0 <= i && i <= n })
