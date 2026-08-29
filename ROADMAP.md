@@ -11734,6 +11734,17 @@ So fair selection is not an assumption the checker may make; the honest rung mod
 Upstream candidate (for Paul, not filed): a fair `ChannelSelect` (rotating start index) and a select
 that does not consume from losing branches (needs channel-level support — JCSP's Alternative reserves
 rather than reads) would let the fair server be certified, and would remove the in-channel reordering.
+REPRODUCED against 6.0.0-beta-3 (`repro/ChannelSelectRepro.groovy`, run with the beta-3 distribution;
+`select()` is bytecode-identical to beta-2): (1) both branches ready, 100 selects over [a, b] and over
+[b, a] — index 0 wins 100/100 both ways: priority by list order; (2) b holding [b1, b2] while a wins —
+b then delivers [b2, b1]: the loser's element re-sent to the BACK; (3) 1000 selects with one branch
+always empty leave 1000 pending receivers on it (`DefaultAsyncChannel.waitingReceivers`), and a single
+later send is taken and re-sent 1000 times before it settles — unbounded growth in a long-lived
+multiplexer, and a hidden O(n) per element; (4) a select over two closed, drained channels never
+completes (timed out at 500 ms) where a `ChannelClosedException` would be the honest outcome. The
+proposal in one line each: a shared claim checked in the channel's delivery path (`receiveIf(claim)`),
+so exactly one branch dequeues and losers never register or bounce; a `fair()` mode rotating the poll
+order per select instance; completing the select exceptionally once every branch has reported closed.
 
 Cases (G320, new group, 5): the OR knot (deadlock) and its generator-branch twin (live), the starvation
 hazard, the finite-generator delay (no hazard), the fair server (withheld). G318's forever multiplexer

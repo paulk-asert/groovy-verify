@@ -342,8 +342,8 @@ static List<Integer> multiplex(int na, int nb) {
 And the **fair server** — two clients, a server taking whichever request is ready and replying on that
 client's own channel — is where the gallery meets the runtime rather than the checker. Groovy 6's
 `ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the back of its
-queue; there is no `fairSelect`. So the checker models exactly that and *withholds* per-client liveness with
-the reason (Phase 256):
+queue; there is no `fairSelect` (all reproduced against 6.0.0-beta-3 — `repro/ChannelSelectRepro.groovy`).
+So the checker models exactly that and *withholds* per-client liveness with the reason (Phase 256):
 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
 ```groovy

@@ -1080,7 +1080,11 @@ static void knot() {
 
 What this leaves is not a checker frontier but a **runtime one**: Kerridge's `fairSelect` / `priSelect`
 distinction has no counterpart in `ChannelSelect` yet — a rotating-priority select, and a select that does not
-consume from losing branches, would let the fair server be certified. Until then the checker says so.
+consume from losing branches, would let the fair server be certified. Until then the checker says so. All of
+it is reproduced, not read: `repro/ChannelSelectRepro.groovy` run against 6.0.0-beta-3 shows index 0 winning
+100/100 in either listing order, a losing branch delivering `[b2, b1]`, a thousand selects leaving a thousand
+pending receivers on a quiet branch (and one later element bounced a thousand times), and a select over two
+closed channels never completing.
 
 ### async/await — the value a task computes
 
