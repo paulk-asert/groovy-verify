@@ -31,6 +31,7 @@ import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.Variable
+import org.codehaus.groovy.ast.VariableScope
 import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
@@ -2974,6 +2975,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         enc.registerAsyncSource(a.name, Encoder.asyncBodyExpr(a.rhs)); continue
                     }
                     if (enc.tryRecordAwaitAll(a.name, a.rhs)) continue
+                    if (enc.tryBindChannelSelect(a.name, a.rhs)) continue     // Phase 249 — an ALT's index / value
                     if (enc.tryBindAwaitAny(a.name, a.rhs)) continue
                     // Phase 242 — the modular channel receive (mirrors checkPath): a channel-typed
                     // param's first()/awaited receive() binds a fresh value with the element bounds.
@@ -4208,7 +4210,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         countChannelSends((BlockStatement) body, ch, rw.sendTotals)
         List<Statement> out = new ArrayList<Statement>()
         rewriteChStatements(((BlockStatement) body).statements, rw, out)
-        new BlockStatement(out, ((BlockStatement) body).variableScope)
+        new BlockStatement(rw.schedule(out), ((BlockStatement) body).variableScope)
+    }
+
+    /** Phase 249 — one ALT's branches for the scheduler's readiness pruning. */
+    private static class AltInfo {
+        String name
+        List<Integer> branches = new ArrayList<Integer>()
+        List<String> elems = new ArrayList<String>()
+        List<Expression> heads = new ArrayList<Expression>()
+        List<Integer> keep
     }
 
     /** Phase 247 — the state of one channel rewrite: the var classes, and the per-channel element
@@ -4224,6 +4235,137 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<String, Integer> sendIdx = new HashMap<String, Integer>()      // channel var → sends rewritten so far
         final Map<String, Integer> recvIdx = new HashMap<String, Integer>()      // stream var → receives rewritten so far
         String subRoot, subName                                                  // active element substitution
+        final Set<String> selectVars = new HashSet<String>()                      // Phase 249 — ALT result vars
+        Object curProc                                                           // null = main; an arm's closure while flattening it
+        final List<Object> tags = new ArrayList<Object>()                        // per emitted statement: its process
+        final Map<Object, Integer> forkAt = new IdentityHashMap<Object, Integer>() // arm → emitted-count at its fork
+        final List<Object> arms = new ArrayList<Object>()                        // arms in fork order
+
+        /** Phase 249 — per ALT statement (index / value decl, by emitted position): the ALT's
+         *  branches, their head elements and head expressions, and the keep-set once scheduled. */
+        final Map<Integer, AltInfo> selectInfo = new HashMap<Integer, AltInfo>()
+
+        /** Emit a rewritten statement, tagged with the process it belongs to. */
+        void emit(List<Statement> out, Statement st) { out.add(st); tags.add(curProc) }
+
+        /** Rebuild an ALT statement over the branches that are READY at its scheduling point — those
+         *  whose head element has been declared by the time nothing else can run. A branch served only
+         *  after the ALT's process moves on can never be the one taken: the static "which guards are
+         *  ready", and it keeps the index/value pair exact (the keep-set is fixed at the index decl). */
+        Statement pruneAlt(Statement st, int at, Set<String> declared) {
+            AltInfo info = selectInfo.get(at)
+            if (info == null) return st
+            if (info.keep == null) {
+                info.keep = new ArrayList<Integer>()
+                for (int j = 0; j < info.branches.size(); j++) if (declared.contains(info.elems.get(j))) info.keep.add(j)
+            }
+            DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) st).expression
+            MethodCallExpression call = (MethodCallExpression) de.rightExpression
+            List<Expression> args = new ArrayList<Expression>()
+            if (call.methodAsString == 'index') {
+                for (Integer j : info.keep) args.add(new ConstantExpression(info.branches.get(j), true))
+            } else {
+                args.add(new VariableExpression(info.name + '$index'))
+                for (Integer j : info.keep) { args.add(new ConstantExpression(info.branches.get(j), true)); args.add(info.heads.get(j)) }
+            }
+            MethodCallExpression nc = new MethodCallExpression(call.objectExpression, call.methodAsString, new ArgumentListExpression(args))
+            nc.setSourcePosition(call)
+            DeclarationExpression nd = new DeclarationExpression(de.leftExpression, de.operation, nc)
+            nd.setSourcePosition(de)
+            ExpressionStatement ns = new ExpressionStatement(nd)
+            ns.setSourcePosition(st)
+            ns
+        }
+        /** Rewrite a nested statement list (an if-branch) into its own block — no scheduling tags. */
+        BlockStatement sub(List<Statement> stmts, VariableScope scope) {
+            List<Statement> tmp = new ArrayList<Statement>()
+            int mark = tags.size()
+            rewriteChStatements(stmts, this, tmp)
+            while (tags.size() > mark) tags.remove(tags.size() - 1)
+            new BlockStatement(tmp, scope)
+        }
+
+        /**
+         * Phase 249 — the dataflow-driven linearisation. The flattened statements are emitted per
+         * PROCESS in program order, but a process's next statement runs only once every channel
+         * element it reads has been declared (a receive blocks until its send) — the scheduler's own
+         * rule, mechanised — and an arm becomes runnable only once main has passed its fork. Main is
+         * preferred, then arms in fork order. When nothing is runnable (the network is stuck — Phase
+         * 243 reports that separately) the remaining statements are emitted in textual order, so an
+         * unsatisfiable read stays an unbound, unconstrained element exactly as before.
+         */
+        List<Statement> schedule(List<Statement> out) {
+            Set<String> elements = new HashSet<String>()
+            for (Map.Entry<String, Integer> e : sendTotals.entrySet()) {
+                String root = rootOf(e.key)
+                for (int k = 1; k <= e.value; k++) elements.add(element(root, k))
+            }
+            List<Set<String>> uses = new ArrayList<Set<String>>(), defs = new ArrayList<Set<String>>()
+            for (Statement st : out) {
+                final Set<String> u = new HashSet<String>(), d = new HashSet<String>()
+                st.visit(new CodeVisitorSupport() {
+                    @Override void visitDeclarationExpression(DeclarationExpression de) {
+                        if (de.leftExpression instanceof VariableExpression && elements.contains(((VariableExpression) de.leftExpression).name)) {
+                            d.add(((VariableExpression) de.leftExpression).name)
+                        }
+                        de.rightExpression?.visit(this)
+                    }
+                    @Override void visitVariableExpression(VariableExpression ve) { if (elements.contains(ve.name)) u.add(ve.name) }
+                })
+                uses.add(u); defs.add(d)
+            }
+            List<Object> procs = new ArrayList<Object>()
+            procs.add(null); procs.addAll(arms)
+            Map<Object, List<Integer>> queue = new IdentityHashMap<Object, List<Integer>>()
+            for (Object p : procs) queue.put(p, new ArrayList<Integer>())
+            for (int i = 0; i < out.size(); i++) {
+                Object t = tags.get(i)
+                List<Integer> q = queue.get(t)
+                if (q == null) { q = new ArrayList<Integer>(); queue.put(t, q); procs.add(t) }
+                q.add(i)
+            }
+            Map<Object, Integer> mainBefore = new IdentityHashMap<Object, Integer>()
+            for (Object a : arms) {
+                Integer at = forkAt.get(a)
+                int cnt = 0
+                for (int i = 0; i < out.size() && at != null && i < at; i++) if (tags.get(i) == null) cnt++
+                mainBefore.put(a, cnt)
+            }
+            Set<String> declared = new HashSet<String>()
+            List<Statement> result = new ArrayList<Statement>()
+            int mainEmitted = 0
+            int remaining = out.size()
+            while (remaining > 0) {
+                int pick = -1, altPick = -1
+                for (Object p : procs) {
+                    List<Integer> q = queue.get(p)
+                    if (q.isEmpty()) continue
+                    if (p != null && mainBefore.containsKey(p) && mainEmitted < mainBefore.get(p)) continue
+                    int head = q.get(0)
+                    if (selectInfo.containsKey(head)) { if (altPick < 0) altPick = head; continue }   // an ALT runs last
+                    if (declared.containsAll(uses.get(head))) { pick = head; break }
+                }
+                if (pick < 0 && altPick >= 0) {                  // nothing else can run: the ALT's ready branches are known
+                    pick = altPick
+                    out.set(pick, pruneAlt(out.get(pick), pick, declared))
+                }
+                if (pick < 0) {                                  // stuck: fall back to textual order
+                    for (int i = 0; i < out.size(); i++) {
+                        List<Integer> q = queue.get(tags.get(i))
+                        if (!q.isEmpty() && q.get(0) == i) { pick = i; break }
+                    }
+                    if (pick < 0) for (Object p : procs) { List<Integer> q = queue.get(p); if (!q.isEmpty()) { pick = q.get(0); break } }
+                }
+                if (selectInfo.containsKey(pick)) out.set(pick, pruneAlt(out.get(pick), pick, declared))
+                queue.get(tags.get(pick)).remove(0)
+                if (tags.get(pick) == null) mainEmitted++
+                declared.addAll(defs.get(pick))
+                result.add(out.get(pick))
+                remaining--
+            }
+            result
+        }
+
         /** The created channel a var derives from ({@code out → src}, {@code branch1 → b}). */
         String rootOf(String v) { String r = v; int g = 0; while (parent.containsKey(r) && g++ < 100) r = parent.get(r); r }
         /** The stream a receive on {@code v} consumes: the nearest subscriber var (each subscriber
@@ -4328,10 +4470,72 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Set<String> subscribers = new HashSet<String>()
         final Map<String, Boolean> exactVar = new HashMap<String, Boolean>()   // derived var → chain exact so far
         collectChannelParents(body, ch, parent, subscribers)
+        final Set<String> selected = new HashSet<String>()                 // Phase 249 — channels an ALT has chosen over
+        final Map<String, String> selectResult = new HashMap<String, String>()   // ALT result var → its first channel
+        final Set<Expression> sanctionedFrom = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         body.visit(new CodeVisitorSupport() {
             private int condDepth
             private Object proc = 'main'
             private void flag(String name, String reason) { if (!verdict.containsKey(name)) verdict.put(name, reason) }
+            private void afterSelect(String name) {
+                if (selected.contains(name)) flag(name, 'is received from after an ALT that may have consumed its element (a one-shot ALT must be the last receive on each of its channels)')
+            }
+            private void fromOutsideShape(Expression call) {
+                List<Expression> args = selectFromArgs(call)
+                if (args == null || sanctionedFrom.contains(stripCasts(call))) return
+                for (Expression a : args) {
+                    Expression x = stripCasts(a)
+                    if (x instanceof VariableExpression && ch.contains(((VariableExpression) x).name)) {
+                        flag(((VariableExpression) x).name, 'is passed to a ChannelSelect outside the supported shape (def r = await ChannelSelect.from(a, b).select(), used via r.index / r.value)')
+                    }
+                }
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) {
+                ClosureExpression arm = asyncClosure(m)
+                if (arm != null) { visitArm(arm); return }
+                fromOutsideShape(m)
+                super.visitStaticMethodCallExpression(m)
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                Expression obj = stripCasts(pe.objectExpression)
+                if (obj instanceof VariableExpression && selectResult.containsKey(((VariableExpression) obj).name) &&
+                    (pe.propertyAsString == 'index' || pe.propertyAsString == 'value')) return    // the sanctioned reads
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (selectResult.containsKey(ve.name)) flag(selectResult.get(ve.name), "has an ALT result ('${ve.name}') used beyond .index / .value")
+                super.visitVariableExpression(ve)
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                List<Expression> alt = awaitedSelectArgs(de.rightExpression)
+                if (alt != null && de.leftExpression instanceof VariableExpression) {
+                    String first = null
+                    for (Expression a : alt) {
+                        Expression x = stripCasts(a)
+                        String name = (x instanceof VariableExpression && ch.contains(((VariableExpression) x).name)) ? ((VariableExpression) x).name : null
+                        if (name == null) { if (first != null) flag(first, 'is in an ALT with a non-channel-variable branch (declare each stage as a variable first)'); continue }
+                        if (first == null) first = name
+                        if (condDepth > 0) flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${de.lineNumber})")
+                        afterSelect(name)
+                        owner(name, recvProcs, 'receive'); family(name, 'reads')
+                        selected.add(name)
+                    }
+                    if (first != null) selectResult.put(((VariableExpression) de.leftExpression).name, first)
+                    Expression x = stripCasts(de.rightExpression)
+                    Expression inner = x instanceof MethodCallExpression ? ((MethodCallExpression) x).arguments : ((StaticMethodCallExpression) x).arguments
+                    Expression sel = stripCasts(((TupleExpression) inner).expressions.get(0))
+                    sanctionedFrom.add(stripCasts(((MethodCallExpression) sel).objectExpression))
+                    de.rightExpression.visit(this)          // still walk it (nested arms / other channels), the from() sanctioned
+                    return
+                }
+                if (de.leftExpression instanceof VariableExpression && parent.containsKey(((VariableExpression) de.leftExpression).name)) {
+                    List<String> ops = chanChainOps(de.rightExpression)
+                    boolean exact = true
+                    for (String op : ops) if (!(op in CHANNEL_EXACT_OPS)) exact = false
+                    exactVar.put(((VariableExpression) de.leftExpression).name, exact)
+                }
+                super.visitDeclarationExpression(de)
+            }
             private void owner(String name, Map<String, Set<Object>> procs, String end) {
                 Set<Object> s = procs.get(name)
                 if (s == null) { s = new HashSet<Object>(); procs.put(name, s) }
@@ -4357,24 +4561,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 proc = arm
                 try { arm.code?.visit(this) } finally { proc = saved }
             }
-            @Override void visitDeclarationExpression(DeclarationExpression de) {
-                if (de.leftExpression instanceof VariableExpression && parent.containsKey(((VariableExpression) de.leftExpression).name)) {
-                    List<String> ops = chanChainOps(de.rightExpression)
-                    boolean exact = true
-                    for (String op : ops) if (!(op in CHANNEL_EXACT_OPS)) exact = false
-                    exactVar.put(((VariableExpression) de.leftExpression).name, exact)
-                }
-                super.visitDeclarationExpression(de)
-            }
-            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) {
-                ClosureExpression arm = asyncClosure(m)
-                if (arm != null) { visitArm(arm); return }
-                super.visitStaticMethodCallExpression(m)
-            }
             @Override void visitMethodCallExpression(MethodCallExpression m) {
                 ClosureExpression arm = asyncClosure(m)
                 if (arm != null) { visitArm(arm); return }
+                fromOutsideShape(m)
                 Expression recv = stripCasts(m.objectExpression)
+                if (recv instanceof VariableExpression && selectResult.containsKey(((VariableExpression) recv).name) && noArgs(m) &&
+                    (m.methodAsString == 'getIndex' || m.methodAsString == 'getValue')) return   // the sanctioned getters
                 if (recv instanceof VariableExpression && ch.contains(((VariableExpression) recv).name)) {
                     String name = ((VariableExpression) recv).name
                     String mm = m.methodAsString
@@ -4387,7 +4580,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${m.lineNumber})")
                         }
                         if (isSend) owner(name, sendProcs, 'send')
-                        if (isRead || isDrain) { owner(name, recvProcs, 'receive'); family(name, 'reads') }
+                        if (isRead || isDrain) { afterSelect(name); owner(name, recvProcs, 'receive'); family(name, 'reads') }
                         if (isDerive) family(name, "stage@${m.lineNumber}:${m.columnNumber}")
                         if (isDrain && (mm == 'each' || !exactChain(name))) {
                             flag(name, mm == 'each' ? "is drained by each {} (an accumulating each carries no invariant — use for (v in ch) or toList())" :
@@ -4405,6 +4598,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (name == null) flag(base, "is iterated through an inline pipeline expression (declare the stage as a variable first)")
                     else {
                         if (condDepth > 0) flag(name, "has a channel operation that is not one-shot — inside an if / loop / catch / closure (line ${coll.lineNumber})")
+                        afterSelect(name)
                         owner(name, recvProcs, 'receive'); family(name, 'reads')
                         if (!exactChain(name)) flag(name, 'is drained through a filter / split / merge / tap stage (element count unknown)')
                         if (!unrollableLoopBody(st.loopBlock)) flag(name, "is drained by a loop whose body is beyond the unrolling fragment (nested loop / try / switch / break)")
@@ -4533,7 +4727,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression e = ((ExpressionStatement) st).expression
                 ClosureExpression cl = asyncClosure(e)                       // async { … } → flatten inline (transparent)
                 if (cl != null) {
-                    if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, rw, out)
+                    // Phase 249 — the arm's statements are tagged as its own process and scheduled by
+                    // dataflow (ChanRewrite.schedule), no longer by their textual position.
+                    Object saved = rw.curProc
+                    rw.forkAt.put(cl, out.size()); rw.arms.add(cl); rw.curProc = cl
+                    try {
+                        if (cl.code instanceof BlockStatement) rewriteChStatements(((BlockStatement) cl.code).statements, rw, out)
+                    } finally { rw.curProc = saved }
                     continue
                 }
                 if (e instanceof MethodCallExpression) {
@@ -4549,7 +4749,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             // Phase 242 — send-checked: a constrained channel's send carries its
                             // contract assert (φ over the element), discharged with a counterexample.
                             List<long[]> bs = rw.bounds.get(name)
-                            if (bs != null && !bs.isEmpty()) out.add(boundsAssert(val, bs, m))
+                            if (bs != null && !bs.isEmpty()) rw.emit(out, boundsAssert(val, bs, m))
                             // The send DECLARES its element (the create-decl below is dropped): the
                             // rewritten body stays single-assignment, so the value-flow pass — and
                             // with it the assert discharge — keeps the whole pipeline in fragment.
@@ -4560,7 +4760,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             DeclarationExpression decl = new DeclarationExpression(
                                 lhs, Token.newSymbol(Types.ASSIGN, m.lineNumber, m.columnNumber), val)
                             decl.setSourcePosition(m)
-                            out.add(new ExpressionStatement(decl))
+                            rw.emit(out, new ExpressionStatement(decl))
                             continue
                         }
                     }
@@ -4568,6 +4768,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
                     DeclarationExpression de = (DeclarationExpression) e
                     String name = ((VariableExpression) de.leftExpression).name
+                    List<Expression> alt = awaitedSelectArgs(de.rightExpression)
+                    if (alt != null) {                                       // Phase 249 — def r = await ChannelSelect.from(a, b).select()
+                        rewriteSelect(name, alt, de, rw, out)
+                        continue
+                    }
                     if (isChannelCreate(de.rightExpression) || isBroadcastCreate(de.rightExpression)) {
                         // def src = AsyncChannel.create(n) / def b = BroadcastChannel.create() → dropped:
                         // the sends declare the elements (above). A channel that is never sent to has no
@@ -4580,20 +4785,111 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         continue
                     }
                 }
-                out.add(new ExpressionStatement(rewriteChExpr(e, rw)))
+                rw.emit(out, new ExpressionStatement(rewriteChExpr(e, rw)))
                 continue
             }
             if (st instanceof ReturnStatement) {
                 Expression r = ((ReturnStatement) st).expression
-                out.add(new ReturnStatement(r == null ? r : rewriteChExpr(r, rw)))
+                rw.emit(out, new ReturnStatement(r == null ? r : rewriteChExpr(r, rw)))
                 continue
             }
             if (st instanceof ForStatement && isChannelExpr(stripCasts(((ForStatement) st).collectionExpression), ch)) {
                 unrollChannelDrain((ForStatement) st, rw, out)                 // Phase 247 — for (v in ch) over the sequence
                 continue
             }
-            out.add(st)
+            if (st instanceof IfStatement) {                                   // Phase 249 — branches rewritten in place (r.index / r.value)
+                IfStatement i = (IfStatement) st
+                Statement ib = i.ifBlock, eb = i.elseBlock
+                BlockStatement nib = rw.sub(ib instanceof BlockStatement ? ((BlockStatement) ib).statements : Collections.singletonList(ib),
+                    ib instanceof BlockStatement ? ((BlockStatement) ib).variableScope : null)
+                Statement neb = (eb == null || eb instanceof EmptyStatement) ? eb :
+                    rw.sub(eb instanceof BlockStatement ? ((BlockStatement) eb).statements : Collections.singletonList(eb),
+                        eb instanceof BlockStatement ? ((BlockStatement) eb).variableScope : null)
+                IfStatement ni = new IfStatement(new BooleanExpression(rewriteChExpr(i.booleanExpression.expression, rw)), nib,
+                    neb == null ? EmptyStatement.INSTANCE : neb)
+                ni.setSourcePosition(st); ni.copyNodeMetaData(st)
+                rw.emit(out, ni)
+                continue
+            }
+            rw.emit(out, st)
         }
+    }
+
+    /** Phase 249 — an ALT: `def r = await ChannelSelect.from(c0, c1, …).select()` becomes
+     *  `def r$index = $channelSelect.index(i…)` over the READY branches (those with an element left —
+     *  the k-th receive on that stream would be satisfiable) and `def r$value = $channelSelect.value(
+     *  r$index, i, head_i, …)`, each head the branch's next element run through its stages. The
+     *  Encoder binds the index as a nondeterministic choice and the value as the matching ite chain.
+     *  `r.index` / `r.value` (and the getters) then read the two shadows. One-shot: the guard has
+     *  required the ALT to be the last receive on each of its channels, so no cursor advances. */
+    private static void rewriteSelect(String name, List<Expression> alt, DeclarationExpression de, ChanRewrite rw, List<Statement> out) {
+        List<Expression> idx = new ArrayList<Expression>()
+        List<Expression> valueArgs = new ArrayList<Expression>()
+        String indexName = name + '$index', valueName = name + '$value'
+        valueArgs.add(new VariableExpression(indexName))
+        AltInfo info = new AltInfo()
+        info.name = name
+        for (int i = 0; i < alt.size(); i++) {
+            String base = chanBaseVar(alt.get(i), rw)
+            if (base == null) continue
+            String root = rw.rootOf(base)
+            Integer seen = rw.recvIdx.get(rw.streamOf(base))
+            int k = (seen == null ? 0 : seen) + 1
+            if (k > rw.total(root)) continue                              // nothing left on this branch: never ready
+            String elem = rw.element(root, k)
+            rw.registerType(root, elem)
+            if (!rw.scalarTypes.containsKey(valueName)) rw.registerType(root, valueName)
+            Expression head = rw.withElement(root, elem) { rewriteChExpr(alt.get(i), rw) }
+            idx.add(new ConstantExpression(i, true))
+            valueArgs.add(new ConstantExpression(i, true))
+            valueArgs.add(head)
+            info.branches.add(i); info.elems.add(elem); info.heads.add(head)
+        }
+        VariableExpression marker = new VariableExpression(Encoder.CHANNEL_SELECT_MARKER)
+        MethodCallExpression indexCall = new MethodCallExpression(marker, 'index', new ArgumentListExpression(idx))
+        indexCall.setSourcePosition(de)
+        DeclarationExpression d1 = new DeclarationExpression(new VariableExpression(indexName),
+            Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), indexCall)
+        d1.setSourcePosition(de)
+        rw.selectInfo.put(out.size(), info)
+        rw.emit(out, new ExpressionStatement(d1))
+        if (!idx.isEmpty()) {
+            MethodCallExpression valueCall = new MethodCallExpression(marker, 'value', new ArgumentListExpression(valueArgs))
+            valueCall.setSourcePosition(de)
+            DeclarationExpression d2 = new DeclarationExpression(new VariableExpression(valueName),
+                Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), valueCall)
+            d2.setSourcePosition(de)
+            rw.selectInfo.put(out.size(), info)
+            rw.emit(out, new ExpressionStatement(d2))
+        }
+        rw.selectVars.add(name)
+    }
+
+    /** The channel arguments of a `ChannelSelect.from(c0, c1, …)` call (either post-STC shape), else null. */
+    private static List<Expression> selectFromArgs(Expression e) {
+        Expression x = stripCasts(e)
+        Expression args = null
+        if (x instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) x
+            if (sm.method == 'from' && sm.ownerType?.nameWithoutPackage == 'ChannelSelect') args = sm.arguments
+        } else if (x instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) x
+            if (m.methodAsString == 'from' && channelOwnerName(m.objectExpression) == 'ChannelSelect') args = m.arguments
+        }
+        if (args instanceof TupleExpression) return ((TupleExpression) args).expressions
+        null
+    }
+
+    /** `await ChannelSelect.from(c…).select()` → the channel arguments; any other expression → null. */
+    private static List<Expression> awaitedSelectArgs(Expression rhs) {
+        Expression x = stripCasts(rhs)
+        Expression inner = null
+        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'await') inner = ((MethodCallExpression) x).arguments
+        else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'await') inner = ((StaticMethodCallExpression) x).arguments
+        if (!(inner instanceof TupleExpression) || ((TupleExpression) inner).expressions.size() != 1) return null
+        Expression sel = stripCasts(((TupleExpression) inner).expressions.get(0))
+        if (!(sel instanceof MethodCallExpression) || ((MethodCallExpression) sel).methodAsString != 'select' || !noArgs((MethodCallExpression) sel)) return null
+        selectFromArgs(((MethodCallExpression) sel).objectExpression)
     }
 
     /** Phase 247 — `for (v in ch) { body }` over a channel with k known sends becomes k copies of the
@@ -4603,7 +4899,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static void unrollChannelDrain(ForStatement st, ChanRewrite rw, List<Statement> out) {
         Expression coll = stripCasts(st.collectionExpression)
         String base = chanBaseVar(coll, rw)
-        if (base == null) { out.add(st); return }
+        if (base == null) { rw.emit(out, st); return }
         String root = rw.rootOf(base)
         int n = rw.total(root)
         Parameter loopVar = st.variable
@@ -4620,12 +4916,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             VariableExpression lhs = new VariableExpression(vi, loopVar.type)
             DeclarationExpression decl = new DeclarationExpression(lhs, Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), elem)
             decl.setSourcePosition(st)
-            out.add(new ExpressionStatement(decl))
+            rw.emit(out, new ExpressionStatement(decl))
             Map<String, Expression> ren = new HashMap<String, Expression>()
             ren.put(loopVar.name, new VariableExpression(vi))
             for (String l : bodyLocals) ren.put(l, new VariableExpression(l + '$' + i))
             Statement copy = copyRenamed(st.loopBlock, ren)
-            if (copy == null) { out.add(st); return }    // guarded by unrollableLoopBody; defensive
+            if (copy == null) { rw.emit(out, st); return }    // guarded by unrollableLoopBody; defensive
             rewriteChStatements(copy instanceof BlockStatement ? ((BlockStatement) copy).statements : Collections.singletonList(copy), rw, out)
         }
     }
@@ -4704,6 +5000,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> ch = rw.ch
         ExpressionTransformer t = new ExpressionTransformer() {
             @Override Expression transform(Expression expr) {
+                if (expr instanceof PropertyExpression) {                 // Phase 249 — r.index / r.value
+                    PropertyExpression pe = (PropertyExpression) expr
+                    Expression obj = stripCasts(pe.objectExpression)
+                    if (obj instanceof VariableExpression && rw.selectVars.contains(((VariableExpression) obj).name) &&
+                        (pe.propertyAsString == 'index' || pe.propertyAsString == 'value')) {
+                        VariableExpression ve = new VariableExpression(((VariableExpression) obj).name + '$' + pe.propertyAsString)
+                        ve.setSourcePosition(expr)
+                        return ve
+                    }
+                }
+                if (expr instanceof MethodCallExpression) {                   // Phase 249 — r.getIndex() / r.getValue()
+                    MethodCallExpression gm = (MethodCallExpression) expr
+                    Expression obj = stripCasts(gm.objectExpression)
+                    if (obj instanceof VariableExpression && rw.selectVars.contains(((VariableExpression) obj).name) && noArgs(gm) &&
+                        (gm.methodAsString == 'getIndex' || gm.methodAsString == 'getValue')) {
+                        VariableExpression ve = new VariableExpression(((VariableExpression) obj).name + '$' + (gm.methodAsString == 'getIndex' ? 'index' : 'value'))
+                        ve.setSourcePosition(expr)
+                        return ve
+                    }
+                }
                 if (expr instanceof VariableExpression) {
                     String name = ((VariableExpression) expr).name
                     if (rw.defs.containsKey(name)) return transform(rw.defs.get(name))   // expand derived var lazily
@@ -5104,6 +5420,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         int seq                // program-order position WITHIN its process (main: ord; arm: op counter)
         boolean conditional    // inside an if-branch / loop / catch — execution not guaranteed
         Expression anchor
+        List<String> alts      // Phase 249 — an ALT node's channels (set on the group's representative)
     }
 
     private static class ParCtx {
@@ -5150,6 +5467,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 245 — a blocking-until-close consumption: a `for (v in ch)` (recorded as 'iterate') or a drain op. */
     private static boolean isIterateUse(ChanUse u) { u.method == 'iterate' || u.method in CHANNEL_DRAIN_OPS }
+
+    /** Phase 249 — `ChannelSelect.from(c0, c1, …)`: a RECV-kind use ('select') of EVERY channel-var
+     *  argument, all sharing the call as anchor (the network check groups them into one ALT node). */
+    private static void recordSelectUsesIfAny(Expression call, ParCtx ctx, ParArm proc, int ord,
+                                              int seq, boolean conditional) {
+        List<Expression> args = selectFromArgs(call)
+        if (args == null) return
+        for (Expression a : args) {
+            Expression x = stripCasts(a)
+            if (x instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) x).name)) {
+                ctx.chanUse(((VariableExpression) x).name, 'select', CHAN_RECV, proc, ord, call.lineNumber, seq, conditional, call)
+            }
+        }
+    }
 
     /** Record a channel end-use at a DIRECT channel-var receiver (a chain's base op has the var
      *  receiver, so a pipeline chain registers exactly one consumption of its source). */
@@ -5204,6 +5535,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (cl != null) { recordArm(call, cl, null); return }
             // Phase 241 — a main-body channel end-use (seq = the statement ordinal)
             recordChanUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
+            recordSelectUsesIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0)     // Phase 249
             boolean isAwait = call.methodAsString == 'await'
             if (isAwait) awaitDepth++
             try { super.visitMethodCallExpression(call) } finally { if (isAwait) awaitDepth-- }
@@ -5212,6 +5544,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
             ClosureExpression cl = asyncClosure(call)
             if (cl != null) { recordArm(call, cl, null); return }
+            recordSelectUsesIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0)     // Phase 249
             boolean isAwait = call.method == 'await'
             if (isAwait) awaitDepth++
             try { super.visitStaticMethodCallExpression(call) } finally { if (isAwait) awaitDepth-- }
@@ -5337,9 +5670,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             private int armCondDepth = 0
             @Override void visitMethodCallExpression(MethodCallExpression call) {
                 // Phase 241 — an arm-side end-use; seq is the arm's own op order (Phase 243 needs it)
-                recordChanUseIfAny(call, ctx, arm, arm.fork, ++armSeq,
-                    arm.conditional || armCondDepth > 0, call)
+                int seq = ++armSeq
+                recordChanUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
+                recordSelectUsesIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0)   // Phase 249
                 super.visitMethodCallExpression(call)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+                recordSelectUsesIfAny(call, ctx, arm, arm.fork, ++armSeq, arm.conditional || armCondDepth > 0)   // Phase 249
+                super.visitStaticMethodCallExpression(call)
             }
             @Override void visitIfElse(IfStatement st) {
                 st.booleanExpression.visit(this)
@@ -5906,10 +6244,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (chanNames.isEmpty()) return Collections.emptySet()
         final Set<Expression> sanctioned = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         body.visit(new CodeVisitorSupport() {
+            private void sanctionSelect(Expression call) {           // Phase 249 — an ALT consumes its channels in place
+                List<Expression> args = selectFromArgs(call)
+                if (args != null) for (Expression a : args) { Expression x = stripCasts(a); if (x instanceof VariableExpression) sanctioned.add(x) }
+            }
             @Override void visitMethodCallExpression(MethodCallExpression m) {
                 Expression recv = stripCasts(m.objectExpression)
                 if (recv instanceof VariableExpression) sanctioned.add(recv)
+                sanctionSelect(m)
                 super.visitMethodCallExpression(m)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) {
+                sanctionSelect(m)
+                super.visitStaticMethodCallExpression(m)
             }
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 if (de.leftExpression instanceof VariableExpression) sanctioned.add(de.leftExpression)
@@ -5943,6 +6290,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (ev instanceof ParArm) return "the await of the task forked at line ${((ParArm) ev).line}"
         ChanUse u = (ChanUse) ev
         String who = u.proc == null ? '' : " in the task forked at line ${u.proc.line}"
+        if (u.alts != null) return "the ALT over ${u.alts.collect { "'" + it + "'" }.join(', ')} (line ${u.line}${who})"
         String what = u.method == 'send' ? 'the send on' :
                       u.method == 'close' ? 'the close of' :
                       isIterateUse(u) ? 'the iteration over' : 'the receive on'
@@ -5964,10 +6312,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         List<ChanUse> blockingReads = new ArrayList<ChanUse>()   // single-element receives (first / awaited receive)
         List<ChanUse> iterates = new ArrayList<ChanUse>()        // Phase 245 — whole-stream receives (block until close)
+        List<ChanUse> selects = new ArrayList<ChanUse>()         // Phase 249 — ALT nodes (one representative per from() call)
+        Map<Expression, ChanUse> selectByAnchor = new IdentityHashMap<Expression, ChanUse>()
         List<ChanUse> sends = new ArrayList<ChanUse>()
         List<ChanUse> closes = new ArrayList<ChanUse>()
         Map<String, List<ChanUse>> sendsByRoot = new HashMap<String, List<ChanUse>>()   // Phase 247 — in FIFO order
         Map<String, ChanUse> closeByRoot = new HashMap<String, ChanUse>()
+        Set<String> selectedChans = new HashSet<String>()
         ChanUse condUse = null
         for (ChanUse u : uses) {
             String root = chanBaseOf(u.chan, chanParent)
@@ -5976,7 +6327,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             boolean isClose = u.method == 'close'
             boolean isRead = u.method == 'first' || u.method == 'receive'
             boolean isIter = isIterateUse(u)
-            if (!isSend && !isClose && !isRead && !isIter) continue
+            boolean isSelect = u.method == 'select'
+            if (!isSend && !isClose && !isRead && !isIter && !isSelect) continue
             if (u.conditional || (u.proc != null && u.proc.conditional)) { condUse = u; continue }
             if (isSend) {
                 sends.add(u)
@@ -5986,6 +6338,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             else if (isClose) { closes.add(u); if (!closeByRoot.containsKey(root)) closeByRoot.put(root, u) }
             else if (isIter) iterates.add(u)
+            else if (isSelect) {
+                // One node per ALT: the first recorded channel use represents it, carrying the branch list.
+                ChanUse rep = selectByAnchor.get(u.anchor)
+                if (rep == null) { rep = u; rep.alts = new ArrayList<String>(); selectByAnchor.put(u.anchor, rep); selects.add(rep) }
+                rep.alts.add(u.chan)
+                selectedChans.add(u.chan)
+            }
             else blockingReads.add(u)
         }
         if (condUse != null) {
@@ -5994,8 +6353,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 "(inside an if / loop / catch)"), condUse.anchor)
             return
         }
+        // Phase 249 — a one-shot ALT must be the LAST receive on each of its channels: a later receive
+        // on a selected channel is satisfied by the j-th or the (j+1)-th send depending on the choice,
+        // which the graph cannot represent — uncertifiable, loudly.
+        if (!selectedChans.isEmpty()) {
+            List<ChanUse> later = new ArrayList<ChanUse>(blockingReads)
+            later.addAll(iterates)
+            for (ChanUse r : later) {
+                if (selectedChans.contains(r.chan)) {
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        "the receive on '${r.chan}' (line ${r.line}) follows an ALT over it — whether the ALT " +
+                        "consumed the element depends on its choice (a one-shot ALT must be the last receive on " +
+                        "each of its channels)"), r.anchor)
+                    return
+                }
+            }
+            for (int i = 0; i < selects.size(); i++) for (int j = i + 1; j < selects.size(); j++) {
+                for (String c : selects.get(i).alts) if (selects.get(j).alts.contains(c)) {
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        "two ALTs (lines ${selects.get(i).line} and ${selects.get(j).line}) both select over '${c}' — " +
+                        "the second's readiness depends on the first's choice"), selects.get(j).anchor)
+                    return
+                }
+            }
+        }
         List<ChanUse> blockers = new ArrayList<ChanUse>(blockingReads)   // ops a process stalls at
         blockers.addAll(iterates)
+        blockers.addAll(selects)
         if (blockers.isEmpty()) return               // nothing blocks → nothing to certify
 
         // A read whose root channel is never sent to can never be satisfied; an iteration over a
@@ -6036,8 +6420,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 return
             }
         }
+        // Phase 249 — an ALT's alternatives: for each branch, the send that would satisfy its next
+        // receive (the ALT is the last receive on the branch, so that is the (j+1)-th send). A branch
+        // with no send left is never ready; an ALT with no ready branch at all can never be satisfied.
+        Map<ChanUse, List<ChanUse>> selectAlts = new IdentityHashMap<ChanUse, List<ChanUse>>()
+        for (ChanUse sel : selects) {
+            List<ChanUse> alts = new ArrayList<ChanUse>()
+            for (String c : sel.alts) {
+                List<ChanUse> ss = sendsByRoot.get(chanBaseOf(c, chanParent))
+                Integer seen = readOrdinal.get(c)
+                int j = (seen == null ? 0 : seen) + 1
+                if (ss != null && j <= ss.size()) alts.add(ss.get(j - 1))
+            }
+            if (alts.isEmpty()) {
+                addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                    describeChanEvent(sel) + " can never be satisfied — no send left on any of its channels"), sel.anchor)
+                return
+            }
+            selectAlts.put(sel, alts)
+        }
 
-        // The wait-for graph: nodes are the channel ops (reads, iterations, sends, closes) plus
+        // The wait-for graph: nodes are the channel ops (reads, iterations, ALTs, sends, closes) plus
         // each awaited arm's join.
         List<Object> evs = new ArrayList<Object>()
         Map<Object, Integer> id = new IdentityHashMap<Object, Integer>()
@@ -6049,6 +6452,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (ParArm a : ctx.arms) if (a.join != Integer.MAX_VALUE) { joined.add(a); id.put(a, evs.size()); evs.add(a) }
         List<List<Integer>> adj = new ArrayList<List<Integer>>()
         for (int i = 0; i < evs.size(); i++) adj.add(new ArrayList<Integer>())
+        Map<Integer, List<Integer>> orAlts = new HashMap<Integer, List<Integer>>()   // Phase 249 — an ALT completes if ANY alternative does
 
         // Main's blocking points before ordinal o: its blockers and the joins it has passed.
         // (X → Y means "X cannot complete until Y has".)
@@ -6070,16 +6474,54 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ChanUse c = closeByRoot.get(chanBaseOf(it.chan, chanParent))
             if (c != null && !c.is(it)) adj.get(id.get(it)).add(id.get(c))
         }
+        for (ChanUse sel : selects) {                            // Phase 249 — an ALT proceeds on any ready branch
+            List<Integer> alts = new ArrayList<Integer>()
+            for (ChanUse s : selectAlts.get(sel)) alts.add(id.get(s))
+            orAlts.put(id.get(sel), alts)
+        }
         for (ParArm a : joined) {
             for (ChanUse u : evUses) if (u.proc != null && u.proc.is(a)) adj.get(id.get(a)).add(id.get(u))
             for (ChanUse b : blockers) if (b.proc == null && b.ord < a.join) adj.get(id.get(a)).add(id.get(b))
             for (ParArm o : joined) if (!o.is(a) && o.join < a.join) adj.get(id.get(a)).add(id.get(o))
         }
 
-        // Well-foundedness: DFS for a cycle, reporting the circular wait it finds.
-        int[] color = new int[evs.size()]                 // 0 white, 1 grey, 2 black
+        // Well-foundedness as a completion fixpoint: an event completes once everything it waits for
+        // has (AND), an ALT additionally once ANY of its alternatives has (OR). Without ALTs this is
+        // exactly "acyclic"; with them a cycle through an ALT is a deadlock only if every branch is
+        // stuck. What is left over is the deadlocked set — explained by the cycle its wait-for edges
+        // (an ALT's edges to its stuck branches included) close.
+        int n = evs.size()
+        boolean[] done = new boolean[n]
+        boolean changed = true
+        while (changed) {
+            changed = false
+            for (int i = 0; i < n; i++) {
+                if (done[i]) continue
+                boolean ok = true
+                for (Integer d : adj.get(i)) if (!done[d]) { ok = false; break }
+                if (ok && orAlts.containsKey(i)) {
+                    ok = false
+                    for (Integer d : orAlts.get(i)) if (done[d]) { ok = true; break }
+                }
+                if (ok) { done[i] = true; changed = true }
+            }
+        }
+        boolean allDone = true
+        for (int i = 0; i < n; i++) if (!done[i]) { allDone = false; break }
+        if (allDone) return
+        List<List<Integer>> stuckAdj = new ArrayList<List<Integer>>()
+        for (int i = 0; i < n; i++) {
+            List<Integer> es = new ArrayList<Integer>()
+            if (!done[i]) {
+                for (Integer d : adj.get(i)) if (!done[d]) es.add(d)
+                List<Integer> alts = orAlts.get(i)
+                if (alts != null) for (Integer d : alts) if (!done[d]) es.add(d)
+            }
+            stuckAdj.add(es)
+        }
+        int[] color = new int[n]                          // 0 white, 1 grey, 2 black
         List<Integer> stack = new ArrayList<Integer>()
-        List<Integer> cycle = findWaitCycle(adj, color, stack)
+        List<Integer> cycle = findWaitCycle(stuckAdj, color, stack)
         if (cycle != null) {
             List<String> parts = new ArrayList<String>()
             for (Integer i : cycle) parts.add(describeChanEvent(evs.get(i)))
@@ -6087,6 +6529,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression anchor = first instanceof ChanUse ? ((ChanUse) first).anchor : ((ParArm) first).anchor
             addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
                 'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first'), anchor)
+        } else {
+            for (int i = 0; i < n; i++) if (!done[i]) {           // defensive: a stuck event without a cycle to show
+                Object ev = evs.get(i)
+                Expression anchor = ev instanceof ChanUse ? ((ChanUse) ev).anchor : ((ParArm) ev).anchor
+                addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
+                    describeChanEvent(ev) + ' can never complete'), anchor)
+                return
+            }
         }
     }
 
@@ -7805,6 +8255,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // Phase 155 — `a = await Awaitable.any(t1, t2)` / first(...): the racing winner is one of the task
                     // values, nondeterministically — an if/else over an unknown selector. Bind a to a fresh value
                     // disjoined over the winners, so the postcondition must hold for EVERY one (prove all branches).
+                    if (enc.tryBindChannelSelect(a.name, a.rhs)) {              // Phase 249 — an ALT's index / value
+                        continue
+                    }
                     if (enc.tryBindAwaitAny(a.name, a.rhs)) {
                         continue
                     }

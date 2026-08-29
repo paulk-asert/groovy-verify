@@ -4751,6 +4751,57 @@ class Encoder implements TheoryApi {
         return true
     }
 
+    /** Phase 249 — the synthetic receiver the channel rewrite spells an ALT with:
+     *  {@code $channelSelect.index(i0, i1, …)} / {@code $channelSelect.value(idx, i0, h0, i1, h1, …)}. */
+    static final String CHANNEL_SELECT_MARKER = '$channelSelect'
+
+    private int selectCounter = 0
+    /**
+     * Phase 249 — an ALT (`await ChannelSelect.from(a, b).select()`), desugared by the checker into the
+     * choice of a READY branch and the value that branch carries: {@code r$index} binds a fresh value
+     * constrained to be one of the ready branch indices (a nondeterministic choice, exactly like
+     * {@link #tryBindAwaitAny}'s racing winner — the spec must hold for every branch), and
+     * {@code r$value} binds the if-then-else chain over the index selecting each branch's head element.
+     * The index/value correlation is exact, so a branch-wise spec (`r.index == 0 ? … : …`) proves.
+     * False → not the marker shape (caller falls through).
+     */
+    boolean tryBindChannelSelect(String name, Expression rhs) {
+        Expression r = rhs
+        while (r instanceof CastExpression) r = ((CastExpression) r).expression
+        if (!(r instanceof MethodCallExpression)) return false
+        MethodCallExpression m = (MethodCallExpression) r
+        if (!(m.objectExpression instanceof VariableExpression) ||
+            ((VariableExpression) m.objectExpression).name != CHANNEL_SELECT_MARKER) return false
+        List<Expression> args = argList(m)
+        if (m.methodAsString == 'index') {
+            Object fresh = session.intVar(name + '#select#' + (++selectCounter))
+            List<Object> disj = new ArrayList<Object>()
+            for (Expression a : args) {
+                Object t = translate(a)
+                if (t == null) return false
+                disj.add(session.eq(fresh, t))
+            }
+            if (!disj.isEmpty()) session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
+            bind(name, fresh)
+            return true
+        }
+        if (m.methodAsString == 'value') {                 // value(idx, i0, h0, i1, h1, …)
+            if (args.size() < 3 || (args.size() - 1) % 2 != 0) return false
+            Object idx = translate(args.get(0))
+            if (idx == null) return false
+            Object v = null
+            for (int i = args.size() - 2; i >= 1; i -= 2) {
+                Object c = translate(args.get(i))
+                Object h = translate(args.get(i + 1))
+                if (c == null || h == null) return false
+                v = (v == null) ? h : session.ite(session.eq(idx, c), h, v)
+            }
+            bind(name, v)
+            return true
+        }
+        false
+    }
+
     private int chanRecvCounter = 0
     /**
      * Phase 242 — the modular channel receive: {@code v = ch.first()} / {@code v = await ch.receive()}

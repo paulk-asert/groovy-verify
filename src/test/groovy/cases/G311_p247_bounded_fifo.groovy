@@ -121,6 +121,21 @@ class G311_p247_bounded_fifo {
                         }
                     }""")],
 
+        // The consumer task textually AHEAD of its producer (the CSP habit of listing the reader
+        // first): the value model schedules the flattened statements by dataflow — a process's
+        // next statement runs once the elements it reads are declared — not by textual position.
+        [group: 'P247 bounded FIFO', name: 'a consumer task ahead of its producer still proves', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == 10 * x + y })
+                        static int readerFirst(int x, int y) {
+                            groovy.concurrent.AsyncChannel<Integer> src = groovy.concurrent.AsyncChannel.create(2)
+                            groovy.concurrent.AsyncChannel<Integer> out = groovy.concurrent.AsyncChannel.create(1)
+                            async { int a = src.first(); int b = src.first(); out.send(10 * a + b) }
+                            async { src.send(x); src.send(y); src.close() }
+                            return out.first()
+                        }
+                    }""")],
+
         // ---------- drains yield the sequence ----------
         [group: 'P247 bounded FIFO', name: 'toList() is the sent sequence', ok: true,
          src: tc("""class C {

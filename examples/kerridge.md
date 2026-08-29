@@ -44,7 +44,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error (Phase 245) |
 | `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
 | `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
-| `ALT` | `ChannelSelect` | future work (locally a nondeterministic branch, like `Awaitable.any`) |
+| `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 
 ## The one-shot shapes verify end to end
 
@@ -121,6 +121,26 @@ static int clientServer(int x) {
 }
 ```
 
+And **ALT** — occam's alternation, the construct every multiplexer and fair-server in the books is built on —
+is `ChannelSelect`. One-shot, it is a nondeterministic choice among the producers that can be ready, so the
+spec must cover both; which branches *can* be ready is decided exactly (a producer that only runs after the
+choosing process moves on is never the one taken), and the wait-for order treats the ALT as an OR node —
+a deadlock only if *every* guard is stuck:
+
+<!-- doclint:case p246-kerridge-gallery/alt-take-whichever-producer-is-ready -->
+```groovy
+@Ensures({ result == x || result == y })
+static int alt(int x, int y) {
+    groovy.concurrent.AsyncChannel<Integer> left = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> right = groovy.concurrent.AsyncChannel.create(1)
+    async { left.send(x); left.close() }
+    async { right.send(y); right.close() }
+    groovy.concurrent.ChannelSelect.Result chosen = await groovy.concurrent.ChannelSelect.from(left, right).select()
+    int v = (int) chosen.value
+    return v
+}
+```
+
 ## The student mistakes are named compile errors
 
 The book teaches deadlock by *running into it* — build the network, watch it hang, discuss. Here the same
@@ -154,7 +174,8 @@ One port stays *deliberately* out of reach, and says so. **GNumbers** as the boo
 (or symbolically bounded) generator behind every pipeline — is *streaming*: the checker's channel model is a
 **bounded FIFO** whose element count is static (Phase 247), and only a *literal* loop bound unrolls into it
 (Phase 248 — bounded model checking, ≤ 32 iterations). A `while (true)` generator or a `for (i in 0..<n)`
-with symbolic `n` refuses the model outright and its value claims skip loudly. That frontier is precisely the ladder's recorded next rung
+with symbolic `n` refuses the model outright and its value claims skip loudly — and the same line divides
+the one-shot `ALT` (certified) from the looping multiplexer (`while (true) { select … }`, the frontier). That frontier is precisely the ladder's recorded next rung
 (symbolic send/receive counts carried by loop invariants; session-typed channel protocols) — which makes
 "pick a streaming example and see what certification takes" a research conversation, not a demo: the same
 guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.

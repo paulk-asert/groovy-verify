@@ -11298,8 +11298,9 @@ row, the README ladder + gallery bullets, `examples/kerridge.md` (ProduceHW move
 proof; the over-receive joins the error zoo; the boundary section is now GNumbers alone). Honest
 boundaries: counts are STATIC — a producer loop is still the streaming frontier (next rung); `receive()`
 outside an `await` and `merge`/`filter` values stay raw (skip, never a wrong count); the flattened
-source order must put a stream's sends before its reads for the value to bind (a consumer arm textually
-ahead of its producer reads an unbound element — unconstrained, refute-only, as before).
+source order had to put a stream's sends before its reads for the value to bind (a consumer arm textually
+ahead of its producer read an unbound element — unconstrained, refute-only) — lifted two phases later by
+Phase 249's dataflow-driven schedule.
 
 ---
 
@@ -11335,6 +11336,67 @@ pipeline. Docs: the Phase 248 subsection in `examples/concurrency.md` (one linke
 CAPABILITIES row, the README ladder + gallery bullets, `examples/kerridge.md` (the bounded pipeline
 joins the verified tier with its own case; the vocabulary table's `GNumbers` row; the boundary section
 now names the symbolic/infinite generator precisely). Next rung: `ALT` as `ChannelSelect`.
+
+---
+
+## Phase 249 — ALT: `ChannelSelect` as a choice among the ready branches  *(shipped — slice 9 of the SEQ/PAR ladder)*
+
+The gallery's "future work" row. occam's ALT / JCSP's Alternative is `groovy.concurrent.ChannelSelect`:
+`ChannelSelect.Result r = await ChannelSelect.from(a, b).select()` (the declared type — STC infers
+`await`'s `<T>` from the target, a bare `def` lands on `Object`). Modelled one-shot on both sides of
+the ladder, riding Phase 155's racing-winner idea and Phase 243's wait-for graph.
+
+**Value side.** `rewriteSelect` spells the declaration as two shadows through a synthetic marker
+receiver (`Encoder.CHANNEL_SELECT_MARKER`): `def r$index = $channelSelect.index(i…)` over the branches
+with an element left (the k-th receive on that stream would be satisfiable) and `def r$value =
+$channelSelect.value(r$index, i, head_i, …)`, each head the branch's next element through its stages;
+`Encoder.tryBindChannelSelect` binds the index as a fresh value disjoined over the candidates (the
+Phase 155 shape — the spec must hold for every branch) and the value as the matching `ite` chain, so
+index and value are EXACTLY correlated and a branch-wise claim proves. `r.index` / `r.value` and the
+getters read the shadows (PropertyExpression handling in `rewriteChExpr`; if-statements are now
+rewritten in place, `ChanRewrite.sub`, so `if (r.index == 0)` guards stay in fragment).
+
+**Readiness, exactly — and the schedule.** "Can be ready" is not "has an element left": a branch served
+only after the ALT's own process moves on can never be the one taken (the free-branch shape refuted
+`result == 1 || result == 2` on first run with `c$1 = 0` — the head of a branch fed by a receive main
+performs after the ALT was unbound). The fix is structural and pays twice: the flattened value model is
+no longer emitted in TEXTUAL order but **scheduled by dataflow** (`ChanRewrite.schedule`): statements
+are tagged with their process while flattening, and a process's next statement runs once every channel
+element it reads has been declared (a receive blocks until its send), an arm once main has passed its
+fork; main preferred, then arms in fork order; when nothing is runnable the remainder is emitted
+textually (an unsatisfiable read stays unbound, as before — Phase 243 reports the deadlock). An ALT
+runs only when nothing else can, and `pruneAlt` rebuilds it over the branches whose element got
+defined by then — the static "which guards are ready", keep-set fixed at the index decl so index/value
+stay consistent. The free-branch ALT now proves `result == 2` (the runtime truth), and the CSP habit of
+listing the reader before the writer — a consumer task textually ahead of its producer — proves too
+(G311 gains the case; the Phase 247 entry's textual-order boundary is retired).
+
+**Structural side.** `ChannelSelect.from(c…)` records a RECV-kind use ('select') of every channel-var
+argument in both walks (main's `ParScanner`, both call shapes; the arm collector gains a
+`visitStaticMethodCallExpression`), sharing the call as anchor; the escape scan sanctions the args.
+`checkNetworkWellFormedness` groups them into ONE node per ALT (`ChanUse.alts`), whose alternatives
+are the sends that would satisfy each branch's next receive (none left → "the ALT over 'a', 'b' can
+never be satisfied — no send left on any of its channels"). Well-foundedness is now a **completion
+fixpoint**: an event completes once all its AND-dependencies have, an ALT additionally once ANY
+alternative has — identical to acyclicity without ALTs, and with them a cycle through an ALT is a
+deadlock only when every branch is stuck; the leftover (stuck) set is explained by the DFS over its
+own edges (an ALT's edges to its stuck branches included), same message shape as before. The
+one-shot discipline is enforced on both sides — a receive/drain after an ALT on one of its channels
+("whether the ALT consumed the element depends on its choice"), two ALTs over one channel — as loud
+network skips, and the value guard additionally names a `ChannelSelect` held in a variable, a
+non-variable branch, or a result used beyond `.index` / `.value`.
+
+Cases (G313, new group, 10): five proofs (one ready branch; two ready branches covered; the
+branch-wise correlated claim; the getters through a map stage; the free branch — certified AND
+`result == 2`), the single-branch over-claim refuted, two deadlocks (every branch stuck — the ALT in
+the spelled-out cycle; no branch ever sent to), two loud skips (a receive after the ALT; a held
+`ChannelSelect`). G310 gains the ALT teaching shape; G311 the reader-first case. Docs: the Phase 249
+subsection in `examples/concurrency.md` (two linked cases), the CAPABILITIES row, the README ladder +
+gallery bullets, `examples/kerridge.md` (the `ALT` vocabulary row moves from future work to Phase 249,
+an ALT case joins the verified tier, the boundary names the looping multiplexer). Honest boundaries:
+one-shot only — the looping multiplexer / fair server is the streaming frontier; `select()` on a
+closed channel and `Result` beyond index/value unmodelled; the schedule linearises the VALUE model
+only (the structural certificate is unchanged and still decides deadlocks).
 
 ---
 

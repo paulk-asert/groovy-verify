@@ -640,6 +640,70 @@ checking in the compiler, and says so: literal bounds only, up to 32 iterations;
 (`for (i in 0..<n)`) stays a loop and skips loudly — the streaming frontier proper, where the send/receive
 count would have to be carried by a loop invariant rather than counted.
 
+### ALT — `ChannelSelect` as a nondeterministic choice among the ready branches (Phase 249)
+
+occam's `ALT` (JCSP's `Alternative`) is the construct the gallery had left as future work. In
+`groovy.concurrent` it is `ChannelSelect`: `await ChannelSelect.from(a, b).select()` blocks until *some*
+branch has an element and returns which (`index`) and what (`value`). Phase 249 models the one-shot form on
+both sides of the ladder. On the **value** side the choice is nondeterministic — `r.index` binds to one of
+the branches that can be ready, `r.value` to that branch's head element, the two exactly correlated (an
+if-then-else chain over the index), so a spec must hold for *every* possibly-ready branch, and a branch-wise
+claim proves:
+
+<!-- doclint:case p249-alt-select/index-and-value-are-correlated-a-branch-wise-claim-proves -->
+```groovy
+@Ensures({ result == x + 1 || result == y - 1 })
+static int branchwise(int x, int y) {
+    groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+    async { a.send(x); a.close() }
+    async { b.send(y); b.close() }
+    groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+    int v = (int) r.value
+    if (r.index == 0) {
+        return v + 1
+    }
+    return v - 1
+}
+```
+
+"Can be ready" is decided *exactly*, by the same mechanism that now linearises the whole value model: the
+flattened statements are no longer emitted in textual order but **scheduled by dataflow** — a process's next
+statement runs once the channel elements it reads have been declared, an arm once main has passed its fork —
+and an ALT runs only when nothing else can, over the branches whose element got defined by then. A branch
+that can only be served *after* the ALT's process moves on is never the one taken, so in the shape below the
+ALT provably takes `b` (`result == 2`, not merely `1 || 2`) — and, as a side effect, the CSP habit of listing
+the reader before the writer now proves too (a consumer task textually ahead of its producer).
+
+On the **structural** side the ALT is an OR node in the wait-for graph: it proceeds on *any* ready branch.
+Well-foundedness becomes a **completion fixpoint** — an event completes once everything it waits for has,
+an ALT additionally once any alternative has — which is exactly acyclicity when there is no ALT, and with one
+makes a cycle a deadlock only if *every* branch is stuck:
+
+<!-- doclint:case p249-alt-select/an-alt-with-one-free-branch-is-certified-and-takes-it -->
+```groovy
+@Ensures({ result == 2 })
+static int freeBranch() {
+    groovy.concurrent.AsyncChannel<Integer> a = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> b = groovy.concurrent.AsyncChannel.create(1)
+    groovy.concurrent.AsyncChannel<Integer> c = groovy.concurrent.AsyncChannel.create(1)
+    async { int v = c.first(); a.send(v) }
+    async { b.send(2) }
+    groovy.concurrent.ChannelSelect.Result r = await groovy.concurrent.ChannelSelect.from(a, b).select()
+    c.send(1)
+    int v = (int) r.value
+    return v
+}
+```
+
+Remove the second task and every branch of the ALT waits on main passing it: *"circular wait: the ALT over
+'a', 'b' … which waits for the send on 'a' … which waits for the receive on 'c' … which waits for the send on
+'c' …"*. An ALT no branch of which is ever sent to "can never be satisfied — no send left on any of its
+channels". The one-shot discipline is loud: a receive *after* an ALT on one of its channels (whether the ALT
+consumed the element depends on its choice), two ALTs over one channel, a `ChannelSelect` held in a variable,
+or a result used beyond `.index` / `.value` all skip with the channel and the reason named. The looping
+multiplexer — `while (true) { alt.select() … }` — is the streaming frontier again.
+
 ### async/await — the value a task computes
 
 The dataflow and channel examples above used `async { }` as plumbing. Groovy 6 also makes `async`/`await` a

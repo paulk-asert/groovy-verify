@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), and since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, and since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -209,6 +209,24 @@ class G310_p246_kerridge_gallery {
                                 printed = printed + v
                             }
                             return printed
+                        }
+                    }""")],
+
+        // ---------- ALT (Phase 249) ----------
+        // The book's ALT: a process that takes whichever of two inputs is ready — occam's alternation,
+        // JCSP's Alternative, here ChannelSelect. One-shot: the choice is nondeterministic over the
+        // ready branches, so the spec must cover both producers' values.
+        [group: 'P246 Kerridge gallery', name: 'ALT: take whichever producer is ready', ok: true,
+         src: tc("""class C {
+                        @Ensures({ result == x || result == y })
+                        static int alt(int x, int y) {
+                            groovy.concurrent.AsyncChannel<Integer> left = groovy.concurrent.AsyncChannel.create(1)
+                            groovy.concurrent.AsyncChannel<Integer> right = groovy.concurrent.AsyncChannel.create(1)
+                            async { left.send(x); left.close() }
+                            async { right.send(y); right.close() }
+                            groovy.concurrent.ChannelSelect.Result chosen = await groovy.concurrent.ChannelSelect.from(left, right).select()
+                            int v = (int) chosen.value
+                            return v
                         }
                     }""")],
 
