@@ -229,7 +229,9 @@ class G318_p254_forever {
                     }""")],
 
         // ---------- the forever multiplexer ----------
-        [group: 'P254 non-terminating processes', name: 'a forever multiplexer over two infinite generators forwards the contract', ok: true,
+        // The contract forwards; but under ChannelSelect's priority the second generator may starve (Phase 256
+        // names it: 'a' is always ready and precedes 'b').
+        [group: 'P254 non-terminating processes', name: 'a forever multiplexer over two infinite generators: the contract forwards, the second branch may starve', expect: 'may starve', refute: 'Assertion may not hold',
          src: tc("""class C {
                         static void mux() {
                             val a = AsyncChannel.<Integer>create(4)

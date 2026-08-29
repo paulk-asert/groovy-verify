@@ -176,8 +176,10 @@ class G319_p255_liveness {
                             }
                         }
                     }""")],
-        // ---------- the ALT over dependent branches: undecided, loudly ----------
-        [group: 'P255 liveness', name: 'a forever ALT over branches fed by dependent stages is undecided (the ALT\'s own fairness)', expect: 'fairness assumption about the ALT',
+        // ---------- the ALT over dependent branches: decided by the OR fixpoint (Phase 256) ----------
+        // Phase 255 left this undecided; Phase 256's general OR treatment certifies it — the stage feeding
+        // both branches waits on nothing that waits on the ALT.
+        [group: 'P255 liveness', name: 'a forever ALT over branches fed by a dependent stage is live', ok: true,
          src: tc("""class C {
                         static void mux() {
                             val nums = AsyncChannel.<Integer>create(4)

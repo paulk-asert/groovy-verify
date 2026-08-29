@@ -856,8 +856,10 @@ The last shape the gallery had left open. A specified unit-counter loop whose bo
 iteration from whichever of its streaming inputs has one — `Result r = await ChannelSelect.from(a, b).select()`
 — is the **multiplexer**. Readiness now changes per iteration, so the model gives each branch a **ghost
 cursor** (`a$c`, `b$c`, declared before the loop): the choice ranges over the branches whose cursor is below
-their list's size, the value is the element at the chosen cursor, the chosen cursor steps, and the injected
-invariant `0 ≤ a$c ≤ |a| ∧ 0 ≤ b$c ≤ |b| ∧ a$c + b$c == i − a₀` ties the cursors to the iterations. "No branch
+their list's size, the value is an element of the chosen branch at or beyond its cursor (Phase 256 — the runtime re-sends a
+losing branch's element to the back of its queue, so within a contended branch the order of taking is not
+FIFO), the chosen cursor steps, and the injected invariant `0 ≤ a$c ≤ |a| ∧ 0 ≤ b$c ≤ |b| ∧ a$c + b$c == i − a₀`
+ties the cursors to the iterations. "No branch
 has an element left" is the block-forever obligation, asserted before every choice:
 
 <!-- doclint:case p253-looping-alt/the-multiplexer-merges-every-element-count-na-nb -->
@@ -1026,6 +1028,59 @@ Where the analysis certifies, the Phase 254 "liveness not claimed" note is disch
 fairness, with termination alone unclaimed because none is meant. What the certificate rests on is stated
 in one line: the scheduler is weakly fair, sends never block, and the base case is the pre-loop
 straight-line code.
+
+### Selection semantics — the runtime's ALT, modelled as it is (Phase 256)
+
+The rung that was to be "fairness of the ALT's choice" turned into something more useful: reading what
+`ChannelSelect.select()` actually does (Groovy 6.0.0-beta-2). It issues a `receive()` on every branch and
+completes with the first; when several are ready the **lowest index wins** (priority by list order), and a
+losing branch's consumed element is **re-sent to the back of its queue** — no loss, but "may reorder values
+within a channel". Fair selection is therefore not an assumption the checker can make; it models the runtime:
+
+- A looping ALT takes **some remaining element** of the chosen branch (`$channelSelect.valueAny`): the count
+  stays exact, element-wise contracts still forward, and positional claims through a contended branch do not
+  prove — which is right, because the runtime does not deliver them.
+- A branch behind one fed by an infinite pure generator is a named **selection starvation hazard**: the
+  generator never blocks, so that branch is always ready, and the lowest ready index is always taken.
+- A reply guarded by the choice — `if (r.index == i) { replyX.send(…) }`, the fair server's shape — leaves
+  its client's liveness **withheld with the runtime's reason**: *"served only when the ALT … takes branch i —
+  ChannelSelect prefers the lowest ready index, so whether this client is ever chosen depends on timing;
+  per-client liveness is not certified (a fair selection would need runtime support)"*.
+
+ALT-*loop* liveness itself needs no choice fairness at all: the weight-0 completion fixpoint of Phase 255
+treats the ALT as an OR node (Phase 249's rule, per iteration), so a multiplexer over dependent stages is
+certified live, and an ALT whose every branch waits on its own output is a circular wait in every iteration:
+
+<!-- doclint:case p256-selection/an-alt-whose-branches-all-wait-on-its-own-output-circular-wait-in-every-iteration -->
+```groovy
+static void knot() {
+    val a = AsyncChannel.<Integer>create(4)
+    val b = AsyncChannel.<Integer>create(4)
+    val out = AsyncChannel.<Integer>create(4)
+    async {                                              // one stage feeds both branches from the ALT's own output
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            int v = out.first()
+            a.send(v)
+            b.send(v)
+            i = i + 1
+        }
+    }
+    int j = 0
+    @Invariant({ j >= 0 })
+    while (true) {
+        ChannelSelect.Result r = await ChannelSelect.from(a, b).select()
+        int v = (int) r.value
+        out.send(v)
+        j = j + 1
+    }
+}
+```
+
+What this leaves is not a checker frontier but a **runtime one**: Kerridge's `fairSelect` / `priSelect`
+distinction has no counterpart in `ChannelSelect` yet — a rotating-priority select, and a select that does not
+consume from losing branches, would let the fair server be certified. Until then the checker says so.
 
 ### async/await — the value a task computes
 

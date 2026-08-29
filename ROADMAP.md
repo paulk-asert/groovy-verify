@@ -11694,6 +11694,57 @@ session-typed view).
 
 ---
 
+## Phase 256 — selection semantics: the runtime's ALT, modelled as it is  *(shipped — slice 16 of the SEQ/PAR ladder)*
+
+Planned as "fairness of the ALT's choice"; became a runtime finding first. `ChannelSelect.select()`
+(6.0.0-beta-2 sources) issues a `receive()` on EVERY branch and completes with the first: when several
+are ready the LOWEST INDEX wins (each ready receive completes synchronously, in loop order — priority
+by list order), and a losing branch's consumed element is RE-SENT to the back of its queue ("may
+reorder values within a channel", no loss). Kerridge's `fairSelect` / `priSelect` have no counterpart.
+So fair selection is not an assumption the checker may make; the honest rung models the runtime:
+
+1. `valueAny` (Encoder): a looping ALT takes SOME remaining element of the chosen branch — a fresh index
+   in [cursor, size) per branch, the value the array select at it — replacing Phase 253's `valueAt`
+   (the head). Counts stay exact (nothing is lost), element-wise contracts forward, positional claims
+   through a contended branch no longer prove: G317's order claim was already refuted, its contract
+   and count still prove; no shipped claim was unsound, the model was merely stronger than the runtime.
+   (The one-shot ALT of Phase 249 keeps `value`: one element per branch, and the guard already forbids
+   receives after it — the re-send cannot be observed.)
+2. STARVATION HAZARD (`Reporter.formatSelectionStarvation`): in a looping ALT, a branch behind one whose
+   producer loop is an infinite pure generator — always ahead, never blocking — may never be taken:
+   "branch 'b' … may starve — branch 'a' precedes it and its producer … never blocks … ChannelSelect
+   takes the lowest ready index". A finite generator ahead is a delay, not a starvation. This FIRES on
+   Phase 254's forever multiplexer over two infinite generators (G318's pin flips to expect it) — a true
+   fact about running that example on Groovy 6.
+3. The general OR fixpoint for ALT-loop liveness (no choice fairness needed): `analyseLoopLiveness`
+   gives an ALT node a 0-weight alternative per branch whose producer loop is in the set and unprimed —
+   a branch with none (one-shot, primed, or a pure generator) completes on its own — and runs Phase
+   249's completion fixpoint per iteration; the leftover set is explained by the DFS. Phase 255's
+   pure-generator shortcut is subsumed: the multiplexer over dependent stages is certified live (G319's
+   undecided pin flips), an ALT whose every branch waits on its own output is a circular wait in every
+   iteration.
+4. THE FAIR SERVER, withheld with the runtime's reason: `if (r.index == i) { X.send(..) }` at a
+   selecting loop's body top level is recorded (`ConsumerInfo.guardedSends` → `guardedReplyOf`), and a
+   client's receive on X — conditional (in its loop) and unpaired (count not static) — is reported as
+   "served only when the ALT in the loop at line N takes branch i — ChannelSelect prefers the lowest
+   ready index, so whether this client is ever chosen depends on timing; per-client liveness is not
+   certified (a fair selection would need runtime support)", in both the conditional-op and the
+   non-static-count paths.
+
+Upstream candidate (for Paul, not filed): a fair `ChannelSelect` (rotating start index) and a select
+that does not consume from losing branches (needs channel-level support — JCSP's Alternative reserves
+rather than reads) would let the fair server be certified, and would remove the in-channel reordering.
+
+Cases (G320, new group, 5): the OR knot (deadlock) and its generator-branch twin (live), the starvation
+hazard, the finite-generator delay (no hazard), the fair server (withheld). G318's forever multiplexer
+and G319's dependent-stage ALT flip. G310 gains the fair server. Docs: the Phase 256 subsection in
+`examples/concurrency.md` (the knot, linked), the CAPABILITIES row, the README ladder bullet,
+`examples/kerridge.md` (the `fairSelect` row — no counterpart —, the fair server in the gallery with its
+withheld verdict quoted, the boundary section: what remains is the runtime's, plus starvation-freedom in
+the large and the session-typed view).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

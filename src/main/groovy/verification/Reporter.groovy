@@ -349,6 +349,17 @@ class Reporter {
         "from one process. The method is allowed to proceed unchecked."
     }
 
+    // ---- Selection starvation (Phase 256) ----
+
+    /** Phase 256 — under ChannelSelect's priority (the lowest ready index wins), a branch behind an always-ready
+     *  one may never be taken: a liveness hazard, named. */
+    static String formatSelectionStarvation(String methodName, String starved, String ahead, int altLine, int producerLine) {
+        "Selection starvation hazard in '${methodName}': branch '${starved}' of the ALT at line ${altLine} may starve — " +
+        "branch '${ahead}' precedes it and its producer (the while (true) at line ${producerLine}) never blocks, so it is " +
+        "always ready, and ChannelSelect takes the lowest ready index. Put the branch that must not starve first, bound " +
+        "the producer, or use a fair selection (rotating priority) when the runtime offers one."
+    }
+
     // ---- Channel contracts (Phase 242) ----
 
     /** Phase 242 — a channel element constraint outside the checkable vocabulary: loud skip, so the

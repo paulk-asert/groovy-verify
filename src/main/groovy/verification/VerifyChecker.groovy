@@ -5376,6 +5376,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<MethodCallExpression, String> receives = new IdentityHashMap<MethodCallExpression, String>()   // call → stream var
         final Set<String> chans = new HashSet<String>()                  // the stream vars read (one receive each per iteration)
         String altVar                                                    // Phase 253 — the loop's ALT result var (at most one ALT per iteration)
+        final Map<String, Integer> guardedSends = new HashMap<String, Integer>()   // Phase 256 — `if (r.index == i) X.send(..)`: channel → branch
         final List<String> altChans = new ArrayList<String>()            // its branches (stream vars), in from() order
         Expression altFrom                                               // the from() call (identity, for the walks)
         /** The stream var a call receives from — by SHAPE (`x.first()` / `x.receive()`), so a copied body still matches. */
@@ -5708,6 +5709,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (altVar != null) {
                     ci.altVar = altVar; ci.altChans.addAll(altChans); ci.altFrom = altFrom
                     scan.sanctionedFroms.add(altFrom)
+                    // Phase 256 — replies guarded by the choice: `if (r.index == i) { X.send(E) }` at the body's top level
+                    for (Statement inner : top0) {
+                        if (!(inner instanceof IfStatement)) continue
+                        IfStatement ifs = (IfStatement) inner
+                        Expression g = stripCasts(ifs.booleanExpression.expression)
+                        if (!(g instanceof BinaryExpression) || ((BinaryExpression) g).operation.type != Types.COMPARE_EQUAL) continue
+                        Expression gl = stripCasts(((BinaryExpression) g).leftExpression)
+                        Integer branch = intLiteral(((BinaryExpression) g).rightExpression)
+                        boolean onIndex = (gl instanceof PropertyExpression && ((PropertyExpression) gl).propertyAsString == 'index' &&
+                            stripCasts(((PropertyExpression) gl).objectExpression) instanceof VariableExpression &&
+                            ((VariableExpression) stripCasts(((PropertyExpression) gl).objectExpression)).name == altVar)
+                        if (!onIndex || branch == null) continue
+                        Statement ib = ifs.ifBlock
+                        List<Statement> its = ib instanceof BlockStatement ? ((BlockStatement) ib).statements : Collections.singletonList(ib)
+                        for (Statement st2 : its) {
+                            MethodCallExpression sc2 = sendCallOf(st2, ch)
+                            if (sc2 != null) ci.guardedSends.put(((VariableExpression) stripCasts(sc2.objectExpression)).name, branch)
+                        }
+                    }
                 }
                 if (!ci.receives.isEmpty() || ci.altVar != null) scan.consumers.put((Statement) st, ci)
             }
@@ -5945,7 +5965,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         DeclarationExpression d1 = new DeclarationExpression(new VariableExpression(r + '$index'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), readyCall)
         d1.setSourcePosition(de)
         out.add(new ExpressionStatement(d1))
-        MethodCallExpression valueCall = new MethodCallExpression(marker, 'valueAt', new ArgumentListExpression(valueArgs))
+        MethodCallExpression valueCall = new MethodCallExpression(marker, 'valueAny', new ArgumentListExpression(valueArgs))   // Phase 256 — the runtime's order
         valueCall.setSourcePosition(de)
         DeclarationExpression d2 = new DeclarationExpression(new VariableExpression(r + '$value'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), valueCall)
         d2.setSourcePosition(de)
@@ -7423,6 +7443,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         Map<String, StreamInfo> infiniteProducers = new HashMap<String, StreamInfo>()
         Map<String, String> loopLiveness = new HashMap<String, String>()     // Phase 255 — root → why its liveness is undecided
+        guardedReplyOf.clear()                                              // Phase 256 — per method
         try {
             Map<String, String> parent = new HashMap<String, String>()
             Set<String> subscribers = new HashSet<String>()
@@ -7503,6 +7524,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             else blockingReads.add(u)
         }
         if (condUse != null) {
+            Object[] guarded = guardedReplyOf.get(chanBaseOf(condUse.chan, chanParent))   // Phase 256 — a client of a selecting server
+            if (guarded != null && (condUse.method == 'first' || condUse.method == 'receive')) {
+                addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                    "the receive on '${condUse.chan}' (line ${condUse.line}) is served only when the ALT in the loop at line ${guarded[0]} " +
+                    "takes branch ${guarded[1]} — ChannelSelect prefers the lowest ready index, so whether this client is " +
+                    "ever chosen depends on timing; per-client liveness is not certified (a fair selection would need " +
+                    "runtime support)"), condUse.anchor)
+                return
+            }
             addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
                 "the channel operation on '${condUse.chan}' (line ${condUse.line}) is conditional " +
                 "(inside an if / loop / catch)"), condUse.anchor)
@@ -7553,6 +7583,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String where = root == r.chan ? "'${root}'" : "its source channel '${root}'"
             ChanUse loopSend = unknownCount.get(root)
             if (loopSend != null) {                                  // Phase 250 — count not static: no pairing
+                Object[] guarded = guardedReplyOf.get(root)          // Phase 256 — the fair-server reply: withheld, with the runtime's reason
+                if (guarded != null) {
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        "the receive on '${r.chan}' (line ${r.line}) is served only when the ALT in the loop at line ${guarded[0]} " +
+                        "takes branch ${guarded[1]} — ChannelSelect prefers the lowest ready index, so whether this client is " +
+                        "ever chosen depends on timing; per-client liveness is not certified (a fair selection would need " +
+                        "runtime support)"), r.anchor)
+                    return
+                }
                 addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
                     "the receive on '${r.chan}' (line ${r.line}) is served by a send inside a loop / if (line " +
                     "${loopSend.line}) — the element count of " + where + " is not static, so the receive cannot " +
@@ -7728,7 +7767,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     // obligations, and the base case — iteration 0 — is the pre-loop straight-line code.
 
     private static class LoopOp { int kind; String chan; int pos; int line; List<String> alts }
-    private static class LoopProc { LoopingStatement loop; List<Statement> block; int line; final List<LoopOp> ops = new ArrayList<LoopOp>(); boolean generator }
+    private static class LoopProc { LoopingStatement loop; List<Statement> block; int line; final List<LoopOp> ops = new ArrayList<LoopOp>(); boolean generator; boolean infinite; ConsumerInfo consumer }
+    /** Phase 256 — a receive served by an ALT-guarded send: channel → [the selecting loop's line, the branch]. */
+    private final Map<String, Object[]> guardedReplyOf = new HashMap<String, Object[]>()
 
     /** Returns root → reason for every stream whose liveness is NOT certified (deadlocks are reported here). */
     private Map<String, String> analyseLoopLiveness(MethodNode node, BlockStatement body, StreamScan sc, Map<String, String> parent) {
@@ -7779,6 +7820,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 }
                 lp.generator = ci == null
+                lp.infinite = isForever(lp.loop)
+                lp.consumer = ci
+                if (ci != null) for (Map.Entry<String, Integer> gs : ci.guardedSends.entrySet()) guardedReplyOf.put(gs.key, [lp.line, gs.value] as Object[])
                 procs.add(lp)
             }
         }
@@ -7788,6 +7832,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<LoopProc, Integer> base = new IdentityHashMap<LoopProc, Integer>()
         for (LoopProc lp : procs) { base.put(lp, nodes.size()); for (LoopOp op : lp.ops) nodes.add([lp, op] as Object[]) }
         List<List<Integer>> adj = new ArrayList<List<Integer>>()
+        Map<Integer, List<Integer>> orAlts = new HashMap<Integer, List<Integer>>()     // Phase 256 — an ALT waits on ANY branch
         for (int i = 0; i < nodes.size(); i++) adj.add(new ArrayList<Integer>())
         for (LoopProc lp : procs) {
             int b = base.get(lp)
@@ -7801,22 +7846,71 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (info.pre > 0) continue                                          // primed: weight −pre, never part of a 0-cycle
                     adj.get(b + i).add(base.get(prod) + prod.ops.indexOf(prod.ops.find { LoopOp o -> o.kind == CHAN_SEND && o.chan == op.chan }))
                 } else if (op.kind == CHAN_SUB) {
-                    boolean served = false
-                    for (String c : op.alts) { LoopProc prod = producerOf.get(c); if (prod != null && prod.generator) served = true }
-                    if (!served) for (String c : op.alts) undecided.put(c, "the ALT over ${op.alts.collect { "'" + it + "'" }.join(', ')} (line ${op.line}) has no branch fed by a pure generator — its liveness would need a fairness assumption about the ALT's own choice".toString())
+                    // Phase 256 — the general OR: a 0-weight alternative per branch whose producer loop is in the
+                    // set and unprimed; a branch with no such edge (a one-shot or primed producer, a pure generator)
+                    // is an alternative that completes on its own, so the ALT completes.
+                    List<Integer> alts = new ArrayList<Integer>()
+                    boolean free = false
+                    for (String c : op.alts) {
+                        LoopProc prod = producerOf.get(c)
+                        StreamInfo info = sc.streams.get(c)
+                        if (prod == null || info == null || info.pre > 0 || prod.generator) { free = true; continue }
+                        alts.add(base.get(prod) + prod.ops.indexOf(prod.ops.find { LoopOp o -> o.kind == CHAN_SEND && o.chan == c }))
+                    }
+                    if (!free && !alts.isEmpty()) orAlts.put(b + i, alts)
+                    // Phase 256 — STARVATION under the runtime's priority: ChannelSelect prefers the lowest ready index,
+                    // so a branch behind one whose producer is an infinite pure generator (always ahead, never
+                    // blocking) may never be taken.
+                    for (int j = 1; j < op.alts.size(); j++) {
+                        for (int k = 0; k < j; k++) {
+                            LoopProc ahead = producerOf.get(op.alts.get(k))
+                            if (ahead != null && ahead.generator && ahead.infinite) {
+                                addStaticTypeError(Reporter.formatSelectionStarvation(node.name, op.alts.get(j), op.alts.get(k), op.line,
+                                    ahead.line), (Statement) lp.loop)
+                                break
+                            }
+                        }
+                    }
                 }
             }
         }
-        int[] color = new int[nodes.size()]
-        List<Integer> cycle = findWaitCycle(adj, color, new ArrayList<Integer>())
+        // Completion fixpoint on the weight-0 graph (Phase 249's, per iteration): an op completes once its
+        // same-iteration waits have, an ALT once ANY alternative has; what is left over is deadlocked.
+        int n = nodes.size()
+        boolean[] done = new boolean[n]
+        boolean changed = true
+        while (changed) {
+            changed = false
+            for (int i = 0; i < n; i++) {
+                if (done[i]) continue
+                boolean ok = true
+                for (Integer d : adj.get(i)) if (!done[d]) { ok = false; break }
+                if (ok && orAlts.containsKey(i)) { ok = false; for (Integer d : orAlts.get(i)) if (done[d]) { ok = true; break } }
+                if (ok) { done[i] = true; changed = true }
+            }
+        }
+        List<List<Integer>> stuckAdj = new ArrayList<List<Integer>>()
+        for (int i = 0; i < n; i++) {
+            List<Integer> es = new ArrayList<Integer>()
+            if (!done[i]) {
+                for (Integer d : adj.get(i)) if (!done[d]) es.add(d)
+                List<Integer> alts = orAlts.get(i)
+                if (alts != null) for (Integer d : alts) if (!done[d]) es.add(d)
+            }
+            stuckAdj.add(es)
+        }
+        int[] color = new int[n]
+        List<Integer> cycle = findWaitCycle(stuckAdj, color, new ArrayList<Integer>())
         if (cycle != null) {
             List<String> parts = new ArrayList<String>()
             Set<String> roots = new HashSet<String>()
             for (Integer i : cycle) {
                 LoopProc lp = (LoopProc) nodes.get(i)[0]; LoopOp op = (LoopOp) nodes.get(i)[1]
-                String what = op.kind == CHAN_SEND ? "the send on '${op.chan}'" : "the receive on '${op.chan}'"
+                String what = op.kind == CHAN_SEND ? "the send on '${op.chan}'" : op.kind == CHAN_SUB ?
+                    "the ALT over ${op.alts.collect { "'" + it + "'" }.join(', ')}" : "the receive on '${op.chan}'"
                 parts.add("${what} (line ${op.line}, in the loop at line ${lp.line})".toString())
                 if (op.chan != null) roots.add(op.chan)
+                if (op.alts != null) roots.addAll(op.alts)
             }
             LoopProc first = (LoopProc) nodes.get(cycle.get(0))[0]
             addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,

@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G310_p246_kerridge_gallery {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count, since Phase 254 c03 as the book ACTUALLY writes it — every process while (true) — is certified for safety (every printed value a square), and since Phase 255 for LIVENESS under weak fairness (no receive waits on itself within an iteration); the forever client–server is live, its receive-first twin a circular wait in every iteration. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
+    static final String DESCRIPTION = 'The Kerridge gallery: UCaPE / groovy_jcsp plugAndPlay teaching shapes ported to groovy.concurrent and run under the SEQ/PAR ladder. The one-shot shapes VERIFY end to end (the c02 hello-world exchange; GSquares as a map stage; GPlus joining two channels; GDelta as BroadcastChannel fan-out; the client-server request-reply certified deadlock-free; GPrint\'s drain-until-close). The classic student mistakes are NAMED COMPILE ERRORS (the mutual-receive deadlock exercise with its circular wait spelled out; the missing end-of-stream close; two producers racing one channel). Since Phase 247 the literal two-write ProduceHW / ConsumeHW pair PROVES in order (and the wrong order is refuted), since Phase 248 c03\'s GNumbers → GSquares → GPrint pipeline with a literal trip count proves its sum, since Phase 249 the one-shot ALT (ChannelSelect) proves a choice among the ready producers, since Phase 251 the SYMBOLIC c03 pipeline — GNumbers(n) → GSquares with n a parameter — proves its drained list element by element, since Phase 252 c03 as the book writes it — a PAR of three LOOPING processes, GSquares receiving and sending — proves the printed squares for symbolic n, since Phase 253 the multiplexer — ALT in a loop over two generators — proves its merged count, since Phase 254 c03 as the book ACTUALLY writes it — every process while (true) — is certified for safety (every printed value a square), and since Phase 255 for LIVENESS under weak fairness (no receive waits on itself within an iteration); the forever client–server is live, its receive-first twin a circular wait in every iteration; and since Phase 256 the fair server\'s per-client liveness is WITHHELD with the runtime\'s reason — ChannelSelect prefers the lowest ready index — the one shape Groovy 6\'s ALT cannot yet carry. The honest boundary is LOUD: the unbounded streaming GNumbers generator skips — the streaming frontier is the ladder\'s recorded next rung, not a claim.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -369,6 +369,52 @@ class G310_p246_kerridge_gallery {
                                 int r = reply.first()
                                 request.send(i)
                                 i = i + 1
+                            }
+                        }
+                    }""")],
+
+        // ---------- the fair server (Phase 256): what the runtime's ALT lets us say ----------
+        // Two clients, a server that takes whichever request is ready and replies on that client's own
+        // channel. Groovy 6's ChannelSelect prefers the lowest ready index, so whether client B is ever
+        // chosen depends on timing: the checker withholds per-client liveness with exactly that reason
+        // (a fair selection — the book's fairSelect — would need runtime support).
+        [group: 'P246 Kerridge gallery', name: 'the fair server: per-client liveness withheld, with the runtime\'s reason', expect: 'served only when the ALT',
+         src: tc("""class C {
+                        static void fairServer() {
+                            val reqA = AsyncChannel.<Integer>create(4)
+                            val reqB = AsyncChannel.<Integer>create(4)
+                            val replyA = AsyncChannel.<Integer>create(4)
+                            val replyB = AsyncChannel.<Integer>create(4)
+                            async {                                              // client A
+                                int i = 0
+                                @Invariant({ i >= 0 })
+                                while (true) {
+                                    reqA.send(i)
+                                    int r = replyA.first()
+                                    i = i + 1
+                                }
+                            }
+                            async {                                              // client B
+                                int i = 0
+                                @Invariant({ i >= 0 })
+                                while (true) {
+                                    reqB.send(i)
+                                    int r = replyB.first()
+                                    i = i + 1
+                                }
+                            }
+                            int j = 0
+                            @Invariant({ j >= 0 })
+                            while (true) {                                       // the server
+                                ChannelSelect.Result r = await ChannelSelect.from(reqA, reqB).select()
+                                int q = (int) r.value
+                                if (r.index == 0) {
+                                    replyA.send(q + 1)
+                                }
+                                if (r.index == 1) {
+                                    replyB.send(q + 1)
+                                }
+                                j = j + 1
                             }
                         }
                     }""")],

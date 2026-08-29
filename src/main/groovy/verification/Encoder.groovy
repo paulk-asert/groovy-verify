@@ -4826,6 +4826,26 @@ class Encoder implements TheoryApi {
             }
             return v
         }
+        if (mm == 'valueAny') {              // Phase 256 — valueAny(idx, i0, list0, cursor0, …): SOME remaining element of the chosen branch
+            // ChannelSelect re-sends a losing branch's consumed element to the BACK of its queue, so within a
+            // contended branch the order of taking is not FIFO: the value taken is an element at an index
+            // ≥ the cursor (a fresh, bounded index per branch) — element-wise facts flow, positional ones do not.
+            if (args.size() < 4 || (args.size() - 1) % 3 != 0) return null
+            Object idx = translate(args.get(0))
+            if (idx == null) return null
+            Object v = null
+            for (int i = args.size() - 3; i >= 1; i -= 3) {
+                Object c = translate(args.get(i))
+                String list = listName(args.get(i + 1))
+                Object cur = translate(args.get(i + 2))
+                if (c == null || list == null || cur == null) return null
+                Object at = session.intVar('select#at#' + (++selectCounter))
+                session.assertExpr(session.and([session.ge(at, cur), session.lt(at, sizeOf(list))]))
+                Object h = session.select(arrayFor(list), at)
+                v = (v == null) ? h : session.ite(session.eq(idx, c), h, v)
+            }
+            return v
+        }
         if (mm == 'valueAt') {               // valueAt(idx, i0, list0, cursor0, i1, list1, cursor1, …)
             if (args.size() < 4 || (args.size() - 1) % 3 != 0) return null
             Object idx = translate(args.get(0))

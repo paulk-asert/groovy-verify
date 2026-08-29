@@ -48,7 +48,8 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" (Phase 252) |
 | a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values (Phase 254); liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it (Phase 255) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
-| `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253) |
+| `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
+| `fairSelect` / `priSelect` | — | no counterpart in `ChannelSelect` yet: the fair server's per-client liveness is withheld with that reason (Phase 256) |
 
 A note on spelling: the ports use Groovy 6's `val` (or `def` / `var`) with the factory's **type witness** —
 `val c = AsyncChannel.<Integer>create(n)`. The witness is what tells static type checking (and the checker)
@@ -338,6 +339,57 @@ static List<Integer> multiplex(int na, int nb) {
 }
 ```
 
+And the **fair server** — two clients, a server taking whichever request is ready and replying on that
+client's own channel — is where the gallery meets the runtime rather than the checker. Groovy 6's
+`ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the back of its
+queue; there is no `fairSelect`. So the checker models exactly that and *withholds* per-client liveness with
+the reason (Phase 256):
+
+<!-- doclint:case p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
+```groovy
+static void fairServer() {
+    val reqA = AsyncChannel.<Integer>create(4)
+    val reqB = AsyncChannel.<Integer>create(4)
+    val replyA = AsyncChannel.<Integer>create(4)
+    val replyB = AsyncChannel.<Integer>create(4)
+    async {                                              // client A
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            reqA.send(i)
+            int r = replyA.first()
+            i = i + 1
+        }
+    }
+    async {                                              // client B
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            reqB.send(i)
+            int r = replyB.first()
+            i = i + 1
+        }
+    }
+    int j = 0
+    @Invariant({ j >= 0 })
+    while (true) {                                       // the server
+        ChannelSelect.Result r = await ChannelSelect.from(reqA, reqB).select()
+        int q = (int) r.value
+        if (r.index == 0) {
+            replyA.send(q + 1)
+        }
+        if (r.index == 1) {
+            replyB.send(q + 1)
+        }
+        j = j + 1
+    }
+}
+```
+
+> Skipped network well-formedness check … the receive on 'replyB' … is served only when the ALT in the loop
+> at line N takes branch 1 — ChannelSelect prefers the lowest ready index, so whether this client is ever
+> chosen depends on timing; per-client liveness is not certified (a fair selection would need runtime support).
+
 ## The student mistakes are named compile errors
 
 The book teaches deadlock by *running into it* — build the network, watch it hang, discuss. Here the same
@@ -383,14 +435,15 @@ preserved per iteration, every send meeting its channel contract, every received
 producer's relation. Its **liveness** (Phase 255), under one stated assumption — *weak fairness*, a process
 whose next operation is enabled eventually executes it: no operation waits, in every iteration, on something
 that waits on itself in the same iteration; a receive-first cycle is named as a circular wait in every
-iteration, a priming send breaks it, the forever client–server is live. Two things are still not claimed,
-and say so. **Fairness of `ALT`'s own choice**: a looping `ALT` is certified live only when a branch is fed
-by a pure generator; over dependent branches — the fair server proper, where every client must eventually
-be *chosen* — the certificate is withheld, loudly, because that needs an assumption about the selection, not
-the scheduler. And **starvation-freedom in the large** — that a particular client is served within any bound
-— is a quantitative property beyond "eventually". Those, and the session-typed protocol view of a channel,
-are the research conversation, not a demo: the same guarantees GPP establishes offline by formal methods,
-issued incrementally by the compiler.
+iteration, a priming send breaks it, the forever client–server is live. What is still not claimed is now a fact about the *runtime*, and the checker says so. Groovy 6's
+`ChannelSelect` prefers the lowest ready index and re-sends losers' elements to the back of their queues
+(Phase 256 models exactly that): a branch behind an always-ready one is a named **starvation hazard**, and
+the **fair server** — every client eventually *chosen* — cannot be certified because no fair selection
+exists to certify it against; a rotating-priority select and a select that does not consume from losing
+branches would close that gap in the runtime, not the checker. **Starvation-freedom in the large** — served
+within a bound — stays a quantitative property beyond "eventually". Those, and the session-typed protocol
+view of a channel, are the research conversation, not a demo: the same guarantees GPP establishes offline by
+formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory
