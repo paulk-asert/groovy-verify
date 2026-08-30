@@ -394,6 +394,14 @@ class Reporter {
     }
 
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */
+    /** Phase 265 — the @ServedWithin(n) bound claim, refuted with the selection policy's own reason. */
+    static String formatServedWithin(String methodName, String detail) {
+        "Cannot certify @ServedWithin in ${methodName}: ${detail}. @ServedWithin(n) claims every ready branch " +
+        "of the method's ALT is served within n selects — starvation-freedom in the large, the quantitative half " +
+        "of the 'eventually' that weak fairness gives. Only a rotation gives a bound: a HELD fair() select over " +
+        "k branches takes every ready branch within k selects (Groovy 6.0.0-beta-4+, GROOVY-12320)."
+    }
+
     /** Phase 263 — a process does not follow its role's projection of the method's @Protocol. */
     static String formatProtocolViolation(String methodName, String role, String detail) {
         "Protocol violation in ${methodName}${role == null ? '' : " (role '" + role + "')"}: ${detail}. The @Protocol is the " +

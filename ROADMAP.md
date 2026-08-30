@@ -12111,6 +12111,30 @@ in the large.
 
 ---
 
+## Phase 265 — Served within a bound: starvation-freedom in the large  *(shipped — slice 25 of the SEQ/PAR ladder)*
+
+The last item of the Kerridge/GPP conversation: not "every client is eventually served" (the weak-fairness
+certificate of Phases 255/257) but "served within a BOUND". Now a claim: `@ServedWithin(n)` on the method
+says every ready branch of its ALT is served within n selects, and the checker decides it against the
+selection policy's own arithmetic. Only a rotation gives a bound: GROOVY-12320's HELD `fair()` starts each
+scan after the last winner, so over k branches a ready branch is passed at most k − 1 times — taken within
+k selects. `@ServedWithin(n)` is therefore CERTIFIED (silently, like any proved contract) exactly for a
+held `fair()` with n >= k on the claim-based runtime, and REFUTED with the policy's own reason everywhere
+else: a priority select has no bound at all (a branch behind an always-ready one may wait forever — Phase
+256's hazard, now the refutation of a stated bound); `fair()` on a fresh instance keeps no rotation state;
+`random()` is fair in expectation only; the racing select before beta-4 re-sends losers; a claimed n below
+k is under the rotation's own worst case; a method with no ALT has nothing to bound. The loop's and the
+network's liveness are the other rungs' verdicts on the same compile — this bound is the selection's, and
+`checkServedWithin` sits beside the network check where the scan already knows each ALT's policy.
+
+Cases (G329, new group, 6, verdicts branching on the runtime where `fair()`/`random()` exist): the certified
+held `fair()` bound, the too-small bound, priority, `random()`, the fresh instance, and no ALT. Both
+runtimes green, 1940. With this the gallery's recorded frontier is closed: what remains beyond the ladder
+is genuinely mixed choice — a race on the same channels — and quantitative bounds across MULTIPLE hops
+(end-to-end latency through a pipeline), both research questions, not withheld demos.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

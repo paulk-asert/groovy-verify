@@ -7812,6 +7812,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /** Phase 265 — the method's `@ServedWithin(n)` bound, or null. */
+    private static Integer servedWithinOf(MethodNode node) {
+        for (AnnotationNode a : node.getAnnotations()) {
+            if (a.classNode?.nameWithoutPackage != 'ServedWithin') continue
+            Expression v = a.getMember('value')
+            if (v instanceof ConstantExpression && ((ConstantExpression) v).value instanceof Number) return ((Number) ((ConstantExpression) v).value).intValue()
+        }
+        null
+    }
+
+    /**
+     * Phase 265 — the @ServedWithin(n) claim, decided per ALT loop against the selection policy: certified
+     * (silently, like any proved contract) only for a HELD fair() over k <= n branches on the claim-based
+     * runtime; refuted with the policy's own reason otherwise. The loop's and the network's liveness are the
+     * other rungs' verdicts on the same compile — the bound here is the selection's.
+     */
+    private void checkServedWithin(MethodNode node, Integer bound, StreamScan sc) {
+        if (bound == null) return
+        boolean anyAlt = false
+        for (ConsumerInfo ci : sc.consumers.values()) {
+            if (ci.altVar == null) continue
+            anyAlt = true
+            int k = ci.altChans.size()
+            int line = ((Statement) ci.loop).lineNumber
+            String why = null
+            if (!CLAIM_SELECT) why = "the racing select (before GROOVY-12320) re-sends a losing branch's element to the back of its queue — no bound exists (the claim needs the claim-based select's held fair())"
+            else if (ci.altPolicy == 'priority') why = "the ALT at line ${line} selects by priority — a branch behind an always-ready one may wait forever, so there is no bound at all (select with a held fair() instance for a bound of ${k})".toString()
+            else if (ci.altPolicy == 'random') why = "the ALT at line ${line} selects with random() — fair in expectation only, no deterministic bound (select with a held fair() instance for a bound of ${k})".toString()
+            else if (ci.altPolicy == 'fair' && !ci.altHeld) why = "the ALT at line ${line} calls fair() on a fresh instance each iteration, which keeps no rotation state — priority in effect, no bound (hoist the instance for a bound of ${k})".toString()
+            else if (bound < k) why = "the ALT at line ${line} is a held fair() select over ${k} branches: the rotation may pass a ready branch ${k - 1} time(s), so the bound it gives is ${k} — the claimed ${bound} is below it".toString()
+            if (why != null) addStaticTypeError(Reporter.formatServedWithin(node.name, why), (Statement) ci.loop)
+        }
+        if (!anyAlt) addStaticTypeError(Reporter.formatServedWithin(node.name, 'the method has no ALT loop for the claim to bound'), node)
+    }
+
     /** Phase 263 — the method's `@Protocol` text, or null. */
     private static String protocolTextOf(MethodNode node) {
         for (AnnotationNode a : node.getAnnotations()) {
@@ -8369,6 +8404,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             collectChannelParents(body, ctx.chanVars, parent, subscribers)
             BlockStatement modelBody = desugarPartnerDrains(body, ctx.chanVars, paramNames(node))   // Phase 262 — as the rewrite sees it
             StreamScan sc = scanStreams(modelBody, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes)
+            checkServedWithin(node, servedWithinOf(node), sc)                 // Phase 265 — the quantitative bound claim
             sanctionedReceives.addAll(sc.sanctionedReceives)
             sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
             for (StreamInfo p : sc.streams.values()) if (p.infinite) infiniteProducers.put(p.root, p)   // Phase 254
