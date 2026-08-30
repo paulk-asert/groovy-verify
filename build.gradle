@@ -538,6 +538,35 @@ dependencies { tlc 'tlaplus:tla2tools:v1.7.4@jar' }          // -> .../download/
 // tree. Sync the model + configs there first; `src/tlc/` stays clean.
 def tlcWorkDir = layout.buildDirectory.dir('tlc').get().asFile
 
+// ---- Phase 270: @Protocol → Scribble, cross-checked with nuScr when installed --------------------
+// Exports the curated protocol corpus (verification.ScribbleExport.CORPUS) as real Scribble and, if a
+// `nuscr` binary is on the PATH, runs it over each .scr so the projection verdicts corroborate — the same
+// external-oracle ethos as tlcCheck/lincheckTest/frayCheck. Without nuscr the export still runs and the
+// cross-check reports SKIPPED. Not wired into `check` (nuscr is not commonly installed).
+tasks.register('nuscrCheck', JavaExec) {
+    group = 'verification'
+    description = 'Export @Protocol corpus as Scribble; cross-check with nuScr when installed'
+    classpath = sourceSets.main.output + sourceSets.main.compileClasspath   // groovy is compile-scoped here
+    mainClass = 'verification.ScribbleExport'
+    args = ["${buildDir}/scribble"]
+    doLast {
+        def nuscr = ['which', 'nuscr'].execute().text.trim()
+        def scrs = fileTree("${buildDir}/scribble") { include '*.scr' }.files.sort()
+        if (!nuscr) {
+            println "nuscrCheck: nuscr not installed — exported ${scrs.size()} protocol(s) to build/scribble, cross-check SKIPPED (opam install nuscr)"
+            return
+        }
+        def failures = []
+        scrs.each { f ->
+            def proc = [nuscr, f.absolutePath].execute()
+            proc.waitFor()
+            if (proc.exitValue() != 0) failures << "${f.name}: ${proc.err.text.readLines().head()}"
+            else println "nuscr ok: ${f.name}"
+        }
+        if (failures) throw new GradleException("nuScr disagreed on: ${failures.join('; ')}")
+    }
+}
+
 def tlcPrepare = tasks.register('tlcPrepare', Sync) {
     from('src/tlc') { include '*.tla', '*.cfg' }
     into tlcWorkDir
