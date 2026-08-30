@@ -3568,6 +3568,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // drain shape the scalar model refuses) carries no deref obligation. A channel PARAM
             // stays obligated — it can be null, and @NotNull is its honest discharge (Phase 242).
             if (currentChannelLocalNames.contains(df.receiver)) return
+            // Phase 257 — likewise a HELD ChannelSelect (`ChannelSelect alt = ChannelSelect.from(..)[.fair()]`):
+            // a factory result, never null; `alt.select()` in the loop carries no deref obligation.
+            if (currentHeldSelectLocalNames.contains(df.receiver)) return
             if (df.indexExpr != null) {
                 // Phase 37 — indexed receiver (xs[i].method() / xs.get(i).method()): consult the
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
@@ -4218,6 +4221,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         rw.consumers.putAll(scan.consumers)
         rw.sanctionedReceives.addAll(scan.sanctionedReceives)
         rw.sanctionedFroms.addAll(scan.sanctionedFroms)
+        rw.selectRefs = scan.selectRefs
         for (StreamInfo info : rw.streams.values()) rw.sendTotals.remove(info.root)
         List<Statement> out = new ArrayList<Statement>()
         rewriteChStatements(((BlockStatement) body).statements, rw, out)
@@ -4254,6 +4258,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<Statement, List<String>> producedBy = new IdentityHashMap<Statement, List<String>>()  // rewritten loop → its streams
         final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final Set<Expression> sanctionedFroms = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        Map<String, SelectRef> selectRefs = new HashMap<String, SelectRef>()   // Phase 257 — held select instances
         ConsumerInfo curConsumer                                                 // while rewriting a consumer loop's body
         int fuelCounter                                                          // Phase 254 — free guards for while (true) loops
         /** The shadow list a streaming root or its map stage is drained from, else null. */
@@ -4537,7 +4542,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (Expression a : args) {
                     Expression x = stripCasts(a)
                     if (x instanceof VariableExpression && ch.contains(((VariableExpression) x).name)) {
-                        flag(((VariableExpression) x).name, 'is passed to a ChannelSelect outside the supported shape (def r = await ChannelSelect.from(a, b).select(), used via r.index / r.value)')
+                        flag(((VariableExpression) x).name, 'is passed to a ChannelSelect outside the supported shapes (Result r = await ChannelSelect.from(a, b)[.fair()|.random()].select(), inline or via a held instance used only as alt.select(); r used via .index / .value)')
                     }
                 }
             }
@@ -4555,15 +4560,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             @Override void visitVariableExpression(VariableExpression ve) {
                 if (selectResult.containsKey(ve.name)) flag(selectResult.get(ve.name), "has an ALT result ('${ve.name}') used beyond .index / .value")
+                if (streamScan.selectRefs.containsKey(ve.name)) {              // Phase 257 — a held instance escaping its select() use
+                    SelectRef r = streamScan.selectRefs.get(ve.name)
+                    for (Expression a : r.chans) { Expression x = stripCasts(a); if (x instanceof VariableExpression && ch.contains(((VariableExpression) x).name)) { flag(((VariableExpression) x).name, "has its ChannelSelect instance ('${ve.name}') used beyond alt.select()"); break } }
+                }
                 super.visitVariableExpression(ve)
             }
             @Override void visitDeclarationExpression(DeclarationExpression de) {
-                List<Expression> alt = awaitedSelectArgs(de.rightExpression)
+                // Phase 257 — a held select instance's declaration: its from() is sanctioned; the var must only be selected on
+                if (de.leftExpression instanceof VariableExpression && streamScan.selectRefs.containsKey(((VariableExpression) de.leftExpression).name)) {
+                    sanctionedFrom.add(streamScan.selectRefs.get(((VariableExpression) de.leftExpression).name).fromCall)
+                    de.rightExpression.visit(this)
+                    return
+                }
+                SelectRef ref = awaitedSelect(de.rightExpression, streamScan.selectRefs)
+                List<Expression> alt = ref == null ? null : ref.chans
                 if (alt != null && de.leftExpression instanceof VariableExpression) {
-                    Expression x0 = stripCasts(de.rightExpression)
-                    Expression inner0 = x0 instanceof MethodCallExpression ? ((MethodCallExpression) x0).arguments : ((StaticMethodCallExpression) x0).arguments
-                    Expression sel0 = stripCasts(((TupleExpression) inner0).expressions.get(0))
-                    boolean loopingAlt = streamScan.sanctionedFroms.contains(stripCasts(((MethodCallExpression) sel0).objectExpression))   // Phase 253
+                    boolean loopingAlt = streamScan.sanctionedFroms.contains(awaitedSelectCall(de.rightExpression))   // Phase 253 — the select() call
                     String first = null
                     for (Expression a : alt) {
                         Expression x = stripCasts(a)
@@ -4576,10 +4589,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         selected.add(name)
                     }
                     if (first != null) selectResult.put(((VariableExpression) de.leftExpression).name, first)
-                    Expression x = stripCasts(de.rightExpression)
-                    Expression inner = x instanceof MethodCallExpression ? ((MethodCallExpression) x).arguments : ((StaticMethodCallExpression) x).arguments
-                    Expression sel = stripCasts(((TupleExpression) inner).expressions.get(0))
-                    sanctionedFrom.add(stripCasts(((MethodCallExpression) sel).objectExpression))
+                    if (!ref.held) sanctionedFrom.add(ref.fromCall)
                     de.rightExpression.visit(this)          // still walk it (nested arms / other channels), the from() sanctioned
                     return
                 }
@@ -4628,6 +4638,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression recv = stripCasts(m.objectExpression)
                 if (recv instanceof VariableExpression && selectResult.containsKey(((VariableExpression) recv).name) && noArgs(m) &&
                     (m.methodAsString == 'getIndex' || m.methodAsString == 'getValue')) return   // the sanctioned getters
+                if (recv instanceof VariableExpression && streamScan.selectRefs.containsKey(((VariableExpression) recv).name) &&
+                    m.methodAsString == 'select' && noArgs(m)) return                            // Phase 257 — alt.select(): the sanctioned use
                 if (recv instanceof VariableExpression && ch.contains(((VariableExpression) recv).name)) {
                     String name = ((VariableExpression) recv).name
                     String mm = m.methodAsString
@@ -4855,11 +4867,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
                     DeclarationExpression de = (DeclarationExpression) e
                     String name = ((VariableExpression) de.leftExpression).name
-                    List<Expression> alt = awaitedSelectArgs(de.rightExpression)
+                    List<Expression> alt = awaitedSelectArgs(de.rightExpression, rw.selectRefs)
                     if (alt != null) {                                       // Phase 249 — def r = await ChannelSelect.from(a, b).select()
                         rewriteSelect(name, alt, de, rw, out)
                         continue
                     }
+                    if (rw.selectRefs.containsKey(name)) continue            // Phase 257 — a held select instance: no value of its own
                     if (rw.streams.containsKey(name)) {                           // Phase 251 — the shadow list
                         rw.emit(out, listDecl(name + '$q', de))
                         continue
@@ -5011,15 +5024,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** `await ChannelSelect.from(c…).select()` → the channel arguments; any other expression → null. */
-    private static List<Expression> awaitedSelectArgs(Expression rhs) {
-        Expression x = stripCasts(rhs)
-        Expression inner = null
-        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'await') inner = ((MethodCallExpression) x).arguments
-        else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'await') inner = ((StaticMethodCallExpression) x).arguments
-        if (!(inner instanceof TupleExpression) || ((TupleExpression) inner).expressions.size() != 1) return null
-        Expression sel = stripCasts(((TupleExpression) inner).expressions.get(0))
-        if (!(sel instanceof MethodCallExpression) || ((MethodCallExpression) sel).methodAsString != 'select' || !noArgs((MethodCallExpression) sel)) return null
-        selectFromArgs(((MethodCallExpression) sel).objectExpression)
+    private static List<Expression> awaitedSelectArgs(Expression rhs) { awaitedSelectArgs(rhs, null) }
+
+    private static List<Expression> awaitedSelectArgs(Expression rhs, Map<String, SelectRef> selectVars) {
+        SelectRef r = awaitedSelect(rhs, selectVars)
+        r == null ? null : r.chans
     }
 
     /** Phase 247 — `for (v in ch) { body }` over a channel with k known sends becomes k copies of the
@@ -5378,7 +5387,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String altVar                                                    // Phase 253 — the loop's ALT result var (at most one ALT per iteration)
         final Map<String, Integer> guardedSends = new HashMap<String, Integer>()   // Phase 256 — `if (r.index == i) X.send(..)`: channel → branch
         final List<String> altChans = new ArrayList<String>()            // its branches (stream vars), in from() order
-        Expression altFrom                                               // the from() call (identity, for the walks)
+        Expression altFrom                                               // the select() call (identity, for the walks)
+        String altPolicy = 'priority'                                    // Phase 257 — priority | fair | random
+        boolean altHeld                                                  // Phase 257 — a held instance (rotation state kept)
         /** The stream var a call receives from — by SHAPE (`x.first()` / `x.receive()`), so a copied body still matches. */
         String readOf(MethodCallExpression m) {
             if (!(m.methodAsString == 'first' || m.methodAsString == 'receive') || !noArgs(m)) return null
@@ -5395,7 +5406,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Set<Expression> sanctionedSends = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final Map<Statement, ConsumerInfo> consumers = new IdentityHashMap<Statement, ConsumerInfo>()
         final Set<Expression> sanctionedReceives = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
-        final Set<Expression> sanctionedFroms = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())   // Phase 253
+        final Set<Expression> sanctionedFroms = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())   // Phase 253 — now the select() calls
+        Map<String, SelectRef> selectRefs = new HashMap<String, SelectRef>()      // Phase 257
         String streamVarRoot(String v, Map<String, String> parent) {
             String r = v; int g = 0
             while (parent.containsKey(r) && g++ < 100) r = parent.get(r)
@@ -5541,6 +5553,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static StreamScan scanStreams(BlockStatement body, Set<String> ch, Map<String, String> parent,
                                           Set<String> subscribers, Set<String> params, Map<String, ClassNode> scalarTypes) {
         StreamScan scan = new StreamScan()
+        scan.selectRefs = collectSelectVars(body)                             // Phase 257
         // every send, and the ones that sit at the top level of a specified top-level loop
         final Map<String, List<MethodCallExpression>> allSends = new HashMap<String, List<MethodCallExpression>>()
         body.visit(new CodeVisitorSupport() {
@@ -5675,10 +5688,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Statement lb0 = ((LoopingStatement) st).loopBlock
                 List<Statement> top0 = lb0 instanceof BlockStatement ? ((BlockStatement) lb0).statements : Collections.singletonList(lb0)
                 String altVar = null; List<String> altChans = null; Expression altFrom = null; int altCount = 0
+                String altPolicy = 'priority'; boolean altHeld = false
                 for (Statement inner : top0) {
                     if (!(inner instanceof ExpressionStatement) || !(((ExpressionStatement) inner).expression instanceof DeclarationExpression)) continue
                     DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) inner).expression
-                    List<Expression> alt = awaitedSelectArgs(de.rightExpression)
+                    SelectRef ref = awaitedSelect(de.rightExpression, scan.selectRefs)
+                    List<Expression> alt = ref == null ? null : ref.chans
                     if (alt == null || !(de.leftExpression instanceof VariableExpression)) continue
                     altCount++
                     List<String> chans = new ArrayList<String>()
@@ -5691,10 +5706,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (chans == null || chans.isEmpty()) continue
                     altVar = ((VariableExpression) de.leftExpression).name
                     altChans = chans
-                    Expression x = stripCasts(de.rightExpression)
-                    Expression inner2 = x instanceof MethodCallExpression ? ((MethodCallExpression) x).arguments : ((StaticMethodCallExpression) x).arguments
-                    Expression sel = stripCasts(((TupleExpression) inner2).expressions.get(0))
-                    altFrom = stripCasts(((MethodCallExpression) sel).objectExpression)
+                    altFrom = awaitedSelectCall(de.rightExpression)             // the select() call is the anchor
+                    altPolicy = ref.policy; altHeld = ref.held
                 }
                 if (altCount != 1) { altVar = null }
                 if (perChan.isEmpty() && altVar == null) continue
@@ -5708,6 +5721,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 if (altVar != null) {
                     ci.altVar = altVar; ci.altChans.addAll(altChans); ci.altFrom = altFrom
+                    ci.altPolicy = altPolicy; ci.altHeld = altHeld
                     scan.sanctionedFroms.add(altFrom)
                     // Phase 256 — replies guarded by the choice: `if (r.index == i) { X.send(E) }` at the body's top level
                     for (Statement inner : top0) {
@@ -5965,7 +5979,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         DeclarationExpression d1 = new DeclarationExpression(new VariableExpression(r + '$index'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), readyCall)
         d1.setSourcePosition(de)
         out.add(new ExpressionStatement(d1))
-        MethodCallExpression valueCall = new MethodCallExpression(marker, 'valueAny', new ArgumentListExpression(valueArgs))   // Phase 256 — the runtime's order
+        // Phase 256/257 — under the claim-based select (GROOVY-12320) exactly one branch dequeues and losers are
+        // untouched, so the value is the chosen branch's HEAD; under the racing select a loser's element is
+        // re-sent to the back, so it is SOME remaining element.
+        MethodCallExpression valueCall = new MethodCallExpression(marker, CLAIM_SELECT ? 'valueAt' : 'valueAny', new ArgumentListExpression(valueArgs))
         valueCall.setSourcePosition(de)
         DeclarationExpression d2 = new DeclarationExpression(new VariableExpression(r + '$value'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), valueCall)
         d2.setSourcePosition(de)
@@ -6136,7 +6153,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (rw.curConsumer != null && rw.curConsumer.altVar != null && e instanceof DeclarationExpression &&
                     ((DeclarationExpression) e).leftExpression instanceof VariableExpression &&
                     ((VariableExpression) ((DeclarationExpression) e).leftExpression).name == rw.curConsumer.altVar &&
-                    awaitedSelectArgs(((DeclarationExpression) e).rightExpression) != null) {
+                    awaitedSelectArgs(((DeclarationExpression) e).rightExpression, rw.selectRefs) != null) {
                     out.addAll(loopingAlt((DeclarationExpression) e, rw))       // Phase 253
                     continue
                 }
@@ -6257,6 +6274,77 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** The unrolling ceiling — bounded model checking, kept small enough to stay a compile-time proof. */
     private static final int CHANNEL_UNROLL_LIMIT = 32
+
+    /** Phase 257 — the runtime hosting the compiler has GROOVY-12320's claim-based ChannelSelect (6.0.0-beta-4+):
+     *  exactly one branch dequeues, losers are untouched, `fair()` / `random()` policies exist. Probed by
+     *  reflection once: the runtime that runs the type checker is the runtime the code will run on. */
+    static final boolean CLAIM_SELECT = probeClaimSelect()
+    private static boolean probeClaimSelect() {
+        try { Class.forName('groovy.concurrent.ChannelSelect').getMethod('fair'); return true } catch (Throwable ignored) { return false }
+    }
+
+    /** Phase 257 — a `ChannelSelect` chain: its channel args, its policy, and whether it is a held instance. */
+    private static class SelectRef {
+        List<Expression> chans
+        String policy = 'priority'       // priority | fair | random
+        boolean held                     // `val alt = ChannelSelect.from(..)[.fair()]` before the loop, `alt.select()` inside
+        Expression fromCall              // the from(..) call (identity)
+        String varName                   // the held var, when held
+    }
+
+    /** `ChannelSelect.from(c…)[.fair()|.random()]` → its SelectRef; anything else → null. */
+    private static SelectRef selectChainInfo(Expression e) {
+        Expression x = stripCasts(e)
+        String policy = 'priority'
+        while (x instanceof MethodCallExpression && (((MethodCallExpression) x).methodAsString == 'fair' || ((MethodCallExpression) x).methodAsString == 'random') && noArgs((MethodCallExpression) x)) {
+            policy = ((MethodCallExpression) x).methodAsString
+            x = stripCasts(((MethodCallExpression) x).objectExpression)
+        }
+        List<Expression> args = selectFromArgs(x)
+        if (args == null) return null
+        SelectRef r = new SelectRef(); r.chans = args; r.policy = policy; r.fromCall = x
+        r
+    }
+
+    /** Held select instances: `X = ChannelSelect.from(..)[.policy()]` declarations anywhere in the body. */
+    private static Map<String, SelectRef> collectSelectVars(Statement body) {
+        final Map<String, SelectRef> out = new HashMap<String, SelectRef>()
+        if (body == null) return out
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    SelectRef r = selectChainInfo(de.rightExpression)
+                    if (r != null) { r.held = true; r.varName = ((VariableExpression) de.leftExpression).name; out.put(r.varName, r) }
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+        out
+    }
+
+    /** `await X.select()` (either await shape): X an inline chain or a held var → its SelectRef (plus the select call). */
+    private static SelectRef awaitedSelect(Expression rhs, Map<String, SelectRef> selectVars) {
+        MethodCallExpression sel = awaitedSelectCall(rhs)
+        if (sel == null) return null
+        selectRefOf(sel.objectExpression, selectVars)
+    }
+
+    private static SelectRef selectRefOf(Expression receiver, Map<String, SelectRef> selectVars) {
+        Expression x = stripCasts(receiver)
+        if (x instanceof VariableExpression && selectVars != null && selectVars.containsKey(((VariableExpression) x).name)) return selectVars.get(((VariableExpression) x).name)
+        selectChainInfo(x)
+    }
+
+    /** The `select()` call inside `await …`, else null. */
+    private static MethodCallExpression awaitedSelectCall(Expression rhs) {
+        Expression x = stripCasts(rhs)
+        Expression inner = null
+        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'await') inner = ((MethodCallExpression) x).arguments
+        else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'await') inner = ((StaticMethodCallExpression) x).arguments
+        if (!(inner instanceof TupleExpression) || ((TupleExpression) inner).expressions.size() != 1) return null
+        Expression sel = stripCasts(((TupleExpression) inner).expressions.get(0))
+        (sel instanceof MethodCallExpression && ((MethodCallExpression) sel).methodAsString == 'select' && noArgs((MethodCallExpression) sel)) ? (MethodCallExpression) sel : null
+    }
 
     /** Phase 252 — node metadata on a synthesized {@code assert}: the sentence the diagnostic reports instead of the condition text. */
     static final String ASSERT_LABEL_KEY = 'verification.assertLabel'
@@ -6531,6 +6619,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         int counter
         int condDepth          // > 0 while walking statements whose execution is not guaranteed
         final Set<String> chanVars
+        Map<String, SelectRef> selectRefs = new HashMap<String, SelectRef>()   // Phase 257 — held select instances
         final List<ParArm> arms = new ArrayList<ParArm>()
         final List<ChanUse> chanUses = new ArrayList<ChanUse>()
         final Map<String, List<ParAccess>> mainWrites = new HashMap<String, List<ParAccess>>()
@@ -6576,9 +6665,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  argument, all sharing the call as anchor (the network check groups them into one ALT node). */
     private static void recordSelectUsesIfAny(Expression call, ParCtx ctx, ParArm proc, int ord,
                                               int seq, boolean conditional) {
-        List<Expression> args = selectFromArgs(call)
-        if (args == null) return
-        for (Expression a : args) {
+        // Phase 257 — the ALT's op is the select() CALL (inline chain or a held instance), so a held instance's
+        // uses are recorded where the process blocks, not where the instance was declared.
+        if (!(call instanceof MethodCallExpression) || ((MethodCallExpression) call).methodAsString != 'select' || !noArgs((MethodCallExpression) call)) return
+        SelectRef ref = selectRefOf(((MethodCallExpression) call).objectExpression, ctx.selectRefs)
+        if (ref == null) return
+        for (Expression a : ref.chans) {
             Expression x = stripCasts(a)
             if (x instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) x).name)) {
                 ctx.chanUse(((VariableExpression) x).name, 'select', CHAN_RECV, proc, ord, call.lineNumber, seq, conditional, call)
@@ -6926,6 +7018,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, String> chanParent = new HashMap<String, String>()
         classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans, chanParent)
         ParCtx ctx = new ParCtx(chanVars)
+        ctx.selectRefs = collectSelectVars(body)                              // Phase 257
         parWalkStatement(body, ctx)
         int chanFindings = checkChannelLinearity(node, ctx, (BlockStatement) body, derivedChans, broadcastChans)
         // Phase 243/245 — the network well-formedness check: runs unless a RACE-class finding
@@ -7159,6 +7252,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  subscribe()/pipeline ops — factory results, never null, so no deref obligation; a channel
      *  PARAM stays out: it can be null, and @NotNull is its honest discharge). */
     private Set<String> currentChannelLocalNames = Collections.emptySet()
+    /** Phase 257 — locals holding a `ChannelSelect.from(..)` chain (a factory result, never null). */
+    private Set<String> currentHeldSelectLocalNames = Collections.emptySet()
 
     // Bound op codes (shared with Encoder.tryBindChannelReceive by value): ge / gt / le / lt.
     private static final long CB_GE = 0L, CB_GT = 1L, CB_LE = 2L, CB_LT = 3L
@@ -7180,6 +7275,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         names.addAll(localNames)
         currentChannelNames = names
         currentChannelLocalNames = localNames
+        currentHeldSelectLocalNames = collectSelectVars(node.code).keySet()          // Phase 257
         if (node.code != null) {
             node.code.visit(new CodeVisitorSupport() {
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
@@ -7504,6 +7600,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // unaffected: a symbolic-count producer loop plus an unconditional close certifies
                 // its drain. Every other conditional op still voids the certificate.
                 if (isSend) { if (!unknownCount.containsKey(root)) unknownCount.put(root, u); continue }
+                // Phase 257 — a client's looping receive on a reply guarded by a HELD fair() select: every ready
+                // branch is taken within n calls and the request precedes the wait, so the reply is served once
+                // the server loop is live — certified with it (analyseLoopLiveness); any other policy is named below.
+                if (isRead) {
+                    Object[] g = guardedReplyOf.get(root)
+                    if (g != null && guardedReplyReason(g) == null) {
+                        // The request must PRECEDE the wait: a send by this process on a branch of that ALT earlier
+                        // in program order (in the loop body before the receive, or a priming send before the loop).
+                        List<String> altRoots = (List<String>) g[4]
+                        boolean requested = false
+                        for (ChanUse v : uses) {
+                            if (v.method == 'send' && v.proc.is(u.proc) && v.seq < u.seq && altRoots.contains(chanBaseOf(v.chan, chanParent))) { requested = true; break }
+                        }
+                        if (requested) continue
+                        addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                            "the receive on '${u.chan}' (line ${u.line}) is served by the reply the ALT in the loop at line ${g[0]} " +
+                            "guards (branch ${g[1]}), but this process sends no request on a branch of that ALT before it — " +
+                            "the request must precede the wait; per-client liveness is not certified"), u.anchor)
+                        return
+                    }
+                }
                 condUse = u; continue
             }
             if (isSend) {
@@ -7526,12 +7643,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (condUse != null) {
             Object[] guarded = guardedReplyOf.get(chanBaseOf(condUse.chan, chanParent))   // Phase 256 — a client of a selecting server
             if (guarded != null && (condUse.method == 'first' || condUse.method == 'receive')) {
-                addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
-                    "the receive on '${condUse.chan}' (line ${condUse.line}) is served only when the ALT in the loop at line ${guarded[0]} " +
-                    "takes branch ${guarded[1]} — ChannelSelect prefers the lowest ready index, so whether this client is " +
-                    "ever chosen depends on timing; per-client liveness is not certified (a fair selection would need " +
-                    "runtime support)"), condUse.anchor)
-                return
+                String why = guardedReplyReason(guarded)
+                if (why != null) {
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        "the receive on '${condUse.chan}' (line ${condUse.line}) is served only when the ALT in the loop at line ${guarded[0]} " +
+                        "takes branch ${guarded[1]} — " + why), condUse.anchor)
+                    return
+                }
+                // Phase 257 — a held fair() select: every ready branch is taken within n calls, the request is
+                // sent before the wait, so the reply arrives once the server loop is live: certified with it.
             }
             addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
                 "the channel operation on '${condUse.chan}' (line ${condUse.line}) is conditional " +
@@ -7585,12 +7705,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (loopSend != null) {                                  // Phase 250 — count not static: no pairing
                 Object[] guarded = guardedReplyOf.get(root)          // Phase 256 — the fair-server reply: withheld, with the runtime's reason
                 if (guarded != null) {
-                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
-                        "the receive on '${r.chan}' (line ${r.line}) is served only when the ALT in the loop at line ${guarded[0]} " +
-                        "takes branch ${guarded[1]} — ChannelSelect prefers the lowest ready index, so whether this client is " +
-                        "ever chosen depends on timing; per-client liveness is not certified (a fair selection would need " +
-                        "runtime support)"), r.anchor)
-                    return
+                    String why = guardedReplyReason(guarded)
+                    if (why != null) {
+                        addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                            "the receive on '${r.chan}' (line ${r.line}) is served only when the ALT in the loop at line ${guarded[0]} " +
+                            "takes branch ${guarded[1]} — " + why), r.anchor)
+                        return
+                    }
+                    continue                                          // Phase 257 — held fair(): certified with the server loop
                 }
                 addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
                     "the receive on '${r.chan}' (line ${r.line}) is served by a send inside a loop / if (line " +
@@ -7766,7 +7888,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     // assumed. Sends never block (Phase 243), one-shot receives are the Phase 252 element-exists
     // obligations, and the base case — iteration 0 — is the pre-loop straight-line code.
 
-    private static class LoopOp { int kind; String chan; int pos; int line; List<String> alts }
+    private static class LoopOp { int kind; String chan; int pos; int line; List<String> alts; String policy; boolean held }
     private static class LoopProc { LoopingStatement loop; List<Statement> block; int line; final List<LoopOp> ops = new ArrayList<LoopOp>(); boolean generator; boolean infinite; ConsumerInfo consumer }
     /** Phase 256 — a receive served by an ALT-guarded send: channel → [the selecting loop's line, the branch]. */
     private final Map<String, Object[]> guardedReplyOf = new HashMap<String, Object[]>()
@@ -7815,6 +7937,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             LoopOp op = new LoopOp(); op.kind = CHAN_SUB; op.pos = pos; op.line = inner.lineNumber
                             op.alts = new ArrayList<String>()
                             for (String c : ci.altChans) op.alts.add(rootVia(c, parent))
+                            op.policy = ci.altPolicy; op.held = ci.altHeld
                             lp.ops.add(op)
                         }
                     }
@@ -7822,7 +7945,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 lp.generator = ci == null
                 lp.infinite = isForever(lp.loop)
                 lp.consumer = ci
-                if (ci != null) for (Map.Entry<String, Integer> gs : ci.guardedSends.entrySet()) guardedReplyOf.put(gs.key, [lp.line, gs.value] as Object[])
+                if (ci != null) {
+                    List<String> altRoots = new ArrayList<String>()
+                    for (String c : ci.altChans) altRoots.add(rootVia(c, parent))
+                    for (Map.Entry<String, Integer> gs : ci.guardedSends.entrySet()) guardedReplyOf.put(gs.key, [lp.line, gs.value, ci.altPolicy, ci.altHeld, altRoots] as Object[])
+                }
                 procs.add(lp)
             }
         }
@@ -7858,15 +7985,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         alts.add(base.get(prod) + prod.ops.indexOf(prod.ops.find { LoopOp o -> o.kind == CHAN_SEND && o.chan == c }))
                     }
                     if (!free && !alts.isEmpty()) orAlts.put(b + i, alts)
-                    // Phase 256 — STARVATION under the runtime's priority: ChannelSelect prefers the lowest ready index,
-                    // so a branch behind one whose producer is an infinite pure generator (always ahead, never
-                    // blocking) may never be taken.
-                    for (int j = 1; j < op.alts.size(); j++) {
+                    // Phase 256/257 — STARVATION under priority: ChannelSelect prefers the lowest ready index, so a
+                    // branch behind one whose producer is an infinite pure generator (always ahead, never blocking)
+                    // may never be taken. `fair()` on a HELD instance rotates from the last winner (taken within n
+                    // calls — no hazard); `fair()` on a fresh instance each iteration keeps no rotation state and is
+                    // priority in effect (named); `random()` has no deterministic starvation (no hazard, no bound).
+                    boolean effectivePriority = op.policy == 'priority' || (op.policy == 'fair' && !op.held)
+                    if (effectivePriority) for (int j = 1; j < op.alts.size(); j++) {
                         for (int k = 0; k < j; k++) {
                             LoopProc ahead = producerOf.get(op.alts.get(k))
                             if (ahead != null && ahead.generator && ahead.infinite) {
                                 addStaticTypeError(Reporter.formatSelectionStarvation(node.name, op.alts.get(j), op.alts.get(k), op.line,
-                                    ahead.line), (Statement) lp.loop)
+                                    ahead.line, op.policy == 'fair'), (Statement) lp.loop)
                                 break
                             }
                         }
@@ -7919,6 +8049,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (String r : roots) undecided.put(r, 'deadlocked, reported above')
         }
         undecided
+    }
+
+    /** Phase 257 — why a client of a selecting server is NOT certified, per policy; null when it is (held fair()). */
+    private static String guardedReplyReason(Object[] guarded) {
+        String policy = guarded.length > 2 ? (String) guarded[2] : 'priority'
+        boolean held = guarded.length > 3 && (Boolean) guarded[3]
+        if (!CLAIM_SELECT) return "ChannelSelect prefers the lowest ready index, so whether this client is ever chosen depends on timing; per-client liveness is not certified (a fair selection needs GROOVY-12320, Groovy 6.0.0-beta-4+)"
+        if (policy == 'fair' && held) return null
+        if (policy == 'fair') return "fair() on a fresh ChannelSelect instance each iteration keeps no rotation state (priority in effect) — hoist the instance before the loop and reuse it; per-client liveness is not certified as written"
+        if (policy == 'random') return "random() offers no bound on how long a ready branch may be passed over (fair only in expectation) — use fair() for a bounded wait; per-client liveness is not certified"
+        return "ChannelSelect prefers the lowest ready index, so whether this client is ever chosen depends on timing; per-client liveness is not certified (use a held fair() instance for a bounded wait)"
     }
 
     private static String rootVia(String v, Map<String, String> parent) {

@@ -163,7 +163,8 @@ class G313_p249_alt_select {
                             return v + w
                         }
                     }""")],
-        [group: 'P249 ALT select', name: 'a ChannelSelect held in a variable is beyond the model', expect: 'outside the supported shape',
+        // Since Phase 257 a held instance is a supported shape (it is how a fair() select keeps its rotation state).
+        [group: 'P249 ALT select', name: 'a ChannelSelect held in a variable is the same one-shot ALT', ok: true,
          src: tc("""class C {
                         @Ensures({ result == x })
                         static int held(int x) {

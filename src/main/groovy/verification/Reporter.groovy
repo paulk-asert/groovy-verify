@@ -354,10 +354,17 @@ class Reporter {
     /** Phase 256 — under ChannelSelect's priority (the lowest ready index wins), a branch behind an always-ready
      *  one may never be taken: a liveness hazard, named. */
     static String formatSelectionStarvation(String methodName, String starved, String ahead, int altLine, int producerLine) {
+        formatSelectionStarvation(methodName, starved, ahead, altLine, producerLine, false)
+    }
+
+    /** Phase 257 — {@code freshFair}: the ALT is `fair()` but on a fresh instance each iteration, so the rotation
+     *  state is lost and the policy is priority in effect. */
+    static String formatSelectionStarvation(String methodName, String starved, String ahead, int altLine, int producerLine, boolean freshFair) {
         "Selection starvation hazard in '${methodName}': branch '${starved}' of the ALT at line ${altLine} may starve — " +
         "branch '${ahead}' precedes it and its producer (the while (true) at line ${producerLine}) never blocks, so it is " +
-        "always ready, and ChannelSelect takes the lowest ready index. Put the branch that must not starve first, bound " +
-        "the producer, or use a fair selection (rotating priority) when the runtime offers one."
+        "always ready, and " + (freshFair ?
+            "fair() on a fresh ChannelSelect instance each iteration keeps no rotation state, so the lowest ready index is taken every time. Hoist the instance before the loop (val alt = ChannelSelect.from(…).fair()) and reuse it." :
+            "ChannelSelect takes the lowest ready index. Put the branch that must not starve first, bound the producer, or select with a held fair() instance (Groovy 6.0.0-beta-4+, GROOVY-12320) for a rotating priority.")
     }
 
     // ---- Channel contracts (Phase 242) ----

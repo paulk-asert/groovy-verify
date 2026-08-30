@@ -4844,7 +4844,10 @@ class Encoder implements TheoryApi {
                 Object cur = translate(args.get(i + 2))
                 if (c == null || list == null || cur == null) return null
                 Object at = session.intVar('select#at#' + (++selectCounter))
-                session.assertExpr(session.and([session.ge(at, cur), session.lt(at, sizeOf(list))]))
+                // The bound holds for the CHOSEN branch only: asserted unconditionally it is unsatisfiable for a
+                // branch with nothing left (cursor == size) and would make the whole VC vacuous (Phase 257 find).
+                session.assertExpr(session.or([session.not(session.eq(idx, c)),
+                    session.and([session.ge(at, cur), session.lt(at, sizeOf(list))])]))
                 Object h = session.select(arrayFor(list), at)
                 v = (v == null) ? h : session.ite(session.eq(idx, c), h, v)
             }

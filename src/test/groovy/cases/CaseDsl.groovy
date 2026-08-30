@@ -119,6 +119,10 @@ class CaseDsl {
                                'import static javax.measure.MetricPrefix.*\n'
 
     /** Wrap a class body in the @TypeChecked verification extension + the standard imports. */
+    /** Phase 257 — true when the runtime running the harness has GROOVY-12320's claim-based ChannelSelect
+     *  (`fair()` exists): cases whose verdict depends on the select semantics branch on it. */
+    static final boolean CLAIM_SELECT = verification.VerifyChecker.CLAIM_SELECT
+
     static String tc(String classText) {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
     }

@@ -16,7 +16,9 @@
 
 /*
  * Observed behaviour of groovy.concurrent.ChannelSelect (Groovy 6.0.0-beta-3) — the reproduction behind
- * groovy-verify's Phase 256 (examples/kerridge.md, "the fair server"). Four experiments, each printing
+ * groovy-verify's Phase 256 (examples/kerridge.md, "the fair server"), fixed upstream as GROOVY-12320
+ * (6.0.0-beta-4: claim-based select, fair(), random(); on such a runtime experiment 1 also exercises the
+ * held / fresh fair() and random() policies). Four experiments, each printing
  * what it observed next to what a JCSP-style Alternative would do:
  *
  *   1. When several branches are ready, which wins?           (priority by list order)
@@ -60,7 +62,31 @@ int[] winsRev = new int[2]
 println "1. both branches ready, 100 selects over [a, b]: index 0 won ${wins[0]}, index 1 won ${wins[1]}"
 println "   the same over [b, a]:                         index 0 won ${winsRev[0]}, index 1 won ${winsRev[1]}"
 println "   => ${wins[1] == 0 && winsRev[1] == 0 ? 'PRIORITY BY LIST ORDER (the first ready branch always wins)' : 'not strictly by list order'}"
-println "   (JCSP: select() arbitrary, priSelect() by order, fairSelect() rotating — no fair choice is available here)"
+boolean hasPolicies = ChannelSelect.metaClass.respondsTo(ChannelSelect.from(AsyncChannel.<Integer>create(1)), 'fair')
+if (!hasPolicies) {
+    println "   (JCSP: select() arbitrary, priSelect() by order, fairSelect() rotating — no fair choice is available here)"
+} else {
+    // GROOVY-12320 (6.0.0-beta-4+): fair() rotates from the last winner on a HELD instance; random() shuffles
+    def a1 = AsyncChannel.<String>create(4), b1 = AsyncChannel.<String>create(4)
+    def held = ChannelSelect.from(a1, b1).fair()
+    int[] fairWins = new int[2]
+    100.times { a1.send('a'); b1.send('b'); def r = await held.select(); fairWins[r.index]++; await(r.index == 0 ? b1.receive() : a1.receive()) }
+    int[] freshWins = new int[2]
+    100.times {
+        def a2 = AsyncChannel.<String>create(4), b2 = AsyncChannel.<String>create(4)
+        a2.send('a'); b2.send('b')
+        def r = await ChannelSelect.from(a2, b2).fair().select(); freshWins[r.index]++
+    }
+    int[] randWins = new int[2]
+    100.times {
+        def a3 = AsyncChannel.<String>create(4), b3 = AsyncChannel.<String>create(4)
+        a3.send('a'); b3.send('b')
+        def r = await ChannelSelect.from(a3, b3).random().select(); randWins[r.index]++
+    }
+    println "   fair() on a HELD instance, 100 selects:          index 0 won ${fairWins[0]}, index 1 won ${fairWins[1]}  (rotating: alternates)"
+    println "   fair() on a FRESH instance each call, 100 selects: index 0 won ${freshWins[0]}, index 1 won ${freshWins[1]}  (no rotation state: priority in effect)"
+    println "   random(), 100 selects:                           index 0 won ${randWins[0]}, index 1 won ${randWins[1]}  (uniform, no bound)"
+}
 println()
 
 // ---------- 2. the losing branch's order ----------

@@ -17,7 +17,9 @@
 # JIRA drafts — groovy.concurrent.ChannelSelect (Groovy 6.0.0-beta-3)
 
 Two issues: a Bug for the behaviour observed in `repro/ChannelSelectRepro.groovy`, and an Improvement
-(fair selection) that builds on the Bug's fix. Both are drafts for Paul to file; nothing has been filed.
+(fair selection) that builds on the Bug's fix. FILED AND FIXED as one issue, GROOVY-12320 (PR #2846, fix version
+6.0.0-beta-4): claim-based `select()`, `fair()` (rotating, on a held instance) and `random()`,
+`ChannelClosedException` when every branch is closed. The drafts stay as the record behind Phases 256/257.
 
 ---
 

@@ -11803,6 +11803,61 @@ drafts under `repro/` stand as written).
 
 ---
 
+## Phase 257 — GROOVY-12320: the claim-based ChannelSelect, modelled where it runs  *(shipped — slice 17 of the SEQ/PAR ladder)*
+
+Paul filed and fixed the Phase 256 findings upstream as GROOVY-12320 (PR #2846, fix version 6.0.0-beta-4;
+merged in master, published locally as 6.0.0-SNAPSHOT for this assessment). The reproduction re-run against
+the snapshot: (2) a losing branch keeps `[b1, b2]`; (3) 1000 selects leave 0 pending receivers on the quiet
+branch and one later element settles at once; (4) a select over two closed channels fails fast with
+`ChannelClosedException("all channels are closed")`; (1) the default stays PRIORITY by list order, now by
+design, with two policies — a HELD `fair()` instance alternates 50/50 over two ready branches (rotating
+from the last winner; "every channel that is ready is taken within n calls"), `fair()` on a FRESH instance
+each call wins 100/0 for index 0 (the rotation state lives in the instance — the javadoc says keep it),
+and `random()` is uniform (46/54) with no bound. `select()` selects by CLAIM: exactly one branch dequeues,
+losers are untouched, cancellation consumes nothing.
+
+The checker now models whichever runtime hosts it: `VerifyChecker.CLAIM_SELECT` probes
+`groovy.concurrent.ChannelSelect` for `fair()` by reflection (the runtime running the type checker is the
+runtime the code runs on; CI is still pinned to beta-3). Under the claim-based select: (a) a looping ALT
+takes the chosen branch's HEAD again (`valueAt`) — positional claims through a contended branch prove;
+(b) a HELD instance is a supported shape (`SelectRef` / `collectSelectVars`: `ChannelSelect alt =
+ChannelSelect.from(a, b)[.fair()|.random()]` before the loop, `alt.select()` inside; the ALT's op and
+anchor are the `select()` CALL, so a held instance is recorded where the process blocks — the
+`sanctionedFroms` set now holds select calls), on both runtimes; (c) the starvation hazard fires only where
+the policy is priority in effect — the default, or `fair()` on a fresh instance each iteration, which is
+named with the hoisting fix; `random()` has no deterministic starvation; (d) the FAIR SERVER — a held
+`fair()` select, replies guarded by `r.index` — has its per-client liveness CERTIFIED under weak fairness:
+every ready branch is taken within n calls, the server loop is live, and the client's REQUEST PRECEDES its
+wait (a send by that process on a branch of the ALT earlier in program order — in the loop body before the
+receive, or a priming send; a receive-first client is withheld: "the request must precede the wait"). The
+client's looping receive on the guarded reply then leaves the network check silent instead of "conditional";
+under priority, fresh `fair()`, or `random()` it is withheld with the policy's own reason
+(`guardedReplyReason`). What stays LOUD is the reply's VALUE: a send inside `if` is not a stream, so the
+channel model skips the guarded replies as it did for Phase 256's server — the liveness certificate is the
+claim, the value model of a conditional stream is a rung not built. A held `ChannelSelect` local is a
+factory result, never null: exempt from the deref obligation like Phase 245's locally-constructed channels
+(the fallback pass had raised `alt != null` against a havoced local). Before beta-4 the same sources keep
+Phase 256's verdicts (`fair()` / `random()` are type errors there).
+
+A soundness find on the way: Phase 256's `valueAny` asserted each branch's index bound
+(`cursor ≤ at < size`) UNCONDITIONALLY — for a branch with nothing left (cursor == size) that is
+unsatisfiable, and the whole VC became vacuous (a positional claim through a lone ready branch "proved"
+on beta-3). The bound is now guarded by the branch being chosen. Every Phase 256 proof still proves with
+the guard in place.
+
+Cases (G321, new group, 7, verdicts branching on `CaseDsl.CLAIM_SELECT`): the positional claim through a
+lone ready branch (proves on beta-4+, refuted before), the held priority multiplexer (both), the held
+`fair()` (no hazard), fresh `fair()` per iteration ("keeps no rotation state" — named), `random()` (no
+hazard), the receive-first client under a held `fair()` (withheld), the fair server under `random()`
+(withheld: "offers no bound"). G313's held-instance pin flips to supported; G310 gains the fair server with
+a held `fair()` — on beta-4+ the network check is silent and no NPE fires while the value model's skip
+stays (`expect` + a `refute:` LIST, a harness addition), a type error before.
+Both runtimes green: the suite on beta-3 (CI's) and on the local snapshot (`--init-script` adding
+mavenLocal, `-PgroovyVersion=6.0.0-SNAPSHOT`). `repro/ChannelSelectRepro.groovy` gained the policy
+experiments (guarded by `respondsTo('fair')`); the JIRA drafts are marked filed.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

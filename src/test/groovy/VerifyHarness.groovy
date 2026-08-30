@@ -121,9 +121,11 @@ class VerifyHarness {
                 : "expected '${c.expect}', got:\n      ${all.replaceAll('\n', '\n      ')}")
             // Optional `refute`: assert a substring is ABSENT from the diagnostic (e.g. an
             // internal/synthetic name that must not leak into a user-facing counterexample).
-            if (ok && c.refute && all.contains((String) c.refute)) {
+            // `refute:` — one substring or a list of them — none may appear (Phase 257: a list)
+            String bad = c.refute == null ? null : (c.refute instanceof List ? (String) ((List) c.refute).find { Object b -> all.contains((String) b) } : (all.contains((String) c.refute) ? (String) c.refute : null))
+            if (ok && bad != null) {
                 ok = false
-                detail = "diagnostic should NOT contain '${c.refute}', but did:\n      ${all.replaceAll('\n', '\n      ')}"
+                detail = "diagnostic should NOT contain '${bad}', but did:\n      ${all.replaceAll('\n', '\n      ')}"
             }
         }
         [ok: ok, detail: detail, errors: errors]

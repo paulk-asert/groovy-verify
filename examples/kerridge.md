@@ -49,7 +49,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values (Phase 254); liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it (Phase 255) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
-| `fairSelect` / `priSelect` | — | no counterpart in `ChannelSelect` yet: the fair server's per-client liveness is withheld with that reason (Phase 256) |
+| `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
 `AsyncChannel<Integer> c = AsyncChannel.create(n)` — because that is what tells static type checking (and
@@ -342,10 +342,10 @@ static List<Integer> multiplex(int na, int nb) {
 ```
 
 And the **fair server** — two clients, a server taking whichever request is ready and replying on that
-client's own channel — is where the gallery meets the runtime rather than the checker. Groovy 6's
-`ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the back of its
-queue; there is no `fairSelect` (all reproduced against 6.0.0-beta-3 — `repro/ChannelSelectRepro.groovy`).
-So the checker models exactly that and *withholds* per-client liveness with the reason (Phase 256):
+client's own channel — is where the gallery met the runtime rather than the checker. Up to Groovy
+6.0.0-beta-3, `ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the
+back of its queue, and there is no `fairSelect` (all reproduced — `repro/ChannelSelectRepro.groovy`); the
+checker models exactly that and *withholds* per-client liveness with the reason (Phase 256):
 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
 ```groovy
@@ -390,7 +390,59 @@ static void fairServer() {
 
 > Skipped network well-formedness check … the receive on 'replyB' … is served only when the ALT in the loop
 > at line N takes branch 1 — ChannelSelect prefers the lowest ready index, so whether this client is ever
-> chosen depends on timing; per-client liveness is not certified (a fair selection would need runtime support).
+> chosen depends on timing; per-client liveness is not certified (a fair selection needs GROOVY-12320, Groovy
+> 6.0.0-beta-4+).
+
+From 6.0.0-beta-4 (GROOVY-12320, the fix drafted from that finding) `select()` selects by claim and offers
+`fair()`: hold the instance — the rotation state lives in it — and the same server's per-client liveness is
+**certified** (Phase 257): every ready client is taken within two selects, each request precedes the wait
+for its reply (a client that waits before asking is withheld, with that reason), and the server loop is
+live, so every client is served under weak fairness. The reply's *value* is another matter: a send inside
+`if` is not a stream, and the channel model says so — loudly, as it did above — rather than pretend. Call
+`.fair()` on a fresh instance inside the loop and the checker names the mistake — no rotation state,
+priority in effect:
+
+<!-- doclint:case p246-kerridge-gallery/the-fair-server-with-a-held-fair-select-per-client-liveness-certified-groovy-6-0-0-beta-4 -->
+```groovy
+static void fairServer() {
+    AsyncChannel<Integer> reqA = AsyncChannel.create(4)
+    AsyncChannel<Integer> reqB = AsyncChannel.create(4)
+    AsyncChannel<Integer> replyA = AsyncChannel.create(4)
+    AsyncChannel<Integer> replyB = AsyncChannel.create(4)
+    async {                                              // client A
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            reqA.send(i)
+            int r = replyA.first()
+            i = i + 1
+        }
+    }
+    async {                                              // client B
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            reqB.send(i)
+            int r = replyB.first()
+            i = i + 1
+        }
+    }
+    ChannelSelect alt = ChannelSelect.from(reqA, reqB).fair()   // held: the rotation state lives here
+    int j = 0
+    @Invariant({ j >= 0 })
+    while (true) {                                       // the server
+        ChannelSelect.Result r = await alt.select()
+        int q = (int) r.value
+        if (r.index == 0) {
+            replyA.send(q + 1)
+        }
+        if (r.index == 1) {
+            replyB.send(q + 1)
+        }
+        j = j + 1
+    }
+}
+```
 
 ## The student mistakes are named compile errors
 
@@ -438,22 +490,24 @@ code before it, and — for liveness — *weak fairness* of the scheduler: a pro
 enabled eventually executes it. Nothing about ordering across processes is assumed; the interleaving of a
 multiplexer is left exactly as nondeterministic as it is.
 
-**The runtime's.** Groovy 6's `ChannelSelect` (6.0.0-beta-3) is not the book's `ALT`. It races a `receive()`
-on every branch and completes with the first: when several are ready the lowest index wins, a losing
-branch's consumed element is re-sent to the *back* of its queue, every select leaves a pending receiver on
-each branch that was empty, and a select over channels that are all closed never completes — all four
-observed, not read, by [`repro/ChannelSelectRepro.groovy`](../repro/ChannelSelectRepro.groovy) (100/100
-wins for index 0 in either listing order; `[b1, b2]` delivered as `[b2, b1]`; a thousand pending receivers
-and one element bounced a thousand times; a 500 ms timeout). The checker models exactly that (Phase 256), so
-three things it *could* say it withholds instead: positional claims through a contended `ALT` branch (the
-value taken is *some* remaining element — counts and element-wise contracts still prove); a branch listed
-after an always-ready one is a named **starvation hazard**; and the **fair server** — every client
-eventually *chosen* — has its per-client liveness withheld with the runtime's reason, because there is no
-fair selection to certify it against. The fix belongs to the runtime, and is drafted:
-[`repro/GROOVY-ChannelSelect-jira-draft.md`](../repro/GROOVY-ChannelSelect-jira-draft.md) — a claim-based
-select that never consumes from losing branches, and a `fair()` policy with rotating priority. With those,
-the fair server is a day's work on the checker: the request stays ready until taken, rotating priority
-bounds the wait, and the same wait-for argument closes.
+**The runtime's — and where it moved.** Up to Groovy 6.0.0-beta-3, `ChannelSelect` is not the book's
+`ALT`. It races a `receive()` on every branch and completes with the first: when several are ready the lowest
+index wins, a losing branch's consumed element is re-sent to the *back* of its queue, every select leaves a
+pending receiver on each branch that was empty, and a select over channels that are all closed never
+completes — all four observed, not read, by
+[`repro/ChannelSelectRepro.groovy`](../repro/ChannelSelectRepro.groovy). The checker models exactly that
+(Phase 256), so three things it *could* say it withholds instead: positional claims through a contended
+`ALT` branch, a branch listed after an always-ready one is a named **starvation hazard**, and the **fair
+server** has its per-client liveness withheld because there is no fair selection to certify it against.
+
+Those findings became GROOVY-12320 (fixed for 6.0.0-beta-4): `select()` is claim-based — exactly one branch
+dequeues, losers are untouched, all-closed fails fast — with `fair()` (rotating from the last winner, state
+in the instance) and `random()`. The checker probes the runtime it runs on and models what it finds (Phase
+257): on beta-4+ a looping `ALT` takes the chosen branch's head again, so positional claims prove; a *held*
+`ChannelSelect` is a supported shape; the starvation hazard fires only where priority is in effect — the
+default, or `fair()` on a *fresh* instance each iteration, named with the hoisting fix; `random()` is fair in
+expectation only; and the fair server with a held `fair()` is **certified**. What is still withheld is
+withheld with the policy's own reason. On beta-3 the verdicts above stand, unchanged.
 
 **Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
 eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the
