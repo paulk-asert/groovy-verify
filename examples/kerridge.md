@@ -502,8 +502,7 @@ multiplexer is left exactly as nondeterministic as it is.
 `ALT`. It races a `receive()` on every branch and completes with the first: when several are ready the lowest
 index wins, a losing branch's consumed element is re-sent to the *back* of its queue, every select leaves a
 pending receiver on each branch that was empty, and a select over channels that are all closed never
-completes — all four observed, not read, by
-[`repro/ChannelSelectRepro.groovy`](../repro/ChannelSelectRepro.groovy). The checker models exactly that
+completes — all four observed, not read. The checker models exactly that
 (Phase 256), so three things it *could* say it withholds instead: positional claims through a contended
 `ALT` branch, a branch listed after an always-ready one is a named **starvation hazard**, and the **fair
 server** has its per-client liveness withheld because there is no fair selection to certify it against.
@@ -619,7 +618,7 @@ static void ring() {
 Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 40) where
 the protocol expects it to receives from 'ca'"); make a client wait before asking and the trace says so. A
 choice belongs to one role (`choice at client { … } or { … }`, the client's `if`/`else` against the
-server's ALT); and the fair server is typed not as a choice at all but as a `par` (Phase 264) — two
+server's ALT); a *mixed* choice — `choice { ping: left -> right } or { pong: right -> left }`, no `at` — is admitted with its coherence checked (Phase 267): one opener and it degenerates to that role's choice, certified; two, and the race is refused with the collision spelled out (buffered sends both succeed and the peers proceed down different branches — no output guards exist to arbitrate, which is why occam banned them); and the fair server is typed not as a choice at all but as a `par` (Phase 264) — two
 request–reply sessions, channels disjoint, interleaved at the server, projected as their *shuffle* — whose
 ALT is one conformant implementation, a cross-wired reply named with its trace.
 
@@ -633,12 +632,13 @@ the same compile. And the bound composes across hops (Phase 266): `@DeliveredWit
 totals its hops (2 + 1) with the worst path named when a claim falls short — head-of-line service, with
 queueing loudly outside the claim.
 
-**Beyond.** A *genuinely mixed* choice — two peers racing on the same channels, where `par`'s disjointness
-is exactly what fails — is beyond the classic projection; and the queueing half of latency — delay behind a
-backlog, which needs arrival-rate assumptions — is a calculus this ladder deliberately does not carry (its
-`@DeliveredWithin` is the head-of-line service bound, and says so). Those are what remains of the research
-conversation: the same guarantees GPP establishes offline by formal methods, issued incrementally by the
-compiler.
+**Beyond.** A mixed choice that truly RACES — both peers permitted to open, resolved by arbitration — needs
+output guards under the select (a two-phase commit the runtime does not have: the checker refuses the
+collision rather than pretend, and the boundary sits in the runtime, as `fairSelect` did before
+GROOVY-12320). And the queueing half of latency — delay behind a backlog, which needs arrival-rate
+assumptions — is a calculus this ladder deliberately does not carry (its `@DeliveredWithin` is the
+head-of-line service bound, and says so). Those are what remains of the research conversation: the same
+guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

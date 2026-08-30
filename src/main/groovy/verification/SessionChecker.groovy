@@ -63,6 +63,15 @@ import org.codehaus.groovy.syntax.Types
  * channels disjoint), projected as the SHUFFLE of the parts' projections. The fair server is exactly this —
  * not a choice one role makes, but two request–reply sessions interleaved at the server — and its ALT is one
  * conformant implementation of the shuffle; a cross-wired reply falls outside it, with its trace.
+ *
+ * Phase 267 — MIXED CHOICE, {@code choice { … } or { … }} with no {@code at}: branches opened by different
+ * roles — the race. Projection is the mixed union for an opener; but local conformance famously stops
+ * implying global coherence there (each peer can conform alone while together they collide), so the checker
+ * adds the missing half: a COHERENCE check across the bound processes. Two peers that can both SEND their
+ * openers are a collision — buffered sends both succeed and the peers proceed down different branches, and
+ * no output guards exist to arbitrate a race (the reason occam banned them; groovy.concurrent's ALT has
+ * input guards only) — refused, both named. Exactly one initiator: the mixed choice DEGENERATES to a choice
+ * at that role, certified silently. None: the conversation can never take it, said.
  */
 class SessionChecker {
 
@@ -117,7 +126,7 @@ class SessionChecker {
         }
         // processes
         List<Object[]> procs = processes(body)            // [name, statements, anchor]
-        Map<String, Object[]> bound = [:]
+        Map<String, Object[]> bound = [:]                 // role → [name, nfa, frag, anchor, sends, recvs]
         List<Object[]> unbound = []
         for (Object[] p : procs) {
             Nfa pn = new Nfa()
@@ -126,15 +135,47 @@ class SessionChecker {
             alphabet(pn, s, q)
             if (s.isEmpty() && q.isEmpty()) continue                                 // no channel traffic: no role
             String role = roles.find { String r -> roleSends.get(r) == s && roleRecvs.get(r) == q }
-            if (role == null) { unbound.add([p, s, q] as Object[]); continue }
+            if (role == null) { unbound.add([p, pn, pf, s, q] as Object[]); continue }
             if (bound.containsKey(role)) { out.add([Reporter.formatProtocolViolation(methodName, role, "two processes play it — ${bound.get(role)[0]} and ${p[0]}"), (ASTNode) p[2]] as Object[]); return out }
-            bound.put(role, [p[0], pn, pf, p[2]] as Object[])
+            bound.put(role, [p[0], pn, pf, p[2], s, q] as Object[])
+        }
+        // Phase 267 — a mixed choice lets a conformant process use a strict SUBSET of its role's alphabet (the
+        // branch it never takes): bind the leftovers where the subset fits exactly one free role.
+        for (Iterator<Object[]> it = unbound.iterator(); it.hasNext(); ) {
+            Object[] u = it.next()
+            Set<String> s = (Set<String>) u[3], q = (Set<String>) u[4]
+            List<String> fits = new ArrayList<String>(roles.findAll { String r -> !bound.containsKey(r) && roleSends.get(r).containsAll(s) && roleRecvs.get(r).containsAll(q) })
+            if (fits.size() != 1) continue
+            Object[] p = (Object[]) u[0]
+            bound.put(fits.get(0), [p[0], u[1], u[2], p[2], s, q] as Object[])
+            it.remove()
         }
         for (Object[] u : unbound) {
             Object[] p = (Object[]) u[0]
-            out.add([Reporter.formatProtocolViolation(methodName, null, "${p[0]} plays no role of the protocol — it sends on ${u[1]} and receives from ${u[2]}, which is no role's projection"), (ASTNode) p[2]] as Object[])
+            out.add([Reporter.formatProtocolViolation(methodName, null, "${p[0]} plays no role of the protocol — it sends on ${u[3]} and receives from ${u[4]}, which is no role's projection"), (ASTNode) p[2]] as Object[])
         }
         for (String r : roles) if (!bound.containsKey(r)) out.add([Reporter.formatProtocolViolation(methodName, r, "no process plays it (a process that sends on ${roleSends.get(r)} and receives from ${roleRecvs.get(r)})"), body] as Object[])
+        if (!out.isEmpty()) return out
+        // Phase 267 — coherence of every MIXED choice: at most one bound process may be able to SEND an opener
+        List<Choice> mixed = []
+        collectMixed(global, mixed)
+        for (Choice c : mixed) {
+            List<Object[]> openers = []                                          // [role, chan]
+            for (G br : c.branches) { Msg m = firstMsg(br); if (m != null && !openers.any { Object[] o -> o[0] == m.from && o[1] == m.chan }) openers.add([m.from, m.chan] as Object[]) }
+            List<Object[]> initiators = openers.findAll { Object[] o -> Object[] b = bound.get((String) o[0]); b != null && ((Set<String>) b[4]).contains((String) o[1]) }
+            if (initiators.size() > 1) {
+                String detail = initiators.collect { Object[] o -> "${bound.get((String) o[0])[0]} (role '${o[0]}') can send '${o[1]}'" }.join(' and ')
+                out.add([Reporter.formatProtocolViolation(methodName, null,
+                    "the mixed choice has two initiators — ${detail}. Each conforms alone; together they collide: " +
+                    "buffered sends both succeed and the peers proceed down different branches. No output guards " +
+                    "exist to arbitrate a race (the reason occam banned them; ChannelSelect offers input guards " +
+                    "only) — give the choice to one role"), body] as Object[])
+            } else if (initiators.isEmpty()) {
+                out.add([Reporter.formatProtocolViolation(methodName, null,
+                    "no process opens the mixed choice — none of them sends ${openers.collect { Object[] o -> "'" + o[1] + "'" }.join(' or ')}, so the conversation can never take it"), body] as Object[])
+            }
+            // exactly one initiator: the mixed choice degenerates to a choice at that role — certified silently
+        }
         if (!out.isEmpty()) return out
         // conformance
         for (String r : roles) {
@@ -143,6 +184,18 @@ class SessionChecker {
             if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "${b[0]} ${v}"), (ASTNode) b[3]] as Object[])
         }
         out
+    }
+
+    private static void collectMixed(G g, List<Choice> out) {
+        if (g instanceof Seq) for (G x : ((Seq) g).items) collectMixed(x, out)
+        else if (g instanceof Loop) collectMixed(((Loop) g).body, out)
+        else if (g instanceof Par) for (G x : ((Par) g).parts) collectMixed(x, out)
+        else if (g instanceof Choice) {
+            Choice c = (Choice) g
+            Set<String> openers = new LinkedHashSet<String>()
+            for (G br : c.branches) { Msg m = firstMsg(br); if (m != null) openers.add(m.from); collectMixed(br, out) }
+            if (c.at == null && openers.size() > 1) out.add(c)
+        }
     }
 
     // ── parser ─────────────────────────────────────────────────────────────────────────────────
@@ -200,9 +253,12 @@ class SessionChecker {
             }
             if (tok == 'choice') {
                 pos[0]++
-                if (!expect(t, pos, 'at', errors)) return seq
-                if (pos[0] >= t.size()) { errors.add("a role is expected after 'choice at'"); return seq }
-                Choice c = new Choice(); c.at = t[pos[0]++]
+                Choice c = new Choice()
+                if (pos[0] < t.size() && t[pos[0]] == 'at') {                  // Phase 267 — `at` optional: without it, a MIXED choice
+                    pos[0]++
+                    if (pos[0] >= t.size()) { errors.add("a role is expected after 'choice at'"); return seq }
+                    c.at = t[pos[0]++]
+                }
                 while (true) {
                     if (!expect(t, pos, '{', errors)) return seq
                     c.branches.add(parseSeq(t, pos, errors, true))
@@ -237,7 +293,7 @@ class SessionChecker {
         if (g instanceof Msg) { out.add(((Msg) g).from); out.add(((Msg) g).to) }
         else if (g instanceof Seq) for (G x : ((Seq) g).items) collectRoles(x, out)
         else if (g instanceof Loop) collectRoles(((Loop) g).body, out)
-        else if (g instanceof Choice) { out.add(((Choice) g).at); for (G x : ((Choice) g).branches) collectRoles(x, out) }
+        else if (g instanceof Choice) { if (((Choice) g).at != null) out.add(((Choice) g).at); for (G x : ((Choice) g).branches) collectRoles(x, out) }
         else if (g instanceof Par) for (G x : ((Par) g).parts) collectRoles(x, out)
     }
 
@@ -289,12 +345,14 @@ class SessionChecker {
         }
         if (g instanceof Choice) {
             Choice c = (Choice) g
+            Set<String> openers = new LinkedHashSet<String>()
             for (G br : c.branches) {
                 Msg m = firstMsg(br)
-                if (m == null) { errors.add("a branch of the choice at '${c.at}' is empty".toString()); return frag(nfa.newState(), null) }
-                if (m.from != c.at) { errors.add("in a choice at '${c.at}' every branch must begin with a message from '${c.at}' — here '${m.chan}: ${m.from} -> ${m.to}' (a choice made by different roles is beyond this projection)".toString()); return frag(nfa.newState(), null) }
+                if (m == null) { errors.add("a branch of the choice${c.at == null ? '' : " at '" + c.at + "'"} is empty".toString()); return frag(nfa.newState(), null) }
+                openers.add(m.from)
+                if (c.at != null && m.from != c.at) { errors.add("in a choice at '${c.at}' every branch must begin with a message from '${c.at}' — here '${m.chan}: ${m.from} -> ${m.to}' (branches opened by different roles are a MIXED choice: write it without 'at' and the coherence check decides)".toString()); return frag(nfa.newState(), null) }
             }
-            if (role != c.at) {
+            if ((c.at == null ? !openers.contains(role) : role != c.at)) {     // Phase 267 — an opener's projection is the mixed union
                 // an external choice: the branches must be told apart by the first message to this role, or be the same for it
                 List<Set<String>> firsts = []
                 List<String> shapes = []
@@ -303,7 +361,7 @@ class SessionChecker {
                 boolean distinct = firsts.every { Set<String> f -> !f.isEmpty() && f.every { String l -> l.startsWith('?') } } &&
                     firsts.collect { Set<String> f -> f }.flatten().size() == new HashSet<String>(firsts.flatten() as List<String>).size()
                 if (!same && !distinct) {
-                    errors.add("role '${role}' cannot tell the branches of the choice at '${c.at}' apart (each branch must begin, for '${role}', with a receive on a different channel, or be the same for it)".toString())
+                    errors.add("role '${role}' cannot tell the branches of the choice${c.at == null ? '' : " at '" + c.at + "'"} apart (each branch must begin, for '${role}', with a receive on a different channel, or be the same for it)".toString())
                     return frag(nfa.newState(), null)
                 }
                 if (same) return project(c.branches.get(0), role, nfa, errors)

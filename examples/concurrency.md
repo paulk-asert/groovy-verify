@@ -1096,7 +1096,8 @@ server draining its client's requests until the close, and Phase 263 adds the se
 `@Protocol` global type on the method — with `par` interleaving independent sub-sessions, the fair
 server's type — projected onto each role and checked against every process's control flow, and Phases 265/266's
 `@ServedWithin(n)` / `@DeliveredWithin(n, from, to)` make "served within a bound" and the pipeline's
-end-to-end head-of-line latency certified or refuted claims (see `examples/kerridge.md`). Before beta-4 the verdicts
+end-to-end head-of-line latency certified or refuted claims; Phase 267 admits the mixed choice and checks
+its coherence — one opener certifies, a racing pair is refused (see `examples/kerridge.md`). Before beta-4 the verdicts
 above stand, and all of them were reproduced, not read: `repro/ChannelSelectRepro.groovy` run against 6.0.0-beta-3 shows index 0 winning
 100/100 in either listing order, a losing branch delivering `[b2, b1]`, a thousand selects leaving a thousand
 pending receivers on a quiet branch (and one later element bounced a thousand times), and a select over two

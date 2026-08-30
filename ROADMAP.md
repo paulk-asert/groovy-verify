@@ -12160,6 +12160,36 @@ reply, the unknown channel. Both runtimes green, 1948.
 
 ---
 
+## Phase 267 — Mixed choice: the race, and who may open it  *(shipped — slice 28 of the SEQ/PAR ladder)*
+
+The classic boundary of session-type projection, taken head-on. `choice { ping: left -> right } or
+{ pong: right -> left }` — no `at`, branches opened by DIFFERENT roles — is the race. The projection side
+is the easy half and is now done: an opener's local type is the mixed union (`!ping.… + ?pong.…`), a
+bystander must still tell the branches apart, and `choice at` with a foreign opener now points at the mixed
+spelling. What mixed choice actually breaks is deeper: LOCAL conformance stops implying GLOBAL coherence —
+a peer that always sends `ping` conforms (inclusion admits taking one branch always), a peer that always
+sends `pong` conforms too, and together they collide: with buffered channels both sends succeed and the
+peers proceed down different branches, each sure of its own choice. No output guards exist to arbitrate a
+race — the reason occam banned them (Buckley–Silberschatz), and `ChannelSelect` offers input guards only.
+
+So the checker adds the missing half: a COHERENCE check across the bound processes, per mixed choice. TWO
+initiators (both peers can send their openers) — refused, both named, with the collision spelled out. ONE —
+the mixed choice DEGENERATES to a choice at that role for this program, certified silently. NONE — the
+conversation can never take the choice, said. En route, binding gained a subset pass (a conformant process
+may use a strict subset of its role's alphabet — the branch it never takes — so exact-alphabet binding
+falls back to unique-subset), which also improved a Phase 263 verdict: a send-only client now binds to its
+role and conformance names the real miss, instead of "plays no role". A Groovy trap cost an iteration:
+`Set.findAll` assigned to a `List` throws at runtime, and the exception silently swallowed the whole
+session check — one `ok:` case passed falsely until the wrong-side probe caught it.
+
+Cases (G331, new group, 5): the collision (each conforms alone; together refused), the degenerate single
+initiator (certified), the never-opened choice, the same-opener internal choice (protocol clean, the value
+model's if/else skip loud as ever), and the `choice at` pointer. Both runtimes green, 1953. TRUE racing
+arbitration — output guards, a two-phase commit under the select — is a RUNTIME feature, not a checker gap:
+the boundary moves to the runtime, exactly as it did with GROOVY-12320.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
