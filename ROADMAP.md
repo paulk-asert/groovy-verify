@@ -12190,6 +12190,32 @@ the boundary moves to the runtime, exactly as it did with GROOVY-12320.
 
 ---
 
+## Phase 268 — Racing arbitration: the upstream proposal, and the refusal that points at it  *(shipped — slice 29 of the SEQ/PAR ladder)*
+
+Phase 267 refused the racing mixed choice because no arbitration exists to run it; this rung does for that
+boundary what Phase 256 did for `fairSelect`: pins it empirically, designs the runtime feature, and drafts
+the upstream ask. [`repro/MixedChoiceRepro.groovy`](repro/MixedChoiceRepro.groovy) (identical on beta-3 and
+the GROOVY-12320 snapshot): (1) the COLLISION — both peers open, both buffered sends succeed, left
+continues down the PONG branch while right continues down the PING branch, one session with two peers each
+sure of its own choice — local conformance intact, coherence broken, live; (2) ONE initiator — the
+degenerate shape the checker certifies — works today; (3) both POLITE — input guards cannot say "or I will
+send", the session never starts (timeout); (4) what arbitration must give, hand-rolled — a CAS claim
+standing in for the two-phase commit: 1000 racing trials, exactly one branch committed in every one.
+
+[`repro/GROOVY-MixedChoice-jira-draft.md`](repro/GROOVY-MixedChoice-jira-draft.md) proposes claimable SEND
+offers — `offers(send(ping, i), receive(pong)).select()` — as the symmetric completion of GROOVY-12320's
+claim-based receive: offers register claimable, a claim tentatively pairs, commit only if both stand, a
+retired send leaves no buffered residue; `fair()`/`random()` order the offer scan as they do branches;
+occam's reason for banning output guards (Buckley–Silberschatz 1983) is the protocol the select now runs
+for you. The checker's collision refusal points at the draft. When a runtime carries it, the checker's
+mixed-choice coherence check gains its second certified outcome (both may open, the select arbitrates) the
+way Phase 257 followed GROOVY-12320 — modelled where it runs, not before.
+
+Nothing else moved: the `repro/` directory returns (its previous occupants were pruned once GROOVY-12320
+was filed and fixed), and G331's verdicts are unchanged. Both runtimes green, 1953; `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

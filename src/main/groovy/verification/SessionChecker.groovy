@@ -169,7 +169,8 @@ class SessionChecker {
                     "the mixed choice has two initiators — ${detail}. Each conforms alone; together they collide: " +
                     "buffered sends both succeed and the peers proceed down different branches. No output guards " +
                     "exist to arbitrate a race (the reason occam banned them; ChannelSelect offers input guards " +
-                    "only) — give the choice to one role"), body] as Object[])
+                    "only) — give the choice to one role, or see the upstream proposal for claimable send offers " +
+                    "(repro/GROOVY-MixedChoice-jira-draft.md: the two-phase commit GROOVY-12320's claim machinery half-built)"), body] as Object[])
             } else if (initiators.isEmpty()) {
                 out.add([Reporter.formatProtocolViolation(methodName, null,
                     "no process opens the mixed choice — none of them sends ${openers.collect { Object[] o -> "'" + o[1] + "'" }.join(' or ')}, so the conversation can never take it"), body] as Object[])

@@ -633,9 +633,13 @@ totals its hops (2 + 1) with the worst path named when a claim falls short — h
 queueing loudly outside the claim.
 
 **Beyond.** A mixed choice that truly RACES — both peers permitted to open, resolved by arbitration — needs
-output guards under the select (a two-phase commit the runtime does not have: the checker refuses the
-collision rather than pretend, and the boundary sits in the runtime, as `fairSelect` did before
-GROOVY-12320). And the queueing half of latency — delay behind a backlog, which needs arrival-rate
+output guards under the select: a two-phase commit the runtime does not have, so the checker refuses the
+collision rather than pretend. That boundary now has its reproduction and its upstream ask
+([`repro/MixedChoiceRepro.groovy`](../repro/MixedChoiceRepro.groovy),
+[`repro/GROOVY-MixedChoice-jira-draft.md`](../repro/GROOVY-MixedChoice-jira-draft.md): claimable SEND
+offers, the symmetric completion of GROOVY-12320's claim-based receive — a CAS stands in for the commit in
+the repro, 1000 racing trials, exactly one branch every time), exactly as `fairSelect` did before
+GROOVY-12320 — and the checker will model it where it runs once a runtime carries it. And the queueing half of latency — delay behind a backlog, which needs arrival-rate
 assumptions — is a calculus this ladder deliberately does not carry (its `@DeliveredWithin` is the
 head-of-line service bound, and says so). Those are what remains of the research conversation: the same
 guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
