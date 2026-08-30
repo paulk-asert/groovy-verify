@@ -11970,6 +11970,35 @@ green under the solver budget.
 
 ---
 
+## Phase 261 — Finite cycles: a terminating partner, and the read that would block  *(shipped — slice 21 of the SEQ/PAR ladder)*
+
+Phase 258 refused a cycle with a terminating member ("a partner that terminates has an exit fact no
+snapshot carries"). With the rely made stable (Phase 260) that reason is gone — a rely never wanted the exit
+fact — and what a finite partner really changes is EXISTENCE. A finite producer's TOTAL is read off its
+guard (`staticTotalText`: `counter < E` gives `E - init`, `<=` adds one, priming sends added; E
+loop-constant), and at a read from it the reader carries two facts: the snapshot may still be short of the
+element — "the partner gets there" is the liveness assumption, assumed as for an infinite partner — and the
+element exists eventually only if it lies BELOW the total, asserted: `k < m`, else "may block forever — the
+producer loop at line L sends m element(s) in all, and this loop reads past them". A bounded ALT over
+bounded branches must select below their totals in all (`c1$c < m1 || c2$c < m2`, asserted, with the
+cursor-sum invariant carrying it). The total is also a stable upper bound a rely may assume. A finite
+partner whose count is not static (a guard of another shape, `j != m`) is skipped loudly.
+
+What this refutes is real and was invisible before: a client and a server bounded by different numbers
+block at the read past the shorter one (both directions — a client asking more than its server answers, a
+server waiting for more than its clients ask), and a `while (true)` server of a bounded client waits
+forever for the request after the last. Matched bounds (`@Requires({ n == m && n >= 0 })`) prove both
+sides, request–reply claims included; a bounded fair server (`while (j < 2 * n)`) over two bounded clients
+proves every reply on the claim runtime.
+
+Cases (G325, new group, 6): the forever server outliving its client (refuted, total named), matched bounds
+(proved), unmatched bounds both ways (refuted), the bounded fair server, the non-static total (skipped).
+G322's "rung not built" case flips to the true finding. Both runtimes green, 1915; `check` green. Next in
+this direction: a server that DRAINS its bounded client (`for (q in request)` after the client closes) —
+the drain of a partner stream — and session types.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

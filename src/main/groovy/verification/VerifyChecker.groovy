@@ -5665,13 +5665,43 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /**
+     * Phase 261 — a FINITE producer loop's total element count as source text, from its guard: `counter < E`
+     * gives `E - init`, `counter <= E` gives `E + 1 - init` (priming sends added), with E loop-constant; null when
+     * the loop is a `while (true)` or the guard has another shape. What a reader in a cycle with it may assert
+     * against: element k of the stream exists eventually iff k < total.
+     */
+    private static String staticTotalText(StreamInfo info, Set<String> ch) {
+        if (info.infinite) return null
+        LoopSpec spec = (LoopSpec) ((Statement) info.loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        Expression g = spec == null ? null : spec.guard
+        while (g instanceof BooleanExpression) g = ((BooleanExpression) g).expression
+        g = stripCasts(g)
+        if (!(g instanceof BinaryExpression)) return null
+        BinaryExpression b = (BinaryExpression) g
+        Expression l = stripCasts(b.leftExpression), r = stripCasts(b.rightExpression)
+        int op = b.operation.type
+        Expression bound = null
+        boolean inclusive = false
+        if (l instanceof VariableExpression && ((VariableExpression) l).name == info.counter && (op == Types.COMPARE_LESS_THAN || op == Types.COMPARE_LESS_THAN_EQUAL)) {
+            bound = r; inclusive = op == Types.COMPARE_LESS_THAN_EQUAL
+        } else if (r instanceof VariableExpression && ((VariableExpression) r).name == info.counter && (op == Types.COMPARE_GREATER_THAN || op == Types.COMPARE_GREATER_THAN_EQUAL)) {
+            bound = l; inclusive = op == Types.COMPARE_GREATER_THAN_EQUAL
+        }
+        if (bound == null) return null
+        for (String n : varNames(bound)) if (n == info.counter || ch.contains(n) || writesVar(info.loop.loopBlock, n)) return null
+        String bt = bound instanceof VariableExpression || bound instanceof ConstantExpression ? bound.text : "(${bound.text})".toString()
+        String init = entryText(info.counterInit)
+        "${bt}${inclusive ? ' + 1' : ''} - ${init}${info.pre == 0 ? '' : ' + ' + info.pre}".toString()
+    }
+
+    /**
      * Phase 258 — CYCLES among the stream loops (a loop reads a stream produced by a loop that, directly or
      * through others, reads a stream it produces): the client–server pair, the ring, the fair server. The
      * flattened model runs each loop atomically in dataflow order, which no order of a cycle respects — so
      * a cycle member reads its partners' streams through RELY VIEWS instead (relyBlock). Every member must
      * be a `while (true)`: a partner that terminates has an exit fact no snapshot can carry.
      */
-    private static void computeCycles(StreamScan scan, Map<String, String> parent) {
+    private static void computeCycles(StreamScan scan, Map<String, String> parent, Set<String> ch) {
         Map<Statement, Set<Statement>> succ = new IdentityHashMap<Statement, Set<Statement>>()
         List<Statement> loops = new ArrayList<Statement>()
         Closure<Object> node = { Statement l -> if (!loops.any { Statement x -> x.is(l) }) { loops.add(l); succ.put(l, Collections.newSetFromMap(new IdentityHashMap<Statement, Boolean>())) }; null }
@@ -5700,22 +5730,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<Statement> members = new ArrayList<Statement>()
             for (Statement m : loops) if (!m.is(l) && reach.get(l).contains(m) && reach.get(m).contains(l)) members.add(m)
             if (members.isEmpty()) continue
-            boolean allForever = isForever((LoopingStatement) l) && members.every { Statement m -> isForever((LoopingStatement) m) }
             List<String> vars = new ArrayList<String>(ci.receives.values()); vars.addAll(ci.altChans)
             Set<String> ps = new LinkedHashSet<String>()
             for (String v : vars) {
                 String root = scan.streamVarRoot(v, parent)
                 StreamInfo p = root == null ? null : scan.streams.get(root)
-                if (p != null && members.any { Statement m -> m.is((Statement) p.loop) }) ps.add(root)
+                if (p != null && members.any { Statement m -> m.is((Statement) p.loop) }) {
+                    // Phase 261 — a FINITE partner is fine (a rely assumes append-stable facts only) provided its
+                    // total is static: element k exists eventually iff k < total, which the reader must show.
+                    if (!p.infinite && staticTotalText(p, ch) == null) { dropped.add(root); continue }
+                    ps.add(root)
+                }
             }
-            if (!allForever) { dropped.addAll(ps); continue }
             scan.partnerStreams.put(l, ps)
             scan.cycleOf.put(l, members)
         }
         for (String root : dropped) {
             StreamInfo info = scan.streams.remove(root)
             if (info != null) scan.sanctionedSends.remove(info.sendCall)
-            scan.whyNot.put(root, 'is read in a cycle of loops that are not all while (true) — a cycle member is modelled through its partners\' invariants, and a partner that terminates has an exit fact no snapshot carries (a finite cycle is a rung not built)')
+            scan.whyNot.put(root, 'is read in a cycle from a terminating loop whose element count is not static (the reader must show it reads below the producer\'s total: a guard `counter < bound` with a loop-constant bound)')
         }
         if (!dropped.isEmpty()) {
             for (ConsumerInfo ci : new ArrayList<ConsumerInfo>(scan.consumers.values())) {
@@ -5935,7 +5968,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         }
-        computeCycles(scan, parent)                                                // Phase 258
+        computeCycles(scan, parent, ch)                                            // Phase 258/261
         // Phase 252 — a loop that both receives and sends (a stage as a process): the sent expression may
         // name a local declared from a sanctioned receive in the same body — an alias of the read element,
         // so the element relation still holds through it.
@@ -6148,9 +6181,33 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             a.setSourcePosition(de)
             a.putNodeMetaData(ASSERT_LABEL_KEY, ("the ALT over ${ci.altChans.collect { "'" + it + "'" }.join(', ')} (line ${de.lineNumber}) may block forever — " +
                 "no branch may have an element left (the multiplexer loop reads past what its producers send)").toString())
+            boolean anyInfinite = false
             for (String c : ci.altChans) {                                    // Phase 254 — an infinite branch can always serve
                 StreamInfo p = rw.streams.get(rw.rootOf(c))
-                if (p != null && p.infinite) a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)
+                if (p != null && p.infinite) { a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE); anyInfinite = true }
+            }
+            if (!partners.isEmpty()) a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)   // Phase 261 — a partner's snapshot may be short: liveness
+            if (!partners.isEmpty() && !anyInfinite) {
+                // Phase 261 — every branch finite: some branch must have an element left in ALL — a partner branch
+                // below its total, a non-partner branch below its (exact) list — asserted.
+                List<String> left = new ArrayList<String>()
+                boolean complete = true
+                for (String c : ci.altChans) {
+                    StreamInfo p = rw.streams.get(rw.rootOf(c))
+                    if (rw.partner(c)) {
+                        String total = p == null ? null : staticTotalText(p, rw.ch)
+                        if (total == null) { complete = false; break }
+                        left.add("${c}\$c < ${total}".toString())
+                    } else left.add("${c}\$c < ${c}\$q.size()".toString())
+                }
+                Expression bound = complete ? ContractExpansionTransform.reparse(left.join(' || ')) : null
+                if (bound != null) {
+                    AssertStatement b = new AssertStatement(new BooleanExpression(bound))
+                    b.setSourcePosition(de)
+                    b.putNodeMetaData(ASSERT_LABEL_KEY, ("the ALT over ${ci.altChans.collect { "'" + it + "'" }.join(', ')} (line ${de.lineNumber}) may block forever — " +
+                        "every branch's producer terminates, and this loop selects past what they send in all").toString())
+                    out.add(b)
+                }
             }
             out.add(a)
         }
@@ -6304,7 +6361,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ConsumerInfo saved = rw.curConsumer
             rw.curConsumer = pc; rw.readsAsTaken = true
             try {
-                for (StreamInfo pi : pinfos) { pf.addAll(streamInvariants(pi, rw, true)); pf.addAll(sendsFollowTakes(pi, rw)) }
+                for (StreamInfo pi : pinfos) {
+                    pf.addAll(streamInvariants(pi, rw, true)); pf.addAll(sendsFollowTakes(pi, rw))
+                    String total = staticTotalText(pi, rw.ch)                     // Phase 261 — never more than its total: stable
+                    Expression tb = total == null ? null : ContractExpansionTransform.reparse("${pi.root}\$q.size() <= ${total}")
+                    if (tb != null) pf.add(norm(tb, rw))
+                }
                 if (pc != null) { Expression cv = cursorInvariant(pc, rw, true); if (cv != null) pf.add(cv) }
             } finally { rw.curConsumer = saved; rw.readsAsTaken = false }
             for (Expression f : pf) facts.add(substituteVars(f, ren))
@@ -6457,20 +6519,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** Phase 252 — the block-forever obligation of a sanctioned receive: the element it reads must exist. */
-    private static Statement consumerAssert(MethodCallExpression recv, ChanRewrite rw) {
+    private static List<Statement> consumerAssert(MethodCallExpression recv, ChanRewrite rw) {
+        List<Statement> out = new ArrayList<Statement>()
         ConsumerInfo ci = rw.curConsumer
         String v = ci.readOf(recv)
-        if (v == null) return null
+        if (v == null) return out
         String list = rw.partner(v) ? (rw.relyName.get(v) ?: v + '$q') : v + '$q'          // Phase 258
         Expression cond = ContractExpansionTransform.reparse("${ci.counter} - ${entryText(ci.counterInit)} < ${list}.size()")
-        if (cond == null) return null
+        if (cond == null) return out
         AssertStatement a = new AssertStatement(new BooleanExpression(cond))
         a.setSourcePosition(recv)
         a.putNodeMetaData(ASSERT_LABEL_KEY, ("the receive on '${v}' (line ${recv.lineNumber}) may block forever — " +
             "the element it reads may never be sent (the consumer loop reads past what the producer loop sends)").toString())
         StreamInfo p = rw.streams.get(rw.rootOf(v))
         if (p != null && p.infinite) a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)   // Phase 254 — liveness: assumed, reported
-        a
+        if (p != null && !p.infinite && rw.partner(v)) {
+            // Phase 261 — a FINITE partner: the snapshot may be short of the element (liveness: assumed, as for an
+            // infinite one), but the element exists eventually only if it is below the partner's total — asserted.
+            a.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)
+            String total = staticTotalText(p, rw.ch)
+            Expression bound = total == null ? null : ContractExpansionTransform.reparse("${ci.counter} - ${entryText(ci.counterInit)} < ${total}")
+            if (bound != null) {
+                AssertStatement b = new AssertStatement(new BooleanExpression(bound))
+                b.setSourcePosition(recv)
+                b.putNodeMetaData(ASSERT_LABEL_KEY, ("the receive on '${v}' (line ${recv.lineNumber}) may block forever — " +
+                    "the producer loop at line ${((Statement) p.loop).lineNumber} sends ${total} element(s) in all, and this loop reads past them").toString())
+                out.add(b)
+            }
+        }
+        out.add(a)
+        out
     }
 
     /** The sanctioned receives inside an expression, in evaluation order. */
@@ -6735,8 +6813,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         Statement t = takenAppend(v, rw, r)
                         if (t != null) after.add(t)
                     }
-                    Statement a = consumerAssert(r, rw)
-                    if (a != null) out.add(a)
+                    out.addAll(consumerAssert(r, rw))
                 }
                 if (e instanceof MethodCallExpression) {
                     MethodCallExpression m = (MethodCallExpression) e

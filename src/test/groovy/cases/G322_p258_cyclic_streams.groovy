@@ -187,7 +187,9 @@ class G322_p258_cyclic_streams {
                             ${server('.fair()', 'q + 1', 'q + 1')}
                         }
                     }""")],
-        [group: 'P258 cyclic streams', name: 'a cycle with a terminating member is a rung not built', expect: 'not all while (true)',
+        // Phase 261 — a terminating member is modelled now (the rely assumes append-stable facts only), and what
+        // it finds here is TRUE: the forever server outlives its bounded client and its next read blocks forever.
+        [group: 'P258 cyclic streams', name: 'a cycle with a terminating member: the forever server\'s next read blocks forever (Phase 261)', expect: 'sends n - 0 element(s) in all',
          src: tc("""class C {
                         static void clientServer(int n) {
                             AsyncChannel<Integer> request = AsyncChannel.create(4)
