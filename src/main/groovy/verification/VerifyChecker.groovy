@@ -2312,7 +2312,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // to `f(ch)`, and receiving one element (`ch.first()`) is a read of `ch`. The pipeline collapses to
             // function composition (the combiner trick); FIFO ordering is the structural half we assume.
             // No-op unless the method actually builds a channel pipeline.
-            Statement deChan = desugarChannels(body, currentChannelBounds, currentScalarTypes, paramNames(node), node)
+            List<Object[]> ghostErrors = new ArrayList<Object[]>()
+            Statement deChan = desugarChannels(body, currentChannelBounds, currentScalarTypes, paramNames(node), node, ghostErrors)
+            for (Object[] ge : ghostErrors) addStaticTypeError(Reporter.formatGhostMisuse((String) ge[0], (String) ge[1]), (ASTNode) ge[2])   // Phase 259
             if (!deChan.is(body)) {
                 node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deChan)
                 body = deChan
@@ -4202,7 +4204,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  is the i-th sent) is exact when one process owns each end and every op is unconditional —
      *  precisely what the guard admits. Pipeline-derived vars resolve lazily at the receive site. */
     private static Statement desugarChannels(Statement body, Map<String, List<long[]>> bounds,
-                                             Map<String, ClassNode> scalarTypes, Set<String> params, MethodNode method) {
+                                             Map<String, ClassNode> scalarTypes, Set<String> params, MethodNode method, List<Object[]> ghostSink = null) {
         if (!(body instanceof BlockStatement)) return body
         Set<String> ch = new HashSet<String>()
         collectChannelVars((BlockStatement) body, ch)
@@ -4227,6 +4229,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (StreamInfo info : rw.streams.values()) rw.sendTotals.remove(info.root)
         List<Statement> out = new ArrayList<Statement>()
         rewriteChStatements(((BlockStatement) body).statements, rw, out)
+        if (ghostSink != null) ghostSink.addAll(rw.ghostErrors)                    // Phase 259 — reported by the caller
         new BlockStatement(rw.schedule(out), ((BlockStatement) body).variableScope)
     }
 
@@ -4268,6 +4271,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         int relyCounter                                                          // Phase 258 — fresh rely views
         final Map<String, String> relyName = new HashMap<String, String>()       // stream var → its current rely view name
         boolean readsAsTaken = true                                              // invariants read a partner as its taken-ghost; a BODY read (rewriteStreamStmts) as its rely view
+        final List<Object[]> ghostErrors = new ArrayList<Object[]>()             // Phase 259 — [ghost text, reason, node]
         /** Phase 258 — is stream var {@code v} read by the current consumer loop from a cycle partner? */
         boolean partner(String v) {
             if (curConsumer == null) return false
@@ -4933,10 +4937,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         }
                     }
                     if (ci0 != null) {                                           // Phase 258 — taken-ghosts: ALT branches, partner reads
-                        Set<String> tv = new LinkedHashSet<String>(ci0.altChans)
-                        Set<String> pps = rw.partnerStreams.get(st)
-                        for (String v : ci0.receives.values()) if (pps != null && pps.contains(rw.rootOf(v))) tv.add(v)
-                        for (String v : tv) {
+                        for (String v : takenVars(ci0, rw)) {
                             DeclarationExpression tk = new DeclarationExpression(new VariableExpression(v + '$taken'),
                                 Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), new ListExpression())
                             tk.setSourcePosition(st)
@@ -5206,6 +5207,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> ch = rw.ch
         ExpressionTransformer t = new ExpressionTransformer() {
             @Override Expression transform(Expression expr) {
+                if (expr instanceof PropertyExpression || expr instanceof MethodCallExpression) {   // Phase 259 — `c.taken`
+                    Expression g = takenGhostRewrite(expr, rw)
+                    if (g instanceof VariableExpression && ((VariableExpression) g).name.endsWith('$taken')) return g
+                }
                 if (expr instanceof PropertyExpression) {                 // Phase 249 — r.index / r.value
                     PropertyExpression pe = (PropertyExpression) expr
                     Expression obj = stripCasts(pe.objectExpression)
@@ -6071,7 +6076,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out.setSourcePosition((Statement) loop); out.copyNodeMetaData((Statement) loop)
         if (spec != null) {
             LoopSpec s2 = new LoopSpec()
-            s2.invariants = new ArrayList<Expression>(spec.invariants)
+            s2.invariants = new ArrayList<Expression>()
+            for (Expression inv : spec.invariants) s2.invariants.add(takenGhostRewrite(inv, rw))   // Phase 259 — `c.taken`
             s2.variant = spec.variant; s2.guard = fuelGuard != null ? fuelGuard : spec.guard; s2.init = spec.init
             s2.forInVar = spec.forInVar; s2.forInBind = spec.forInBind
             s2.isDoWhile = spec.isDoWhile; s2.autoInvariantOnly = spec.autoInvariantOnly
@@ -6312,6 +6318,67 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /** Phase 258/259 — the stream vars a consumer loop keeps a taken-ghost for: partner reads and ALT branches. */
+    private static Set<String> takenVars(ConsumerInfo ci, ChanRewrite rw) {
+        Set<String> tv = new LinkedHashSet<String>()
+        if (ci == null) return tv
+        tv.addAll(ci.altChans)
+        Set<String> pps = rw.partnerStreams.get((Statement) ci.loop)
+        for (String v : ci.receives.values()) if (pps != null && pps.contains(rw.rootOf(v))) tv.add(v)
+        tv
+    }
+
+    /**
+     * Phase 259 — `c.taken` (or `c.getTaken()`) in a spec or body of the current consumer loop → the loop's
+     * taken-ghost `c$taken`. Anywhere else it names nothing: recorded, reported once the rewrite is done.
+     */
+    private static Expression takenGhostRewrite(Expression e, ChanRewrite rw) {
+        if (e == null) return null
+        ExpressionTransformer t = new ExpressionTransformer() {
+            @Override Expression transform(Expression x) {
+                if (x == null) return null
+                String c = null
+                if (x instanceof PropertyExpression && ((PropertyExpression) x).propertyAsString == 'taken' &&
+                    stripCasts(((PropertyExpression) x).objectExpression) instanceof VariableExpression) {
+                    c = ((VariableExpression) stripCasts(((PropertyExpression) x).objectExpression)).name
+                } else if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'getTaken' && noArgs((MethodCallExpression) x) &&
+                    stripCasts(((MethodCallExpression) x).objectExpression) instanceof VariableExpression) {
+                    c = ((VariableExpression) stripCasts(((MethodCallExpression) x).objectExpression)).name
+                }
+                if (c != null && rw.ch.contains(c)) {
+                    Set<String> tv = takenVars(rw.curConsumer, rw)
+                    if (tv.contains(c)) {
+                        VariableExpression g = new VariableExpression(c + '$taken')
+                        g.setSourcePosition(x)
+                        return g
+                    }
+                    String why = rw.curConsumer == null
+                        ? 'it is outside a specified loop that receives from a stream'
+                        : "the loop at line ${((Statement) rw.curConsumer.loop).lineNumber} takes nothing from '${c}' (it is not a stream this loop receives from a cycle partner, nor a branch of its ALT)".toString()
+                    ASTNode at = x.lineNumber > 0 ? x : (rw.curConsumer != null ? (ASTNode) rw.curConsumer.loop : x)   // a reparsed spec has no position
+                    rw.ghostErrors.add([c + '.taken', why, at] as Object[])
+                    return x
+                }
+                if (x instanceof ClosureExpression) {
+                    ClosureExpression cl = (ClosureExpression) x
+                    if (!(cl.code instanceof BlockStatement)) return x
+                    List<Statement> ss = new ArrayList<Statement>()
+                    for (Statement st : ((BlockStatement) cl.code).statements) {
+                        if (st instanceof ExpressionStatement) { Statement n = new ExpressionStatement(transform(((ExpressionStatement) st).expression)); n.setSourcePosition(st); ss.add(n) }
+                        else if (st instanceof ReturnStatement) { Statement n = new ReturnStatement(transform(((ReturnStatement) st).expression)); n.setSourcePosition(st); ss.add(n) }
+                        else ss.add(st)
+                    }
+                    ClosureExpression nc = new ClosureExpression(cl.parameters, new BlockStatement(ss, ((BlockStatement) cl.code).variableScope))
+                    nc.setVariableScope(cl.variableScope)
+                    nc.setSourcePosition(cl)
+                    return nc
+                }
+                x.transformExpression(this)
+            }
+        }
+        t.transform(e)
+    }
+
     /** Phase 258 — after a partner read: the element read joins the reader's taken-ghost. */
     private static Statement takenAppend(String v, ChanRewrite rw, ASTNode at) {
         ConsumerInfo ci = rw.curConsumer
@@ -6525,6 +6592,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression r = ((ReturnStatement) st).expression
                 ReturnStatement nr = new ReturnStatement(r == null ? null : rewriteChExpr(r, rw))
                 nr.setSourcePosition(st); out.add(nr); continue
+            }
+            if (st instanceof AssertStatement) {                                  // Phase 259 — a body assert may name `c.taken`
+                AssertStatement as0 = (AssertStatement) st
+                AssertStatement na = new AssertStatement(new BooleanExpression(rewriteChExpr(as0.booleanExpression.expression, rw)), as0.messageExpression)
+                na.setSourcePosition(st); na.copyNodeMetaData(st); out.add(na); continue
             }
             out.add(st)
         }

@@ -1087,7 +1087,9 @@ fires only where priority is in effect — including `fair()` on a *fresh* insta
 no rotation state — and the fair server with a held `fair()` has its per-client liveness *certified* under
 weak fairness. Phase 258 then made the guarded replies *conditional streams* and the cycle itself a
 rely/guarantee argument, so the fair server verifies whole and each client proves `r == i + 1` — the
-request–reply law — with a wrong claim refuted (see `examples/kerridge.md`). Before beta-4 the verdicts
+request–reply law — with a wrong claim refuted; and Phase 259's `c.taken` (the elements a loop has taken
+so far, a ghost its `@Invariant` can quantify over) lets a token ring prove its closed form (see
+`examples/kerridge.md`). Before beta-4 the verdicts
 above stand, and all of them were reproduced, not read: `repro/ChannelSelectRepro.groovy` run against 6.0.0-beta-3 shows index 0 winning
 100/100 in either listing order, a losing branch delivering `[b2, b1]`, a thousand selects leaving a thousand
 pending receivers on a quiet branch (and one later element bounced a thousand times), and a select over two

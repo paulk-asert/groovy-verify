@@ -1,0 +1,3 @@
+moduleName=groovy-verify-ghosts
+moduleVersion=1.0
+extensionClasses=verification.ChannelGhosts

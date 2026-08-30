@@ -11906,6 +11906,32 @@ the user cannot name — the recorded next rung.
 
 ---
 
+## Phase 259 — The taken ghost: `c.taken`, the history a loop can name  *(shipped — slice 19 of the SEQ/PAR ladder)*
+
+Phase 258 left the token ring's closed form unprovable: `x == 2 * i + 1` in the primed cycle needs "every
+element A has taken so far is 2k + 1", a fact over A's taken-ghost that no local carries and the user could
+not spell. Now they can: `c.taken` is the list of elements the enclosing loop has taken from channel `c` so
+far — a stream it receives from a cycle partner, or a branch of its ALT — usable in that loop's
+`@Invariant` (and body asserts), quantified as `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`
+or the range sugar `(0..<i).every { … }`. It is a Groovy EXTENSION PROPERTY (`verification.ChannelGhosts`,
+registered through `META-INF/groovy/org.codehaus.groovy.runtime.ExtensionModule`) so the spec closure
+type-checks under STC — which does check `@Invariant` closures, "No such property: taken" otherwise — and
+executing it throws: it has a value at verification time only. The checker rewrites it to the loop's
+taken-ghost `c$taken` (`takenGhostRewrite`, applied to the LoopSpec invariants and to body asserts, which
+the stream rewrite now also walks); a partner rely instantiates a partner's user invariant over the
+partner's fresh taken-ghost like any other fact, so the closed form travels the cycle: A's `ca.taken[k] ==
+3k + 2` reaches C's law through B's, and `x == 3 * i + 2` proves for the three-process ring. Named where the
+loop takes nothing from the channel — a channel it sends to, a loop that receives from no stream — it is
+reported (`formatGhostMisuse`, anchored at the loop: a reparsed spec has no position of its own).
+
+Cases (G323, new group, 7): the primed cycle's closed form in both spellings, the wrong closed form
+refuted at its base case (the priming element is 0, so the first reply is 1), the token ring's `3i + 2`,
+the fair server's client proving the history of its replies (`replyA.taken[k] == k + 1`, claim runtime),
+and the two misuses. Both runtimes green: 1903 on beta-3 and on the snapshot. The ghost is `taken` only —
+a producer's `c.sent` would be its exact shadow list and is a one-line follow-up if a shape needs it.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -394,6 +394,13 @@ class Reporter {
     }
 
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */
+    /** Phase 259 — a verification ghost (`c.taken`) used where it names nothing. */
+    static String formatGhostMisuse(String ghost, String reason) {
+        "Verification ghost '${ghost}' names nothing here: ${reason}. `c.taken` is the list of elements the " +
+        "enclosing loop has taken from channel c so far — a stream it receives from a cycle partner, or a " +
+        "branch of its ALT — for that loop's @Invariant."
+    }
+
     static String formatNetworkSkipped(String methodName, String reason) {
         "Skipped network well-formedness check for ${methodName} (${reason}). The deadlock-freedom " +
         "certificate covers one-shot networks of unconditional sends and receives on local " +

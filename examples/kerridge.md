@@ -49,6 +49,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values (Phase 254); liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it (Phase 255) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
+| the history of a channel (a trace) | `c.taken` in a loop `@Invariant` | the elements this loop has taken from `c` so far, a list the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })` (Phase 259) |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
@@ -518,9 +519,40 @@ flattened model — each loop atomic, in dataflow order — has no order for it.
 fallback made every value claim after such a read vacuous (a `while (true)` client asserting `r == i + 2`
 "compiled cleanly") and replaced it with rely/guarantee: a cycle member reads its partner through a view
 constrained by the partner's invariants and the FIFO law, what it has *taken* is a prefix of what was sent,
-and the request–reply law closes — `r == i + 1` proves, `r == i + 2` is refuted. Every member of the cycle
-must be a `while (true)`; a closed form over a token ring (`x == 2 * i + 1`) needs an invariant over the
-taken elements the user cannot yet name. Both are said loudly.
+and the request–reply law closes — `r == i + 1` proves, `r == i + 2` is refuted. A closed form over a token
+ring needs one more thing: the history of what a loop has taken, which Phase 259 lets the invariant name as
+`c.taken`. Every member of the cycle must be a `while (true)`; that is said loudly.
+
+<!-- doclint:case p259-taken-ghost/the-primed-cycle-what-a-has-taken-is-2k-1-so-what-it-reads-is-2i-1-proved -->
+```groovy
+static void primed() {
+    AsyncChannel<Integer> aToB = AsyncChannel.create(4)
+    AsyncChannel<Integer> bToA = AsyncChannel.create(4)
+    async {                                              // A: one message ahead
+        aToB.send(0)
+        int i = 0
+        @Invariant({ i >= 0 && Forall.range(0, i, { int k -> bToA.taken[k] == 2 * k + 1 }) })
+        while (true) {
+            int x = bToA.first()
+            assert x == 2 * i + 1
+            aToB.send(x + 1)
+            i = i + 1
+        }
+    }
+    int j = 0
+    @Invariant({ j >= 0 })
+    while (true) {                                       // B
+        int y = aToB.first()
+        bToA.send(y + 1)
+        j = j + 1
+    }
+}
+```
+
+The token goes round with a value: A primes `0`, B answers `y + 1`, A reads `2i + 1` at its i-th turn —
+proved because A's invariant says what it has *taken* so far, B's law says what it sends is what it took
+plus one, and the FIFO law binds B's taken to A's sent. The three-process ring proves `3i + 2` the same way,
+and `2k` in place of `2k + 1` is refuted at its base case.
 
 **Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
 eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the
