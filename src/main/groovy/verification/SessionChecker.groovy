@@ -58,6 +58,11 @@ import org.codehaus.groovy.syntax.Types
  * violation is reported with the trace that reaches it. The check is structural (no solver): what the
  * protocol adds to the ladder is ORDER across the whole conversation — the deadlock, liveness and value
  * certificates of the other rungs stand on their own.
+ *
+ * Phase 264 — PARALLEL COMPOSITION, {@code par { … } and { … }}: independent sub-sessions interleaved (their
+ * channels disjoint), projected as the SHUFFLE of the parts' projections. The fair server is exactly this —
+ * not a choice one role makes, but two request–reply sessions interleaved at the server — and its ALT is one
+ * conformant implementation of the shuffle; a cross-wired reply falls outside it, with its trace.
  */
 class SessionChecker {
 
@@ -67,6 +72,7 @@ class SessionChecker {
     static class Seq extends G { List<G> items = [] }
     static class Loop extends G { G body }
     static class Choice extends G { String at; List<G> branches = [] }
+    static class Par extends G { List<G> parts = [] }                       // Phase 264 — independent sub-sessions, interleaved
 
     // ── a local type / a process: NFAs over op labels ("!c", "?c"), ε = '' ─────────────────────
     static class Nfa {
@@ -170,6 +176,28 @@ class SessionChecker {
                 if (!expect(t, pos, '}', errors)) return seq
                 seq.items.add(l); continue
             }
+            if (tok == 'par') {                                            // Phase 264 — par { … } and { … }
+                pos[0]++
+                Par par = new Par()
+                while (true) {
+                    if (!expect(t, pos, '{', errors)) return seq
+                    par.parts.add(parseSeq(t, pos, errors, true))
+                    if (!expect(t, pos, '}', errors)) return seq
+                    if (pos[0] < t.size() && t[pos[0]] == 'and') { pos[0]++; continue }
+                    break
+                }
+                if (par.parts.size() < 2) { errors.add("a par needs at least two parts ('… } and { …')"); return seq }
+                Map<String, Integer> where = [:]
+                for (int pi = 0; pi < par.parts.size(); pi++) {
+                    Set<String> cs = new LinkedHashSet<String>()
+                    collectChans(par.parts.get(pi), cs)
+                    for (String c : cs) {
+                        if (where.containsKey(c) && where.get(c) != pi) { errors.add("the parts of a par must not share a channel ('${c}' is in two — independent sub-sessions only)".toString()); return seq }
+                        where.put(c, pi)
+                    }
+                }
+                seq.items.add(par); continue
+            }
             if (tok == 'choice') {
                 pos[0]++
                 if (!expect(t, pos, 'at', errors)) return seq
@@ -210,6 +238,7 @@ class SessionChecker {
         else if (g instanceof Seq) for (G x : ((Seq) g).items) collectRoles(x, out)
         else if (g instanceof Loop) collectRoles(((Loop) g).body, out)
         else if (g instanceof Choice) { out.add(((Choice) g).at); for (G x : ((Choice) g).branches) collectRoles(x, out) }
+        else if (g instanceof Par) for (G x : ((Par) g).parts) collectRoles(x, out)
     }
 
     private static void collectChans(G g, Set<String> out) {
@@ -217,6 +246,7 @@ class SessionChecker {
         else if (g instanceof Seq) for (G x : ((Seq) g).items) collectChans(x, out)
         else if (g instanceof Loop) collectChans(((Loop) g).body, out)
         else if (g instanceof Choice) for (G x : ((Choice) g).branches) collectChans(x, out)
+        else if (g instanceof Par) for (G x : ((Par) g).parts) collectChans(x, out)
     }
 
     /** The first message of a global type, or null when it starts with nothing (empty). */
@@ -225,6 +255,7 @@ class SessionChecker {
         if (g instanceof Seq) { for (G x : ((Seq) g).items) { Msg m = firstMsg(x); if (m != null) return m } ; return null }
         if (g instanceof Loop) return firstMsg(((Loop) g).body)
         if (g instanceof Choice) return firstMsg(((Choice) g).branches.get(0))
+        if (g instanceof Par) return firstMsg(((Par) g).parts.get(0))
         null
     }
 
@@ -286,7 +317,47 @@ class SessionChecker {
             }
             return frag(a, anyOut ? b : null)
         }
+        if (g instanceof Par) {                                            // Phase 264 — the shuffle of the parts
+            List<Frag> fs = []
+            for (G part : ((Par) g).parts) fs.add(project(part, role, nfa, errors))
+            if (!errors.isEmpty()) return frag(nfa.newState(), null)
+            return shuffle(fs, nfa)
+        }
         frag(nfa.newState(), null)
+    }
+
+    /**
+     * Phase 264 — the SHUFFLE of independent fragments (channels disjoint): a product automaton over tuples of
+     * per-part states, any part free to take its next step. Regular, so the same inclusion check decides.
+     */
+    private static Frag shuffle(List<Frag> fs, Nfa nfa) {
+        Map<String, Integer> ids = [:]
+        List<int[]> todo = []
+        Closure<Integer> stateOf = { int[] tuple ->
+            String k = tuple.toList().join(',')
+            Integer id = ids.get(k)
+            if (id == null) { id = nfa.newState(); ids.put(k, id); todo.add(tuple.clone()) }
+            id
+        }
+        int[] start = fs.collect { Frag f -> f.in } as int[]
+        int inState = stateOf(start)
+        Integer outState = null
+        boolean allOut = fs.every { Frag f -> f.out != null }
+        while (!todo.isEmpty()) {
+            int[] tuple = todo.remove(0)
+            int from = stateOf(tuple)
+            if (allOut && (0..<fs.size()).every { int i -> tuple[i] == (int) fs.get(i).out }) {
+                if (outState == null) outState = nfa.newState()
+                nfa.edge(from, '', (int) outState)
+            }
+            for (int i = 0; i < fs.size(); i++) {
+                for (Object[] e : nfa.edges.get(tuple[i])) {
+                    int[] next = tuple.clone(); next[i] = (int) e[1]
+                    nfa.edge(from, (String) e[0], stateOf(next), e[2] == null ? -1 : (int) e[2])
+                }
+            }
+        }
+        frag(inState, outState)
     }
 
     private static Frag frag(int a, Integer b) { Frag f = new Frag(); f.in = a; f.out = b; f }
@@ -306,6 +377,7 @@ class SessionChecker {
         if (g instanceof Seq) return ((Seq) g).items.collect { G x -> shape(x, role) }.join('')
         if (g instanceof Loop) return "(${shape(((Loop) g).body, role)})*"
         if (g instanceof Choice) return '(' + ((Choice) g).branches.collect { G x -> shape(x, role) }.join('|') + ')'
+        if (g instanceof Par) return 'par(' + ((Par) g).parts.collect { G x -> shape(x, role) }.join('&') + ')'
         ''
     }
 

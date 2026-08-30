@@ -404,8 +404,9 @@ class Reporter {
     /** Phase 263 — the @Protocol itself cannot be read or projected. */
     static String formatProtocolSkipped(String methodName, String reason) {
         "Skipped protocol check for ${methodName} (${reason}). A @Protocol is a sequence of `label: from -> to` messages " +
-        "(the label is the channel), `loop { … }` and `choice at role { … } or { … }` (every branch beginning with a " +
-        "message from that role, and told apart by the others through their first message to them)."
+        "(the label is the channel), `loop { … }`, `choice at role { … } or { … }` (every branch beginning with a " +
+        "message from that role, and told apart by the others through their first message to them), and " +
+        "`par { … } and { … }` (independent sub-sessions, channels disjoint, interleaved)."
     }
 
     /** Phase 259 — a verification ghost (`c.taken`) used where it names nothing. */

@@ -50,7 +50,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
 | the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })` (Phases 259/260); bound a law a *partner* relies on by the ghost's own size |
-| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol('''loop { request: client -> server; reply: server -> client }''')` on the method | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace (Phase 263) |
+| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol('''loop { request: client -> server; reply: server -> client }''')` on the method | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
@@ -617,14 +617,15 @@ static void ring() {
 Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 40) where
 the protocol expects it to receives from 'ca'"); make a client wait before asking and the trace says so. A
 choice belongs to one role (`choice at client { … } or { … }`, the client's `if`/`else` against the
-server's ALT); the fair server's choice — opened by whichever client asks first — is beyond that
-projection, and the checker says exactly that.
+server's ALT); and the fair server is typed not as a choice at all but as a `par` (Phase 264) — two
+request–reply sessions, channels disjoint, interleaved at the server, projected as their *shuffle* — whose
+ALT is one conformant implementation, a cross-wired reply named with its trace.
 
 **Beyond.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
-eventually — is a quantitative property the "eventually" of weak fairness does not reach; and a *mixed*
-choice, opened by different roles, is beyond the classic projection. Those are what remains of the
-research conversation: the same guarantees GPP establishes offline by formal methods, issued incrementally
-by the compiler.
+eventually — is a quantitative property the "eventually" of weak fairness does not reach; and a *genuinely
+mixed* choice — two peers racing on the same channels, where `par`'s disjointness is exactly what fails —
+is beyond the classic projection. Those are what remains of the research conversation: the same guarantees
+GPP establishes offline by formal methods, issued incrementally by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

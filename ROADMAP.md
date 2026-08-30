@@ -12075,6 +12075,42 @@ out of a loop is not read, and the check is per method (no cross-method sessions
 
 ---
 
+## Phase 264 — Parallel protocols: the fair server's session type  *(shipped — slice 24 of the SEQ/PAR ladder)*
+
+Phase 263 left the fair server outside the projection, and rightly: it is NOT a choice one role makes. It
+is two INDEPENDENT request–reply sessions interleaved at the server — which is a `par`:
+
+```groovy
+@Protocol('''
+    par {
+        loop { reqA: clientA -> server; replyA: server -> clientA }
+    } and {
+        loop { reqB: clientB -> server; replyB: server -> clientB }
+    }
+''')
+```
+
+`par { … } and { … }` composes sub-sessions whose channels are DISJOINT (enforced — sharing a channel
+would conflate orders on it) and projects, per role, as the SHUFFLE of the parts' projections: a product
+automaton over tuples of per-part states, any part free to take its next step — regular, so Phase 263's
+inclusion check decides unchanged. Each client plays its own part (the other projects to nothing); the
+server plays the shuffle, and its ALT — take whichever request is ready, reply on that client's channel —
+is ONE conformant implementation (the shuffle also admits batching; the type does not over-commit). A
+cross-wired server (replyB for reqA) falls outside the shuffle and is named with its trace ("sends on
+'replyB' after it receives from 'reqA' where the protocol expects it to sends on 'replyA' or receives from
+'reqB'").
+
+Conformance is the protocol's ORDER only, and the layers compose: the same typed server is clean on
+6.0.0-beta-4+ with a held `fair()` (conformant AND certified live AND its values proved — Phases 257/258)
+and, under a priority select, conformant while per-client liveness is withheld (Phase 256) — one program,
+different guarantees, each said by its own rung. Cases (G328, new group, 4): the typed fair server
+(clean on the claim runtime), the priority twin (order conforms, liveness withheld, on both runtimes), the
+cross-wired trace, the shared-channel refusal. Both runtimes green, 1934; `check` green. What remains
+beyond: GENUINELY mixed choice — a race between two peers on the SAME channels — and starvation-freedom
+in the large.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
