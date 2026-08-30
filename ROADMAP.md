@@ -11858,6 +11858,54 @@ experiments (guarded by `respondsTo('fair')`); the JIRA drafts are marked filed.
 
 ---
 
+## Phase 258 — Cyclic streams and conditional streams: the fair server verifies whole  *(shipped — slice 18 of the SEQ/PAR ladder)*
+
+Paul asked for the conditional-stream rung — the fair server's guarded replies as streams, so a client can
+prove what it is answered. The probe that opened it found something older: a `while (true)` client–server
+pair (Phase 255's shape) with `assert r == i + 2` in the client "compiled cleanly". The flattened model runs
+each loop atomically in dataflow order; a CYCLE has no such order, so the fallback ran the server first over
+an empty request list, its exit facts pinned `reply$q.size() == j == 0`, and the client's assumed "the
+element exists" contradicted them — every claim after a read in a cycle was vacuous (the Phase 255 cases
+carried no value claim, so nothing showed). A soundness find, fixed here.
+
+The fix is RELY/GUARANTEE over streams. `computeCycles` finds the loops in a cycle (each reads a stream
+produced by a loop that, directly or through others, reads a stream it produces — the client–server pair,
+the primed cycle, the ring, the fair server); every member must be a `while (true)` (a partner that
+terminates has an exit fact no snapshot carries — flagged loudly, a rung not built). A member reads a
+partner's stream through a fresh RELY VIEW (`X$rely<n>`, an unassigned list: havoc-by-default) constrained
+by the whole cycle's invariants instantiated over fresh names — each partner's user invariants, stream laws,
+cursor facts and taken-ghosts (`relyBlock`) — plus the FIFO LAW: what a consumer has TAKEN is a prefix of what
+its producer sent, and where the reader IS that producer the law binds to the reader's own exact list. That
+is the link that closes a request–reply claim: `reply$rely[i] == request$taken'[i] + 1 == request$q[i] + 1
+== i + 1`. Every partner read appends to the reader's TAKEN-GHOST (`X$taken`), the loop's own laws are stated
+over it (`consumerBoundInvariants`, `aliasedSend`, `cursorInvariant`), and partner producers are no longer
+imported as frame facts. Soundness: the conjunction of the loops' invariants is a global invariant (each
+mentions its own counter and lists exactly, others' only through append-stable facts), the partners' states
+are existentially quantified, and the element's existence is the liveness assumption Phase 254 already makes.
+The wrong claim is now REFUTED with a counterexample (`request$taken$r4.size() = 1, reply$rely4.size() = 1`).
+
+CONDITIONAL STREAMS ride on that: a guarded reply `if (r.index == b) { Y.send(E) }` at the top level of an
+ALT loop, the channel's only send, is a stream whose count is the chosen branch's cursor and whose k-th
+element is E with the ALT's value (the alias `T q = (cast) r.value`, or `r.value` itself) standing for the
+k-th element TAKEN from that branch (`guardedReplyStreams`, a second consumer-scan pass sanctions the loops
+that read the replies). An ALT choice appends the value to the branch's taken-ghost; under the claim-based
+select (Phase 257) the taken-ghost is the branch's prefix and the FIFO law is elementwise, under the racing
+select — losers re-sent to the back — it is a count only, so the same client claim PROVES on 6.0.0-beta-4+
+and is REFUTED before (a true refutation: the k-th reply may answer another request). The network check
+applies the Phase 256/257 guarded-reply verdicts to the now-sanctioned reads (`requestPrecedes`), so
+liveness stays withheld for a priority server and certified for a held `fair()` with the request first.
+
+Cases (G322, new group, 8): the forever client–server proves `r == i + 1`, refutes `r == i + 2`, refutes a
+reply computed from a loop-written accumulator (count law, no element law); the fair server proves both
+clients' claims and refutes a wrong one (claim runtime; type error before); the priority server proves the
+claim on the claim runtime with liveness withheld and refutes it under the racing select; the boundaries —
+a guarded reply with a second send, a cycle with a terminating member. G310's held-`fair()` fair server is
+now a CLEAN verdict on the claim runtime (no skip). Both runtimes green: 1896 on beta-3 and on the snapshot.
+What the closed-form token-ring claim (`x == 2 * i + 1`) would need is an invariant over the taken-ghost
+the user cannot name — the recorded next rung.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

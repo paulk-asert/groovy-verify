@@ -397,10 +397,14 @@ From 6.0.0-beta-4 (GROOVY-12320, the fix drafted from that finding) `select()` s
 `fair()`: hold the instance — the rotation state lives in it — and the same server's per-client liveness is
 **certified** (Phase 257): every ready client is taken within two selects, each request precedes the wait
 for its reply (a client that waits before asking is withheld, with that reason), and the server loop is
-live, so every client is served under weak fairness. The reply's *value* is another matter: a send inside
-`if` is not a stream, and the channel model says so — loudly, as it did above — rather than pretend. Call
-`.fair()` on a fresh instance inside the loop and the checker names the mistake — no rotation state,
-priority in effect:
+live, so every client is served under weak fairness. And since Phase 258 the reply's *value* is proved too:
+the guarded `replyA.send(q + 1)` is a **conditional stream** — one element per choice of its branch, its
+k-th element `q + 1` over the k-th request taken from `reqA` — and the cycle (clients waiting on the
+server, the server waiting on the clients) is argued by rely/guarantee, each loop reading its partner's
+stream through a view constrained by the partner's invariants and the FIFO law. So the server below
+verifies whole, and a client that asserts `r == i + 1` after its receive proves it — while `r == i + 2` is
+refuted with a counterexample. Call `.fair()` on a fresh instance inside the loop instead and the checker
+names the mistake — no rotation state, priority in effect:
 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-with-a-held-fair-select-per-client-liveness-certified-groovy-6-0-0-beta-4 -->
 ```groovy
@@ -508,6 +512,15 @@ in the instance) and `random()`. The checker probes the runtime it runs on and m
 default, or `fair()` on a *fresh* instance each iteration, named with the hoisting fix; `random()` is fair in
 expectation only; and the fair server with a held `fair()` is **certified**. What is still withheld is
 withheld with the policy's own reason. On beta-3 the verdicts above stand, unchanged.
+
+**The cycle's.** A client waiting on a server that waits on the client is a *cycle* of streams, and the
+flattened model — each loop atomic, in dataflow order — has no order for it. Phase 258 found that the
+fallback made every value claim after such a read vacuous (a `while (true)` client asserting `r == i + 2`
+"compiled cleanly") and replaced it with rely/guarantee: a cycle member reads its partner through a view
+constrained by the partner's invariants and the FIFO law, what it has *taken* is a prefix of what was sent,
+and the request–reply law closes — `r == i + 1` proves, `r == i + 2` is refuted. Every member of the cycle
+must be a `while (true)`; a closed form over a token ring (`x == 2 * i + 1`) needs an invariant over the
+taken elements the user cannot yet name. Both are said loudly.
 
 **Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
 eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the
