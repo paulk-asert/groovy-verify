@@ -11750,6 +11750,14 @@ proposal in one line each: a shared claim checked in the channel's delivery path
 so exactly one branch dequeues and losers never register or bounce; a `fair()` mode rotating the poll
 order per select instance; completing the select exceptionally once every branch has reported closed.
 
+Perf note (from CI, 2026-08-30): `valueAny` makes a REFUTATION through a looping ALT a SAT search that
+must build a model of the branches' quantified element relations; with `a$q[k] == k`-style relations
+that model-based instantiation is wildly variable — ~1 s here, past the 8 s CI budget on ubuntu-latest
+for G317's two refuting cases (the contract an input violates; the order claim). Both now use constant
+payloads (`a.send(0)` / `b.send(100)`), which carry the same points at 3 ms; the proof-side cases keep
+the indexed producers. Pattern to remember: a refutation under quantified stream relations is the
+expensive direction — prefer constant or bounded payloads in refuting cases.
+
 Cases (G320, new group, 5): the OR knot (deadlock) and its generator-branch twin (live), the starvation
 hazard, the finite-generator delay (no hazard), the fair server (withheld). G318's forever multiplexer
 and G319's dependent-stage ALT flip. G310 gains the fair server. Docs: the Phase 256 subsection in

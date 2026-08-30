@@ -55,6 +55,9 @@ class G317_p253_looping_alt {
                                 b.close()
                             }"""
 
+    /** The same two producers with constant payloads (0s on a, 100s on b). */
+    static final String PRODUCERS_CONST = PRODUCERS.replace('a.send(i)', 'a.send(0)').replace('b.send(i + 100)', 'b.send(100)')
+
     static final List<Map> CASES = [
 
         // ---------- the multiplexer ----------
@@ -120,11 +123,14 @@ class G317_p253_looping_alt {
                             return out.toList()
                         }
                     }""")],
+        // (Constant payloads: the refutation is a SAT search under the branches' element relations, and a
+        // relation `a$q[k] == k` makes that model-building heavy enough to time out on a slow CI runner;
+        // `a$q[k] == 0` carries the same point at a fraction of the cost.)
         [group: 'P253 looping ALT', name: 'a forwarded element contract an input violates is refuted', expect: 'Assertion may not hold',
          src: tc("""class C {
                         @Requires({ na >= 1 && nb >= 0 })
                         @Ensures({ result.size() == na + nb })
-                        static List<Integer> merge(int na, int nb) {${PRODUCERS}
+                        static List<Integer> merge(int na, int nb) {${PRODUCERS_CONST}
                             AsyncChannel<@Positive Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
@@ -144,7 +150,7 @@ class G317_p253_looping_alt {
          src: tc("""class C {
                         @Requires({ na >= 1 && nb >= 1 })
                         @Ensures({ result.size() == na + nb && result[0] == 0 })
-                        static List<Integer> merge(int na, int nb) {${PRODUCERS}
+                        static List<Integer> merge(int na, int nb) {${PRODUCERS_CONST}
                             AsyncChannel<Integer> out = AsyncChannel.create(8)
                             int j = 0
                             @Invariant({ 0 <= j && j <= na + nb })
