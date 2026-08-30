@@ -52,7 +52,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })` (Phases 259/260); bound a law a *partner* relies on by the ghost's own size |
 | starvation-freedom in the large (served within a bound) | `@ServedWithin(n)` on the method | certified for a held `fair()` over k <= n branches (the rotation's own arithmetic); refuted with the policy's reason otherwise (Phase 265) |
 | end-to-end latency through a pipeline | `@DeliveredWithin(value = n, from = 'c', to = 'd')` | the head-of-line service bound, summed hop by hop (a stage is 1, a held `fair()` ALT its branch count), the worst path deciding; queueing is loudly not claimed (Phase 266) |
-| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol('''loop { request: client -> server; reply: server -> client }''')` on the method | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
+| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol({ loop { request: client >> server; reply: server >> client } })` on the method — plain Groovy, parsed by Groovy (`text = '''…'''` keeps the string form; `./gradlew nuscrCheck` exports the corpus as real Scribble for the MPST tools, the mixed choice refused as outside their fragment) | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
@@ -574,14 +574,14 @@ control flow against its projection, naming a violation with the trace that reac
 
 <!-- doclint:case p263-session-types/the-primed-token-ring-follows-a-three-role-protocol-that-says-the-priming -->
 ```groovy
-@Protocol('''
-    ab: a -> b                       // the priming token
+@Protocol({
+    ab: a >> b                       // the priming token
     loop {
-        bc: b -> c
-        ca: c -> a
-        ab: a -> b
+        bc: b >> c
+        ca: c >> a
+        ab: a >> b
     }
-''')
+})
 static void ring() {
     AsyncChannel<Integer> ab = AsyncChannel.create(4)
     AsyncChannel<Integer> bc = AsyncChannel.create(4)

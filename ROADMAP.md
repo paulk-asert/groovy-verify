@@ -12216,6 +12216,67 @@ was filed and fixed), and G331's verdicts are unchanged. Both runtimes green, 19
 
 ---
 
+## Phase 269 — The `@Protocol` closure DSL: Groovy parses the protocol  *(shipped — slice 30 of the SEQ/PAR ladder)*
+
+Paul asked whether the protocol string could become what Groovy is best at — a DSL. It can, almost without
+inventing anything: three pieces of Groovy line up so well that the notation is *plain Groovy already*. A
+statement LABEL is the message name, `>>` points from sender to receiver, and the combinators are command
+chains:
+
+```groovy
+@Protocol({
+    loop {
+        request: client >> server
+        reply:   server >> client
+    }
+    choice(at: client) { add: client >> server } or { quit: client >> server }
+    par { reqA: clientA >> server } and { reqB: clientB >> server }
+    choice { ping: left >> right } or { pong: right >> left }        // mixed
+})
+```
+
+The names are protocol vocabulary, not variables — and STC checks annotation closures (Phase 259's lesson)
+— so `ContractExpansionTransform` harvests the closure at CONVERSION, before STC: `captureProtocolDsl`
+walks the closure's AST (labels + `>>` binaries; `loop`/`choice[(at: role)]`/`par` chains joined by
+`or`/`and`), renders it to the canonical protocol text into the annotation's new `text` member, and clears
+the closure member to `Void`. `SessionChecker` is unchanged downstream — one canonical form, two surfaces.
+What the closure surface buys: Groovy's parser reports malformed protocols as COMPILE ERRORS with the
+statement's own line and column (a wrong combinator, `choice … and`, a stray named argument, an unlabelled
+message — each named by `protocolDslError`), where the hand parser gave positionless prose; the notation is
+IDE-assisted; and the AST is there for any tool that wants it (the Scribble exporter is next). The Phase
+263 string survives as `text = \'\'\'…\'\'\'` — arrows and `choice at role` — for tools that carry protocols as
+strings. The whole corpus (G327/G328/G331, the kerridge gallery fence) is migrated to the closure surface.
+
+Cases (G332, new group, 6): the DSL end to end, the `text =` pin, a violation traced through the closure
+surface, and three compile-error shapes at their own lines. Both runtimes green, 1959; `check` green.
+
+---
+
+## Phase 270 — Scribble export, and nuScr as an oracle at the door  *(shipped — slice 31 of the SEQ/PAR ladder)*
+
+Paul asked how much anyone needs Scribble; the answer we settled on: users never do — the checker does, as
+a boundary artifact and an oracle. `ScribbleExport` walks the parsed global type and emits REAL Scribble —
+the notation the MPST tools read (Scribble-Java; nuScr, the actively maintained OCaml core) — with the
+mapping stated honestly in the code: a message becomes `label() from A to B;` (payload empty: our label IS
+the channel, its element type the payload — a deliberate divergence); `loop` becomes `rec Xn { …;
+continue Xn; }` (Scribble's rec is ω-iteration where ours is a Kleene star — the closest standard
+spelling); `choice at` is verbatim; `par { } and { }` is Scribble-Java syntax that nuScr's fragment may
+reject — the gate's finding to report, not ours to hide. A MIXED choice is refused as "outside standard
+Scribble": the claim that this ladder stepped past the standard fragment, previously prose, is now emitted
+mechanically per protocol (`MixedPingPong.outside-standard.txt` sits beside the four `.scr` files).
+
+The `nuscrCheck` gradle task joins the external-oracle family (tlcCheck, lincheckTest, frayCheck): it
+exports the curated corpus (`ScribbleExport.CORPUS` — request–reply, the primed ring, the calculator
+choice, the fair server's par, the mixed ping-pong) to `build/scribble` and, when a `nuscr` binary is on
+the PATH, runs it over each `.scr`, failing on disagreement; without one it reports the export and
+"cross-check SKIPPED (opam install nuscr)" — the status on this machine. Golden-output tests
+(`ScribbleExportTest`, five) pin every mapping including the refusal. One flinch worth recording: a
+half-edited `render` slipped into the tree while the Phase 269 gates ran and its golden test failed inside
+that window's `check` — the fix landed before anything was committed, and the gates re-ran on the final
+tree. Not in `check` (nuscr is rarely installed); run `./gradlew nuscrCheck`.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

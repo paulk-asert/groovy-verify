@@ -385,18 +385,29 @@ executable contract over a small grid of integer inputs and reports any concrete
 best-effort `fails on:` repro (Phase 62). See `Encoder` and the roadmap for the exact boundaries.
 
 Groovy 6's **concurrency sugar** has its own fragment, structural as well as value-level (the SEQ/PAR
-ladder, Phases 240–245 — full treatment in [the concurrency gallery](examples/concurrency.md) and the
-per-phase [CAPABILITIES](CAPABILITIES.md) rows). The value model is deliberately small: a *safe* `async { e }`
-reads out as `e` (gathers as the value list, racing combinators as a nondeterministic choice), a
-`DataflowVariable` as a write-once scalar, and an `AsyncChannel` pipeline as function composition over **one
-representative element** — one send and one consumer per channel, sends *declaring* the element (a never-sent
-channel read proves nothing), with loops, drains, and multi-element traffic refusing the rewrite loudly. The
-structural rules are checked on top of it, not assumed: concurrent tasks must not touch what another task
-or the enclosing fork-join window writes (240); each channel end has one live process, with
-`BroadcastChannel.subscribe()` the sanctioned fan-out (241); Bean Validation bounds on the element type are
-the channel's contract — checked at sends, assumed at a channel-typed parameter's receives (242); the
-one-shot network's wait-for order must be **well-founded** — a cycle, an unsatisfiable receive, or an
-iteration over a never-closed channel is a named error, with conditional ops, escaping channels, and channel
-parameters excluded from the claim (243, 245); and a body-level `@Guarantee` is proved against its
-predicate (244). The scheduler, the JMM, atomicity, and everything outside the one-shot fragment stay with
-the runtime rungs in [CONCURRENCY.md](CONCURRENCY.md).
+ladder, Phases 240–270 — full treatment in [the concurrency gallery](examples/concurrency.md), [the
+Kerridge gallery](examples/kerridge.md), and the per-phase [CAPABILITIES](CAPABILITIES.md) rows). The
+value model: a *safe* `async { e }` reads out as `e` (gathers as the value list, racing combinators as a
+nondeterministic choice), a `DataflowVariable` as a write-once scalar, and an `AsyncChannel` as the
+sequence its producer sends — one-shot traffic as a bounded FIFO (the k-th receive is the k-th send);
+a specified unit-counter producer loop as a **stream** (the channel is the list the loop builds, literal,
+symbolic, or infinite — a `while (true)` process is certified for safety and, under weak fairness, for
+liveness); consumer and stage loops reading element k; `for (v in c)` drains ending at the close; loops
+that answer each other (client–server pairs, rings, fair servers) by **rely/guarantee** over append-stable
+facts, with the histories nameable in an `@Invariant` as the `c.taken` / `c.sent` ghosts, terminating
+members held to their static totals, and a partner's drain read as the counter loop it is; an ALT
+(`ChannelSelect`) as a choice among ready branches, modelled with the selection semantics of the runtime
+that hosts the checker (priority and re-sent losers before Groovy 6.0.0-beta-4; the claim-based select
+with a held `fair()` / `random()` from GROOVY-12320 on), guarded replies as conditional streams. The
+structural rules are checked on top, not assumed: task/window interference (240); one live process per
+channel end, `BroadcastChannel.subscribe()` the sanctioned fan-out (241); Bean Validation element bounds
+as the channel's contract (242); wait-for **well-foundedness** — one-shot networks as a DAG, looping
+networks per iteration index — with a cycle, an unsatisfiable receive, or an iteration over a
+never-closed channel a named error (243, 245, 255); `@Guarantee` proved (244); starvation hazards and
+per-client liveness decided by the selection policy's own arithmetic, quantitative bounds as claims
+(`@ServedWithin`, `@DeliveredWithin` — head-of-line service, queueing loudly not claimed); and a
+`@Protocol` session type (a Groovy closure, or text) projected onto each role and enforced by
+conformance, `par` interleaving independent sub-sessions and a mixed choice held to one initiator.
+*Out, and said so:* queueing delay (arrival rates), racing arbitration (output guards — proposed
+upstream), and the scheduler, the JMM, and atomicity, which stay with the runtime rungs in
+[CONCURRENCY.md](CONCURRENCY.md).
