@@ -522,7 +522,8 @@ constrained by the partner's invariants and the FIFO law, what it has *taken* is
 and the request–reply law closes — `r == i + 1` proves, `r == i + 2` is refuted. A closed form over a token
 ring needs one more thing: the history of what a loop has taken, which Phase 259 lets the invariant name as
 `c.taken`. A member may terminate (Phase 261) — then what it reads must lie below its partner's total, and
-the read that would block forever is refuted, the total named.
+the read that would block forever is refuted, the total named — and a partner that *drains* until the
+other's close (Phase 262) is the cycle that ends cleanly, verified whole.
 
 <!-- doclint:case p259-taken-ghost/the-primed-cycle-what-a-has-taken-is-2k-1-so-what-it-reads-is-2i-1-proved -->
 ```groovy
@@ -559,8 +560,10 @@ its own law (`Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) }
 own size so a reader mid-cycle may rely on it), and its readers prove against it. And a member of the cycle
 may terminate (Phase 261): a bounded client's total is read off its guard, and a partner that reads past it
 is refuted at that read — a `while (true)` server of a `while (i < n)` client waits forever for the request
-after the last, which the checker now says; matched bounds prove both sides. A server that *drains* until
-its client closes is the shape that ends cleanly, and the drain of a cycle partner's stream is the next rung.
+after the last, which the checker now says; matched bounds prove both sides. And the shape that ends
+cleanly — a client that closes its request channel after its loop, a server that *drains* it until the
+close — verifies whole (Phase 262): the drain is read as the counter loop it is, its replies are exactly the
+client's requests answered, and its termination is the client's close.
 
 **Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
 eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the

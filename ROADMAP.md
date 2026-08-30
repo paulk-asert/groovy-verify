@@ -11999,6 +11999,38 @@ the drain of a partner stream — and session types.
 
 ---
 
+## Phase 262 — The drain of a partner stream: the cycle that ends cleanly  *(shipped — slice 22 of the SEQ/PAR ladder)*
+
+Phase 261's true finding — a `while (true)` server of a bounded client waits forever after the last
+request — named the shape that ends cleanly: a client that CLOSES its request channel after its loop, and a
+server that DRAINS it, `for (q in request) { reply.send(q + 1) }`, until the close. Phase 251's drain is a
+loop over the completed shadow list, which a cycle cannot supply (the drain's replies are what the client
+waits on). So a drain of a cycle partner's stream is REBUILT — arms rebuilt, never mutated, as
+`alphaRenameArms` does — into the counter loop the cycle model reads directly (`desugarPartnerDrains`):
+
+```
+int request$d = 0
+while (request$d < n) { int q = request.first(); …; request$d = request$d + 1 }   // while (true) for a forever producer
+```
+
+with a synthesized LoopSpec (`0 <= request$d && request$d <= n`, variant `n - request$d`), provided the
+producer is a unit-counter loop with a static total (Phase 261's `staticTotalText`) that closes the channel
+after its loop, and the drain replies on a channel the producer reads — the cycle in evidence. The rebuilt
+body feeds everything that judges the network: the model verdicts (`checkChannelLinearity`), the network
+check's stream scan and liveness analysis, and the rewrite. The drain's reads are then partner reads (rely
+views, taken-ghost, the read-below-total obligation — met by the guard, the drain reads exactly what is
+sent), its replies a stream of exactly the total, and the client's request–reply claim proves with its reads
+below that total (`r == i + 1` proves, `r == i + 2` is refuted). Without the close, or over a producer of
+another shape, the drain is left to Phase 251's model and its loud skip. A drain of a `while (true)`
+producer's stream never finishes BY DESIGN: the network check now says "a non-terminating drain" and
+withholds its certificate instead of claiming a deadlock (its values still prove).
+
+Cases (G326, new group, 5): the bounded client with a draining server (proved), the wrong claim (refuted),
+the drain in the main body with the client in the arm, the forever client (a non-terminating drain, noted,
+the replies proved), and the missing close (Phase 251's skip). Both runtimes green, 1920; `check` green.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

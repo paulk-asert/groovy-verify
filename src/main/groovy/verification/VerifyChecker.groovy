@@ -4209,6 +4209,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> ch = new HashSet<String>()
         collectChannelVars((BlockStatement) body, ch)
         if (ch.isEmpty()) return body
+        body = desugarPartnerDrains((BlockStatement) body, ch, params)   // Phase 262 — a drain of a cycle partner's stream
         // Phase 241/247 — the bounded-FIFO guard: refuse the rewrite for any body with a channel
         // beyond the model (the body then skips loudly downstream; checkChannelLinearity names the
         // channel and the reason), so nothing proves an order-dependent or count-dependent value.
@@ -6874,6 +6875,154 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /**
+     * Phase 262 — the DRAIN of a cycle partner's stream, `for (v in c) { … reply.send(f(v)) … }`, where c is
+     * produced by a unit-counter loop in another process that receives what the drain sends and closes c after
+     * its loop (or never terminates — then the drain never ends either). Rebuilt — arms are rebuilt, never
+     * mutated — as the counter loop the cycle model reads directly:
+     * <pre>
+     *   int c$d = 0
+     *   while (c$d < TOTAL) { T v = c.first(); …; c$d = c$d + 1 }     // TOTAL from the producer's guard
+     * </pre>
+     * with a synthesized LoopSpec (`0 <= c$d && c$d <= TOTAL`, variant `TOTAL - c$d`; `while (true)` for a
+     * non-terminating producer). The drain's reads are then partner reads (rely views, taken-ghost, the
+     * read-below-total obligation — trivially met, the drain reads exactly what is sent), its sends a stream
+     * of TOTAL elements, and the client's reads of the replies carry their own obligation against that.
+     */
+    private static BlockStatement desugarPartnerDrains(BlockStatement body, Set<String> ch, Set<String> params) {
+        List<List<Statement>> blocks = topLevelBlocks(body)
+        Map<String, Object[]> loopSend = new HashMap<String, Object[]>()           // channel → [producer loop, its block]
+        for (List<Statement> block : blocks) {
+            for (Statement st : block) {
+                if (!(st instanceof LoopingStatement)) continue
+                Statement lb = ((LoopingStatement) st).loopBlock
+                List<Statement> top = lb instanceof BlockStatement ? ((BlockStatement) lb).statements : Collections.singletonList(lb)
+                for (Statement inner : top) {
+                    MethodCallExpression call = sendCallOf(inner, ch)
+                    if (call != null) loopSend.put(((VariableExpression) stripCasts(call.objectExpression)).name, [st, block] as Object[])
+                }
+            }
+        }
+        Map<Statement, List<Statement>> replace = new IdentityHashMap<Statement, List<Statement>>()
+        for (List<Statement> block : blocks) {
+            for (Statement st : block) {
+                if (!(st instanceof ForStatement)) continue
+                ForStatement f = (ForStatement) st
+                Expression coll = stripCasts(f.collectionExpression)
+                if (!(coll instanceof VariableExpression) || !ch.contains(((VariableExpression) coll).name)) continue
+                String c = ((VariableExpression) coll).name
+                Object[] ls = loopSend.get(c)
+                if (ls == null) continue
+                LoopingStatement pl = (LoopingStatement) ls[0]
+                List<Statement> pb = (List<Statement>) ls[1]
+                if (pb.is(block)) continue                                       // the same process: not a partner's
+                Set<String> drainSends = channelOps(f.loopBlock, ch, true)
+                Set<String> prodReads = channelOps(pl.loopBlock, ch, false)
+                if (drainSends.intersect(prodReads).isEmpty()) continue           // no cycle: Phase 251's drain
+                String[] w = [null]
+                Object[] cnt = unitCounter(pl, pb, params, w)
+                if (cnt == null) continue
+                boolean infinite = isForever(pl)
+                String total = null
+                if (!infinite) {
+                    StreamInfo tmp = new StreamInfo()
+                    tmp.root = c; tmp.loop = pl; tmp.counter = (String) cnt[0]; tmp.counterInit = (Expression) cnt[1]; tmp.infinite = false
+                    boolean after = false, closed = false
+                    for (Statement s0 : pb) {
+                        if (s0.is((Statement) pl)) { after = true; continue }
+                        MethodCallExpression pc = sendCallOf(s0, ch)
+                        if (!after && pc != null && ((VariableExpression) stripCasts(pc.objectExpression)).name == c) tmp.pre++
+                        if (after && s0 instanceof ExpressionStatement && ((ExpressionStatement) s0).expression instanceof MethodCallExpression) {
+                            MethodCallExpression m = (MethodCallExpression) ((ExpressionStatement) s0).expression
+                            Expression r = stripCasts(m.objectExpression)
+                            if (m.methodAsString == 'close' && r instanceof VariableExpression && ((VariableExpression) r).name == c) closed = true
+                        }
+                    }
+                    total = staticTotalText(tmp, ch)
+                    if (total == null || !closed) continue                       // no static total / never closed: Phase 251 decides
+                }
+                String d = c + '$d'
+                ClassNode vt = f.variable.isDynamicTyped() ? ClassHelper.int_TYPE : f.variable.type
+                MethodCallExpression first = new MethodCallExpression(new VariableExpression(c), 'first', ArgumentListExpression.EMPTY_ARGUMENTS)
+                first.setSourcePosition(f.collectionExpression)
+                DeclarationExpression vd = new DeclarationExpression(new VariableExpression(f.variable.name, vt), Token.newSymbol(Types.ASSIGN, f.lineNumber, f.columnNumber), first)
+                vd.setSourcePosition(f)
+                ExpressionStatement vds = new ExpressionStatement(vd); vds.setSourcePosition(f)
+                Expression step = ContractExpansionTransform.reparse("${d} = ${d} + 1")
+                Expression guard = infinite ? new ConstantExpression(true) : ContractExpansionTransform.reparse("${d} < ${total}")
+                Expression inv = ContractExpansionTransform.reparse(infinite ? "${d} >= 0" : "0 <= ${d} && ${d} <= ${total}")
+                Expression variant = infinite ? null : ContractExpansionTransform.reparse("${total} - ${d}")
+                if (step == null || guard == null || inv == null) continue
+                ExpressionStatement steps = new ExpressionStatement(step); steps.setSourcePosition(f)
+                List<Statement> bodyStmts = new ArrayList<Statement>()
+                bodyStmts.add(vds)
+                bodyStmts.addAll(f.loopBlock instanceof BlockStatement ? ((BlockStatement) f.loopBlock).statements : Collections.singletonList(f.loopBlock))
+                bodyStmts.add(steps)
+                BlockStatement nb = new BlockStatement(bodyStmts, f.loopBlock instanceof BlockStatement ? ((BlockStatement) f.loopBlock).variableScope : null)
+                nb.setSourcePosition(f.loopBlock)
+                WhileStatement ws = new WhileStatement(new BooleanExpression(guard), nb)
+                ws.setSourcePosition(f)
+                LoopSpec spec = new LoopSpec()
+                spec.invariants = [inv] as List<Expression>
+                spec.variant = variant
+                spec.guard = guard
+                spec.body = bodyStmts
+                ws.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, spec)
+                DeclarationExpression dd = new DeclarationExpression(new VariableExpression(d, ClassHelper.int_TYPE), Token.newSymbol(Types.ASSIGN, f.lineNumber, f.columnNumber), new ConstantExpression(0, true))
+                dd.setSourcePosition(f)
+                ExpressionStatement dds = new ExpressionStatement(dd); dds.setSourcePosition(f)
+                replace.put(st, [dds, ws] as List<Statement>)
+            }
+        }
+        if (replace.isEmpty()) return body
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : body.statements) {
+            if (replace.containsKey(st)) { out.addAll(replace.get(st)); continue }
+            Expression call = null, e = null
+            if (st instanceof ExpressionStatement) {
+                e = ((ExpressionStatement) st).expression
+                call = e
+                if (e instanceof DeclarationExpression) call = stripCasts(((DeclarationExpression) e).rightExpression)
+                else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) call = stripCasts(((BinaryExpression) e).rightExpression)
+            }
+            ClosureExpression cl = call == null ? null : asyncClosure(call)
+            if (cl == null || !(cl.code instanceof BlockStatement) || !((BlockStatement) cl.code).statements.any { Statement x -> replace.containsKey(x) }) { out.add(st); continue }
+            List<Statement> ns = new ArrayList<Statement>()
+            for (Statement x : ((BlockStatement) cl.code).statements) { if (replace.containsKey(x)) ns.addAll(replace.get(x)) else ns.add(x) }
+            BlockStatement copy = new BlockStatement(ns, ((BlockStatement) cl.code).variableScope)
+            copy.setSourcePosition(cl.code); copy.copyNodeMetaData(cl.code)
+            Expression rebuilt = rebuildAsyncCall(call, cl, copy)
+            Expression ne
+            if (e instanceof DeclarationExpression) ne = new DeclarationExpression(((DeclarationExpression) e).leftExpression, ((DeclarationExpression) e).operation, rebuilt)
+            else if (e instanceof BinaryExpression) ne = new BinaryExpression(((BinaryExpression) e).leftExpression, ((BinaryExpression) e).operation, rebuilt)
+            else ne = rebuilt
+            ne.setSourcePosition(e); ne.copyNodeMetaData(e)
+            ExpressionStatement nst = new ExpressionStatement(ne)
+            nst.setSourcePosition(st); nst.copyNodeMetaData(st)
+            out.add(nst)
+        }
+        BlockStatement nb = new BlockStatement(out, body.variableScope)
+        nb.setSourcePosition(body); nb.copyNodeMetaData(body)
+        nb
+    }
+
+    /** The channel vars a statement sends on ({@code sends}) or receives from (first / awaited receive). */
+    private static Set<String> channelOps(Statement st, Set<String> ch, boolean sends) {
+        final Set<String> out = new LinkedHashSet<String>()
+        if (st == null) return out
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                Expression r = stripCasts(m.objectExpression)
+                if (r instanceof VariableExpression && ch.contains(((VariableExpression) r).name)) {
+                    String mm = m.methodAsString
+                    if (sends ? mm == 'send' : (mm == 'first' || mm == 'receive')) out.add(((VariableExpression) r).name)
+                }
+                super.visitMethodCallExpression(m)
+            }
+        })
+        out
+    }
+
     /** Phase 252 — arm locals renamed apart from the body's (and earlier arms') locals before the flattening:
      *  two loops naturally both count with `i`, and the flattened single-assignment model would conflate them.
      *  Arms are rebuilt, never mutated; an arm whose body the renamer cannot copy is left as is. */
@@ -7870,7 +8019,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // instead of a bare skip. The same verdicts make desugarChannels refuse the rewrite.
         // Anchored at the channel's DECLARATION: STC dedups errors per source position, and the
         // Phase 243 network skip may anchor at the very same conditional op (Phase 244's finding).
-        for (Map.Entry<String, String> e : channelModelVerdicts(body, ctx.chanVars, paramNames(node), currentScalarTypes).entrySet()) {
+        // Phase 262 — the verdicts see the body as the rewrite will: a partner's drain already rebuilt as its counter loop
+        BlockStatement modelBody = desugarPartnerDrains(body, ctx.chanVars, paramNames(node))
+        for (Map.Entry<String, String> e : channelModelVerdicts(modelBody, ctx.chanVars, paramNames(node), currentScalarTypes).entrySet()) {
             if (!erroredChans.contains(e.key) && flagged.add(e.key + ':model')) {
                 Expression anchor = chanDeclAnchor(body, e.key)
                 if (anchor == null) anchor = anchorFor(uses, e.key)
@@ -8204,11 +8355,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Map<String, String> parent = new HashMap<String, String>()
             Set<String> subscribers = new HashSet<String>()
             collectChannelParents(body, ctx.chanVars, parent, subscribers)
-            StreamScan sc = scanStreams(body, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes)
+            BlockStatement modelBody = desugarPartnerDrains(body, ctx.chanVars, paramNames(node))   // Phase 262 — as the rewrite sees it
+            StreamScan sc = scanStreams(modelBody, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes)
             sanctionedReceives.addAll(sc.sanctionedReceives)
             sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
             for (StreamInfo p : sc.streams.values()) if (p.infinite) infiniteProducers.put(p.root, p)   // Phase 254
-            loopLiveness = analyseLoopLiveness(node, body, sc, parent)       // Phase 255 — liveness under weak fairness
+            loopLiveness = analyseLoopLiveness(node, modelBody, sc, parent)  // Phase 255 — liveness under weak fairness
         } catch (Throwable ignored) {
         }
         Set<String> livenessNoted = new HashSet<String>()
@@ -8410,6 +8562,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         for (ChanUse it : iterates) {
             String root = chanBaseOf(it.chan, chanParent)
+            StreamInfo forever = infiniteProducers.get(root)
+            if (!closeByRoot.containsKey(root) && forever != null) {
+                // Phase 262 — a drain of a `while (true)` producer's stream never finishes by design: a
+                // non-terminating drain, not a deadlock — said, and the certificate withheld rather than claimed.
+                addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                    "the iteration over '${it.chan}' (line ${it.line}) never finishes — its producer is a while (true) " +
+                    "(line ${((Statement) forever.loop).lineNumber}) that never closes it: a non-terminating drain (the values it " +
+                    "drains are certified under that; no deadlock is claimed)"), it.anchor)
+                return
+            }
             if (!closeByRoot.containsKey(root)) {
                 addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
                     "the iteration over '${it.chan}' (line ${it.line}) can never finish — no close() on " +
