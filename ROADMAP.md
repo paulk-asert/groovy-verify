@@ -12031,6 +12031,50 @@ the replies proved), and the missing close (Phase 251's skip). Both runtimes gre
 
 ---
 
+## Phase 263 — Session types: a `@Protocol` for the network, projected and checked  *(shipped — slice 23 of the SEQ/PAR ladder)*
+
+The last recorded rung of the Kerridge gallery, and "the research conversation" until now. A `@Protocol`
+on the method is a GLOBAL type in the multiparty-session-type sense (Honda–Yoshida–Carbone; the Scribble
+notation): messages `label: from -> to` — the label is the channel the message travels on, so the type
+needs no new vocabulary of message kinds — with `loop { … }` and `choice at role { … } or { … }`:
+
+```groovy
+@Protocol('''
+    ab: a -> b                       // the priming token
+    loop { bc: b -> c; ca: c -> a; ab: a -> b }
+''')
+```
+
+`SessionChecker` (a new engine source, no solver) PROJECTS it onto each role — a message is `!c` to its
+sender, `?c` to its receiver, nothing to the rest; a loop is a star; a choice at S is S's own selection
+and, for another role, an external choice whose branches must be told apart by their first message to it
+(distinct receives) or be identical for it — every branch of a choice at S must open with a message from
+S. The projection is a Thompson NFA over channel ops. Each PROCESS — the main body, each `async` arm — is
+bound to a role by the channel ends it uses (its send-set and receive-set equal the role's), its control
+flow read as an automaton over the same ops (sends; receives, including those inside a send's argument;
+`for (v in c)` drains as `(?c …)*`; an ALT as a choice whose guarded `if (r.index == k)` blocks — skipping
+op-free statements between — are its branches; loops as stars, a `while (true)` with no exit; ifs as
+unions), and CONFORMANCE is language inclusion, decided on the product of the process NFA with the local
+type's subset-DFA: a process never performs an op its local type does not allow next, and never ends where
+the protocol continues. A violation is reported with the trace that reaches it — "the async arm at line 52
+receives from 'add' (line 56) after it receives from 'add' where the protocol expects it to sends on 'sum'"
+— and the binding failures are named: a role nobody plays, a process that plays no role. `verification.Protocol`
+is a SOURCE-retained method annotation; the check runs in the PAR walk, independent of the other rungs
+(their deadlock, liveness and value certificates stand on their own; what the protocol adds is ORDER across
+the whole conversation).
+
+Cases (G327, new group, 10): the forever client–server conforms; a client that waits before asking and a
+server that answers twice violate, each named with its trace; the bounded client with a draining server
+conforms (loops are stars); the primed token ring conforms to a three-role protocol that SAYS the priming,
+and violates one that does not; a choice at the client (two request kinds) — the client's if/else and the
+server's ALT with guarded replies — conforms; the fair server's choice, opened by different roles, is
+beyond this projection and says so; a role nobody plays; a process that plays no role. Both runtimes
+green, 1930; `check` green. Boundaries recorded: payload types are not part of the type (the channel's
+element type is), a choice opened by different roles (mixed choice) is beyond classic projection, `break`
+out of a loop is not read, and the check is per method (no cross-method sessions).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

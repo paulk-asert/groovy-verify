@@ -394,6 +394,20 @@ class Reporter {
     }
 
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */
+    /** Phase 263 — a process does not follow its role's projection of the method's @Protocol. */
+    static String formatProtocolViolation(String methodName, String role, String detail) {
+        "Protocol violation in ${methodName}${role == null ? '' : " (role '" + role + "')"}: ${detail}. The @Protocol is the " +
+        "global type of the method's channel network; each process — the main body, each async arm — is bound to a role " +
+        "by the channel ends it uses and must follow the role's projection in order, from its first channel op to its last."
+    }
+
+    /** Phase 263 — the @Protocol itself cannot be read or projected. */
+    static String formatProtocolSkipped(String methodName, String reason) {
+        "Skipped protocol check for ${methodName} (${reason}). A @Protocol is a sequence of `label: from -> to` messages " +
+        "(the label is the channel), `loop { … }` and `choice at role { … } or { … }` (every branch beginning with a " +
+        "message from that role, and told apart by the others through their first message to them)."
+    }
+
     /** Phase 259 — a verification ghost (`c.taken`) used where it names nothing. */
     static String formatGhostMisuse(String ghost, String reason) {
         "Verification ghost '${ghost}' names nothing here: ${reason}. `c.taken` is the list of elements the " +

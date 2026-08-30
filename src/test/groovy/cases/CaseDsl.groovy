@@ -38,6 +38,7 @@ class CaseDsl {
         import groovy.test.GroovyAssert
         import static groovy.test.GroovyAssert.shouldFail
         import verification.Forall
+        import verification.Protocol
                 import verification.Sets
         import verification.Sorted
         import verification.Fib

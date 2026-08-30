@@ -50,6 +50,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
 | the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })` (Phases 259/260); bound a law a *partner* relies on by the ghost's own size |
+| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol('''loop { request: client -> server; reply: server -> client }''')` on the method | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace (Phase 263) |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
@@ -565,12 +566,65 @@ cleanly — a client that closes its request channel after its loop, a server th
 close — verifies whole (Phase 262): the drain is read as the counter loop it is, its replies are exactly the
 client's requests answered, and its termination is the client's close.
 
-**Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
-eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the
-*session-typed* view of a channel — a protocol of message kinds and directions, not a sequence of ints — is
-a different specification language from `@Invariant` altogether. Those two are the research conversation,
-not a demo: the same guarantees GPP establishes offline by formal methods, issued incrementally by the
-compiler.
+**The session-typed view** — a protocol of messages and directions, not a sequence of ints — was the other
+half of the research conversation, and Phase 263 makes it a demo. A `@Protocol` on the method is the
+network's global type, Scribble-style; the checker projects it onto each role and checks every process's
+control flow against its projection, naming a violation with the trace that reaches it:
+
+<!-- doclint:case p263-session-types/the-primed-token-ring-follows-a-three-role-protocol-that-says-the-priming -->
+```groovy
+@Protocol('''
+    ab: a -> b                       // the priming token
+    loop {
+        bc: b -> c
+        ca: c -> a
+        ab: a -> b
+    }
+''')
+static void ring() {
+    AsyncChannel<Integer> ab = AsyncChannel.create(4)
+    AsyncChannel<Integer> bc = AsyncChannel.create(4)
+    AsyncChannel<Integer> ca = AsyncChannel.create(4)
+    async {                                              // b
+        int j = 0
+        @Invariant({ j >= 0 })
+        while (true) {
+            int y = ab.first()
+            bc.send(y + 1)
+            j = j + 1
+        }
+    }
+    async {                                              // c
+        int m = 0
+        @Invariant({ m >= 0 })
+        while (true) {
+            int z = bc.first()
+            ca.send(z + 1)
+            m = m + 1
+        }
+    }
+    ab.send(0)                                           // a
+    int i = 0
+    @Invariant({ i >= 0 })
+    while (true) {
+        int x = ca.first()
+        ab.send(x + 1)
+        i = i + 1
+    }
+}
+```
+
+Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 40) where
+the protocol expects it to receives from 'ca'"); make a client wait before asking and the trace says so. A
+choice belongs to one role (`choice at client { … } or { … }`, the client's `if`/`else` against the
+server's ALT); the fair server's choice — opened by whichever client asks first — is beyond that
+projection, and the checker says exactly that.
+
+**Beyond.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
+eventually — is a quantitative property the "eventually" of weak fairness does not reach; and a *mixed*
+choice, opened by different roles, is beyond the classic projection. Those are what remains of the
+research conversation: the same guarantees GPP establishes offline by formal methods, issued incrementally
+by the compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

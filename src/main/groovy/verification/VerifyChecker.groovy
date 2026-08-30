@@ -7812,6 +7812,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /** Phase 263 — the method's `@Protocol` text, or null. */
+    private static String protocolTextOf(MethodNode node) {
+        for (AnnotationNode a : node.getAnnotations()) {
+            if (a.classNode?.nameWithoutPackage != 'Protocol') continue
+            Expression v = a.getMember('value')
+            if (v instanceof ConstantExpression && ((ConstantExpression) v).value != null) return ((ConstantExpression) v).value.toString()
+        }
+        null
+    }
+
     /** The Phase 240 entry point — see the section comment above. Runs on the ORIGINAL body,
      *  before the Phase 118/119 desugaring flattens the arms away. */
     private void checkParInterference(MethodNode node, Statement body) {
@@ -7829,6 +7839,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ParCtx ctx = new ParCtx(chanVars)
         ctx.selectRefs = collectSelectVars(body)                              // Phase 257
         parWalkStatement(body, ctx)
+        String protocol = protocolTextOf(node)                                // Phase 263 — a session type for the network
+        if (protocol != null) for (Object[] f : SessionChecker.check(node.name, protocol, (BlockStatement) body, chanVars)) addStaticTypeError((String) f[0], (ASTNode) f[1])
         int chanFindings = checkChannelLinearity(node, ctx, (BlockStatement) body, derivedChans, broadcastChans)
         // Phase 243/245 — the network well-formedness check: runs unless a RACE-class finding
         // re-shaped the network's meaning (its own loud report stands). Model-limit skips only
