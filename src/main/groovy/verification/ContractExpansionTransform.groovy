@@ -20,6 +20,8 @@ import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.expr.MapEntryExpression
+import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
@@ -132,6 +134,7 @@ class ContractExpansionTransform implements ASTTransformation {
         for (ClassNode cn : module.classes) {
             augmentClass(cn, module, source)
             for (MethodNode mn : cn.methods) {
+                captureProtocolDsl(mn, source)                      // Phase 269 — the @Protocol closure, pre-STC
                 augment(mn, module, source)
             }
             // Phase 15b — constructors get the same contract-text capture + clean-body snapshot as
@@ -142,6 +145,110 @@ class ContractExpansionTransform implements ASTTransformation {
                 augment(cn2, module, source)
             }
         }
+    }
+
+    // ── Phase 269 — the @Protocol closure DSL, rendered to protocol text before STC ─────────────
+    //
+    // `@Protocol({ loop { request: client >> server } })` is plain Groovy: the message name is a statement
+    // LABEL, `>>` points from sender to receiver, and `choice(at: r) { } or { }` / `par { } and { }` /
+    // `loop { }` are command chains. None of the names are variables — they are protocol vocabulary — so
+    // the closure is harvested here (CONVERSION, before STC would see undeclared names), rendered to the
+    // canonical protocol text, stored in the annotation's `text` member, and the closure member cleared.
+    // A statement the DSL does not know is a compile error at its own line and column.
+
+    private static void captureProtocolDsl(MethodNode mn, SourceUnit source) {
+        for (AnnotationNode an : mn.getAnnotations()) {
+            if (an.classNode?.nameWithoutPackage != 'Protocol') continue
+            Expression v = an.getMember('value')
+            if (!(v instanceof ClosureExpression)) continue
+            ClosureExpression cl = (ClosureExpression) v
+            StringBuilder out = new StringBuilder()
+            boolean ok = renderProtocolBlock(cl.code, out, source)
+            an.setMember('value', new ClassExpression(ClassHelper.VOID_TYPE))
+            if (ok) an.setMember('text', new ConstantExpression(out.toString()))
+        }
+    }
+
+    private static boolean renderProtocolBlock(Statement st, StringBuilder out, SourceUnit source) {
+        List<Statement> stmts = st instanceof BlockStatement ? ((BlockStatement) st).statements : [st]
+        for (Statement s0 : stmts) {
+            if (!renderProtocolStmt(s0, out, source)) return false
+        }
+        true
+    }
+
+    private static boolean renderProtocolStmt(Statement s0, StringBuilder out, SourceUnit source) {
+        if (s0 instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) s0).expression
+            List<String> labels = s0.statementLabels
+            if (labels && labels.size() == 1 && e instanceof BinaryExpression &&
+                ((BinaryExpression) e).operation.text == '>>' &&
+                ((BinaryExpression) e).leftExpression instanceof VariableExpression &&
+                ((BinaryExpression) e).rightExpression instanceof VariableExpression) {
+                out.append(labels[0]).append(': ')
+                   .append(((VariableExpression) ((BinaryExpression) e).leftExpression).name).append(' -> ')
+                   .append(((VariableExpression) ((BinaryExpression) e).rightExpression).name).append('; ')
+                return true
+            }
+            if (e instanceof MethodCallExpression) return renderProtocolChain((MethodCallExpression) e, out, source)
+        }
+        protocolDslError(s0, "a protocol item is 'label: from >> to', 'loop { … }', 'choice(at: role) { … } or { … }', 'choice { … } or { … }' or 'par { … } and { … }'", source)
+        false
+    }
+
+    private static boolean renderProtocolChain(MethodCallExpression call, StringBuilder out, SourceUnit source) {
+        List<MethodCallExpression> chain = []
+        Expression cur = call
+        while (cur instanceof MethodCallExpression) { chain.add(0, (MethodCallExpression) cur); cur = ((MethodCallExpression) cur).objectExpression }
+        MethodCallExpression head = chain[0]
+        String kind = head.methodAsString
+        String joiner = kind == 'choice' ? 'or' : (kind == 'par' ? 'and' : null)
+        if (!(kind in ['loop', 'choice', 'par']) || (kind == 'loop' && chain.size() > 1)) {
+            protocolDslError((ASTNode) call, "'${kind}' is not a protocol combinator (loop, choice[(at: role)] { } or { }, par { } and { })", source)
+            return false
+        }
+        for (int i = 1; i < chain.size(); i++) {
+            if (chain[i].methodAsString != joiner) {
+                protocolDslError((ASTNode) chain[i], "'${chain[i].methodAsString}' cannot continue a '${kind}' (its branches join with '${joiner}')", source)
+                return false
+            }
+        }
+        for (int i = 0; i < chain.size(); i++) {
+            MethodCallExpression mc = chain[i]
+            List<Expression> args = mc.arguments instanceof TupleExpression ? ((TupleExpression) mc.arguments).expressions : []
+            ClosureExpression body = (ClosureExpression) args.find { it instanceof ClosureExpression }
+            if (body == null || args.count { it instanceof ClosureExpression } != 1) {
+                protocolDslError((ASTNode) mc, "'${mc.methodAsString}' takes one block", source)
+                return false
+            }
+            if (i == 0) {
+                out.append(kind)
+                MapExpression named = (MapExpression) args.find { it instanceof MapExpression }
+                if (kind == 'choice' && named != null) {
+                    MapEntryExpression at = named.mapEntryExpressions.find { it.keyExpression.text == 'at' }
+                    Expression av = at?.valueExpression
+                    String role = av instanceof VariableExpression ? ((VariableExpression) av).name :
+                                  (av instanceof ConstantExpression ? String.valueOf(((ConstantExpression) av).value) : null)
+                    if (at == null || role == null || named.mapEntryExpressions.size() != 1) {
+                        protocolDslError((ASTNode) mc, "'choice' takes at most one named argument, 'at: role'", source)
+                        return false
+                    }
+                    out.append(' at ').append(role)
+                } else if (named != null) {
+                    protocolDslError((ASTNode) mc, "'${kind}' takes no named arguments", source)
+                    return false
+                }
+            } else out.append(joiner)
+            out.append(' { ')
+            if (!renderProtocolBlock(body.code, out, source)) return false
+            out.append('} ')
+        }
+        true
+    }
+
+    private static void protocolDslError(ASTNode at, String why, SourceUnit source) {
+        source.errorCollector.addErrorAndContinue(new SyntaxErrorMessage(new SyntaxException(
+            "the @Protocol closure holds something the protocol DSL does not: ${why}", at.lineNumber, at.columnNumber), source))
     }
 
     /**

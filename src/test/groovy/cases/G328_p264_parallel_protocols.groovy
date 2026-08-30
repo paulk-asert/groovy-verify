@@ -31,19 +31,19 @@ class G328_p264_parallel_protocols {
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
-    static final String PAR_PROTO = """@Protocol('''
+    static final String PAR_PROTO = """@Protocol({
                             par {
                                 loop {
-                                    reqA:   clientA -> server
-                                    replyA: server -> clientA
+                                    reqA:   clientA >> server
+                                    replyA: server >> clientA
                                 }
                             } and {
                                 loop {
-                                    reqB:   clientB -> server
-                                    replyB: server -> clientB
+                                    reqB:   clientB >> server
+                                    replyB: server >> clientB
                                 }
                             }
-                        ''')"""
+                        })"""
 
     static String fairServer(String proto, String select, String replyA = 'replyA', String replyB = 'replyB') { """class C {
                         ${proto}
@@ -100,12 +100,12 @@ class G328_p264_parallel_protocols {
         [group: 'P264 parallel protocols', name: 'a cross-wired server (replyB for reqA) falls outside the shuffle, with its trace', expect: 'Protocol violation',
          src: tc(fairServer(PAR_PROTO, '', 'replyB', 'replyA'))],
         [group: 'P264 parallel protocols', name: 'parts that share a channel are refused: independent sub-sessions only', expect: 'must not share a channel',
-         src: tc(fairServer("""@Protocol('''
+         src: tc(fairServer("""@Protocol({
                             par {
-                                loop { reqA: clientA -> server; replyA: server -> clientA }
+                                loop { reqA: clientA >> server; replyA: server >> clientA }
                             } and {
-                                loop { reqA: clientB -> server; replyB: server -> clientB }
+                                loop { reqA: clientB >> server; replyB: server >> clientB }
                             }
-                        ''')""", ''))],
+                        })""", ''))],
     ]
 }

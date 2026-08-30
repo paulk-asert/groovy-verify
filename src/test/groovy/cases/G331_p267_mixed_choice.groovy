@@ -32,15 +32,15 @@ class G331_p267_mixed_choice {
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
-    static final String MIXED = """@Protocol('''
+    static final String MIXED = """@Protocol({
                             loop {
                                 choice {
-                                    ping: left -> right
+                                    ping: left >> right
                                 } or {
-                                    pong: right -> left
+                                    pong: right >> left
                                 }
                             }
-                        ''')"""
+                        })"""
 
     static String peers(String left, String right) { """class C {
                         ${MIXED}
@@ -77,15 +77,15 @@ class G331_p267_mixed_choice {
         // Phase 250) — the protocol layer is what this case watches: no violation.
         [group: 'P267 mixed choice', name: 'both branches from one role is an internal choice, not a mixed one', expect: 'Skipped channel verification', refute: 'Protocol violation',
          src: tc("""class C {
-                        @Protocol('''
+                        @Protocol({
                             loop {
                                 choice {
-                                    add: client -> server
+                                    add: client >> server
                                 } or {
-                                    neg: client -> server
+                                    neg: client >> server
                                 }
                             }
-                        ''')
+                        })
                         static void calc() {
                             AsyncChannel<Integer> add = AsyncChannel.create(4)
                             AsyncChannel<Integer> neg = AsyncChannel.create(4)
@@ -112,6 +112,6 @@ class G331_p267_mixed_choice {
                     }""")],
         // `choice at` with a foreign opener now points at the mixed spelling.
         [group: 'P267 mixed choice', name: 'a choice at one role opened by another points at the mixed spelling', expect: "write it without 'at'",
-         src: tc(peers('ping.send(i)', 'int x = ping.first()').replace('choice {', "choice at left {"))],
+         src: tc(peers('ping.send(i)', 'int x = ping.first()').replace('choice {', 'choice(at: left) {'))],
     ]
 }

@@ -32,12 +32,12 @@ class G327_p263_session_types {
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
-    static final String REQ_REPLY = """@Protocol('''
+    static final String REQ_REPLY = """@Protocol({
                             loop {
-                                request: client -> server
-                                reply:   server -> client
+                                request: client >> server
+                                reply:   server >> client
                             }
-                        ''')"""
+                        })"""
 
     static String clientServer(String proto, String client, String server = """int j = 0
                                 @Invariant({ j >= 0 })
@@ -112,14 +112,14 @@ class G327_p263_session_types {
         // ---------- three roles: the primed token ring — the protocol must say the priming ----------
         [group: 'P263 session types', name: 'the primed token ring follows a three-role protocol that says the priming', ok: true,
          src: tc("""class C {
-                        @Protocol('''
-                            ab: a -> b                       // the priming token
+                        @Protocol({
+                            ab: a >> b                       // the priming token
                             loop {
-                                bc: b -> c
-                                ca: c -> a
-                                ab: a -> b
+                                bc: b >> c
+                                ca: c >> a
+                                ab: a >> b
                             }
-                        ''')
+                        })
                         static void ring() {
                             AsyncChannel<Integer> ab = AsyncChannel.create(4)
                             AsyncChannel<Integer> bc = AsyncChannel.create(4)
@@ -154,13 +154,13 @@ class G327_p263_session_types {
                     }""")],
         [group: 'P263 session types', name: 'the same ring against a protocol without the priming: the first send is the violation', expect: "sends on 'ab' (line",
          src: tc("""class C {
-                        @Protocol('''
+                        @Protocol({
                             loop {
-                                bc: b -> c
-                                ca: c -> a
-                                ab: a -> b
+                                bc: b >> c
+                                ca: c >> a
+                                ab: a >> b
                             }
-                        ''')
+                        })
                         static void ring() {
                             AsyncChannel<Integer> ab = AsyncChannel.create(4)
                             AsyncChannel<Integer> bc = AsyncChannel.create(4)
@@ -196,17 +196,17 @@ class G327_p263_session_types {
         // ---------- a choice at the client: two request kinds, each answered ----------
         [group: 'P263 session types', name: 'a choice at the client (two request kinds) — the client\'s if/else and the server\'s ALT both conform', expect: 'Skipped channel verification', refute: 'Protocol violation',
          src: tc("""class C {
-                        @Protocol('''
+                        @Protocol({
                             loop {
-                                choice at client {
-                                    add: client -> server
-                                    sum: server -> client
+                                choice(at: client) {
+                                    add: client >> server
+                                    sum: server >> client
                                 } or {
-                                    neg: client -> server
-                                    res: server -> client
+                                    neg: client >> server
+                                    res: server >> client
                                 }
                             }
-                        ''')
+                        })
                         static void calc() {
                             AsyncChannel<Integer> add = AsyncChannel.create(4)
                             AsyncChannel<Integer> neg = AsyncChannel.create(4)
@@ -244,17 +244,17 @@ class G327_p263_session_types {
         // ---------- the loud boundaries ----------
         [group: 'P263 session types', name: 'the fair server: a choice opened by different roles is beyond this projection', expect: 'every branch must begin with a message from',
          src: tc("""class C {
-                        @Protocol('''
+                        @Protocol({
                             loop {
-                                choice at server {
-                                    reqA:   clientA -> server
-                                    replyA: server -> clientA
+                                choice(at: server) {
+                                    reqA:   clientA >> server
+                                    replyA: server >> clientA
                                 } or {
-                                    reqB:   clientB -> server
-                                    replyB: server -> clientB
+                                    reqB:   clientB >> server
+                                    replyB: server >> clientB
                                 }
                             }
-                        ''')
+                        })
                         static void fairServer() {
                             AsyncChannel<Integer> reqA = AsyncChannel.create(4)
                             AsyncChannel<Integer> reqB = AsyncChannel.create(4)
@@ -294,13 +294,13 @@ class G327_p263_session_types {
                         }
                     }""")],
         [group: 'P263 session types', name: 'a role nobody plays is named', expect: 'no process plays it',
-         src: tc(clientServer("""@Protocol('''
+         src: tc(clientServer("""@Protocol({
                             loop {
-                                request: client -> server
-                                reply:   server -> client
-                                log:     server -> logger
+                                request: client >> server
+                                reply:   server >> client
+                                log:     server >> logger
                             }
-                        ''')""", CLIENT).replace('AsyncChannel<Integer> reply = AsyncChannel.create(4)', 'AsyncChannel<Integer> reply = AsyncChannel.create(4)\n                            AsyncChannel<Integer> log = AsyncChannel.create(4)'))],
+                        })""", CLIENT).replace('AsyncChannel<Integer> reply = AsyncChannel.create(4)', 'AsyncChannel<Integer> reply = AsyncChannel.create(4)\n                            AsyncChannel<Integer> log = AsyncChannel.create(4)'))],
         // Phase 267's subset binding improved this verdict: a send-only client FITS the client role (a
         // conformant process may use a subset of its alphabet), and conformance then names the real miss.
         [group: 'P263 session types', name: 'a client that never listens is refuted in its role, the miss named', expect: 'the protocol expects it to receives from',

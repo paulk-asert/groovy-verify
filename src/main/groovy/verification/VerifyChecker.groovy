@@ -7965,6 +7965,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static String protocolTextOf(MethodNode node) {
         for (AnnotationNode a : node.getAnnotations()) {
             if (a.classNode?.nameWithoutPackage != 'Protocol') continue
+            // Phase 269 — the closure DSL arrives here already rendered: ContractExpansionTransform harvested
+            // the closure pre-STC into the `text` member (the closure member is cleared to Void).
+            Expression t = a.getMember('text')
+            if (t instanceof ConstantExpression && ((ConstantExpression) t).value) return ((ConstantExpression) t).value.toString()
             Expression v = a.getMember('value')
             if (v instanceof ConstantExpression && ((ConstantExpression) v).value != null) return ((ConstantExpression) v).value.toString()
         }
