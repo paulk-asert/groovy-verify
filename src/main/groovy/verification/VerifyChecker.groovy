@@ -4272,6 +4272,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final Map<String, String> relyName = new HashMap<String, String>()       // stream var → its current rely view name
         boolean readsAsTaken = true                                              // invariants read a partner as its taken-ghost; a BODY read (rewriteStreamStmts) as its rely view
         final List<Object[]> ghostErrors = new ArrayList<Object[]>()             // Phase 259 — [ghost text, reason, node]
+        List<StreamInfo> curInfos = Collections.<StreamInfo>emptyList()          // Phase 260 — the streams the loop being rewritten produces
+        boolean relyMode                                                         // instantiating a PARTNER's spec: its ghosts resolve in its context, misuse not re-reported
         /** Phase 258 — is stream var {@code v} read by the current consumer loop from a cycle partner? */
         boolean partner(String v) {
             if (curConsumer == null) return false
@@ -5209,7 +5211,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override Expression transform(Expression expr) {
                 if (expr instanceof PropertyExpression || expr instanceof MethodCallExpression) {   // Phase 259 — `c.taken`
                     Expression g = takenGhostRewrite(expr, rw)
-                    if (g instanceof VariableExpression && ((VariableExpression) g).name.endsWith('$taken')) return g
+                    if (g instanceof VariableExpression && (((VariableExpression) g).name.endsWith('$taken') || ((VariableExpression) g).name.endsWith('$q'))) return g
                 }
                 if (expr instanceof PropertyExpression) {                 // Phase 249 — r.index / r.value
                     PropertyExpression pe = (PropertyExpression) expr
@@ -6058,7 +6060,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         LoopSpec spec = (LoopSpec) ((Statement) loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
         ConsumerInfo consumer = rw.consumers.get((Statement) loop)
         ConsumerInfo savedConsumer = rw.curConsumer
+        List<StreamInfo> savedInfos = rw.curInfos
         rw.curConsumer = consumer
+        rw.curInfos = infos                                                      // Phase 260 — `c.sent` resolves against these
         try {
         Statement lb = loop.loopBlock
         List<Statement> blockIn = lb instanceof BlockStatement ? ((BlockStatement) lb).statements : Collections.singletonList(lb)
@@ -6107,7 +6111,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (rw.partnerLoop((Statement) loop, (Statement) p.loop)) continue   // Phase 258 — a cycle partner: relied on at the read, not framed
                     LoopSpec ps = (LoopSpec) ((Statement) p.loop).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
                     if (ps != null) {
-                        s2.invariants.addAll(ps.invariants)
+                        s2.invariants.addAll(specInContext(ps.invariants, (Statement) p.loop, rw))   // Phase 260 — its ghosts, in its context
                         if (!p.infinite) s2.invariants.add(new NotExpression(ps.guard))   // Phase 254 — an infinite producer has no exit fact
                     }
                     s2.invariants.addAll(streamInvariants(p, rw))
@@ -6122,7 +6126,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             out.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, s2)
         }
         out
-        } finally { rw.curConsumer = savedConsumer }
+        } finally { rw.curConsumer = savedConsumer; rw.curInfos = savedInfos }
     }
 
     /** Phase 253 — the looping ALT, per iteration: the block-forever assert (some branch has an element left),
@@ -6210,7 +6214,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Phase 253/258 — the looping ALT's cursors: each within its list, together counting the iterations; each
      *  branch's taken-ghost is the prefix its cursor has passed (a partner branch: just the cursor's length). */
-    private static Expression cursorInvariant(ConsumerInfo consumer, ChanRewrite rw) {
+    private static Expression cursorInvariant(ConsumerInfo consumer, ChanRewrite rw, boolean stableOnly = false) {
         if (consumer.altVar == null) return null
         ConsumerInfo saved = rw.curConsumer
         rw.curConsumer = consumer
@@ -6220,12 +6224,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (String c : consumer.altChans) {
                 // Under the racing select (before GROOVY-12320) the element taken is SOME remaining one and losers are
                 // re-sent: the taken-ghost is a count, not the prefix — the prefix fact holds only under the claim-based select.
+                if (stableOnly) {                                                // Phase 260 — no count equality; the prefix law over the ghost's own size
+                    parts.add(("0 <= ${c}\$c && ${c}\$taken != null" + (rw.partner(c) || !CLAIM_SELECT ? '' :
+                        " && ${c}\$taken.size() <= ${c}\$q.size() && Forall.range(0, ${c}\$taken.size(), { int k -> ${c}\$taken[k] == ${c}\$q[k] })")).toString())
+                    continue
+                }
                 if (rw.partner(c)) parts.add("0 <= ${c}\$c && ${c}\$taken != null && ${c}\$taken.size() == ${c}\$c".toString())
                 else parts.add(("0 <= ${c}\$c && ${c}\$c <= ${c}\$q.size() && ${c}\$taken != null && ${c}\$taken.size() == ${c}\$c" +
                     (CLAIM_SELECT ? " && Forall.range(0, ${c}\$c, { int k -> ${c}\$taken[k] == ${c}\$q[k] })" : '')).toString())
                 sum.add(c + '$c')
             }
-            parts.add("${sum.join(' + ')} == ${consumer.counter} - ${entryText(consumer.counterInit)}".toString())
+            if (!stableOnly) parts.add("${sum.join(' + ')} == ${consumer.counter} - ${entryText(consumer.counterInit)}".toString())
             Expression inv = ContractExpansionTransform.reparse(parts.join(' && '))
             inv == null ? null : norm(inv, rw)
         } finally { rw.curConsumer = saved }
@@ -6284,14 +6293,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (String v : pc.receives.values()) if (pps != null && pps.contains(rw.rootOf(v))) pTaken.add(v)
             }
             for (String tv : pTaken) ren.put(tv + '$taken', new VariableExpression(tv + '$taken' + sfx))
+            // Phase 260 — a partner is observed at ANY point of its body: only its append-STABLE facts may be assumed —
+            // elementwise laws bounded by their own list, priming values, "sends follow takes", the prefix law of an
+            // ALT branch, and the user's conjuncts that mention no ghost count (stableUserConjuncts). Never a count
+            // equality: Phase 258 assumed the loop-head invariants whole, which a partner mid-iteration violates, and
+            // the partner's own preservation VC in a cycle was vacuous (a wrong `c.sent` law went unrefuted).
             List<Expression> pf = new ArrayList<Expression>()
             LoopSpec ps = (LoopSpec) P.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
-            if (ps != null) pf.addAll(ps.invariants)
+            if (ps != null) pf.addAll(stableUserConjuncts(specInContext(ps.invariants, P, rw)))   // Phase 259/260 — its ghosts, in its context
             ConsumerInfo saved = rw.curConsumer
             rw.curConsumer = pc; rw.readsAsTaken = true
             try {
-                for (StreamInfo pi : pinfos) pf.addAll(streamInvariants(pi, rw))
-                if (pc != null) { pf.addAll(consumerBoundInvariants(pc, rw)); Expression cv = cursorInvariant(pc, rw); if (cv != null) pf.add(cv) }
+                for (StreamInfo pi : pinfos) { pf.addAll(streamInvariants(pi, rw, true)); pf.addAll(sendsFollowTakes(pi, rw)) }
+                if (pc != null) { Expression cv = cursorInvariant(pc, rw, true); if (cv != null) pf.add(cv) }
             } finally { rw.curConsumer = saved; rw.readsAsTaken = false }
             for (Expression f : pf) facts.add(substituteVars(f, ren))
             for (String tv : pTaken) {                                          // the FIFO law
@@ -6345,6 +6359,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     stripCasts(((MethodCallExpression) x).objectExpression) instanceof VariableExpression) {
                     c = ((VariableExpression) stripCasts(((MethodCallExpression) x).objectExpression)).name
                 }
+                String sc = null                                                  // Phase 260 — `c.sent` / `c.getSent()`
+                if (x instanceof PropertyExpression && ((PropertyExpression) x).propertyAsString == 'sent' &&
+                    stripCasts(((PropertyExpression) x).objectExpression) instanceof VariableExpression) {
+                    sc = ((VariableExpression) stripCasts(((PropertyExpression) x).objectExpression)).name
+                } else if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'getSent' && noArgs((MethodCallExpression) x) &&
+                    stripCasts(((MethodCallExpression) x).objectExpression) instanceof VariableExpression) {
+                    sc = ((VariableExpression) stripCasts(((MethodCallExpression) x).objectExpression)).name
+                }
                 if (c != null && rw.ch.contains(c)) {
                     Set<String> tv = takenVars(rw.curConsumer, rw)
                     if (tv.contains(c)) {
@@ -6352,11 +6374,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         g.setSourcePosition(x)
                         return g
                     }
-                    String why = rw.curConsumer == null
-                        ? 'it is outside a specified loop that receives from a stream'
-                        : "the loop at line ${((Statement) rw.curConsumer.loop).lineNumber} takes nothing from '${c}' (it is not a stream this loop receives from a cycle partner, nor a branch of its ALT)".toString()
-                    ASTNode at = x.lineNumber > 0 ? x : (rw.curConsumer != null ? (ASTNode) rw.curConsumer.loop : x)   // a reparsed spec has no position
-                    rw.ghostErrors.add([c + '.taken', why, at] as Object[])
+                    if (!rw.relyMode) {
+                        String why = rw.curConsumer == null
+                            ? 'it is outside a specified loop that receives from a stream'
+                            : "the loop at line ${((Statement) rw.curConsumer.loop).lineNumber} takes nothing from '${c}' (it is not a stream this loop receives from a cycle partner, nor a branch of its ALT)".toString()
+                        ASTNode at = x.lineNumber > 0 ? x : (rw.curConsumer != null ? (ASTNode) rw.curConsumer.loop : x)   // a reparsed spec has no position
+                        rw.ghostErrors.add([c + '.taken', why, at] as Object[])
+                    }
+                    return x
+                }
+                if (sc != null && rw.ch.contains(sc)) {
+                    StreamInfo own = rw.curInfos.find { StreamInfo si -> si.root == sc }
+                    if (own != null) {
+                        VariableExpression g = new VariableExpression(sc + '$q')          // the producer's own exact list (priming sends included)
+                        g.setSourcePosition(x)
+                        return g
+                    }
+                    if (!rw.relyMode) {
+                        Statement here = rw.curInfos.isEmpty() ? (rw.curConsumer == null ? null : (Statement) rw.curConsumer.loop) : (Statement) rw.curInfos.get(0).loop
+                        String why = here == null
+                            ? 'it is outside a specified loop that produces a stream'
+                            : "the loop at line ${here.lineNumber} produces no stream on '${sc}' (one send per iteration, at the body's top level or guarded by its ALT)".toString()
+                        ASTNode at = x.lineNumber > 0 ? x : (here != null ? (ASTNode) here : x)
+                        rw.ghostErrors.add([sc + '.sent', why, at] as Object[])
+                    }
                     return x
                 }
                 if (x instanceof ClosureExpression) {
@@ -6377,6 +6418,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         t.transform(e)
+    }
+
+    /** Phase 259/260 — another loop's spec with ITS ghosts (`c.taken`, `c.sent`) resolved in its own context. */
+    private static List<Expression> specInContext(List<Expression> invs, Statement loop, ChanRewrite rw) {
+        ConsumerInfo savedC = rw.curConsumer
+        List<StreamInfo> savedI = rw.curInfos
+        boolean savedMode = rw.relyMode
+        rw.curConsumer = rw.consumers.get(loop)
+        List<StreamInfo> infos = new ArrayList<StreamInfo>()
+        for (StreamInfo si : rw.streams.values()) if (si.loop.is(loop)) infos.add(si)
+        rw.curInfos = infos
+        rw.relyMode = true
+        try {
+            List<Expression> out = new ArrayList<Expression>()
+            for (Expression inv : invs) out.add(takenGhostRewrite(inv, rw))
+            out
+        } finally { rw.curConsumer = savedC; rw.curInfos = savedI; rw.relyMode = savedMode }
     }
 
     /** Phase 258 — after a partner read: the element read joins the reader's taken-ghost. */
@@ -6430,9 +6488,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** The injected sequence facts for one stream: size == counter − entry, and (when the sent expression
      *  is a function of the counter and loop constants) the k-th element's value; likewise per map stage. */
-    private static List<Expression> streamInvariants(StreamInfo info, ChanRewrite rw) {
+    /**
+     * The stream's laws. {@code stableOnly} (Phase 260 — what a RELY may assume of a partner observed at ANY point
+     * of its body, not only at its loop head): the elementwise laws, each bounded by its own list's size, and the
+     * priming values — never a count equality (`q.size() == counter`, `dq.size() == q.size()`), which a partner
+     * mid-iteration violates and which made the partner's own preservation VC vacuous.
+     */
+    private static List<Expression> streamInvariants(StreamInfo info, ChanRewrite rw, boolean stableOnly = false) {
         List<Expression> out = new ArrayList<Expression>()
         String q = info.root + '$q'
+        Expression nn = ContractExpansionTransform.reparse("${q} != null")
         if (info.conditional) {                                                // Phase 258 — a guarded reply
             String k = 'k'
             Expression size = ContractExpansionTransform.reparse("${q} != null && ${q}.size() == ${info.condChan}\$c")
@@ -6447,6 +6512,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression shape = ContractExpansionTransform.reparse("Forall.range(0, ${q}.size(), { int ${k} -> ${q}[${k}] == __E__ })")
                 if (elem != null && shape != null) rel = substituteVar(shape, '__E__', elem)
             }
+            if (stableOnly) size = nn
             if (size != null && rel != null) out.add(norm(new BinaryExpression(size, Token.newSymbol(Types.LOGICAL_AND, -1, -1), rel), rw))
             else if (size != null) out.add(norm(size, rw))
             return out
@@ -6466,6 +6532,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression shape = ContractExpansionTransform.reparse("Forall.range(${info.pre}, ${q}.size(), { int ${k} -> ${q}[${k}] == __E__ })")
             if (elem != null && shape != null) rel = substituteVar(shape, '__E__', elem)
         }
+        if (stableOnly) size = nn
         if (size != null && rel != null) out.add(norm(new BinaryExpression(size, Token.newSymbol(Types.LOGICAL_AND, -1, -1), rel), rw))
         else if (size != null) out.add(norm(size, rw))
         // Phase 255 — the priming elements' values survive the loop's summary only through its invariant
@@ -6489,10 +6556,112 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Expression shape = ContractExpansionTransform.reparse("Forall.range(${info.pre}, ${dq}.size(), { int ${k} -> ${dq}[${k}] == __E__ })")
                 if (elem != null && shape != null) drel = substituteVar(shape, '__E__', derivedValue(d, elem, rw))
             }
+            if (stableOnly) { if (drel != null) out.add(norm(drel, rw)); continue }
             if (ds != null && drel != null) out.add(norm(new BinaryExpression(ds, Token.newSymbol(Types.LOGICAL_AND, -1, -1), drel), rw))
             else if (ds != null) out.add(norm(ds, rw))
         }
         out
+    }
+
+    /**
+     * Phase 260 — a stage's sends never outrun its takes: `own.size() <= taken.size()` for each stream its law is
+     * built from, provided the read precedes the send in the body (else it is not stable). A conditional stream's
+     * take is the ALT step that guards it. Stable under every partner step, and what a reader needs to carry the
+     * FIFO law through: `i < reply.size()` gives `i < request$taken.size()`.
+     */
+    private static List<Expression> sendsFollowTakes(StreamInfo info, ChanRewrite rw) {
+        List<Expression> out = new ArrayList<Expression>()
+        String q = info.root + '$q'
+        ConsumerInfo ci = rw.consumers.get((Statement) info.loop)
+        if (ci == null) return out
+        Statement lb = info.loop.loopBlock
+        List<Statement> top = lb instanceof BlockStatement ? ((BlockStatement) lb).statements : Collections.singletonList(lb)
+        int sendAt = topIndexOf(top, info.sendCall)
+        Set<String> partners = rw.partnerStreams.get((Statement) info.loop)
+        if (info.conditional) {
+            int altAt = topIndexOf(top, ci.altFrom)
+            if (altAt >= 0 && sendAt >= 0 && altAt < sendAt) {
+                Expression e = ContractExpansionTransform.reparse("${q}.size() <= ${info.condChan}\$taken.size()")
+                if (e != null) out.add(norm(e, rw))
+            }
+            return out
+        }
+        for (Map.Entry<String, MethodCallExpression> al : info.aliases.entrySet()) {
+            String v = ci.readOf(al.value)
+            if (v == null) continue
+            int readAt = topIndexOf(top, al.value)
+            if (readAt < 0 || sendAt < 0 || readAt >= sendAt) continue
+            String list = (partners != null && partners.contains(rw.rootOf(v))) ? v + '$taken' : v + '$q'
+            Expression e = ContractExpansionTransform.reparse("${q}.size() <= ${list}.size()")
+            if (e != null) out.add(norm(e, rw))
+        }
+        out
+    }
+
+    /** The index of the top-level statement whose subtree contains {@code node}, or -1. */
+    private static int topIndexOf(List<Statement> top, final ASTNode node) {
+        if (node == null) return -1
+        for (int i = 0; i < top.size(); i++) {
+            final boolean[] hit = [false]
+            top.get(i).visit(new CodeVisitorSupport() {
+                @Override void visitMethodCallExpression(MethodCallExpression m) { if (m.is(node)) hit[0] = true; super.visitMethodCallExpression(m) }
+                @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) { if (m.is(node)) hit[0] = true; super.visitStaticMethodCallExpression(m) }
+            })
+            if (hit[0]) return i
+        }
+        -1
+    }
+
+    /**
+     * Phase 260 — the conjuncts of a user invariant a RELY may assume: those that mention no ghost list, and
+     * those whose every ghost-list `.size()` / `isEmpty()` is a quantifier bound (`Forall.range(0, c.sent.size(), …)`,
+     * `(0..<c.taken.size()).every { … }`) — a count equality over a ghost list holds at the loop head only.
+     */
+    private static List<Expression> stableUserConjuncts(List<Expression> invs) {
+        List<Expression> out = new ArrayList<Expression>()
+        List<Expression> conj = new ArrayList<Expression>()
+        for (Expression inv : invs) splitAnd(inv, conj)
+        for (Expression c : conj) if (ghostSizeOnlyInBounds(c)) out.add(c)
+        out
+    }
+
+    private static void splitAnd(Expression e, List<Expression> out) {
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LOGICAL_AND) {
+            splitAnd(((BinaryExpression) e).leftExpression, out); splitAnd(((BinaryExpression) e).rightExpression, out)
+        } else out.add(e)
+    }
+
+    private static boolean isGhostList(Expression e) {
+        Expression x = stripCasts(e)
+        x instanceof VariableExpression && (((VariableExpression) x).name.endsWith('$taken') || ((VariableExpression) x).name.endsWith('$q'))
+    }
+
+    private static boolean ghostSizeOnlyInBounds(Expression c) {
+        final boolean[] bad = [false]
+        final int[] boundDepth = [0]
+        c.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if ((m.methodAsString == 'size' || m.methodAsString == 'isEmpty') && isGhostList(m.objectExpression) && boundDepth[0] == 0) bad[0] = true
+                String recvText = m.objectExpression instanceof ClassExpression ? ((ClassExpression) m.objectExpression).type.nameWithoutPackage : m.objectExpression?.text
+                boolean isForall = recvText == 'Forall' || (recvText != null && recvText.endsWith('.Forall'))
+                if (isForall) {
+                    List<Expression> args = m.arguments instanceof TupleExpression ? ((TupleExpression) m.arguments).expressions : Collections.<Expression>emptyList()
+                    for (Expression a : args) { if (a instanceof ClosureExpression) a.visit(this) else { boundDepth[0]++; try { a.visit(this) } finally { boundDepth[0]-- } } }
+                    return
+                }
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) {
+                if (m.ownerType?.nameWithoutPackage == 'Forall') {
+                    List<Expression> args = m.arguments instanceof TupleExpression ? ((TupleExpression) m.arguments).expressions : Collections.<Expression>emptyList()
+                    for (Expression a : args) { if (a instanceof ClosureExpression) a.visit(this) else { boundDepth[0]++; try { a.visit(this) } finally { boundDepth[0]-- } } }
+                    return
+                }
+                super.visitStaticMethodCallExpression(m)
+            }
+            @Override void visitRangeExpression(RangeExpression r) { boundDepth[0]++; try { super.visitRangeExpression(r) } finally { boundDepth[0]-- } }
+        })
+        !bad[0]
     }
 
     /** True when the expression's names are not written by the producer loop (nor channel vars) — a loop constant. */

@@ -49,7 +49,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values (Phase 254); liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it (Phase 255) |
 | `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
-| the history of a channel (a trace) | `c.taken` in a loop `@Invariant` | the elements this loop has taken from `c` so far, a list the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })` (Phase 259) |
+| the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })` (Phases 259/260); bound a law a *partner* relies on by the ghost's own size |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
@@ -552,7 +552,10 @@ static void primed() {
 The token goes round with a value: A primes `0`, B answers `y + 1`, A reads `2i + 1` at its i-th turn —
 proved because A's invariant says what it has *taken* so far, B's law says what it sends is what it took
 plus one, and the FIFO law binds B's taken to A's sent. The three-process ring proves `3i + 2` the same way,
-and `2k` in place of `2k + 1` is refuted at its base case.
+and `2k` in place of `2k + 1` is refuted at its base case. The twin ghost `c.sent` (Phase 260) is for the
+other side: a producer whose values are loop-written — a counting server, a Fibonacci generator — states
+its own law (`Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })`, bounded by the ghost's
+own size so a reader mid-cycle may rely on it), and its readers prove against it.
 
 **Beyond both.** *Starvation-freedom in the large* — that a client is served within a bound, not merely
 eventually — is a quantitative property the "eventually" of weak fairness does not reach. And the

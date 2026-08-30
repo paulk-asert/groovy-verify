@@ -11932,6 +11932,44 @@ a producer's `c.sent` would be its exact shadow list and is a one-line follow-up
 
 ---
 
+## Phase 260 — The sent ghost `c.sent`, and the rely made stable  *(shipped — slice 20 of the SEQ/PAR ladder)*
+
+`c.sent` is the twin of `c.taken`: the list of elements the enclosing loop's process has sent on channel
+`c` so far (priming sends included) — the producer's own exact shadow list, named. It gives a send whose
+value is LOOP-WRITTEN the element law the checker cannot derive (Phase 251's relation needs the counter or a
+receive alias): the producer states it — `@Invariant({ … && Forall.range(0, reply.sent.size(), { int k ->
+reply.sent[k] == 2 * (k + 1) }) })` for a counting server, `c.sent[k] == Fib.of(k)` for a Fibonacci
+generator — and a consumer proves against it across a pipeline (the reader of the Fibonacci stream proves
+`x == Fib.of(n)`) or a cycle (the counting server's client proves `r == 2 * (i + 1)` — Phase 258's refuted
+shape, now specified). Same mechanism as Phase 259 (`ChannelGhosts.getSent`, `takenGhostRewrite` resolving
+against the loop's produced streams — `rw.curInfos`); another loop's spec is resolved in ITS context
+(`specInContext`) wherever it is imported, as a partner's rely or a producer's frame facts, so a ghost in a
+producer's law travels to its readers.
+
+The probe for the wrong law found a soundness bug in Phase 258 and this phase fixes it. The rely
+instantiated a partner's LOOP-HEAD invariants whole; but a partner is observed at any point of its body — a
+client that has sent request i+1 and not yet taken reply i+1 — where the count laws (`sent.size() == i`,
+`taken.size() == i`) do not hold. For the server's read that made the assumptions contradict the element's
+existence: the server's own preservation VC in a cycle was VACUOUS, a wrong `c.sent` law went unrefuted and
+its client "proved" `r == 2 * i` against it (the non-cyclic twin, and every establishment VC, were checked
+all along). Now a rely assumes only a partner's APPEND-STABLE facts (`streamInvariants(…, stableOnly)`,
+`cursorInvariant(…, stableOnly)`, `stableUserConjuncts`): elementwise laws bounded by their own list's size,
+priming values, the FIFO law, the prefix law of an ALT branch over the ghost's own size, "sends follow takes"
+(`own.size() <= taken.size()`, when the read precedes the send in the body — `sendsFollowTakes`, the fact a
+reader needs to carry the FIFO law through), and the user's conjuncts that mention no ghost count outside a
+quantifier bound. Never a count equality. Every Phase 258/259 proof still closes on those facts — and the
+wrong law is refuted at the send. Hence the idiom: bound a `sent`/`taken` law by the ghost's own size, not
+the counter; a counter-bounded law is checked as the loop's own invariant but says nothing to a reader
+mid-iteration (instantiated with a fresh counter, harmlessly).
+
+Cases (G324, new group, 6): the counting server (proved, its wrong law refuted at the send, and refuted at
+the client without the law), the Fibonacci generator, two misuses. A note for case authors met on the way:
+an accumulator stepping by one beside the loop counter reads as a second unit counter (Phase 254's rule —
+"steps two counters") — step by two, or the loop is not a stream producer. Both runtimes green, 1909; `check`
+green under the solver budget.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

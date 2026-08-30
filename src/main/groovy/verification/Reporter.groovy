@@ -398,7 +398,8 @@ class Reporter {
     static String formatGhostMisuse(String ghost, String reason) {
         "Verification ghost '${ghost}' names nothing here: ${reason}. `c.taken` is the list of elements the " +
         "enclosing loop has taken from channel c so far — a stream it receives from a cycle partner, or a " +
-        "branch of its ALT — for that loop's @Invariant."
+        "branch of its ALT — and `c.sent` the list its process has sent on a stream it produces, for that " +
+        "loop's @Invariant."
     }
 
     static String formatNetworkSkipped(String methodName, String reason) {

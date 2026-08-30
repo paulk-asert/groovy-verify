@@ -31,6 +31,15 @@ import groovy.concurrent.AsyncChannel
  * verification time only: the checker rewrites it to the ghost, and executing it is an error.
  */
 class ChannelGhosts {
+    /** Phase 260 — {@code c.sent}: the elements the enclosing loop's process has sent on {@code c} so far
+     *  (priming sends before the loop included) — the producer's own exact history, for a send whose value
+     *  is loop-written and so has no law the checker can derive (an accumulator, a Fibonacci generator). */
+    static <T> List<T> getSent(AsyncChannel<T> self) {
+        throw new UnsupportedOperationException(
+            "'sent' is a verification ghost — the elements the enclosing loop has sent on the channel — " +
+            'for @Invariant closures the checker discharges at compile time; it has no runtime value')
+    }
+
     static <T> List<T> getTaken(AsyncChannel<T> self) {
         throw new UnsupportedOperationException(
             "'taken' is a verification ghost — the elements the enclosing loop has taken from the channel — " +
