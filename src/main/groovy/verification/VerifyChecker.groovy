@@ -7812,6 +7812,120 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /** Phase 266 — the method's `@DeliveredWithin(value, from, to)`, as [value, from, to], or null. */
+    private static Object[] deliveredWithinOf(MethodNode node) {
+        for (AnnotationNode a : node.getAnnotations()) {
+            if (a.classNode?.nameWithoutPackage != 'DeliveredWithin') continue
+            Expression v = a.getMember('value'), f = a.getMember('from'), t = a.getMember('to')
+            if (v instanceof ConstantExpression && ((ConstantExpression) v).value instanceof Number &&
+                f instanceof ConstantExpression && t instanceof ConstantExpression) {
+                return [((Number) ((ConstantExpression) v).value).intValue(), String.valueOf(((ConstantExpression) f).value), String.valueOf(((ConstantExpression) t).value)] as Object[]
+            }
+        }
+        null
+    }
+
+    /**
+     * Phase 266 — the multi-hop service bound: hops from `from` to `to` through the scanned stages. A hop is a
+     * consumer loop taking the incoming channel and producing the next: a plain stage costs 1 iteration; an ALT
+     * branch costs its branch count under a held fair() (Phase 265's arithmetic) and is unbounded otherwise; a
+     * guarded reply leaves on ITS branch's reply channel at the ALT's cost. Every simple path must meet the
+     * bound (an element travels whichever exists), so the worst path decides; an unbounded hop refutes with its
+     * own reason, and the claim is the SERVICE bound only — queueing is not claimed.
+     */
+    private void checkDeliveredWithin(MethodNode node, Object[] claim, StreamScan sc, Map<String, String> parent) {
+        if (claim == null) return
+        int bound = (int) claim[0]
+        String from = (String) claim[1], to = (String) claim[2]
+        Map<String, List<Object[]>> edges = new HashMap<String, List<Object[]>>()   // root → [next root, cost (-1 = unbounded), reason/label]
+        for (ConsumerInfo ci : sc.consumers.values()) {
+            Statement loop = (Statement) ci.loop
+            List<StreamInfo> produced = new ArrayList<StreamInfo>()
+            for (StreamInfo si : sc.streams.values()) if (si.loop.is(loop)) produced.add(si)
+            if (produced.isEmpty()) continue
+            int line = loop.lineNumber
+            // plain receives: cost 1 to every non-conditional stream the stage produces
+            for (String v : ci.receives.values()) {
+                String root = sc.streamVarRoot(v, parent) ?: v
+                for (StreamInfo si : produced) {
+                    if (si.conditional) continue
+                    addHop(edges, root, si.root, 1, "the stage at line ${line} (1)".toString())
+                }
+            }
+            // ALT branches: the policy's cost, to non-conditional outputs and to the branch's OWN guarded reply
+            if (ci.altVar != null) {
+                int k = ci.altChans.size()
+                String why = null
+                if (!CLAIM_SELECT) why = "the racing select (before GROOVY-12320) re-sends losers — the hop at line ${line} has no bound".toString()
+                else if (ci.altPolicy == 'priority') why = "the ALT at line ${line} selects by priority — no bound at all for a branch behind an always-ready one".toString()
+                else if (ci.altPolicy == 'random') why = "the ALT at line ${line} selects with random() — fair in expectation only, no deterministic bound".toString()
+                else if (ci.altPolicy == 'fair' && !ci.altHeld) why = "the ALT at line ${line} calls fair() on a fresh instance — no rotation state, no bound".toString()
+                for (String c : ci.altChans) {
+                    String root = sc.streamVarRoot(c, parent) ?: c
+                    for (StreamInfo si : produced) {
+                        if (si.conditional && si.condChan != c) continue          // a guarded reply leaves on its own branch's channel
+                        addHop(edges, root, si.root, why == null ? k : -1, why == null ? "the held fair() ALT at line ${line} (${k})".toString() : why)
+                    }
+                }
+            }
+        }
+        Set<String> known = new HashSet<String>()
+        for (String r : edges.keySet()) known.add(r)
+        for (List<Object[]> es : edges.values()) for (Object[] e : es) known.add((String) e[0])
+        if (!known.contains(from) && !sc.streams.containsKey(from)) { addStaticTypeError(Reporter.formatDeliveredWithin(node.name, "'${from}' is not a channel a scanned stage consumes or produces"), node); return }
+        // every simple path from → to
+        List<Object[]> worst = [null]                                            // [total, label list] of the worst bounded path
+        String[] unbounded = [null]
+        boolean[] found = [false]
+        deliverDfs(edges, from, to, new LinkedHashSet<String>(), 0, new ArrayList<String>(), worst, unbounded, found)
+        if (unbounded[0] != null) { addStaticTypeError(Reporter.formatDeliveredWithin(node.name, unbounded[0]), node); return }
+        if (!found[0]) { addStaticTypeError(Reporter.formatDeliveredWithin(node.name, "no path carries an element from '${from}' to '${to}' through the scanned stages"), node); return }
+        Object[] w = (Object[]) worst[0]
+        if (((int) w[0]) > bound) {
+            addStaticTypeError(Reporter.formatDeliveredWithin(node.name,
+                "the path ${from} -> ${((List<String>) w[1]).join(' -> ')} totals ${w[0]} service step(s) — the claimed ${bound} is below it"), node)
+        }
+    }
+
+    private static void addHop(Map<String, List<Object[]>> edges, String from, String to, int cost, String label) {
+        List<Object[]> l = edges.get(from)
+        if (l == null) { l = new ArrayList<Object[]>(); edges.put(from, l) }
+        for (Object[] e : l) if (e[0] == to) return
+        l.add([to, cost, label] as Object[])
+    }
+
+    private static void deliverDfs(Map<String, List<Object[]>> edges, String at, String to, Set<String> onPath,
+                                   int total, List<String> labels, List<Object[]> worst, String[] unbounded, boolean[] found) {
+        if (at == to) {
+            found[0] = true
+            Object[] w = (Object[]) worst[0]
+            if (w == null || total > (int) w[0]) worst[0] = [total, new ArrayList<String>(labels)] as Object[]
+            return
+        }
+        if (!onPath.add(at)) return
+        List<Object[]> es = edges.get(at)
+        if (es != null) for (Object[] e : es) {
+            if (unbounded[0] != null) break
+            if (((int) e[1]) < 0) {
+                // reachable unbounded hop on a path toward `to`: refute only if `to` is reachable beyond it
+                if (reaches(edges, (String) e[0], to, new HashSet<String>())) { unbounded[0] = (String) e[2]; break }
+                continue
+            }
+            labels.add("${e[2]} -> ${e[0]}".toString())
+            deliverDfs(edges, (String) e[0], to, onPath, total + (int) e[1], labels, worst, unbounded, found)
+            labels.remove(labels.size() - 1)
+        }
+        onPath.remove(at)
+    }
+
+    private static boolean reaches(Map<String, List<Object[]>> edges, String at, String to, Set<String> seen) {
+        if (at == to) return true
+        if (!seen.add(at)) return false
+        List<Object[]> es = edges.get(at)
+        if (es != null) for (Object[] e : es) if (reaches(edges, (String) e[0], to, seen)) return true
+        false
+    }
+
     /** Phase 265 — the method's `@ServedWithin(n)` bound, or null. */
     private static Integer servedWithinOf(MethodNode node) {
         for (AnnotationNode a : node.getAnnotations()) {
@@ -8405,6 +8519,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             BlockStatement modelBody = desugarPartnerDrains(body, ctx.chanVars, paramNames(node))   // Phase 262 — as the rewrite sees it
             StreamScan sc = scanStreams(modelBody, ctx.chanVars, parent, subscribers, paramNames(node), currentScalarTypes)
             checkServedWithin(node, servedWithinOf(node), sc)                 // Phase 265 — the quantitative bound claim
+            checkDeliveredWithin(node, deliveredWithinOf(node), sc, parent)   // Phase 266 — the multi-hop service bound
             sanctionedReceives.addAll(sc.sanctionedReceives)
             sanctionedReceives.addAll(sc.sanctionedFroms)                     // Phase 253 — a looping ALT's from() call is its anchor
             for (StreamInfo p : sc.streams.values()) if (p.infinite) infiniteProducers.put(p.root, p)   // Phase 254

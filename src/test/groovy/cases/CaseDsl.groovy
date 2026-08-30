@@ -40,6 +40,7 @@ class CaseDsl {
         import verification.Forall
         import verification.Protocol
         import verification.ServedWithin
+        import verification.DeliveredWithin
         import verification.Sets
         import verification.Sorted
         import verification.Fib

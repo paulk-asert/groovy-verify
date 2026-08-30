@@ -51,6 +51,7 @@ ported, never sources (the same rule as the jcstress-inspired examples).
 | `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
 | the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })` (Phases 259/260); bound a law a *partner* relies on by the ghost's own size |
 | starvation-freedom in the large (served within a bound) | `@ServedWithin(n)` on the method | certified for a held `fair()` over k <= n branches (the rotation's own arithmetic); refuted with the policy's reason otherwise (Phase 265) |
+| end-to-end latency through a pipeline | `@DeliveredWithin(value = n, from = 'c', to = 'd')` | the head-of-line service bound, summed hop by hop (a stage is 1, a held `fair()` ALT its branch count), the worst path deciding; queueing is loudly not claimed (Phase 266) |
 | a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol('''loop { request: client -> server; reply: server -> client }''')` on the method | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
@@ -627,13 +628,17 @@ on the fair server is **certified** — a held `fair()` over two branches takes 
 selects, the rotation's own arithmetic — while a priority select refutes the same claim with "no bound at
 all", `random()` with "fair in expectation only", and a fresh-instance `fair()` with "keeps no rotation
 state". The bound is the selection's; the loop's liveness and the values are the other rungs' verdicts on
-the same compile.
+the same compile. And the bound composes across hops (Phase 266): `@DeliveredWithin(value = 2, from =
+'reqA', to = 'replyA')` certifies the fair server's request–reply latency, and a merge-then-stage pipeline
+totals its hops (2 + 1) with the worst path named when a claim falls short — head-of-line service, with
+queueing loudly outside the claim.
 
 **Beyond.** A *genuinely mixed* choice — two peers racing on the same channels, where `par`'s disjointness
-is exactly what fails — is beyond the classic projection; and bounds across *multiple hops* (end-to-end
-latency through a pipeline) are a quantitative calculus this ladder does not carry. Those are what remains
-of the research conversation: the same guarantees GPP establishes offline by formal methods, issued
-incrementally by the compiler.
+is exactly what fails — is beyond the classic projection; and the queueing half of latency — delay behind a
+backlog, which needs arrival-rate assumptions — is a calculus this ladder deliberately does not carry (its
+`@DeliveredWithin` is the head-of-line service bound, and says so). Those are what remains of the research
+conversation: the same guarantees GPP establishes offline by formal methods, issued incrementally by the
+compiler.
 
 As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
 the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory

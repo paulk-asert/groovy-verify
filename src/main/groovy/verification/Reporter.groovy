@@ -394,6 +394,14 @@ class Reporter {
     }
 
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */
+    /** Phase 266 — the @DeliveredWithin(n, from, to) multi-hop bound claim. */
+    static String formatDeliveredWithin(String methodName, String detail) {
+        "Cannot certify @DeliveredWithin in ${methodName}: ${detail}. @DeliveredWithin(value = n, from = 'c', " +
+        "to = 'd') claims the pipeline's SERVICE bound: once an element is next in line at every hop, it travels " +
+        "from c to d within n service steps — one per plain stage, the branch count per held fair() ALT " +
+        "(Phase 265's arithmetic). Queueing behind earlier elements is not part of the claim."
+    }
+
     /** Phase 265 — the @ServedWithin(n) bound claim, refuted with the selection policy's own reason. */
     static String formatServedWithin(String methodName, String detail) {
         "Cannot certify @ServedWithin in ${methodName}: ${detail}. @ServedWithin(n) claims every ready branch " +

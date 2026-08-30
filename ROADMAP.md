@@ -12135,6 +12135,31 @@ is genuinely mixed choice — a race on the same channels — and quantitative b
 
 ---
 
+## Phase 266 — Delivered within a bound: the multi-hop service bound  *(shipped — slice 26 of the SEQ/PAR ladder)*
+
+Phase 265 bounded one select; this composes bounds across the pipeline. `@DeliveredWithin(value = n,
+from = 'c', to = 'd')` claims the network's END-TO-END SERVICE bound: once an element is next in line at
+every hop, it travels from c to d within n service steps. `checkDeliveredWithin` builds the hop graph from
+the stream scan — a plain stage (consumer of one channel producing the next) forwards its head element in
+ONE iteration; an ALT hop costs its branch count under a held `fair()` (Phase 265's arithmetic) and is
+UNBOUNDED under priority, a fresh `fair()`, `random()`, or the racing select; a guarded reply leaves on its
+OWN branch's reply channel at the ALT's cost (so another client's reply channel is unreachable by
+construction — "no path", said) — then sums the hops along every simple path from c to d, and the WORST
+path decides (an element travels whichever exists). Refutations carry the path's arithmetic ("the path a ->
+the held fair() ALT at line 47 (2) -> merged -> the stage at line 55 (1) -> out totals 3 service step(s) —
+the claimed 2 is below it"), an unbounded hop's own reason, "no path", or an unknown channel name. The fair
+server's request–reply latency is the two-role special case: `@DeliveredWithin(value = 2, from = 'reqA',
+to = 'replyA')` certifies on the claim runtime.
+
+The LOUD BOUNDARY is in the claim's name: this is HEAD-OF-LINE service, not queueing — an element behind a
+backlog waits its turn at each hop first, and the claim does not say otherwise (a queueing bound needs
+arrival-rate assumptions the ladder does not carry). Cases (G330, new group, 8): one stage certified and
+refuted with its path, the fair merge plus a stage (2 + 1, certified at 3, the sum named at 2), the
+priority merge (no bound, the hop named), the fair server's request answered within two, the unreachable
+reply, the unknown channel. Both runtimes green, 1948.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
