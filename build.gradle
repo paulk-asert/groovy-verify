@@ -410,7 +410,7 @@ dependencies {
 
     // ---- lincheck = the Lincheck TESTS (depend on the compiled domain + the domain's deps via extendsFrom) ----
     lincheckImplementation sourceSets.concurrent.output
-    lincheckImplementation 'org.jetbrains.lincheck:lincheck:3.6'
+    lincheckImplementation 'org.jetbrains.lincheck:lincheck:3.7'
     lincheckImplementation platform("org.junit:junit-bom:$junitVersion")
     lincheckImplementation 'org.junit.jupiter:junit-jupiter'
     lincheckRuntimeOnly 'org.junit.platform:junit-platform-launcher'
