@@ -647,13 +647,18 @@ first" — and the honest answer comes back:
 ```
 [Static type checking] - Cannot prove postcondition of merge holds on this return path
     ensured: ((result.size() == (na + nb)) && (result[0] == 0))
-    counterexample: … na = 1, nb = 7720 …
-    fails on: merge(1, 7720)
+    counterexample: … na = 1, …
+    fails on: merge(1, …
 ```
 
-One element on the left against thousands on the right: the select is free to take a right-hand element
-first, and the counterexample is a scenario you can picture rather than a "not proved". The *count* claim,
-on the same network, proves — nondeterminism costs you the order and nothing else.
+One element on the left and the select still free to take a right-hand one first — a scenario you can
+picture, rather than a "not proved". The *count* claim, on the same network, proves: nondeterminism costs
+you the order and nothing else.
+
+The right-hand count is elided above because it is the solver's free choice, not a forced boundary — the
+same case answers `merge(1, 7720)` on 6.0.0-beta-3 and `merge(1, 1)` on a beta-4 runtime, both valid
+witnesses to the same gap. Contrast `overRead(0)` and `clientServer(0, 1)`: those *are* forced — the
+obligation admits no smaller failure — and they come back identical on both runtimes.
 
 **A server bounded above its clients** (Phase 261) — a cycle whose members both terminate, but not
 together. The server loops `m` times, the client asks `n < m` times, and the server's last read waits for a

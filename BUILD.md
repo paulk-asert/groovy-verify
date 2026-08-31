@@ -214,9 +214,21 @@ diagnostic gets the same treatment: put `<!-- doclint:diagnostic <id> -->` — t
 id — immediately before a plain fenced block holding the message. The lint compiles that case and requires
 every fragment of the quote to appear, **in order**, in what it really printed. Whitespace is normalised, so
 hard-wrap the quote for the page; `…` marks an elision, so a doc may *shorten* a message but never invent
-one. Prefer eliding any part of a message that moves with the Groovy version (`examples/kerridge.md` elides
-the ChannelSelect tail for exactly that reason), and remember the line numbers in a message are the compiled
-file's — say so once per section rather than trying to make them match the snippet.
+one. Two things to elide on sight, both of which this lint will otherwise catch for you on the *other*
+runtime: text that moves with the Groovy version (`examples/kerridge.md` elides the ChannelSelect tail for
+exactly that reason), and a **counterexample value the solver merely chose** rather than was forced to. A
+forced witness is stable and worth pinning — `overRead(0)`, `clientServer(0, 1)`, where the obligation
+admits no smaller failure — while a free one is not: the same P253 order claim answers `merge(1, 7720)` on
+beta-3 and `merge(1, 1)` on beta-4. Remember too that the line numbers in a message are the compiled file's
+— say so once per section rather than trying to make them match the snippet.
+
+Because verdicts branch on the runtime (`CLAIM_SELECT` / `ARBITRATED_SELECT`), run the lint on **both**
+runtimes before committing a quote from a `groovy.concurrent` case, the same rule the suite already follows:
+
+```sh
+echo 'allprojects { repositories { mavenLocal() } }' > /tmp/mavenlocal.init.gradle
+./gradlew docLint -PgroovyVersion=6.0.0-SNAPSHOT --init-script /tmp/mavenlocal.init.gradle
+```
 
 Get the text by running the case verbosely and pasting what it prints:
 
