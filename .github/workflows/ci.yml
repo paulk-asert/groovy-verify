@@ -53,7 +53,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Proof suite + runtime rung + doc lint
         run: ./gradlew check --no-daemon
         env:
@@ -82,7 +82,7 @@ jobs:
           java-version: |
             17
             25
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Publish the artifact under test to mavenLocal (25 toolchain)
         run: >
           ./gradlew publishToMavenLocal --no-daemon
@@ -127,7 +127,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       # OCaml 5.3, not newer: nuscr 2.1.1's dependency stack tops out below 5.4 (its ppx line needs
       # ppxlib 0.35, which caps ocaml < 5.4.0; the ppxlib 0.36 route forces a sexplib0 the base < v0.17
       # bound cannot meet) — 5.3.0 is the exact stack the exporter's verdicts were validated on locally.
