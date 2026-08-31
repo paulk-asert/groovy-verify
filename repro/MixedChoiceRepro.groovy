@@ -22,7 +22,7 @@
  * (examples/kerridge.md, "the race") and the upstream proposal repro/GROOVY-MixedChoice-jira-draft.md.
  * A mixed choice is a session where either peer may open: left may send `ping` OR receive `pong`; right,
  * dually. occam banned output guards because arbitrating this needs a commit protocol
- * (Buckley–Silberschatz); ChannelSelect (GROOVY-12320) offers input guards only. Four experiments:
+ * (Buckley–Silberschatz); ChannelSelect (GROOVY-12320) offers input guards only. Five experiments:
  *
  *   1. The COLLISION: both peers open (buffered sends both succeed) — each reads the other's opener
  *      as "your choice" and the two proceed down DIFFERENT branches of the same session.
