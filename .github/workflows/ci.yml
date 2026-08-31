@@ -131,6 +131,13 @@ jobs:
       - uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: '5.4'
+      # setup-ocaml works from a pinned opam-repository snapshot. nuscr 2.1.1 needs base < v0.17, and
+      # the SNAPSHOT's metadata for that base line still carried its original compiler cap (ocaml < 4.14)
+      # — unsolvable on the 5.4 switch. Upstream has since retro-relaxed those dependency bounds (the
+      # same pin solves on OCaml 5.4.1 against today's metadata, as the local install proved), so
+      # refresh the repository before installing.
+      - name: Refresh opam metadata
+        run: opam update -y
       - name: Install nuScr (pinned to the verdicts the exporter is tuned to)
         run: opam install nuscr.2.1.1 -y
       - name: Export the @Protocol corpus and cross-check with nuScr
