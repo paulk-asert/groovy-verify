@@ -44,16 +44,52 @@ if (r.index == 0) { /* my open committed: continue the ping branch */ }
 else              { /* my peer's open won: r.value is the pong opener */ }
 ```
 
-- `send(chan, value)` / `send(chan, Supplier<V>)` — an offer to transfer `value` into `chan`.
+- `send(chan, value)` — an offer to transfer `value` into `chan`. (No `Supplier<V>` form in v1: the
+  commit happens under the channel lock, so a supplier would run user code under that lock or be
+  pre-evaluated, defeating its purpose — the value is required up front.)
 - `receive(chan)` — today's input guard, unchanged.
-- `select()` commits exactly one offer of this select: a send offer commits when a matching receive (or a
-  peer's receive **offer**) claims it; committing any offer atomically retires this select's others —
-  two-phase: offers are registered claimable, a claim tentatively pairs, the pair commits only if both
-  sides' claims still stand, else both retire and rescan.
+- `select()` commits exactly one offer of this select; committing any offer atomically retires the others.
+- `Result` defines its send-commit shape explicitly: `getValue()` (the sent value, or null) and a
+  branch-kind accessor (`isSend()`), rather than callers inferring from the index.
+- A send offer to a CLOSED channel fails that branch and counts toward the all-closed
+  `ChannelClosedException` fast-fail, mirroring the receive behaviour.
 - Policies compose: `fair()` / `random()` order the scan over offers exactly as GROOVY-12320 does over
   branches.
 - A committed send behaves exactly like `chan.send(v)`; a retired one has NO effect on the channel — no
   buffered residue, mirroring the claim-based receive's "losers untouched".
+
+**The real work: a revertible claim.** GROOVY-12320 built the easy half, and this should be said plainly.
+A claimable *receive* never needs pairing — the claim is tested when a value is provably present under a
+single channel lock. A send offer meeting a receive offer is a genuine TWO-party commit across two selects'
+claims, and the current irreversible boolean claim (`Winner.claim`, an `AtomicBoolean`) cannot express it:
+claim yourself first and a failed CAS on the peer leaves you committed with no transfer (and no guaranteed
+rescan — plain receivers withdraw lock-free from the `ConcurrentLinkedDeque`); claim the peer first and a
+failed CAS on yourself has committed the peer to a transfer that never happens. The claim must become a
+three-state machine — OPEN → PENDING(owner) → COMMITTED, with PENDING revertible and pending acquisition
+ordered/tie-broken against livelock between symmetric peers: Buckley–Schilberschatz's actual protocol.
+Every existing claim site then speaks that machine (the receive path, `deliverToWaitingReceiver`,
+`drainBufferToReceivers`, and `Winner.cancel`, whose CAS-based timeout/cancel race is currently
+load-bearing — the "holding the claim, this cannot fail" invariant). `waitingSenders` (a plain
+`ArrayDeque` whose removal takes the channel lock) needs the same lock-free-withdrawal treatment as
+receivers, or a losing send offer withdrawn from inside a winning channel's delivery hits exactly the
+cross-channel-lock deadlock the class comment warns about. The alternative discipline is Go's — lock all
+member channels in a global order during the scan, so the active party self-commits and one CAS on the
+parked peer suffices — but this class deliberately rejected multi-channel locking (that is why
+`waitingReceivers` became a `ConcurrentLinkedDeque`). Contained to two classes either way; it needs
+jcstress-grade stress testing, not just unit tests.
+
+**The coherence caveat, stated up front.** Arbitration restores SESSION coherence only where a send cannot
+complete unilaterally — that is, over RENDEZVOUS (capacity-0) channels, which `DefaultAsyncChannel(0)`
+already supports (empirically: a capacity-0 `send` returns a pending promise that completes exactly when a
+receiver takes it — repro experiment 5). Run the mixed choice over buffered channels with the proposed API
+and both send offers find buffer space, commit under only their own select's claim, and the experiment-1
+collision reproduces exactly, through the new feature. Each select's claim arbitrates within that select;
+coherence BETWEEN two selects comes only from the rendezvous itself. Go has the identical property — its
+mixed-choice idioms use unbuffered channels. Send offers on buffered channels remain meaningful (a
+space-driven select: "send when room frees, or take from the other branch") — they just do not give
+cross-select session coherence, and the docs should say so, or the collision will be filed as a bug against
+the new feature. groovy-verify's checker will certify the racing mixed choice only over capacity-0 opener
+channels for the same reason.
 
 **Why the buffered workaround is not one.** With buffered channels each peer can just `send` its opener
 unconditionally — but then *both* sends succeed, and each peer reads the other's opener as "your choice":
@@ -73,8 +109,15 @@ that claim, run inside the select over the channel's own machinery, is this prop
 3. Both polite: `select().orTimeoutMillis(500)` times out — nobody opens.
 4. The CAS claim: 1000/1000 trials commit exactly one branch (963/37 and 961/39 splits across runs).
 
-**Relation to GROOVY-12320.** Same design centre: selection must not disturb what it does not take.
-12320 made the *receive* side claimable (losers untouched, all-closed fails fast, `fair()`/`random()`).
-Send offers are the symmetric completion; with them, `ChannelSelect` reaches parity with the generalized
-CSP alternative — and a compile-time session checker can certify the racing mixed choice instead of
-refusing it (its refusal message already points here).
+**Relation to GROOVY-12320 — and to the class's own stated model.** Same design centre: selection must
+not disturb what it does not take. 12320 made the *receive* side claimable (losers untouched, all-closed
+fails fast, `fair()`/`random()`); send offers are its completion — the harder half. And the precedent is
+closer to home than occam: `ChannelSelect`'s own javadoc cites Go's `select` as its inspiration, and Go's
+`select` supports send cases — so this completes parity with the class's stated model, not just with the
+generalized CSP alternative. The occam/JCSP ban on output guards was motivated by DISTRIBUTED commit cost
+(Buckley–Silberschatz 1983); in shared memory that cost does not apply, and Go proved the construct
+tractable there. With it, a compile-time session checker can certify the racing mixed choice (over
+rendezvous channels) instead of refusing it — its refusal message already points here. Timing is worth
+weighing: `ChannelSelect` is `@since 6.0.0` and still in beta, so landing the API surface before GA (even
+`@Incubating`) avoids a 6.x addition — against which sits the protocol risk, since the claim state-machine
+touches invariants already shipped in beta; if it slips past GA it remains additive and safe in 6.x.

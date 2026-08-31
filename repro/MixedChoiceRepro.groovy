@@ -28,8 +28,12 @@
  *      as "your choice" and the two proceed down DIFFERENT branches of the same session.
  *   2. The DEGENERATE case: one initiator — the mixed choice quietly becomes that role's choice.
  *   3. POLITENESS: both peers only offer to receive — nobody opens, the session never starts.
- *   4. What ARBITRATION must give: a hand-rolled two-phase claim (one CAS standing in for the commit
- *      protocol) — N racing trials, exactly one branch committed in every one.
+ *   4. What ARBITRATION must give: a hand-rolled claim (one CAS standing in for the commit protocol —
+ *      the SPEC, exactly-one-commit; the real protocol needs a revertible two-phase claim, see the
+ *      draft) — N racing trials, exactly one branch committed in every one.
+ *   5. The COHERENCE caveat's ground: a capacity-0 (rendezvous) send pends until a receiver takes it —
+ *      the handshake an arbitrated select can hook into — while a buffered send completes alone, which
+ *      is why session coherence between two selects needs capacity-0 openers.
  *
  * Run:  GROOVY_HOME=~/Developer/groovy-6.0.0-beta-3 ~/Developer/groovy-6.0.0-beta-3/bin/groovy repro/MixedChoiceRepro.groovy
  */
@@ -95,6 +99,24 @@ println "   select would run): ${n} trials — left committed ${leftWins.get()},
 println "   => EXACTLY ONE branch commits in every trial: the semantics claimable SEND offers would give"
 println "      (GROOVY-12320 made receives claimable; a send offer that can be claimed or retired is the"
 println "       missing half — ChannelSelect.offers(send(ping, v), receive(pong)).select())"
+println()
+
+// ---------- 5. rendezvous vs buffered: where cross-select coherence can come from ----------
+def rz = AsyncChannel.<Integer>create(0)
+def sendF = rz.send(42)
+Thread.sleep(100)
+boolean pendsAlone = !sendF.done
+int taken = await rz.receive()
+Thread.sleep(100)
+boolean completesOnTake = sendF.done
+def buf = AsyncChannel.<Integer>create(4)
+def bufF = buf.send(7)
+Thread.sleep(100)
+println "5. capacity-0 send with no receiver: ${pendsAlone ? 'PENDS' : 'completed alone'}; after a receiver takes (${taken}): ${completesOnTake ? 'COMPLETES' : 'still pending'}"
+println "   capacity-4 send with no receiver: ${bufF.done ? 'COMPLETES ALONE' : 'pends'}"
+println "   => session coherence between two selects can only come from the rendezvous: a buffered send"
+println "      offer commits unilaterally, and the experiment-1 collision would reproduce through the"
+println "      proposed API — the racing mixed choice needs capacity-0 opener channels"
 println()
 println "Done."
 System.exit(0)

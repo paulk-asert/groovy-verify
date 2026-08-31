@@ -12208,8 +12208,10 @@ claim-based receive: offers register claimable, a claim tentatively pairs, commi
 retired send leaves no buffered residue; `fair()`/`random()` order the offer scan as they do branches;
 occam's reason for banning output guards (Buckley–Silberschatz 1983) is the protocol the select now runs
 for you. The checker's collision refusal points at the draft. When a runtime carries it, the checker's
-mixed-choice coherence check gains its second certified outcome (both may open, the select arbitrates) the
-way Phase 257 followed GROOVY-12320 — modelled where it runs, not before.
+mixed-choice coherence check gains its second certified outcome — both may open, the select arbitrates —
+over RENDEZVOUS (capacity-0) opener channels only: a buffered send offer commits unilaterally against
+buffer space, and the collision reproduces through the new API (upstream review's catch, grounded as the
+repro's experiment 5) — the way Phase 257 followed GROOVY-12320, modelled where it runs, not before.
 
 Nothing else moved: the `repro/` directory returns (its previous occupants were pruned once GROOVY-12320
 was filed and fixed), and G331's verdicts are unchanged. Both runtimes green, 1953; `check` green.
