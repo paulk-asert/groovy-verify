@@ -66,7 +66,7 @@ claim yourself first and a failed CAS on the peer leaves you committed with no t
 rescan — plain receivers withdraw lock-free from the `ConcurrentLinkedDeque`); claim the peer first and a
 failed CAS on yourself has committed the peer to a transfer that never happens. The claim must become a
 three-state machine — OPEN → PENDING(owner) → COMMITTED, with PENDING revertible and pending acquisition
-ordered/tie-broken against livelock between symmetric peers: Buckley–Schilberschatz's actual protocol.
+ordered/tie-broken against livelock between symmetric peers: Buckley–Silberschatz's actual protocol.
 Every existing claim site then speaks that machine (the receive path, `deliverToWaitingReceiver`,
 `drainBufferToReceivers`, and `Winner.cancel`, whose CAS-based timeout/cancel race is currently
 load-bearing — the "holding the claim, this cannot fail" invariant). `waitingSenders` (a plain
