@@ -19,7 +19,13 @@
 
 # JIRA draft — ChannelSelect output guards: claimable SEND offers (the arbitrated mixed choice)
 
-A draft for Paul to file; nothing has been filed. The observations behind it are runnable:
+FILED AND FIXED as GROOVY-12323 (fix version 6.0.0-beta-4): the API landed as this draft's v1 verbatim —
+`offers(send(chan, v), receive(chan)).select()`, no Supplier form, explicit `Result.isSend()`/`getValue()`,
+closed-channel send offers in the fast-fail, `fair()`/`random()` over offers. Verified against the local
+6.0.0-SNAPSHOT: 2000 RACED rendezvous mixed-choice trials commit exactly one branch every time (a genuine
+185/1815 split, zero collisions, zero hangs); the buffered collision reproduces through the new API exactly
+as the coherence caveat states; a retired send leaves no residue; a held `fair()` over offers is 50/50.
+The draft stays as the record behind Phases 267/268. The observations behind it are runnable:
 [`repro/MixedChoiceRepro.groovy`](MixedChoiceRepro.groovy), identical on 6.0.0-beta-3 and on the
 6.0.0-SNAPSHOT carrying GROOVY-12320.
 

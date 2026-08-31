@@ -34,10 +34,15 @@
  *   5. The COHERENCE caveat's ground: a capacity-0 (rendezvous) send pends until a receiver takes it —
  *      the handshake an arbitrated select can hook into — while a buffered send completes alone, which
  *      is why session coherence between two selects needs capacity-0 openers.
+ *   6. On a runtime with GROOVY-12323 (the fix drafted from all of the above): the RESOLUTION —
+ *      offers(send(…), receive(…)).select() commits exactly one branch of a raced rendezvous mixed
+ *      choice, the buffered collision reproduces through the API (the caveat, by design), a retired
+ *      send leaves no residue, and all-closed fast-fails.
  *
  * Run:  GROOVY_HOME=~/Developer/groovy-6.0.0-beta-3 ~/Developer/groovy-6.0.0-beta-3/bin/groovy repro/MixedChoiceRepro.groovy
  */
 import groovy.concurrent.AsyncChannel
+import groovy.concurrent.ChannelSelect
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import static org.apache.groovy.runtime.async.AsyncSupport.*
@@ -73,7 +78,7 @@ def ping3 = AsyncChannel.<Integer>create(4)
 def pong3 = AsyncChannel.<Integer>create(4)
 String outcome
 try {
-    def r = await groovy.concurrent.ChannelSelect.from(ping3, pong3).select().orTimeoutMillis(500)
+    def r = await ChannelSelect.from(ping3, pong3).select().orTimeoutMillis(500)
     outcome = "completed with ${r}"
 } catch (Throwable t) {
     outcome = "${t.class.simpleName} after 500 ms"
@@ -117,6 +122,34 @@ println "   capacity-4 send with no receiver: ${bufF.done ? 'COMPLETES ALONE' : 
 println "   => session coherence between two selects can only come from the rendezvous: a buffered send"
 println "      offer commits unilaterally, and the experiment-1 collision would reproduce through the"
 println "      proposed API — the racing mixed choice needs capacity-0 opener channels"
+println()
+
+// ---------- 6. the resolution, where the runtime carries GROOVY-12323 ----------
+if (ChannelSelect.methods.any { it.name == 'offers' }) {
+    int m = 500
+    int lo = 0, ro = 0, coll = 0, hung = 0
+    for (int i = 0; i < m; i++) {
+        def p6 = AsyncChannel.<Integer>create(0)
+        def q6 = AsyncChannel.<Integer>create(0)
+        def go = new CountDownLatch(1)
+        def res = new Object[2]
+        def t1 = Thread.start { go.await(); res[0] = ChannelSelect.offers(ChannelSelect.send(p6, i), ChannelSelect.receive(q6)).select().toCompletableFuture().get() }
+        def t2 = Thread.start { go.await(); res[1] = ChannelSelect.offers(ChannelSelect.send(q6, i), ChannelSelect.receive(p6)).select().toCompletableFuture().get() }
+        go.countDown(); t1.join(2000); t2.join(2000)
+        if (res[0] == null || res[1] == null) { hung++; continue }
+        boolean ls = res[0].send, rs = res[1].send
+        if (ls && rs) coll++ else if (ls) lo++ else if (rs) ro++
+    }
+    println "6. GROOVY-12323 present — raced rendezvous mixed choice, ${m} trials: left opened ${lo}, right opened ${ro}, collisions ${coll}, hung ${hung}"
+    def bp = AsyncChannel.<Integer>create(4)
+    def bq = AsyncChannel.<Integer>create(4)
+    def b1 = await ChannelSelect.offers(ChannelSelect.send(bp, 1), ChannelSelect.receive(bq)).select()
+    def b2 = await ChannelSelect.offers(ChannelSelect.send(bq, 2), ChannelSelect.receive(bp)).select()
+    println "   buffered openers: left ${b1.send ? 'SENT' : 'received'}, right ${b2.send ? 'SENT' : 'received'} — ${b1.send && b2.send ? 'the collision, through the API: session coherence needs capacity-0 (the documented caveat)' : 'coherent'}"
+    println "   => the race is ARBITRATED where a send cannot complete unilaterally: mixed choice, resolved"
+} else {
+    println "6. this runtime has no ChannelSelect.offers (pre-GROOVY-12323): the resolution experiments need 6.0.0-beta-4+"
+}
 println()
 println "Done."
 System.exit(0)

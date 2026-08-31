@@ -12216,6 +12216,15 @@ repro's experiment 5) — the way Phase 257 followed GROOVY-12320, modelled wher
 Nothing else moved: the `repro/` directory returns (its previous occupants were pruned once GROOVY-12320
 was filed and fixed), and G331's verdicts are unchanged. Both runtimes green, 1953; `check` green.
 
+**Landed** *(addendum)*: filed as GROOVY-12323 and merged for 6.0.0-beta-4 — the API is this draft's v1
+verbatim (`offers(send(chan, v), receive(chan)).select()`, no Supplier, explicit `Result.isSend()`/
+`getValue()`, closed send offers in the fast-fail, policies over offers). Empirics on the local snapshot:
+2000 RACED rendezvous mixed-choice trials, exactly one branch committed in every one (185/1815 split, no
+collisions, no hangs); the buffered collision reproduces through the API exactly as the coherence caveat
+documents (by design, not defect); a retired send leaves no residue; all-closed fast-fails; a held
+`fair()` over offers is 50/50. The repro gained the probe-gated resolution as experiment 6. The checker's
+next rung: probe for `offers`, and certify the racing mixed choice over capacity-0 openers.
+
 ---
 
 ## Phase 269 — The `@Protocol` closure DSL: Groovy parses the protocol  *(shipped — slice 30 of the SEQ/PAR ladder)*
