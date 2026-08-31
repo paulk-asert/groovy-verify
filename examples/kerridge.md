@@ -59,8 +59,8 @@ A note on spelling: the ports declare their channels with the **element type on 
 `AsyncChannel<Integer> c = AsyncChannel.create(n)` — because that is what tells static type checking (and
 the checker) what flows through the channel: `create(n)` has no argument that could fix `T`, so a bare
 `def c = AsyncChannel.create(n)` is an `AsyncChannel<Object>` and neither side can say anything about its
-elements. (`def` / `var` / `val` with a type witness, `val c = AsyncChannel.<Integer>create(n)`, is supported
-and pinned by a case, but it is nobody's idiom; and an element *contract* — `AsyncChannel<@PositiveOrZero
+elements. (`def` / `var` / `val` with a type witness, `val c = AsyncChannel.<Integer>create(n)`, is also supported
+and pinned by a case; but an element *contract* — `AsyncChannel<@PositiveOrZero
 Integer>`, Phase 242 — has to sit on a declared generic anyway.) The one place a declared type is required
 rather than merely idiomatic is an ALT's result, `ChannelSelect.Result r = await …` (Phase 249).
 
@@ -346,9 +346,10 @@ static List<Integer> multiplex(int na, int nb) {
 ```
 
 And the **fair server** — two clients, a server taking whichever request is ready and replying on that
-client's own channel — is where the gallery met the runtime rather than the checker. Up to Groovy
-6.0.0-beta-3, `ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the back of its queue, and there is no `fairSelect`; the
-checker models exactly that and *withholds* per-client liveness with the reason (Phase 256):
+client's own channel — is where the gallery meets the runtime's own selection semantics. On a runtime
+whose select races receives (priority by list order, a losing branch's element re-sent to the back of its
+queue, no fair selection), the checker models exactly that and *withholds* per-client liveness with the
+reason:
 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
 ```groovy
@@ -396,18 +397,19 @@ static void fairServer() {
 > chosen depends on timing; per-client liveness is not certified (a fair selection needs GROOVY-12320, Groovy
 > 6.0.0-beta-4+).
 
-From 6.0.0-beta-4 (GROOVY-12320, the fix drafted from that finding) `select()` selects by claim and offers
-`fair()`: hold the instance — the rotation state lives in it — and the same server's per-client liveness is
-**certified** (Phase 257): every ready client is taken within two selects, each request precedes the wait
-for its reply (a client that waits before asking is withheld, with that reason), and the server loop is
-live, so every client is served under weak fairness. And since Phase 258 the reply's *value* is proved too:
-the guarded `replyA.send(q + 1)` is a **conditional stream** — one element per choice of its branch, its
-k-th element `q + 1` over the k-th request taken from `reqA` — and the cycle (clients waiting on the
-server, the server waiting on the clients) is argued by rely/guarantee, each loop reading its partner's
-stream through a view constrained by the partner's invariants and the FIFO law. So the server below
-verifies whole, and a client that asserts `r == i + 1` after its receive proves it — while `r == i + 2` is
-refuted with a counterexample. Call `.fair()` on a fresh instance inside the loop instead and the checker
-names the mistake — no rotation state, priority in effect:
+On a runtime with the claim-based select (see the [version note](#groovy-version-note)) `select()`
+dequeues exactly one branch, losers untouched, and offers `fair()`: hold the instance — the rotation state
+lives in it — and the same server's per-client liveness is **certified**: every ready client is taken
+within two selects (the rotation's own arithmetic), each request precedes the wait for its reply (a client
+that waits before asking is withheld, with that reason), and the server loop is live, so every client is
+served under weak fairness. The reply's *value* is proved too: the guarded `replyA.send(q + 1)` is a
+**conditional stream** — one element per choice of its branch, its k-th element `q + 1` over the k-th
+request taken from `reqA` — and the cycle (clients waiting on the server, the server waiting on the
+clients) is argued by rely/guarantee, each loop reading its partner's stream through a view constrained by
+the partner's invariants and the FIFO law. So the server below verifies whole, and a client that asserts
+`r == i + 1` after its receive proves it — while `r == i + 2` is refuted with a counterexample. Call
+`.fair()` on a fresh instance inside the loop instead and the checker names the mistake — no rotation
+state, priority in effect:
 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-with-a-held-fair-select-per-client-liveness-certified-groovy-6-0-0-beta-4 -->
 ```groovy
@@ -478,53 +480,36 @@ JCSP polices at runtime — is a compile-time "Channel linearity violation": the
 is *"the 2nd receive on 'src' can never be satisfied — only 1 send"* (Phase 247): the process would block
 forever, and the FIFO pairing knows it.
 
-## The honest boundary, loudly
+## How deadlock, liveness and starvation are certified
 
-Every teaching shape above carries a certificate, and every certificate stops somewhere it can name. The
-stops are of three kinds.
+The certificates above rest on a small number of mechanisms, each worth knowing by name.
 
-**The checker's own fragment.** A streaming process is a *specified unit-counter loop* — `while (i < n)`,
-`while (true)` or C-style, stepping one variable the guard tests (or the only stepped one, for `while (true)`)
-by exactly one, carrying its `@Invariant` (and `@Decreases` when it ends) — with one send per channel per
-iteration, one receive per channel per iteration or one `ALT`, `int` elements, and the pipeline's map stages
-declared as variables. Anything else refuses the value model *with the reason named*: a range `for`-in over a
-symbolic bound, two sends or two receives of one channel in an iteration, a `first()` outside such a loop, a
-send under an `if` that is not the `ALT`-guarded reply shape, a drain through a `filter`. The accumulating
-`for (v in ch)` drain is the loop engine's own boundary, so drained values are spelled `toList()` or collected
-in a loop. Inside the fragment the certificates rest on three stated facts: sends never block (an
-`AsyncChannel` send is queued, its `Awaitable` discarded), the base case of every loop is the straight-line
-code before it, and — for liveness — *weak fairness* of the scheduler: a process whose next operation is
-enabled eventually executes it. Nothing about ordering across processes is assumed; the interleaving of a
-multiplexer is left exactly as nondeterministic as it is.
+**Deadlock is well-foundedness of the wait-for order.** Every receive waits for a send, every drain waits
+for a close; the checker builds that graph and demands it be well-founded. For a one-shot network the graph
+must be acyclic — a cycle *is* the deadlock, and the error spells out the loop of waits, receive by receive
+(the mutual-receive student exercise above). An `ALT` enters the graph as an **OR node**: it is stuck only
+if *every* branch is stuck, which is why a multiplexer over live producers certifies while a knot whose
+every branch waits on its own output does not.
 
-**The runtime's — and where it moved.** Up to Groovy 6.0.0-beta-3, `ChannelSelect` is not the book's
-`ALT`. It races a `receive()` on every branch and completes with the first: when several are ready the lowest
-index wins, a losing branch's consumed element is re-sent to the *back* of its queue, every select leaves a
-pending receiver on each branch that was empty, and a select over channels that are all closed never
-completes — all four observed, not read. The checker models exactly that
-(Phase 256), so three things it *could* say it withholds instead: positional claims through a contended
-`ALT` branch, a branch listed after an always-ready one is a named **starvation hazard**, and the **fair
-server** has its per-client liveness withheld because there is no fair selection to certify it against.
+**Forever processes lift the same graph to the iteration index.** A `while (true)` network has no final
+state to be safe in, so the wait-for graph is built *per iteration*: an edge of weight 0 means "waits for
+the partner's send in the same round", and a cycle in the weight-0 subgraph is a circular wait in **every**
+round — the receive-first pair. A priming send before a loop is one message of head start — a negative
+edge that breaks the cycle — which is exactly why the token ring with `ab.send(0)` is live and the same
+ring without it deadlocks in round one. Liveness then follows by a completion fixpoint under one stated
+assumption, **weak fairness**: a process whose next operation is enabled eventually executes it. Nothing
+else about scheduling is assumed, and nothing about cross-process ordering — a multiplexer's interleaving
+stays exactly as nondeterministic as it is. A *terminating* partner adds an obligation instead of an
+assumption: reading element `k` from a producer that sends `m` in all is refuted unless `k < m` — the read
+that would block forever is named, with the total ("a `while (true)` server of a bounded client waits
+forever for the request after the last").
 
-Those findings became GROOVY-12320 (fixed for 6.0.0-beta-4): `select()` is claim-based — exactly one branch
-dequeues, losers are untouched, all-closed fails fast — with `fair()` (rotating from the last winner, state
-in the instance) and `random()`. The checker probes the runtime it runs on and models what it finds (Phase
-257): on beta-4+ a looping `ALT` takes the chosen branch's head again, so positional claims prove; a *held*
-`ChannelSelect` is a supported shape; the starvation hazard fires only where priority is in effect — the
-default, or `fair()` on a *fresh* instance each iteration, named with the hoisting fix; `random()` is fair in
-expectation only; and the fair server with a held `fair()` is **certified**. What is still withheld is
-withheld with the policy's own reason. On beta-3 the verdicts above stand, unchanged.
-
-**The cycle's.** A client waiting on a server that waits on the client is a *cycle* of streams, and the
-flattened model — each loop atomic, in dataflow order — has no order for it. Phase 258 found that the
-fallback made every value claim after such a read vacuous (a `while (true)` client asserting `r == i + 2`
-"compiled cleanly") and replaced it with rely/guarantee: a cycle member reads its partner through a view
-constrained by the partner's invariants and the FIFO law, what it has *taken* is a prefix of what was sent,
-and the request–reply law closes — `r == i + 1` proves, `r == i + 2` is refuted. A closed form over a token
-ring needs one more thing: the history of what a loop has taken, which Phase 259 lets the invariant name as
-`c.taken`. A member may terminate (Phase 261) — then what it reads must lie below its partner's total, and
-the read that would block forever is refuted, the total named — and a partner that *drains* until the
-other's close (Phase 262) is the cycle that ends cleanly, verified whole.
+**Values cross processes as streams and, in cycles, by rely/guarantee.** A specified producer loop makes
+its channel *be* the list the loop builds, so a consumer's k-th receive is that list's k-th element and
+element-wise claims prove. When two loops answer each other — client and server, a ring — no sequential
+order of the loops exists, so each reads its partner through a view constrained by the partner's own loop
+invariant plus one law of the channel itself: what a consumer has *taken* is a prefix of what its producer
+sent. The histories in that argument are nameable in specs as the ghosts `c.taken` and `c.sent`:
 
 <!-- doclint:case p259-taken-ghost/the-primed-cycle-what-a-has-taken-is-2k-1-so-what-it-reads-is-2i-1-proved -->
 ```groovy
@@ -552,24 +537,28 @@ static void primed() {
 }
 ```
 
+
 The token goes round with a value: A primes `0`, B answers `y + 1`, A reads `2i + 1` at its i-th turn —
 proved because A's invariant says what it has *taken* so far, B's law says what it sends is what it took
-plus one, and the FIFO law binds B's taken to A's sent. The three-process ring proves `3i + 2` the same way,
-and `2k` in place of `2k + 1` is refuted at its base case. The twin ghost `c.sent` (Phase 260) is for the
-other side: a producer whose values are loop-written — a counting server, a Fibonacci generator — states
-its own law (`Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })`, bounded by the ghost's
-own size so a reader mid-cycle may rely on it), and its readers prove against it. And a member of the cycle
-may terminate (Phase 261): a bounded client's total is read off its guard, and a partner that reads past it
-is refuted at that read — a `while (true)` server of a `while (i < n)` client waits forever for the request
-after the last, which the checker now says; matched bounds prove both sides. And the shape that ends
-cleanly — a client that closes its request channel after its loop, a server that *drains* it until the
-close — verifies whole (Phase 262): the drain is read as the counter loop it is, its replies are exactly the
-client's requests answered, and its termination is the client's close.
+plus one, and the FIFO law binds B's taken to A's sent. The three-process ring proves `3i + 2` the same
+way, and `2k` in place of `2k + 1` is refuted at its base case. The twin ghost `c.sent` serves a producer
+whose values are loop-written — a counting server, a Fibonacci generator — which states its own stream law
+(`Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })`) for its readers to prove against.
+And the cycle that ends cleanly — a client that closes its request channel after its loop, a server that
+*drains* it until the close — verifies whole, the drain's termination being the client's close.
 
-**The session-typed view** — a protocol of messages and directions, not a sequence of ints — was the other
-half of the research conversation, and Phase 263 makes it a demo. A `@Protocol` on the method is the
-network's global type, Scribble-style; the checker projects it onto each role and checks every process's
-control flow against its projection, naming a violation with the trace that reaches it:
+**Starvation and service bounds are the selection policy's own arithmetic.** A branch listed after an
+always-ready one under a priority select may wait forever — a named hazard, not a warning. A *held*
+`fair()` select rotates from the last winner, so over k branches a ready branch is taken within k selects:
+that arithmetic certifies `@ServedWithin(n)` for n ≥ k, refutes it under priority ("no bound at all"),
+`random()` ("fair in expectation only") and a fresh-instance `fair()` ("keeps no rotation state"), and
+composes across hops — `@DeliveredWithin(value = n, from = 'c', to = 'd')` sums one step per plain stage
+and k per fair merge along every path, the worst path deciding. These are **head-of-line** service bounds;
+queueing behind a backlog is deliberately outside the claim.
+
+**Protocols are session types, checked by projection.** A `@Protocol` closure is the network's global
+type; the checker projects it onto each role and checks every process's control flow against its
+projection, naming a violation with the trace that reaches it:
 
 <!-- doclint:case p263-session-types/the-primed-token-ring-follows-a-three-role-protocol-that-says-the-priming -->
 ```groovy
@@ -614,38 +603,50 @@ static void ring() {
 }
 ```
 
+
 Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 40) where
 the protocol expects it to receives from 'ca'"); make a client wait before asking and the trace says so. A
 choice belongs to one role (`choice at client { … } or { … }`, the client's `if`/`else` against the
-server's ALT); a *mixed* choice — `choice { ping: left -> right } or { pong: right -> left }`, no `at` — is admitted with its coherence checked (Phase 267): one opener and it degenerates to that role's choice, certified; two, and the race is refused with the collision spelled out (buffered sends both succeed and the peers proceed down different branches — no output guards exist to arbitrate, which is why occam banned them); and the fair server is typed not as a choice at all but as a `par` (Phase 264) — two
-request–reply sessions, channels disjoint, interleaved at the server, projected as their *shuffle* — whose
-ALT is one conformant implementation, a cross-wired reply named with its trace.
+server's ALT); `par { … } and { … }` interleaves independent sub-sessions — the fair server's type — and a
+*mixed* choice (`choice { ping: left >> right } or { pong: right >> left }`, no `at`) is admitted with its
+**coherence** checked across the processes, because each peer can conform alone while together they
+collide: one opener and the choice degenerates to that role's, certified; a racing pair is certified only
+where the race is genuinely arbitrated — every initiator opening through `offers(send(…), receive(…))
+.select()` over **rendezvous** (capacity-0) channels, since a buffered send commits unilaterally and
+re-creates the collision — and refused otherwise with the exact missing piece named.
 
-And *starvation-freedom in the large* is now a claim rather than a lament (Phase 265): `@ServedWithin(2)`
-on the fair server is **certified** — a held `fair()` over two branches takes every ready branch within two
-selects, the rotation's own arithmetic — while a priority select refutes the same claim with "no bound at
-all", `random()` with "fair in expectation only", and a fresh-instance `fair()` with "keeps no rotation
-state". The bound is the selection's; the loop's liveness and the values are the other rungs' verdicts on
-the same compile. And the bound composes across hops (Phase 266): `@DeliveredWithin(value = 2, from =
-'reqA', to = 'replyA')` certifies the fair server's request–reply latency, and a merge-then-stage pipeline
-totals its hops (2 + 1) with the worst path named when a claim falls short — head-of-line service, with
-queueing loudly outside the claim.
+## The honest boundary, loudly
 
-**Beyond — and the boundary moved again.** A mixed choice that truly RACES — both peers permitted to
-open, resolved by arbitration — needs output guards under the select, and the runtime now has them: the ask
-landed as **GROOVY-12323** (6.0.0-beta-4), its API the draft's v1 verbatim, and the repro's experiment 6
-shows the resolution live — thousands of raced rendezvous trials, exactly one branch committed in every
-one, with the buffered collision still reproducing through the API exactly as the documented caveat says
-(session coherence comes from the rendezvous; capacity-0 openers required). Twice now the pattern has
-run checker → finding → reproduction → upstream fix → modelled where it runs: `fairSelect` became
-GROOVY-12320, the mixed choice became GROOVY-12323 — and the checker now completes the loop (Phase 271):
-on a runtime carrying `offers`, a racing pair that opens through the arbitrated select over rendezvous
-channels is **certified coherent**, a buffered or bare-send opener refused with the caveat quoted. What
-remains beyond the ladder is the queueing calculus alone. And the queueing half of latency — delay behind a backlog, which needs arrival-rate
-assumptions — is a calculus this ladder deliberately does not carry (its `@DeliveredWithin` is the
-head-of-line service bound, and says so). Those are what remains of the research conversation: the same
-guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
+Every certificate stops somewhere it can name, and the stops are these.
 
-As everywhere in the [concurrency gallery](concurrency.md): the scheduler, the JMM, and atomicity remain
-the [three runtime rungs](../CONCURRENCY.md) — these certificates are action-grained and above the memory
-model, exactly as CSP's own semantics are.
+**The checker's fragment.** A streaming process is a *specified unit-counter loop* — `while (i < n)`,
+`while (true)` or C-style, stepping one variable the guard tests by exactly one, carrying its `@Invariant`
+(and `@Decreases` when it ends) — with one send per channel per iteration, one receive per channel per
+iteration or one `ALT`, `int` elements, and the pipeline's map stages declared as variables. Anything else
+refuses the value model *with the reason named*: a range `for`-in over a symbolic bound, two sends of one
+channel in an iteration, a `first()` outside such a loop, a send under an `if` that is not the
+`ALT`-guarded reply shape, a drain through a `filter`. Inside the fragment the certificates rest on three
+stated facts: sends never block on a buffered channel (queued, the `Awaitable` discarded), the base case of
+every loop is the straight-line code before it, and liveness assumes weak fairness — nothing more.
+
+**What is genuinely outside today.** The *queueing* half of latency — delay behind a backlog, which needs
+arrival-rate assumptions — is a calculus this gallery deliberately does not carry; its bounds are
+head-of-line service bounds and say so. The arbitrated `offers(…)` select is certified at the session layer
+(coherence, conformance) but sits outside the *value* model — a racing peer's loop values are honestly
+skipped, not proved. And as everywhere in the [concurrency gallery](concurrency.md): the scheduler, the
+JMM, and atomicity remain the [three runtime rungs](../CONCURRENCY.md) — these certificates are
+action-grained and above the memory model, exactly as CSP's own semantics are.
+
+## Groovy version note
+
+A practical gotcha rather than a boundary: the checker **probes the runtime that hosts it** and models the
+selection semantics it finds, so verdicts follow *your* Groovy. On Groovy 6 up to 6.0.0-beta-3 the select
+races receives (priority by list order, losers re-sent) — the withheld fair server, the starvation
+hazards, and the refuted positional claims above are that runtime's honest verdicts, and the beta-4
+spellings are type errors there. From **6.0.0-beta-4** the claim-based select (GROOVY-12320: held
+`fair()` / `random()`, losers untouched) makes the fair server certifiable end to end, and the arbitrated
+select (GROOVY-12323: `offers(send(…), receive(…))`) makes the racing mixed choice certifiable over
+rendezvous channels. Both features originated as findings of this checker — reproduced, drafted, and fixed
+upstream — so the examples that need them are marked, and on an older runtime they fail loudly rather than
+prove weakly. The same guarantees GPP establishes offline by formal methods, issued incrementally by the
+compiler.
