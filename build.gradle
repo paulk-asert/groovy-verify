@@ -560,7 +560,13 @@ tasks.register('nuscrCheck', JavaExec) {
         scrs.each { f ->
             def proc = [nuscr, f.absolutePath].execute()
             proc.waitFor()
-            if (proc.exitValue() != 0) failures << "${f.name}: ${proc.err.text.readLines().head()}"
+            def rejected = proc.exitValue() != 0
+            def gapNote = new File(f.parentFile, (f.name - '.scr') + '.nuscr-gap.txt')   // written by the exporter
+            if (gapNote.exists()) {
+                // a KNOWN nuScr fragment gap: rejection is the recorded state, acceptance is news
+                if (rejected) println "nuscr known gap (${gapNote.text.trim()}): ${f.name}"
+                else println "nuscr GAP CLOSED? ${f.name} was accepted — update NUSCR_FRAGMENT_GAPS"
+            } else if (rejected) failures << "${f.name}: ${(proc.err.text + proc.in.text).readLines().findAll { it }.head()}"
             else println "nuscr ok: ${f.name}"
         }
         if (failures) throw new GradleException("nuScr disagreed on: ${failures.join('; ')}")

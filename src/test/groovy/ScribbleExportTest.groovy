@@ -51,11 +51,12 @@ class ScribbleExportTest {
         choice at client {
             add() from client to server;
             sum() from server to client;
+            continue X1;
         } or {
             neg() from client to server;
             res() from server to client;
+            continue X1;
         }
-        continue X1;
     }
 }
 ''', scr)

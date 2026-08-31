@@ -62,6 +62,26 @@ class ScribbleExport {
         else if (g instanceof SessionChecker.Par) g.parts.each { collectRoles(it, out) }
     }
 
+    /** A loop body followed by `continue label;` in TAIL position: pushed into a trailing choice's branches. */
+    private static boolean renderThenContinue(SessionChecker.G g, StringBuilder out, String pad, int[] recNo,
+                                              List<String> errors, String label) {
+        List<SessionChecker.G> items = g instanceof SessionChecker.Seq ? ((SessionChecker.Seq) g).items : [g]
+        for (int i = 0; i < items.size() - 1; i++) if (!render(items[i], out, pad, recNo, errors)) return false
+        SessionChecker.G last = items.isEmpty() ? null : items[items.size() - 1]
+        if (last instanceof SessionChecker.Choice && ((SessionChecker.Choice) last).at != null) {
+            SessionChecker.Choice c = (SessionChecker.Choice) last
+            for (int i = 0; i < c.branches.size(); i++) {
+                out.append(pad).append(i == 0 ? "choice at ${c.at} {\n" : '} or {\n')
+                if (!renderThenContinue(c.branches.get(i), out, pad + '    ', recNo, errors, label)) return false
+            }
+            out.append(pad).append('}\n')
+            return true
+        }
+        if (last != null && !render(last, out, pad, recNo, errors)) return false
+        out.append(pad).append("continue ${label};\n")
+        true
+    }
+
     private static boolean render(SessionChecker.G g, StringBuilder out, String pad, int[] recNo, List<String> errors) {
         if (g instanceof SessionChecker.Msg) {
             out.append(pad).append("${g.chan}() from ${g.from} to ${g.to};\n")
@@ -72,10 +92,11 @@ class ScribbleExport {
             return true
         }
         if (g instanceof SessionChecker.Loop) {
+            // nuScr (2.1.1) implements TAIL-recursive protocols only: when the loop body ends in a choice, the
+            // `continue` must sit in each branch's tail position, not after the choice (found by the oracle).
             String label = "X${++recNo[0]}"
             out.append(pad).append("rec ${label} {\n")
-            if (!render(g.body, out, pad + '    ', recNo, errors)) return false
-            out.append(pad).append("    continue ${label};\n")
+            if (!renderThenContinue(g.body, out, pad + '    ', recNo, errors, label)) return false
             out.append(pad).append('}\n')
             return true
         }
@@ -104,6 +125,12 @@ class ScribbleExport {
         false
     }
 
+    /** Phase 270 — protocols standard Scribble carries but nuScr's grammar does not (its parser has no `par`
+     *  token): the gate treats a nuscr rejection of these as the KNOWN gap, and an acceptance as news. */
+    static final Map<String, String> NUSCR_FRAGMENT_GAPS = [
+        FairServerPar: "nuScr's grammar has no par construct (parallel composition is Scribble-Java syntax)",
+    ].asImmutable()
+
     /** The curated corpus: the gallery's protocols, by name. The mixed choice is here deliberately — its
      *  refusal note documents the fragment boundary mechanically. */
     static final Map<String, String> CORPUS = [
@@ -124,6 +151,8 @@ class ScribbleExport {
             if (scr != null) {
                 new File(dir, "${name}.scr").text = scr
                 println "exported ${name}.scr"
+                String gap = NUSCR_FRAGMENT_GAPS[name]
+                if (gap != null) new File(dir, "${name}.nuscr-gap.txt").text = gap + '\n'   // the gate reads this sidecar
             } else {
                 new File(dir, "${name}.outside-standard.txt").text = errors.join('\n') + '\n'
                 println "outside the standard fragment: ${name} — ${errors.join('; ')}"

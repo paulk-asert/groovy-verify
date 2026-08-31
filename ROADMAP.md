@@ -12275,6 +12275,19 @@ half-edited `render` slipped into the tree while the Phase 269 gates ran and its
 that window's `check` — the fix landed before anything was committed, and the gates re-ran on the final
 tree. Not in `check` (nuscr is rarely installed); run `./gradlew nuscrCheck`.
 
+**The oracle, live** *(addendum, same day)*: Paul asked for nuscr installed and the cross-check run for
+real — a from-scratch OCaml toolchain (brew → opam → OCaml 5.4.1 → nuscr 2.1.1, ~15 min of compilation)
+and it repaid the effort on the first pass. nuScr accepted `ReqReply` and `PrimedRing` verbatim (bare
+`rec X1 {` needs no refinement brackets) — and REJECTED `CalcChoice`: "Non tail-recursive protocol is not
+implemented". nuScr 2.1.1 implements TAIL-recursive protocols only, and the exporter had appended
+`continue X1;` after a trailing choice; it now pushes the `continue` into each branch's tail position
+(`renderThenContinue`), the golden updated, and `CalcChoice` passes — a real exporter bug, found by the
+oracle within minutes of it existing. `FairServerPar` fails at `par` exactly as the grammar predicted
+(nuScr's parser has no `par` token — confirmed against `parser.mly` before the binary landed) and the gate
+reports it as the KNOWN gap from its sidecar note rather than a disagreement; an acceptance by a future
+nuScr would be flagged as "GAP CLOSED?". nuscr signals errors with exit 124; the gate's any-nonzero check
+stands. Final tally: 3 ok, 1 known gap, 1 outside-standard note — zero disagreements.
+
 ---
 
 ## Definition of done, per increment
