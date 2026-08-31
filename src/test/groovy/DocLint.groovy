@@ -15,20 +15,30 @@
  */
 
 /**
- * SKETCH — the four drift lints that keep the hand-maintained docs honest against the single source of truth
- * ({@link VerifyHarness#CASES} and the codebase). This entry point is the human-readable REPORT; the same four
+ * SKETCH — the drift lints that keep the hand-maintained docs honest against the single source of truth
+ * ({@link VerifyHarness#CASES} and the codebase). This entry point is the human-readable REPORT; the same
  * lints are asserted by {@link DocLintTest} inside `check`/CI, so drift fails the build.
  *
  *   1. group-descriptions — every CASES group has a one-line capability description (a co-located DESCRIPTION in its cases/G*.groovy file, aggregated by Harvester.GROUP_DESC)
  *   2. snippets-as-tests  — every fenced ```groovy block in the docs appears as a CASES source (can't silently break)
  *   3. architecture-map   — every file named in ARCHITECTURE.md exists; every verification/*.groovy is mapped
  *   4. pack-corpora       — every EncodingPack's declared corpus groups exist in CASES (provenance can't rot)
+ *   5. trusted-inventory  — every shipped external-spec skeleton parses and carries a contract (no silent trust loss)
+ *   6. diagnostics-verbatim — every doc-QUOTED compiler message is really what its case emits (quoted prose can't drift)
  *
  * Run: {@code ./gradlew docLint}
  */
 class DocLint {
 
     static String norm(String s) { s.replaceAll(/\s+/, ' ').trim() }
+
+    /** The hand-maintained docs the drift lints read: the top-level set plus the split-out galleries. */
+    static List<String> docFiles() {
+        List<String> fs = ['README.md', 'FRAGMENT.md', 'CAPABILITIES.md', 'ARCHITECTURE.md', 'CONCURRENCY.md', 'TOOLING.md', 'PACKS.md']
+        File examplesDir = new File('examples')   // the split-out galleries (examples/*.md, examples/**/examples.md)
+        if (examplesDir.isDirectory()) examplesDir.eachFileRecurse { File ff -> if (ff.name.endsWith('.md')) fs << ff.path }
+        fs
+    }
 
     /** id → whitespace-normalised case source, for the doclint:case link check. Comments are kept: teaching
      *  comments live in the test source (the single source of truth), so the doc must reproduce them faithfully. */
@@ -63,10 +73,7 @@ class DocLint {
         Map<String, String> byId = caseSourcesById()
         int blocks = 0, unmatched = 0, exempt = 0, quoted = 0, linked = 0, linkBroken = 0
         def examples = [], broken = []
-        def docFiles = ['README.md', 'FRAGMENT.md', 'CAPABILITIES.md', 'ARCHITECTURE.md', 'CONCURRENCY.md', 'TOOLING.md', 'PACKS.md']
-        File examplesDir = new File('examples')   // the split-out galleries (examples/*.md, examples/**/examples.md)
-        if (examplesDir.isDirectory()) examplesDir.eachFileRecurse { File ff -> if (ff.name.endsWith('.md')) docFiles << ff.path }
-        docFiles.each { String f ->
+        docFiles().each { String f ->
             File doc = new File(f); if (!doc.exists()) return
             (doc.text =~ /(?s)(<!--\s*doclint:(ignore|case)(?:\s+([^\s>]+))?[^>]*-->\s*\n)?```groovy\n(.*?)```/).each { m ->
                 String marker = m[2], id = m[3], raw = m[4] as String   // type | id | body
@@ -106,6 +113,44 @@ class DocLint {
         println "\n[4] pack corpora — ${verification.PackRegistry.packs().size()} packs, ${broken.size()} broken group claims"
         if (broken) println "    BROKEN (${broken.size()}): " + broken.join(', ')
         broken.size()
+    }
+
+    // 6 ─ every doc-QUOTED compiler message is really what its case emits. The snippet lint (2) pins the
+    //     *code*; nothing pinned the diagnostics beside it, so quoted messages were unverified prose and
+    //     drifted silently (an edited Phase 243 deadlock message shipped for four phases). A fenced block
+    //     preceded by `<!-- doclint:diagnostic ID -->` is checked against the diagnostics case ID really
+    //     produces: whitespace-normalised, split on `…` (the elision marker), each fragment must appear —
+    //     IN ORDER — in the case's own compiler output. So a doc may shorten a message but never invent one.
+    static int lintDiagnostics() {
+        Map<String, Map> byId = [:]
+        VerifyHarness.CASES.each { Map c -> byId[Harvester.slug((String) c.group) + '/' + Harvester.slug((String) c.name)] = c }
+        Map<String, String> emitted = [:]                       // id → normalised compiler output (memoised: compiling is the cost)
+        int quoted = 0, broken = 0
+        List<String> bad = []
+        docFiles().each { String f ->
+            File doc = new File(f); if (!doc.exists()) return
+            (doc.text =~ /(?s)<!--\s*doclint:diagnostic\s+([^\s>]+)\s*-->\s*\n```[a-z]*\n(.*?)```/).each { m ->
+                String id = m[1], body = norm(m[2] as String)
+                quoted++
+                Map c = byId[id]
+                if (c == null) { broken++; bad << "${f}: unknown case id '${id}'"; return }
+                String out = emitted[id]
+                if (out == null) {
+                    List<String> errs = VerifyHarness.compile('DocDiag' + Math.abs(id.hashCode()), (String) c.src)
+                    out = emitted[id] = norm(errs == null ? '' : errs.join('\n'))
+                }
+                int at = 0
+                String missing = body.split('…').find { String frag ->
+                    String t = frag.trim(); if (!t) return false
+                    int i = out.indexOf(t, at); if (i < 0) return true
+                    at = i + t.length(); return false
+                }
+                if (missing != null) { broken++; bad << "${f}: '${id}' — quoted text not emitted: '${missing.trim().take(90)}'" }
+            }
+        }
+        println "\n[6] diagnostics-verbatim — ${quoted - broken}/${quoted} quoted diagnostics match their case's real output"
+        if (broken) { println "    DRIFTED (${broken}):"; bad.each { println "      ${it}" } }
+        broken
     }
 
     // 3 ─ ARCHITECTURE.md names real files, and every engine source is mapped.
@@ -176,7 +221,7 @@ class DocLint {
 
     static void main(String[] args) {
         println '── DocLint (human-readable report; DocLintTest asserts the same lints inside `check`/CI) ' + ('─' * 8)
-        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora() + lintTrustedSpecs()
+        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora() + lintTrustedSpecs() + lintDiagnostics()
         println "\n${'═' * 70}\nTotal drift findings: ${total}  (report-only; not failing the build)"
     }
 }

@@ -173,7 +173,7 @@ verifier-vs-runtime difference, not a logic bug: the `a[i] = i++` / `src[++i]` s
 
 ## Keeping the docs in sync
 
-Three lints hold the documentation to the code. `./gradlew docLint` prints a human-readable report;
+Four lints hold the documentation to the code. `./gradlew docLint` prints a human-readable report;
 `./gradlew check` runs the same checks as JUnit assertions
 ([`DocLintTest`](src/test/groovy/DocLintTest.groovy)), so any drift fails the build:
 
@@ -182,6 +182,7 @@ Three lints hold the documentation to the code. `./gradlew docLint` prints a hum
 2. **snippets-as-tests** — every fenced `groovy` block in the docs is accounted for (see below).
 3. **architecture map** — every `src/main/groovy/verification/*.groovy` engine source is named in
    [ARCHITECTURE.md](ARCHITECTURE.md).
+4. **diagnostics-verbatim** — every doc-*quoted* compiler message is really what its case emits (see below).
 
 ### Documenting an example
 
@@ -204,6 +205,24 @@ four dispositions:
 
 So: add an example, then **link it** with `doclint:case` if it mirrors a test, or **exempt it** with
 `doclint:ignore <reason>` if it's illustrative — and run `./gradlew docLint` to confirm it's accounted for.
+
+### Quoting a diagnostic
+
+Lint 2 pins the *code*; for a long time nothing pinned the compiler messages quoted beside it, and quoted
+prose duly drifted (a hand-edited Phase 243 deadlock message shipped for several phases). So a quoted
+diagnostic gets the same treatment: put `<!-- doclint:diagnostic <id> -->` — the same `slug(group)/slug(name)`
+id — immediately before a plain fenced block holding the message. The lint compiles that case and requires
+every fragment of the quote to appear, **in order**, in what it really printed. Whitespace is normalised, so
+hard-wrap the quote for the page; `…` marks an elision, so a doc may *shorten* a message but never invent
+one. Prefer eliding any part of a message that moves with the Groovy version (`examples/kerridge.md` elides
+the ChannelSelect tail for exactly that reason), and remember the line numbers in a message are the compiled
+file's — say so once per section rather than trying to make them match the snippet.
+
+Get the text by running the case verbosely and pasting what it prints:
+
+```sh
+VERIFY_VERBOSE=1 ./gradlew verify -Pcases='the deadlock exercise'
+```
 
 ## Using it in your own build
 

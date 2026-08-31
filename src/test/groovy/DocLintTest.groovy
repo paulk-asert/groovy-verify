@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals
  *   • every fenced groovy block in the docs is linked to a case, exempted, or a verbatim substring of some case —
  *     and every doclint:case link still matches its case (comments included)
  *   • every verification/*.groovy engine source is named in ARCHITECTURE.md
+ *   • every doc-QUOTED compiler message is really what its case emits (a doc may elide with `…`, never invent)
  */
 class DocLintTest {
 
@@ -44,6 +45,12 @@ class DocLintTest {
     void everyPackCorpusGroupExists() {
         assertEquals(0, DocLint.lintPackCorpora(), 'an EncodingPack claims a corpus group that has no cases')
         assertEquals(0, DocLint.lintTrustedSpecs(), 'a shipped external-spec skeleton is malformed or contract-free (silent trust loss)')
+    }
+
+    @Test
+    void everyQuotedDiagnosticIsWhatTheCompilerSays() {
+        assertEquals(0, DocLint.lintDiagnostics(),
+            'a doc-quoted compiler message is not what its case emits — re-run the case and paste the real diagnostic')
     }
 
     @Test

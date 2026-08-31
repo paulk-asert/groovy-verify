@@ -81,7 +81,7 @@ static String helloWorld() {
 
 The *literal* `ProduceHW` / `ConsumeHW` pair — two messages, `"Hello"` then `"World"`, down one channel — was
 the gallery's first named boundary; the bounded FIFO of Phase 247 proves it end to end, **in order** (read
-them back the other way round and the claim is refuted with a counterexample):
+them back the other way round and the postcondition is refuted — [below](#the-student-mistakes-are-named-compile-errors)):
 
 <!-- doclint:case p246-kerridge-gallery/the-literal-two-write-producehw-consumehw-proves-in-order -->
 ```groovy
@@ -392,10 +392,17 @@ static void fairServer() {
 }
 ```
 
-> Skipped network well-formedness check … the receive on 'replyB' … is served only when the ALT in the loop
-> at line N takes branch 1 — ChannelSelect prefers the lowest ready index, so whether this client is ever
-> chosen depends on timing; per-client liveness is not certified (a fair selection needs GROOVY-12320, Groovy
-> 6.0.0-beta-4+).
+<!-- doclint:diagnostic p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
+```
+[Static type checking] - Skipped network well-formedness check for fairServer (the receive on 'replyA'
+(line 48) is served only when the ALT in the loop at line 62 takes branch 0 — ChannelSelect prefers the
+lowest ready index, so whether this client is ever chosen depends on timing; per-client liveness is not
+certified …). The deadlock-freedom certificate covers one-shot networks of unconditional sends and receives
+on local channels; outside that the network is neither certified nor refuted.
+```
+
+(The elided tail is the one part of this message that moves with the runtime: before beta-4 it names
+GROOVY-12320 as the missing feature, after it points at the held `fair()` instance you should have used.)
 
 On a runtime with the claim-based select (see the [version note](#groovy-version-note)) `select()`
 dequeues exactly one branch, losers untouched, and offers `fair()`: hold the instance — the rotation state
@@ -456,7 +463,12 @@ static void fairServer() {
 ## The student mistakes are named compile errors
 
 The book teaches deadlock by *running into it* — build the network, watch it hang, discuss. Here the same
-exercises refuse to compile, each with its cause spelled out:
+exercises refuse to compile, each with its cause spelled out. Every message below is what the compiler
+really prints — `./gradlew docLint` compiles each case and fails the build if a quoted diagnostic drifts
+from it — with two reading notes: a `…` marks text elided for length, and the line numbers are the compiled
+file's, so they don't line up with the snippet above them.
+
+**The deadlock exercise.** Two processes, each reading from the other before it writes:
 
 <!-- doclint:case p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
 ```groovy
@@ -469,16 +481,228 @@ static int deadlockExercise() {
 }
 ```
 
-> Process-network deadlock in 'deadlockExercise': circular wait: the receive on 'bToA' … which waits for
-> the send on 'bToA' … which waits for the receive on 'aToB' … which waits for the send on 'aToB' …
-> which waits for the first.
+<!-- doclint:diagnostic p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
+```
+[Static type checking] - Process-network deadlock in 'deadlockExercise': circular wait: the receive on
+'bToA' (line 41 in the task forked at line 41), which waits for the send on 'bToA' (line 42 in the task
+forked at line 42), which waits for the receive on 'aToB' (line 42 in the task forked at line 42), which
+waits for the send on 'aToB' (line 41 in the task forked at line 41), which waits for the first. A one-shot
+channel network is deadlock-free exactly when its wait-for order is well-founded; this one blocks forever.
+Move the send before the blocking receive, fork the producer before awaiting its consumer, or let a
+concurrent task serve the channel.
+```
 
-The **missing poison pill** — a consumer draining a stream nobody ends — errors as *"the iteration over
-'stream' can never finish — no close()"*. **Two producers on one one2one channel** — the discipline
-JCSP polices at runtime — is a compile-time "Channel linearity violation": the element order is a race. And
-**reading more than was written** — a consumer that takes a second message from a producer that sent one —
-is *"the 2nd receive on 'src' can never be satisfied — only 1 send"* (Phase 247): the process would block
-forever, and the FIFO pairing knows it.
+The second half is the part a student can act on: the *theorem* the verdict rests on, then the three ways
+out — which are the design rules the books teach, arriving at the moment the mistake is made.
+
+**The missing poison pill.** A consumer draining a stream nobody ever ends:
+
+<!-- doclint:case p246-kerridge-gallery/the-missing-end-of-stream-an-unclosed-drain-is-refuted -->
+```groovy
+static int missingPoison() {
+    AsyncChannel<Integer> stream = AsyncChannel.create(4)
+    stream.send(1)
+    async {
+        int seen = 0
+        for (v in stream) {
+            seen = seen + 1
+        }
+    }
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p246-kerridge-gallery/the-missing-end-of-stream-an-unclosed-drain-is-refuted -->
+```
+[Static type checking] - Process-network deadlock in 'missingPoison': the iteration over 'stream' (line 43)
+can never finish — no close() on 'stream' anywhere in the method. …
+```
+
+**Two producers on one one2one channel** — the discipline JCSP polices at runtime, here refused before the
+program exists:
+
+<!-- doclint:case p246-kerridge-gallery/two-producers-race-a-one2one-channel-refuted -->
+```groovy
+static int notOne2One() {
+    AsyncChannel<Integer> connect = AsyncChannel.create(2)
+    async { connect.send(1) }
+    async { connect.send(2) }
+    return connect.first()
+}
+```
+
+<!-- doclint:diagnostic p246-kerridge-gallery/two-producers-race-a-one2one-channel-refuted -->
+```
+[Static type checking] - Channel linearity violation in 'notOne2One': two concurrent senders on 'connect' —
+the async task forked at line 40 and the async task forked at line 41 both use its send-end, so the element
+order is a race. A point-to-point channel has one live process per end — one sender, one receiver (FIFO
+per-element reasoning depends on it). Make the conflicting uses sequential, give each producer its own
+channel, or use a BroadcastChannel (subscribing before any sender starts) for one-to-many delivery.
+```
+
+**Reading more than was written.** A consumer that takes a second message from a producer that sent one —
+the FIFO pairing of Phase 247 knows there is no send to match it:
+
+<!-- doclint:case p247-bounded-fifo/a-receive-past-the-last-send-can-never-be-satisfied -->
+```groovy
+static int overReceive(int x) {
+    AsyncChannel<Integer> src = AsyncChannel.create(2)
+    async { src.send(x); src.close() }
+    int a = src.first()
+    int b = src.first()
+    return a + b
+}
+```
+
+<!-- doclint:diagnostic p247-bounded-fifo/a-receive-past-the-last-send-can-never-be-satisfied -->
+```
+[Static type checking] - Process-network deadlock in 'overReceive': the 2nd receive on 'src' (line 42) can
+never be satisfied — only 1 send on 'src' anywhere in the method. …
+```
+
+**And the values, not only the structure.** `ConsumeHW` reading the two messages back the other way round
+is a perfectly good *network* — nothing blocks, nothing races — and it still refuses to compile, because
+the claim it makes about what comes out is false:
+
+<!-- doclint:case p246-kerridge-gallery/consumehw-read-in-the-wrong-order-is-refuted -->
+```groovy
+@Ensures({ result == 'Hello World' })
+static String produceHW() {
+    AsyncChannel<String> connect = AsyncChannel.create(2)
+    async { connect.send('Hello'); connect.send('World'); connect.close() }
+    String first = connect.first()
+    String second = connect.first()
+    return second + ' ' + first
+}
+```
+
+<!-- doclint:diagnostic p246-kerridge-gallery/consumehw-read-in-the-wrong-order-is-refuted -->
+```
+[Static type checking] - Cannot prove postcondition of produceHW holds on this return path
+    ensured: (result == Hello World)
+    fails on: produceHW()
+```
+
+No counterexample line there, and that is the honest output: `produceHW()` takes no parameters, so there is
+nothing to instantiate — the failing call *is* the whole witness. Give a claim something to range over and
+the next section is what comes back instead.
+
+## …and a wrong claim comes back with a counterexample
+
+The four refutations above carry no counterexample and need none: for a circular wait, a racing send-end or
+an unmatched receive, the cited chain of waits **is** the witness — there is no model to exhibit, because
+nothing about the values decides it. Every claim that ranges over *values*, though, is refuted the way the
+rest of the verifier refutes: with an instantiation you can go and run.
+
+**Reading one element past the producer** (Phase 252) — the off-by-one every teaching pipeline meets. The
+consumer loops `n + 1` times over a generator that sends `n`:
+
+<!-- doclint:case p252-streaming-consumers/a-consumer-reading-past-the-producer-may-block-forever -->
+```groovy
+@Requires({ n >= 0 })
+@Ensures({ result == n + 1 })
+static int overRead(int n) {
+    AsyncChannel<Integer> out = AsyncChannel.create(4)
+    async {
+        int i = 0
+        @Invariant({ 0 <= i && i <= n })
+        @Decreases({ n - i })
+        while (i < n) {
+            out.send(i)
+            i = i + 1
+        }
+        out.close()
+    }
+    int seen = 0
+    int i = 0
+    @Invariant({ 0 <= i && i <= n + 1 && seen == i })
+    @Decreases({ n + 1 - i })
+    while (i < n + 1) {
+        int v = out.first()
+        seen = seen + 1
+        i = i + 1
+    }
+    return seen
+}
+```
+
+<!-- doclint:diagnostic p252-streaming-consumers/a-consumer-reading-past-the-producer-may-block-forever -->
+```
+[Static type checking] - Assertion may not hold: the receive on 'out' (line 57) may block forever — the
+element it reads may never be sent (the consumer loop reads past what the producer loop sends)
+    counterexample: i = 0, … n = 0, …
+    fails on: overRead(0)
+```
+
+`n = 0` is the smallest witness there is: a generator that sends nothing at all, and a consumer that still
+reads once. It is the same shape as the wrap-around philosopher in the
+[concurrency gallery](concurrency.md) — the verifier doesn't say "this might hang", it hands back the
+trip count at which it does.
+
+**Claiming an order the ALT does not give** (Phase 253). Strengthen the multiplexer's `@Ensures` from the
+count to `result.size() == na + nb && result[0] == 0` — "the first merged element is the left producer's
+first" — and the honest answer comes back:
+
+<!-- doclint:diagnostic p253-looping-alt/the-merge-order-is-nondeterministic-an-order-claim-is-refuted -->
+```
+[Static type checking] - Cannot prove postcondition of merge holds on this return path
+    ensured: ((result.size() == (na + nb)) && (result[0] == 0))
+    counterexample: … na = 1, nb = 7720 …
+    fails on: merge(1, 7720)
+```
+
+One element on the left against thousands on the right: the select is free to take a right-hand element
+first, and the counterexample is a scenario you can picture rather than a "not proved". The *count* claim,
+on the same network, proves — nondeterminism costs you the order and nothing else.
+
+**A server bounded above its clients** (Phase 261) — a cycle whose members both terminate, but not
+together. The server loops `m` times, the client asks `n < m` times, and the server's last read waits for a
+request that never comes:
+
+<!-- doclint:case p261-finite-cycles/a-server-bounded-above-its-clients-waits-forever-for-a-request-refuted -->
+```groovy
+@Requires({ 0 <= n && n < m })
+static void clientServer(int n, int m) {
+    AsyncChannel<Integer> request = AsyncChannel.create(4)
+    AsyncChannel<Integer> reply = AsyncChannel.create(4)
+    async {                                              // the server
+        int j = 0
+        @Invariant({ 0 <= j && j <= m })
+        while (j < m) {
+            int q = request.first()
+            reply.send(q + 1)
+            j = j + 1
+        }
+    }
+    int i = 0
+    @Invariant({ 0 <= i && i <= n })
+    @Decreases({ n - i })
+    while (i < n) {                                      // the client
+        request.send(i)
+        int r = reply.first()
+        assert r == i + 1
+        i = i + 1
+    }
+}
+```
+
+<!-- doclint:diagnostic p261-finite-cycles/a-server-bounded-above-its-clients-waits-forever-for-a-request-refuted -->
+```
+[Static type checking] - Assertion may not hold: the receive on 'request' (line 46) may block forever — the
+producer loop at line 52 sends n - 0 element(s) in all, and this loop reads past them
+    counterexample: … m = 1, n = 0 …
+    fails on: clientServer(0, 1)
+```
+
+`clientServer(0, 1)` — a client that asks nothing and a server that insists on answering once. The
+diagnostic names the *total* the partner will send (`n - 0`), which is the fact the reader had to discharge
+and couldn't, and the counterexample is the smallest mismatch of the two bounds.
+
+A caveat worth stating, since it decides which of these are worth quoting. Counterexamples over a method's
+own **parameters** read like the three above. The cycle proofs — rely/guarantee through the `taken` / `sent`
+ghosts — are refuted just as sharply, but their models are stated in the encoder's own vocabulary
+(`aToB$q.size()`, `reply$rely4.size()`, `loop$fuel1`), which is honest and unhelpful in equal measure. For
+those, the message is the teaching material and the model is for whoever is debugging the encoding.
 
 ## How deadlock, liveness and starvation are certified
 
