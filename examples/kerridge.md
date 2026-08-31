@@ -347,8 +347,7 @@ static List<Integer> multiplex(int na, int nb) {
 
 And the **fair server** — two clients, a server taking whichever request is ready and replying on that
 client's own channel — is where the gallery met the runtime rather than the checker. Up to Groovy
-6.0.0-beta-3, `ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the
-back of its queue, and there is no `fairSelect` (all reproduced — `repro/ChannelSelectRepro.groovy`); the
+6.0.0-beta-3, `ChannelSelect` prefers the lowest ready index and re-sends a losing branch's element to the back of its queue, and there is no `fairSelect`; the
 checker models exactly that and *withholds* per-client liveness with the reason (Phase 256):
 
 <!-- doclint:case p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
@@ -633,8 +632,7 @@ totals its hops (2 + 1) with the worst path named when a claim falls short — h
 queueing loudly outside the claim.
 
 **Beyond — and the boundary moved again.** A mixed choice that truly RACES — both peers permitted to
-open, resolved by arbitration — needs output guards under the select, and the runtime now has them: the
-ask drafted here ([`repro/GROOVY-MixedChoice-jira-draft.md`](../repro/GROOVY-MixedChoice-jira-draft.md))
+open, resolved by arbitration — needs output guards under the select, and the runtime now has them: the ask
 landed as **GROOVY-12323** (6.0.0-beta-4), its API the draft's v1 verbatim, and the repro's experiment 6
 shows the resolution live — thousands of raced rendezvous trials, exactly one branch committed in every
 one, with the buffered collision still reproducing through the API exactly as the documented caveat says
