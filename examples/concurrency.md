@@ -18,9 +18,10 @@
 
 > The **structural** half these proofs *assume* — mutual exclusion, interleaving-freedom, deadlock-freedom,
 > delivery — is checked separately by Lincheck / TLA+ TLC / Fray / jcstress. See **[CONCURRENCY.md](../CONCURRENCY.md)**.
-> Since the SEQ/PAR ladder (Phases 240–245, the later sections of this page), a substantial part of that
-> structural half is **checked at compile time** for the one-shot channel fragment: task disjointness,
-> channel-end linearity, channel contracts, deadlock-freedom, guarantee conformance, and drain termination.
+> Since the SEQ/PAR ladder (the later sections of this page, continuing in
+> [the Kerridge gallery](kerridge.md)), a substantial part of that structural half is **checked at compile
+> time** for channel networks: task disjointness, channel-end linearity, channel contracts,
+> deadlock-freedom, guarantee conformance, and drain termination.
 
 
 groovy-verify is a *sequential* SMT-backed checker — it reasons about no thread interleavings, races, or
@@ -38,18 +39,19 @@ features, each assuming a different structural guarantee:
 | Seqlock (optimistic read) | read-side snapshot atomicity (a validated read reflects a real consistent state under the JMM) | the parity protocol: a write restores `x == y` before republishing, a validated read returns a consistent snapshot |
 | Agents / actors | serialization (one message at a time) | each handler preserves the invariant |
 | Dataflow | single-assignment | the network computes the right value |
-| Channels | FIFO delivery | each element gets the right per-element transform — and, since Phase 241, that each channel end has one live process (channel linearity, checked not assumed; `BroadcastChannel` fan-out proves) |
-| `async`/`await` | safe (pure-value) tasks complete | the value an awaited task computes — and, since Phase 240, that nothing a task touches is concurrently written (fork-window disjointness, checked not assumed) |
+| Channels | FIFO delivery | each element gets the right per-element transform — and that each channel end has one live process (channel linearity, *checked* not assumed; `BroadcastChannel` fan-out proves) |
+| `async`/`await` | safe (pure-value) tasks complete | the value an awaited task computes — and that nothing a task touches is concurrently written (fork-window disjointness, checked not assumed) |
 
 For the eight rows above these are honest "prove half the property" results: the half SMT can discharge,
 which is usually the functional one. The line has moved since they were written, though. What still stays
 out is **mutual exclusion itself**, the **scheduler**, and the **JMM** — concurrent-separation-logic and
-runtime-rung territory. But for the **one-shot channel fragment** the structural half is now *checked, not
-assumed*: the SEQ/PAR ladder (Phases 240–245, the sections after the gallery) certifies task disjointness
-(240), one live process per channel end (241), element contracts at every send and opaque receive (242),
-**deadlock-freedom as well-foundedness of the wait-for order** (243), bodies honouring their declared
-guarantees (244), and drain termination — every blocking operation in a clean network provably completes
-(245). Outside that fragment the disclaimers above stand, loudly.
+runtime-rung territory. But for **channel networks** the structural half is now *checked, not
+assumed*: the SEQ/PAR ladder (the sections after the gallery, continuing in
+[the Kerridge gallery](kerridge.md)) certifies task disjointness, one live process per channel end,
+element contracts at every send and opaque receive, **deadlock-freedom as well-foundedness of the
+wait-for order**, bodies honouring their declared guarantees, and drain termination — every blocking
+operation in a clean network provably completes. Outside that fragment the disclaimers above stand,
+loudly.
 
 Groovy's **rely/guarantee** support goes further than the eight above — proving *both* halves on a concurrent
 buffer, and combining with an information-flow lattice (Graeme Smith's Dafny approach):
@@ -303,7 +305,7 @@ single-assignment makes the schedule irrelevant. The functional value `a + b` th
 wrong claim (`result == a`) still refutes with a counterexample. As with locks and actors, we assume the
 structural guarantee (here, that each variable really is bound once) and prove no deadlock-freedom or
 termination for *dataflow* networks — only the value the network computes, given that it computes one.
-(*Channel* networks are different since Phase 243: their deadlock-freedom is checked — see below.)
+(*Channel* networks are different: their deadlock-freedom is checked — see below.)
 
 > [!NOTE]
 > **The straight-line form the verifier actually sees.** That desugaring isn't pseudocode — the whole concurrent
@@ -1032,7 +1034,7 @@ straight-line code.
 ### Selection semantics — the runtime's ALT, modelled as it is (Phase 256)
 
 The rung that was to be "fairness of the ALT's choice" turned into something more useful: reading what
-`ChannelSelect.select()` actually does (Groovy 6.0.0-beta-3; bytecode-identical in beta-2). It issues a `receive()` on every branch and
+the racing `ChannelSelect.select()` actually does. It issues a `receive()` on every branch and
 completes with the first; when several are ready the **lowest index wins** (priority by list order), and a
 losing branch's consumed element is **re-sent to the back of its queue** — no loss, but "may reorder values
 within a channel". Fair selection is therefore not an assumption the checker can make; it models the runtime:
@@ -1078,31 +1080,16 @@ static void knot() {
 }
 ```
 
-What this left was a **runtime frontier**, and it has since moved: GROOVY-12320 (Groovy 6.0.0-beta-4) makes
-`select()` claim-based — exactly one branch dequeues, losers are untouched, a select over closed channels
-fails fast — and adds `fair()` (rotating from the last winner, on a *held* instance) and `random()`. The
-checker probes the runtime it runs on and models what it finds (Phase 257): under the claim-based select a
-looping ALT takes the chosen branch's head again, a held instance is a supported shape, the starvation hazard
-fires only where priority is in effect — including `fair()` on a *fresh* instance each iteration, which keeps
-no rotation state — and the fair server with a held `fair()` has its per-client liveness *certified* under
-weak fairness. Phase 258 then made the guarded replies *conditional streams* and the cycle itself a
-rely/guarantee argument, so the fair server verifies whole and each client proves `r == i + 1` — the
-request–reply law — with a wrong claim refuted; and Phase 259's `c.taken` (the elements a loop has taken
-so far, a ghost its `@Invariant` can quantify over) lets a token ring prove its closed form, and Phase 260's
-`c.sent` lets a producer whose values are loop-written — a counting server, a Fibonacci generator — state
-its own stream law for its readers; Phase 261 admits a terminating member to the cycle, refuting the read
-that would block forever past a partner's total, and Phase 262 verifies the cycle that ends cleanly — a
-server draining its client's requests until the close, and Phase 263 adds the session-typed view — a
-`@Protocol` global type on the method — with `par` interleaving independent sub-sessions, the fair
-server's type — projected onto each role and checked against every process's control flow, and Phases 265/266's
-`@ServedWithin(n)` / `@DeliveredWithin(n, from, to)` make "served within a bound" and the pipeline's
-end-to-end head-of-line latency certified or refuted claims; Phase 267 admits the mixed choice and checks
-its coherence — one opener certifies, a racing pair is refused — and since Phase 269 the protocol is a
-Groovy closure, parsed by Groovy itself (see `examples/kerridge.md`). Before beta-4 the verdicts
-above stand, and all of them were reproduced, not read: `repro/ChannelSelectRepro.groovy` run against 6.0.0-beta-3 shows index 0 winning
-100/100 in either listing order, a losing branch delivering `[b2, b1]`, a thousand selects leaving a thousand
-pending receivers on a quiet branch (and one later element bounced a thousand times), and a select over two
-closed channels never completing.
+Every behaviour above was reproduced empirically, not read from the docs — the reproduction became
+GROOVY-12320, whose claim-based select (a held `fair()`, losers untouched) makes the fair server
+certifiable end to end. The checker probes the runtime that hosts it and models whichever select it finds,
+so the verdicts here are the racing runtime's honest ones and flip where the fix is present.
+
+The ladder continues past selection — cyclic values by rely/guarantee with the `c.taken` / `c.sent`
+history ghosts, terminating partners and draining servers, `@Protocol` session types with `par` and the
+mixed choice, and the `@ServedWithin` / `@DeliveredWithin` service bounds — all worked through in
+**[the Kerridge gallery](kerridge.md)**: the mechanisms in its *How deadlock, liveness and starvation are
+certified* section, and the Groovy ≥ 6.0.0-beta-4 gotcha in its *version note*.
 
 ### async/await — the value a task computes
 
