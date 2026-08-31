@@ -43,6 +43,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One lane per PR (superseded commits cancel immediately) and one per branch (main runs are never
+# cancelled mid-verdict, but a burst of pushes coalesces: oldest finishes, newest queues, the middle
+# ones are superseded). The local gates are the per-commit verification; CI is the public backstop,
+# and the tip always gets its verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
