@@ -12276,7 +12276,7 @@ that window's `check` — the fix landed before anything was committed, and the 
 tree. Not in `check` (nuscr is rarely installed); run `./gradlew nuscrCheck`.
 
 **The oracle, live** *(addendum, same day)*: Paul asked for nuscr installed and the cross-check run for
-real — a from-scratch OCaml toolchain (brew → opam → OCaml 5.4.1 → nuscr 2.1.1, ~15 min of compilation)
+real — a from-scratch OCaml toolchain (brew → opam → OCaml 5.3.0 → nuscr 2.1.1, ~15 min of compilation; 5.3 deliberately — nuscr 2.1.1's ppxlib line caps at ocaml < 5.4)
 and it repaid the effort on the first pass. nuScr accepted `ReqReply` and `PrimedRing` verbatim (bare
 `rec X1 {` needs no refinement brackets) — and REJECTED `CalcChoice`: "Non tail-recursive protocol is not
 implemented". nuScr 2.1.1 implements TAIL-recursive protocols only, and the exporter had appended
