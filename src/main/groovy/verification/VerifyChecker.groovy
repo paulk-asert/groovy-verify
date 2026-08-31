@@ -3483,8 +3483,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (r.status != CheckResult.Status.VERIFIED) {
                 // If the assertion is over a method parameter, it is usually a caller precondition written as a
                 // runtime check; nudge toward @Requires, which documents it and is checked at every call site.
-                boolean overParam = referencesParameter(asite.cond, currentMethod)
+                // The hint pastes the PRINTED text into that @Requires, so it is offered only for a real
+                // asserted expression: a synthesized obligation prints its own prose wording ("the receive on
+                // 'c' (line n) may block forever — …"), which would paste an English sentence into a contract.
                 String label = (String) asite.node.getNodeMetaData(ASSERT_LABEL_KEY)   // Phase 252 — a synthesized assert's own wording
+                boolean overParam = label == null && referencesParameter(asite.cond, currentMethod)
                 addStaticTypeError(withRepro(Reporter.formatAssertion(label != null ? label : asite.cond.text, r, overParam), r, 'AssertionError'), asite.node)
             }
             return

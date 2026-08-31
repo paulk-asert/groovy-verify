@@ -545,11 +545,18 @@ static void g(int x) { assert x > 0 }     // refuted — counterexample x = 0
 A verified `assert` means *prove this holds here*, not *check it at runtime* — so `g`'s assertion over a parameter
 the signature doesn't constrain is refuted, and the diagnostic nudges toward the right tool:
 
+<!-- doclint:diagnostic pl-assert/assert-unjustified-over-a-parameter-refuted-suggests-requires -->
 ```
 [Static type checking] - Assertion may not hold: (x > 0)
     counterexample: x = 0
+    fails on: f(0)
     hint: if this is a caller precondition, declare it as @Requires({ (x > 0) }) — it is then documented and checked at every call site.
 ```
+
+The hint is offered only where its text really is a contract you could paste: an assertion **you** wrote,
+over a parameter. An obligation the checker synthesises states itself in prose ("the receive on 'c' (line n)
+may block forever — …"), and there the nudge is withheld rather than suggesting an English sentence as a
+`@Requires`.
 
 A *proven* assert is then **used as a fact** downstream — both by the implicit safety checks (`assert i < n; …
 a[i]`) and by the method's `@Ensures` — so a proof can be broken into steps the solver reaches one at a time.

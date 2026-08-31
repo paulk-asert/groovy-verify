@@ -67,7 +67,11 @@ class G325_p261_finite_cycles {
          src: tc(pair('@Requires({ n == m && n >= 0 })', 'j < m', '0 <= j && j <= m'))],
         [group: 'P261 finite cycles', name: 'unmatched bounds: the read that would block forever is refuted, the total named', expect: 'may block forever',
          src: tc(pair('', 'j < m', '0 <= j && j <= m'))],
+        // The @Requires hint is for an assert the AUTHOR wrote, whose text pastes into a contract; a
+        // synthesized block-forever obligation prints prose ("the receive on 'request' … may block
+        // forever — …"), so the nudge is withheld rather than suggesting an English sentence as a contract.
         [group: 'P261 finite cycles', name: 'a server bounded above its clients waits forever for a request: refuted', expect: 'may block forever',
+         refute: 'declare it as @Requires',
          src: tc(pair('@Requires({ 0 <= n && n < m })', 'j < m', '0 <= j && j <= m'))],
         // ---------- a bounded fair server ----------
         [group: 'P261 finite cycles', name: 'a bounded fair server over two bounded clients: every reply proves (claim-based select)',

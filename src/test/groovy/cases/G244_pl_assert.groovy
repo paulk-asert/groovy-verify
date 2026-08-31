@@ -46,6 +46,7 @@ class G244_pl_assert {
                     }''')],
         // An unprovable assertion *not* over a parameter (a bare local) refutes without the @Requires nudge.
         [group: 'PL-assert', name: 'assert over a local refutes without the @Requires hint', expect: 'Assertion may not hold',
+         refute: 'declare it as @Requires',
          src: tc('''class C {
                         @Requires({ n >= 0 })
                         static int pick(int n) {
