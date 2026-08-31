@@ -125,6 +125,8 @@ class CaseDsl {
     /** Phase 257 — true when the runtime running the harness has GROOVY-12320's claim-based ChannelSelect
      *  (`fair()` exists): cases whose verdict depends on the select semantics branch on it. */
     static final boolean CLAIM_SELECT = verification.VerifyChecker.CLAIM_SELECT
+    /** Phase 271 — the hosting runtime carries GROOVY-12323's arbitrated select. */
+    static final boolean ARBITRATED_SELECT = verification.VerifyChecker.ARBITRATED_SELECT
 
     static String tc(String classText) {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()

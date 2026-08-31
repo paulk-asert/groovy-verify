@@ -7088,6 +7088,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  exactly one branch dequeues, losers are untouched, `fair()` / `random()` policies exist. Probed by
      *  reflection once: the runtime that runs the type checker is the runtime the code will run on. */
     static final boolean CLAIM_SELECT = probeClaimSelect()
+    /** Phase 271 — the runtime hosting the checker carries GROOVY-12323's arbitrated select (offers/send/receive). */
+    static final boolean ARBITRATED_SELECT = probeArbitratedSelect()
+
+    private static boolean probeArbitratedSelect() {
+        try {
+            Class<?> cs = Class.forName('groovy.concurrent.ChannelSelect')
+            return cs.methods.any { it.name == 'offers' }
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
     private static boolean probeClaimSelect() {
         try { Class.forName('groovy.concurrent.ChannelSelect').getMethod('fair'); return true } catch (Throwable ignored) { return false }
     }
@@ -7993,7 +8004,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ctx.selectRefs = collectSelectVars(body)                              // Phase 257
         parWalkStatement(body, ctx)
         String protocol = protocolTextOf(node)                                // Phase 263 — a session type for the network
-        if (protocol != null) for (Object[] f : SessionChecker.check(node.name, protocol, (BlockStatement) body, chanVars)) addStaticTypeError((String) f[0], (ASTNode) f[1])
+        if (protocol != null) for (Object[] f : SessionChecker.check(node.name, protocol, (BlockStatement) body, chanVars, ARBITRATED_SELECT)) addStaticTypeError((String) f[0], (ASTNode) f[1])
         int chanFindings = checkChannelLinearity(node, ctx, (BlockStatement) body, derivedChans, broadcastChans)
         // Phase 243/245 — the network well-formedness check: runs unless a RACE-class finding
         // re-shaped the network's meaning (its own loud report stands). Model-limit skips only

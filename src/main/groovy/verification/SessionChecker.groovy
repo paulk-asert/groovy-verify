@@ -64,6 +64,13 @@ import org.codehaus.groovy.syntax.Types
  * not a choice one role makes, but two request–reply sessions interleaved at the server — and its ALT is one
  * conformant implementation of the shuffle; a cross-wired reply falls outside it, with its trace.
  *
+ * Phase 271 — the RACING mixed choice, CERTIFIED: on a runtime carrying GROOVY-12323's arbitrated select,
+ * two initiators are coherent when every one of them opens ONLY through {@code offers(send(…), receive(…))
+ * .select()} — never a bare send — and every opener channel is RENDEZVOUS ({@code AsyncChannel.create(0)}):
+ * a buffered send offer commits unilaterally against buffer space and the collision reproduces through the
+ * API (the caveat GROOVY-12323 documents), so the capacity is part of the certificate. Anything less is
+ * refused with the exact missing piece.
+ *
  * Phase 267 — MIXED CHOICE, {@code choice { … } or { … }} with no {@code at}: branches opened by different
  * roles — the race. Projection is the mixed union for an opener; but local conformance famously stops
  * implying global coherence there (each peer can conform alone while together they collide), so the checker
@@ -96,7 +103,7 @@ class SessionChecker {
     // ── entry ──────────────────────────────────────────────────────────────────────────────────
 
     /** Findings as [message, anchor]; empty when every process conforms. */
-    static List<Object[]> check(String methodName, String text, BlockStatement body, Set<String> chans) {
+    static List<Object[]> check(String methodName, String text, BlockStatement body, Set<String> chans, boolean arbitrated = false) {
         List<Object[]> out = []
         List<String> errors = []
         G global = parse(text, errors)
@@ -128,16 +135,23 @@ class SessionChecker {
         List<Object[]> procs = processes(body)            // [name, statements, anchor]
         Map<String, Object[]> bound = [:]                 // role → [name, nfa, frag, anchor, sends, recvs]
         List<Object[]> unbound = []
+        Map<Object, OpInfo> opInfoOf = new IdentityHashMap<Object, OpInfo>()
         for (Object[] p : procs) {
             Nfa pn = new Nfa()
-            Frag pf = processAutomaton((List<Statement>) p[1], pn, chans)
+            OpInfo oi = new OpInfo()
+            Frag pf = processAutomaton((List<Statement>) p[1], pn, chans, oi)
+            for (List<Object[]> es : pn.edges.values()) for (Object[] e : es) {   // bare sends = '!' edges not from an offers-select
+                String l = (String) e[0]
+                if (l.startsWith('!') && !oi.offerSends.contains(l.substring(1))) oi.bareSends.add(l.substring(1))
+            }
+            opInfoOf.put(p, oi)
             Set<String> s = new LinkedHashSet<String>(), q = new LinkedHashSet<String>()
             alphabet(pn, s, q)
             if (s.isEmpty() && q.isEmpty()) continue                                 // no channel traffic: no role
             String role = roles.find { String r -> roleSends.get(r) == s && roleRecvs.get(r) == q }
             if (role == null) { unbound.add([p, pn, pf, s, q] as Object[]); continue }
             if (bound.containsKey(role)) { out.add([Reporter.formatProtocolViolation(methodName, role, "two processes play it — ${bound.get(role)[0]} and ${p[0]}"), (ASTNode) p[2]] as Object[]); return out }
-            bound.put(role, [p[0], pn, pf, p[2], s, q] as Object[])
+            bound.put(role, [p[0], pn, pf, p[2], s, q, opInfoOf.get(p)] as Object[])
         }
         // Phase 267 — a mixed choice lets a conformant process use a strict SUBSET of its role's alphabet (the
         // branch it never takes): bind the leftovers where the subset fits exactly one free role.
@@ -147,7 +161,7 @@ class SessionChecker {
             List<String> fits = new ArrayList<String>(roles.findAll { String r -> !bound.containsKey(r) && roleSends.get(r).containsAll(s) && roleRecvs.get(r).containsAll(q) })
             if (fits.size() != 1) continue
             Object[] p = (Object[]) u[0]
-            bound.put(fits.get(0), [p[0], u[1], u[2], p[2], s, q] as Object[])
+            bound.put(fits.get(0), [p[0], u[1], u[2], p[2], s, q, opInfoOf.get(p)] as Object[])
             it.remove()
         }
         for (Object[] u : unbound) {
@@ -163,7 +177,22 @@ class SessionChecker {
             List<Object[]> openers = []                                          // [role, chan]
             for (G br : c.branches) { Msg m = firstMsg(br); if (m != null && !openers.any { Object[] o -> o[0] == m.from && o[1] == m.chan }) openers.add([m.from, m.chan] as Object[]) }
             List<Object[]> initiators = openers.findAll { Object[] o -> Object[] b = bound.get((String) o[0]); b != null && ((Set<String>) b[4]).contains((String) o[1]) }
-            if (initiators.size() > 1) {
+            if (initiators.size() > 1 && arbitrated) {
+                // Phase 271 — the RACING mixed choice: certified iff every initiator opens ONLY through the
+                // arbitrated select and every opener channel is rendezvous (capacity-0).
+                Set<String> rendezvous = rendezvousChans(body, chans)
+                List<String> why = []
+                for (Object[] o : initiators) {
+                    OpInfo oi = (OpInfo) bound.get((String) o[0])[6]
+                    String chan = (String) o[1]
+                    if (oi == null || oi.bareSends.contains(chan)) why.add("${bound.get((String) o[0])[0]} (role '${o[0]}') opens '${chan}' with a bare send — un-arbitrated; open it inside offers(send(${chan}, …), …)".toString())
+                    else if (!oi.offerSends.contains(chan)) why.add("${bound.get((String) o[0])[0]} (role '${o[0]}') does not open '${chan}' through an arbitrated select".toString())
+                    else if (!rendezvous.contains(chan)) why.add("'${chan}' is a buffered channel — a buffered send offer commits unilaterally against buffer space and the collision reproduces through the API (GROOVY-12323's documented caveat): the racing openers must be rendezvous, AsyncChannel.create(0)".toString())
+                }
+                if (why.isEmpty()) continue                        // certified: the race is arbitrated — silent
+                out.add([Reporter.formatProtocolViolation(methodName, null,
+                    "the mixed choice has two initiators and the race is not certifiable as written — ${why.join('; ')}"), body] as Object[])
+            } else if (initiators.size() > 1) {
                 String detail = initiators.collect { Object[] o -> "${bound.get((String) o[0])[0]} (role '${o[0]}') can send '${o[1]}'" }.join(' and ')
                 out.add([Reporter.formatProtocolViolation(methodName, null,
                     "the mixed choice has two initiators — ${detail}. Each conforms alone; together they collide: " +
@@ -184,6 +213,28 @@ class SessionChecker {
             String v = conforms((Nfa) b[1], (Frag) b[2], local.get(r), localFrag.get(r))
             if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "${b[0]} ${v}"), (ASTNode) b[3]] as Object[])
         }
+        out
+    }
+
+    /** Phase 271 — channel vars declared `AsyncChannel.create(0)`: rendezvous, the only coherent racing openers. */
+    private static Set<String> rendezvousChans(BlockStatement body, Set<String> chans) {
+        final Set<String> out = new LinkedHashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && chans.contains(((VariableExpression) de.leftExpression).name)) {
+                    Expression r = strip(de.rightExpression)
+                    String mn = r instanceof MethodCallExpression ? ((MethodCallExpression) r).methodAsString :
+                                (r instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) r).method : null)
+                    Expression ra = r instanceof MethodCallExpression ? ((MethodCallExpression) r).arguments :
+                                    (r instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) r).arguments : null)
+                    if (mn == 'create' && ra instanceof TupleExpression && ((TupleExpression) ra).expressions.size() == 1) {
+                        Expression cap = strip(((TupleExpression) ra).expressions.get(0))
+                        if (cap instanceof ConstantExpression && ((ConstantExpression) cap).value == 0) out.add(((VariableExpression) de.leftExpression).name)
+                    }
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
         out
     }
 
@@ -481,12 +532,15 @@ class SessionChecker {
 
     // ── a process's control flow as an automaton over its channel ops ──────────────────────────
 
-    private static Frag processAutomaton(List<Statement> stmts, Nfa n, Set<String> chans) {
-        Map<String, List<String>> held = [:]                    // held select var → its branches
-        seqFrag(stmts, n, chans, held)
+    /** Phase 271 — how a process sends: bare `c.send(v)` vs inside an arbitrated offers-select. */
+    static class OpInfo { final Set<String> bareSends = [] as Set; final Set<String> offerSends = [] as Set }
+
+    private static Frag processAutomaton(List<Statement> stmts, Nfa n, Set<String> chans, OpInfo info) {
+        Map<String, List<String>> held = [:]                    // held select var → its branches ('?c' / '!c' labels)
+        seqFrag(stmts, n, chans, held, info)
     }
 
-    private static Frag seqFrag(List<Statement> stmts, Nfa n, Set<String> chans, Map<String, List<String>> held) {
+    private static Frag seqFrag(List<Statement> stmts, Nfa n, Set<String> chans, Map<String, List<String>> held, OpInfo info) {
         int a = n.newState(); int cur = a
         List<Statement> list = new ArrayList<Statement>(stmts)
         int i = 0
@@ -508,16 +562,18 @@ class SessionChecker {
                 int ca = n.newState(), cb = n.newState()
                 for (int k = 0; k < branches.size(); k++) {
                     int s1 = n.newState()
-                    n.edge(ca, '?' + branches.get(k), s1, st.lineNumber)
+                    String label = branches.get(k)
+                    if (label.startsWith('!') && info != null) info.offerSends.add(label.substring(1))   // Phase 271
+                    n.edge(ca, label, s1, st.lineNumber)
                     Statement gb = guarded.get(k)
                     if (gb != null) {
-                        Frag gf = seqFrag(gb instanceof BlockStatement ? ((BlockStatement) gb).statements : [gb], n, chans, held)
+                        Frag gf = seqFrag(gb instanceof BlockStatement ? ((BlockStatement) gb).statements : [gb], n, chans, held, info)
                         n.edge(s1, '', gf.in)
                         if (gf.out != null) n.edge(gf.out, '', cb)
                     } else n.edge(s1, '', cb)
                 }
                 f = frag(ca, cb)
-            } else f = stmtFrag(st, n, chans, held)
+            } else f = stmtFrag(st, n, chans, held, info)
             i++
             if (f == null) continue
             n.edge(cur, '', f.in)
@@ -533,13 +589,13 @@ class SessionChecker {
         opsOf(((ExpressionStatement) st).expression, chans, 0).isEmpty()
     }
 
-    private static Frag stmtFrag(Statement st, Nfa n, Set<String> chans, Map<String, List<String>> held) {
-        if (st instanceof BlockStatement) return seqFrag(((BlockStatement) st).statements, n, chans, held)
+    private static Frag stmtFrag(Statement st, Nfa n, Set<String> chans, Map<String, List<String>> held, OpInfo info) {
+        if (st instanceof BlockStatement) return seqFrag(((BlockStatement) st).statements, n, chans, held, info)
         if (st instanceof IfStatement) {
             IfStatement is = (IfStatement) st
-            Frag t = seqFrag(is.ifBlock instanceof BlockStatement ? ((BlockStatement) is.ifBlock).statements : [is.ifBlock], n, chans, held)
+            Frag t = seqFrag(is.ifBlock instanceof BlockStatement ? ((BlockStatement) is.ifBlock).statements : [is.ifBlock], n, chans, held, info)
             Frag e = (is.elseBlock == null || is.elseBlock instanceof EmptyStatement) ? frag(n.newState(), null) :
-                seqFrag(is.elseBlock instanceof BlockStatement ? ((BlockStatement) is.elseBlock).statements : [is.elseBlock], n, chans, held)
+                seqFrag(is.elseBlock instanceof BlockStatement ? ((BlockStatement) is.elseBlock).statements : [is.elseBlock], n, chans, held, info)
             if (is.elseBlock == null || is.elseBlock instanceof EmptyStatement) { int s = n.newState(); e = frag(s, s) }
             int a = n.newState(), b = n.newState()
             n.edge(a, '', t.in); n.edge(a, '', e.in)
@@ -554,24 +610,24 @@ class SessionChecker {
             if (coll instanceof VariableExpression && chans.contains(((VariableExpression) coll).name)) {   // a drain: (?c body)*
                 int a = n.newState(), b = n.newState(), s1 = n.newState()
                 n.edge(a, '?' + ((VariableExpression) coll).name, s1, st.lineNumber)
-                Frag body = seqFrag(fs.loopBlock instanceof BlockStatement ? ((BlockStatement) fs.loopBlock).statements : [fs.loopBlock], n, chans, held)
+                Frag body = seqFrag(fs.loopBlock instanceof BlockStatement ? ((BlockStatement) fs.loopBlock).statements : [fs.loopBlock], n, chans, held, info)
                 n.edge(s1, '', body.in)
                 if (body.out != null) n.edge(body.out, '', a)
                 n.edge(a, '', b)
                 return frag(a, b)
             }
-            return star(seqFrag(fs.loopBlock instanceof BlockStatement ? ((BlockStatement) fs.loopBlock).statements : [fs.loopBlock], n, chans, held), n, true)
+            return star(seqFrag(fs.loopBlock instanceof BlockStatement ? ((BlockStatement) fs.loopBlock).statements : [fs.loopBlock], n, chans, held, info), n, true)
         }
         if (st instanceof WhileStatement) {
             WhileStatement ws = (WhileStatement) st
             Expression g = ws.booleanExpression.expression
             boolean forever = g instanceof ConstantExpression && ((ConstantExpression) g).value == true
-            return star(seqFrag(ws.loopBlock instanceof BlockStatement ? ((BlockStatement) ws.loopBlock).statements : [ws.loopBlock], n, chans, held), n, !forever)
+            return star(seqFrag(ws.loopBlock instanceof BlockStatement ? ((BlockStatement) ws.loopBlock).statements : [ws.loopBlock], n, chans, held, info), n, !forever)
         }
         if (st instanceof DoWhileStatement) {
             DoWhileStatement ds = (DoWhileStatement) st
-            Frag once = seqFrag(ds.loopBlock instanceof BlockStatement ? ((BlockStatement) ds.loopBlock).statements : [ds.loopBlock], n, chans, held)
-            Frag rest = star(seqFrag(ds.loopBlock instanceof BlockStatement ? ((BlockStatement) ds.loopBlock).statements : [ds.loopBlock], n, chans, held), n, true)
+            Frag once = seqFrag(ds.loopBlock instanceof BlockStatement ? ((BlockStatement) ds.loopBlock).statements : [ds.loopBlock], n, chans, held, info)
+            Frag rest = star(seqFrag(ds.loopBlock instanceof BlockStatement ? ((BlockStatement) ds.loopBlock).statements : [ds.loopBlock], n, chans, held, info), n, true)
             if (once.out == null) return once
             n.edge(once.out, '', rest.in)
             return frag(once.in, rest.out)
@@ -580,7 +636,8 @@ class SessionChecker {
             Expression e = ((ExpressionStatement) st).expression
             // a held select: `alt = ChannelSelect.from(a, b)[.fair()]`
             if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
-                List<String> br = selectChainBranches(((DeclarationExpression) e).rightExpression, chans)
+                List<String> br = selectChainBranches(((DeclarationExpression) e).rightExpression, chans)?.collect { '?' + it }
+                if (br == null) br = offersBranches(strip(((DeclarationExpression) e).rightExpression), chans)   // Phase 271
                 if (br != null) { held.put(((VariableExpression) ((DeclarationExpression) e).leftExpression).name, br); int s = n.newState(); return frag(s, s) }
             }
             List<Object[]> ops = opsOf(e, chans, st.lineNumber)
@@ -610,7 +667,7 @@ class SessionChecker {
                 if (r instanceof VariableExpression && chans.contains(((VariableExpression) r).name)) {
                     String c = ((VariableExpression) r).name
                     if ((m.methodAsString == 'first' || m.methodAsString == 'receive') && noArgs(m)) out.add(['?' + c, line] as Object[])
-                    else if (m.methodAsString == 'send') out.add(['!' + c, line] as Object[])
+                    else if (m.methodAsString == 'send') out.add(['!' + c, line] as Object[])   // a BARE send (opInfo marks it at the call site)
                 }
             }
             @Override void visitClosureExpression(ClosureExpression c) { }          // not this process's flow
@@ -636,7 +693,32 @@ class SessionChecker {
         if (!(sel instanceof MethodCallExpression) || ((MethodCallExpression) sel).methodAsString != 'select') return null
         Expression recv = strip(((MethodCallExpression) sel).objectExpression)
         if (recv instanceof VariableExpression && held.containsKey(((VariableExpression) recv).name)) return held.get(((VariableExpression) recv).name)
-        selectChainBranches(recv, chans)
+        List<String> from = selectChainBranches(recv, chans)
+        if (from != null) return from.collect { '?' + it }
+        offersBranches(recv, chans)                              // Phase 271 — GROOVY-12323's arbitrated select
+    }
+
+    /** Phase 271 — `ChannelSelect.offers(send(a, v), receive(b))[…]` → mixed labels ['!a', '?b'], else null. */
+    private static List<String> offersBranches(Expression e, Set<String> chans) {
+        Expression x = strip(e)
+        while (x instanceof MethodCallExpression && (((MethodCallExpression) x).methodAsString == 'fair' || ((MethodCallExpression) x).methodAsString == 'random')) x = strip(((MethodCallExpression) x).objectExpression)
+        Expression args = null
+        if (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'offers') args = ((MethodCallExpression) x).arguments
+        else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'offers') args = ((StaticMethodCallExpression) x).arguments
+        if (!(args instanceof TupleExpression)) return null
+        List<String> out = []
+        for (Expression a : ((TupleExpression) args).expressions) {
+            Expression o = strip(a)
+            String kind = o instanceof MethodCallExpression ? ((MethodCallExpression) o).methodAsString :
+                          (o instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) o).method : null)
+            Expression oa = o instanceof MethodCallExpression ? ((MethodCallExpression) o).arguments :
+                            (o instanceof StaticMethodCallExpression ? ((StaticMethodCallExpression) o).arguments : null)
+            if (!(kind in ['send', 'receive']) || !(oa instanceof TupleExpression) || ((TupleExpression) oa).expressions.isEmpty()) return null
+            Expression c = strip(((TupleExpression) oa).expressions.get(0))
+            if (!(c instanceof VariableExpression) || !chans.contains(((VariableExpression) c).name)) return null
+            out.add((kind == 'send' ? '!' : '?') + ((VariableExpression) c).name)
+        }
+        out.isEmpty() ? null : out
     }
 
     private static Expression awaited(Expression e) {

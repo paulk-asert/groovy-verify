@@ -12301,6 +12301,34 @@ stands. Final tally: 3 ok, 1 known gap, 1 outside-standard note — zero disagre
 
 ---
 
+## Phase 271 — The racing mixed choice, certified  *(shipped — slice 32 of the SEQ/PAR ladder)*
+
+The boundary refused in Phase 267 and proposed upstream in Phase 268 closes the way Phase 257 closed:
+GROOVY-12323 landed, and the checker models it where it runs. `ARBITRATED_SELECT` probes the hosting
+runtime for `ChannelSelect.offers` (mirrored in `CaseDsl`); `SessionChecker` reads the arbitrated select
+as a first-class process op — `offers(send(a, v), receive(b)).select()`, inline or held, becomes a mixed
+choice node whose send offers are `!a` automaton edges — so binding and conformance see a racing peer as
+the role it plays (the Phase 267 probe bound nothing: "no process plays it"). Phase 267's coherence check
+then gains its second certified outcome. TWO initiators are COHERENT — certified silently — exactly when
+every one of them opens ONLY through the arbitrated select (never a bare send: `OpInfo` splits each
+process's send alphabet into bare and offered) and every opener channel is RENDEZVOUS
+(`rendezvousChans`: declared `AsyncChannel.create(0)`), on a runtime that has the feature. Each condition
+is GROOVY-12323's own empirics made mechanical: the raced rendezvous mixed choice commits exactly one
+branch every time, while a buffered send offer commits unilaterally and the collision reproduces through
+the API — the documented caveat is now the refusal text ("'ping' is a buffered channel … the racing
+openers must be rendezvous, AsyncChannel.create(0)"). A bare-send opener is refused as "un-arbitrated";
+a pre-12323 runtime never sees the question (the offers spelling is a type error there, said by STC).
+
+Cases (G333, new group, 3, verdicts branching on `ARBITRATED_SELECT`): the certified race (no protocol
+violation; the value model's honest loop-skips remain — the racing shape is the session layer's to
+certify, the offers-select is not in the value fragment), the buffered refusal with the caveat quoted,
+and the bare-send refusal. Every `from()`-based session case unchanged (the ALT labels were generalised
+under them). Both runtimes green, 1962. With this, the Kerridge conversation's every named boundary has
+either shipped as a rung or moved the runtime twice — `fairSelect` → GROOVY-12320, the mixed choice →
+GROOVY-12323 — and what remains beyond the ladder is the queueing calculus alone.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

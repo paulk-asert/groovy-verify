@@ -640,8 +640,10 @@ shows the resolution live — thousands of raced rendezvous trials, exactly one 
 one, with the buffered collision still reproducing through the API exactly as the documented caveat says
 (session coherence comes from the rendezvous; capacity-0 openers required). Twice now the pattern has
 run checker → finding → reproduction → upstream fix → modelled where it runs: `fairSelect` became
-GROOVY-12320, the mixed choice became GROOVY-12323. The checker's certified-racing outcome (over
-capacity-0 openers, on runtimes carrying `offers`) is the next rung. And the queueing half of latency — delay behind a backlog, which needs arrival-rate
+GROOVY-12320, the mixed choice became GROOVY-12323 — and the checker now completes the loop (Phase 271):
+on a runtime carrying `offers`, a racing pair that opens through the arbitrated select over rendezvous
+channels is **certified coherent**, a buffered or bare-send opener refused with the caveat quoted. What
+remains beyond the ladder is the queueing calculus alone. And the queueing half of latency — delay behind a backlog, which needs arrival-rate
 assumptions — is a calculus this ladder deliberately does not carry (its `@DeliveredWithin` is the
 head-of-line service bound, and says so). Those are what remains of the research conversation: the same
 guarantees GPP establishes offline by formal methods, issued incrementally by the compiler.
