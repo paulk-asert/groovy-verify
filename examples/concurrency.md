@@ -406,13 +406,14 @@ Both subscribers read the broadcast element, `x + x` proves; a subscriber channe
 it can feed a `map` pipeline and the composition proves too. The point-to-point fan-out alternative — each
 producer owning its **own** channel — also stays green, pinning that the linearity rules are per-channel, not
 per-method. Honest boundaries: uses are recognised at a direct channel-variable receiver (`send`/`close`,
-`first`/`receive`, the pipeline ops, `subscribe`); `merge`/`tap` argument-side ends and channel iteration are
-not yet tracked, and those shapes already fall outside the value model. Delivery and termination remain the
-assumed structural half, as everywhere in this section.
+`first`/`receive`, the pipeline ops, `subscribe`); `merge`/`tap` argument-side ends are
+not tracked (those shapes already fall outside the value model); iteration became a receive-end use in
+[drain discipline](#drain-discipline--iteration-blocks-until-close-phase-245) below. Delivery and
+termination are assumed here — the later rungs check them.
 
 ### Channel contracts — the element type is the protocol invariant (Phase 242)
 
-With the ends disciplined, the next rung is *what flows through them* (slice 3 of the SEQ/PAR ladder): a
+With the ends disciplined, the next question is *what flows through them*: a
 channel's element type may carry Bean Validation bounds — `AsyncChannel<@PositiveOrZero Integer>` — and that
 type IS the channel's contract, the monitor-invariant reduction transplanted to channels. The invariant is
 **checked at each send** (an assert at the send site, refuting with a counterexample) and **assumed at each
@@ -601,8 +602,8 @@ proves both replies. What stays outside is still loud, now with the reason: a **
 receive (inside an `if` / loop / catch / non-async closure), an end used by **two processes**, **two
 consumer families** on one channel (direct receives *and* a derived stage), a drain through a
 count-changing stage (`filter` / `split` / `merge` / `tap`), or an `each {}` drain (an accumulating `each`
-carries no invariant — use `for (v in ch)` or `toList()`). The counts are *static*: a producer **loop** is
-still the streaming frontier.
+carries no invariant — use `for (v in ch)` or `toList()`). The counts are *static*: producer
+**loops** are the following sections' subject.
 
 ### Bounded streaming — literal-bounded channel loops unroll (Phase 248)
 
@@ -639,8 +640,8 @@ A consumer loop unrolls the same way (`for (i in 0..<2) acc = 10 * acc + src.fir
 elements in order), and a producer loop of two against a consumer loop of three is the FIFO pairing's named
 deadlock — *"the 3rd receive on 'src' can never be satisfied — only 2 sends"*. This is bounded model
 checking in the compiler, and says so: literal bounds only, up to 32 iterations; a **symbolic** bound
-(`for (i in 0..<n)`) stays a loop and skips loudly — the streaming frontier proper, where the send/receive
-count would have to be carried by a loop invariant rather than counted.
+(`for (i in 0..<n)`) stays a loop and skips loudly here — carrying the count by a loop invariant instead is
+[symbolic streaming](#symbolic-streaming--the-channel-as-the-sequence-its-producer-loop-builds-phase-251) below.
 
 ### ALT — `ChannelSelect` as a nondeterministic choice among the ready branches (Phase 249)
 
@@ -702,14 +703,15 @@ Remove the second task and every branch of the ALT waits on main passing it: *"c
 'a', 'b' … which waits for the send on 'a' … which waits for the receive on 'c' … which waits for the send on
 'c' …"*. An ALT no branch of which is ever sent to "can never be satisfied — no send left on any of its
 channels". The one-shot discipline is loud: a receive *after* an ALT on one of its channels (whether the ALT
-consumed the element depends on its choice), two ALTs over one channel, a `ChannelSelect` held in a variable,
-or a result used beyond `.index` / `.value` all skip with the channel and the reason named. The looping
-multiplexer — `while (true) { alt.select() … }` — is the streaming frontier again.
+consumed the element depends on its choice), two ALTs over one channel, or a result used beyond
+`.index` / `.value` all skip with the channel and the reason named (a `ChannelSelect` *held in a variable*
+is a supported shape — the rotation state of a `fair()` lives in it). The looping multiplexer —
+`while (true) { alt.select() … }` — is [the looping ALT](#the-looping-alt--the-multiplexer-phase-253) below.
 
 ### Streaming termination — a loop send never blocks (Phase 250)
 
-The structural half of the streaming frontier, taken on its own. Phases 243/245 voided the network
-certificate for *any* channel operation inside a loop or `if`; but a **send never blocks** — it stalls
+The structural half of streaming, taken on its own. The earlier network rungs voided the
+well-formedness certificate for *any* channel operation inside a loop or `if`; but a **send never blocks** — it stalls
 nobody — so a conditional send only makes its channel's element *count* non-static. Phase 250 drops it from
 the wait-for graph and remembers the root: an **iteration** (`for (v in ch)`, `toList()`), which waits for
 the *close*, not for a count, is unaffected — so the book's generator as the book means it, `GNumbers(n)`
@@ -739,12 +741,12 @@ than a silent pass or a spurious "no send" error: *"the receive on 'out' is serv
 the element count is not static, so the receive cannot be paired with a send"* (an ALT branch on such a
 channel likewise). What this certificate does **not** say is anything about the drained *values*: the value
 model still refuses loop traffic loudly (`Skipped channel verification … not one-shot`), and carrying the
-count symbolically — the channel as a sequence the producer's loop invariant describes — is the value half
-of the frontier, now the only half left.
+count symbolically — the channel as a sequence the producer's loop invariant describes — is
+[symbolic streaming](#symbolic-streaming--the-channel-as-the-sequence-its-producer-loop-builds-phase-251), next.
 
 ### Symbolic streaming — the channel as the sequence its producer loop builds (Phase 251)
 
-The value half of the streaming frontier, and the last rung of the ladder's second run. A channel whose
+The value half of streaming. A channel whose
 *only* send is the send statement of a unit-counter loop carrying `@Invariant` / `@Decreases` is modelled as
 the **list that loop builds**: `send` appends, a `map {}` stage appends its transform in lockstep, `toList()`
 reads the list, `close()` is the marker drains are scheduled behind. The sequence facts are **injected into
@@ -786,8 +788,8 @@ The boundaries, loud and named: a one-at-a-time `first()` on a streaming channel
 producer loop without a spec, a second send, a non-unit counter or a range `for`-in (the model rides a
 `while` / C-style unit-counter loop), a non-int element type — and the accumulating `for (v in ch)` drain of
 a stream, which is the loop engine's own "a loop after a list-building loop" skip: `toList()` is the
-drained-value spelling. What the ladder has *not* modelled remains the looping consumer proper — the ALT
-multiplexer, the fair server — where the count is not the whole story.
+drained-value spelling. The looping consumer proper — the ALT multiplexer, the fair server, where the
+count is not the whole story — is the following sections' subject.
 
 ### Streaming consumers — the looping process (Phase 252)
 
@@ -849,8 +851,9 @@ collection: size and contents are havoc'd, then its invariant characterises the 
 renamed apart** before the flattening — both loops naturally count with `i`, and the flattened
 single-assignment model had conflated them since Phase 119. Loud boundary: a receive in a loop without a
 spec or a unit counter, or twice per iteration on one channel, is named — as before, the counter is the
-variable the guard tests. The ALT multiplexer as a *looping* process stays the frontier: its per-iteration
-choice is the one-shot ALT's, but its readiness across iterations is not a count.
+variable the guard tests. The ALT multiplexer as a *looping* process — its per-iteration choice the
+one-shot ALT's, its readiness across iterations not a count — is
+[the looping ALT](#the-looping-alt--the-multiplexer-phase-253), next.
 
 ### The looping ALT — the multiplexer (Phase 253)
 
