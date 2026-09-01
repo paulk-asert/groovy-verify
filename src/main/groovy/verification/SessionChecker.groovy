@@ -216,8 +216,10 @@ class SessionChecker {
         out
     }
 
-    /** Phase 271 — channel vars declared `AsyncChannel.create(0)`: rendezvous, the only coherent racing openers. */
-    private static Set<String> rendezvousChans(BlockStatement body, Set<String> chans) {
+    /** Phase 271 — channel vars declared `AsyncChannel.create(0)`: rendezvous, the only coherent racing openers.
+     *  Phase 272 shares it: on a rendezvous channel a SEND blocks until its receive, so the wait-for graph
+     *  needs the same set (one source, not a facsimile). */
+    static Set<String> rendezvousChans(BlockStatement body, Set<String> chans) {
         final Set<String> out = new LinkedHashSet<String>()
         body.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {

@@ -8741,6 +8741,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             pairedSend.put(r, ss.get(j - 1))
         }
+        // Phase 272 — RENDEZVOUS channels (`AsyncChannel.create(0)`, JCSP's plain one2one). Everywhere else
+        // the certificate rests on "a send never blocks" (buffered: queued, the Awaitable discarded), so a
+        // send is a graph node nothing waits behind. At capacity 0 that is false — the send completes only
+        // when its receive does — and the send-send cycle it makes possible is the deadlock the books teach
+        // first (a producer and a consumer that both write before they read). So on a rendezvous channel a
+        // send becomes a blocking event too, waiting for the receive that will take its element.
+        Set<String> chanNames = new HashSet<String>()
+        for (ChanUse u : uses) { chanNames.add(u.chan); chanNames.add(chanBaseOf(u.chan, chanParent)) }
+        Set<String> rendezvousRoots = SessionChecker.rendezvousChans(body, chanNames)
+        Map<ChanUse, ChanUse> pairedReceive = new IdentityHashMap<ChanUse, ChanUse>()
+        List<ChanUse> rvSends = new ArrayList<ChanUse>()
+        for (Map.Entry<ChanUse, ChanUse> e : pairedSend.entrySet()) {
+            ChanUse snd = e.value
+            if (snd == null || !rendezvousRoots.contains(chanBaseOf(snd.chan, chanParent))) continue
+            if (!pairedReceive.containsKey(snd)) { pairedReceive.put(snd, e.key); rvSends.add(snd) }
+        }
         for (ChanUse it : iterates) {
             String root = chanBaseOf(it.chan, chanParent)
             StreamInfo forever = infiniteProducers.get(root)
@@ -8804,20 +8820,42 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
         // Main's blocking points before ordinal o: its blockers and the joins it has passed.
         // (X → Y means "X cannot complete until Y has".)
+        // Phase 272 — a rendezvous send blocks, so it joins the blockers for program-order purposes: an
+        // operation later in the same process cannot run until that send has been taken.
+        List<ChanUse> ordered = new ArrayList<ChanUse>(blockers)
+        ordered.addAll(rvSends)
         for (ChanUse u : evUses) {
             if (u.proc == null) {
-                for (ChanUse b : blockers) if (b.proc == null && b.ord < u.ord) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : ordered) if (b.proc == null && b.ord < u.ord) adj.get(id.get(u)).add(id.get(b))
                 for (ParArm a : joined) if (a.join < u.ord) adj.get(id.get(u)).add(id.get(a))
             } else {
-                for (ChanUse b : blockers) if (b.proc != null && b.proc.is(u.proc) && b.seq < u.seq) adj.get(id.get(u)).add(id.get(b))
-                for (ChanUse b : blockers) if (b.proc == null && b.ord < u.proc.fork) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : ordered) if (b.proc != null && b.proc.is(u.proc) && b.seq < u.seq) adj.get(id.get(u)).add(id.get(b))
+                for (ChanUse b : ordered) if (b.proc == null && b.ord < u.proc.fork) adj.get(id.get(u)).add(id.get(b))
                 for (ParArm a : joined) if (a.join < u.proc.fork) adj.get(id.get(u)).add(id.get(a))
             }
         }
         for (ChanUse r : blockingReads) {                       // the j-th receive waits for the j-th send
             ChanUse s = pairedSend.get(r)
-            if (s != null && !s.is(r)) adj.get(id.get(r)).add(id.get(s))
+            if (s != null && !s.is(r) && !pairedReceive.containsKey(s)) adj.get(id.get(r)).add(id.get(s))
         }
+        // Phase 272 — a rendezvous send and its receive are ONE synchronisation, not two events waiting on
+        // each other (that would make every matched pair a two-cycle, and every rendezvous a "deadlock").
+        // They complete together, so each waits for exactly what the other waits for: the union of the two
+        // program-order predecessor sets, with no edge between them. A real cycle then has to close through
+        // some OTHER event — which is precisely the send-send knot when both processes write before reading.
+        List<int[]> rvPairs = new ArrayList<int[]>()
+        for (ChanUse snd : rvSends) {
+            ChanUse r = pairedReceive.get(snd)
+            if (r != null && !r.is(snd)) rvPairs.add(new int[] { id.get(snd), id.get(r) })
+        }
+        Map<Integer, List<Integer>> merged = new HashMap<Integer, List<Integer>>()
+        for (int[] pr : rvPairs) {
+            List<Integer> u = new ArrayList<Integer>()
+            for (Integer x : adj.get(pr[0])) if (x != pr[0] && x != pr[1] && !u.contains(x)) u.add(x)
+            for (Integer x : adj.get(pr[1])) if (x != pr[0] && x != pr[1] && !u.contains(x)) u.add(x)
+            merged.put(pr[0], u); merged.put(pr[1], new ArrayList<Integer>(u))
+        }
+        for (Map.Entry<Integer, List<Integer>> e : merged.entrySet()) adj.set(e.key, e.value)
         for (ChanUse it : iterates) {                            // Phase 245 — an iteration finishes at close
             ChanUse c = closeByRoot.get(chanBaseOf(it.chan, chanParent))
             if (c != null && !c.is(it)) adj.get(id.get(it)).add(id.get(c))
@@ -8875,8 +8913,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Integer i : cycle) parts.add(describeChanEvent(evs.get(i)))
             Object first = evs.get(cycle.get(0))
             Expression anchor = first instanceof ChanUse ? ((ChanUse) first).anchor : ((ParArm) first).anchor
+            boolean rvCycle = false                       // Phase 272 — a knot that closes through a rendezvous send
+            for (Integer i : cycle) { Object ev = evs.get(i); if (ev instanceof ChanUse && pairedReceive.containsKey(ev)) rvCycle = true }
             addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
-                'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first'), anchor)
+                'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first', rvCycle), anchor)
         } else {
             for (int i = 0; i < n; i++) if (!done[i]) {           // defensive: a stuck event without a cycle to show
                 Object ev = evs.get(i)

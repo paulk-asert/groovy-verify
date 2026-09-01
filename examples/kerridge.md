@@ -27,27 +27,28 @@ Welch/Martin design-rule school.
 
 This gallery ports those teaching shapes onto Groovy 6's `groovy.concurrent` (channels as `AsyncChannel`,
 `PAR` arms as `async {}` tasks, the delta as `BroadcastChannel`, `ALT` as `ChannelSelect`) and runs them
-under the [SEQ/PAR ladder](concurrency.md) (Phases 240–271) — where the corresponding certificates are
+under the [SEQ/PAR ladder](concurrency.md) (Phases 240–272) — where the corresponding certificates are
 issued **in the compiler**, as ordinary static type-checking errors, rather than established offline. The
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-**What is in it.** Twenty-one worked examples, every one linked to a case that runs in CI.
+**What is in it.** Twenty-four worked examples, every one linked to a case that runs in CI.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
 ways, with a literal trip count, with a symbolic `n`, and as three `while (true)` processes; client–server;
 `ALT`; the multiplexer; the fair server, withheld and then certified. Then the
 [student mistakes as named compile errors](#the-student-mistakes-are-named-compile-errors) — the
 mutual-receive deadlock with its wait cycle spelled out receive by receive, the missing poison pill, two
-producers on one one2one, reading past the last send — each shown with the compiler's verbatim message, and
+producers on one one2one, reading past the last send, and c07's two send-send knots on rendezvous
+channels — each shown with the compiler's verbatim message, and
 [what a refuted value claim hands back](#and-a-wrong-claim-comes-back-with-a-counterexample): a
 counterexample you can run. The primed token ring and a three-role protocol close the mechanism sections.
 
 **What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
-sixteen rows of the table below are the JCSP/occam vocabulary the books are built on, and the twenty-one
-examples are the smallest programs that exercise each. Measured against the books' own corpus it is a thin
-slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and only c02 and c03 are ported
-here by name; the client–server, `ALT`, multiplexer, fair-server and token-ring shapes recur across the
+seventeen rows of the table below are the JCSP/occam vocabulary the books are built on, and the
+twenty-four examples are the smallest programs that exercise each. Measured against the books' own corpus it
+is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and only c02, c03 and
+c07 are ported here by name; the client–server, `ALT`, multiplexer, fair-server and token-ring shapes recur across the
 later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
 not ported: its own vocabulary — `DataClass`, the worker and collector components, the CSPm/FDR
 definitions — has no representation here.
@@ -73,6 +74,7 @@ diagnostics and counterexamples rather than one line of pass/fail per case.
 | Kerridge / JCSP | groovy.concurrent | What the checker does with it |
 | --- | --- | --- |
 | `Channel.one2one()` | `AsyncChannel<Integer> c = AsyncChannel.create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
+| an *unbuffered* `one2one` (the JCSP default — a write blocks until the read) | `AsyncChannel.create(0)` — a rendezvous | the send is a blocking event too, and a send and its receive are one synchronisation: the send-send knot two write-first processes make is a named deadlock (Phase 272) |
 | a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked (Phase 240) |
 | typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives (Phase 242) |
 | the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
@@ -622,6 +624,106 @@ No counterexample line there, and that is the honest output: `produceHW()` takes
 nothing to instantiate — the failing call *is* the whole witness. Give a claim something to range over and
 the next section is what comes back instead.
 
+### c07's deadlock, which every earlier rung was blind to
+
+The chapter that introduces deadlock does it with two processes that each **write before they read** — and
+that is not the mutual-*receive* knot above. On JCSP's plain `one2one` a write blocks until the matching
+read, so two writers block on each other; give the same channel a buffer and it is not a deadlock at all.
+Every shape above this point used buffered channels, and the certificate rested on *a send never blocks* —
+so this entire class was invisible, and the network compiled in silence. Declaring the channel
+`AsyncChannel.create(0)` — a rendezvous, which is what JCSP's `one2one` is — makes the send a blocking
+event, and the knot is named (Phase 272):
+
+<!-- doclint:case p272-rendezvous-channels/both-processes-write-before-they-read-the-send-send-knot-is-refuted -->
+```groovy
+static int badPC() {
+    AsyncChannel<Integer> pToC = AsyncChannel.create(0)
+    AsyncChannel<Integer> cToP = AsyncChannel.create(0)
+    async { pToC.send(1); int i = cToP.first() }
+    async { cToP.send(1); int j = pToC.first() }
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p272-rendezvous-channels/both-processes-write-before-they-read-the-send-send-knot-is-refuted -->
+```
+[Static type checking] - Process-network deadlock in 'badPC': circular wait: the send on 'pToC' (line 41 in
+the task forked at line 41), which waits for the send on 'cToP' (line 42 in the task forked at line 42),
+which waits for the first. … On a rendezvous channel (created with capacity 0) a send blocks until its
+receive, so two processes that both write before they read wait on each other. Let one side receive before
+it sends, give the channel a buffer, or break the cycle in the client-server graph — a server must not be a
+client of a server that is its own client.
+```
+
+The same chapter's second deadlock is the one its tradition cares about most: the **crossed clients**. Each
+server answers its own client and then turns round and acts as a *client of the other server* — a cycle in
+the client–server graph, which is exactly what the Welch/Martin design rule forbids. The checker finds it as
+the same well-foundedness failure, and names the two peer requests that wait on each other:
+
+<!-- doclint:case p272-rendezvous-channels/crossed-clients-two-servers-that-are-each-other-s-client-deadlock -->
+```groovy
+static int crossedClients() {
+    AsyncChannel<Integer> c0ToS0 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s0ToC0 = AsyncChannel.create(0)
+    AsyncChannel<Integer> c1ToS1 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s1ToC1 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s0ToS1 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s1ToS0 = AsyncChannel.create(0)
+    async { c0ToS0.send(1); int r0 = s0ToC0.first() }
+    async { c1ToS1.send(2); int r1 = s1ToC1.first() }
+    async {                                          // server 0, also server 1's client
+        int q = c0ToS0.first()
+        s0ToS1.send(q)
+        int a = s1ToS0.first()
+        s0ToC0.send(a)
+    }
+    async {                                          // server 1, also server 0's client
+        int q = c1ToS1.first()
+        s1ToS0.send(q)
+        int a = s0ToS1.first()
+        s1ToC1.send(a)
+    }
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p272-rendezvous-channels/crossed-clients-two-servers-that-are-each-other-s-client-deadlock -->
+```
+[Static type checking] - Process-network deadlock in 'crossedClients': circular wait: the send on 's0ToS1'
+(line 49 in the task forked at line 47), which waits for the send on 's1ToS0' (line 55 in the task forked at
+line 53), which waits for the first. …
+```
+
+Obey the rule — make server 1 a **pure** server and server 0 its only client, so the client–server graph is
+a DAG — and the network certifies *and* the answer proves end to end:
+
+<!-- doclint:case p272-rendezvous-channels/a-strict-server-hierarchy-certifies-and-the-answer-proves -->
+```groovy
+@Ensures({ result == x + 1 })
+static int layered(int x) {
+    AsyncChannel<Integer> c0ToS0 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s0ToC0 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s0ToS1 = AsyncChannel.create(0)
+    AsyncChannel<Integer> s1ToS0 = AsyncChannel.create(0)
+    async {                                          // server 0, client of server 1
+        int q = c0ToS0.first()
+        s0ToS1.send(q)
+        int a = s1ToS0.first()
+        s0ToC0.send(a)
+    }
+    async {                                          // server 1: a pure server
+        int q = s0ToS1.first()
+        s1ToS0.send(q + 1)
+    }
+    c0ToS0.send(x)                                   // the client
+    return s0ToC0.first()
+}
+```
+
+The verdict keys on the **capacity**, not on the shape: the write-first pair on a buffered channel is
+certified, because with a buffer it genuinely does not deadlock. Writing before reading is a mistake only
+where the channel makes it one, and the checker says so only there.
+
 ## …and a wrong claim comes back with a counterexample
 
 The four refutations above carry no counterexample and need none: for a circular wait, a racing send-end or
@@ -749,7 +851,9 @@ those, the message is the teaching material and the model is for whoever is debu
 The certificates above rest on a small number of mechanisms, each worth knowing by name.
 
 **Deadlock is well-foundedness of the wait-for order.** Every receive waits for a send, every drain waits
-for a close; the checker builds that graph and demands it be well-founded. For a one-shot network the graph
+for a close, and on a rendezvous channel every send waits for its receive as well (Phase 272 — a send and
+the receive that takes its element being one synchronisation, so a matched pair is not itself a cycle); the
+checker builds that graph and demands it be well-founded. For a one-shot network the graph
 must be acyclic — a cycle *is* the deadlock, and the error spells out the loop of waits, receive by receive
 (the mutual-receive student exercise above). An `ALT` enters the graph as an **OR node**: it is stuck only
 if *every* branch is stuck, which is why a multiplexer over live producers certifies while a knot whose
@@ -890,7 +994,8 @@ iteration or one `ALT`, `int` elements, and the pipeline's map stages declared a
 refuses the value model *with the reason named*: a range `for`-in over a symbolic bound, two sends of one
 channel in an iteration, a `first()` outside such a loop, a send under an `if` that is not the
 `ALT`-guarded reply shape, a drain through a `filter`. Inside the fragment the certificates rest on three
-stated facts: sends never block on a buffered channel (queued, the `Awaitable` discarded), the base case of
+stated facts: sends never block on a buffered channel (queued, the `Awaitable` discarded) — a channel
+declared with capacity 0 is a rendezvous instead, and its sends do block (Phase 272) — the base case of
 every loop is the straight-line code before it, and liveness assumes weak fairness — nothing more.
 
 **What is genuinely outside today.** The *queueing* half of latency — delay behind a backlog, which needs

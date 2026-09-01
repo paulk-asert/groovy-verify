@@ -387,10 +387,24 @@ class Reporter {
      * dining-philosophers resource hierarchy, applied to the network's blocking structure.
      */
     static String formatNetworkDeadlock(String methodName, String detail) {
+        formatNetworkDeadlock(methodName, detail, false)
+    }
+
+    /**
+     * Phase 272 — the remedy has to match the knot. For the buffered cases the cure is to get a send in
+     * front of a blocking receive; for a RENDEZVOUS send-send cycle that advice is exactly backwards (both
+     * processes already write first — that IS the bug), so the rendezvous form names the real fixes.
+     */
+    static String formatNetworkDeadlock(String methodName, String detail, boolean rendezvous) {
         "Process-network deadlock in '${methodName}': ${detail}. A one-shot channel network is " +
         "deadlock-free exactly when its wait-for order is well-founded; this one blocks forever. " +
-        "Move the send before the blocking receive, fork the producer before awaiting its " +
-        "consumer, or let a concurrent task serve the channel."
+        (rendezvous
+            ? "On a rendezvous channel (created with capacity 0) a send blocks until its receive, so two " +
+              "processes that both write before they read wait on each other. Let one side receive before " +
+              "it sends, give the channel a buffer, or break the cycle in the client-server graph — a " +
+              "server must not be a client of a server that is its own client."
+            : "Move the send before the blocking receive, fork the producer before awaiting its " +
+              "consumer, or let a concurrent task serve the channel.")
     }
 
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */

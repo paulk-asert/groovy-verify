@@ -12329,6 +12329,48 @@ GROOVY-12323 — and what remains beyond the ladder is the queueing calculus alo
 
 ---
 
+## Phase 272 — Rendezvous channels: the send-send deadlock  *(shipped — slice 33 of the SEQ/PAR ladder)*
+
+Every rung up to here rested on **a send never blocks** — buffered, queued, the `Awaitable` discarded — so a
+send was a wait-for node nothing waited behind, and an entire deadlock class was invisible. It is the FIRST
+class Kerridge's book teaches: c07's `BadP`/`BadC`, a producer and a consumer that both write before they
+read, which knots on JCSP's plain (unbuffered) `one2one`. Probed before building: both the deadlocked and
+the working version compiled **silently** — no refutation, and no loud skip either, which is the part that
+mattered, since the certificate's own assumption had gone unstated at capacity 0.
+
+A channel declared `AsyncChannel.create(0)` is a rendezvous, and `SessionChecker.rendezvousChans` — Phase
+271's, now shared rather than copied — already names them. Its sends join the wait-for graph's blockers, so
+an operation later in the same process waits behind them. The subtlety is the pairing: a rendezvous send and
+its receive must NOT be modelled as waiting on each other (that makes every matched pair a two-cycle, and
+every rendezvous a "deadlock" — the first cut did exactly that and refuted the working version). They are
+ONE synchronisation: each inherits the union of the two program-order predecessor sets, with no edge
+between them, so a real cycle has to close through some other event — which is precisely the send-send knot.
+The remedy text is now knot-specific: the buffered advice ("move the send before the blocking receive") is
+backwards here, where both processes already write first, so the rendezvous form names the real fixes,
+including the design rule itself ("a server must not be a client of a server that is its own client").
+
+Cases (G334, new group, 5): the write-first knot refuted with its cycle; the book's fix (one side receives
+first) certified; the crossed client-server pair — two servers each acting as the other's client, the
+Welch/Martin rule violated — refuted, naming the two peer requests that wait on each other; the layered
+version (a pure server, a DAG of clients) certified *and* its answer proved end to end; and the boundary
+that keeps the model honest — the same write-first pair on a BUFFERED channel is certified, because with a
+buffer it genuinely does not deadlock. The verdict keys on the capacity, not the shape. Phase 267/271's
+`create(0)` session cases are unaffected. Both runtimes green, 1967; `check` green; docLint 0 drift
+(174 case links, 12 pinned diagnostics).
+
+This also corrects Phase 271's closing note. A chapter-by-chapter read of UCaPE c04–c25 (the book's own
+examples, checked against the repository) says the queueing calculus is *not* all that remains: ALT
+pre-conditions with a recomputed guard mask (c05's bounded buffer, c12's Butler capping seated philosophers
+at n−1 — deadlock avoidance by resource limiting), timer guards (c05, c14, c17), barriers and buckets with
+dynamic enrolment and an `AltingBarrier` as an ALT guard (c14), CREW-shared mutable state (c13), and the
+shared `any2one`/`one2any` channels the linearity rule currently refuses outright (c11, c12, c14, c24) are
+all real rungs. Two corrections to earlier assumptions, both from the sources: the books use **no poison
+pill anywhere** — termination is a `Sentinel` object convention, and c23's merge needs *counted* close (one
+sentinel per input), which `close()` does not express — and there is **no prime sieve or recursive network**
+in the book at all.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
