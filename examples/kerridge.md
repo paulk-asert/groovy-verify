@@ -25,13 +25,48 @@ Groovy over [JCSP](https://github.com/CSPforJAVA/jcsp) — the occam inheritance
 "guaranteed deadlock and livelock free … through the use of formal methods" — proofs made *offline*, in the
 Welch/Martin design-rule school.
 
-This gallery ports his teaching shapes onto Groovy 6's `groovy.concurrent` (channels as `AsyncChannel`,
-`PAR` arms as `async {}` tasks, the delta as `BroadcastChannel`) and runs them under the
-[SEQ/PAR ladder](concurrency.md) (Phases 240–246) — where the corresponding certificates are issued **in the
-compiler**: values proved end-to-end, deadlock-freedom as well-foundedness of the wait-for order, and the
-classic student mistakes surfacing as *named compile errors* rather than runtime hangs. The shapes are
-**inspired by UCaPE, written ourselves** — his repository carries no licence and JCSP is LGPL, so ideas are
-ported, never sources (the same rule as the jcstress-inspired examples).
+This gallery ports those teaching shapes onto Groovy 6's `groovy.concurrent` (channels as `AsyncChannel`,
+`PAR` arms as `async {}` tasks, the delta as `BroadcastChannel`, `ALT` as `ChannelSelect`) and runs them
+under the [SEQ/PAR ladder](concurrency.md) (Phases 240–271) — where the corresponding certificates are
+issued **in the compiler**, as ordinary static type-checking errors, rather than established offline. The
+shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
+ideas are ported, never sources (the same rule as the jcstress-inspired examples).
+
+**What is in it.** Twenty-one worked examples, every one linked to a case that runs in CI.
+[Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
+two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
+ways, with a literal trip count, with a symbolic `n`, and as three `while (true)` processes; client–server;
+`ALT`; the multiplexer; the fair server, withheld and then certified. Then the
+[student mistakes as named compile errors](#the-student-mistakes-are-named-compile-errors) — the
+mutual-receive deadlock with its wait cycle spelled out receive by receive, the missing poison pill, two
+producers on one one2one, reading past the last send — each shown with the compiler's verbatim message, and
+[what a refuted value claim hands back](#and-a-wrong-claim-comes-back-with-a-counterexample): a
+counterexample you can run. The primed token ring and a three-role protocol close the mechanism sections.
+
+**What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
+sixteen rows of the table below are the JCSP/occam vocabulary the books are built on, and the twenty-one
+examples are the smallest programs that exercise each. Measured against the books' own corpus it is a thin
+slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and only c02 and c03 are ported
+here by name; the client–server, `ALT`, multiplexer, fair-server and token-ring shapes recur across the
+later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
+not ported: its own vocabulary — `DataClass`, the worker and collector components, the CSPm/FDR
+definitions — has no representation here.
+
+**What is proved, and what is assumed.** Values end-to-end through the channels; deadlock-freedom as
+well-foundedness of the wait-for order, with `ALT` as an OR node; safety of networks that never stop, and
+liveness under **weak fairness** — [stated as an assumption](#how-deadlock-liveness-and-starvation-are-certified),
+nothing more. `@ServedWithin` and `@DeliveredWithin` are head-of-line service bounds; queueing behind a
+backlog is [deliberately outside the claim](#the-honest-boundary-loudly). The scheduler, the JMM and
+atomicity stay below the line, exactly as CSP's own semantics are.
+
+**Two findings went upstream.** Modelling `ALT` as Groovy 6 actually implemented it showed there was no fair
+selection, and that a losing branch's element was re-sent to the back of its queue — now **GROOVY-12320**, a
+held `fair()` / `random()`. The racing mixed choice needed real arbitration — now **GROOVY-12323**,
+`offers(send(…), receive(…))` over rendezvous channels. Both merged for 6.0.0-beta-4; the
+[version note](#groovy-version-note) says what each runtime can and cannot certify.
+
+To run the gallery: `./gradlew verify -Pcases='P246 Kerridge gallery'`, with `VERIFY_VERBOSE=1` to see the
+diagnostics and counterexamples rather than one line of pass/fail per case.
 
 ## The vocabulary, mapped
 
