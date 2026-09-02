@@ -881,6 +881,8 @@ class ChannelDesugar {
         collectChannelParents(body, ch, parent, subscribers)
         // Phase 251 — streaming channels: their one loop send is sanctioned; other loop sends carry a reason.
         final StreamScan streamScan = scanStreams(body, ch, parent, subscribers, params, scalarTypes)
+        final Set<String> sharedSend = new HashSet<String>(), sharedRecv = new HashSet<String>()   // Phase 284
+        VerifyChecker.collectSharedEnds(body, sharedSend, sharedRecv)
         final Set<String> selected = new HashSet<String>()                 // Phase 249 — channels an ALT has chosen over
         final Map<String, String> selectResult = new HashMap<String, String>()   // ALT result var → its first channel
         final Set<Expression> sanctionedFrom = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
@@ -982,7 +984,17 @@ class ChannelDesugar {
                 Set<Object> s = procs.get(name)
                 if (s == null) { s = new HashSet<Object>(); procs.put(name, s) }
                 s.add(proc)
-                if (s.size() > 1) flag(name, "has ${end}s from more than one process")
+                // Phase 284 — for a DECLARED shared end the plural is the point, not a surprise: say what the
+                // declaration costs (the positional model) rather than reporting it as an unmet expectation.
+                if (s.size() > 1) {
+                    boolean declared = (end == 'send' ? sharedSend : sharedRecv).contains(name)
+                    flag(name, declared
+                        ? ("is declared @Shared${end == 'send' ? 'Send' : 'Receive'}, so its ${end} end is shared by " +
+                           "${s.size()} processes — outside the positional model by construction: nothing is claimed " +
+                           "about which element a receive returns or the order they arrive in (the element contract " +
+                           "and deadlock-freedom still hold)").toString()
+                        : "has ${end}s from more than one process")
+                }
             }
             private void family(String name, String key) {
                 Set<String> f = families.get(name)

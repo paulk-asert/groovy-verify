@@ -12704,6 +12704,99 @@ introduced. Worth scoping deliberately rather than assuming it is the next `when
 
 ---
 
+## Phase 284 — Shared channel ends, declared  *(shipped — slice 45)*
+
+The decision that had been open for several slices. c11, c12's canteen and c24 all need JCSP's `any2one` /
+`one2any`, and Phase 241 refused every one of them — rightly, since the FIFO per-element model rests on one
+live process per end. Relaxing it is now possible but only as a DECLARATION: `@SharedSend` (many writers,
+one reader) and `@SharedReceive` (one writer, many competing readers) on the channel's own declaration.
+
+**Declared, never inferred, and that is the design rather than a detail.** Inferring sharing from "two
+processes send here" would convert the linearity rule's main value — catching sharing nobody intended — into
+a silent weakening: a typo giving two producers one channel would go from a named error to a quietly weaker
+model. So the undeclared shapes still refuse exactly as before, and the corpus carries both spellings of
+each side by side to pin that.
+
+What the declaration COSTS is the positional model, reported at the channel in terms of what is given up
+rather than as an unmet expectation ("is declared @SharedSend, so its send end is shared by 2 processes —
+outside the positional model by construction: nothing is claimed about which element a receive returns or
+the order they arrive in"). What it KEEPS is two things, and both are load-bearing:
+
+* the element CONTRACT (Phase 242) — every sender must satisfy it, so the reader may assume it whoever sent;
+* DEADLOCK-FREEDOM — with a receive on a shared send end waiting on the DISJUNCTION of the sends, reusing
+  the OR node an ALT already uses. That is not a nicety: pairing positionally, as the point-to-point model
+  does, would report a deadlock whenever the paired sender happened to be the blocked one while another send
+  could satisfy the receive. Both directions are pinned — a receive nothing sends to is still named, and a
+  receive with one blocked sender and one free one is not.
+
+Not `BroadcastChannel`: that delivers every element to EVERY subscriber, where `one2any` delivers each
+element to exactly one of many competing readers. Different construct, and the doc says so.
+
+Cases (G338, new group, 6): both declared relaxations, both undeclared refusals, and both directions of the
+deadlock claim. Two annotations shipped (`verification.SharedSend` / `SharedReceive`), mapped in
+ARCHITECTURE.md. Both runtimes green, 2000; `check` green; docLint 0 drift (182 case links).
+
+Stage 2 is Phase 285.
+
+---
+
+## Phase 285 — The correlation a shared reply end cannot support  *(shipped — slice 46)*
+
+The obligation Phase 284 was worth doing for. c12's canteen has every philosopher write one `service` and
+read one `deliver`; the book never says what follows, and it is the bug the shape invites — with many
+readers competing for every reply, NOTHING ties the value a client received to the request it sent. A claim
+relating the two can hold only by luck.
+
+Detected syntactically, per process, which is all it takes: a local bound from a receive on a
+`@SharedReceive` channel, a local this same process passed to a send, and an assertion mentioning both.
+Each `async { … }` arm is its own process; a nested arm is not folded into its parent.
+
+**Why it is worth a check at all, given the claim already fails.** A shared channel is outside the
+positional model, so the received value is unconstrained and the assertion would refute anyway — as a bare
+"Assertion may not hold", which names the SYMPTOM and not the mistake. The whole value here is the
+diagnostic: it says the reply may be another client's, and it names both fixes (a private reply channel, or
+a client id carried in the message and checked). That is the difference between a tool that cannot prove
+something and one that knows why.
+
+Cases (G338, 2 more): the canteen client refused, and — the control that keeps the refusal honest — the
+same correlation proving fine once the client has its OWN reply channel. The refusal is about the sharing,
+not about replies.
+
+Both runtimes green, 2002; `check` green; docLint 0 drift (20 pinned diagnostics). With this the
+shared-channel decision is closed: c11, c12's canteen and c24 have the vocabulary they need, and the shape
+they invite is named rather than merely unprovable.
+
+---
+
+## Phase 286 — c12's canteen: where four slices meet  *(shipped — slice 47)*
+
+The half of c12 that the shared-channel decision was blocking, and the first example needing everything
+built recently at once: shared ends (284/285) for `service` (`any2one`) and `deliver` (`one2any`), the
+per-offer guard (276) for the precondition, and the held `fair()` (GROOVY-12320 / Phase 257) for
+`fairSelect`. It composes — which was the question worth asking, since each of those was exercised only by
+cases written to exercise it.
+
+The SERVERY is a guarded ALT chosen with a held `fair()`, a combination no earlier shape uses: the guard
+discharges the assertion in its own arm while the rotation state lives in the held instance. `chickens >= 0`
+proves and "never serve what you have not got" is proved from the guard; widening the precondition refutes
+at `chickens = 0, r$index = 1`. Fair selection changes WHICH ready branch is taken and nothing about what
+may be served — the precondition is still the whole difference. The positive case carries
+`refute: ['Assertion may not hold', 'Cannot prove loop invariant', 'Skipped loop verification']`; the third
+is the one that matters, pinning that the loop was actually VERIFIED rather than passed over.
+
+**An honest boundary found by trying the whole thing first.** The book's program is a college — servery plus
+philosophers in one network — and as a single method it falls outside the loop fragment: a channel send and
+forked arms in the loop's PREFIX region are not modelled, so everything skips loudly and the invariant is
+never checked. The gallery therefore ports the two halves separately, as it does everywhere else, and the
+doc says so rather than showing only the half that works. Worth recording as the shape of the limit: the
+fragment admits a loop with a specified prefix, not a whole network assembled around one.
+
+Cases (G338, 2 more). The philosopher half was already covered by Phase 285's correlation refusal, which is
+the canteen client believing the meal it collects answers the order it placed. Both runtimes green, 2004;
+`check` green; docLint 0 drift (183 case links, 20 pinned diagnostics).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

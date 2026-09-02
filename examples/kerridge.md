@@ -933,6 +933,114 @@ either and the same overflow comes back, at the same arm, with the same `counter
 One ergonomic wrinkle worth knowing: the guard closures read the loop's state, so the state has to be
 declared *before* the select is built — `int counter = 0` above the `offers(…)`, not below it.
 
+## Shared channel ends — declared, never inferred
+
+The books use `any2one` and `one2any` constantly: c12's canteen has five philosophers all writing one
+`service` channel and all reading one `deliver`, c11 has eight hundred particles sharing a channel into
+their manager. The port refused all of it, and for a reason — the whole FIFO model rests on one live process
+per end, so that the k-th send is the k-th receive.
+
+Sharing is now available, **as a declaration**:
+
+<!-- doclint:case p284-shared-ends/a-declared-any2one-send-end-is-permitted-at-the-cost-of-the-positional-model -->
+```groovy
+static int anyToOne() {
+    @verification.SharedSend AsyncChannel<Integer> service = AsyncChannel.create(4)
+    async { service.send(1) }
+    async { service.send(2) }
+    return service.first()
+}
+```
+
+Declared and **never inferred**, which is the design point rather than a detail. Inferring sharing from "two
+processes send here" would convert the linearity rule's main value — catching sharing nobody intended — into
+a silent weakening, so the undeclared shape refuses exactly as it always did. The two spellings sit side by
+side in the corpus for that reason.
+
+What the declaration costs is said at the channel, in terms of what is given up rather than as a
+disappointed expectation:
+
+```
+Skipped channel verification for anyToOne (channel 'service' is declared @SharedSend, so its send end is
+shared by 2 processes — outside the positional model by construction: nothing is claimed about which
+element a receive returns or the order they arrive in (the element contract and deadlock-freedom still
+hold))
+```
+
+And those two survivors are real, not consolation. The **element contract** holds because every sender must
+satisfy it, so the reader may assume it whoever sent. **Deadlock-freedom** holds because a receive on a
+shared send end waits on the *disjunction* of the sends — the same OR node an `ALT` uses — rather than on
+the j-th. That distinction earns its keep: pairing positionally would report a deadlock whenever the paired
+sender happened to be the blocked one, even though another send could satisfy the receive. A receive that
+nothing sends to is still named; a receive with one blocked sender and one free one is not.
+
+`@SharedReceive` is the mirror — one writer, many *competing* readers — and is not the
+[broadcast fan-out](concurrency.md) of Phase 241, where every subscriber sees every element. Here each
+element goes to exactly one reader, which is what `one2any` means and what a work queue needs.
+
+### The canteen, both halves
+
+c12's other network is a college canteen: philosophers queue at a servery, which holds a stock of chickens,
+takes deliveries from the kitchen, and serves a philosopher only when it has something to serve. The
+channels are exactly the two shared kinds — `service` is `any2one` (every philosopher asks on it) and
+`deliver` is `one2any` (every philosopher collects from it), while `supply` from the kitchen stays
+point-to-point.
+
+The **servery** is a guarded ALT chosen with a held `fair()` — JCSP's `fairSelect(precondition)` — which is
+a combination no earlier shape uses: the guard proves the assertion in its own arm while the rotation state
+lives in the held instance.
+
+<!-- doclint:case p284-shared-ends/c12-s-servery-a-guarded-fair-select-never-serves-what-it-has-not-got -->
+```groovy
+static void servery() {
+    AsyncChannel<Integer> supply = AsyncChannel.create(4)
+    AsyncChannel<Integer> service = AsyncChannel.create(4)
+    int chickens = 0
+    ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(supply),
+                                             ChannelSelect.receive(service).when { chickens > 0 }).fair()
+    @Invariant({ chickens >= 0 })
+    while (true) {
+        ChannelSelect.Result r = await alt.select()
+        if (r.index == 0) {
+            chickens = chickens + 1
+        }
+        if (r.index == 1) {
+            assert chickens > 0
+            chickens = chickens - 1
+        }
+    }
+}
+```
+
+Serve whenever asked instead and it hands out a chicken it has not got, refuted at `chickens = 0` with the
+service branch taken. Fair selection changes *which* ready branch is chosen and nothing about what may be
+served: the precondition is still the whole difference.
+
+A note on scope, since the book's own program is a whole college: the network as a single method falls
+outside the loop fragment — a channel send and forked arms in the loop's prefix region — so the gallery
+ports the two halves separately, as it does everywhere else. The servery above is one half; the philosopher
+is the other, and the philosopher is where the shared reply end bites.
+
+**The obligation the books leave implicit.** c12's canteen has every philosopher write one
+`service` and read one `deliver`. Nothing in the book says so, but a client that believes the reply it took
+answers the request it sent is relying on luck — with many readers competing, any client may take any reply.
+That claim is now refused by name:
+
+<!-- doclint:diagnostic p284-shared-ends/a-client-that-assumes-the-shared-reply-is-its-own-is-refused -->
+```
+[Static type checking] - Correlated claim on a shared reply end in 'canteen': this assertion relates 'r',
+taken from 'deliver' — whose receive end is declared @SharedReceive — to 'mine', which this same process
+sent. With a shared reply end every client competes for every reply, so nothing ties the value you received
+to the request you sent; the claim can hold only by luck. Give each client its own reply channel (the
+request-reply shape this gallery certifies), or carry a client id in the message and have the client check
+it before believing the answer.
+```
+
+Without this the claim would still fail — a shared channel is outside the positional model, so the value is
+unconstrained — but it would fail as a bare *"assertion may not hold"*, which names the symptom and not the
+mistake. Give the client its own reply channel and the same correlation proves, which is the point: the
+refusal is about the *sharing*, not about replies.
+
 ## CREW — shared state that is correct by discipline
 
 Every other shape in this gallery keeps processes apart. c13 does the opposite: one shared map, handed to N

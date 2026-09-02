@@ -396,6 +396,19 @@ class Reporter {
      * processes already write first — that IS the bug), so the rendezvous form names the real fixes.
      */
     /**
+     * Phase 285 — the mistake a shared reply end invites, and the one the books leave implicit: relating
+     * what you took from it to what you sent. With many readers competing, any client may take any reply.
+     */
+    static String formatSharedReplyCorrelation(String methodName, String reply, String chan, String sent) {
+        "Correlated claim on a shared reply end in '${methodName}': this assertion relates '${reply}', taken " +
+        "from '${chan}' — whose receive end is declared @SharedReceive — to '${sent}', which this same " +
+        "process sent. With a shared reply end every client competes for every reply, so nothing ties the " +
+        "value you received to the request you sent; the claim can hold only by luck. Give each client its " +
+        "own reply channel (the request-reply shape this gallery certifies), or carry a client id in the " +
+        "message and have the client check it before believing the answer."
+    }
+
+    /**
      * Phase 282 — CREW: a write under the READ lock. `@WithReadLock` exists to let several threads read at
      * once, so a write taken under it races every concurrent reader — the one mistake the concurrent-read /
      * exclusive-write discipline is there to prevent, and the one the annotation cannot prevent by itself.

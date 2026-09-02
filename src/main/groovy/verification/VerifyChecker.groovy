@@ -2332,6 +2332,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 checkCrewDiscipline(node)                    // Phase 282 — the CREW lock discipline
             } catch (Throwable ignored) {
             }
+            try {
+                if (body instanceof BlockStatement) checkSharedReplyCorrelation(node, (BlockStatement) body)
+            } catch (Throwable ignored) {
+            }
 
             // Phase 242 — a constrained channel PARAM's statement send becomes its contract assert
             // (`ch.send(e)` → `assert φ(e)`): the producer's half of the modular channel contract.
@@ -4131,6 +4135,107 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         new BinaryExpression(l, Token.newSymbol(type, -1, -1), r)
     }
 
+    /** Phase 284 — channel locals declared with a shared END: `@SharedSend AsyncChannel<Integer> c = …`
+     *  (JCSP's any2one) and `@SharedReceive` (one2any). Declared, never inferred. */
+    static void collectSharedEnds(BlockStatement body, Set<String> sharedSend, Set<String> sharedRecv) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    String n = ((VariableExpression) de.leftExpression).name
+                    for (AnnotationNode a : (de.annotations ?: Collections.<AnnotationNode> emptyList())) {
+                        String an = a?.classNode?.nameWithoutPackage
+                        if (an == 'SharedSend') sharedSend.add(n)
+                        if (an == 'SharedReceive') sharedRecv.add(n)
+                    }
+                    for (AnnotationNode a : (((VariableExpression) de.leftExpression).annotations ?: Collections.<AnnotationNode> emptyList())) {
+                        String an = a?.classNode?.nameWithoutPackage
+                        if (an == 'SharedSend') sharedSend.add(n)
+                        if (an == 'SharedReceive') sharedRecv.add(n)
+                    }
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    // ── Phase 285 — the correlation a shared reply end cannot support ───────────────────────────
+    /**
+     * c12's canteen has every philosopher write one `service` channel and read one `deliver`. The book
+     * leaves the consequence implicit, and it is the bug a shared reply end invites: with many readers
+     * competing for every reply, NOTHING ties the value a client received to the request it sent. A claim
+     * relating the two can hold only by luck.
+     *
+     * <p>Detected syntactically, per process, which is all it takes: a local bound from a receive on a
+     * {@code @SharedReceive} channel, a local this same process passed to a send, and an assertion
+     * mentioning both. Without this the claim still fails — the shared channel is outside the positional
+     * model, so the value is unconstrained — but it fails as a bare "assertion may not hold", which names
+     * the symptom and not the mistake.
+     */
+    private void checkSharedReplyCorrelation(MethodNode node, BlockStatement body) {
+        Set<String> shSend = new HashSet<String>(), shRecv = new HashSet<String>()
+        collectSharedEnds(body, shSend, shRecv)
+        if (shRecv.isEmpty()) return
+        for (Statement proc : processBodies(body)) checkOneProcessCorrelation(node, proc, shRecv)
+    }
+
+    /** The method's own body plus each `async { … }` arm — one entry per process. */
+    private static List<Statement> processBodies(BlockStatement body) {
+        final List<Statement> out = new ArrayList<Statement>()
+        out.add(body)
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                if (ce.code != null) out.add(ce.code)
+                super.visitClosureExpression(ce)
+            }
+        })
+        out
+    }
+
+    private void checkOneProcessCorrelation(MethodNode node, Statement proc, Set<String> shRecv) {
+        final Map<String, String> replyOf = new LinkedHashMap<String, String>()   // local → the shared channel it came from
+        final Set<String> sent = new LinkedHashSet<String>()                      // locals this process sent
+        proc.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }       // a nested arm is its own process
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    Expression r = stripCasts(de.rightExpression)
+                    if (r instanceof MethodCallExpression) {
+                        MethodCallExpression m = (MethodCallExpression) r
+                        Expression recv = stripCasts(m.objectExpression)
+                        if ((m.methodAsString == 'first' || m.methodAsString == 'receive') &&
+                            recv instanceof VariableExpression && shRecv.contains(((VariableExpression) recv).name)) {
+                            replyOf.put(((VariableExpression) de.leftExpression).name, ((VariableExpression) recv).name)
+                        }
+                    }
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if (m.methodAsString == 'send' && m.arguments instanceof TupleExpression) {
+                    for (Expression a : ((TupleExpression) m.arguments).expressions) {
+                        for (String n : varNames(a)) sent.add(n)
+                    }
+                }
+                super.visitMethodCallExpression(m)
+            }
+        })
+        if (replyOf.isEmpty() || sent.isEmpty()) return
+        proc.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+            @Override void visitAssertStatement(AssertStatement as) {
+                Set<String> names = varNames(as.booleanExpression.expression)
+                String reply = null, own = null
+                for (String n : names) if (replyOf.containsKey(n)) reply = n
+                for (String n : names) if (sent.contains(n) && !replyOf.containsKey(n)) own = n
+                if (reply != null && own != null) {
+                    addStaticTypeError(Reporter.formatSharedReplyCorrelation(
+                        node.name, reply, replyOf.get(reply), own), as)
+                }
+                super.visitAssertStatement(as)
+            }
+        })
+    }
+
     // ── Phase 282 — CREW: the concurrent-read / exclusive-write discipline, checked ──────────────
     /**
      * Kerridge c13 hands one shared map to N readers and M writers under a PAR, and it is correct not by
@@ -5052,19 +5157,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                       Set<String> derivedChans, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
         if (uses.isEmpty()) return 0
+        // Phase 284 — a DECLARED shared end lifts the corresponding half of the linearity rule (and only
+        // that half). Undeclared sharing stays an error: catching what nobody intended is the rule's point.
+        Set<String> sharedSend = new HashSet<String>(), sharedRecv = new HashSet<String>()
+        collectSharedEnds(body, sharedSend, sharedRecv)
         Set<String> flagged = new HashSet<String>()          // per-channel per-rule dedupe
         Set<String> erroredChans = new HashSet<String>()     // channels with a concurrency error
         for (int i = 0; i < uses.size(); i++) {
             for (int j = i + 1; j < uses.size(); j++) {
                 ChanUse a = uses.get(i), b = uses.get(j)
                 if (a.chan != b.chan || !distinctProcs(a, b) || !usesConcurrent(a, b)) continue
-                if (a.kind == CHAN_SEND && b.kind == CHAN_SEND && flagged.add(a.chan + ':ss')) {
+                if (a.kind == CHAN_SEND && b.kind == CHAN_SEND && !sharedSend.contains(a.chan) &&
+                    flagged.add(a.chan + ':ss')) {
                     erroredChans.add(a.chan)
                     addStaticTypeError(Reporter.formatChannelLinearity(node.name, a.chan,
                         "two concurrent senders on '${a.chan}' — ${procDesc(a)} and ${procDesc(b)} " +
                         "both use its send-end, so the element order is a race"), b.anchor)
                 } else if (a.kind == CHAN_RECV && b.kind == CHAN_RECV && !broadcastChans.contains(a.chan) &&
-                           flagged.add(a.chan + ':rr')) {
+                           !sharedRecv.contains(a.chan) && flagged.add(a.chan + ':rr')) {
                     erroredChans.add(a.chan)
                     addStaticTypeError(Reporter.formatChannelLinearity(node.name, a.chan,
                         "two concurrent receivers on '${a.chan}' — ${procDesc(a)} and ${procDesc(b)} " +
@@ -5905,7 +6015,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (ParArm a : joined) if (a.join < u.proc.fork) adj.get(id.get(u)).add(id.get(a))
             }
         }
+        // Phase 284 — on a DECLARED shared send end the j-th pairing is meaningless: any sender's element
+        // will do, so the receive waits on the DISJUNCTION of the sends (the same OR node an ALT uses).
+        // Pairing it to one particular send would report a deadlock whenever that sender happened to be
+        // the blocked one, even though another send could satisfy it.
+        Set<String> shSend = new HashSet<String>(), shRecv = new HashSet<String>()
+        collectSharedEnds(body, shSend, shRecv)
         for (ChanUse r : blockingReads) {                       // the j-th receive waits for the j-th send
+            if (shSend.contains(chanBaseOf(r.chan, chanParent))) {
+                List<Integer> alts = new ArrayList<Integer>()
+                List<ChanUse> ss = sendsByRoot.get(chanBaseOf(r.chan, chanParent))
+                if (ss != null) for (ChanUse snd : ss) { Integer si = id.get(snd); if (si != null) alts.add(si) }
+                if (!alts.isEmpty()) { orAlts.put(id.get(r), alts); continue }
+            }
             ChanUse s = pairedSend.get(r)
             if (s != null && !s.is(r) && !pairedReceive.containsKey(s)) adj.get(id.get(r)).add(id.get(s))
         }

@@ -27,9 +27,6 @@ class G305_p241_channel_linearity {
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
     static final List<Map> CASES = [
-
-        // ---------- concurrent same-end users: ERRORS (races, previously mis-modelled) ----------
-        // Before this phase the flatten-order PROVED result == 2; the runtime element order is a race.
         [group: 'P241 channel linearity', name: 'two concurrent senders race the element order', expect: 'Channel linearity',
          src: tc("""class C {
                         @Ensures({ result == 2 })
