@@ -27,12 +27,12 @@ Welch/Martin design-rule school.
 
 This gallery ports those teaching shapes onto Groovy 6's `groovy.concurrent` (channels as `AsyncChannel`,
 `PAR` arms as `async {}` tasks, the delta as `BroadcastChannel`, `ALT` as `ChannelSelect`) and runs them
-under the [SEQ/PAR ladder](concurrency.md) (Phases 240–272) — where the corresponding certificates are
+under the [SEQ/PAR ladder](concurrency.md) (Phases 240–286) — where the corresponding certificates are
 issued **in the compiler**, as ordinary static type-checking errors, rather than established offline. The
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-**What is in it.** Twenty-four worked examples, every one linked to a case that runs in CI.
+**What is in it.** Thirty-three worked examples, every one linked to a case that runs in CI.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
 ways, with a literal trip count, with a symbolic `n`, and as three `while (true)` processes; client–server;
@@ -42,14 +42,16 @@ mutual-receive deadlock with its wait cycle spelled out receive by receive, the 
 producers on one one2one, reading past the last send, and c07's two send-send knots on rendezvous
 channels — each shown with the compiler's verbatim message, and
 [what a refuted value claim hands back](#and-a-wrong-claim-comes-back-with-a-counterexample): a
-counterexample you can run. The primed token ring and a three-role protocol close the mechanism sections.
+counterexample you can run. The sections after that take one construct at a time — the guarded ALT, shared
+channel ends, CREW, the overwriting buffer, the butler, barriers — each with the shape that certifies and
+the mistake it is there to catch.
 
 **What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
-seventeen rows of the table below are the JCSP/occam vocabulary the books are built on, and the
-twenty-four examples are the smallest programs that exercise each. Measured against the books' own corpus it
-is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and only c02, c03 and
-c07 are ported here by name; the client–server, `ALT`, multiplexer, fair-server and token-ring shapes recur across the
-later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
+twenty-two rows of the table below are the JCSP/occam vocabulary the books are built on, and the
+thirty-three examples are the smallest programs that exercise each. Measured against the books' own corpus
+it is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and c02, c03, c05,
+c07, c09, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
+fair-server and token-ring shapes recur across the later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
 not ported: its own vocabulary — `DataClass`, the worker and collector components, the CSPm/FDR
 definitions — has no representation here.
 
@@ -64,8 +66,9 @@ Four gaps this gallery hit were reported upstream and fixed in `groovy.concurren
 [what the gallery changed upstream](#what-the-gallery-changed-upstream), and the
 [version note](#groovy-version-note) for what each runtime can and cannot certify.
 
-To run the gallery: `./gradlew verify -Pcases='P246 Kerridge gallery'`, with `VERIFY_VERBOSE=1` to see the
-diagnostics and counterexamples rather than one line of pass/fail per case.
+To run one section's cases: `./gradlew verify -Pcases='P246 Kerridge gallery'` (and likewise `P272`
+rendezvous, `P273` guarded ALT, `P277` barriers, `P282` CREW, `P284` shared ends), with `VERIFY_VERBOSE=1`
+to see the diagnostics and counterexamples rather than one line of pass/fail per case.
 
 ## The vocabulary, mapped
 
@@ -88,6 +91,10 @@ diagnostics and counterexamples rather than one line of pass/fail per case.
 | starvation-freedom in the large (served within a bound) | `@ServedWithin(n)` on the method | certified for a held `fair()` over k <= n branches (the rotation's own arithmetic); refuted with the policy's reason otherwise (Phase 265) |
 | end-to-end latency through a pipeline | `@DeliveredWithin(value = n, from = 'c', to = 'd')` | the head-of-line service bound, summed hop by hop (a stage is 1, a held `fair()` ALT its branch count), the worst path deciding; queueing is loudly not claimed (Phase 266) |
 | a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol({ loop { request: client >> server; reply: server >> client } })` on the method — plain Groovy, parsed by Groovy (`text = '''…'''` keeps the string form; `./gradlew nuscrCheck` exports the corpus as real Scribble for the MPST tools, the mixed choice refused as outside their fragment) | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
+| `select(preCon)` — a guard masked off while keeping its index | `receive(c).when { cond }` on an offer, or `select(boolean… enabled)` positionally | the committed branch is one whose flag holds, so a guarded arm's assertion and the loop's `@Invariant` prove from the guard (Phases 275/276); the positional form must drop branches only from the END, or `r.index` moves |
+| `Barrier` (`sync` / `enroll` / `resign`) | `java.util.concurrent.Phaser` — `arriveAndAwaitAdvance()`, `register()`, `arriveAndDeregister()` | a round is one n-way synchronisation, so a knot has to close through some other event; short party counts and a sync after resigning are named (Phases 277/278) |
+| `any2one` / `one2any` (shared channel ends) | `@SharedSend` / `@SharedReceive` on the declaration | declared, never inferred — undeclared sharing still refuses; the positional model is given up loudly, the element contract and deadlock-freedom survive, and a client claiming a shared reply is its own is refused (Phases 284/285) |
+| `Crew` (concurrent read, exclusive write) | `@WithReadLock` / `@WithWriteLock` | the transforms stay transparent to the prover; what is refused is a write taken under the READ lock, and read and write halves on different locks (Phase 282) |
 | `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
@@ -1127,9 +1134,10 @@ static void owBuffer() {
 }
 ```
 
-The assertion sits *inside* the guarded arm and is proved from the guard alone — the checker knows the
-committed branch is one whose flag held, so on that path `missed >= 0` is a fact rather than a hope. Widen
-the guard by one (`missed >= -1`, always true here) and the buffer answers a request it cannot satisfy:
+The assertion sits *inside* the guarded arm and is proved from the guard alone, by the same fact the
+[bounded buffer](#the-guarded-alt--c05s-bounded-buffer) turns on: the committed branch is one whose flag
+held. Widen the guard by one (`missed >= -1`, always true here) and the buffer answers a request it cannot
+satisfy:
 
 <!-- doclint:diagnostic p273-guarded-alt/an-unguarded-request-branch-delivers-from-empty-refuted -->
 ```
@@ -1307,6 +1315,14 @@ must be acyclic — a cycle *is* the deadlock, and the error spells out the loop
 (the mutual-receive student exercise above). An `ALT` enters the graph as an **OR node**: it is stuck only
 if *every* branch is stuck, which is why a multiplexer over live producers certifies while a knot whose
 every branch waits on its own output does not.
+
+Two later mechanisms are the same idea generalised, and belong on the same graph. A **barrier round** is the
+rendezvous pair lifted from two parties to n: every party's j-th sync completes exactly when all of them do,
+so the round inherits its members' predecessors and none waits on another — a matched barrier is not itself
+a cycle, and a knot has to close through some other event, which is how the crossed barriers and the mixed
+barrier/channel knot are found. And a receive on a **declared shared send end** waits on the *disjunction*
+of the sends, reusing the ALT's OR node: any sender's element will do, so pairing it to one particular send
+would report a deadlock whenever that sender happened to be the blocked one.
 
 **Forever processes lift the same graph to the iteration index.** A `while (true)` network has no final
 state to be safe in, so the wait-for graph is built *per iteration*: an edge of weight 0 means "waits for
