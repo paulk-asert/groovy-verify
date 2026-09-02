@@ -37,6 +37,13 @@ next pre-release, set `groovyVersion` in `gradle.properties` to `6.0.0-SNAPSHOT`
 snapshot repo in `build.gradle` (and `examples-dsl/build.gradle`); if a freshly-published snapshot looks
 stale, `--refresh-dependencies`.
 
+Groovy compilation runs in a **forked JVM with a 2g ceiling** (`build.gradle`, `tasks.withType(GroovyCompile)`).
+Gradle's in-worker default (~512m) is enough for this source set on 6.0.0-beta-3 but not on a 6.0.0 snapshot,
+where the same sources die with `java.lang.OutOfMemoryError: Java heap space` in about fifteen seconds. It is
+the *shape* rather than the volume that costs: the test source set is larger in total (36k lines vs 35k) and
+compiles fine at 512m, because its largest class is 555 lines, while `verification/VerifyChecker.groovy` is a
+single 15.5k-line class. Forking keeps the build working across Groovy versions either way.
+
 ```sh
 ./gradlew verify                          # compact console runner — one line per case, summary at the end
 VERIFY_VERBOSE=1 ./gradlew verify         # also print the counterexamples for refuted cases
