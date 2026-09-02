@@ -976,7 +976,8 @@ static void butler() {
 Only the *enters* carry a guard, and that is the book's own asymmetry rather than an omission: a decrement
 cannot break an upper bound, so leaving is always safe. What is proved is `seated <= 1` — the butler never
 seats them all — which is the whole of why the philosophers cannot deadlock, reduced to an invariant on one
-counter.
+counter. The four channels carry no statically known sends, so their *values* are loudly not modelled; the
+cap is a claim about the counter, and that is what certifies.
 
 Get the rule off by one — seat n rather than n−1 — and it is refuted at precisely the state the circular
 wait needs:

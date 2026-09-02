@@ -12573,14 +12573,38 @@ limit is STRICTLY below the seat count, and the proof turns on that strictness.
 Cases (G335, 2 more): the cap proved, the off-by-one refuted. Both runtimes green, 1984; `check` green;
 docLint 0 drift (178 case links, 16 pinned diagnostics). `examples/kerridge.md` gains a butler section.
 
-**A false positive found and NOT fixed here.** An UNGUARDED held `offers(...)` select — GROOVY-12323's own
-spelling, with no `when` on any offer — still raises "Cannot invoke method select() on null object", because
-`collectSelectVars` / `selectChainInfo` recognise `from(...)` and the guarded ternary but not a bare
-`offers(...)`. This is the third instance of that class of bug (after the conditional select in Phase 273
-and the `new`-bound local in Phase 277), and the fix is the same shape: teach the select recogniser the
-`offers(...)` form so the held-instance exemption covers it. Left out of this slice deliberately — it
-touches the recogniser the Phase 267/271 session cases run through, so it wants its own change and its own
-whole-corpus run rather than riding along with a gallery addition.
+**A false positive found here and fixed in Phase 280.** An UNGUARDED held `offers(...)` select —
+GROOVY-12323's own spelling, with no `when` on any offer — raised "Cannot invoke method select() on null
+object", because `selectChainInfo` recognised `from(...)` and the guarded ternary but not a bare
+`offers(...)`. The third instance of that class after the conditional select (Phase 273) and the `new`-bound
+local (Phase 277).
+
+---
+
+## Phase 280 — The offers() select, recognised  *(shipped — slice 41)*
+
+`selectChainInfo` knew `ChannelSelect.from(…)` and Phase 273's guarded ternary, but not `offers(…)` — so a
+HELD offers-select was an opaque object and `alt.select()` raised an undischargeable "Cannot invoke method
+select() on null object". Third instance of that class, and the same fix as the other two: teach the
+recogniser the shape, and the held-instance exemption follows.
+
+**RECEIVE offers only, and that restriction is the whole lesson of the change.** The first cut accepted
+`send(c, v)` offers too, which broke Phase 271's racing pair: a select's branch list is read downstream as
+the channels it CONSUMES, so counting a send offer there made two peers of a mixed choice look like two
+receivers on one channel — "Channel linearity violation … two concurrent receivers on 'ping'", refusing
+correct code. A send offer is an output guard; the racing mixed choice stays the session layer's business
+(Phase 271), where it already was.
+
+**A second, benign consequence, kept rather than suppressed.** Making offers-selects visible means the
+channel model now *says* it is not modelling their values, where before the select was invisible and it said
+nothing. Two cases (c05's per-offer buffer, c12's butler) moved from silent to loudly skipped. The
+invariants still prove; the cases now expect the skip and carry `refute: ['Cannot prove loop invariant',
+'NullPointerException']` so the skip can never quietly stand in for a lost proof. Loud beats silent, which is
+the ladder's rule everywhere else. (The `from(…)`-spelled c05 buffer does not emit the same skip — its select
+is sanctioned through the consumer-loop recogniser — an inconsistency worth a look but not chased here.)
+
+Cases (G335, 1 more): the unguarded held offers-select, pinned against the NPE. Both runtimes green, 1985;
+`check` green; docLint 0 drift.
 
 ---
 

@@ -40,6 +40,25 @@ class G335_p273_guarded_alt {
     // The spec is over the union of the arms — which is what the model carries — and it proves.
     // `refute:` pins the false positive this phase removes: no null-deref obligation on a conditional build.
     static final List<Map> CASES = [
+        // Phase 280 — an UNGUARDED held `offers(...)` select is GROOVY-12323's own spelling; before it was
+        // recognised, a held one raised an undischargeable "select() on null object".
+        [group: 'P273 guarded ALT', name: 'an unguarded held offers() select is a ChannelSelect, not a null deref',
+         *: (WHEN_GUARD ? [expect: 'Skipped'] : [expect: 'Cannot find matching method']),
+         refute: 'NullPointerException',
+         src: tc("""class C {
+                        static void plainOffers() {
+                            AsyncChannel<Integer> a = AsyncChannel.create(4)
+                            AsyncChannel<Integer> b = AsyncChannel.create(4)
+                            ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(a),
+                                                                     ChannelSelect.receive(b))
+                            int n = 0
+                            @Invariant({ n >= 0 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                n = n + 1
+                            }
+                        }
+                    }""")],
 
         // ---------- c12's Butler: deadlock avoidance by resource limiting ----------
         // The dining philosophers' OTHER classic solution. Rather than order the forks (the resource
@@ -47,8 +66,12 @@ class G335_p273_guarded_alt {
         // most n-1 sit, so someone always holds fewer forks than they need and the circular wait never
         // closes. Two philosophers here, so the cap is one. The exits need no guard — a decrement cannot
         // break an upper bound — which is why the book's butler guards only the enters.
+        // The channel-model skips are honest and expected: these channels carry no statically known sends,
+        // so their VALUES are not modelled. The cap is an invariant on the counter, and it proves — pinned
+        // by refuting the failure messages, so the skip can never quietly stand in for a lost proof.
         [group: 'P273 guarded ALT', name: 'c12\'s butler seats at most n-1: the cap proves',
-         *: (WHEN_GUARD ? [ok: true] : [expect: 'Cannot find matching method']),
+         *: (WHEN_GUARD ? [expect: 'Skipped channel verification'] : [expect: 'Cannot find matching method']),
+         refute: ['Cannot prove loop invariant', 'NullPointerException'],
          src: tc("""class C {
                         static void butler() {
                             AsyncChannel<Integer> exit0 = AsyncChannel.create(4)
@@ -245,7 +268,8 @@ class G335_p273_guarded_alt {
         // is what keeps a fair() rotation alive). Same certificate as the positional mask above — that
         // equivalence is the point of pinning both.
         [group: 'P273 guarded ALT', name: 'c05\'s bounded buffer, guarded per offer: the same invariant proves',
-         *: (WHEN_GUARD ? [ok: true] : [expect: 'Cannot find matching method']),
+         *: (WHEN_GUARD ? [expect: 'Skipped channel verification'] : [expect: 'Cannot find matching method']),
+         refute: ['Cannot prove loop invariant', 'NullPointerException'],
          src: tc("""class C {
                         @Requires({ elements >= 1 })
                         static void queue(int elements) {

@@ -349,6 +349,30 @@ class ChannelDesugar {
         null
     }
 
+    /** Phase 280 — the channel an offer names: `receive(c)` or `send(c, v)`, through any `.when { … }`
+     *  wrappers. Null when the offer is not one of those two shapes. */
+    static Expression offerChannelOf(Expression offer) {
+        Expression x = stripCasts(offer)
+        while (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'when') {
+            x = stripCasts(((MethodCallExpression) x).objectExpression)
+        }
+        // RECEIVE offers only. A `send(c, v)` offer is an OUTPUT guard: the select's branch list is read
+        // downstream as the channels it consumes, so counting a send there makes two peers of a mixed
+        // choice look like two receivers on one channel — a linearity violation that is not there. The
+        // racing mixed choice stays the session layer's business (Phase 271), where it already is.
+        Expression args = null
+        if (x instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) x
+            if (sm.method == 'receive' && sm.ownerType?.nameWithoutPackage == 'ChannelSelect') args = sm.arguments
+        } else if (x instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) x
+            if (m.methodAsString == 'receive' && channelOwnerName(m.objectExpression) == 'ChannelSelect') args = m.arguments
+        }
+        if (!(args instanceof TupleExpression)) return null
+        List<Expression> a = ((TupleExpression) args).expressions
+        a.isEmpty() ? null : a.get(0)
+    }
+
     /** One offer's conjoined guard — `receive(c).when { a }.when { b }` is `a && b` — else null when unguarded.
      *  A `when` whose argument is not a single-expression closure yields null too, and the caller then treats
      *  the offer as unmodelled rather than as unguarded (silently dropping a guard would be unsound). */
@@ -3513,7 +3537,23 @@ class ChannelDesugar {
             x = stripCasts(((MethodCallExpression) x).objectExpression)
         }
         List<Expression> args = selectFromArgs(x)
-        if (args == null) return null
+        if (args == null) {
+            // Phase 280 — `ChannelSelect.offers(receive(a), send(b, v), …)`, GROOVY-12323's spelling. Before
+            // this it was not recognised as a select at all, so a HELD one raised an undischargeable
+            // "select() on null object" — the same false positive the conditional select had in Phase 273
+            // and a `new`-bound local in Phase 277, in a third place.
+            List<Expression> offers = selectOffersArgs(x)
+            if (offers == null) return null
+            List<Expression> chans = new ArrayList<Expression>()
+            for (Expression o : offers) {
+                Expression c = offerChannelOf(o)
+                if (c == null) return null              // an offer shape we do not model: not a select we claim
+                chans.add(c)
+            }
+            SelectRef ro = new SelectRef(); ro.chans = chans; ro.policy = policy; ro.fromCall = x
+            ro.fromCalls.add(x)
+            return ro
+        }
         SelectRef r = new SelectRef(); r.chans = args; r.policy = policy; r.fromCall = x
         r.fromCalls.add(x)
         r
