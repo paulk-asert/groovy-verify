@@ -32,7 +32,7 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-**What is in it.** Thirty-three worked examples, every one linked to a case that runs in CI.
+**What is in it.** Thirty-five worked examples, every one linked to a case that runs in CI.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
 ways, with a literal trip count, with a symbolic `n`, and as three `while (true)` processes; client–server;
@@ -48,9 +48,9 @@ the mistake it is there to catch.
 
 **What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
 twenty-two rows of the table below are the JCSP/occam vocabulary the books are built on, and the
-thirty-three examples are the smallest programs that exercise each. Measured against the books' own corpus
+thirty-five examples are the smallest programs that exercise each. Measured against the books' own corpus
 it is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and c02, c03, c05,
-c07, c09, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
+c07, c08, c09, c10, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
 fair-server and token-ring shapes recur across the later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
 not ported: its own vocabulary — `DataClass`, the worker and collector components, the CSPm/FDR
 definitions — has no representation here.
@@ -66,8 +66,8 @@ Four gaps this gallery hit were reported upstream and fixed in `groovy.concurren
 [what the gallery changed upstream](#what-the-gallery-changed-upstream), and the
 [version note](#groovy-version-note) for what each runtime can and cannot certify.
 
-To run one section's cases: `./gradlew verify -Pcases='P246 Kerridge gallery'` (and likewise `P272`
-rendezvous, `P273` guarded ALT, `P277` barriers, `P282` CREW, `P284` shared ends), with `VERIFY_VERBOSE=1`
+To run one section's cases: `./gradlew verify -Pcases='P246 Kerridge gallery'` (and likewise `P255`
+liveness, `P272` rendezvous, `P273` guarded ALT, `P277` barriers, `P282` CREW, `P284` shared ends), with `VERIFY_VERBOSE=1`
 to see the diagnostics and counterexamples rather than one line of pass/fail per case.
 
 ## The vocabulary, mapped
@@ -1048,6 +1048,44 @@ unconstrained — but it would fail as a bare *"assertion may not hold"*, which 
 mistake. Give the client its own reply channel and the same correlation proves, which is the point: the
 refusal is about the *sharing*, not about replies.
 
+## c08's multiplexer — the design that earns the correlation
+
+The canteen above refuses a client that believes the reply it took answers the request it sent. c08 is the
+chapter that shows how to *earn* that belief, and the two are worth reading together because the books put
+them in different places.
+
+`CSMux` selects over the client request channels, and the index it selected is the whole mechanism: it reads
+`inClientChannels[index]`, forwards to a server, waits, and writes the answer back to
+`outClientChannels[index]` — the *originating* client's own channel. Each client has a private reply end, and
+the mux remembers whose turn it was. That is the shape this gallery certifies as the fair server, and with
+it the claim the canteen could not make goes through:
+
+<!-- doclint:case p258-cyclic-streams/the-fair-server-each-client-is-answered-its-own-request-plus-one-claim-based-select -->
+```groovy
+async {                                              // client A
+    int i = 0
+    @Invariant({ i >= 0 })
+    while (true) {
+        reqA.send(i)
+        int r = replyA.first()
+        assert r == i + 1
+        i = i + 1
+    }
+}
+```
+
+`r == i + 1` — *my* answer to *my* request — proves, and it proves through a cycle: the client waits on the
+server while the server waits on the clients, so neither can be read as a producer the other drains. It
+holds by rely/guarantee, each loop reading its partner through the partner's own invariant plus the FIFO
+law of a private channel.
+
+Set that beside the canteen and the design rule falls out as a difference of one channel. Route replies
+through a shared end and correlation is
+[refused](#shared-channel-ends--declared-never-inferred), because any client may take any reply. Give each
+client its own reply end and route by the selected index, and the same correlation is *proved*. c08 calls
+that deadlock avoidance by design; the checker sees it as the difference between a claim that can hold only
+by luck and one the wait-for order and the FIFO law together establish.
+
 ## CREW — shared state that is correct by discipline
 
 Every other shape in this gallery keeps processes apart. c13 does the opposite: one shared map, handed to N
@@ -1212,6 +1250,65 @@ wait needs:
 `seated = 1` — one philosopher already at the table, and the butler about to seat the second. Resource
 limiting only avoids deadlock while the limit is *strictly* below the seat count, and that strictness is
 what the proof turns on.
+
+## The token ring — c10's three versions
+
+c10 teaches deadlock by building a ring that has it, then fixing it twice. Version 0 is the natural way to
+write a ring and the wrong one: every element receives from its predecessor before it sends to its
+successor, so nobody can start.
+
+<!-- doclint:case p255-liveness/a-three-process-ring-with-no-priming-send-deadlocks-in-every-iteration -->
+```groovy
+static void ring() {
+    AsyncChannel<Integer> ab = AsyncChannel.create(4)
+    AsyncChannel<Integer> bc = AsyncChannel.create(4)
+    AsyncChannel<Integer> ca = AsyncChannel.create(4)
+    async {
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            int x = ca.first()
+            ab.send(x)
+            i = i + 1
+        }
+    }
+    async {
+        int i = 0
+        @Invariant({ i >= 0 })
+        while (true) {
+            int x = ab.first()
+            bc.send(x)
+            i = i + 1
+        }
+    }
+    int j = 0
+    @Invariant({ j >= 0 })
+    while (true) {
+        int x = bc.first()
+        ca.send(x)
+        j = j + 1
+    }
+}
+```
+
+The compiler walks the whole ring and ends with the chapter's own lesson:
+
+<!-- doclint:diagnostic p255-liveness/a-three-process-ring-with-no-priming-send-deadlocks-in-every-iteration -->
+```
+[Static type checking] - Process-network deadlock in 'ring': circular wait in every iteration: the receive
+on 'bc' … which waits for the send on 'bc' … which waits for the receive on 'ab' … which waits for the send
+on 'ab' … which waits for the receive on 'ca' … which waits for the send on 'ca' … which waits for the
+first — no message is ever ahead of this cycle (a priming send before one of the loops would break it).
+```
+
+Both of the book's fixes are that parenthesis. Version 1 inserts an extra process carrying a spare packet;
+version 2 primes the ring with an empty one. They differ in packaging and not in principle — each puts **one
+message ahead of the cycle**, which is a negative edge in the lifted wait-for graph and breaks it in every
+round. Add a single `ab.send(0)` before the loops and the same ring is live; the
+[primed cycle](#how-deadlock-liveness-and-starvation-are-certified) then proves what goes round it, and the
+[three-role protocol](#how-deadlock-liveness-and-starvation-are-certified) types the priming as part of the
+conversation. So c10's three versions are one refutation and one fix told twice — which is worth saying
+plainly, because the chapter can otherwise read as three separate ideas.
 
 ## Barriers — c14's phase synchronisation
 
