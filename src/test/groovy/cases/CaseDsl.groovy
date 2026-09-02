@@ -128,6 +128,12 @@ class CaseDsl {
     /** Phase 271 — the hosting runtime carries GROOVY-12323's arbitrated select. */
     static final boolean ARBITRATED_SELECT = verification.VerifyChecker.ARBITRATED_SELECT
 
+    /** Phase 274 — GROOVY-12324's `select(boolean... enabled)` precondition mask (6.0.0-beta-5+). */
+    static final boolean GUARDED_SELECT = verification.VerifyChecker.GUARDED_SELECT
+
+    /** Phase 276 — GROOVY-12326's `receive(c).when { cond }` per-offer guard. */
+    static final boolean WHEN_GUARD = verification.VerifyChecker.WHEN_GUARD
+
     static String tc(String classText) {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
     }

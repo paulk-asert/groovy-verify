@@ -73,6 +73,8 @@ import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.ThrowStatement
 import org.codehaus.groovy.ast.stmt.WhileStatement
+import org.codehaus.groovy.ast.stmt.TryCatchStatement
+import org.codehaus.groovy.ast.stmt.CatchStatement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.syntax.Token
@@ -2314,6 +2316,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // No-op unless the method actually builds a channel pipeline.
             List<Object[]> ghostErrors = new ArrayList<Object[]>()
             Statement deChan = desugarChannels(body, currentChannelBounds, currentScalarTypes, paramNames(node), node, ghostErrors)
+            deChan = desugarGuardedSelects(deChan)      // Phase 275 — a masked select's index, with or without a stream model
             for (Object[] ge : ghostErrors) addStaticTypeError(Reporter.formatGhostMisuse((String) ge[0], (String) ge[1]), (ASTNode) ge[2])   // Phase 259
             if (!deChan.is(body)) {
                 node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deChan)
@@ -4196,6 +4199,288 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         t.transform(e)
     }
 
+
+    // ── Phase 275 — the GUARDED ALT's index, independent of the stream model ──────────────────────
+    /**
+     * Bind {@code r.index} for a MASKED select (GROOVY-12324's {@code select(boolean... enabled)}).
+     *
+     * <p>The stream machinery cannot carry this one. {@code rewriteChStatements} does not descend into
+     * {@code while} bodies, and {@link #loopingAlt} is gated on a {@code ConsumerInfo} built from per-branch
+     * streams — but the shape c05 is written in is a SERVER loop whose branches have no statically known
+     * producers at all, and whose invariant is about a local counter rather than about values. So the index
+     * is bound here instead, by a plain body-wide desugaring that needs no channel model:
+     *
+     * <pre>
+     *   ChannelSelect.Result r = await alt.select(counter &lt; cap, counter &gt; 0)
+     *     ⇒  def r$index = $channelSelect.guarded(0, counter &lt; cap, 1, counter &gt; 0)
+     *   r.index  ⇒  r$index
+     * </pre>
+     *
+     * The declaration stays where it was — inside the loop body — so the flags are re-translated each
+     * iteration against that iteration's bindings, which is the whole point of a guard. The Encoder reads
+     * the marker as "the committed index is one whose flag holds", and the existing if/else ITE machinery
+     * then carries the arms. Fires ONLY on a select that actually carries flags, so an unmasked ALT keeps
+     * the stream model's richer treatment (values included) untouched.
+     */
+    private static Statement desugarGuardedSelects(Statement body) {
+        if (!(body instanceof BlockStatement)) return body
+        Map<String, List<Expression>> guards = new LinkedHashMap<String, List<Expression>>()   // select var → per-offer guards
+        collectHeldOfferGuards(body, guards)
+        Map<String, String> bound = new LinkedHashMap<String, String>()          // result var → its $index var
+        collectMaskedSelects(body, bound, guards)
+        if (bound.isEmpty()) return body
+        return rewriteGuardedStmt(body, bound, guards)
+    }
+
+    /** Phase 276 — select instances whose OFFERS carry guards, so a held `alt` declared outside the loop
+     *  still tells the loop body what each branch is guarded by. */
+    private static void collectHeldOfferGuards(Statement body, Map<String, List<Expression>> out) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    List<Expression> g = selectOfferGuards(de.rightExpression)
+                    if (g != null) out.put(((VariableExpression) de.leftExpression).name, g)
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    /** Result vars declared by an awaited select that is guarded at all — by positional flags
+     *  (GROOVY-12324) or per-offer (GROOVY-12326), the two spellings of the same thing. */
+    private static void collectMaskedSelects(Statement body, Map<String, String> out, Map<String, List<Expression>> guards) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression &&
+                    guardedSelectArity(de.rightExpression, guards) > 0) {
+                    String n = ((VariableExpression) de.leftExpression).name
+                    out.put(n, n + '$index')
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
+    /** The branch count of an awaited GUARDED select, or 0 when it carries no guard of either kind. */
+    private static int guardedSelectArity(Expression rhs, Map<String, List<Expression>> guards) {
+        List<Expression> mask = awaitedSelectMask(rhs)
+        if (mask != null && !mask.isEmpty()) return mask.size()
+        List<Expression> og = offerGuardsFor(rhs, guards)
+        og == null ? 0 : og.size()
+    }
+
+    /** The per-offer guards behind an awaited select — through a held instance, or inline. */
+    private static List<Expression> offerGuardsFor(Expression rhs, Map<String, List<Expression>> guards) {
+        MethodCallExpression sel = awaitedSelectCall(rhs)
+        if (sel == null) return null
+        Expression recv = stripCasts(sel.objectExpression)
+        if (recv instanceof VariableExpression) return guards == null ? null : guards.get(((VariableExpression) recv).name)
+        selectOfferGuards(recv)
+    }
+
+    /** `r.index` / `r.getIndex()` → `r$index`, for the result vars bound above. */
+    private static Expression rewriteGuardedExpr(Expression e, Map<String, String> bound) {
+        if (e == null) return null
+        ExpressionTransformer t = new ExpressionTransformer() {
+            @Override Expression transform(Expression expr) {
+                if (expr instanceof PropertyExpression) {
+                    PropertyExpression pe = (PropertyExpression) expr
+                    Expression o = stripCasts(pe.objectExpression)
+                    if (o instanceof VariableExpression && bound.containsKey(((VariableExpression) o).name) &&
+                        pe.propertyAsString == 'index') return new VariableExpression(bound.get(((VariableExpression) o).name))
+                }
+                if (expr instanceof MethodCallExpression) {
+                    MethodCallExpression m = (MethodCallExpression) expr
+                    Expression o = stripCasts(m.objectExpression)
+                    if (o instanceof VariableExpression && bound.containsKey(((VariableExpression) o).name) &&
+                        m.methodAsString == 'getIndex' && noArgs(m)) return new VariableExpression(bound.get(((VariableExpression) o).name))
+                }
+                expr.transformExpression(this)
+            }
+        }
+        t.transform(e)
+    }
+
+    /** Phase 276 — GROOVY-12326's offer-level guard. The arguments of `ChannelSelect.offers(...)`, else null. */
+    private static List<Expression> selectOffersArgs(Expression e) {
+        Expression x = stripCasts(e)
+        Expression args = null
+        if (x instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) x
+            if (sm.method == 'offers' && sm.ownerType?.nameWithoutPackage == 'ChannelSelect') args = sm.arguments
+        } else if (x instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) x
+            if (m.methodAsString == 'offers' && channelOwnerName(m.objectExpression) == 'ChannelSelect') args = m.arguments
+        }
+        (args instanceof TupleExpression) ? ((TupleExpression) args).expressions : null
+    }
+
+    /** The single expression a `{ … }` guard closure evaluates to, else null (a block guard is unmodelled). */
+    private static Expression guardClosureBody(Expression e) {
+        Expression x = stripCasts(e)
+        if (!(x instanceof ClosureExpression)) return null
+        Statement code = ((ClosureExpression) x).code
+        if (code instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) code).statements
+            if (ss.size() != 1) return null
+            code = ss.get(0)
+        }
+        if (code instanceof ExpressionStatement) return ((ExpressionStatement) code).expression
+        if (code instanceof ReturnStatement) return ((ReturnStatement) code).expression
+        null
+    }
+
+    /** One offer's conjoined guard — `receive(c).when { a }.when { b }` is `a && b` — else null when unguarded.
+     *  A `when` whose argument is not a single-expression closure yields null too, and the caller then treats
+     *  the offer as unmodelled rather than as unguarded (silently dropping a guard would be unsound). */
+    private static Expression offerGuardOf(Expression offer, boolean[] unmodelled) {
+        Expression x = stripCasts(offer)
+        List<Expression> gs = new ArrayList<Expression>()
+        while (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'when') {
+            MethodCallExpression m = (MethodCallExpression) x
+            List<Expression> a = (m.arguments instanceof TupleExpression) ? ((TupleExpression) m.arguments).expressions : null
+            if (a == null || a.size() != 1) { unmodelled[0] = true; return null }
+            Expression body = guardClosureBody(a.get(0))
+            if (body == null) { unmodelled[0] = true; return null }
+            gs.add(0, body)
+            x = stripCasts(m.objectExpression)
+        }
+        if (gs.isEmpty()) return null
+        Expression conj = gs.get(0)
+        for (int i = 1; i < gs.size(); i++) {
+            conj = new BinaryExpression(conj, Token.newSymbol(Types.LOGICAL_AND, -1, -1), gs.get(i))
+        }
+        conj
+    }
+
+    /** Per-offer guards of a select expression, positionally; null when it is not an `offers(...)` select or
+     *  carries a guard outside the fragment. Entries are null for unguarded offers. */
+    private static List<Expression> selectOfferGuards(Expression selectExpr) {
+        Expression x = stripCasts(selectExpr)
+        while (x instanceof MethodCallExpression &&
+               (((MethodCallExpression) x).methodAsString == 'fair' || ((MethodCallExpression) x).methodAsString == 'random') &&
+               noArgs((MethodCallExpression) x)) {
+            x = stripCasts(((MethodCallExpression) x).objectExpression)
+        }
+        List<Expression> offers = selectOffersArgs(x)
+        if (offers == null) return null
+        boolean[] bad = new boolean[1]
+        List<Expression> out = new ArrayList<Expression>()
+        for (Expression o : offers) out.add(offerGuardOf(o, bad))
+        if (bad[0]) return null
+        boolean any = false
+        for (Expression g : out) if (g != null) any = true
+        any ? out : null
+    }
+
+    /** Phase 275 — carry a loop's spec across the rewrite, over the rewritten statements. */
+    private static void rebindLoopSpec(Statement from, Statement to, Map<String, String> bound, Map<String, List<Expression>> guards) {
+        Object o = from.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (!(o instanceof LoopSpec)) return
+        LoopSpec sp = (LoopSpec) o, ns = new LoopSpec()
+        ns.invariants = sp.invariants.collect { Expression e -> rewriteGuardedExpr(e, bound) }
+        ns.variant = sp.variant == null ? null : rewriteGuardedExpr(sp.variant, bound)
+        ns.guard = sp.guard == null ? null : rewriteGuardedExpr(sp.guard, bound)
+        ns.body = sp.body.collect { Statement x -> rewriteGuardedStmt(x, bound, guards) }
+        ns.init = sp.init == null ? null : sp.init.collect { Statement x -> rewriteGuardedStmt(x, bound, guards) }
+        ns.forInVar = sp.forInVar
+        ns.forInBind = sp.forInBind == null ? null : rewriteGuardedStmt(sp.forInBind, bound, guards)
+        ns.isDoWhile = sp.isDoWhile
+        ns.autoInvariantOnly = sp.autoInvariantOnly
+        to.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, ns)
+    }
+
+    /** The statement walk: replace the masked-select declaration, rewrite `r.index` everywhere else. */
+    private static Statement rewriteGuardedStmt(Statement st, Map<String, String> bound, Map<String, List<Expression>> guards) {
+        if (st == null || st instanceof EmptyStatement) return st
+        if (st instanceof BlockStatement) {
+            BlockStatement b = (BlockStatement) st
+            List<Statement> out = new ArrayList<Statement>()
+            for (Statement s : b.statements) out.add(rewriteGuardedStmt(s, bound, guards))
+            BlockStatement nb = new BlockStatement(out, b.variableScope)
+            nb.setSourcePosition(b); return nb
+        }
+        if (st instanceof WhileStatement) {
+            WhileStatement w = (WhileStatement) st
+            WhileStatement nw = new WhileStatement(
+                new BooleanExpression(rewriteGuardedExpr(w.booleanExpression.expression, bound)),
+                rewriteGuardedStmt(w.loopBlock, bound, guards))
+            nw.setSourcePosition(w); nw.copyNodeMetaData(w)
+            // The LoopSpec rides as node metadata and holds its OWN statement list — the one the loop
+            // encoder actually executes. Copying the metadata onto a rebuilt loop would carry the stale
+            // pre-rewrite body, so the spec is rebuilt over the rewritten statements too.
+            rebindLoopSpec(w, nw, bound, guards)
+            return nw
+        }
+        if (st instanceof IfStatement) {
+            IfStatement i = (IfStatement) st
+            IfStatement ni = new IfStatement(
+                new BooleanExpression(rewriteGuardedExpr(i.booleanExpression.expression, bound)),
+                rewriteGuardedStmt(i.ifBlock, bound, guards),
+                i.elseBlock == null ? EmptyStatement.INSTANCE : rewriteGuardedStmt(i.elseBlock, bound, guards))
+            ni.setSourcePosition(i); ni.copyNodeMetaData(i); return ni
+        }
+        if (st instanceof ExpressionStatement) {
+            Expression e = ((ExpressionStatement) st).expression
+            if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
+                DeclarationExpression de = (DeclarationExpression) e
+                String n = ((VariableExpression) de.leftExpression).name
+                // Phase 276 — the two spellings of one guard: a positional flag (GROOVY-12324) and a
+                // per-offer `when` (GROOVY-12326). The runtime conjoins them, so the model does too.
+                List<Expression> mask = awaitedSelectMask(de.rightExpression)
+                List<Expression> og = offerGuardsFor(de.rightExpression, guards)
+                int arity = mask != null && !mask.isEmpty() ? mask.size() : (og == null ? 0 : og.size())
+                if (bound.containsKey(n) && arity > 0 && (og == null || og.size() == arity)) {
+                    List<Expression> gargs = new ArrayList<Expression>()
+                    for (int i = 0; i < arity; i++) {
+                        Expression flag = (mask != null && i < mask.size()) ? mask.get(i) : null
+                        Expression guard = og == null ? null : og.get(i)
+                        Expression term = flag == null ? guard
+                            : guard == null ? flag
+                            : new BinaryExpression(flag, Token.newSymbol(Types.LOGICAL_AND, -1, -1), guard)
+                        if (term == null) term = new ConstantExpression(true, true)
+                        gargs.add(new ConstantExpression(i, true))
+                        gargs.add(rewriteGuardedExpr(term, bound))
+                    }
+                    MethodCallExpression call = new MethodCallExpression(
+                        new VariableExpression(Encoder.CHANNEL_SELECT_MARKER), 'guarded', new ArgumentListExpression(gargs))
+                    call.setSourcePosition(de)
+                    DeclarationExpression nd = new DeclarationExpression(new VariableExpression(bound.get(n)),
+                        Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), call)
+                    nd.setSourcePosition(de)
+                    ExpressionStatement ns = new ExpressionStatement(nd)
+                    ns.setSourcePosition(st); return ns
+                }
+            }
+            ExpressionStatement ns = new ExpressionStatement(rewriteGuardedExpr(e, bound))
+            ns.setSourcePosition(st); ns.copyNodeMetaData(st); return ns
+        }
+        if (st instanceof TryCatchStatement) {           // groovy-contracts wraps an @Invariant loop in one
+            TryCatchStatement t = (TryCatchStatement) st
+            TryCatchStatement nt = new TryCatchStatement(rewriteGuardedStmt(t.tryStatement, bound, guards),
+                t.finallyStatement == null ? EmptyStatement.INSTANCE : rewriteGuardedStmt(t.finallyStatement, bound, guards))
+            for (CatchStatement c : t.catchStatements) {
+                CatchStatement nc = new CatchStatement(c.variable, rewriteGuardedStmt(c.code, bound, guards))
+                nc.setSourcePosition(c); nt.addCatch(nc)
+            }
+            nt.setSourcePosition(t); nt.copyNodeMetaData(t); return nt
+        }
+        if (st instanceof DoWhileStatement) {
+            DoWhileStatement w = (DoWhileStatement) st
+            DoWhileStatement nw = new DoWhileStatement(
+                new BooleanExpression(rewriteGuardedExpr(w.booleanExpression.expression, bound)),
+                rewriteGuardedStmt(w.loopBlock, bound, guards))
+            nw.setSourcePosition(w); nw.copyNodeMetaData(w); rebindLoopSpec(w, nw, bound, guards); return nw
+        }
+        if (st instanceof ForStatement) {
+            ForStatement f = (ForStatement) st
+            ForStatement nf = new ForStatement(f.variable, rewriteGuardedExpr(f.collectionExpression, bound),
+                rewriteGuardedStmt(f.loopBlock, bound, guards))
+            nf.setSourcePosition(f); nf.copyNodeMetaData(f); return nf
+        }
+        st
+    }
+
     // ── Phase 119 — async-channel pipeline desugaring ───────────────────────────────────────────
     /** Rewrite an `AsyncChannel` network into plain single-assignment code; returns the body unchanged
      *  if it builds no channel or exceeds the model (the guard's verdicts are reported loudly by
@@ -4563,6 +4848,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             private void afterSelect(String name) {
                 if (selected.contains(name)) flag(name, 'is received from after an ALT that may have consumed its element (a one-shot ALT must be the last receive on each of its channels)')
             }
+            /** Phase 273 — a guarded ALT whose arms do not agree positionally: `r.index` would name a
+             *  different channel depending on which arm built the select, so no branch-wise spec means
+             *  anything. Named exactly, because it is the API's own gap: JCSP's `select(preCon)` masks a
+             *  guard while KEEPING its index, and a positional `ChannelSelect.from(…)` cannot. */
+            private void guardedMismatch(SelectRef r) {
+                for (Expression a : r.chans) {
+                    String n = chanNameOf(a)
+                    if (n != null && ch.contains(n)) {
+                        flag(n, "is a branch of a guarded ALT whose branch POSITIONS differ between the arms of its " +
+                                "condition, so r.index would not name the same channel in every arm. Offer the branches " +
+                                "in the same positions (a guarded ALT may drop a branch only from the END) — " +
+                                "ChannelSelect.from(…) is positional, where JCSP's select(preCon) masks a guard while " +
+                                "keeping its index; this API has no equivalent")
+                        return
+                    }
+                }
+            }
             private void fromOutsideShape(Expression call) {
                 List<Expression> args = selectFromArgs(call)
                 if (args == null || sanctionedFrom.contains(stripCasts(call))) return
@@ -4594,9 +4896,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 super.visitVariableExpression(ve)
             }
             @Override void visitDeclarationExpression(DeclarationExpression de) {
+                Expression rhs0 = stripCasts(de.rightExpression)          // Phase 273 — the guarded-ALT index check
+                if (rhs0 instanceof TernaryExpression) {
+                    SelectRef gr = selectChainInfo(rhs0)
+                    if (gr != null && gr.indexUnstable) guardedMismatch(gr)
+                }
                 // Phase 257 — a held select instance's declaration: its from() is sanctioned; the var must only be selected on
                 if (de.leftExpression instanceof VariableExpression && streamScan.selectRefs.containsKey(((VariableExpression) de.leftExpression).name)) {
-                    sanctionedFrom.add(streamScan.selectRefs.get(((VariableExpression) de.leftExpression).name).fromCall)
+                    sanctionedFrom.addAll(streamScan.selectRefs.get(((VariableExpression) de.leftExpression).name).fromCalls)
                     de.rightExpression.visit(this)
                     return
                 }
@@ -4616,7 +4923,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         selected.add(name)
                     }
                     if (first != null) selectResult.put(((VariableExpression) de.leftExpression).name, first)
-                    if (!ref.held) sanctionedFrom.add(ref.fromCall)
+                    if (!ref.held) sanctionedFrom.addAll(ref.fromCalls)
                     de.rightExpression.visit(this)          // still walk it (nested arms / other channels), the from() sanctioned
                     return
                 }
@@ -5001,6 +5308,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  `r.index` / `r.value` (and the getters) then read the two shadows. One-shot: the guard has
      *  required the ALT to be the last receive on each of its channels, so no cursor advances. */
     private static void rewriteSelect(String name, List<Expression> alt, DeclarationExpression de, ChanRewrite rw, List<Statement> out) {
+        // Phase 275 — a MASKED select (GROOVY-12324): the branch the runtime commits is one whose flag
+        // holds, and that is exactly the fact a guarded loop's invariant turns on ("the PUT arm runs only
+        // while there is room"). Emitted over EVERY branch with its flag, not only the branches with an
+        // element left: the mask is about enablement, and readiness — where it is statically known at all —
+        // is the existing stream machinery's business. Modelling more indices than can really occur is a
+        // sound over-approximation for the safety claims this proves.
+        List<Expression> mask = awaitedSelectMask(de.rightExpression)
+        if (mask != null && mask.size() == alt.size()) {
+            List<Expression> gargs = new ArrayList<Expression>()
+            for (int i = 0; i < alt.size(); i++) {
+                gargs.add(new ConstantExpression(i, true))
+                gargs.add(rewriteChExpr(mask.get(i), rw))
+            }
+            MethodCallExpression guardedCall = new MethodCallExpression(
+                new VariableExpression(Encoder.CHANNEL_SELECT_MARKER), 'guarded', new ArgumentListExpression(gargs))
+            guardedCall.setSourcePosition(de)
+            DeclarationExpression dg = new DeclarationExpression(new VariableExpression(name + '$index'),
+                Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), guardedCall)
+            dg.setSourcePosition(de)
+            rw.emit(out, new ExpressionStatement(dg))
+            rw.selectVars.add(name)
+            return
+        }
         List<Expression> idx = new ArrayList<Expression>()
         List<Expression> valueArgs = new ArrayList<Expression>()
         String indexName = name + '$index', valueName = name + '$value'
@@ -5044,6 +5374,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** The channel arguments of a `ChannelSelect.from(c0, c1, …)` call (either post-STC shape), else null. */
+    /** Phase 273 — the variable name a select argument names, for the positional-agreement check. */
+    private static String chanNameOf(Expression e) {
+        Expression x = stripCasts(e)
+        x instanceof VariableExpression ? ((VariableExpression) x).name : null
+    }
+
     private static List<Expression> selectFromArgs(Expression e) {
         Expression x = stripCasts(e)
         Expression args = null
@@ -5059,6 +5395,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** `await ChannelSelect.from(c…).select()` → the channel arguments; any other expression → null. */
+    /** Phase 275 — the precondition flags of an awaited `…select(m0, m1, …)` (GROOVY-12324), else null.
+     *  One flag per offer, in offer order; a bare `select()` has none. */
+    private static List<Expression> awaitedSelectMask(Expression rhs) {
+        MethodCallExpression sel = awaitedSelectCall(rhs)     // one matcher, not a parallel one
+        if (sel == null) return null
+        Expression args = sel.arguments
+        if (!(args instanceof TupleExpression)) return null
+        List<Expression> flags = ((TupleExpression) args).expressions
+        flags.isEmpty() ? null : flags
+    }
+
     private static List<Expression> awaitedSelectArgs(Expression rhs) { awaitedSelectArgs(rhs, null) }
 
     private static List<Expression> awaitedSelectArgs(Expression rhs, Map<String, SelectRef> selectVars) {
@@ -6225,7 +6572,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 l.add(new ConstantExpression(i, true)); l.add(new VariableExpression(listOf(c))); l.add(new VariableExpression(c + '$c'))
             }
         }
-        MethodCallExpression readyCall = new MethodCallExpression(marker, 'ready', new ArgumentListExpression(readyArgs))
+        // Phase 275 — GROOVY-12324's mask, if this select carries one: the chosen branch must be enabled
+        // as well as ready, which is the fact a guarded loop's invariant turns on.
+        List<Expression> gmask = awaitedSelectMask(de.rightExpression)
+        String readyOp = 'ready'
+        if (gmask != null && gmask.size() == ci.altChans.size()) {
+            readyOp = 'readyGuarded'
+            List<Expression> ga = new ArrayList<Expression>()
+            for (int i = 0; i < ci.altChans.size(); i++) {
+                String c = ci.altChans.get(i)
+                ga.add(new ConstantExpression(i, true)); ga.add(new VariableExpression(listOf(c)))
+                ga.add(new VariableExpression(c + '$c')); ga.add(rewriteChExpr(gmask.get(i), rw))
+            }
+            readyArgs = ga
+        }
+        MethodCallExpression readyCall = new MethodCallExpression(marker, readyOp, new ArgumentListExpression(readyArgs))
         readyCall.setSourcePosition(de)
         DeclarationExpression d1 = new DeclarationExpression(new VariableExpression(r + '$index'), Token.newSymbol(Types.ASSIGN, de.lineNumber, de.columnNumber), readyCall)
         d1.setSourcePosition(de)
@@ -7094,6 +7455,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 271 — the runtime hosting the checker carries GROOVY-12323's arbitrated select (offers/send/receive). */
     static final boolean ARBITRATED_SELECT = probeArbitratedSelect()
 
+    /** Phase 274 — does the hosting runtime carry GROOVY-12324's guarded select? */
+    static final boolean GUARDED_SELECT = probeGuardedSelect()
+
+    /** Phase 276 — …and GROOVY-12326's per-offer `when` guard? */
+    static final boolean WHEN_GUARD = probeWhenGuard()
+
     private static boolean probeArbitratedSelect() {
         try {
             Class<?> cs = Class.forName('groovy.concurrent.ChannelSelect')
@@ -7106,18 +7473,60 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         try { Class.forName('groovy.concurrent.ChannelSelect').getMethod('fair'); return true } catch (Throwable ignored) { return false }
     }
 
+    /** Phase 274 — GROOVY-12324's per-select precondition mask: `select(boolean... enabled)`, one flag per
+     *  offer, indices preserved. The guarded ALT of occam and JCSP, at last spellable. */
+    private static boolean probeGuardedSelect() {
+        try { Class.forName('groovy.concurrent.ChannelSelect').getMethod('select', boolean[].class); return true }
+        catch (Throwable ignored) { return false }
+    }
+
+    /** Phase 276 — GROOVY-12326's per-offer guard: `receive(c).when { cond }`, the flag bound to its branch
+     *  by syntax rather than by position, and consulted once per select so a held instance stays usable. */
+    private static boolean probeWhenGuard() {
+        try { Class.forName('groovy.concurrent.ChannelSelect$Offer').getMethod('when', java.util.function.BooleanSupplier.class); return true }
+        catch (Throwable ignored) { return false }
+    }
+
     /** Phase 257 — a `ChannelSelect` chain: its channel args, its policy, and whether it is a held instance. */
     private static class SelectRef {
         List<Expression> chans
         String policy = 'priority'       // priority | fair | random
         boolean held                     // `val alt = ChannelSelect.from(..)[.fair()]` before the loop, `alt.select()` inside
+        boolean guarded                  // Phase 273 — built by a condition (JCSP's precondition mask), so a branch may not be offered
+        boolean indexUnstable            // Phase 273 — …and its arms disagree on WHICH channel is branch i
         Expression fromCall              // the from(..) call (identity)
+        List<Expression> fromCalls = new ArrayList<Expression>()   // Phase 273 — every arm's from() (one, or both of a guarded ternary)
         String varName                   // the held var, when held
     }
 
     /** `ChannelSelect.from(c…)[.fair()|.random()]` → its SelectRef; anything else → null. */
     private static SelectRef selectChainInfo(Expression e) {
         Expression x = stripCasts(e)
+        // Phase 273 — a GUARDED ALT: `counter == 0 ? from(put) : from(put, get)`, the varargs spelling of
+        // JCSP's precondition mask (`select(preCon)` with preCon[GET] = counter > 0). Both arms must be
+        // select chains of the same policy, and — the condition that makes `r.index` mean anything — the
+        // channel lists must AGREE POSITIONALLY as far as they go, so a branch keeps its index whether or
+        // not it is offered. (JCSP's mask keeps indices stable by construction; a positional `from(…)`
+        // does not, so the checker has to demand it.) The union is the ALT's branch list.
+        if (x instanceof TernaryExpression) {
+            TernaryExpression t = (TernaryExpression) x
+            SelectRef a = selectChainInfo(t.trueExpression), b = selectChainInfo(t.falseExpression)
+            if (a == null || b == null || a.policy != b.policy) return null
+            List<Expression> wide = a.chans.size() >= b.chans.size() ? a.chans : b.chans
+            List<Expression> narrow = a.chans.size() >= b.chans.size() ? b.chans : a.chans
+            boolean unstable = a.indexUnstable || b.indexUnstable
+            for (int i = 0; i < narrow.size(); i++) {
+                String n = chanNameOf(narrow.get(i))
+                if (n == null || n != chanNameOf(wide.get(i))) { unstable = true; break }
+            }
+            // Still a ChannelSelect either way — recognising the SHAPE is what keeps a bogus "select() on
+            // null object" off a perfectly good guarded ALT. Whether its indices mean anything is a separate
+            // verdict, carried by indexUnstable and reported on its own.
+            SelectRef r = new SelectRef(); r.chans = wide; r.policy = a.policy; r.fromCall = a.fromCall
+            r.fromCalls.addAll(a.fromCalls); r.fromCalls.addAll(b.fromCalls)
+            r.guarded = true; r.indexUnstable = unstable
+            return r
+        }
         String policy = 'priority'
         while (x instanceof MethodCallExpression && (((MethodCallExpression) x).methodAsString == 'fair' || ((MethodCallExpression) x).methodAsString == 'random') && noArgs((MethodCallExpression) x)) {
             policy = ((MethodCallExpression) x).methodAsString
@@ -7126,6 +7535,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Expression> args = selectFromArgs(x)
         if (args == null) return null
         SelectRef r = new SelectRef(); r.chans = args; r.policy = policy; r.fromCall = x
+        r.fromCalls.add(x)
         r
     }
 
@@ -7158,7 +7568,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         selectChainInfo(x)
     }
 
-    /** The `select()` call inside `await …`, else null. */
+    /** The `select()` call inside `await …`, else null. Phase 275 — arguments are admitted, because
+     *  GROOVY-12324's `select(boolean... enabled)` carries one precondition flag per offer; before it,
+     *  any argument meant "not the shape we model" and the ALT was invisible to every pass. */
     private static MethodCallExpression awaitedSelectCall(Expression rhs) {
         Expression x = stripCasts(rhs)
         Expression inner = null
@@ -7166,7 +7578,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         else if (x instanceof StaticMethodCallExpression && ((StaticMethodCallExpression) x).method == 'await') inner = ((StaticMethodCallExpression) x).arguments
         if (!(inner instanceof TupleExpression) || ((TupleExpression) inner).expressions.size() != 1) return null
         Expression sel = stripCasts(((TupleExpression) inner).expressions.get(0))
-        (sel instanceof MethodCallExpression && ((MethodCallExpression) sel).methodAsString == 'select' && noArgs((MethodCallExpression) sel)) ? (MethodCallExpression) sel : null
+        (sel instanceof MethodCallExpression && ((MethodCallExpression) sel).methodAsString == 'select') ? (MethodCallExpression) sel : null
     }
 
     /** Phase 252 — node metadata on a synthesized {@code assert}: the sentence the diagnostic reports instead of the condition text. */

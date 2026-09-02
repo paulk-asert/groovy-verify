@@ -4817,6 +4817,42 @@ class Encoder implements TheoryApi {
             if (!disj.isEmpty()) session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
             return fresh
         }
+        // Phase 275 — GROOVY-12324's precondition mask: guarded(i0, m0, i1, m1, …). The committed index is
+        // one whose flag holds, which is the whole meaning of `select(boolean... enabled)`. Asserted as an
+        // assumption because the runtime cannot return a disabled branch: with EVERY flag false it throws
+        // (IllegalStateException) rather than choosing, so the continuation this models is not reached —
+        // sound for the partial-correctness reading the rest of the checker takes on a throwing operation.
+        if (mm == 'guarded') {
+            if (args.isEmpty() || args.size() % 2 != 0) return null
+            Object fresh = session.intVar('select#' + (++selectCounter))
+            List<Object> disj = new ArrayList<Object>()
+            for (int i = 0; i < args.size(); i += 2) {
+                Object c = translate(args.get(i))
+                Object flag = translateGoal(args.get(i + 1))
+                if (c == null || flag == null) return null
+                disj.add(session.and([session.eq(fresh, c), flag]))
+            }
+            session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
+            return fresh
+        }
+        // Phase 275 — readiness AND the mask: readyGuarded(i, list, cursor, flag, …). A branch can be
+        // committed only if it still has an element to give AND its precondition holds, which is what
+        // `select(boolean... enabled)` means inside a loop that recomputes its flags each round.
+        if (mm == 'readyGuarded') {
+            if (args.isEmpty() || args.size() % 4 != 0) return null
+            Object fresh = session.intVar('select#' + (++selectCounter))
+            List<Object> disj = new ArrayList<Object>()
+            for (int i = 0; i < args.size(); i += 4) {
+                Object c = translate(args.get(i))
+                String list = listName(args.get(i + 1))
+                Object cur = translate(args.get(i + 2))
+                Object flag = translateGoal(args.get(i + 3))
+                if (c == null || list == null || cur == null || flag == null) return null
+                disj.add(session.and([session.eq(fresh, c), session.lt(cur, sizeOf(list)), flag]))
+            }
+            session.assertExpr(disj.size() == 1 ? disj.get(0) : session.or(disj))
+            return fresh
+        }
         if (mm == 'value') {                 // value(idx, i0, h0, i1, h1, …)
             if (args.size() < 3 || (args.size() - 1) % 2 != 0) return null
             Object idx = translate(args.get(0))

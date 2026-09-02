@@ -12371,6 +12371,118 @@ in the book at all.
 
 ---
 
+## Phase 273 — The guarded ALT: c05's precondition mask, as far as the API carries it  *(shipped — slice 34)*
+
+JCSP writes the bounded buffer as `qAlt.priSelect(preCon)` with `preCon[PUT] = counter < elements`: a guard
+is masked OFF while **keeping its index**. `ChannelSelect.from(…)` is positional and has no mask, so the
+idiom spells as a condition choosing the argument list. Three results, one of them a finding.
+
+**A false positive removed.** A conditionally-built select was an opaque object, so `alt.select()` raised
+"Cannot invoke method select() on null object — obligation: alt != null", which nothing could discharge. The
+shape is now recognised (`selectChainInfo` handles a ternary whose arms are select chains of one policy) and
+every arm's `from()` is sanctioned, so its channels are no longer flagged as escaping the supported shapes.
+
+**The index-stability rule.** A guarded ALT may drop a branch only from the END. Otherwise `r.index` names a
+different channel depending on which arm built the select, and no branch-wise spec means anything; the
+mismatch is refused naming the gap in the API itself. This bites c05's own `Queue`: it masks PUT when the
+buffer is full, which moves GET from branch 1 to branch 0 — so the book's canonical example is **not
+expressible** here. That is a third candidate finding of the same kind as GROOVY-12320/12323 — a
+`select(boolean[] enabled)` (or `.disable(i)`) would keep indices stable and make the whole c05/c09/c12/c16
+family portable. Not yet filed: it wants a reproduction and a draft first.
+
+**What is deliberately not claimed.** The guard's own restriction is NOT modelled — the branch set is
+over-approximated by the union of the arms. That is sound for proving (a spec true of every branch in the
+union is true of any subset) and incomplete for refuting, and it is why c05's bounded-buffer *invariant* —
+which needs the masked branch excluded to keep `0 <= counter <= elements` — is not proved here. Modelling it
+means constraining `r.index` by the arm condition and lifting that into Phase 253's looping-ALT model, where
+the ready-branch set is currently static. That is the next slice, and it is the real c05.
+
+Cases (G335, new group, 3): the end-dropping guarded ALT recognised with its union spec proved; the union
+model shown non-vacuous (the stronger single-branch claim refutes); c05's first-guard mask refused with the
+index reason. Both refutation cases carry `refute: 'NullPointerException'`, pinning the false positive out.
+Both runtimes green, 1970; `check` green.
+
+---
+
+## Phases 274-275 — GROOVY-12324 lands, and c05's bounded buffer proves  *(shipped — slices 35-36)*
+
+Phase 273's finding went upstream and was merged as GROOVY-12324, and the API is the proposal verbatim:
+`select(boolean... enabled)`, one flag per offer in offer order, indices preserved, `IllegalArgumentException`
+on a length mismatch — and, for the all-disabled case, the *Ada* answer rather than JCSP's silent hang
+(`IllegalStateException("every offer of the select is disabled")` on the returned awaitable). `FAIR` rotates
+over enabled indices with `lastWinner` still absolute, so the rotation bound survives masking. The optional
+complement landed too: `Result.getChannel()`, identity beside the positional index. The javadoc's own worked
+example is the bounded buffer.
+
+`GUARDED_SELECT` probes for it (`ChannelSelect.select(boolean[])`), mirrored into `CaseDsl` beside
+`CLAIM_SELECT` / `ARBITRATED_SELECT`.
+
+**What this fixes, immediately:** every structural refusal Phase 273 had to make. c05's `Queue` now passes
+the shape checks whole — no null-deref on the held instance, no "outside the supported shapes", and no index
+instability, because the mask keeps a branch's position instead of moving it. The Phase 273 refusal text is
+still right for the *ternary* spelling, which remains the wrong way to write it.
+
+**The mask, modelled — c05 proves (Phase 275).** The remaining half landed too. `$channelSelect.guarded(
+i0, m0, …)` binds a fresh index with `OR_i (v == i AND m_i)`: the committed branch is one whose flag holds,
+which is the whole meaning of `select(boolean... enabled)`. It is emitted by a body-wide desugaring,
+`desugarGuardedSelects`, deliberately NOT through the stream machinery — `rewriteChStatements` does not
+descend into `while` bodies and `loopingAlt` is gated on a `ConsumerInfo` built from per-branch streams,
+whereas c05's `Queue` is a SERVER loop with no statically known producers whose invariant is about a local
+counter. The pass fires only on a select that actually carries flags, so every existing ALT keeps the
+stream model's richer treatment untouched.
+
+Three things had to be right, and two were found the hard way. `awaitedSelectCall` required `noArgs`, which
+alone made a masked select invisible to every pass. And a rebuilt loop must carry a REBUILT `LoopSpec`: the
+spec rides as node metadata with its own statement list — the one the loop encoder actually executes — so
+`copyNodeMetaData` onto a rewritten loop silently carried the stale pre-rewrite body, and the rewrite looked
+like it had done nothing.
+
+Cases (G335, 3 more): c05's bounded buffer proves `0 <= counter <= elements`; and the two ways to get it
+wrong are refuted at the arm the missing guard would have blocked — PUT always enabled overflows
+(`counter = 1, elements = 1`, the buffer exactly full with PUT still offered), GET always enabled underflows
+(`counter = 0`). Safety only: the `while (true)` is the book's own, and a select whose flags are all false
+throws at runtime (GROOVY-12324's `IllegalStateException`), so that is modelled as a path not reached.
+
+One case (G335) pinned the frontier before this landed; it is now the proving case.
+
+**Build note:** the 2026-09-02 snapshot needs a forked Groovy compiler with a raised heap to build this
+project's `src/main` — at Gradle's default worker heap it dies with `java.lang.OutOfMemoryError: Java heap
+space` in ~15s. Reproduced at an unmodified HEAD, so it is the snapshot, not local work; beta-3 is
+unaffected, and `groovyOptions.fork = true` with `memoryMaximumSize = '6g'` compiles it in 10s. Genuine
+growth rather than a runaway, but worth watching before beta-5.
+
+Both runtimes green, 1971; `check` green; docLint 0 drift.
+
+---
+
+## Phase 276 — GROOVY-12326: the guard on the branch  *(shipped — slice 37)*
+
+Phase 275's own retrospective became the next report. Building c05 against GROOVY-12324's mask showed that
+`select(counter < elements, counter > 0)` binds each flag to a branch by POSITION and nothing else: the
+reader counts arguments and matches them against a `from(…)` written elsewhere — the same fragility the mask
+removed, moved from the index to the flag. Filed and merged as GROOVY-12326, and the API is again the
+proposal verbatim: `Offer.when(BooleanSupplier)`, guards conjoining with each other and with a positional
+flag, indices preserved, all-disabled still `IllegalStateException`.
+
+The supplier, not a boolean, is the part that came out of building rather than surveying: a guard is
+consulted at every select, so the instance stays HELD — and a held instance is what keeps a `fair()`
+rotation alive (GROOVY-12320). A boolean would freeze at construction, or force rebuilding the select each
+round, which Phase 257 already refuses as "fair() on a fresh ChannelSelect instance each iteration keeps no
+rotation state".
+
+Checker support reuses Phase 275 wholesale: `selectOfferGuards` reads the per-offer closures off an
+`offers(…)` chain (conjoining a repeated `when`, refusing a guard that is not a single-expression closure
+rather than silently dropping it), `offerGuardsFor` resolves them through a held instance or inline, and
+both spellings feed the SAME `$channelSelect.guarded(…)` marker — a positional flag and an offer guard on
+the same branch are conjoined, as the runtime conjoins them. `WHEN_GUARD` probes for it.
+
+Cases (G335, 2 more): the buffer guarded per offer proves the same invariant, and dropping the `put` guard
+in that spelling refutes with the SAME counterexample as the positional one (`counter = 1, elements = 1`).
+Pinning both is the point — the equivalence is what says the second spelling is ergonomics, not semantics.
+Both runtimes green, 1975; `check` green; docLint 0 drift (176 case links, 13 pinned diagnostics).
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

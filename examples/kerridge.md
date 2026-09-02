@@ -60,11 +60,9 @@ nothing more. `@ServedWithin` and `@DeliveredWithin` are head-of-line service bo
 backlog is [deliberately outside the claim](#the-honest-boundary-loudly). The scheduler, the JMM and
 atomicity stay below the line, exactly as CSP's own semantics are.
 
-**Two findings went upstream.** Modelling `ALT` as Groovy 6 actually implemented it showed there was no fair
-selection, and that a losing branch's element was re-sent to the back of its queue — now **GROOVY-12320**, a
-held `fair()` / `random()`. The racing mixed choice needed real arbitration — now **GROOVY-12323**,
-`offers(send(…), receive(…))` over rendezvous channels. Both merged for 6.0.0-beta-4; the
-[version note](#groovy-version-note) says what each runtime can and cannot certify.
+Four gaps this gallery hit were reported upstream and fixed in `groovy.concurrent` itself; see
+[what the gallery changed upstream](#what-the-gallery-changed-upstream), and the
+[version note](#groovy-version-note) for what each runtime can and cannot certify.
 
 To run the gallery: `./gradlew verify -Pcases='P246 Kerridge gallery'`, with `VERIFY_VERBOSE=1` to see the
 diagnostics and counterexamples rather than one line of pass/fail per case.
@@ -438,8 +436,8 @@ certified …). The deadlock-freedom certificate covers one-shot networks of unc
 on local channels; outside that the network is neither certified nor refuted.
 ```
 
-(The elided tail is the one part of this message that moves with the runtime: before beta-4 it names
-GROOVY-12320 as the missing feature, after it points at the held `fair()` instance you should have used.)
+(The elided tail is the one part of this message that moves with the runtime: on an older Groovy it names
+the missing feature, on a newer one it points at the held `fair()` instance you should have used.)
 
 On a runtime with the claim-based select (see the [version note](#groovy-version-note)) `select()`
 dequeues exactly one branch, losers untouched, and offers `fair()`: hold the instance — the rotation state
@@ -846,6 +844,95 @@ ghosts — are refuted just as sharply, but their models are stated in the encod
 (`aToB$q.size()`, `reply$rely4.size()`, `loop$fuel1`), which is honest and unhelpful in equal measure. For
 those, the message is the teaching material and the model is for whoever is debugging the encoding.
 
+## The guarded ALT — c05's bounded buffer
+
+c05's `Queue` is a bounded circular buffer whose ALT masks a guard **off** — JCSP's
+`qAlt.priSelect(preCon)` with `preCon[PUT] = counter < elements` — so that PUT is offered only while there
+is room, and GET only while there is content. `ChannelSelect.select(boolean... enabled)` is the same idea:
+one flag per offer, in offer order, with a disabled branch keeping its position so `r.index` still means
+what it did. The buffer is then both expressible and provable:
+
+<!-- doclint:case p273-guarded-alt/c05-s-bounded-buffer-the-guards-make-the-invariant-hold -->
+```groovy
+@Requires({ elements >= 1 })
+static void queue(int elements) {
+    AsyncChannel<Integer> put = AsyncChannel.create(4)
+    AsyncChannel<Integer> get = AsyncChannel.create(4)
+    ChannelSelect alt = ChannelSelect.from(put, get)
+    int counter = 0
+    @Invariant({ 0 <= counter && counter <= elements })
+    while (true) {
+        ChannelSelect.Result r = await alt.select(counter < elements, counter > 0)
+        if (r.index == 0) {
+            counter = counter + 1
+        }
+        if (r.index == 1) {
+            counter = counter - 1
+        }
+    }
+}
+```
+
+The buffer can neither overflow nor underflow, and that is *proved*: the committed branch is one whose flag
+holds, so the increment arm runs only where `counter < elements`. Which is the whole of what c05 teaches —
+and the two ways to get it wrong are refuted at the arm the missing guard would have blocked. Leave PUT
+always enabled:
+
+<!-- doclint:diagnostic p273-guarded-alt/without-the-put-guard-the-buffer-overflows-refuted -->
+```
+[Static type checking] - Cannot prove loop invariant is preserved by the loop body in queue
+    invariant: ((0 <= counter) && (counter <= elements))
+    counterexample: counter = 1, elements = 1
+    fails on: queue(1)
+```
+
+`counter = 1, elements = 1` — the buffer exactly full, and PUT still on offer. Leave GET always enabled
+instead and the mirror image comes back, `counter = 0` with GET still offered: the underflow. Neither is a
+warning about a shape; each is the state the missing precondition would have excluded.
+
+The **`while (true)`** is the book's own — a buffer process does not stop — so what is proved here is
+safety, not termination. A select whose flags are all false throws (`IllegalStateException`), so the checker
+treats that as a path not reached rather than a state to reason about.
+
+There is a second spelling, and it is the one to reach for. A positional flag binds to its branch by
+counting: `select(counter < elements, counter > 0)` says nothing about *which* channel each flag guards, and
+the `from(…)` it lines up with is usually written elsewhere. `receive(c).when { … }` puts the guard on the
+branch it guards, the way occam's `boolean & input` does:
+
+<!-- doclint:case p273-guarded-alt/c05-s-bounded-buffer-guarded-per-offer-the-same-invariant-proves -->
+```groovy
+@Requires({ elements >= 1 })
+static void queue(int elements) {
+    AsyncChannel<Integer> put = AsyncChannel.create(4)
+    AsyncChannel<Integer> get = AsyncChannel.create(4)
+    int counter = 0
+    ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(put).when { counter < elements },
+                                             ChannelSelect.receive(get).when { counter > 0 })
+    @Invariant({ 0 <= counter && counter <= elements })
+    while (true) {
+        ChannelSelect.Result r = await alt.select()
+        if (r.index == 0) {
+            counter = counter + 1
+        }
+        if (r.index == 1) {
+            counter = counter - 1
+        }
+    }
+}
+```
+
+The guard is a closure rather than a boolean because it is consulted at *every* select — which is what lets
+the instance be **held**, and a held instance is what keeps a `fair()` rotation alive. A boolean would
+freeze at construction, or force rebuilding the select each round, which is the mistake the gallery
+[already refuses](#groovy-version-note). Guards conjoin: an offer's `when` and a positional flag can be
+combined, and both must hold.
+
+The two spellings certify **identically**, which is why both are pinned here — drop the `put` guard in
+either and the same overflow comes back, at the same arm, with the same `counter = 1, elements = 1`.
+
+One ergonomic wrinkle worth knowing: the guard closures read the loop's state, so the state has to be
+declared *before* the select is built — `int counter = 0` above the `offers(…)`, not below it.
+
 ## How deadlock, liveness and starvation are certified
 
 The certificates above rest on a small number of mechanisms, each worth knowing by name.
@@ -1006,6 +1093,23 @@ skipped, not proved. And as everywhere in the [concurrency gallery](concurrency.
 JMM, and atomicity remain the [three runtime rungs](../CONCURRENCY.md) — these certificates are
 action-grained and above the memory model, exactly as CSP's own semantics are.
 
+## What the gallery changed upstream
+
+Four gaps here were not boundaries to document but bugs and omissions in `groovy.concurrent`, found by
+modelling it as it actually behaved, reproduced, drafted, and fixed upstream. They are collected here rather
+than told alongside the examples, which are about the shapes and not about how the runtime got them.
+
+| Finding | What the checker hit | What shipped |
+| --- | --- | --- |
+| **GROOVY-12320** | `ALT` was not a choice but a consumption from every branch: losers were re-sent to the back of their queue, stale receivers accumulated, and there was no fair selection at all | selection by claim, losers untouched, and the held `fair()` / `random()` policies — which is what makes the fair server's per-client liveness certifiable |
+| **GROOVY-12323** | the racing *mixed* choice could not be arbitrated: two peers both committed, so a symmetric protocol could not be made coherent | `offers(send(…), receive(…))`, the send offers that let one branch commit over rendezvous channels |
+| **GROOVY-12324** | c05's guarded ALT was inexpressible — emulating a precondition mask by varying `from(…)`'s arguments renumbers the branches, so `r.index` names a different channel per arm | `select(boolean... enabled)`, one flag per offer with positions preserved; and `Result.getChannel()` beside the positional index |
+| **GROOVY-12326** | that mask binds each flag to its branch only by position, which is the same fragility moved from the index to the flag | `Offer.when(BooleanSupplier)`, the guard written on the branch it guards, consulted once per select so the instance can still be held |
+
+The pattern is the same each time: the checker models the runtime *as it is* rather than as documented, so a
+divergence shows up as an example that will not certify — and the reason it will not is specific enough to
+file. The last of the four came out of building against the third.
+
 ## Groovy version note
 
 A practical gotcha rather than a boundary: the checker **probes the runtime that hosts it** and models the
@@ -1015,7 +1119,8 @@ hazards, and the refuted positional claims above are that runtime's honest verdi
 spellings are type errors there. From **6.0.0-beta-4** the claim-based select (GROOVY-12320: held
 `fair()` / `random()`, losers untouched) makes the fair server certifiable end to end, and the arbitrated
 select (GROOVY-12323: `offers(send(…), receive(…))`) makes the racing mixed choice certifiable over
-rendezvous channels. Both features originated as findings of this checker — reproduced, drafted, and fixed
-upstream — so the examples that need them are marked, and on an older runtime they fail loudly rather than
-prove weakly. The same guarantees GPP establishes offline by formal methods, issued incrementally by the
-compiler.
+rendezvous channels. Later betas add the guarded select (GROOVY-12324's `select(boolean... enabled)`) and
+the per-offer guard (GROOVY-12326's `receive(c).when { … }`) — the checker probes for each feature rather
+than for a version number, so the examples that need one are marked, and on an older runtime they fail
+loudly rather than prove weakly. The same guarantees GPP establishes offline by formal methods, issued
+incrementally by the compiler.
