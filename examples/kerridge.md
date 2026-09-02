@@ -933,6 +933,62 @@ either and the same overflow comes back, at the same arm, with the same `counter
 One ergonomic wrinkle worth knowing: the guard closures read the loop's state, so the state has to be
 declared *before* the select is built — `int counter = 0` above the `offers(…)`, not below it.
 
+## Barriers — c14's phase synchronisation
+
+The first synchronisation in this gallery that is not a channel. c14 builds its hand-eye test on JCSP's
+`Barrier` — `sync` / `enroll` / `resign` — and `groovy.concurrent` has none. It does not need one:
+`java.util.concurrent.Phaser` **is** that Barrier under another name, `arriveAndAwaitAdvance()` for sync and
+`register()` / `arriveAndDeregister()` for enroll and resign.
+
+With a **static** party count the certificate is the same well-foundedness theorem as the channel network. A
+round — the j-th sync of every party — is one synchronisation, so its parties inherit the round's
+predecessors and none waits on another; a matched barrier is therefore not itself a cycle, and a real knot
+has to close through some other event. Two barriers synced in opposite orders is the classic:
+
+<!-- doclint:case p277-barriers/two-barriers-synced-in-opposite-orders-circular-wait -->
+```groovy
+static int crossed() {
+    java.util.concurrent.Phaser first = new java.util.concurrent.Phaser(2)
+    java.util.concurrent.Phaser second = new java.util.concurrent.Phaser(2)
+    async {
+        first.arriveAndAwaitAdvance()
+        second.arriveAndAwaitAdvance()
+    }
+    second.arriveAndAwaitAdvance()
+    first.arriveAndAwaitAdvance()
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p277-barriers/two-barriers-synced-in-opposite-orders-circular-wait -->
+```
+[Static type checking] - Process-network deadlock in 'crossed': circular wait: the sync on 'first' (line 42
+in the task forked at line 41), which waits for the sync on 'second' (line 45), which waits for the first.
+… Sync the barriers in the same order in every process, or use one barrier where the phases really are one
+phase.
+```
+
+A barrier built for more parties than ever arrive is the other static error — *"constructed for 3 parties
+but only 2 processes arrive at it"* — and it never advances at all.
+
+**Dynamic enrolment** is what c14 actually uses: a target resigns up front, then each round enrols, syncs
+and resigns again, so it takes part only in the rounds it is active for. Once enrolment moves at runtime a
+round's party set is a runtime value, so the count and deadlock-freedom are *withheld* — said out loud, per
+barrier — while the **discipline** is still checked. Syncing on a barrier this process has resigned from is
+refused:
+
+<!-- doclint:diagnostic p277-barriers/a-sync-after-resigning-is-refused -->
+```
+[Static type checking] - Barrier discipline violated in 'stale': this process syncs on 'gate' (line 44)
+after having resigned from it, and it has no party to arrive with — the runtime raises rather than waiting.
+A resigned process must register() again before it syncs; the enroll / sync / resign pairing is what keeps a
+party out of the rounds it is not taking part in.
+```
+
+So does resigning twice. That pairing is the whole of what c14's `TargetProcess` is careful about, and it is
+now mechanical. What is *not* here yet: `AltingBarrier` — a barrier as an ALT branch, which can lose a race
+to a channel — and `Bucket`, neither of which has a `groovy.concurrent` or JDK equivalent to port onto.
+
 ## How deadlock, liveness and starvation are certified
 
 The certificates above rest on a small number of mechanisms, each worth knowing by name.

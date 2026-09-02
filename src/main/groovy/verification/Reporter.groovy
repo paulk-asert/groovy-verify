@@ -395,6 +395,32 @@ class Reporter {
      * front of a blocking receive; for a RENDEZVOUS send-send cycle that advice is exactly backwards (both
      * processes already write first — that IS the bug), so the rendezvous form names the real fixes.
      */
+    /** Phase 278 — a process that gave up its party and then used the barrier anyway. */
+    static String formatBarrierResigned(String methodName, String barrier, String op, int line) {
+        String what = op == 'sync' ? 'syncs on' : 'resigns from'
+        "Barrier discipline violated in '${methodName}': this process ${what} '${barrier}' (line ${line}) " +
+        "after having resigned from it, and it has no party to arrive with — the runtime raises rather " +
+        "than waiting. A resigned process must register() again before it syncs; the enroll / sync / " +
+        "resign pairing is what keeps a party out of the rounds it is not taking part in."
+    }
+
+    /** Phase 278 — enrolment that moves at runtime: the party set of a round is not static, so the count
+     *  and deadlock-freedom claims are withheld rather than made on the constructor's number. */
+    static String formatBarrierDynamic(String methodName, String barrier) {
+        "Skipped barrier certificate for '${barrier}' in ${methodName} (its enrolment changes at runtime: " +
+        "register() / arriveAndDeregister()). The party set of a round is then a runtime value, so neither " +
+        "the party count nor deadlock-freedom is certified for this barrier. The enrolment DISCIPLINE — no " +
+        "sync by a process that has resigned — is still checked."
+    }
+
+    /** Phase 277 — a barrier knot: the remedy is an ordering one, not a channel one. */
+    static String formatBarrierDeadlock(String methodName, String detail) {
+        "Process-network deadlock in '${methodName}': ${detail}. A barrier releases only when every party " +
+        "has arrived, so two processes that sync the same barriers in different orders each wait for the " +
+        "other to reach the one it is holding. Sync the barriers in the same order in every process, or " +
+        "use one barrier where the phases really are one phase."
+    }
+
     static String formatNetworkDeadlock(String methodName, String detail, boolean rendezvous) {
         "Process-network deadlock in '${methodName}': ${detail}. A one-shot channel network is " +
         "deadlock-free exactly when its wait-for order is well-founded; this one blocks forever. " +
@@ -405,6 +431,20 @@ class Reporter {
               "server must not be a client of a server that is its own client."
             : "Move the send before the blocking receive, fork the producer before awaiting its " +
               "consumer, or let a concurrent task serve the channel.")
+    }
+
+    /**
+     * Phase 277 — a barrier no one can pass: fewer processes arrive at it than it was constructed for, so
+     * it never advances and every party that did arrive waits forever. The static half of JCSP's enrolment
+     * discipline (`java.util.concurrent.Phaser` being that Barrier under another name).
+     */
+    static String formatBarrierParties(String methodName, String barrier, int declared, int arriving) {
+        "Barrier '${barrier}' in '${methodName}' can never advance: it is constructed for ${declared} " +
+        "part${declared == 1 ? 'y' : 'ies'} but only ${arriving} process${arriving == 1 ? '' : 'es'} " +
+        "arrive${arriving == 1 ? 's' : ''} at it. A barrier releases when every enrolled party has " +
+        "arrived, so the ones that do arrive block forever. Construct it for the number of processes that " +
+        "sync on it, or have the missing parties arrive (register()/arriveAndDeregister() adjust the " +
+        "count at runtime, which this certificate does not model)."
     }
 
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */

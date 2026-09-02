@@ -12483,6 +12483,77 @@ Both runtimes green, 1975; `check` green; docLint 0 drift (176 case links, 13 pi
 
 ---
 
+## Phase 277 — Barriers: the first synchronisation that is not a channel  *(shipped — slice 38, c14 slice 1 of 3)*
+
+Kerridge c14 builds its whole system on JCSP's `Barrier` (sync / enroll / resign) and `AltingBarrier`, and
+`groovy.concurrent` has no barrier at all. It does not need one: **`java.util.concurrent.Phaser` is that
+Barrier under another name** — `arriveAndAwaitAdvance()` is sync, `register()` / `arriveAndDeregister()`
+are enroll / resign, and `getRegisteredParties()` / `getPhase()` are the quantities a spec would want. So
+unlike c05, this rung needed no upstream change; the earlier ranking of c14 as "needs a new primitive
+family" was wrong on that half.
+
+STATIC enrolment only: a phaser built with a literal party count, arrived at by that many processes. Two
+certificates. **Enrolment** — fewer processes syncing than the barrier was constructed for means it never
+advances, refuted with both counts. **Well-foundedness** — the same theorem as the channel network, with a
+barrier ROUND (the j-th sync of every party) coalesced into one synchronisation: its members inherit the
+round's program-order predecessors and none waits on another, which is Phase 272's rendezvous-pair
+coalescing lifted from two parties to n. A matched barrier is therefore not itself a cycle, and a real knot
+closes through some other event — two barriers synced in opposite orders, the classic, named with its cycle
+and a remedy that is an ORDERING one rather than the channel text.
+
+The pass is self-contained and runs before the channel machinery: a barrier network need not have channels
+at all (two processes and a Phaser is already deadlockable), and the channel path's every branch is about
+sends and receives, so a channel-free network never reaches its graph.
+
+**A general false positive, found on the way.** A local bound to `new …` carried an undischargeable
+null-deref obligation — `StringBuilder sb = new StringBuilder(); sb.append('x')` refuted with "Possible
+NullPointerException". Nothing to do with barriers; it is fixed with the codebase's own idiom, a
+`currentNewLocalNames` exemption that generalises the existing channel-factory and held-select ones (a
+constructor yields an object or throws), excluding any name reassigned elsewhere in the method. Pinned by
+its own case.
+
+**And a drift the doc lint caught.** Adding the `Phaser` import to the shared case header shifted every
+case's source line numbers by one, which broke nine pinned diagnostics quoting line numbers — the suite
+stayed green (`expect:` is a substring) while the docs silently went stale. Reverted; the barrier cases
+name the type in full instead. Exactly the class of rot lint 6 was built for.
+
+Cases (G336, new group, 4): the lockstep shape certified, the crossed-barrier knot refuted, the short party
+count refuted, and the `new`-local regression. Both runtimes green, 1979; `check` green; docLint 0 drift.
+Still to come for c14: dynamic enrolment (register / arriveAndDeregister), then `AltingBarrier` and
+`Bucket`, each with an upstream question of its own.
+
+---
+
+## Phase 278 — Dynamic enrolment: the discipline, not the count  *(shipped — slice 39, c14 slice 2 of 3)*
+
+c14's `TargetProcess` resigns up front and then, every round, enrols / syncs / resigns — so a target takes
+part only in the rounds it is active for. Once enrolment moves at runtime the party set of a round is a
+runtime value, so Phase 277's two static certificates stop applying. The honest split: withhold what depends
+on the count, keep what does not.
+
+**Withheld, loudly, once per barrier:** the party count and deadlock-freedom, with the reason named
+(`register()` / `arriveAndDeregister()` present). **Still certified:** the enrolment DISCIPLINE, which holds
+whether or not the count is static — a process that has resigned its party has none to arrive with, so a
+later sync (or a second resign) is refused. Tracked per process in program order, a process assumed enrolled
+to begin with (it is one of the parties the barrier was constructed for), `register()` re-enrolling it and
+`arriveAndDeregister()` giving the party up. Conditional ops are skipped rather than guessed at. That is
+exactly the pairing c14 is careful about, now mechanical.
+
+Bookkeeping: `barrierUses` now carries enrolment ops as well as syncs, so every Phase 277 path reads through
+a `barrierSyncs(ctx)` view, and the round structure and count checks skip a barrier that `dynamicBarriers`
+reports as moving.
+
+Cases (G336, 3 more): the c14 pairing done right (discipline holds, count withheld — pinned with
+`refute: 'Barrier discipline violated'` so the withholding can never mask a real violation), a sync after
+resigning refused, a double resign refused. Both runtimes green, 1982; `check` green; docLint 0 drift
+(177 case links, 15 pinned diagnostics). `examples/kerridge.md` gains a barrier section.
+
+Left for c14: `AltingBarrier` (a barrier as an ALT branch, able to lose a race to a channel) and `Bucket` —
+neither has a `groovy.concurrent` or JDK equivalent to port onto, so each is an upstream question before it
+is a checker one.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

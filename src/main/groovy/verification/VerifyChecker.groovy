@@ -3579,6 +3579,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 257 — likewise a HELD ChannelSelect (`ChannelSelect alt = ChannelSelect.from(..)[.fair()]`):
             // a factory result, never null; `alt.select()` in the loop carries no deref obligation.
             if (currentHeldSelectLocalNames.contains(df.receiver)) return
+            // Phase 277 — and a local bound to a `new …`: a constructor yields an object or throws.
+            if (currentNewLocalNames.contains(df.receiver)) return
             if (df.indexExpr != null) {
                 // Phase 37 — indexed receiver (xs[i].method() / xs.get(i).method()): consult the
                 // per-element nullity oracle. A @NonNull-element container is trusted — no
@@ -7857,6 +7859,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, SelectRef> selectRefs = new HashMap<String, SelectRef>()   // Phase 257 — held select instances
         final List<ParArm> arms = new ArrayList<ParArm>()
         final List<ChanUse> chanUses = new ArrayList<ChanUse>()
+        // Phase 277 — barrier syncs are kept OUT of chanUses: a barrier is not a channel, and every
+        // channel pass (linearity, FIFO pairing, streams) would have to special-case it. They join the
+        // wait-for graph directly instead, which is the only pass that has anything to say about them.
+        final List<ChanUse> barrierUses = new ArrayList<ChanUse>()
+        final Map<String, Integer> phaserParties = new LinkedHashMap<String, Integer>()
         final Map<String, List<ParAccess>> mainWrites = new HashMap<String, List<ParAccess>>()
         final Map<String, List<ParAccess>> mainReads = new HashMap<String, List<ParAccess>>()
         ParCtx(Set<String> chanVars) { this.chanVars = chanVars }
@@ -7865,6 +7872,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             record(mainReads, n, ord, line)
             // The first mention of an arm's handle after its fork is its join (await/gather/wrapper).
             for (ParArm a : arms) if (n.equals(a.handle) && ord > a.fork && a.join == Integer.MAX_VALUE) a.join = ord
+        }
+        void barrierUse(String bar, String op, ParArm proc, int ord, int line, int seq, boolean conditional, Expression anchor) {
+            ChanUse u = new ChanUse()
+            u.chan = bar; u.method = op; u.kind = -1; u.proc = proc
+            u.ord = ord; u.line = line; u.seq = seq; u.conditional = conditional; u.anchor = anchor
+            barrierUses.add(u)
         }
         void chanUse(String chan, String method, int kind, ParArm proc, int ord, int line, int seq,
                      boolean conditional, Expression anchor) {
@@ -7925,6 +7938,49 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (k >= 0) ctx.chanUse(name, call.methodAsString, k, proc, ord, call.lineNumber, seq, conditional, anchor)
     }
 
+    /** Phase 277 — a BARRIER sync at a phaser-var receiver. `java.util.concurrent.Phaser` is JCSP's
+     *  `Barrier` under another name — `register()` is enroll, `arriveAndDeregister()` is resign, and
+     *  `arriveAndAwaitAdvance()` is sync — so the books' barrier shapes port onto it with no new runtime
+     *  primitive. This slice models STATIC enrollment only: a phaser constructed with a literal party
+     *  count and synced by that many processes. */
+    private static void recordBarrierUseIfAny(MethodCallExpression call, ParCtx ctx, ParArm proc, int ord,
+                                              int seq, boolean conditional, Expression anchor) {
+        Expression recv = stripCasts(call.objectExpression)
+        if (!(recv instanceof VariableExpression)) return
+        String name = ((VariableExpression) recv).name
+        if (!ctx.phaserParties.containsKey(name)) return
+        // Phase 278 — the enrolment ops join the syncs: `register()` is JCSP's enroll and
+        // `arriveAndDeregister()` its resign, and c14's whole discipline is the order they come in.
+        String m = call.methodAsString
+        if (m == 'arriveAndAwaitAdvance' || m == 'register' || m == 'arriveAndDeregister') {
+            ctx.barrierUse(name, m == 'arriveAndAwaitAdvance' ? 'sync' : m, proc, ord, call.lineNumber, seq, conditional, anchor)
+        }
+    }
+
+    /** `new Phaser(n)` declarations: var name → the literal party count. A non-literal count, or any
+     *  dynamic `register()` / `arriveAndDeregister()`, leaves the barrier out of the model (loudly). */
+    private static void collectPhaserVars(BlockStatement body, Map<String, Integer> out) {
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    Expression r = stripCasts(de.rightExpression)
+                    if (r instanceof ConstructorCallExpression &&
+                        ((ConstructorCallExpression) r).type?.nameWithoutPackage == 'Phaser') {
+                        Expression a = ((ConstructorCallExpression) r).arguments
+                        List<Expression> args = (a instanceof TupleExpression) ? ((TupleExpression) a).expressions : null
+                        if (args != null && args.size() == 1) {
+                            Expression c = stripCasts(args.get(0))
+                            if (c instanceof ConstantExpression && ((ConstantExpression) c).value instanceof Integer) {
+                                out.put(((VariableExpression) de.leftExpression).name, (Integer) ((ConstantExpression) c).value)
+                            }
+                        }
+                    }
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+    }
+
     /** Peel casts (STC/lowering wrappers) off an expression. */
     private static Expression stripCasts(Expression e) {
         Expression a = e
@@ -7966,6 +8022,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (cl != null) { recordArm(call, cl, null); return }
             // Phase 241 — a main-body channel end-use (seq = the statement ordinal)
             recordChanUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
+            recordBarrierUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
             recordSelectUsesIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0)     // Phase 249
             boolean isAwait = call.methodAsString == 'await'
             if (isAwait) awaitDepth++
@@ -8103,6 +8160,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 241 — an arm-side end-use; seq is the arm's own op order (Phase 243 needs it)
                 int seq = ++armSeq
                 recordChanUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
+                recordBarrierUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
                 recordSelectUsesIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0)   // Phase 249
                 super.visitMethodCallExpression(call)
             }
@@ -8417,6 +8475,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         classifyChannelVars((BlockStatement) body, chanVars, createdChans, derivedChans, broadcastChans, chanParent)
         ParCtx ctx = new ParCtx(chanVars)
         ctx.selectRefs = collectSelectVars(body)                              // Phase 257
+        collectPhaserVars((BlockStatement) body, ctx.phaserParties)           // Phase 277 — barriers
         parWalkStatement(body, ctx)
         String protocol = protocolTextOf(node)                                // Phase 263 — a session type for the network
         if (protocol != null) for (Object[] f : SessionChecker.check(node.name, protocol, (BlockStatement) body, chanVars, ARBITRATED_SELECT)) addStaticTypeError((String) f[0], (ASTNode) f[1])
@@ -8656,6 +8715,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private Set<String> currentChannelLocalNames = Collections.emptySet()
     /** Phase 257 — locals holding a `ChannelSelect.from(..)` chain (a factory result, never null). */
     private Set<String> currentHeldSelectLocalNames = Collections.emptySet()
+    /** Phase 277 — locals initialised by a `new …`: a constructor returns an object or throws, never null.
+     *  Generalises the channel-factory and held-select exemptions above; without it any ordinary
+     *  `StringBuilder sb = new StringBuilder(); sb.append(…)` carried an undischargeable deref obligation. */
+    private Set<String> currentNewLocalNames = Collections.emptySet()
 
     // Bound op codes (shared with Encoder.tryBindChannelReceive by value): ge / gt / le / lt.
     private static final long CB_GE = 0L, CB_GT = 1L, CB_LE = 2L, CB_LT = 3L
@@ -8678,6 +8741,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentChannelNames = names
         currentChannelLocalNames = localNames
         currentHeldSelectLocalNames = collectSelectVars(node.code).keySet()          // Phase 257
+        currentNewLocalNames = collectNewLocalNames(node.code)                       // Phase 277
         if (node.code != null) {
             node.code.visit(new CodeVisitorSupport() {
                 @Override void visitDeclarationExpression(DeclarationExpression de) {
@@ -8932,9 +8996,175 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** The Phase 243 entry point — see the section comment above. Runs only when the linearity
      *  pass was silent, so the one-sender/one-receiver/one-element discipline holds. */
+    /** Phase 277 — locals whose declaration initialiser is a constructor call, anywhere in the body. A
+     *  later re-assignment from something nullable would make this unsound, so a name assigned anywhere
+     *  else in the method is excluded. */
+    private static Set<String> collectNewLocalNames(Statement code) {
+        if (code == null) return Collections.emptySet()
+        final Set<String> news = new LinkedHashSet<String>(), reassigned = new HashSet<String>()
+        code.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression &&
+                    stripCasts(de.rightExpression) instanceof ConstructorCallExpression) {
+                    news.add(((VariableExpression) de.leftExpression).name)
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) &&
+                    !(be instanceof DeclarationExpression) && be.leftExpression instanceof VariableExpression) {
+                    reassigned.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        news.removeAll(reassigned)
+        news
+    }
+
+    /**
+     * Phase 277 — the barrier certificate, standing on its own. Two checks, in order:
+     * <ol>
+     *   <li>ENROLMENT: a barrier releases when every party it was constructed for has arrived, so if fewer
+     *       processes sync on it than that, it never advances and everyone who did arrive waits forever.</li>
+     *   <li>WELL-FOUNDEDNESS: the same theorem the channel network rests on. A round — the j-th sync of
+     *       every party — is ONE synchronisation, so its members inherit the round's program-order
+     *       predecessors and none waits on another (which would make every barrier its own cycle). A real
+     *       knot then closes through some other event: two barriers synced in opposite orders.</li>
+     * </ol>
+     * Returns true when it reported, so the caller stops rather than re-reporting through the channel path.
+     */
+    private boolean checkBarriers(MethodNode node, ParCtx ctx) {
+        // Phase 278 — the enrolment DISCIPLINE, which holds whether or not the count is static: a process
+        // that has resigned its party has none to arrive with, so a later sync (or a second resign) is an
+        // error the runtime raises. Tracked per process in program order — a process is assumed enrolled
+        // to begin with (it is one of the parties the barrier was constructed for), register() re-enrols
+        // it, arriveAndDeregister() gives the party up. This is exactly c14's enroll/resign pairing.
+        Map<String, Boolean> enrolled = new HashMap<String, Boolean>()
+        List<ChanUse> inOrder = new ArrayList<ChanUse>(ctx.barrierUses)
+        inOrder.sort { ChanUse a, ChanUse b -> a.proc.is(b.proc) ? (a.seq <=> b.seq) : (a.ord <=> b.ord) }
+        for (ChanUse u : inOrder) {
+            if (u.conditional) continue                          // not guaranteed to run: no claim either way
+            String key = u.chan + '@' + (u.proc == null ? 'main' : System.identityHashCode(u.proc))
+            boolean on = enrolled.containsKey(key) ? enrolled.get(key) : true
+            if (u.method == 'register') { enrolled.put(key, true); continue }
+            if (!on) {
+                addStaticTypeError(Reporter.formatBarrierResigned(node.name, u.chan, u.method, u.line), u.anchor)
+                return true
+            }
+            if (u.method == 'arriveAndDeregister') enrolled.put(key, false)
+        }
+        Set<String> dyn = dynamicBarriers(ctx)
+        for (Map.Entry<String, Integer> e : ctx.phaserParties.entrySet()) {
+            if (dyn.contains(e.key)) continue                    // Phase 278 — the count is a runtime value
+            Set<Object> procs = new HashSet<Object>()
+            ChanUse first = null
+            for (ChanUse u : barrierSyncs(ctx)) if (u.chan == e.key) {
+                procs.add(u.proc == null ? 'main' : u.proc)
+                if (first == null) first = u
+            }
+            if (first == null) continue                          // declared but never synced
+            if (procs.size() < e.value) {
+                addStaticTypeError(Reporter.formatBarrierParties(node.name, e.key, e.value, procs.size()), first.anchor)
+                return true
+            }
+        }
+        // Phase 278 — with enrolment moving at runtime the party set of a round is not static, so neither
+        // the count nor deadlock-freedom is claimed for such a barrier. Said out loud, once, per barrier.
+        for (String bar : dyn) {
+            ChanUse at = null
+            for (ChanUse u : ctx.barrierUses) if (u.chan == bar && u.method != 'sync') { at = u; break }
+            if (at != null) addStaticTypeError(Reporter.formatBarrierDynamic(node.name, bar), at.anchor)
+        }
+        if (!dyn.isEmpty()) return true
+        List<ChanUse> evs = new ArrayList<ChanUse>(barrierSyncs(ctx))
+        Map<ChanUse, Integer> id = new IdentityHashMap<ChanUse, Integer>()
+        for (int i = 0; i < evs.size(); i++) id.put(evs.get(i), i)
+        List<List<Integer>> adj = new ArrayList<List<Integer>>()
+        for (int i = 0; i < evs.size(); i++) adj.add(new ArrayList<Integer>())
+        for (ChanUse u : evs) {                                   // program order within each process
+            for (ChanUse b : evs) {
+                if (b.is(u)) continue
+                boolean sameProc = (u.proc == null && b.proc == null) || (u.proc != null && b.proc != null && b.proc.is(u.proc))
+                if (sameProc && b.seq < u.seq) adj.get(id.get(u)).add(id.get(b))
+            }
+        }
+        Map<Integer, List<Integer>> merged = new HashMap<Integer, List<Integer>>()
+        for (List<ChanUse> round : barrierRounds(ctx)) {
+            List<Integer> ids = new ArrayList<Integer>()
+            for (ChanUse u : round) { Integer i = id.get(u); if (i != null) ids.add(i) }
+            if (ids.size() < 2) continue
+            List<Integer> u = new ArrayList<Integer>()
+            for (Integer i : ids) for (Integer x : adj.get(i)) if (!ids.contains(x) && !u.contains(x)) u.add(x)
+            for (Integer i : ids) merged.put(i, new ArrayList<Integer>(u))
+        }
+        for (Map.Entry<Integer, List<Integer>> e : merged.entrySet()) adj.set(e.key, e.value)
+        List<Integer> cycle = findWaitCycle(adj, new int[evs.size()], new ArrayList<Integer>())
+        if (cycle == null) return false
+        List<String> parts = new ArrayList<String>()
+        for (Integer i : cycle) {
+            ChanUse u = evs.get(i)
+            parts.add("the sync on '${u.chan}' (line ${u.line}${u.proc == null ? '' : " in the task forked at line ${u.proc.line}"})".toString())
+        }
+        addStaticTypeError(Reporter.formatBarrierDeadlock(node.name,
+            'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first'), evs.get(cycle.get(0)).anchor)
+        true
+    }
+
+    /** Phase 278 — the SYNCS among the barrier ops (the list also carries register / arriveAndDeregister). */
+    private static List<ChanUse> barrierSyncs(ParCtx ctx) {
+        List<ChanUse> out = new ArrayList<ChanUse>()
+        for (ChanUse u : ctx.barrierUses) if (u.method == 'sync') out.add(u)
+        out
+    }
+
+    /** Phase 278 — barriers whose enrolment changes at runtime: their party count is not the constructor's,
+     *  so neither the count check nor the round structure applies to them. */
+    private static Set<String> dynamicBarriers(ParCtx ctx) {
+        Set<String> out = new LinkedHashSet<String>()
+        for (ChanUse u : ctx.barrierUses) if (u.method != 'sync') out.add(u.chan)
+        out
+    }
+
+    /** Phase 277 — the barrier rounds of a method: for each phaser, the j-th sync of every process that
+     *  syncs it. With static enrollment each process arrives once per round, so grouping by ordinal is
+     *  exactly the round structure — the same "j-th receive pairs with the j-th send" idea the channel
+     *  model uses, lifted from two parties to n. */
+    private static List<List<ChanUse>> barrierRounds(ParCtx ctx) {
+        List<List<ChanUse>> out = new ArrayList<List<ChanUse>>()
+        Set<String> dynamic = dynamicBarriers(ctx)
+        for (String bar : ctx.phaserParties.keySet()) {
+            if (dynamic.contains(bar)) continue                  // Phase 278 — no static round structure
+            Map<Object, List<ChanUse>> byProc = new LinkedHashMap<Object, List<ChanUse>>()
+            for (ChanUse u : barrierSyncs(ctx)) {
+                if (u.chan != bar) continue
+                Object k = u.proc == null ? 'main' : u.proc
+                List<ChanUse> l = byProc.get(k)
+                if (l == null) { l = new ArrayList<ChanUse>(); byProc.put(k, l) }
+                l.add(u)
+            }
+            if (byProc.size() < 2) continue
+            for (List<ChanUse> l : byProc.values()) l.sort { ChanUse a, ChanUse b -> a.seq <=> b.seq }
+            int rounds = Integer.MAX_VALUE
+            for (List<ChanUse> l : byProc.values()) rounds = Math.min(rounds, l.size())
+            for (int j = 0; j < rounds; j++) {
+                List<ChanUse> round = new ArrayList<ChanUse>()
+                for (List<ChanUse> l : byProc.values()) round.add(l.get(j))
+                out.add(round)
+            }
+        }
+        out
+    }
+
     private void checkNetworkWellFormedness(MethodNode node, ParCtx ctx, BlockStatement body,
                                             Map<String, String> chanParent, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
+        // Phase 277 — barriers first: the enrolment check needs nothing else, and a network of barriers
+        // and nothing else (two processes and a Phaser is already deadlockable) never reaches the channel
+        // machinery below, whose every path is about sends and receives.
+        if (!ctx.barrierUses.isEmpty()) {
+            if (checkBarriers(node, ctx)) return
+        }
         if (uses.isEmpty()) return
         // Phase 252 — a consumer loop's sanctioned receives are decided by the value model (the element-exists
         // obligation under the producer's summary), not by the wait-for graph: they leave it here.
@@ -9223,6 +9453,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<ChanUse> evUses = new ArrayList<ChanUse>(blockers)
         evUses.addAll(sends)
         evUses.addAll(closes)
+        evUses.addAll(barrierSyncs(ctx))                                     // Phase 277 — barrier syncs
         for (ChanUse u : evUses) { id.put(u, evs.size()); evs.add(u) }
         List<ParArm> joined = new ArrayList<ParArm>()
         for (ParArm a : ctx.arms) if (a.join != Integer.MAX_VALUE) { joined.add(a); id.put(a, evs.size()); evs.add(a) }
@@ -9236,6 +9467,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // operation later in the same process cannot run until that send has been taken.
         List<ChanUse> ordered = new ArrayList<ChanUse>(blockers)
         ordered.addAll(rvSends)
+        ordered.addAll(barrierSyncs(ctx))                                    // Phase 277 — a sync blocks too
         for (ChanUse u : evUses) {
             if (u.proc == null) {
                 for (ChanUse b : ordered) if (b.proc == null && b.ord < u.ord) adj.get(id.get(u)).add(id.get(b))
@@ -9266,6 +9498,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Integer x : adj.get(pr[0])) if (x != pr[0] && x != pr[1] && !u.contains(x)) u.add(x)
             for (Integer x : adj.get(pr[1])) if (x != pr[0] && x != pr[1] && !u.contains(x)) u.add(x)
             merged.put(pr[0], u); merged.put(pr[1], new ArrayList<Integer>(u))
+        }
+        // Phase 277 — a barrier ROUND is the same coalescing, n-way: every party's j-th sync completes
+        // exactly when all of them do, so each inherits the union of the round's program-order
+        // predecessors and none waits on another (which would make every barrier its own cycle). A knot
+        // then has to close through some other event — two barriers synced in opposite orders, say.
+        for (List<ChanUse> round : barrierRounds(ctx)) {
+            List<Integer> ids = new ArrayList<Integer>()
+            for (ChanUse u : round) { Integer i = id.get(u); if (i != null) ids.add(i) }
+            if (ids.size() < 2) continue
+            List<Integer> u = new ArrayList<Integer>()
+            for (Integer i : ids) for (Integer x : adj.get(i)) if (!ids.contains(x) && !u.contains(x)) u.add(x)
+            for (Integer i : ids) merged.put(i, new ArrayList<Integer>(u))
         }
         for (Map.Entry<Integer, List<Integer>> e : merged.entrySet()) adj.set(e.key, e.value)
         for (ChanUse it : iterates) {                            // Phase 245 — an iteration finishes at close
