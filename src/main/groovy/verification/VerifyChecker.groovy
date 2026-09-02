@@ -5416,6 +5416,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (u.alts != null) return "the ALT over ${u.alts.collect { "'" + it + "'" }.join(', ')} (line ${u.line}${who})"
         String what = u.method == 'send' ? 'the send on' :
                       u.method == 'close' ? 'the close of' :
+                      u.method == 'sync' ? 'the sync on' :        // Phase 283 — a barrier in a mixed cycle
                       isIterateUse(u) ? 'the iteration over' : 'the receive on'
         "${what} '${u.chan}' (line ${u.line}${who})"
     }
@@ -5996,9 +5997,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object first = evs.get(cycle.get(0))
             Expression anchor = first instanceof ChanUse ? ((ChanUse) first).anchor : ((ParArm) first).anchor
             boolean rvCycle = false                       // Phase 272 — a knot that closes through a rendezvous send
-            for (Integer i : cycle) { Object ev = evs.get(i); if (ev instanceof ChanUse && pairedReceive.containsKey(ev)) rvCycle = true }
-            addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
-                'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first', rvCycle), anchor)
+            boolean barrierCycle = false                  // Phase 283 — …or through a barrier sync
+            for (Integer i : cycle) {
+                Object ev = evs.get(i)
+                if (ev instanceof ChanUse && pairedReceive.containsKey(ev)) rvCycle = true
+                if (ev instanceof ChanUse && ((ChanUse) ev).method == 'sync') barrierCycle = true
+            }
+            String detail = 'circular wait: ' + parts.join(', which waits for ') + ', which waits for the first'
+            addStaticTypeError(barrierCycle
+                ? Reporter.formatMixedDeadlock(node.name, detail)
+                : Reporter.formatNetworkDeadlock(node.name, detail, rvCycle), anchor)
         } else {
             for (int i = 0; i < n; i++) if (!done[i]) {           // defensive: a stuck event without a cycle to show
                 Object ev = evs.get(i)

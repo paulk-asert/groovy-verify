@@ -433,6 +433,19 @@ class Reporter {
         "sync by a process that has resigned — is still checked."
     }
 
+    /**
+     * Phase 283 — a knot closed by a barrier AND a channel together, which is the shape a real barrier
+     * network deadlocks in: the parties agree on a phase while also exchanging messages, and the two
+     * orderings disagree. Named separately because neither single-medium remedy is the whole answer.
+     */
+    static String formatMixedDeadlock(String methodName, String detail) {
+        "Process-network deadlock in '${methodName}': ${detail}. A barrier releases only when every party " +
+        "has arrived, so a process waiting on a message before it syncs holds the whole phase up — and the " +
+        "process that would send that message is itself waiting for the phase. Put the communication and " +
+        "the synchronisation in the same order in every party: sync then exchange, or exchange then sync, " +
+        "but not one of each."
+    }
+
     /** Phase 277 — a barrier knot: the remedy is an ordering one, not a channel one. */
     static String formatBarrierDeadlock(String methodName, String detail) {
         "Process-network deadlock in '${methodName}': ${detail}. A barrier releases only when every party " +

@@ -12673,6 +12673,37 @@ Cases (G337, new group, 5). Both runtimes green, 1992; `check` green; docLint 0 
 
 ---
 
+## Phase 283 — Barriers and channels in one knot  *(shipped — slice 44, c14 slice 3)*
+
+c14's targets do not only synchronise; they synchronise AND exchange messages, so a cycle can close through
+both media at once. Phases 277/278 wired barrier syncs into the same wait-for graph as channel ops but never
+tested the interaction — this is that test, and the composition works: one party waiting for a message
+before it syncs holds the phase up while the party that would send it waits for the phase, and the cycle is
+found.
+
+Two defects the interaction exposed, both in the reporting rather than the analysis:
+
+* **A barrier read as a receive.** `describeChanEvent` had no case for a sync, so a barrier in a mixed cycle
+  printed as "the receive on 'gate'" — plainly wrong, and exactly the kind of thing that only shows up when
+  two mechanisms meet. The case `expect`s the corrected wording (`which waits for the sync on 'gate'`) so it
+  cannot regress.
+* **The wrong remedy.** A mixed knot was getting the channel advice ("move the send before the blocking
+  receive"), which is not the answer: the fault is an ORDERING one across two kinds of synchronisation.
+  `formatMixedDeadlock` names it as such — put the communication and the synchronisation in the same order
+  in every party, sync-then-exchange or exchange-then-sync, but not one of each.
+
+Cases (G336, 2 more): the mixed knot with its wording pinned, and the same two media in the same order
+certifying. Both runtimes green, 1994; `check` green; docLint 0 drift (181 case links, 19 pinned
+diagnostics).
+
+c14 now has everything that ports without an upstream change. What remains — `AltingBarrier` (a barrier as
+an ALT branch, able to lose a race to a channel) and `Bucket` — has no `groovy.concurrent` or JDK equivalent
+to sit on. `AltingBarrier` in particular is not a small ask: a barrier that can lose a race needs agreement
+among the selecting parties, which is a two-phase protocol rather than the single claim GROOVY-12320
+introduced. Worth scoping deliberately rather than assuming it is the next `when()`.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

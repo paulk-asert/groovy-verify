@@ -37,6 +37,40 @@ class G336_p277_barriers {
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
     static final List<Map> CASES = [
+        // ---------- barriers AND channels in one network (Phase 283) ----------
+        // c14's real shape: the targets agree on a phase with barriers while also exchanging messages over
+        // channels. A knot can close through both media at once — here one party waits for a message before
+        // it syncs, holding the phase up, while the party that would send it waits for the phase. The
+        // `expect` pins the wording: a barrier in the cycle must read as a SYNC, not as a receive.
+        [group: 'P277 barriers', name: 'a knot closed by a barrier and a channel together', expect: "which waits for the sync on 'gate'",
+         src: tc("""class C {
+                        static int mixed() {
+                            java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
+                            AsyncChannel<Integer> ch = AsyncChannel.create(1)
+                            async {
+                                int x = ch.first()
+                                gate.arriveAndAwaitAdvance()
+                            }
+                            gate.arriveAndAwaitAdvance()
+                            ch.send(1)
+                            return 0
+                        }
+                    }""")],
+        // The same two media in the same order in both parties — sync, then exchange — and it certifies.
+        [group: 'P277 barriers', name: 'sync then exchange in every party: certified', ok: true,
+         src: tc("""class C {
+                        static int mixedOk() {
+                            java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
+                            AsyncChannel<Integer> ch = AsyncChannel.create(1)
+                            async {
+                                gate.arriveAndAwaitAdvance()
+                                int x = ch.first()
+                            }
+                            gate.arriveAndAwaitAdvance()
+                            ch.send(1)
+                            return 0
+                        }
+                    }""")],
         // A regression, found while building this rung: a local bound to `new …` carried an
         // undischargeable null-deref obligation, so ordinary code refuted. A constructor yields an object
         // or throws — never null — which generalises the channel-factory and held-select exemptions.

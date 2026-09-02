@@ -1150,8 +1150,42 @@ party out of the rounds it is not taking part in.
 ```
 
 So does resigning twice. That pairing is the whole of what c14's `TargetProcess` is careful about, and it is
-now mechanical. What is *not* here yet: `AltingBarrier` — a barrier as an ALT branch, which can lose a race
-to a channel — and `Bucket`, neither of which has a `groovy.concurrent` or JDK equivalent to port onto.
+now mechanical.
+
+**Barriers and channels knot together.** c14's targets do not only synchronise — they synchronise *and*
+exchange messages, and a cycle can close through both media at once. One party waiting for a message before
+it syncs holds the whole phase up, while the party that would send that message is waiting for the phase:
+
+<!-- doclint:case p277-barriers/a-knot-closed-by-a-barrier-and-a-channel-together -->
+```groovy
+static int mixed() {
+    java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
+    AsyncChannel<Integer> ch = AsyncChannel.create(1)
+    async {
+        int x = ch.first()
+        gate.arriveAndAwaitAdvance()
+    }
+    gate.arriveAndAwaitAdvance()
+    ch.send(1)
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p277-barriers/a-knot-closed-by-a-barrier-and-a-channel-together -->
+```
+[Static type checking] - Process-network deadlock in 'mixed': circular wait: the receive on 'ch' (line 42 in
+the task forked at line 41), which waits for the send on 'ch' (line 46), which waits for the sync on 'gate'
+(line 45), which waits for the first. … Put the communication and the synchronisation in the same order in
+every party: sync then exchange, or exchange then sync, but not one of each.
+```
+
+The remedy is neither of the single-medium ones, which is why the mixed knot is named separately: it is an
+*ordering* fault across two kinds of synchronisation. Put them in the same order in both parties and the
+same network certifies.
+
+What is *not* here yet: `AltingBarrier` — a barrier as an ALT branch, which can lose a race to a channel —
+and `Bucket`, neither of which has a `groovy.concurrent` or JDK equivalent to port onto, so each is an
+upstream question before it is a checker one.
 
 ## How deadlock, liveness and starvation are certified
 
