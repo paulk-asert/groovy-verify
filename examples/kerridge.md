@@ -935,9 +935,10 @@ declared *before* the select is built — `int counter = 0` above the `offers(�
 
 ## The butler — deadlock avoidance by resource limiting
 
-c12 gives the dining philosophers their *other* classic solution. The [concurrency gallery](concurrency.md)
-already proves the resource-**ordering** one: every philosopher takes the lower-numbered fork first, so the
-cycle cannot close. c12 instead leaves the forks alone and adds a **butler** who refuses to seat the last
+c12 gives the dining philosophers their *other* classic solution. The concurrency gallery already proves the
+resource-**ordering** one —
+[every philosopher takes the lower-numbered fork first](concurrency.md#dining-philosophers--deadlock-freedom-by-resource-ordering),
+so the cycle cannot close. c12 instead leaves the forks alone and adds a **butler** who refuses to seat the last
 philosopher — with n seats at most n−1 sit, so someone always holds fewer forks than they need. That is a
 guarded ALT over a counter, which is exactly the shape the bounded buffer above needed, so it certifies with
 no new machinery. Two philosophers here, so the cap is one:

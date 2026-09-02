@@ -146,6 +146,14 @@ confirms the ordered version never deadlocks while the naive one does. See [`CON
 *(Dining philosophers is one of [jcstress](https://github.com/openjdk/jcstress)'s classic samples — credited as the
 source of the problem; the code here is our own.)*
 
+**The other classic solution is certified too.** Ordering the forks is one way to break the cycle; *limiting the
+resource* is the other. A **butler** process refuses to seat the last philosopher, so with n seats at most n−1 sit
+and someone always holds fewer forks than they need. That is Kerridge c12, and it is proved in the
+[Kerridge gallery](kerridge.md#the-butler--deadlock-avoidance-by-resource-limiting) — not as an ordering
+predicate but as an invariant on the butler's own counter, `seated <= n - 1`, with the off-by-one (seating n
+rather than n−1) refuted at exactly the state the circular wait needs. Two textbook answers to one problem, each
+certified in the shape its own argument takes.
+
 ### Check-then-act — a verified invariant that concurrency breaks
 
 The sharpest illustration of the boundary. A bounded counter: increment only while below the limit. Sequentially
