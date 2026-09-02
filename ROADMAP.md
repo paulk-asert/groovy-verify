@@ -12637,6 +12637,42 @@ gains an overwriting-buffer section.
 
 ---
 
+## Phase 282 — CREW: the lock discipline, checked  *(shipped — slice 43)*
+
+Kerridge c13 is the one chapter whose correctness rests on the OPPOSITE of what the ladder enforces
+everywhere else: one shared map, N readers and M writers under a PAR, correct not by separation (Phase 240's
+fork-window disjointness) but by a concurrent-read / exclusive-write lock discipline. JCSP writes that
+discipline by hand — matched `startRead()` / `endRead()` around every access. Groovy states it
+DECLARATIVELY with `@WithReadLock` / `@WithWriteLock`, and being declarative is the whole reason it can be
+checked: the annotation says which half a method takes, so breaking the discipline is syntactic.
+
+**Probed first, and the probe redirected the slice.** The plan was a licence — an escape hatch letting
+shared state past the disjointness rule. It turned out nothing needed one: c13's shape (arms calling methods
+on a shared object) is not flagged today, because the interference check sees reads of the reference and no
+writes. What IS true is that the plainly-racy version — a `@WithReadLock` method that WRITES the guarded
+field — compiled silently, with zero solver checks. So the gap was never a missing licence; it was a missing
+obligation, and the slice became the obligation.
+
+Two refusals, both statically decidable and neither claiming anything about the memory model:
+
+* **A write under the read lock.** `@WithReadLock` exists to admit concurrent readers, so a write taken
+  under it races every one of them. Refused naming the field; the increment forms (`value++`, `++value`)
+  count as writes too.
+* **The halves on different locks.** `@WithReadLock('a')` beside `@WithWriteLock('b')` — a reader and a
+  writer then hold unrelated locks and exclude nothing. Refused naming both fields.
+
+**What is deliberately NOT changed:** the lock transforms stay transparent to the prover (Phase 115 — the
+class `@Invariant` is the monitor invariant, and P-check-then-act still proves the SAME invariant with and
+without the lock, because these certificates are above the JMM). This pass makes no thread-safety claim; it
+refuses two shapes that make the discipline a fiction. Two controls pin that it is not read too eagerly: the
+correct reader/writer arrangement stays clean, and a read-locked method writing only its own LOCALS is fine
+— both with `refute:` on the new diagnostics so the check cannot start crying wolf.
+
+Cases (G337, new group, 5). Both runtimes green, 1992; `check` green; docLint 0 drift (337 groups described,
+180 case links, 18 pinned diagnostics). `examples/kerridge.md` gains a CREW section.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

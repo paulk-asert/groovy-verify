@@ -395,6 +395,26 @@ class Reporter {
      * front of a blocking receive; for a RENDEZVOUS send-send cycle that advice is exactly backwards (both
      * processes already write first — that IS the bug), so the rendezvous form names the real fixes.
      */
+    /**
+     * Phase 282 — CREW: a write under the READ lock. `@WithReadLock` exists to let several threads read at
+     * once, so a write taken under it races every concurrent reader — the one mistake the concurrent-read /
+     * exclusive-write discipline is there to prevent, and the one the annotation cannot prevent by itself.
+     */
+    static String formatReadLockWrite(String methodName, String field) {
+        "Write under a read lock in '${methodName}': it assigns the field '${field}' while holding only " +
+        "@WithReadLock, which by design lets other threads read concurrently — so this write races every " +
+        "one of them. Concurrent-read / exclusive-write means writes take @WithWriteLock; move the " +
+        "assignment into a @WithWriteLock method, or make this one @WithWriteLock if it is really a writer."
+    }
+
+    /** Phase 282 — CREW read and write halves taken on DIFFERENT locks: no mutual exclusion between them. */
+    static String formatLockFieldMismatch(String className, String readLock, String writeLock) {
+        "Read and write locks differ in '${className}': @WithReadLock uses '${readLock}' and @WithWriteLock " +
+        "uses '${writeLock}', so a reader and a writer hold unrelated locks and exclude nothing. Concurrent-" +
+        "read / exclusive-write needs BOTH halves on one ReentrantReadWriteLock — name the same field in " +
+        "both annotations, or leave both unnamed to share the generated one."
+    }
+
     /** Phase 278 — a process that gave up its party and then used the barrier anyway. */
     static String formatBarrierResigned(String methodName, String barrier, String op, int line) {
         String what = op == 'sync' ? 'syncs on' : 'resigns from'

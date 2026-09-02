@@ -933,6 +933,58 @@ either and the same overflow comes back, at the same arm, with the same `counter
 One ergonomic wrinkle worth knowing: the guard closures read the loop's state, so the state has to be
 declared *before* the select is built — `int counter = 0` above the `offers(…)`, not below it.
 
+## CREW — shared state that is correct by discipline
+
+Every other shape in this gallery keeps processes apart. c13 does the opposite: one shared map, handed to N
+readers and M writers launched from the same `PAR`, and it is correct — not by separation but by a
+**concurrent-read / exclusive-write** lock discipline. In JCSP that discipline is manual, a matched
+`startRead()` / `endRead()` around every access. Groovy states it *declaratively*, which is what makes it
+checkable at all: the annotation says which half a method takes.
+
+<!-- doclint:case p282-crew/concurrent-readers-and-an-exclusive-writer-the-discipline-holds -->
+```groovy
+class Db {
+    private int value = 0
+    @WithWriteLock
+    void put(int v) { value = v }
+    @WithReadLock
+    int get() { return value }
+}
+class C {
+    static int crew() {
+        Db db = new Db()
+        def t1 = async { db.put(5) }
+        def t2 = async { db.get() }
+        def r = await(t1, t2)
+        return 0
+    }
+}
+```
+
+**What is and is not claimed.** The lock transforms stay [transparent to the prover](concurrency.md): the
+class `@Invariant` is the monitor invariant each critical section preserves, and the same invariant proves
+with or without the lock, because these certificates are action-grained and above the memory model. Nothing
+here says a lock makes anything thread-safe — that remains the [runtime rungs'](../CONCURRENCY.md) business.
+What is refused are the two ways the *discipline itself* becomes a fiction, both of them syntactic.
+
+The first is the mistake CREW exists to prevent — a write taken under the **read** lock, which by design
+admits concurrent readers:
+
+<!-- doclint:diagnostic p282-crew/a-write-under-the-read-lock-is-refused -->
+```
+[Static type checking] - Write under a read lock in 'bump': it assigns the field 'value' while holding only
+@WithReadLock, which by design lets other threads read concurrently — so this write races every one of them.
+Concurrent-read / exclusive-write means writes take @WithWriteLock; move the assignment into a
+@WithWriteLock method, or make this one @WithWriteLock if it is really a writer.
+```
+
+`value++` is refused the same way — an increment is a write however it is spelled. The second is subtler and
+is what the annotation's optional field name invites: read and write halves naming **different** locks, so a
+reader and a writer hold unrelated locks and exclude nothing. Both are named with the fields involved.
+
+And the discipline is not read too eagerly: a read-locked method may write its own locals freely, which is
+pinned by its own case so the check cannot start crying wolf over correct code.
+
 ## The overwriting buffer — when losing data is the specification
 
 Every channel shape so far has been lossless: the k-th element received is the k-th sent, and a value that

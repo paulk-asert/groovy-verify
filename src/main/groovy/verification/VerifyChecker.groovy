@@ -50,6 +50,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.RangeExpression
+import org.codehaus.groovy.ast.expr.FieldExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
@@ -2327,6 +2328,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 checkParInterference(node, body)
             } catch (Throwable ignored) {
             }
+            try {
+                checkCrewDiscipline(node)                    // Phase 282 — the CREW lock discipline
+            } catch (Throwable ignored) {
+            }
 
             // Phase 242 — a constrained channel PARAM's statement send becomes its contract assert
             // (`ch.send(e)` → `assert φ(e)`): the producer's half of the modular channel contract.
@@ -4124,6 +4129,97 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     static BinaryExpression bin(Expression l, int type, Expression r) {
         new BinaryExpression(l, Token.newSymbol(type, -1, -1), r)
+    }
+
+    // ── Phase 282 — CREW: the concurrent-read / exclusive-write discipline, checked ──────────────
+    /**
+     * Kerridge c13 hands one shared map to N readers and M writers under a PAR, and it is correct not by
+     * separation but by a LOCK DISCIPLINE. Groovy spells that discipline declaratively — `@WithReadLock` /
+     * `@WithWriteLock` around a `ReentrantReadWriteLock` — which is what makes it checkable at all: the
+     * annotation says which half a method takes, so the two ways of breaking CREW are syntactic.
+     *
+     * <p>Elsewhere these transforms are deliberately TRANSPARENT (Phase 115: the class `@Invariant` is the
+     * monitor invariant each critical section preserves, and the check-then-act case proves the SAME
+     * invariant with and without the lock, because the verifier reasons above the JMM). Nothing here
+     * changes that. This pass does not claim the lock makes anything thread-safe; it refuses the two shapes
+     * that make the discipline a fiction.
+     */
+    private void checkCrewDiscipline(MethodNode node) {
+        List<AnnotationNode> anns = node.annotations
+        if (anns == null) return
+        AnnotationNode read = null
+        for (AnnotationNode a : anns) if (a?.classNode?.nameWithoutPackage == 'WithReadLock') read = a
+        ClassNode dc = node.declaringClass
+        if (dc == null) return
+        // (2) the two halves on different locks exclude nothing — reported once, at the read-locked method.
+        if (read != null) {
+            String rl = lockFieldNameOf(read)
+            for (MethodNode m : dc.methods) {
+                for (AnnotationNode a : (m.annotations ?: Collections.<AnnotationNode> emptyList())) {
+                    if (a?.classNode?.nameWithoutPackage != 'WithWriteLock') continue
+                    String wl = lockFieldNameOf(a)
+                    if (rl != wl) {
+                        addStaticTypeError(Reporter.formatLockFieldMismatch(dc.nameWithoutPackage, rl, wl), read)
+                        return
+                    }
+                }
+            }
+        }
+        if (read == null || node.code == null) return
+        // (1) a write to one of this class's fields while holding only the read lock.
+        final Set<String> fields = new HashSet<String>()
+        for (FieldNode f : dc.fields) if (!f.static) fields.add(f.name)
+        final List<String> hit = new ArrayList<String>()
+        node.code.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && !(be instanceof DeclarationExpression)) {
+                    String n = assignedFieldName(be.leftExpression, fields)
+                    if (n != null && !hit.contains(n)) hit.add(n)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                String n = assignedFieldName(pe.expression, fields)
+                if (n != null && !hit.contains(n)) hit.add(n)
+                super.visitPostfixExpression(pe)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                String n = assignedFieldName(pe.expression, fields)
+                if (n != null && !hit.contains(n)) hit.add(n)
+                super.visitPrefixExpression(pe)
+            }
+        })
+        for (String f : hit) addStaticTypeError(Reporter.formatReadLockWrite(node.name, f), node)
+    }
+
+    /** The lock field an annotation names, or the generated default when it names none. */
+    private static String lockFieldNameOf(AnnotationNode a) {
+        Expression v = a.getMember('value')
+        (v instanceof ConstantExpression && ((ConstantExpression) v).value instanceof String)
+            ? (String) ((ConstantExpression) v).value : '$reentrantlock'
+    }
+
+    /** The field name an assignment target names — a bare `x`, or `this.x` — when x is one of the class's
+     *  fields; null for a local, a parameter, or anything else. */
+    private static String assignedFieldName(Expression target, Set<String> fields) {
+        Expression t = stripCasts(target)
+        if (t instanceof VariableExpression) {
+            VariableExpression ve = (VariableExpression) t
+            // a local or parameter shadows the field: only an accessed FieldNode (or an unresolved name
+            // that IS a field) counts as a field write.
+            if (ve.accessedVariable instanceof FieldNode) return ve.name
+            return (ve.accessedVariable == null && fields.contains(ve.name)) ? ve.name : null
+        }
+        if (t instanceof PropertyExpression) {
+            PropertyExpression pe = (PropertyExpression) t
+            Expression o = stripCasts(pe.objectExpression)
+            if (o instanceof VariableExpression && ((VariableExpression) o).isThisExpression() &&
+                fields.contains(pe.propertyAsString)) return pe.propertyAsString
+        }
+        if (t instanceof FieldExpression && fields.contains(((FieldExpression) t).fieldName)) {
+            return ((FieldExpression) t).fieldName
+        }
+        null
     }
 
     // ── Phase 240 — PAR disjointness: the fork-window interference check ────────────────────────
