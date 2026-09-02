@@ -12608,6 +12608,35 @@ Cases (G335, 1 more): the unguarded held offers-select, pinned against the NPE. 
 
 ---
 
+## Phase 281 — c09's overwriting buffer: loss as the specification  *(shipped — slice 42)*
+
+The second chapter the guarded ALT unlocked, and the first shape in the gallery where **losing data is
+correct**. Every channel rung so far rests on lossless FIFO — the k-th element received is the k-th sent —
+and c09's event buffer inverts it: between a source that produces when it likes and a handler that asks when
+it is ready, it keeps only the NEWEST value and counts what it discarded. No new machinery; what is new is
+the shape of the claim.
+
+What survives the loss is the EMPTINESS discipline: the buffer may discard freely but must never hand out a
+value it does not have. `missed` is -1 when empty and counts discards otherwise, so the request branch is
+offered only while `missed >= 0`, and the assertion in that arm is discharged FROM THE GUARD — the checker
+knows the committed branch is one whose flag held, so `missed >= 0` is a fact on that path. This is the
+first case where a guard proves an `assert` inside its own arm rather than a loop invariant, which is worth
+having pinned: it exercises the Phase 275 marker through the arm-encoding rather than through the invariant.
+
+The negative widens the guard by one (`missed >= -1`, vacuously true here — the same off-by-one shape as
+c12's butler) and the assertion refutes with `counterexample: missed = -1, r$index = 1`: the empty buffer,
+and the request branch taken anyway. The counterexample naming the chosen BRANCH as well as the state is the
+guarded model showing its work.
+
+Deliberately not claimed: that every input reaches the handler. In this buffer that is false by design, and
+the honest reading is that the lossless reasoning the rest of the ladder leans on is simply not in play.
+
+Cases (G335, 2 more), both pinned with `refute:` so a skip can never stand in for the proof. Both runtimes
+green, 1987; `check` green; docLint 0 drift (179 case links, 17 pinned diagnostics). `examples/kerridge.md`
+gains an overwriting-buffer section.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

@@ -40,6 +40,59 @@ class G335_p273_guarded_alt {
     // The spec is over the union of the arms — which is what the model carries — and it proves.
     // `refute:` pins the false positive this phase removes: no null-deref obligation on a conditional build.
     static final List<Map> CASES = [
+        // ---------- c09's overwriting buffer: loss is the specification ----------
+        // The event buffer keeps only the NEWEST value and counts the ones it threw away, so unlike every
+        // other channel shape in this gallery it is *correct* for it to lose data. What must still hold is
+        // the emptiness discipline: it may discard, but it must never hand out a value it does not have.
+        // `missed` is -1 when empty and counts discards otherwise, so the request branch is offered only
+        // while `missed >= 0` — and that guard is exactly what discharges the assert in its arm.
+        [group: 'P273 guarded ALT', name: 'c09\'s overwriting buffer never delivers from empty',
+         *: (WHEN_GUARD ? [expect: 'Skipped channel verification'] : [expect: 'Cannot find matching method']),
+         refute: ['Assertion may not hold', 'Cannot prove loop invariant', 'NullPointerException'],
+         src: tc("""class C {
+                        static void owBuffer() {
+                            AsyncChannel<Integer> input = AsyncChannel.create(4)
+                            AsyncChannel<Integer> request = AsyncChannel.create(4)
+                            int missed = -1
+                            ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(input),
+                                                                     ChannelSelect.receive(request).when { missed >= 0 })
+                            @Invariant({ missed >= -1 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                if (r.index == 0) {
+                                    missed = missed + 1
+                                }
+                                if (r.index == 1) {
+                                    assert missed >= 0
+                                    missed = -1
+                                }
+                            }
+                        }
+                    }""")],
+        // Answer a request whenever one arrives, and the buffer hands out a value it has not got — refuted
+        // at the empty state. The guard is the whole difference between a lossy buffer and a broken one.
+        [group: 'P273 guarded ALT', name: 'an unguarded request branch delivers from empty: refuted',
+         *: (WHEN_GUARD ? [expect: 'Assertion may not hold'] : [expect: 'Cannot find matching method']),
+         src: tc("""class C {
+                        static void owBuffer() {
+                            AsyncChannel<Integer> input = AsyncChannel.create(4)
+                            AsyncChannel<Integer> request = AsyncChannel.create(4)
+                            int missed = -1
+                            ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(input),
+                                                                     ChannelSelect.receive(request).when { missed >= -1 })
+                            @Invariant({ missed >= -1 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                if (r.index == 0) {
+                                    missed = missed + 1
+                                }
+                                if (r.index == 1) {
+                                    assert missed >= 0
+                                    missed = -1
+                                }
+                            }
+                        }
+                    }""")],
         // Phase 280 — an UNGUARDED held `offers(...)` select is GROOVY-12323's own spelling; before it was
         // recognised, a held one raised an undischargeable "select() on null object".
         [group: 'P273 guarded ALT', name: 'an unguarded held offers() select is a ChannelSelect, not a null deref',

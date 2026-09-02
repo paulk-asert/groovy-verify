@@ -933,6 +933,56 @@ either and the same overflow comes back, at the same arm, with the same `counter
 One ergonomic wrinkle worth knowing: the guard closures read the loop's state, so the state has to be
 declared *before* the select is built — `int counter = 0` above the `offers(…)`, not below it.
 
+## The overwriting buffer — when losing data is the specification
+
+Every channel shape so far has been lossless: the k-th element received is the k-th sent, and a value that
+goes missing is a bug. c09 inverts that. Its event buffer sits between a source that produces whenever it
+likes and a handler that asks whenever it is ready, and it keeps only the **newest** value, counting the ones
+it threw away. Discarding is not a failure here — it is the point, and the count is part of the answer.
+
+What must still hold is the **emptiness discipline**: the buffer may discard freely, but it must never hand
+out a value it does not have. `missed` is `-1` when empty and counts discards otherwise, so the request
+branch is offered only while `missed >= 0` — and that guard is exactly what discharges the assertion in its
+arm:
+
+<!-- doclint:case p273-guarded-alt/c09-s-overwriting-buffer-never-delivers-from-empty -->
+```groovy
+static void owBuffer() {
+    AsyncChannel<Integer> input = AsyncChannel.create(4)
+    AsyncChannel<Integer> request = AsyncChannel.create(4)
+    int missed = -1
+    ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(input),
+                                             ChannelSelect.receive(request).when { missed >= 0 })
+    @Invariant({ missed >= -1 })
+    while (true) {
+        ChannelSelect.Result r = await alt.select()
+        if (r.index == 0) {
+            missed = missed + 1
+        }
+        if (r.index == 1) {
+            assert missed >= 0
+            missed = -1
+        }
+    }
+}
+```
+
+The assertion sits *inside* the guarded arm and is proved from the guard alone — the checker knows the
+committed branch is one whose flag held, so on that path `missed >= 0` is a fact rather than a hope. Widen
+the guard by one (`missed >= -1`, always true here) and the buffer answers a request it cannot satisfy:
+
+<!-- doclint:diagnostic p273-guarded-alt/an-unguarded-request-branch-delivers-from-empty-refuted -->
+```
+[Static type checking] - Assertion may not hold: (missed >= 0)
+    counterexample: missed = -1, r$index = 1
+    fails on: owBuffer()
+```
+
+The counterexample names both halves of the mistake: `missed = -1` is the empty buffer, `r$index = 1` the
+request branch being taken anyway. Note what is *not* claimed — nothing says every input reaches the
+handler, because in this buffer that is false by design. The lossless FIFO reasoning the rest of the gallery
+leans on is simply not in play; what is certified is the one property that survives the loss.
+
 ## The butler — deadlock avoidance by resource limiting
 
 c12 gives the dining philosophers their *other* classic solution. The concurrency gallery already proves the
