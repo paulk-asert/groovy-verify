@@ -154,15 +154,14 @@ dependencies {
 
 tasks.withType(GroovyCompile).configureEach {
     groovyOptions.parameters = true   // keep formal parameter names for the checker
-    // Compile in a forked JVM with a raised heap. Gradle's in-worker default (~512m) is enough for
-    // this source set on 6.0.0-beta-3, but not on a 6.0.0 snapshot, where the same sources die with
-    // `java.lang.OutOfMemoryError: Java heap space` in about fifteen seconds. Measured: beta-3 compiles
-    // at 512m, the snapshot needs ~640m — and it is the SHAPE, not the volume, that costs. The test
-    // source set is LARGER in total (36k lines vs 35k) yet compiles fine at 512m, because its largest
-    // class is 555 lines; `verification/VerifyChecker.groovy` is a single 15.5k-line class, and the
-    // per-class caches added for GROOVY-12288 grow with the distinct type pairs inside one class.
-    // Forking here keeps the build working across Groovy versions regardless; splitting that class
-    // would remove us from the pathological case, which is worth doing on its own merits.
+    // Compile in a forked JVM with a raised heap. Gradle's in-worker default (~512m) was enough for this
+    // source set on 6.0.0-beta-3 but not on a 6.0.0 snapshot, where the same sources died with
+    // `java.lang.OutOfMemoryError: Java heap space` in about fifteen seconds. It is the SHAPE, not the
+    // volume, that costs: the test source set is LARGER in total (36k lines vs 35k) yet compiled fine at
+    // 512m, because its largest class is 555 lines, while `VerifyChecker` was then a single 15.5k-line
+    // class. Splitting `ChannelDesugar` out of it restored the 512m compile on the snapshot — the same
+    // total code in two classes — which is what a per-class compiler cost predicts. The fork stays as
+    // insurance: it keeps the build working across Groovy versions whatever the class sizes do next.
     groovyOptions.fork = true
     groovyOptions.forkOptions.memoryMaximumSize = '2g'
 }

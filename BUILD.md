@@ -38,11 +38,12 @@ snapshot repo in `build.gradle` (and `examples-dsl/build.gradle`); if a freshly-
 stale, `--refresh-dependencies`.
 
 Groovy compilation runs in a **forked JVM with a 2g ceiling** (`build.gradle`, `tasks.withType(GroovyCompile)`).
-Gradle's in-worker default (~512m) is enough for this source set on 6.0.0-beta-3 but not on a 6.0.0 snapshot,
-where the same sources die with `java.lang.OutOfMemoryError: Java heap space` in about fifteen seconds. It is
+Gradle's in-worker default (~512m) was enough for this source set on 6.0.0-beta-3 but not on a 6.0.0 snapshot,
+where the same sources died with `java.lang.OutOfMemoryError: Java heap space` in about fifteen seconds. It is
 the *shape* rather than the volume that costs: the test source set is larger in total (36k lines vs 35k) and
-compiles fine at 512m, because its largest class is 555 lines, while `verification/VerifyChecker.groovy` is a
-single 15.5k-line class. Forking keeps the build working across Groovy versions either way.
+compiles fine at 512m, because its largest class is 555 lines, while `VerifyChecker` was then a single
+15.5k-line class. Splitting [`ChannelDesugar`](src/main/groovy/verification/ChannelDesugar.groovy) out of it
+restored the 512m compile — the same total code in two classes. The fork stays as insurance.
 
 ```sh
 ./gradlew verify                          # compact console runner — one line per case, summary at the end

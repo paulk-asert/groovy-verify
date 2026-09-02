@@ -12554,6 +12554,36 @@ is a checker one.
 
 ---
 
+## Phase 279 — c12's butler: the guarded ALT, cashed in  *(shipped — slice 40)*
+
+The first return on Phases 275/276 that cost nothing to collect. Kerridge c12 gives the dining philosophers
+their OTHER classic solution: not the resource ordering `examples/concurrency.md` already proves, but a
+BUTLER who refuses to seat the last philosopher, so with n seats at most n-1 sit and someone always holds
+fewer forks than they need. In JCSP that is `eitherAlt` (all exits, then all enters) swapped for `exitAlt`
+(exits only) when `seated < seats - 1` fails — and because the exits occupy the SAME indices in both, it
+satisfies the positional-agreement rule Phase 273 imposed. It ports straight onto a per-offer guard and
+proves `seated <= 1` with **no engine work at all**, which is the honest test that 275/276 generalised
+rather than fitting one example.
+
+Only the enters are guarded, which is the book's own asymmetry rather than an omission: a decrement cannot
+break an upper bound. The negative is the butler's own off-by-one — seat n rather than n-1 — refuted at
+`seated = 1`, exactly the state the circular wait needs. Resource limiting avoids deadlock only while the
+limit is STRICTLY below the seat count, and the proof turns on that strictness.
+
+Cases (G335, 2 more): the cap proved, the off-by-one refuted. Both runtimes green, 1984; `check` green;
+docLint 0 drift (178 case links, 16 pinned diagnostics). `examples/kerridge.md` gains a butler section.
+
+**A false positive found and NOT fixed here.** An UNGUARDED held `offers(...)` select — GROOVY-12323's own
+spelling, with no `when` on any offer — still raises "Cannot invoke method select() on null object", because
+`collectSelectVars` / `selectChainInfo` recognise `from(...)` and the guarded ternary but not a bare
+`offers(...)`. This is the third instance of that class of bug (after the conditional select in Phase 273
+and the `new`-bound local in Phase 277), and the fix is the same shape: teach the select recogniser the
+`offers(...)` form so the held-instance exemption covers it. Left out of this slice deliberately — it
+touches the recogniser the Phase 267/271 session cases run through, so it wants its own change and its own
+whole-corpus run rather than riding along with a gallery addition.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

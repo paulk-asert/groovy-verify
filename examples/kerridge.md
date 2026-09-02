@@ -933,6 +933,66 @@ either and the same overflow comes back, at the same arm, with the same `counter
 One ergonomic wrinkle worth knowing: the guard closures read the loop's state, so the state has to be
 declared *before* the select is built — `int counter = 0` above the `offers(…)`, not below it.
 
+## The butler — deadlock avoidance by resource limiting
+
+c12 gives the dining philosophers their *other* classic solution. The [concurrency gallery](concurrency.md)
+already proves the resource-**ordering** one: every philosopher takes the lower-numbered fork first, so the
+cycle cannot close. c12 instead leaves the forks alone and adds a **butler** who refuses to seat the last
+philosopher — with n seats at most n−1 sit, so someone always holds fewer forks than they need. That is a
+guarded ALT over a counter, which is exactly the shape the bounded buffer above needed, so it certifies with
+no new machinery. Two philosophers here, so the cap is one:
+
+<!-- doclint:case p273-guarded-alt/c12-s-butler-seats-at-most-n-1-the-cap-proves -->
+```groovy
+static void butler() {
+    AsyncChannel<Integer> exit0 = AsyncChannel.create(4)
+    AsyncChannel<Integer> exit1 = AsyncChannel.create(4)
+    AsyncChannel<Integer> enter0 = AsyncChannel.create(4)
+    AsyncChannel<Integer> enter1 = AsyncChannel.create(4)
+    int seated = 0
+    ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(exit0),
+                                             ChannelSelect.receive(exit1),
+                                             ChannelSelect.receive(enter0).when { seated < 1 },
+                                             ChannelSelect.receive(enter1).when { seated < 1 })
+    @Invariant({ seated <= 1 })
+    while (true) {
+        ChannelSelect.Result r = await alt.select()
+        if (r.index == 0) {
+            seated = seated - 1
+        }
+        if (r.index == 1) {
+            seated = seated - 1
+        }
+        if (r.index == 2) {
+            seated = seated + 1
+        }
+        if (r.index == 3) {
+            seated = seated + 1
+        }
+    }
+}
+```
+
+Only the *enters* carry a guard, and that is the book's own asymmetry rather than an omission: a decrement
+cannot break an upper bound, so leaving is always safe. What is proved is `seated <= 1` — the butler never
+seats them all — which is the whole of why the philosophers cannot deadlock, reduced to an invariant on one
+counter.
+
+Get the rule off by one — seat n rather than n−1 — and it is refuted at precisely the state the circular
+wait needs:
+
+<!-- doclint:diagnostic p273-guarded-alt/a-butler-that-seats-n-rather-than-n-1-the-cap-is-refuted -->
+```
+[Static type checking] - Cannot prove loop invariant is preserved by the loop body in offByOne
+    invariant: (seated <= 1)
+    counterexample: seated = 1
+    fails on: offByOne()
+```
+
+`seated = 1` — one philosopher already at the table, and the butler about to seat the second. Resource
+limiting only avoids deadlock while the limit is *strictly* below the seat count, and that strictness is
+what the proof turns on.
+
 ## Barriers — c14's phase synchronisation
 
 The first synchronisation in this gallery that is not a channel. c14 builds its hand-eye test on JCSP's

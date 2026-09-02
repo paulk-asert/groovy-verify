@@ -40,6 +40,78 @@ class G335_p273_guarded_alt {
     // The spec is over the union of the arms — which is what the model carries — and it proves.
     // `refute:` pins the false positive this phase removes: no null-deref obligation on a conditional build.
     static final List<Map> CASES = [
+
+        // ---------- c12's Butler: deadlock avoidance by resource limiting ----------
+        // The dining philosophers' OTHER classic solution. Rather than order the forks (the resource
+        // hierarchy in concurrency.md), a butler refuses to seat the last philosopher: with n seats at
+        // most n-1 sit, so someone always holds fewer forks than they need and the circular wait never
+        // closes. Two philosophers here, so the cap is one. The exits need no guard — a decrement cannot
+        // break an upper bound — which is why the book's butler guards only the enters.
+        [group: 'P273 guarded ALT', name: 'c12\'s butler seats at most n-1: the cap proves',
+         *: (WHEN_GUARD ? [ok: true] : [expect: 'Cannot find matching method']),
+         src: tc("""class C {
+                        static void butler() {
+                            AsyncChannel<Integer> exit0 = AsyncChannel.create(4)
+                            AsyncChannel<Integer> exit1 = AsyncChannel.create(4)
+                            AsyncChannel<Integer> enter0 = AsyncChannel.create(4)
+                            AsyncChannel<Integer> enter1 = AsyncChannel.create(4)
+                            int seated = 0
+                            ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(exit0),
+                                                                     ChannelSelect.receive(exit1),
+                                                                     ChannelSelect.receive(enter0).when { seated < 1 },
+                                                                     ChannelSelect.receive(enter1).when { seated < 1 })
+                            @Invariant({ seated <= 1 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                if (r.index == 0) {
+                                    seated = seated - 1
+                                }
+                                if (r.index == 1) {
+                                    seated = seated - 1
+                                }
+                                if (r.index == 2) {
+                                    seated = seated + 1
+                                }
+                                if (r.index == 3) {
+                                    seated = seated + 1
+                                }
+                            }
+                        }
+                    }""")],
+        // The butler's own off-by-one: seat n rather than n-1, and the cap is refuted at exactly the state
+        // the circular wait needs — both philosophers seated, each holding one fork and waiting for the
+        // other. Resource limiting only avoids deadlock if the limit is strictly below the seat count.
+        [group: 'P273 guarded ALT', name: 'a butler that seats n rather than n-1: the cap is refuted',
+         *: (WHEN_GUARD ? [expect: 'Cannot prove loop invariant'] : [expect: 'Cannot find matching method']),
+         src: tc("""class C {
+                        static void offByOne() {
+                            AsyncChannel<Integer> exit0 = AsyncChannel.create(4)
+                            AsyncChannel<Integer> exit1 = AsyncChannel.create(4)
+                            AsyncChannel<Integer> enter0 = AsyncChannel.create(4)
+                            AsyncChannel<Integer> enter1 = AsyncChannel.create(4)
+                            int seated = 0
+                            ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(exit0),
+                                                                     ChannelSelect.receive(exit1),
+                                                                     ChannelSelect.receive(enter0).when { seated < 2 },
+                                                                     ChannelSelect.receive(enter1).when { seated < 2 })
+                            @Invariant({ seated <= 1 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                if (r.index == 0) {
+                                    seated = seated - 1
+                                }
+                                if (r.index == 1) {
+                                    seated = seated - 1
+                                }
+                                if (r.index == 2) {
+                                    seated = seated + 1
+                                }
+                                if (r.index == 3) {
+                                    seated = seated + 1
+                                }
+                            }
+                        }
+                    }""")],
         [group: 'P273 guarded ALT', name: 'a guarded ALT dropping its last branch is a ChannelSelect, and the union spec proves', ok: true,
          src: tc("""class C {
                         @Ensures({ result == x || result == y })
