@@ -32,8 +32,8 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-<!-- doclint:count 36 -->
-**What is in it.** Thirty-six worked examples, every one linked to a case that runs in CI, and the
+<!-- doclint:count 37 -->
+**What is in it.** Thirty-seven worked examples, every one linked to a case that runs in CI, and the
 compiler messages beside them quoted verbatim from those same cases.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
@@ -1002,9 +1002,33 @@ hold))
 And those two survivors are real, not consolation. The **element contract** holds because every sender must
 satisfy it, so the reader may assume it whoever sent. **Deadlock-freedom** holds because a receive on a
 shared send end waits on the *disjunction* of the sends — the same OR node an `ALT` uses — rather than on
-the j-th. That distinction earns its keep: pairing positionally would report a deadlock whenever the paired
-sender happened to be the blocked one, even though another send could satisfy the receive. A receive that
-nothing sends to is still named; a receive with one blocked sender and one free one is not.
+the j-th. That distinction earns its keep, and it is pinned from both sides. A receive that nothing sends to
+is still named:
+
+<!-- doclint:diagnostic p284-shared-ends/a-shared-end-does-not-excuse-a-receive-nothing-sends-to -->
+```
+[Static type checking] - Process-network deadlock in 'noSend': the receive on 'service' (line 40) can never
+be satisfied — no send on 'service' anywhere in the method. …
+```
+
+while a receive with one blocked sender and one free one is **not** — which is the case that would fail if
+the model paired positionally and happened to pick the blocked partner:
+
+<!-- doclint:case p284-shared-ends/one-blocked-sender-does-not-deadlock-a-shared-end -->
+```groovy
+static int orNode() {
+    @verification.SharedSend AsyncChannel<Integer> service = AsyncChannel.create(4)
+    AsyncChannel<Integer> other = AsyncChannel.create(1)
+    other.send(9)
+    async { int w = other.first(); service.send(1) }
+    async { service.send(2) }
+    return service.first()
+}
+```
+
+The first task cannot send until `other` feeds it; the second can send immediately. Positional pairing has a
+one-in-two chance of matching the receive against the blocked one and crying deadlock over a network that
+runs. The disjunction has no such coin to flip.
 
 `@SharedReceive` is the mirror — one writer, many *competing* readers — and is not the
 [broadcast fan-out](concurrency.md) of Phase 241, where every subscriber sees every element. Here each
@@ -1453,9 +1477,19 @@ not model).
 
 **Dynamic enrolment** is what c14 actually uses: a target resigns up front, then each round enrols, syncs
 and resigns again, so it takes part only in the rounds it is active for. Once enrolment moves at runtime a
-round's party set is a runtime value, so the count and deadlock-freedom are *withheld* — said out loud, per
-barrier — while the **discipline** is still checked. Syncing on a barrier this process has resigned from is
-refused:
+round's party set is a runtime value, so the count and deadlock-freedom are *withheld* — and withheld out
+loud, per barrier, naming what is given up and what survives:
+
+<!-- doclint:diagnostic p277-barriers/enrol-sync-resign-the-c14-pairing-discipline-holds-the-count-is-withheld -->
+```
+[Static type checking] - Skipped barrier certificate for 'gate' in rounds (its enrolment changes at runtime:
+register() / arriveAndDeregister()). The party set of a round is then a runtime value, so neither the party
+count nor deadlock-freedom is certified for this barrier. The enrolment DISCIPLINE — no sync by a process
+that has resigned — is still checked.
+```
+
+What survives is that discipline, and it is enough to catch what c14's `TargetProcess` is careful about.
+Syncing on a barrier this process has resigned from is refused:
 
 <!-- doclint:diagnostic p277-barriers/a-sync-after-resigning-is-refused -->
 ```
@@ -1465,8 +1499,8 @@ A resigned process must register() again before it syncs; the enroll / sync / re
 party out of the rounds it is not taking part in.
 ```
 
-So does resigning twice. That pairing is the whole of what c14's `TargetProcess` is careful about, and it is
-now mechanical.
+So does resigning twice, with the same message shape. That pairing is now mechanical rather than a matter of
+reading the code carefully.
 
 **Barriers and channels knot together.** c14's targets do not only synchronise — they synchronise *and*
 exchange messages, and a cycle can close through both media at once. One party waiting for a message before

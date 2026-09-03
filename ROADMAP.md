@@ -12854,10 +12854,17 @@ case and lint 6 pins the messages beside it, but a *count* in prose was unchecke
 claim with `<!-- doclint:count N -->` and the lint holds N to that file's link count; `DocLintTest`
 asserts it inside `check`. The same mechanism is available to any gallery that counts itself.
 
+Then the same audit run to the end, since the point was to stop asserting refusals: the shared-end section's
+two survivor claims are now pinned from both sides — the receive nothing sends to is named, and the receive
+with one blocked sender and one free one is NOT, which is the case that would fail if the model paired
+positionally and picked the blocked partner — and the dynamic-enrolment barrier's WITHHELD certificate is
+quoted rather than described, which is what the loud-unsoundness tenet asks for. Seven paraphrases became
+pinned blocks in all, and the page went from 36 linked cases to 37.
+
 Verified on BOTH runtimes, which is the point of the exercise for a page full of solver output: 6.0.0-beta-3
-and 6.0.0-SNAPSHOT each report 27/27 quoted diagnostics matching, so the five new counterexamples are
+and 6.0.0-SNAPSHOT each report 29/29 quoted diagnostics matching, so the new counterexamples are
 runtime-stable rather than one build's free choices. 2006 passed / 0 failed; `check` green; docLint 0 drift
-(186 case links, 27 pinned diagnostics, 1 prose count).
+(187 case links, 29 pinned diagnostics, 1 prose count).
 
 ---
 
