@@ -134,6 +134,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 276 — …and GROOVY-12326's per-offer `when` guard? */
     static final boolean WHEN_GUARD = probeWhenGuard()
 
+    /** Phase 290 — GROOVY-12343's timer offer / timer channel. */
+    static final boolean TIMER_OFFER = probeTimerOffer()
+
     static boolean probeArbitratedSelect() {
         try {
             Class<?> cs = Class.forName('groovy.concurrent.ChannelSelect')
@@ -159,6 +162,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         try { Class.forName('groovy.concurrent.ChannelSelect$Offer').getMethod('when', java.util.function.BooleanSupplier.class); return true }
         catch (Throwable ignored) { return false }
     }
+    /** Phase 290 — GROOVY-12343's timer: `AsyncChannel.after(millis)` (a timer CHANNEL, clock from creation)
+     *  and `ChannelSelect.after(millis)` (a timer OFFER, re-armed every select so a HELD instance keeps its
+     *  fair() rotation). The last member of JCSP's guard family Groovy's select was missing. */
+    static boolean probeTimerOffer() {
+        try { Class.forName('groovy.concurrent.ChannelSelect').getMethod('after', long.class); return true }
+        catch (Throwable ignored) { return false }
+    }
+
     // ─── CheckerApi — the curated surface pack checker-passes (EncodingPack.checkMethod) run against ───
 
     /** {@link CheckerApi#reportError} — the pack pass's diagnostic channel. */
@@ -4397,6 +4408,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         int condDepth          // > 0 while walking statements whose execution is not guaranteed
         final Set<String> chanVars
         Map<String, SelectRef> selectRefs = new HashMap<String, SelectRef>()   // Phase 257 — held select instances
+        // Phase 290 — the select() calls carrying a TIMER offer (GROOVY-12343), by anchor identity. A timer
+        // always fires, so such a select is satisfiable unconditionally: it waits for no other process, and
+        // cannot be a member of a wait-for cycle. That is precisely what a deadline in the choice buys, and
+        // it is the one thing the OR-node model cannot work out for itself — no send serves a timer branch.
+        final Set<Expression> timedSelects =
+            Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final List<ParArm> arms = new ArrayList<ParArm>()
         final List<ChanUse> chanUses = new ArrayList<ChanUse>()
         // Phase 277 — barrier syncs are kept OUT of chanUses: a barrier is not a channel, and every
@@ -4458,6 +4475,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!(call instanceof MethodCallExpression) || ((MethodCallExpression) call).methodAsString != 'select' || !noArgs((MethodCallExpression) call)) return
         SelectRef ref = selectRefOf(((MethodCallExpression) call).objectExpression, ctx.selectRefs)
         if (ref == null) return
+        if (!ref.timerAt.isEmpty()) ctx.timedSelects.add(call)          // Phase 290 — this ALT has a deadline
         for (Expression a : ref.chans) {
             Expression x = stripCasts(a)
             if (x instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) x).name)) {
@@ -5987,7 +6005,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 int j = (seen == null ? 0 : seen) + 1
                 if (ss != null && j <= ss.size()) alts.add(ss.get(j - 1))
             }
-            if (alts.isEmpty()) {
+            if (alts.isEmpty() && !ctx.timedSelects.contains(sel.anchor)) {
                 addStaticTypeError(Reporter.formatNetworkDeadlock(node.name,
                     describeChanEvent(sel) + " can never be satisfied — no send left on any of its channels"), sel.anchor)
                 return
@@ -6078,6 +6096,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (c != null && !c.is(it)) adj.get(id.get(it)).add(id.get(c))
         }
         for (ChanUse sel : selects) {                            // Phase 249 — an ALT proceeds on any ready branch
+            // Phase 290 — …and an ALT with a timer branch proceeds on the deadline whatever the others do,
+            // so it waits on no one. Giving it an EMPTY alternative list would mean "no way forward"; it is
+            // left out of the OR map entirely, which is how a node that never blocks is spelled here.
+            if (ctx.timedSelects.contains(sel.anchor)) continue
             List<Integer> alts = new ArrayList<Integer>()
             for (ChanUse s : selectAlts.get(sel)) alts.add(id.get(s))
             orAlts.put(id.get(sel), alts)

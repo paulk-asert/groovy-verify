@@ -12915,6 +12915,43 @@ earned its file.
 
 ---
 
+## Phase 290 — the timer as a branch, and the liveness a deadline buys  *(shipped — slice 51)*
+
+GROOVY-12343 landed on master, so the last of JCSP's four guard kinds — input, output, boolean, **timer** —
+is expressible in Groovy, and the three chapters that could not port (c05's scaling device, c14's hand-eye
+test, c17's sampling `Sniffer`) put a timeout INSIDE the choice in each case. `orTimeout` around the select
+is a different program: an exception around the choice rather than a branch of it.
+
+**Both spellings modelled**, because the PR shipped both layers the ticket proposed. `ChannelSelect.after(…)`
+is an offer re-armed on every select, which is what a per-round deadline needs — rebuilding the select each
+iteration to get a fresh deadline throws away the held instance the `fair()` rotation's state lives in, the
+mistake the gallery already refuses. `AsyncChannel.after(…)` is a channel whose clock starts at creation: one
+fixed deadline for every round, and it may sit directly among a `from(…)` call's branches.
+
+**The recogniser.** A timer branch names no channel but its POSITION is load-bearing (`r.index` is
+positional), so it occupies its slot with an inert constant — every downstream pass asks
+`instanceof VariableExpression` before treating a branch as a channel, so linearity, FIFO and readiness all
+skip it without learning anything new. `SelectRef.timerAt` records which indices they are.
+
+**The certificate, which is the point.** Every other branch of an ALT waits for another process to send; a
+timer waits for the clock. So a select carrying one is satisfiable unconditionally: it is left OUT of the
+OR-node map entirely rather than given an empty alternative set, which is how "this node never blocks" is
+spelled in the wait-for graph, and the Phase 249 "can never be satisfied" refutation is withheld for it. The
+case pair is the whole argument — the identical network refuted without a deadline and certified with one,
+no send added and no process reordered. That is the CSP reading of what a timeout is for: not giving up on a
+process that may be stuck, but making a choice that cannot get stuck.
+
+Guarded timers are pinned too (`after(100).when { … }`), so the liveness exemption is not read as "any select
+mentioning after() never blocks" — a guarded-off timer arms nothing.
+
+Docs: `examples/kerridge.md` gains the `CSTimer` vocabulary row, a section on the deadline branch, and a
+fifth row in "what the gallery changed upstream"; the unported-constructs note now says `AltingBarrier` is
+the narrower question because the timer answered the same one (may an offer be something other than a
+channel operation?). 2020 passed / 0 failed on 6.0.0-beta-3 AND 6.0.0-SNAPSHOT; `check` green; docLint 0
+drift (190 case links, 32 pinned diagnostics, 39 gallery examples).
+
+---
+
 ## Candidate — the Actor surface  *(not started; a different gallery, recorded so it is not lost)*
 
 Outside the Kerridge work by construction: UCaPE is CSP, and actors do not appear in it. This belongs with

@@ -32,8 +32,8 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-<!-- doclint:count 37 -->
-**What is in it.** Thirty-seven worked examples, every one linked to a case that runs in CI, and the
+<!-- doclint:count 39 -->
+**What is in it.** Thirty-nine worked examples, every one linked to a case that runs in CI, and the
 compiler messages beside them quoted verbatim from those same cases.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
@@ -64,7 +64,7 @@ nothing more. `@ServedWithin` and `@DeliveredWithin` are head-of-line service bo
 backlog is [deliberately outside the claim](#the-honest-boundary-loudly). The scheduler, the JMM and
 atomicity stay below the line, exactly as CSP's own semantics are.
 
-Four gaps this gallery hit were reported upstream and fixed in `groovy.concurrent` itself; see
+Five gaps this gallery hit were reported upstream and fixed in `groovy.concurrent` itself; see
 [what the gallery changed upstream](#what-the-gallery-changed-upstream), and the
 [version note](#groovy-version-note) for what each runtime can and cannot certify.
 
@@ -94,6 +94,7 @@ to see the diagnostics and counterexamples rather than one line of pass/fail per
 | end-to-end latency through a pipeline | `@DeliveredWithin(value = n, from = 'c', to = 'd')` | the head-of-line service bound, summed hop by hop (a stage is 1, a held `fair()` ALT its branch count), the worst path deciding; queueing is loudly not claimed (Phase 266) |
 | a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol({ loop { request: client >> server; reply: server >> client } })` on the method — plain Groovy, parsed by Groovy (`text = '''…'''` keeps the string form; `./gradlew nuscrCheck` exports the corpus as real Scribble for the MPST tools, the mixed choice refused as outside their fragment) | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
 | `select(preCon)` — a guard masked off while keeping its index | `receive(c).when { cond }` on an offer, or `select(boolean… enabled)` positionally | the committed branch is one whose flag holds, so a guarded arm's assertion and the loop's `@Invariant` prove from the guard (Phases 275/276); the positional form must drop branches only from the END, or `r.index` moves |
+| `CSTimer` in the `Guard[]` (a timeout as a branch of the `ALT`) | `ChannelSelect.after(millis)` as an offer, or `AsyncChannel.after(millis)` as a channel | from 6.0.0 (GROOVY-12343): the offer re-arms each select, so a *held* instance keeps its `fair()` rotation while carrying a per-round deadline; the channel's clock starts at creation, one fixed deadline for every round. A timer always fires, so an ALT carrying one **waits on no other process** — the liveness certificate that a deadline buys (Phase 290) |
 | `Barrier` (`sync` / `enroll` / `resign`) | `java.util.concurrent.Phaser` — `arriveAndAwaitAdvance()`, `register()`, `arriveAndDeregister()` | a round is one n-way synchronisation, so a knot has to close through some other event; short party counts and a sync after resigning are named (Phases 277/278) |
 | `any2one` / `one2any` (shared channel ends) | `@SharedSend` / `@SharedReceive` on the declaration | declared, never inferred — undeclared sharing still refuses; the positional model is given up loudly, the element contract and deadlock-freedom survive, and a client claiming a shared reply is its own is refused (Phases 284/285) |
 | `Crew` (concurrent read, exclusive write) | `@WithReadLock` / `@WithWriteLock` | the transforms stay transparent to the prover; what is refused is a write taken under the READ lock, and read and write halves on different locks (Phase 282) |
@@ -1535,7 +1536,80 @@ same network certifies.
 
 What is *not* here yet: `AltingBarrier` — a barrier as an ALT branch, which can lose a race to a channel —
 and `Bucket`, neither of which has a `groovy.concurrent` or JDK equivalent to port onto, so each is an
-upstream question before it is a checker one.
+upstream question before it is a checker one. `AltingBarrier` is the narrower of the two now that
+[the timer](#the-deadline-as-a-branch--c17s-sampler-and-what-a-timer-proves) has landed, since it asks the
+same question that one answered: whether a select's offer may be something other than a channel operation.
+
+## The deadline as a branch — c17's sampler, and what a timer proves
+
+The fourth guard kind. occam and JCSP offer four things to an `ALT` — an input, an output, a boolean, and a
+**timer** — and until GROOVY-12343 landed, Groovy's select had the first three. c05's scaling device, c14's
+hand-eye test and c17's sampling `Sniffer` all put a timeout *inside* the choice, and none of them ported:
+wrapping the whole select in `orTimeout` makes the deadline an exception around the choice rather than a
+branch of it, which is a different program.
+
+Both spellings are now modelled. `ChannelSelect.after(millis)` is an **offer**, re-armed on every `select()`,
+which is what a per-round deadline needs — the alternative, rebuilding the select each iteration, throws away
+the held instance the [`fair()` rotation's state lives in](#groovy-version-note). `AsyncChannel.after(millis)`
+is a **channel** whose clock starts at creation: one fixed deadline shared by every round.
+
+What a timer changes is not the value but the **liveness**, and the pair below is the whole of it. Every
+other branch of an `ALT` waits for some other process to send; a timer waits for the clock. So take a select
+that cannot be satisfied — nothing anywhere sends to its only channel — which the gallery has refused since
+Phase 249:
+
+<!-- doclint:diagnostic p290-timer/a-select-nothing-sends-to-can-never-be-satisfied -->
+```
+[Static type checking] - Process-network deadlock in 'quiet': the ALT over 'work' (line 40) can never be
+satisfied — no send left on any of its channels. …
+```
+
+Add a deadline and the same network certifies. Nothing else moves — no send is introduced, no process
+reordered:
+
+<!-- doclint:case p290-timer/a-deadline-makes-the-same-select-satisfiable -->
+```groovy
+static int deadline() {
+    AsyncChannel<Integer> work = AsyncChannel.create(4)
+    ChannelSelect.Result r = await ChannelSelect.offers(ChannelSelect.receive(work),
+                                                        ChannelSelect.after(100)).select()
+    return r.index
+}
+```
+
+That is a real certificate rather than a suppression: a timed `ALT` is taken out of the wait-for cycle search
+altogether, because it waits on nobody. It is the CSP reading of what a timeout is *for* — not "give up on a
+process that may be stuck" but "make this choice one that cannot get stuck".
+
+**The sampling loop.** c17's `Sniffer` reads its input when there is one and takes a sample when the clock
+says so, and that is a held select with both arms carrying the loop's invariant:
+
+<!-- doclint:case p290-timer/the-sampling-loop-a-held-select-with-a-timer-offer -->
+```groovy
+static void sniffer() {
+    AsyncChannel<Integer> input = AsyncChannel.create(4)
+    int samples = 0
+    ChannelSelect alt = ChannelSelect.offers(ChannelSelect.receive(input),
+                                             ChannelSelect.after(100)).fair()
+    @Invariant({ samples >= 0 })
+    while (true) {
+        ChannelSelect.Result r = await alt.select()
+        if (r.index == 0) {
+            samples = samples + 1
+        }
+        if (r.index == 1) {
+            samples = 0
+        }
+    }
+}
+```
+
+The timer branch holds **position 1**, so `r.index` means what it always did — a timer names no channel, but
+it does occupy a branch. The invariant is not vacuous: claim instead that the counter only ever grows and the
+reset arm refutes it, which is the arm a sampler exists to have. And the deadline composes with the guard of
+[GROOVY-12326](#the-guarded-alt--c05s-bounded-buffer) — `after(100).when { samples > 0 }`, "time out only
+when there is something to report" — which is pinned so that the liveness exemption above is not read as
+*any* select mentioning `after()` never blocks. A guarded-off timer arms nothing, and is not a way forward.
 
 ## How deadlock, liveness and starvation are certified
 
@@ -1707,7 +1781,7 @@ action-grained and above the memory model, exactly as CSP's own semantics are.
 
 ## What the gallery changed upstream
 
-Four gaps here were not boundaries to document but bugs and omissions in `groovy.concurrent`, found by
+Five gaps here were not boundaries to document but bugs and omissions in `groovy.concurrent`, found by
 modelling it as it actually behaved, reproduced, drafted, and fixed upstream. They are collected here rather
 than told alongside the examples, which are about the shapes and not about how the runtime got them.
 
@@ -1717,8 +1791,10 @@ than told alongside the examples, which are about the shapes and not about how t
 | **GROOVY-12323** | the racing *mixed* choice could not be arbitrated: two peers both committed, so a symmetric protocol could not be made coherent | `offers(send(…), receive(…))`, the send offers that let one branch commit over rendezvous channels |
 | **GROOVY-12324** | c05's guarded ALT was inexpressible — emulating a precondition mask by varying `from(…)`'s arguments renumbers the branches, so `r.index` names a different channel per arm | `select(boolean... enabled)`, one flag per offer with positions preserved; and `Result.getChannel()` beside the positional index |
 | **GROOVY-12326** | that mask binds each flag to its branch only by position, which is the same fragility moved from the index to the flag | `Offer.when(BooleanSupplier)`, the guard written on the branch it guards, consulted once per select so the instance can still be held |
+| **GROOVY-12343** | three chapters put a timer *inside* the `ALT` (c05's scaling device, c14's hand-eye test, c17's `Sniffer`) and none could port: `orTimeout` wraps the choice in an exception rather than adding a branch to it | `ChannelSelect.after(…)` and `AsyncChannel.after(…)` — the offer re-arms per select so a held instance keeps its rotation, the channel is a fixed deadline; with it the last of JCSP's four guard kinds is present |
 
-The pattern is the same each time: the checker models the runtime *as it is* rather than as documented, so a
+The last of those closes the guard family: input, output, boolean and timer are all now expressible, which
+is the vocabulary occam had. The pattern is the same each time: the checker models the runtime *as it is* rather than as documented, so a
 divergence shows up as an example that will not certify — and the reason it will not is specific enough to
 file. The last of the four came out of building against the third.
 

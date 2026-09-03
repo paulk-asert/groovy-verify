@@ -383,6 +383,49 @@ class ChannelDesugar {
         a.isEmpty() ? null : a.get(0)
     }
 
+    /** Phase 290 — a timer CHANNEL expression, `AsyncChannel.after(millis)` / `after(Duration)`: the fixed
+     *  deadline spelling, which may appear directly among a `from(…)` call's branches. Its clock starts when
+     *  it is created, so it is one deadline shared by every round rather than a per-round one — but for the
+     *  liveness certificate the two are the same fact: the branch becomes ready without anyone sending. */
+    static boolean isTimerChannelExpr(Expression e) {
+        Expression x = stripCasts(e)
+        if (x instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) x
+            return sm.method == 'after' && sm.ownerType?.nameWithoutPackage == 'AsyncChannel'
+        }
+        if (x instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) x
+            return m.methodAsString == 'after' && channelOwnerName(m.objectExpression) == 'AsyncChannel'
+        }
+        false
+    }
+
+    /** Phase 290 — GROOVY-12343's TIMER offer, `ChannelSelect.after(millis)` / `after(Duration)`, through any
+     *  `.when { … }` wrappers. A timer names no channel, so {@link #offerChannelOf} returns null for it and
+     *  the caller must ask here before concluding the offer shape is one it does not model. */
+    static boolean isTimerOffer(Expression offer) {
+        Expression x = stripCasts(offer)
+        while (x instanceof MethodCallExpression && ((MethodCallExpression) x).methodAsString == 'when') {
+            x = stripCasts(((MethodCallExpression) x).objectExpression)
+        }
+        if (x instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sm = (StaticMethodCallExpression) x
+            return sm.method == 'after' && sm.ownerType?.nameWithoutPackage == 'ChannelSelect'
+        }
+        if (x instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) x
+            return m.methodAsString == 'after' && channelOwnerName(m.objectExpression) == 'ChannelSelect'
+        }
+        false
+    }
+
+    /** The stand-in a timer branch occupies in a SelectRef's channel list. A timer has no channel, but its
+     *  POSITION is load-bearing — `r.index` is positional — so the slot must be held by something. A constant
+     *  is inert to every downstream pass, each of which asks `instanceof VariableExpression` before treating
+     *  a branch as a channel, so the timer is skipped by linearity, FIFO and readiness alike without any of
+     *  them having to learn about it. */
+    static Expression timerSlot() { new ConstantExpression('after') }
+
     /** One offer's conjoined guard — `receive(c).when { a }.when { b }` is `a && b` — else null when unguarded.
      *  A `when` whose argument is not a single-expression closure yields null too, and the caller then treats
      *  the offer as unmodelled rather than as unguarded (silently dropping a guard would be unsound). */
@@ -967,7 +1010,9 @@ class ChannelDesugar {
                 if (alt != null && de.leftExpression instanceof VariableExpression) {
                     boolean loopingAlt = streamScan.sanctionedFroms.contains(awaitedSelectCall(de.rightExpression))   // Phase 253 — the select() call
                     String first = null
-                    for (Expression a : alt) {
+                    for (int ai = 0; ai < alt.size(); ai++) {
+                        Expression a = alt.get(ai)
+                        if (ref.timerAt.contains(ai)) continue          // Phase 290 — a deadline branch, understood
                         Expression x = stripCasts(a)
                         String name = (x instanceof VariableExpression && ch.contains(((VariableExpression) x).name)) ? ((VariableExpression) x).name : null
                         if (name == null) { if (first != null) flag(first, 'is in an ALT with a non-channel-variable branch (declare each stage as a variable first)'); continue }
@@ -3523,6 +3568,10 @@ class ChannelDesugar {
         Expression fromCall              // the from(..) call (identity)
         List<Expression> fromCalls = new ArrayList<Expression>()   // Phase 273 — every arm's from() (one, or both of a guarded ternary)
         String varName                   // the held var, when held
+        /** Phase 290 — branch indices that are TIMER offers (GROOVY-12343). A timer is always eventually
+         *  ready, so a select carrying one can never be the unsatisfiable ALT of Phase 249 — which is the
+         *  whole point of having a deadline in the choice rather than an exception around it. */
+        Set<Integer> timerAt = new LinkedHashSet<Integer>()
     }
 
     /** `ChannelSelect.from(c…)[.fair()|.random()]` → its SelectRef; anything else → null. */
@@ -3567,17 +3616,26 @@ class ChannelDesugar {
             List<Expression> offers = selectOffersArgs(x)
             if (offers == null) return null
             List<Expression> chans = new ArrayList<Expression>()
-            for (Expression o : offers) {
+            Set<Integer> timers = new LinkedHashSet<Integer>()
+            for (int i = 0; i < offers.size(); i++) {
+                Expression o = offers.get(i)
                 Expression c = offerChannelOf(o)
+                if (c == null && isTimerOffer(o)) {     // Phase 290 — a deadline branch: no channel, but a position
+                    timers.add(i); chans.add(timerSlot()); continue
+                }
                 if (c == null) return null              // an offer shape we do not model: not a select we claim
                 chans.add(c)
             }
             SelectRef ro = new SelectRef(); ro.chans = chans; ro.policy = policy; ro.fromCall = x
+            ro.timerAt = timers
             ro.fromCalls.add(x)
             return ro
         }
         SelectRef r = new SelectRef(); r.chans = args; r.policy = policy; r.fromCall = x
         r.fromCalls.add(x)
+        for (int i = 0; i < args.size(); i++) {                  // Phase 290 — a timer channel among the branches
+            if (isTimerChannelExpr(args.get(i))) r.timerAt.add(i)
+        }
         r
     }
 

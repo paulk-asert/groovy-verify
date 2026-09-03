@@ -134,6 +134,9 @@ class CaseDsl {
     /** Phase 276 — GROOVY-12326's `receive(c).when { cond }` per-offer guard. */
     static final boolean WHEN_GUARD = verification.VerifyChecker.WHEN_GUARD
 
+    /** Phase 290 — GROOVY-12343's timer offer (`ChannelSelect.after`) and timer channel (`AsyncChannel.after`). */
+    static final boolean TIMER_OFFER = verification.VerifyChecker.TIMER_OFFER
+
     static String tc(String classText) {
         HDR + "@TypeChecked(extensions = 'verification.VerifyChecker')\n" + classText.stripIndent()
     }
