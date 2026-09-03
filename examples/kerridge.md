@@ -32,7 +32,9 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-**What is in it.** Thirty-seven worked examples, every one linked to a case that runs in CI.
+<!-- doclint:count 36 -->
+**What is in it.** Thirty-six worked examples, every one linked to a case that runs in CI, and the
+compiler messages beside them quoted verbatim from those same cases.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
 ways, with a literal trip count, with a symbolic `n`, and as three `while (true)` processes; client–server;
@@ -894,8 +896,21 @@ always enabled:
 ```
 
 `counter = 1, elements = 1` — the buffer exactly full, and PUT still on offer. Leave GET always enabled
-instead and the mirror image comes back, `counter = 0` with GET still offered: the underflow. Neither is a
-warning about a shape; each is the state the missing precondition would have excluded.
+instead and the mirror image comes back:
+
+<!-- doclint:diagnostic p273-guarded-alt/without-the-get-guard-the-buffer-underflows-refuted -->
+```
+[Static type checking] - Cannot prove loop invariant is preserved by the loop body in queue
+    invariant: ((0 <= counter) && (counter <= elements))
+    counterexample: counter = 0, elements = 1
+    fails on: queue(1)
+```
+
+`counter = 0` with GET still offered: the underflow. Both models read the same way, which is worth saying
+once because every loop-invariant counterexample below reads like it — the values are the state at the **top
+of the body**, from which one more iteration breaks the claim. A full buffer about to be written; an empty
+one about to be read. Neither is a warning about a shape; each is the state the missing precondition would
+have excluded.
 
 The **`while (true)`** is the book's own — a buffer process does not stop — so what is proved here is
 safety, not termination. A select whose flags are all false throws (`IllegalStateException`), so the checker
@@ -961,8 +976,18 @@ static int anyToOne() {
 
 Declared and **never inferred**, which is the design point rather than a detail. Inferring sharing from "two
 processes send here" would convert the linearity rule's main value — catching sharing nobody intended — into
-a silent weakening, so the undeclared shape refuses exactly as it always did. The two spellings sit side by
-side in the corpus for that reason.
+a silent weakening. Take the annotation off those same six lines and nothing else changes — the refusal is
+the one it always was, and it names both racing tasks:
+
+<!-- doclint:diagnostic p284-shared-ends/undeclared-sharing-is-still-refused -->
+```
+[Static type checking] - Channel linearity violation in 'undeclared': two concurrent senders on 'service' —
+the async task forked at line 40 and the async task forked at line 41 both use its send-end, so the element
+order is a race. A point-to-point channel has one live process per end — one sender, one receiver (FIFO
+per-element reasoning depends on it). …
+```
+
+The two spellings sit side by side in the corpus for that reason, and `@SharedReceive` has the mirror pair.
 
 What the declaration costs is said at the channel, in terms of what is given up rather than as a
 disappointed expectation:
@@ -1019,9 +1044,21 @@ static void servery() {
 }
 ```
 
-Serve whenever asked instead and it hands out a chicken it has not got, refuted at `chickens = 0` with the
-service branch taken. Fair selection changes *which* ready branch is chosen and nothing about what may be
-served: the precondition is still the whole difference.
+Serve whenever asked instead — drop the `when` and leave the service branch always on offer — and it hands
+out a chicken it has not got:
+
+<!-- doclint:diagnostic p284-shared-ends/a-servery-that-serves-whenever-asked-is-refused -->
+```
+[Static type checking] - Assertion may not hold: (chickens > 0)
+    counterexample: chickens = 0, r$index = 1
+    fails on: servery()
+```
+
+`chickens = 0` is the empty servery and `r$index = 1` the service branch taken anyway — the same two-part
+witness [c09's buffer](#the-overwriting-buffer--when-losing-data-is-the-specification) hands back, which is
+no coincidence: it is the same guarded-arm obligation over a different counter. Fair selection changes
+*which* ready branch is chosen and nothing about what may be served: the precondition is still the whole
+difference.
 
 A note on scope, since the book's own program is a whole college: the network as a single method falls
 outside the loop fragment — a channel send and forked arms in the loop's prefix region — so the gallery
@@ -1133,7 +1170,16 @@ Concurrent-read / exclusive-write means writes take @WithWriteLock; move the ass
 
 `value++` is refused the same way — an increment is a write however it is spelled. The second is subtler and
 is what the annotation's optional field name invites: read and write halves naming **different** locks, so a
-reader and a writer hold unrelated locks and exclude nothing. Both are named with the fields involved.
+reader and a writer hold unrelated locks and exclude nothing. That one is caught at the class rather than at
+a statement, and names both fields:
+
+<!-- doclint:diagnostic p282-crew/read-and-write-halves-on-different-locks-are-refused -->
+```
+[Static type checking] - Read and write locks differ in 'Db4': @WithReadLock uses 'lockB' and @WithWriteLock
+uses 'lockA', so a reader and a writer hold unrelated locks and exclude nothing. Concurrent-read /
+exclusive-write needs BOTH halves on one ReentrantReadWriteLock — name the same field in both annotations,
+or leave both unnamed to share the generated one.
+```
 
 And the discipline is not read too eagerly: a read-locked method may write its own locals freely, which is
 pinned by its own case so the check cannot start crying wolf over correct code.
@@ -1393,8 +1439,17 @@ in the task forked at line 41), which waits for the sync on 'second' (line 45), 
 phase.
 ```
 
-A barrier built for more parties than ever arrive is the other static error — *"constructed for 3 parties
-but only 2 processes arrive at it"* — and it never advances at all.
+A barrier built for more parties than ever arrive is the other static error, and it never advances at all —
+the message carries both counts, because the discrepancy is the whole diagnosis:
+
+<!-- doclint:diagnostic p277-barriers/a-party-that-never-arrives-leaves-the-barrier-stuck -->
+```
+[Static type checking] - Barrier 'gate' in 'shortParty' can never advance: it is constructed for 3 parties
+but only 2 processes arrive at it. A barrier releases when every enrolled party has arrived, so the ones
+that do arrive block forever. Construct it for the number of processes that sync on it, or have the missing
+parties arrive (register()/arriveAndDeregister() adjust the count at runtime, which this certificate does
+not model).
+```
 
 **Dynamic enrolment** is what c14 actually uses: a target resigns up front, then each round enrols, syncs
 and resigns again, so it takes part only in the rounds it is active for. Once enrolment moves at runtime a

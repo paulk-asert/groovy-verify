@@ -12826,6 +12826,79 @@ is left of UCaPE is c06/c17 (testing process networks, a different kind of exerc
 
 ---
 
+## Phase 288 — the gallery's own counterexamples, and a lint for counting  *(shipped — slice 49)*
+
+No engine change: a documentation slice acting on the reader feedback that the verbatim compiler messages
+and the counterexamples are what people come for. An audit of `examples/kerridge.md` against what the corpus
+actually emits found the gallery quoting a construct's proof and then *describing* its refutation in prose —
+the corpus holds 44 cases across the five newest groups and the page linked 13 — so five messages that were
+paraphrase are now pinned blocks:
+
+* c05's **underflow** (`counter = 0, elements = 1`) beside the overflow that was already there;
+* the canteen's **servery** serving what it has not got (`chickens = 0, r$index = 1`);
+* **undeclared sharing** still refused — the linearity violation naming both racing tasks, which is the
+  evidence for the "declared, never inferred" design point the section rests on;
+* CREW's **read and write halves on different locks**;
+* a barrier **constructed for more parties than arrive** — previously an inline italic fragment of the real
+  message, exactly the shape lint 6 exists to stop.
+
+One thing said once rather than five times: a loop-invariant counterexample is the state at the TOP of the
+body, from which one more iteration breaks the claim. `counter = 1, elements = 1` is a full buffer about to
+be written, `tokens = 1` a healthy ring about to gain a second token, `seated = 1` a table about to be
+over-filled. Without that sentence `invariant: (tokens == 1)` over `counterexample: tokens = 1` reads as a
+contradiction.
+
+**Lint 7 — `example-counts`.** The intro claimed thirty-seven worked examples and the file held thirty-six
+`doclint:case` links, drifted by a section added without touching the intro. Lint 2 pins each block to a
+case and lint 6 pins the messages beside it, but a *count* in prose was unchecked. A doc now declares its
+claim with `<!-- doclint:count N -->` and the lint holds N to that file's link count; `DocLintTest`
+asserts it inside `check`. The same mechanism is available to any gallery that counts itself.
+
+Verified on BOTH runtimes, which is the point of the exercise for a page full of solver output: 6.0.0-beta-3
+and 6.0.0-SNAPSHOT each report 27/27 quoted diagnostics matching, so the five new counterexamples are
+runtime-stable rather than one build's free choices. 2006 passed / 0 failed; `check` green; docLint 0 drift
+(186 case links, 27 pinned diagnostics, 1 prose count).
+
+---
+
+## Candidate — the Actor surface  *(not started; a different gallery, recorded so it is not lost)*
+
+Outside the Kerridge work by construction: UCaPE is CSP, and actors do not appear in it. This belongs with
+`examples/concurrency.md`, not `examples/kerridge.md`. Recorded here because the assessment that led to it
+started out wrong and the corrected version is worth keeping.
+
+**What is already done.** The STATE story, and it is complete for what it covers: a class `@Invariant` is
+the monitor invariant, assumed on entry and checked preserved on exit, with the structural half assumed —
+mutual exclusion from a lock (Phase 115), serialization from an Agent/Actor processing one message at a time
+(Phase 117), or the read/write discipline of CREW (Phase 282). The actor case needs no annotation at all,
+because serialization is structural rather than disciplinary.
+
+**What is not.** The `Actor` FEATURE surface has no case exercising it: `sendAndGet`, `become`, `stash` /
+`unstashAll`, `scheduleOnce` / `scheduleAtFixedRate`, `onError`, `ActorOptions`. (A grep for `become` and
+`stash` in the corpus finds only the English words in prose.) "The invariant story is finished" was
+generalised, wrongly, into "actors are finished".
+
+**Three properties worth having, each REUSING machinery already built** — which is the real argument, since
+none of them needs a new mechanism:
+
+* *`become` as protocol conformance.* An actor's become-chain is a state machine, and Phases 263/264 already
+  project a global `@Protocol` onto roles and check control flow against the projection. The interesting
+  property is not the invariant (which holds whichever behaviour is current — the reason this was dismissed
+  first time round) but the SEQUENCE, which is exactly what session types check.
+* *Stash conservation.* `stash()` with no matching `unstashAll()` loses messages, and
+  `ActorOptions.withStashBound(n, StashOverflow)` means the runtime has a bound the code can exceed. The same
+  conservation shape as c04's token count (Phase 287): take one, put one back.
+* *Bounded mailbox overflow.* `ActorOptions.withBoundedMailbox(n, Overflow)` — choosing between dropping the
+  oldest, the newest, or failing is precisely c09's overwriting-buffer question (Phase 281), where loss is
+  the specification and the discarded count is part of the answer.
+
+Also uncovered, and relevant to the timer proposal: `ActorContext` has `scheduleOnce` and
+`scheduleAtFixedRate`, so the ACTOR half of `groovy.concurrent` has timers while the CHANNEL half has none.
+That asymmetry is the strongest argument for `AsyncChannel.after(…)`, because it is about the library's own
+coherence rather than about what other ecosystems do.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

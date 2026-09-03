@@ -219,9 +219,32 @@ class DocLint {
         broken.size()
     }
 
+    // 7 ─ a doc that COUNTS its examples in prose must count them right. Lint 2 pins each block to a case
+    //     and lint 6 pins the messages beside it, but the summary sentence at the top of a gallery ("Thirty-
+    //     seven worked examples, every one linked to a case") was unchecked prose, and drifted the moment a
+    //     section was added without touching the intro. A doc declares its own claim with
+    //     `<!-- doclint:count N -->`, N in digits; the lint holds N to that file's doclint:case link count.
+    static int lintExampleCounts() {
+        int claims = 0, broken = 0
+        List<String> bad = []
+        docFiles().each { String f ->
+            File doc = new File(f); if (!doc.exists()) return
+            String text = doc.text
+            int links = (text =~ /<!--\s*doclint:case\s/).count
+            (text =~ /<!--\s*doclint:count\s+(\d+)\s*-->/).each { m ->
+                claims++
+                int claimed = (m[1] as String) as int
+                if (claimed != links) { broken++; bad << "${f}: claims ${claimed} worked examples, has ${links} doclint:case links" }
+            }
+        }
+        println "\n[7] example counts — ${claims - broken}/${claims} prose counts match their file's linked cases"
+        if (broken) { println "    DRIFTED (${broken}):"; bad.each { println "      ${it}" } }
+        broken
+    }
+
     static void main(String[] args) {
         println '── DocLint (human-readable report; DocLintTest asserts the same lints inside `check`/CI) ' + ('─' * 8)
-        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora() + lintTrustedSpecs() + lintDiagnostics()
+        int total = lintGroupDescriptions() + lintSnippets() + lintArchitecture() + lintPackCorpora() + lintTrustedSpecs() + lintDiagnostics() + lintExampleCounts()
         println "\n${'═' * 70}\nTotal drift findings: ${total}  (report-only; not failing the build)"
     }
 }

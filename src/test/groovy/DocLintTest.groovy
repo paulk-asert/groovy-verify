@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals
  *     and every doclint:case link still matches its case (comments included)
  *   • every verification/*.groovy engine source is named in ARCHITECTURE.md
  *   • every doc-QUOTED compiler message is really what its case emits (a doc may elide with `…`, never invent)
+ *   • a doc that counts its worked examples in prose counts them right (`<!-- doclint:count N -->`)
  */
 class DocLintTest {
 
@@ -51,6 +52,12 @@ class DocLintTest {
     void everyQuotedDiagnosticIsWhatTheCompilerSays() {
         assertEquals(0, DocLint.lintDiagnostics(),
             'a doc-quoted compiler message is not what its case emits — re-run the case and paste the real diagnostic')
+    }
+
+    @Test
+    void everyProseExampleCountMatchesItsLinkedCases() {
+        assertEquals(0, DocLint.lintExampleCounts(),
+            'a doc counts its worked examples in prose and the count has drifted from its doclint:case links')
     }
 
     @Test
