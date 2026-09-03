@@ -732,6 +732,12 @@ The verdict keys on the **capacity**, not on the shape: the write-first pair on 
 certified, because with a buffer it genuinely does not deadlock. Writing before reading is a mistake only
 where the channel makes it one, and the checker says so only there.
 
+The rule that "capacity decides whether a send can block" outlives channels, which is worth knowing before
+leaving this chapter: a bounded actor mailbox declared `Overflow.BLOCK` parks its sender the same way, and
+[fills the same kind of knot](concurrency.md#the-bounded-mailbox--the-other-send-that-blocks-phase-289)
+when the handler is waiting on the process doing the filling. Those two are the only blocking sends in
+`groovy.concurrent`; everywhere else a send is queued and returns.
+
 ## …and a wrong claim comes back with a counterexample
 
 The four refutations above carry no counterexample and need none: for a circular wait, a racing send-end or
@@ -1767,9 +1773,16 @@ iteration or one `ALT`, `int` elements, and the pipeline's map stages declared a
 refuses the value model *with the reason named*: a range `for`-in over a symbolic bound, two sends of one
 channel in an iteration, a `first()` outside such a loop, a send under an `if` that is not the
 `ALT`-guarded reply shape, a drain through a `filter`. Inside the fragment the certificates rest on three
-stated facts: sends never block on a buffered channel (queued, the `Awaitable` discarded) — a channel
-declared with capacity 0 is a rendezvous instead, and its sends do block (Phase 272) — the base case of
+stated facts: sends never block on a buffered channel (queued, the `Awaitable` discarded), the base case of
 every loop is the straight-line code before it, and liveness assumes weak fairness — nothing more.
+
+The first of those is **measured rather than assumed**, which matters because so much rests on it: eight
+sends into a capacity-2 channel with nothing draining all return, so a channel's capacity is a hint to the
+reader and not a bound on the sender. Two constructs are the exceptions, and both are modelled as blocking —
+a channel declared with capacity 0, which is a rendezvous (Phase 272), and a
+[bounded actor mailbox](concurrency.md#the-bounded-mailbox--the-other-send-that-blocks-phase-289)
+declared `Overflow.BLOCK` (Phase 289, in the concurrency gallery: an actor is not a CSP process, so it is
+documented there rather than here).
 
 **What is genuinely outside today.** The *queueing* half of latency — delay behind a backlog, which needs
 arrival-rate assumptions — is a calculus this gallery deliberately does not carry; its bounds are

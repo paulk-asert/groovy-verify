@@ -285,7 +285,7 @@ changes — mutual exclusion → serialization. That's the point: the same local
 **shared-memory locking *and* message-passing actors**. Drop the `count < capacity` guard and it refutes, lock
 or no lock. (We still don't prove the runtime *is* serial — that's the agent's contract, the half we rely on.)
 
-### The bounded mailbox — the one send that really blocks (Phase 289)
+### The bounded mailbox — the other send that blocks (Phase 289)
 
 The invariant above is what an actor *maintains*. Its **mailbox** is a different question, and the first one
 in this gallery whose answer had to be measured rather than reasoned about.

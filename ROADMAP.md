@@ -12907,7 +12907,11 @@ the handler runs once per MESSAGE where an async arm is a single process run. Th
 cases assert it; the mailbox verdict is independent and is what they pin.
 
 Docs: folded into `examples/concurrency.md` beside the Agents & actors invariant section rather than given a
-new `actors.md` — the invariant half and the mailbox half of the same paradigm belong together, and one
+new `actors.md`, and cross-linked BOTH ways — the Kerridge gallery's c07 chapter, which is where a reader
+learns that capacity decides whether a send blocks, now says the rule outlives channels, and its honest
+boundary names the mailbox as the second exception beside the rendezvous. (Phase 290 note: the section was
+first titled "the ONE send that really blocks", which the cross-link then contradicted — there are two.
+Renamed to "the other send that blocks".) — the invariant half and the mailbox half of the same paradigm belong together, and one
 section does not earn a page. It becomes `actors.md` when `become` / stash join it, the way kerridge.md
 earned its file.
 
