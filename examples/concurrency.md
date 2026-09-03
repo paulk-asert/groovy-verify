@@ -285,6 +285,72 @@ changes — mutual exclusion → serialization. That's the point: the same local
 **shared-memory locking *and* message-passing actors**. Drop the `count < capacity` guard and it refutes, lock
 or no lock. (We still don't prove the runtime *is* serial — that's the agent's contract, the half we rely on.)
 
+### The bounded mailbox — the one send that really blocks (Phase 289)
+
+The invariant above is what an actor *maintains*. Its **mailbox** is a different question, and the first one
+in this gallery whose answer had to be measured rather than reasoned about.
+
+Every deadlock certificate here rests on a sentence: *a send never blocks*. A buffered `AsyncChannel` queues
+the element and hands back an `Awaitable` the caller drops on the floor. That is not an assumption — eight
+sends into a capacity-2 channel with nothing draining all return, which `ActorMailboxSemanticsTest` pins, so
+capacity is a hint to the reader rather than a bound on the sender. The one exception was the rendezvous
+channel of [the Kerridge gallery](kerridge.md#c07s-deadlock-which-every-earlier-rung-was-blind-to).
+
+`ActorOptions.withBoundedMailbox(k, Overflow.BLOCK)` is the second, and the same test pins it: a send into a
+full BLOCK mailbox parks the calling thread until space appears. So a burst into a bounded actor is a chain
+of blocking events — and the classic actor footgun becomes a wait-for cycle a compiler can name. One message
+is being handled and `k` wait behind it, so the (k+2)-th send is the first that must wait for the handler to
+take another:
+
+<!-- doclint:case p289-actor-mailbox/filling-a-block-mailbox-before-feeding-its-handler-is-a-circular-wait -->
+```groovy
+static int knot() {
+    AsyncChannel<Integer> gate = AsyncChannel.create(4)
+    Actor<Integer> worker = Actor.reactor({ Integer m -> gate.first() },
+        ActorOptions.DEFAULTS.withBoundedMailbox(1, ActorOptions.Overflow.BLOCK))
+    worker.send(1)
+    worker.send(2)
+    worker.send(3)
+    gate.send(0)
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p289-actor-mailbox/filling-a-block-mailbox-before-feeding-its-handler-is-a-circular-wait -->
+```
+[Static type checking] - Actor mailbox deadlock in 'knot': the send to 'worker' (line 44) is the 3rd to a
+mailbox bounded at 1 with Overflow.BLOCK — one message is being handled and 1 waits behind it, so this send
+parks the sending thread until the handler takes another. The handler cannot: it is waiting for the receive
+on 'gate' (line 40), which this method sends only at line 45, after the send that blocks. …
+```
+
+Both halves of the cycle are named, and the fix is arithmetic rather than advice: `gate.send(0)` before the
+burst, a bound above the burst, or a policy that does not block. Each of those is a case, and the **bound**
+is what the refutation turns on — the identical burst on an unbounded mailbox is not a deadlock, because
+there the send is queued and no one waits.
+
+**The lossy policies say something different.** `DROP_NEWEST` and `FAIL` never block, so there is no cycle to
+find; what they cost is the *answer*. A `sendAndGet` past the bound has its reply completed with an
+`IllegalStateException` rather than a value — measured, and worth knowing, because `Overflow`'s javadoc says
+only "the new message is silently dropped" where `StashOverflow` spells the reply binding out. So the caller
+is **not** stranded, which is the good news, and a claim about that reply can hold only by luck:
+
+<!-- doclint:diagnostic p289-actor-mailbox/a-claim-on-a-reply-past-a-drop-newest-bound-is-refused -->
+```
+[Static type checking] - Reply from a full bounded mailbox in 'lossy': 'reply' is the Awaitable of a
+sendAndGet to 'worker' (line 43) whose mailbox is bounded at 1 with Overflow.DROP_NEWEST, and this send is
+past that bound. … nothing ties this Awaitable to an answer, and a claim about its value can hold only by
+luck. …
+```
+
+That is the [shared reply end](kerridge.md#shared-channel-ends--declared-never-inferred) again in a different
+dress: not "this will fail" but "nothing connects the thing you have to the thing you asked for".
+
+**One boundary, stated rather than papered over.** A channel an actor *handler* touches falls out of the
+one-shot FIFO model, and says so — because a handler runs once per **message**, where an `async` arm is a
+single process run. The mailbox verdict is independent of that skip, which is why the cases pin both: the
+channel certificate withheld, and the deadlock answer given.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

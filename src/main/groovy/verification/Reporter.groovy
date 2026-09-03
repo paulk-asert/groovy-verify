@@ -493,6 +493,41 @@ class Reporter {
         "count at runtime, which this certificate does not model)."
     }
 
+    /** Phase 289 — a burst into a bounded BLOCK mailbox whose handler cannot drain: a wait-for cycle. */
+    static String formatActorMailboxDeadlock(String methodName, String actor, int capacity, int sendLine,
+                                             int nth, String gate, int waitLine, int feedLine) {
+        "Actor mailbox deadlock in '${methodName}': the send to '${actor}' (line ${sendLine}) is the " +
+        "${nth}${nth % 10 == 1 && nth != 11 ? 'st' : nth % 10 == 2 && nth != 12 ? 'nd' : nth % 10 == 3 && nth != 13 ? 'rd' : 'th'} " +
+        "to a mailbox bounded at ${capacity} with Overflow.BLOCK — one message is being handled and " +
+        "${capacity} wait${capacity == 1 ? 's' : ''} behind it, so this send parks the sending thread until " +
+        "the handler takes another. The handler cannot: it is waiting for the receive on '${gate}' " +
+        "(line ${waitLine}), which this method sends only at line ${feedLine}, after the send that blocks. " +
+        "Unlike a buffered AsyncChannel — where a send is queued and never blocks whatever the capacity — a " +
+        "BLOCK mailbox makes the sender wait, so filling one before feeding its handler is a circular wait. " +
+        "Feed '${gate}' before the burst, raise the bound above the burst, or choose a non-blocking overflow " +
+        "policy and handle the loss."
+    }
+
+    /** Phase 289 — a claim on a reply that the overflow policy may have thrown away. */
+    static String formatActorMailboxLossy(String methodName, String actor, int capacity, String policy,
+                                          int sendLine, String replyVar) {
+        "Reply from a full bounded mailbox in '${methodName}': '${replyVar}' is the Awaitable of a " +
+        "sendAndGet to '${actor}' (line ${sendLine}) whose mailbox is bounded at ${capacity} with " +
+        "Overflow.${policy}, and this send is past that bound. Under ${policy} the message is " +
+        (policy == 'FAIL' ? 'rejected at the sender' : 'dropped silently') + ", and the reply is completed " +
+        "with an IllegalStateException rather than a value — so the caller is not stranded, but nothing " +
+        "ties this Awaitable to an answer, and a claim about its value can hold only by luck. Await it " +
+        "defensively, keep the burst within the bound, or use Overflow.BLOCK so the send waits instead of " +
+        "being discarded."
+    }
+
+    /** Phase 289 — a bounded mailbox the model cannot read: loud skip, no claim either way. */
+    static String formatActorMailboxSkipped(String methodName, String actor, String why) {
+        "Skipped actor mailbox certificate for '${actor}' in ${methodName} (${why}). The mailbox model " +
+        "needs a literal capacity and a literal ActorOptions.Overflow constant to say whether a send " +
+        "blocks; without them neither deadlock-freedom nor loss is certified for this actor."
+    }
+
     /** Phase 243 — the network is outside the certificate's scope: loud skip, no claim either way. */
     /** Phase 266 — the @DeliveredWithin(n, from, to) multi-hop bound claim. */
     static String formatDeliveredWithin(String methodName, String detail) {

@@ -2336,6 +2336,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (body instanceof BlockStatement) checkSharedReplyCorrelation(node, (BlockStatement) body)
             } catch (Throwable ignored) {
             }
+            try {
+                // Phase 289 — the bounded actor mailbox: the only send besides a rendezvous that blocks.
+                if (body instanceof BlockStatement) {
+                    for (ActorMailbox.Finding f : ActorMailbox.check(node.name, (BlockStatement) body)) {
+                        addStaticTypeError(f.message, f.anchor)
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
 
             // Phase 242 — a constrained channel PARAM's statement send becomes its contract assert
             // (`ch.send(e)` → `assert φ(e)`): the producer's half of the modular channel contract.
@@ -4549,7 +4558,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ParScanner(int ord, ParCtx ctx) { this.ord = ord; this.ctx = ctx }
 
         @Override void visitMethodCallExpression(MethodCallExpression call) {
-            ClosureExpression cl = asyncClosure(call)
+            ClosureExpression cl = asyncClosure(call) ?: ActorMailbox.handlerClosure(call)   // Phase 289
             if (cl != null) { recordArm(call, cl, null); return }
             // Phase 241 — a main-body channel end-use (seq = the statement ordinal)
             recordChanUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
@@ -4561,7 +4570,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
 
         @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
-            ClosureExpression cl = asyncClosure(call)
+            ClosureExpression cl = asyncClosure(call) ?: ActorMailbox.handlerClosure(call)   // Phase 289
             if (cl != null) { recordArm(call, cl, null); return }
             recordSelectUsesIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0)     // Phase 249
             boolean isAwait = call.method == 'await'
@@ -4576,6 +4585,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 recordArm(rhs, cl, ((VariableExpression) de.leftExpression).name)
                 return
             }
+            ClosureExpression handler = ActorMailbox.handlerClosure(rhs)             // Phase 289
+            if (handler != null) { recordArm(rhs, handler, null); return }           // no handle: it never joins
             de.rightExpression?.visit(this)     // the LHS is a fresh binding, not a shared-state write
         }
 
@@ -5542,7 +5553,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         code.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 if (de.leftExpression instanceof VariableExpression &&
-                    stripCasts(de.rightExpression) instanceof ConstructorCallExpression) {
+                    (stripCasts(de.rightExpression) instanceof ConstructorCallExpression ||
+                     ActorMailbox.isActorFactory(stripCasts(de.rightExpression)))) {   // Phase 289
                     news.add(((VariableExpression) de.leftExpression).name)
                 }
                 super.visitDeclarationExpression(de)

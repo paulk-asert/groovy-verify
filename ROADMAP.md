@@ -12868,6 +12868,53 @@ runtime-stable rather than one build's free choices. 2006 passed / 0 failed; `ch
 
 ---
 
+## Phase 289 — the bounded actor mailbox, the second send that blocks  *(shipped — slice 50)*
+
+The first case coverage of the `Actor` FEATURE surface, taken from the candidate list below on the grounds
+that it is the only one of the three whose property is LIVENESS — the checker's sharpest claim, and the
+actor half's least-tested. It reuses c09's lossy-buffer shape rather than needing new theory.
+
+**Three runtime facts, measured before anything was modelled** (`ActorMailboxSemanticsTest`, which stays in
+the suite as the evidence):
+
+* A buffered `AsyncChannel` send NEVER blocks, whatever the capacity — eight sends into a capacity-2 channel
+  with nothing draining all return. The gallery's stated assumption is therefore sound, and capacity is a
+  hint to the reader rather than a bound on the sender. Worth having pinned: several certificates rest on it.
+* `withBoundedMailbox(k, Overflow.BLOCK)` DOES block the sender when full, and releases when space appears.
+  That makes it the only send in `groovy.concurrent` besides a rendezvous channel (Phase 272) that is a
+  blocking event.
+* A `sendAndGet` past the bound under `DROP_NEWEST` completes its reply with `IllegalStateException` — the
+  caller is NOT stranded. This was the suspected bug, and it is not one: only the javadoc is silent, where
+  `StashOverflow` documents the same binding. Recorded so the negative result is not re-investigated.
+
+**The model.** `ActorMailbox` (new engine source, kept out of `VerifyChecker` so that class does not grow
+back past the per-class compile ceiling of Phase 288's neighbour) reads a literal capacity and a literal
+policy off the declaration. One message is in the handler and k in the box, so the (k+2)-th send is the first
+that must wait; if the handler is itself waiting on a channel this method feeds only AFTER that send, both
+halves of the cycle are named. Under the lossy policies nothing blocks, and what is refused instead is a
+claim on a reply the policy may have thrown away — Phase 285's correlated shared reply in another dress.
+
+**Two integration points, both general rather than actor-specific:**
+
+* An actor handler is now registered as a PROCESS (a `ParArm`) like an `async` arm, with no join handle
+  since an actor never joins. Without it a handler's channel wait read as a sequential receive in the
+  caller, and the caller was falsely accused of deadlock — the good cases caught it.
+* A local bound to an `Actor` factory joins the never-null set beside `new` (Phase 277): a factory returns
+  an actor or throws, so `worker.send(…)` carried an undischargeable deref obligation without it.
+
+**One boundary kept loud.** A channel an actor handler touches falls out of the one-shot FIFO model, because
+the handler runs once per MESSAGE where an async arm is a single process run. The skip is emitted and the
+cases assert it; the mailbox verdict is independent and is what they pin.
+
+Docs: folded into `examples/concurrency.md` beside the Agents & actors invariant section rather than given a
+new `actors.md` — the invariant half and the mailbox half of the same paradigm belong together, and one
+section does not earn a page. It becomes `actors.md` when `become` / stash join it, the way kerridge.md
+earned its file.
+
+2014 passed / 0 failed; `check` green; docLint 0 drift (188 case links, 31 pinned diagnostics).
+
+---
+
 ## Candidate — the Actor surface  *(not started; a different gallery, recorded so it is not lost)*
 
 Outside the Kerridge work by construction: UCaPE is CSP, and actors do not appear in it. This belongs with
@@ -12888,16 +12935,17 @@ generalised, wrongly, into "actors are finished".
 **Three properties worth having, each REUSING machinery already built** — which is the real argument, since
 none of them needs a new mechanism:
 
-* *`become` as protocol conformance.* An actor's become-chain is a state machine, and Phases 263/264 already
-  project a global `@Protocol` onto roles and check control flow against the projection. The interesting
+* *`become` as protocol conformance.* An actor's become-chain is a state machine, and the interesting
   property is not the invariant (which holds whichever behaviour is current — the reason this was dismissed
-  first time round) but the SEQUENCE, which is exactly what session types check.
+  first time round) but the SEQUENCE. Session types are the right frame, but calling this a REUSE of Phases
+  263/264 was optimistic: those project a global `@Protocol` onto a role and check a METHOD's control flow
+  against it, whereas `become` moves the state between dispatches. It needs a become-graph and transition
+  checking — new machinery. The most interesting of the three, and the expensive one.
 * *Stash conservation.* `stash()` with no matching `unstashAll()` loses messages, and
   `ActorOptions.withStashBound(n, StashOverflow)` means the runtime has a bound the code can exceed. The same
   conservation shape as c04's token count (Phase 287): take one, put one back.
-* *Bounded mailbox overflow.* `ActorOptions.withBoundedMailbox(n, Overflow)` — choosing between dropping the
-  oldest, the newest, or failing is precisely c09's overwriting-buffer question (Phase 281), where loss is
-  the specification and the discarded count is part of the answer.
+* *Bounded mailbox overflow.* SHIPPED as Phase 289 above — and it turned out to be the liveness item rather
+  than the loss item, because `Overflow.BLOCK` makes the sender wait.
 
 Also uncovered, and relevant to the timer proposal: `ActorContext` has `scheduleOnce` and
 `scheduleAtFixedRate`, so the ACTOR half of `groovy.concurrent` has timers while the CHANNEL half has none.
