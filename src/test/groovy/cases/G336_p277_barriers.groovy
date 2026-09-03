@@ -37,6 +37,57 @@ class G336_p277_barriers {
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
 
     static final List<Map> CASES = [
+        // ---------- c04's reset ring: conservation, not ordering (Phase 287) ----------
+        // The book's first ALT, injected into a feedback ring. The normal arm forwards the circulating
+        // token — take one, put one back. The RESET arm must ALSO drain that token before injecting the
+        // reset value, or the ring quietly gains one. What is proved is a conservation property: exactly
+        // one token is in flight, whichever arm the ALT takes. No guard anywhere — the arms just have to
+        // agree on the count.
+        [group: 'P277 barriers', name: 'c04\'s reset ring conserves its token', expect: 'Skipped channel verification',
+         refute: ['Cannot prove loop invariant', 'Skipped loop verification'],
+         src: tc("""class C {
+                        static void resetPrefix() {
+                            AsyncChannel<Integer> reset = AsyncChannel.create(4)
+                            AsyncChannel<Integer> ring = AsyncChannel.create(4)
+                            ChannelSelect alt = ChannelSelect.from(reset, ring)
+                            int tokens = 1
+                            @Invariant({ tokens == 1 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                if (r.index == 0) {
+                                    tokens = tokens - 1
+                                    tokens = tokens + 1
+                                }
+                                if (r.index == 1) {
+                                    tokens = tokens - 1
+                                    tokens = tokens + 1
+                                }
+                            }
+                        }
+                    }""")],
+        // Leave the drain out of the reset arm — the mistake the chapter is about — and the ring gains a
+        // token every time it is reset. Refuted at the invariant, not at any one channel operation.
+        [group: 'P277 barriers', name: 'a reset that forgets to drain gains a token: refuted',
+         expect: 'Cannot prove loop invariant',
+         src: tc("""class C {
+                        static void resetPrefix() {
+                            AsyncChannel<Integer> reset = AsyncChannel.create(4)
+                            AsyncChannel<Integer> ring = AsyncChannel.create(4)
+                            ChannelSelect alt = ChannelSelect.from(reset, ring)
+                            int tokens = 1
+                            @Invariant({ tokens == 1 })
+                            while (true) {
+                                ChannelSelect.Result r = await alt.select()
+                                if (r.index == 0) {
+                                    tokens = tokens + 1
+                                }
+                                if (r.index == 1) {
+                                    tokens = tokens - 1
+                                    tokens = tokens + 1
+                                }
+                            }
+                        }
+                    }""")],
         // ---------- barriers AND channels in one network (Phase 283) ----------
         // c14's real shape: the targets agree on a phase with barriers while also exchanging messages over
         // channels. A knot can close through both media at once — here one party waits for a message before

@@ -245,10 +245,15 @@ class ChannelDesugar {
         if (!(body instanceof BlockStatement)) return body
         Map<String, List<Expression>> guards = new LinkedHashMap<String, List<Expression>>()   // select var → per-offer guards
         collectHeldOfferGuards(body, guards)
+        // Phase 287 — an UNGUARDED select in a specified loop binds its index too. c04's reset ring is a
+        // plain two-branch ALT whose arms move a token count, with no precondition anywhere; without this
+        // `r.index` is unresolvable and the loop is skipped. Safe by construction: this pass runs AFTER the
+        // stream rewrite, so a select the looping-ALT model already handled is no longer a declaration here.
+        Map<String, SelectRef> selVars = collectSelectVars(body)
         Map<String, String> bound = new LinkedHashMap<String, String>()          // result var → its $index var
-        collectMaskedSelects(body, bound, guards)
+        collectMaskedSelects(body, bound, guards, selVars)
         if (bound.isEmpty()) return body
-        return rewriteGuardedStmt(body, bound, guards)
+        return rewriteGuardedStmt(body, bound, guards, selVars)
     }
 
     /** Phase 276 — select instances whose OFFERS carry guards, so a held `alt` declared outside the loop
@@ -265,13 +270,15 @@ class ChannelDesugar {
         })
     }
 
-    /** Result vars declared by an awaited select that is guarded at all — by positional flags
-     *  (GROOVY-12324) or per-offer (GROOVY-12326), the two spellings of the same thing. */
-    static void collectMaskedSelects(Statement body, Map<String, String> out, Map<String, List<Expression>> guards) {
+    /** Result vars whose index this pass binds: an awaited select that is guarded — by positional flags
+     *  (GROOVY-12324) or per-offer (GROOVY-12326) — or, since Phase 287, any awaited select at all, whose
+     *  index is then simply one of its branches. */
+    static void collectMaskedSelects(Statement body, Map<String, String> out, Map<String, List<Expression>> guards,
+                                     Map<String, SelectRef> selVars) {
         body.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
                 if (de.leftExpression instanceof VariableExpression &&
-                    guardedSelectArity(de.rightExpression, guards) > 0) {
+                    guardedSelectArity(de.rightExpression, guards, selVars) > 0) {
                     String n = ((VariableExpression) de.leftExpression).name
                     out.put(n, n + '$index')
                 }
@@ -281,11 +288,14 @@ class ChannelDesugar {
     }
 
     /** The branch count of an awaited GUARDED select, or 0 when it carries no guard of either kind. */
-    static int guardedSelectArity(Expression rhs, Map<String, List<Expression>> guards) {
+    static int guardedSelectArity(Expression rhs, Map<String, List<Expression>> guards,
+                                  Map<String, SelectRef> selVars) {
         List<Expression> mask = awaitedSelectMask(rhs)
         if (mask != null && !mask.isEmpty()) return mask.size()
         List<Expression> og = offerGuardsFor(rhs, guards)
-        og == null ? 0 : og.size()
+        if (og != null) return og.size()
+        SelectRef ref = awaitedSelect(rhs, selVars)          // Phase 287 — unguarded: any branch is possible
+        ref == null ? 0 : ref.chans.size()
     }
 
     /** The per-offer guards behind an awaited select — through a held instance, or inline. */
@@ -417,29 +427,29 @@ class ChannelDesugar {
     }
 
     /** Phase 275 — carry a loop's spec across the rewrite, over the rewritten statements. */
-    static void rebindLoopSpec(Statement from, Statement to, Map<String, String> bound, Map<String, List<Expression>> guards) {
+    static void rebindLoopSpec(Statement from, Statement to, Map<String, String> bound, Map<String, List<Expression>> guards, Map<String, SelectRef> selVars) {
         Object o = from.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
         if (!(o instanceof LoopSpec)) return
         LoopSpec sp = (LoopSpec) o, ns = new LoopSpec()
         ns.invariants = sp.invariants.collect { Expression e -> rewriteGuardedExpr(e, bound) }
         ns.variant = sp.variant == null ? null : rewriteGuardedExpr(sp.variant, bound)
         ns.guard = sp.guard == null ? null : rewriteGuardedExpr(sp.guard, bound)
-        ns.body = sp.body.collect { Statement x -> rewriteGuardedStmt(x, bound, guards) }
-        ns.init = sp.init == null ? null : sp.init.collect { Statement x -> rewriteGuardedStmt(x, bound, guards) }
+        ns.body = sp.body.collect { Statement x -> rewriteGuardedStmt(x, bound, guards, selVars) }
+        ns.init = sp.init == null ? null : sp.init.collect { Statement x -> rewriteGuardedStmt(x, bound, guards, selVars) }
         ns.forInVar = sp.forInVar
-        ns.forInBind = sp.forInBind == null ? null : rewriteGuardedStmt(sp.forInBind, bound, guards)
+        ns.forInBind = sp.forInBind == null ? null : rewriteGuardedStmt(sp.forInBind, bound, guards, selVars)
         ns.isDoWhile = sp.isDoWhile
         ns.autoInvariantOnly = sp.autoInvariantOnly
         to.putNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY, ns)
     }
 
     /** The statement walk: replace the masked-select declaration, rewrite `r.index` everywhere else. */
-    static Statement rewriteGuardedStmt(Statement st, Map<String, String> bound, Map<String, List<Expression>> guards) {
+    static Statement rewriteGuardedStmt(Statement st, Map<String, String> bound, Map<String, List<Expression>> guards, Map<String, SelectRef> selVars) {
         if (st == null || st instanceof EmptyStatement) return st
         if (st instanceof BlockStatement) {
             BlockStatement b = (BlockStatement) st
             List<Statement> out = new ArrayList<Statement>()
-            for (Statement s : b.statements) out.add(rewriteGuardedStmt(s, bound, guards))
+            for (Statement s : b.statements) out.add(rewriteGuardedStmt(s, bound, guards, selVars))
             BlockStatement nb = new BlockStatement(out, b.variableScope)
             nb.setSourcePosition(b); return nb
         }
@@ -447,20 +457,20 @@ class ChannelDesugar {
             WhileStatement w = (WhileStatement) st
             WhileStatement nw = new WhileStatement(
                 new BooleanExpression(rewriteGuardedExpr(w.booleanExpression.expression, bound)),
-                rewriteGuardedStmt(w.loopBlock, bound, guards))
+                rewriteGuardedStmt(w.loopBlock, bound, guards, selVars))
             nw.setSourcePosition(w); nw.copyNodeMetaData(w)
             // The LoopSpec rides as node metadata and holds its OWN statement list — the one the loop
             // encoder actually executes. Copying the metadata onto a rebuilt loop would carry the stale
             // pre-rewrite body, so the spec is rebuilt over the rewritten statements too.
-            rebindLoopSpec(w, nw, bound, guards)
+            rebindLoopSpec(w, nw, bound, guards, selVars)
             return nw
         }
         if (st instanceof IfStatement) {
             IfStatement i = (IfStatement) st
             IfStatement ni = new IfStatement(
                 new BooleanExpression(rewriteGuardedExpr(i.booleanExpression.expression, bound)),
-                rewriteGuardedStmt(i.ifBlock, bound, guards),
-                i.elseBlock == null ? EmptyStatement.INSTANCE : rewriteGuardedStmt(i.elseBlock, bound, guards))
+                rewriteGuardedStmt(i.ifBlock, bound, guards, selVars),
+                i.elseBlock == null ? EmptyStatement.INSTANCE : rewriteGuardedStmt(i.elseBlock, bound, guards, selVars))
             ni.setSourcePosition(i); ni.copyNodeMetaData(i); return ni
         }
         if (st instanceof ExpressionStatement) {
@@ -472,7 +482,7 @@ class ChannelDesugar {
                 // per-offer `when` (GROOVY-12326). The runtime conjoins them, so the model does too.
                 List<Expression> mask = awaitedSelectMask(de.rightExpression)
                 List<Expression> og = offerGuardsFor(de.rightExpression, guards)
-                int arity = mask != null && !mask.isEmpty() ? mask.size() : (og == null ? 0 : og.size())
+                int arity = guardedSelectArity(de.rightExpression, guards, selVars)
                 if (bound.containsKey(n) && arity > 0 && (og == null || og.size() == arity)) {
                     List<Expression> gargs = new ArrayList<Expression>()
                     for (int i = 0; i < arity; i++) {
@@ -500,10 +510,10 @@ class ChannelDesugar {
         }
         if (st instanceof TryCatchStatement) {           // groovy-contracts wraps an @Invariant loop in one
             TryCatchStatement t = (TryCatchStatement) st
-            TryCatchStatement nt = new TryCatchStatement(rewriteGuardedStmt(t.tryStatement, bound, guards),
-                t.finallyStatement == null ? EmptyStatement.INSTANCE : rewriteGuardedStmt(t.finallyStatement, bound, guards))
+            TryCatchStatement nt = new TryCatchStatement(rewriteGuardedStmt(t.tryStatement, bound, guards, selVars),
+                t.finallyStatement == null ? EmptyStatement.INSTANCE : rewriteGuardedStmt(t.finallyStatement, bound, guards, selVars))
             for (CatchStatement c : t.catchStatements) {
-                CatchStatement nc = new CatchStatement(c.variable, rewriteGuardedStmt(c.code, bound, guards))
+                CatchStatement nc = new CatchStatement(c.variable, rewriteGuardedStmt(c.code, bound, guards, selVars))
                 nc.setSourcePosition(c); nt.addCatch(nc)
             }
             nt.setSourcePosition(t); nt.copyNodeMetaData(t); return nt
@@ -512,13 +522,13 @@ class ChannelDesugar {
             DoWhileStatement w = (DoWhileStatement) st
             DoWhileStatement nw = new DoWhileStatement(
                 new BooleanExpression(rewriteGuardedExpr(w.booleanExpression.expression, bound)),
-                rewriteGuardedStmt(w.loopBlock, bound, guards))
-            nw.setSourcePosition(w); nw.copyNodeMetaData(w); rebindLoopSpec(w, nw, bound, guards); return nw
+                rewriteGuardedStmt(w.loopBlock, bound, guards, selVars))
+            nw.setSourcePosition(w); nw.copyNodeMetaData(w); rebindLoopSpec(w, nw, bound, guards, selVars); return nw
         }
         if (st instanceof ForStatement) {
             ForStatement f = (ForStatement) st
             ForStatement nf = new ForStatement(f.variable, rewriteGuardedExpr(f.collectionExpression, bound),
-                rewriteGuardedStmt(f.loopBlock, bound, guards))
+                rewriteGuardedStmt(f.loopBlock, bound, guards, selVars))
             nf.setSourcePosition(f); nf.copyNodeMetaData(f); return nf
         }
         st

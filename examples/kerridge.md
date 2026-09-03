@@ -32,7 +32,7 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-**What is in it.** Thirty-five worked examples, every one linked to a case that runs in CI.
+**What is in it.** Thirty-seven worked examples, every one linked to a case that runs in CI.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
 ways, with a literal trip count, with a symbolic `n`, and as three `while (true)` processes; client–server;
@@ -48,9 +48,9 @@ the mistake it is there to catch.
 
 **What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
 twenty-two rows of the table below are the JCSP/occam vocabulary the books are built on, and the
-thirty-five examples are the smallest programs that exercise each. Measured against the books' own corpus
-it is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and c02, c03, c05,
-c07, c08, c09, c10, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
+thirty-seven examples are the smallest programs that exercise each. Measured against the books' own corpus
+it is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and c02, c03, c04,
+c05, c07, c08, c09, c10, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
 fair-server and token-ring shapes recur across the later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
 not ported: its own vocabulary — `DataClass`, the worker and collector components, the CSPm/FDR
 definitions — has no representation here.
@@ -1250,6 +1250,54 @@ wait needs:
 `seated = 1` — one philosopher already at the table, and the butler about to seat the second. Resource
 limiting only avoids deadlock while the limit is *strictly* below the seat count, and that strictness is
 what the proof turns on.
+
+## c04's reset ring — conservation, not ordering
+
+The book's first `ALT`, and it is injected into a feedback ring rather than sitting at the end of a
+pipeline. The normal arm forwards the circulating token — take one, put one back. The reset arm has to do
+something the beginner forgets: **drain that token too** before injecting the reset value, or the ring
+quietly gains one and never loses it again.
+
+What that asks for is a different kind of claim from anything above. Not which value arrives, nor whether a
+wait can close a cycle, but a **conservation** property: exactly one token is in flight, whichever arm the
+ALT takes.
+
+<!-- doclint:case p277-barriers/c04-s-reset-ring-conserves-its-token -->
+```groovy
+static void resetPrefix() {
+    AsyncChannel<Integer> reset = AsyncChannel.create(4)
+    AsyncChannel<Integer> ring = AsyncChannel.create(4)
+    ChannelSelect alt = ChannelSelect.from(reset, ring)
+    int tokens = 1
+    @Invariant({ tokens == 1 })
+    while (true) {
+        ChannelSelect.Result r = await alt.select()
+        if (r.index == 0) {
+            tokens = tokens - 1
+            tokens = tokens + 1
+        }
+        if (r.index == 1) {
+            tokens = tokens - 1
+            tokens = tokens + 1
+        }
+    }
+}
+```
+
+There is no guard anywhere — the arms simply have to agree on the count. Drop the drain from the reset arm
+and the invariant is refuted, at the state the ring is in every time it is reset:
+
+<!-- doclint:diagnostic p277-barriers/a-reset-that-forgets-to-drain-gains-a-token-refuted -->
+```
+[Static type checking] - Cannot prove loop invariant is preserved by the loop body in resetPrefix
+    invariant: (tokens == 1)
+    counterexample: tokens = 1
+    fails on: resetPrefix()
+```
+
+`tokens = 1` is the healthy ring — one token going round — and the reset arm about to add a second. The
+chapter's lesson is that an `ALT` arm is not free to skip the work its siblings do; here that is an
+arithmetic fact about a counter rather than an appeal to care.
 
 ## The token ring — c10's three versions
 

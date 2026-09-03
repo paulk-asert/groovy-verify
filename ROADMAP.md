@@ -12797,6 +12797,35 @@ the canteen client believing the meal it collects answers the order it placed. B
 
 ---
 
+## Phase 287 — c04's reset ring, and the unguarded index  *(shipped — slice 48)*
+
+The last uncovered shape in the teaching core, and it asked for something the ladder had not been asked for:
+a CONSERVATION property. c04's first `ALT` sits in a feedback ring — the normal arm forwards the circulating
+token, and the reset arm must ALSO drain it before injecting the reset value or the ring silently gains one.
+Not which value arrives, not whether a wait closes a cycle: exactly one token in flight, whichever arm is
+taken.
+
+**The engine change it needed generalises.** Phase 275's desugaring bound `r.index` only for a GUARDED
+select; c04's ALT has no precondition anywhere, so `r.index` was unresolvable and the loop skipped. It now
+binds for ANY awaited select in a specified loop, the unguarded case being simply "one of its branches" —
+the `guarded` marker with all-true flags, which is what the older `index(…)` marker already meant. Safe by
+construction rather than by inspection: this pass runs after the stream rewrite, so a select the looping-ALT
+model already handled is no longer a declaration by the time it looks. That also retires the limitation
+noted in Phase 280, where an unguarded `offers(…)` select left its loop unverified.
+
+Cases (G336, 2 more): the ring conserving its token, and the reset arm that forgets to drain refuted at
+`tokens = 1` — the healthy ring, one token going round, with the reset about to add a second. The positive
+carries `refute: ['Cannot prove loop invariant', 'Skipped loop verification']`, the second pinning that the
+loop was verified rather than passed over.
+
+Both runtimes green, 2006; `check` green; docLint 0 drift (186 case links, 22 pinned diagnostics).
+
+With c04 the teaching core c02–c14 is ported: c02, c03, c04, c05, c07, c08, c09, c10, c12, c13, c14. What
+is left of UCaPE is c06/c17 (testing process networks, a different kind of exercise) and c15–c25
+(distribution, mobility, farms, GUI), which sit beside this checker's action grain rather than inside it.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
