@@ -30,11 +30,13 @@ class G341_p291_monoid_values {
     // reach, like G219's FjOption): `Monoid.monoid(F2, zero)`, `Semigroup.semigroup(F2)`, and a library constant.
     // They FOLLOW the checked class, so only that class carries the @TypeChecked extensions.
     static final String FJ = '''
+        interface F<A, B> { B f(A a) }
         interface F2<A, B, C> { C f(A a, B b) }
         class Semigroup<A> {
             final F2<A, A, A> op
             Semigroup(F2<A, A, A> op) { this.op = op }
             static <A> Semigroup<A> semigroup(F2<A, A, A> op) { new Semigroup<A>(op) }
+            static <A> Semigroup<A> semigroup(F<A, F<A, A>> op) { new Semigroup<A>({ A a, A b -> op.f(a).f(b) } as F2<A, A, A>) }
             A sum(A a, A b) { op.f(a, b) }
         }
         class Monoid<A> {
@@ -42,6 +44,7 @@ class G341_p291_monoid_values {
             final A zero
             Monoid(F2<A, A, A> op, A zero) { this.op = op; this.zero = zero }
             static <A> Monoid<A> monoid(F2<A, A, A> op, A zero) { new Monoid<A>(op, zero) }
+            static <A> Monoid<A> monoid(F<A, F<A, A>> op, A zero) { new Monoid<A>({ A a, A b -> op.f(a).f(b) } as F2<A, A, A>, zero) }
             A sum(A a, A b) { op.f(a, b) }
             static final Monoid<Integer> intAdditionMonoid = monoid({ int a, int b -> a + b } as F2<Integer, Integer, Integer>, 0)
         }
@@ -144,6 +147,55 @@ class G341_p291_monoid_values {
                         static int total(List<Integer> xs, int z) {
                             Monoid<Integer> add = Monoid.monoid({ int a, int b -> a + b } as F2<Integer, Integer, Integer>, z)
                             xs.sumParallel(add::sum)
+                        }
+                    }''')],
+
+        // FJ's curried spelling — `Monoid.monoid(F<A, F<A, A>> sum, A zero)`, the combiner `a -> b -> E` — is the same
+        // anonymous combiner with its formals taken from the two nested lambdas.
+        [group: 'P291 monoid value', name: 'curried Monoid.monoid(a -> b -> a + b, 0) proves', ok: true,
+         untrusted: 'opaque carrier',
+         src: both('''class Curried {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.monoid({ int a -> { int b -> a + b } as F<Integer, Integer> } as F<Integer, F<Integer, Integer>>, 0)
+                            xs.sumParallel(add::sum)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'the curried subtraction monoid refutes associativity',
+         expect: 'Cannot prove Monoid associativity for combiner sub', refute: '__',
+         src: both('''class CurriedDiffs {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> sub = Monoid.monoid({ int a -> { int b -> a - b } as F<Integer, Integer> } as F<Integer, F<Integer, Integer>>, 0)
+                            xs.sumParallel(sub::sum)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a curried Semigroup with a wrong claim refutes (max vs min mixed)',
+         expect: 'Cannot prove Semigroup associativity for combiner mix', refute: '__',
+         src: both('''class CurriedMix {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Semigroup<Integer> mix = Semigroup.semigroup({ int a -> { int b -> a >= b ? b - 1 : a } as F<Integer, Integer> } as F<Integer, F<Integer, Integer>>)
+                            xs.sumParallel(mix::sum)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'an untyped curried lambda is typed from Monoid<Integer> and refutes a wrong zero',
+         expect: 'Cannot prove Monoid identity for combiner add', refute: '__',
+         src: both('''class CurriedUntyped {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.monoid({ a -> { b -> a + b } as F<Integer, Integer> } as F<Integer, F<Integer, Integer>>, 1)
+                            xs.sumParallel(add::sum)
+                        }
+                    }''')],
+        // The inner lambda without its own coercion: STC must accept the nested Closure as the F result.
+        [group: 'P291 monoid value', name: 'curried form with an uncast inner lambda refutes subtraction',
+         expect: 'Cannot prove Monoid associativity for combiner sub', refute: '__',
+         src: both('''class CurriedBare {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> sub = Monoid.monoid({ int a -> { int b -> a - b } } as F<Integer, F<Integer, Integer>>, 0)
+                            xs.sumParallel(sub::sum)
                         }
                     }''')],
 

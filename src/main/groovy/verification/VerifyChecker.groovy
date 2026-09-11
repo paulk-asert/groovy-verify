@@ -654,17 +654,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (kind == null) return
         List<Expression> args = argListOf(call)
         if (args == null) return
-        ClosureExpression cl = null
+        Object[] lam = null
         List<Expression> others = new ArrayList<Expression>()
         for (Expression a : args) {
-            Expression s = stripCasts(a)
-            if (cl == null && s instanceof ClosureExpression && ((ClosureExpression) s).parameters?.length == 2) cl = (ClosureExpression) s
-            else others.add(s)
+            Object[] l = lam == null ? combinerLambda(a) : null
+            if (l != null) lam = l
+            else others.add(stripCasts(a))
         }
-        if (cl == null || !carrierLawsDone.add(cl)) return
-        Parameter[] ps = cl.parameters
-        ClassNode t = ps[0].isDynamicTyped() ? null : ps[0].type
-        ClassNode t1 = ps[1].isDynamicTyped() ? null : ps[1].type
+        if (lam == null) return
+        ClosureExpression cl = (ClosureExpression) lam[0]
+        if (!carrierLawsDone.add(cl)) return
+        Parameter p0 = (Parameter) lam[1]
+        Parameter p1 = (Parameter) lam[2]
+        ClassNode t = p0.isDynamicTyped() ? null : p0.type
+        ClassNode t1 = p1.isDynamicTyped() ? null : p1.type
         if (t == null && t1 == null) t = t1 = carrierElementType(declType ?: rt)   // `{ a, b -> … }`: the type argument
         if (t != null) t = ClassHelper.getUnwrapper(t)
         if (t1 != null) t1 = ClassHelper.getUnwrapper(t1)
@@ -673,8 +676,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 "the ${kind} combiner's lambda must declare both parameters with one type"), cl)
             return
         }
-        List<String> formals = [ps[0].name, ps[1].name]
-        Expression e = Encoder.soleClosureExpr(cl)
+        List<String> formals = [p0.name, p1.name]
+        Expression e = (Expression) lam[3]
         if (e == null || !isPureOver(e, formals)) {
             addStaticTypeError(Reporter.formatPostconditionSkipped(name,
                 "the ${kind} combiner is not an equational lambda the verifier can model"), cl)
@@ -801,10 +804,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (kind == null && call.objectExpression instanceof ClassExpression) kind = carrierKind(call.objectExpression.type)
         if (kind == null) return false
         List<Expression> args = argListOf(call)
-        args != null && args.any { Expression a ->
-            Expression x = stripCasts(a)
-            x instanceof ClosureExpression && ((ClosureExpression) x).parameters?.length == 2
-        }
+        args != null && args.any { Expression a -> combinerLambda(a) != null }
+    }
+
+    /** A carrier argument's combiner lambda as {@code [anchor, p0, p1, body]}: the two-parameter form
+     *  {@code { a, b -> E }} (FJ's {@code F2}), or the curried form {@code { a -> { b -> E } }}
+     *  ({@code F<A, F<A, A>>}), casts peeled at both levels; else null. The anchor is the outer lambda. */
+    private static Object[] combinerLambda(Expression arg) {
+        Expression s = stripCasts(arg)
+        if (!(s instanceof ClosureExpression)) return null
+        ClosureExpression cl = (ClosureExpression) s
+        Parameter[] ps = cl.parameters
+        if (ps != null && ps.length == 2) return [cl, ps[0], ps[1], Encoder.soleClosureExpr(cl)] as Object[]
+        if (ps == null || ps.length != 1) return null
+        Expression inner = Encoder.soleClosureExpr(cl)
+        inner = inner == null ? null : stripCasts(inner)
+        if (!(inner instanceof ClosureExpression)) return null
+        Parameter[] qs = ((ClosureExpression) inner).parameters
+        if (qs == null || qs.length != 1) return null
+        [cl, ps[0], qs[0], Encoder.soleClosureExpr((ClosureExpression) inner)] as Object[]
     }
 
     /** A literal identity element as re-parseable source ({@code 0}, {@code -1}, {@code 0.0d}, {@code ''}), else null. */

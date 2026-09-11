@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1 and 2)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–3)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13125,9 +13125,19 @@ static field assert `untrusted: 'opaque carrier'`. The first draft of the delega
 `injectParallel` over a Semigroup, which CombinerChecker rightly rejects (no identity to match the seed), so the
 case is seedless.
 
-**Still open:** FJ's curried `F<A, F<A, A>>` form, the Palatable/Purefun factory spellings as cases, and
-consumer-facing surfacing of the ledger (today it is the harness line and the `entries()` API, the same as for
-the other two kinds).
+**As shipped (slice 3): FJ's curried form.** `Monoid.monoid(F<A, F<A, A>> sum, A zero)` and the matching
+`Semigroup.semigroup` take the combiner as `a -> b -> E`. `combinerLambda` now recognises both spellings, the
+two-parameter `{ a, b -> E }` and the curried `{ a -> { b -> E } }`, peeling casts at both levels. It returns the
+two formals, the body and the outer lambda as the anchor. Law discharge and slice 2's lambda-built check both use
+it, so a curried local is proven, not ledgered. Everything downstream is unchanged: the type fallback (an untyped
+curried lambda takes `int` from `Monoid<Integer>`), the purity check and the lemmas. Groovy's STC accepts the inner
+lambda without its own `as F<…>` cast (`{ int a -> { int b -> a - b } } as F<Integer, F<Integer, Integer>>`), and
+a case pins that spelling. Five cases: curried add proves; curried subtraction refutes, with and without the inner
+cast; a curried non-associative Semigroup refutes; and an untyped curried lambda refutes a wrong zero. The FJ
+stubs gain `F<A, B>` and the two curried overloads.
+
+**Still open:** the Palatable/Purefun factory spellings as cases, and consumer-facing surfacing of the ledger
+(today it is the harness line and the `entries()` API, the same as for the other two kinds).
 
 ---
 
