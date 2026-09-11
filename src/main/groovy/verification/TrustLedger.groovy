@@ -48,12 +48,44 @@ class TrustLedger {
      *  compile recorded even when the JVM-wide set already held the entry. Null (no capture) by default. */
     private static final ThreadLocal<List<String>> CAPTURED = new ThreadLocal<List<String>>()
 
+    /**
+     * {@code VERIFY_TRUST} (also {@code -Dverify.trust}) — Phase 291: surfacing the ledger to a consumer's own build.
+     * {@code report} prints each trusted fact a class relied on when the checker finishes that class
+     * ({@code trusted: …} on stdout, the {@code VERIFY_EXPLAIN} channel); {@code deny} makes each one a compile
+     * error instead. Null — unset, or any other value — leaves the ledger an inventory only, the default path
+     * byte-identical. Mutable only as a test hook (the harness {@code trustMode:} key).
+     */
+    static volatile String mode = normaliseMode(System.getenv('VERIFY_TRUST') ?: System.getProperty('verify.trust'))
+
+    static String normaliseMode(String m) {
+        String t = m?.trim()?.toLowerCase()
+        t == 'report' || t == 'deny' ? t : null
+    }
+
+    /** Records made on this thread since the checker last surfaced them (only while {@link #mode} is set). */
+    private static final ThreadLocal<List<String>> PENDING = new ThreadLocal<List<String>>()
+
     /** Record one trusted fact: {@code kind} ∈ {in-place @ThrowsIf, external spec, opaque carrier}, {@code where}
      *  is the owning method (FQN#name), {@code what} the contract detail. Idempotent. */
     static void record(String kind, String where, String what) {
         String e = "[${kind}] ${where} — ${what}".toString()
         ENTRIES.add(e)
         CAPTURED.get()?.add(e)
+        if (mode != null) {
+            List<String> p = PENDING.get()
+            if (p == null) {
+                p = new ArrayList<String>()
+                PENDING.set(p)
+            }
+            p.add(e)
+        }
+    }
+
+    /** The facts recorded on this thread since the last drain — deduplicated, in order — clearing them. */
+    static List<String> drainPending() {
+        List<String> p = PENDING.get()
+        PENDING.remove()
+        p ? new ArrayList<String>(new LinkedHashSet<String>(p)) : new ArrayList<String>()
     }
 
     /** All recorded trusted facts, sorted for stable output. */

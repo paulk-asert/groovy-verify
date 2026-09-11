@@ -156,6 +156,11 @@ class Reporter {
      * groovy-verify could not prove. Derived automatically from the annotation + the combiner's equation, so the
      * wording names the law and the combiner rather than a synthetic method.
      */
+    /** Phase 291 — {@code VERIFY_TRUST=deny}: a fact the compile assumed without proof, surfaced as an error. */
+    static String formatTrustDenied(String fact) {
+        "Trusted without proof (VERIFY_TRUST=deny): ${fact}. Prove it, or unset VERIFY_TRUST to accept it as an assumption.".toString()
+    }
+
     static String formatReducerLawFailure(String combinerName, String law, String lawText, CheckResult result) {
         formatReducerLawFailure('@Reducer', combinerName, law, lawText, result)
     }

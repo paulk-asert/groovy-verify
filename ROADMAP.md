@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–5)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–6)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13185,8 +13185,38 @@ under `m`. The composed sum monoid proves both laws without a ledger entry. A co
 under the Monoid's name. A parameter Semigroup and a reassigned local stay ledgered. An FJ `F2` local refutes at
 the Monoid.
 
-**Still open:** consumer-facing surfacing of the ledger. Today it is the harness line and the `entries()` API,
-the same as for the other two kinds.
+**As shipped (slice 6): the ledger, surfaced to a consumer's build.** Until now the trusted-spec ledger reached
+only the harness's `trusted:` line and the `TrustLedger.entries()` API. For the ledger's three kinds (in-place
+`@ThrowsIf`, external spec, opaque carrier) that made "visible" true for this repository but not for a user.
+
+There is a new transient knob, `VERIFY_TRUST` (also `-Dverify.trust`), following the `VERIFY_EXPLAIN` precedent;
+unset, the default path is byte-identical. `TrustLedger` gains a per-thread pending list, filled only while the
+mode is set, and `afterVisitClass` drains it once the class's methods, constructors and field initialisers are
+checked:
+
+* **`report`** prints `trusted: [kind] owner#method — detail` on stdout, the channel `VERIFY_EXPLAIN` already uses;
+* **`deny`** raises each fact as a compile error: `Trusted without proof (VERIFY_TRUST=deny): …`. It is
+  class-anchored, because an external-spec record is made inside the static `SpecRegistry.lookup`, which has no
+  AST node to point at. The fact names its owning method.
+
+The mode is a volatile static with a test hook. The harness gains a `trustMode:` key that sets it for one
+compile, restores it, and drains the pending list, so nothing leaks between cases. Tests:
+
+* three cases: under `deny` an opaque carrier fails, a proven carrier compiles clean, and an in-place trusted
+  `@ThrowsIf` fails;
+* `TrustLedgerTest`: `report` prints to stdout, and an unknown mode is off.
+
+**Checked in a real consumer build.** A scratch copy of `ci/consumer-smoke`, with a spec-only `@ThrowsIf` source,
+compiled against the freshly published jar. The baseline is silent. `VERIFY_TRUST=report` on a fresh daemon and
+`-Dverify.trust=report` through `groovyOptions.forkOptions.jvmArgs` both print the fact at Gradle's default log
+level. `-Dverify.trust=deny` fails `compileGroovy` with it. TOOLING.md carries the recipe; the forkOptions route
+is recommended because the daemon captures environment variables at startup.
+
+**Possible next steps, not started:**
+
+* a per-kind filter (`deny:opaque carrier`), since external specs such as `Math.abs` are pervasive by design;
+* site-anchored `deny` errors for the two kinds that have an AST node (opaque carrier and in-place `@ThrowsIf`);
+* making the consumer-smoke CI job assert the `report` line too.
 
 ---
 

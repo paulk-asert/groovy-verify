@@ -16,7 +16,7 @@
 
 # Tool knobs
 
-Seven environment variables tune what the checker *runs and reports* — never what a completed proof means. They're **transient tooling**,
+Eight environment variables tune what the checker *runs and reports* — never what a completed proof means. They're **transient tooling**,
 set per run, distinct from the permanent `@TypeChecked(extensions = …)` configuration; unset, every one leaves the
 default path byte-identical.
 
@@ -31,6 +31,7 @@ default path byte-identical.
 | `VERIFY_PACKS` | select which [encoding packs](PACKS.md) run: `none` disables all, a comma-separated name list keeps only those — a bisection tool when triaging a suspect domain encoding (a deselected pack's vocabulary degrades to loud skips)  Since Phase 227 a deselected pack's DECLARED spec skeletons (`EncodingPack.specFqns()`) are deselected with it — lifecycle coherence for pack-shipped contracts |
 | `VERIFY_Z3_TIMEOUT_MS` | the per-check solver budget in milliseconds (default `2000`; also `-Dverify.z3.timeoutMs`). Refute-direction VCs are model searches and therefore hardware-speed sensitive: a refutation that is crisp on a dev laptop can come back `solver: timeout` on a slower CI runner. Raising the budget moves the decided-vs-undecided boundary only — it never changes what a returned verdict means. CI sets `8000` |
 | `VERIFY_SPECS` | a directory of external-spec skeletons overriding the classpath lookup (also `-Dverify.specs`) — JML's specspath analogue, for iterating on a spec before jarring it. Specs are TRUSTED axioms: the knob changes which trusted facts are consulted, so unlike the other knobs it can change what proves — every consumed spec is recorded (`SpecRegistry.consumed()`) for exactly that reason |
+| `VERIFY_TRUST=report\|deny` | surface the trusted-spec ledger (below) in your own build (also `-Dverify.trust`): `report` prints each fact a class relied on without proof as `trusted: […] owner#method — …` when the checker finishes that class; `deny` makes each one a compile error (`Trusted without proof (VERIFY_TRUST=deny): …`) — a strict mode for a build that wants every assumption acknowledged. Any other value is off |
 
 **Trusted heritage in the explain read-out** (Phase 231). Every registry fact a proof leans on is
 labelled with its provenance and surfaced by the same load-bearing ablation as authored clauses:
@@ -62,6 +63,22 @@ programmatically, and DocLint's `[5] trusted inventory` section lints every ship
 (a malformed spec file is *silent trust loss* — the registry caches the miss and callers quietly lose
 the contract — so it is a drift finding, asserted in `check`). Trust that is visible is trust that
 gets reviewed.
+
+The ledger has three kinds: in-place `@ThrowsIf`, external spec, and opaque `Monoid`/`Semigroup` carrier (Phase
+291). It reaches **your** build through `VERIFY_TRUST` (Phase 291). Groovy compiles in a forked worker, and the
+Gradle daemon captures environment variables when it starts, so pass the knob as a system property of the
+compiler JVM:
+
+<!-- doclint:ignore build configuration: pass VERIFY_TRUST to the forked Groovy compiler -->
+```groovy
+tasks.withType(GroovyCompile).configureEach {
+    groovyOptions.forkOptions.jvmArgs += ['-Dverify.trust=report']   // or 'deny' to fail on any assumption
+}
+```
+
+Setting `VERIFY_TRUST` in the environment also works, as long as the daemon was started with it (`./gradlew
+--stop` first). Both routes are checked against a real from-jar consumer build: `report` prints at the default
+log level, and `deny` fails `compileGroovy` with the fact as the error.
 
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 

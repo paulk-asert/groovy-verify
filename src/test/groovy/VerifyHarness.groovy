@@ -107,6 +107,9 @@ class VerifyHarness {
      * {@link #verificationCases} JUnit factory (per-test IDE/CI reporting) — no duplicated judging.
      */
     static Map evaluate(Map c, String name) {
+        // `trustMode:` — run this one compile under VERIFY_TRUST=report|deny (restored after; nothing left pending)
+        String priorTrustMode = verification.TrustLedger.mode
+        if (c.trustMode != null) verification.TrustLedger.mode = (String) c.trustMode
         verification.TrustLedger.capture()
         List<String> errors
         List<String> trustedRecords
@@ -114,6 +117,8 @@ class VerifyHarness {
             errors = compile(name, (String) c.src)
         } finally {
             trustedRecords = verification.TrustLedger.captured()
+            verification.TrustLedger.mode = priorTrustMode
+            verification.TrustLedger.drainPending()
         }
         Map judged = judge(c, errors)
         // Phase 291 — `trusted:` a substring some TrustLedger record made by THIS compile must contain;

@@ -50,6 +50,36 @@ class TrustLedgerTest {
             'a trusted @ThrowsIf must appear in the ledger with its owning method')
     }
 
+    /** Phase 291 — VERIFY_TRUST=report prints each trusted fact a class relied on, on stdout, as it finishes the class. */
+    @Test
+    void reportModePrintsEachTrustedFact() {
+        String prior = TrustLedger.mode
+        PrintStream out = System.out
+        ByteArrayOutputStream buf = new ByteArrayOutputStream()
+        TrustLedger.mode = 'report'
+        System.setOut(new PrintStream(buf, true, 'UTF-8'))
+        try {
+            new GroovyClassLoader().parseClass(cases.CaseDsl.tc('''class C {
+                @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
+                static Object parse(Object s) { return helper(s) }
+                static Object helper(Object s) { s }
+            }'''), 'LedgerCase3.groovy')
+        } finally {
+            System.setOut(out)
+            TrustLedger.mode = prior
+            TrustLedger.drainPending()
+        }
+        String printed = buf.toString('UTF-8')
+        assertTrue(printed.contains('trusted: [in-place @ThrowsIf] C#parse'),
+            "report mode must print the trusted fact, got: ${printed}")
+    }
+
+    @Test
+    void unknownTrustModeIsOff() {
+        assertNull(TrustLedger.normaliseMode('warn'), 'only report / deny switch surfacing on')
+        assertEquals('deny', TrustLedger.normaliseMode(' DENY '))
+    }
+
     @Test
     void malformedSpecTextIsContained() {
         assertNull(SpecRegistry.parseForLint('class {{{ not groovy', 'x.y.Z'),

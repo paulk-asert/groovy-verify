@@ -2695,6 +2695,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Best-effort: a constructor processing failure shouldn't break the class's other diagnostics.
             }
         }
+        // Phase 291 — VERIFY_TRUST: surface the trusted facts this class relied on, now that its methods,
+        // constructors and field initialisers are all checked. `report` prints them; `deny` fails the compile.
+        String trustMode = TrustLedger.mode
+        if (trustMode != null) {
+            for (String fact : TrustLedger.drainPending()) {
+                if (trustMode == 'deny') addStaticTypeError(Reporter.formatTrustDenied(fact), classNode)
+                else println "trusted: ${fact}"
+            }
+        }
     }
 
     @Override

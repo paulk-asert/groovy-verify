@@ -438,5 +438,30 @@ class G341_p291_monoid_values {
                         @Requires({ xs != null })
                         static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
                     }''')],
+
+        // Surfacing the ledger to a consumer's build: VERIFY_TRUST (the harness `trustMode:` key sets it for one
+        // compile). `deny` turns every trusted fact into a compile error — an opaque carrier fails, a proven one
+        // compiles clean, and the other ledger kinds are covered by the same switch.
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny: an opaque carrier fails the compile', trustMode: 'deny',
+         expect: 'Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FDenied#total — Monoid.integer() (a Monoid) at sumParallel',
+         src: purefun('''class FDenied {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
+                    }''')],
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny: a proven carrier compiles clean', trustMode: 'deny', ok: true,
+         src: purefun('''class FProvenDeny {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.of(0, { int a, int b -> a + b } as Operator2<Integer>)
+                            xs.sumParallel(add::combine)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny also covers an in-place trusted @ThrowsIf', trustMode: 'deny',
+         expect: 'Trusted without proof (VERIFY_TRUST=deny): [in-place @ThrowsIf] Parser#parse',
+         src: tc('''class Parser {
+                        @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
+                        static Object parse(Object s) { return helper(s) }
+                        static Object helper(Object s) { s }
+                    }''')],
     ]
 }
