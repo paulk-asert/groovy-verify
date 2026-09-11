@@ -37,7 +37,7 @@ plugins { id 'groovy' }
 // Overridden by CI with the values extracted from the root build, so a version bump there can't
 // silently leave this smoke testing a stale artifact; the defaults keep it runnable by hand.
 def gvVersion = providers.gradleProperty('gvVersion').orElse('0.1.0').get()
-def groovyVer = providers.gradleProperty('groovyVersion').orElse('6.0.0-beta-3').get()
+def groovyVer = providers.gradleProperty('groovyVersion').orElse('6.0.0-RC-2').get()
 
 java {
     toolchain { languageVersion = JavaLanguageVersion.of(17) }   // the floor the artifact claims
@@ -46,6 +46,8 @@ java {
 repositories {
     mavenLocal()     // the freshly-published artifact under test
     mavenCentral()   // Groovy, groovy-contracts, and the artifact's z3 dependencies
+    // TEMPORARY: the 6.0.0-RC-2 release-vote staging repo — remove once RC-2 reaches Central
+    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1122' }
 }
 
 // The must-refute half lives in its own source set so it gets its own compile task

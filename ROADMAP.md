@@ -12956,6 +12956,29 @@ drift (190 case links, 32 pinned diagnostics, 39 gallery examples).
 
 ---
 
+## Housekeeping — Groovy 6.0.0-RC-2  *(shipped)*
+
+`gradle.properties` moves `groovyVersion` from 6.0.0-beta-3 to `org.apache.groovy:6.0.0-RC-2`. It resolves from
+its release-vote staging repository (`orgapachegroovy-1122`), which is a TEMPORARY `maven { url … }` entry in
+`build.gradle`, `examples-dsl/build.gradle` and `ci/consumer-smoke/build.gradle`. Drop the entry once RC-2 is on
+Central. The built-against wording is refreshed in README, BUILD.md, the build.gradle comment and the
+consumer-smoke fallback. No verifier change was needed. Everything since beta-3 that the checker depends on had
+already been exercised against the local 6.0.0-SNAPSHOT.
+
+**The coverage shift that matters.** All five runtime probes read TRUE on RC-2: `CLAIM_SELECT` (GROOVY-12320),
+`ARBITRATED_SELECT` (12323), `GUARDED_SELECT` (12324), `WHEN_GUARD` (12326) and `TIMER_OFFER` (12343). So the
+pinned build, and therefore CI, now takes the claim-runtime verdict branches that were previously checked only
+on the snapshot. The pre-beta-4 branches (priority select, re-sent losers, `fair()` as a type error) are no
+longer exercised by any default build. `-PgroovyVersion=6.0.0-beta-3` still runs them.
+
+Gates on the RC-2 artifacts, all green: suite 2020/2020; `check` 2054 tests, 0 failures (fresh daemon,
+`VERIFY_Z3_TIMEOUT_MS=8000`); runtime rung 672/679 clean (the same 2 spec-throw, 0 review), with the classic
+`VERIFY_RUNG_INDY=false` sweep matching indy; docLint 0 drift (190/190 case links, 32/32 pinned diagnostics); TLC
+"No error has been found"; Lincheck 10/10; Fray clean; jcstress no failed or error tests; consumer smoke on
+JDK 17: the good contract verifies, the bad one refutes (Possible NullPointerException).
+
+---
+
 ## Candidate — the Actor surface  *(not started; a different gallery, recorded so it is not lost)*
 
 Outside the Kerridge work by construction: UCaPE is CSP, and actors do not appear in it. This belongs with
@@ -12992,6 +13015,63 @@ Also uncovered, and relevant to the timer proposal: `ActorContext` has `schedule
 `scheduleAtFixedRate`, so the ACTOR half of `groovy.concurrent` has timers while the CHANNEL half has none.
 That asymmetry is the strongest argument for `AsyncChannel.after(…)`, because it is about the library's own
 coherence rather than about what other ecosystems do.
+
+---
+
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(proposed)*
+
+Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
+discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
+sides. CombinerChecker classifies a combiner by the simple name of its type (`Monoid`, `Semigroup` — matching
+Functional Java, Palatable and Purefun) and accepts it as "the associativity contract, an assertion carrier, not a
+proof"; groovy-verify does not look at such values at all. So the canonical lying instance,
+
+```groovy
+def sub = Monoid.monoid({ int a, int b -> a - b } as F2, 0)   // type-checks in FJ, in Haskell, in Cats
+xs.sumParallel(sub)                                           // CombinerChecker: MONOID carrier, accepted
+```
+
+sails through both checkers and yields a split-dependent wrong answer at runtime — the exact bug class the
+`@Associative` path now refutes. In the wrapper ecosystems this is *by design* a testing problem (`quickcheck-classes`,
+`cats-laws`/`discipline`, hand-written jqwik properties for FJ). This phase makes it a proof problem for the
+subset we can see.
+
+**Recognition.** In `afterVisitMethod`, find constructions of a carrier value whose owner type classifies as
+MONOID/SEMIGROUP under the same simple-name rule CombinerChecker uses, and whose combiner argument is a closure or
+lambda *literal at the site*: FJ `Monoid.monoid(F2, zero)` / `Semigroup.semigroup(F2)` (and the curried `F<A,F<A,A>>`
+forms), the Palatable/Purefun equivalents, and a static field or local initialised from one. Treat the literal's
+body as an anonymous combiner in the Phase-116 equational shape — binary `T×T→T`, no preconditions, body pure over
+the two formals — and hand it to the Phase-130 law synthesis unchanged: associativity for both carriers, identity
+against the supplied `zero` for a Monoid. The only new code is the discovery step; the obligations, the inliner
+and the reporter are the ones the annotation path already uses. Diagnostics anchor on the lambda, in the shape of
+`formatReducerLawFailure`: `Cannot prove associativity of the Monoid combiner at Monoids.groovy:12 — counterexample:
+a = 0, b = 1, c = 1` (sub: `(0-1)-1 = -2` vs `0-(1-1) = 0`).
+
+**What stays trusted, loudly.** A carrier arriving as a parameter, a field initialised elsewhere, or a library
+constant (`Monoid.intAdditionMonoid`, `Monoid.stringMonoid`) is an opaque value: no body to model, so it keeps the
+Phase-116 trust level and is *reported* as trusted (the same "assumed, not proven" channel the monitor invariant
+uses), not silently passed. A visible body outside the fragment — map merging, a call into unmodelled code —
+skips with the postcondition-skipped diagnostic exactly as an impure `@Reducer` does. The FRAGMENT boundary is
+unchanged: Int/BigDecimal/String combiners prove; `double` proves in the straight-line IEEE fragment (and
+floating-point addition is *not* associative — `(a+b)+c ≠ a+(b+c)` for `1e16, -1e16, 1.0` — so a `double` sum
+monoid is expected to *refute*, which is a feature: it is the first checker in the family that will tell an FP
+programmer their `Monoid<Double>` is a lie).
+
+**Why here and not in CombinerChecker.** CombinerChecker is shape-only by design (it is in core Groovy, has no
+solver, and its source says so of carriers: "an assertion carrier, not a proof"); the two-checker split — shape at the call site,
+semantics in groovy-verify — is the Phase-116 contract, and this phase keeps to it. The synergy also runs the
+same direction as before: CombinerChecker still refuses a bare inline closure at the *call* site, so the only way
+a lambda reaches a parallel fold is wrapped in a carrier, which is precisely the site this phase inspects.
+
+**Definition of done for this increment.** (1) `Monoid.monoid(add, 0)` and `Semigroup.semigroup(max)` with
+visible lambdas prove associativity and identity silently under both checkers over a real `sumParallel` site;
+(2) the subtraction monoid refutes with a counterexample anchored on the lambda, and a wrong `zero`
+(`Monoid.monoid(add, 1)`) refutes identity; (3) an opaque carrier (parameter, `Monoid.intAdditionMonoid`) reports
+*trusted*, and a map-merge body reports *skipped*, neither passing silently; (4) CAPABILITIES.md row
+"Monoids/semigroups — checked *and* proven" gains the value-carrier column, and the README `CombinerChecker`/`Sum` example gains
+a carrier-value sibling, one proven and one refuted; (5) tests in a new `P-carrier` group alongside `P-reducer`. The functional
+programming post's "Monoids and Semigroups, checked" section and the talk abstract both currently say the FJ path
+is trusted; both get a sentence when this ships.
 
 ---
 

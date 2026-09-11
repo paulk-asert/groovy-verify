@@ -21,7 +21,8 @@ own build. For *what* it proves and *why*, see [README.md](README.md).
 
 ## Building & testing
 
-Built using JDK 25 against `org.apache.groovy:6.0.0-beta-3` from Maven Central; the published
+Built using JDK 25 against `org.apache.groovy:6.0.0-RC-2` (from its release-vote staging repository until
+it reaches Maven Central — the temporary `maven { url … }` entry in each build file); the published
 artifact targets **Java 17 bytecode** (Groovy 6's own floor), so consumers need JDK 17+, not 25 — the
 17 floor is held honest by a from-jar consumer smoke compile on a real JDK 17, since groovyc has no
 `--release`-style API fencing to catch a stray newer-JDK call at build time. That smoke is CI-enforced
@@ -141,7 +142,7 @@ closed) it is **wired into `check`** — a new confirmed proof-vs-runtime diverg
 **`VERIFY_RUNG_INDY=false`** recompiles every rung case with **classic call-site bytecode** instead of
 invokedynamic — a differential lever for the less-exercised legacy code generator: same corpus, same
 grid, same cross-validation, different codegen. Sweeps on 6.0.0-SNAPSHOT, 6.0.0-beta-1 (655
-runnable proofs), 6.0.0-beta-2 (664) and 6.0.0-beta-3 (672) came back **byte-identical to the indy
+runnable proofs), 6.0.0-beta-2 (664), 6.0.0-beta-3 (672) and 6.0.0-RC-2 (672) came back **byte-identical to the indy
 run** — no classic-codegen divergence surfaced.
 (Set with a fresh daemon: the gradle daemon captures the environment at startup.) Since GROOVY-12185,
 classic call sites live in the optional **`groovy-callsite`** module rather than core `groovy`, so the
@@ -252,8 +253,8 @@ declare it in a compile-only scope:
 
 ```groovy
 dependencies {
-    implementation "org.apache.groovy:groovy:6.0.0-beta-3"            // you supply Groovy …
-    implementation "org.apache.groovy:groovy-contracts:6.0.0-beta-3"  // … and groovy-contracts
+    implementation "org.apache.groovy:groovy:6.0.0-RC-2"            // you supply Groovy …
+    implementation "org.apache.groovy:groovy-contracts:6.0.0-RC-2"  // … and groovy-contracts
     compileOnly   "io.github.paulk-asert:groovy-verify:0.1.0"         // Maven: <scope>provided</scope>
 }
 ```

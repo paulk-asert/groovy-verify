@@ -29,6 +29,8 @@ java {
 
 repositories {
     mavenCentral()
+    // TEMPORARY: the 6.0.0-RC-2 release-vote staging repo — remove once RC-2 reaches Central
+    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1122' }
     // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
