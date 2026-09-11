@@ -1338,7 +1338,7 @@ class Encoder implements TheoryApi {
         actuals.size() == 1 && actuals.get(0) instanceof VariableExpression && ((VariableExpression) actuals.get(0)).name == fieldName
     }
     /** The single value expression of a closure literal's body, or null. */
-    private static Expression soleClosureExpr(ClosureExpression cl) {
+    static Expression soleClosureExpr(ClosureExpression cl) {
         Statement code = cl?.code
         if (code instanceof BlockStatement) {
             List<Statement> ss = ((BlockStatement) code).statements

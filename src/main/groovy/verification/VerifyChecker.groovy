@@ -528,20 +528,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Synthesise a void lemma method whose {@code @Ensures} is {@code lawText} over fresh params of type
      *  {@code t}, and run it through the normal per-method verification. */
     private void runReducerLaw(MethodNode combiner, ClassNode t, String law, List<String> paramNames, String lawText) {
+        runLawLemma(combiner.name, combiner.declaringClass, combiner, t, law, paramNames, lawText,
+            [combiner.name, law] as String[], null)
+    }
+
+    /** The lemma core shared by {@code @Reducer} methods (Phase 130) and carrier values (Phase 291): a void method
+     *  named {@code base$law}, owned by {@code owner}, positioned on {@code anchor}, whose {@code @Ensures} is
+     *  {@code lawText}. {@code lawMeta} is the REDUCER_LAW_KEY payload — {@code [name, law]}, or
+     *  {@code [name, law, kind, displayLaw]} when the wording differs from a {@code @Reducer}'s. {@code extra}
+     *  seeds combiners {@link #collectCombiners} cannot find (a lambda has no MethodNode). */
+    private void runLawLemma(String base, ClassNode owner, ASTNode anchor, ClassNode t, String law,
+                             List<String> paramNames, String lawText, String[] lawMeta, Map<String, Object[]> extra) {
         List<Parameter> ps = new ArrayList<Parameter>()
         for (String n : paramNames) ps.add(new Parameter(t, n))
-        MethodNode m = new MethodNode(combiner.name + '$' + law,
+        MethodNode m = new MethodNode(base + '$' + law,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, ClassHelper.VOID_TYPE,
             ps.toArray(new Parameter[0]), ClassNode.EMPTY_ARRAY, new BlockStatement())
-        m.declaringClass = combiner.declaringClass
+        m.declaringClass = owner
         m.addAnnotation(new AnnotationNode(ENSURES_TYPE))   // marker so findEnsures sees a postcondition
         AnnotationNode cs = new AnnotationNode(CONTRACT_SOURCE_TYPE)
         cs.addMember('ensures', new ConstantExpression(lawText))
         m.addAnnotation(cs)
         // Anchor on the combiner's real declaration so the (void-lemma) diagnostic actually surfaces (Phase 94).
-        m.setSourcePosition(combiner)
-        m.putNodeMetaData(REDUCER_LAW_KEY, [combiner.name, law] as String[])
-        beforeVisitMethod(m)
+        m.setSourcePosition(anchor)
+        m.putNodeMetaData(REDUCER_LAW_KEY, lawMeta)
+        extraLawCombiners = extra
+        try {
+            beforeVisitMethod(m)
+        } finally {
+            extraLawCombiners = null
+        }
         afterVisitMethod(m)
     }
 
@@ -552,6 +568,155 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (z instanceof ConstantExpression && ((ConstantExpression) z).value instanceof String) {
             return (String) ((ConstantExpression) z).value
         }
+        null
+    }
+
+    // ---- Phase 291: the library-style monoid — a Monoid/Semigroup VALUE built from a visible lambda ----
+
+    /** Combiners seeded into the next law lemma's {@code currentCombiners}; set only inside {@link #runLawLemma}. */
+    private Map<String, Object[]> extraLawCombiners = null
+
+    /** Lambdas whose carrier laws were already discharged (a body or initialiser may be scanned twice). */
+    private final Set<ClosureExpression> carrierLawsDone =
+        Collections.newSetFromMap(new IdentityHashMap<ClosureExpression, Boolean>())
+
+    /** {@code 'Monoid'} / {@code 'Semigroup'} when {@code t} or one of its supertypes has that simple name —
+     *  CombinerChecker's classification rule (Functional Java, Palatable and Purefun converge on the names);
+     *  else null. A type that is both is a Monoid. */
+    private static String carrierKind(ClassNode t) {
+        if (t == null) return null
+        String found = null
+        Deque<ClassNode> todo = new ArrayDeque<ClassNode>()
+        todo.add(t)
+        Set<String> seen = new HashSet<String>()
+        while (!todo.isEmpty()) {
+            ClassNode c = todo.poll()
+            if (!seen.add(c.name)) continue
+            String sn = c.nameWithoutPackage
+            int i = sn.lastIndexOf('$')
+            if (i >= 0) sn = sn.substring(i + 1)
+            if (sn == 'Monoid') return 'Monoid'
+            if (sn == 'Semigroup') found = 'Semigroup'
+            if (c.superClass != null) todo.add(c.superClass)
+            for (ClassNode ifc : (c.interfaces ?: ClassNode.EMPTY_ARRAY)) todo.add(ifc)
+        }
+        found
+    }
+
+    /**
+     * Phase 291 — CombinerChecker accepts a Monoid/Semigroup carrier as "an assertion carrier, not a proof". Where
+     * the carrier is BUILT in {@code root} (a method body, or a field initialiser named {@code nameHint}) from a
+     * two-parameter lambda literal — {@code Monoid.monoid({ int a, int b -> a - b } as F2, 0)} — the lambda is an
+     * anonymous combiner in the Phase-116 equational shape, and the laws the carrier asserts are discharged by
+     * the Phase-130 lemmas: associativity for both kinds, identity against the supplied zero for a Monoid.
+     */
+    private void verifyCarrierValueLaws(ClassNode owner, ASTNode root, String nameHint, ClassNode hintType) {
+        Map<MethodCallExpression, String> named = new IdentityHashMap<MethodCallExpression, String>()
+        Map<MethodCallExpression, ClassNode> declTypes = new IdentityHashMap<MethodCallExpression, ClassNode>()
+        List<MethodCallExpression> calls = new ArrayList<MethodCallExpression>()
+        if (nameHint != null && root instanceof Expression && stripCasts((Expression) root) instanceof MethodCallExpression) {
+            named.put((MethodCallExpression) stripCasts((Expression) root), nameHint)
+            if (hintType != null) declTypes.put((MethodCallExpression) stripCasts((Expression) root), hintType)
+        }
+        root.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                Expression rhs = stripCasts(de.rightExpression)
+                if (!de.isMultipleAssignmentDeclaration() && rhs instanceof MethodCallExpression) {
+                    named.put((MethodCallExpression) rhs, de.variableExpression.name)
+                    declTypes.put((MethodCallExpression) rhs, de.variableExpression.originType)
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                calls.add(call)
+                super.visitMethodCallExpression(call)
+            }
+        })
+        for (MethodCallExpression call : calls) {
+            dischargeCarrierLaws(owner, call, named.get(call) ?: 'lambda', declTypes.get(call))
+        }
+    }
+
+    /** The single type argument of a carrier type ({@code Monoid<Integer>} → {@code Integer}), else null. */
+    private static ClassNode carrierElementType(ClassNode carrier) {
+        GenericsType[] gts = carrier?.genericsTypes
+        if (gts == null || gts.length != 1 || gts[0].isPlaceholder() || gts[0].isWildcard()) return null
+        gts[0].type
+    }
+
+    private void dischargeCarrierLaws(ClassNode owner, MethodCallExpression call, String name, ClassNode declType) {
+        ClassNode rt = null
+        try { rt = getType(call) } catch (Throwable ignored) { }
+        String kind = carrierKind(rt)
+        if (kind == null && call.objectExpression instanceof ClassExpression) kind = carrierKind(call.objectExpression.type)
+        if (kind == null) return
+        List<Expression> args = argListOf(call)
+        if (args == null) return
+        ClosureExpression cl = null
+        List<Expression> others = new ArrayList<Expression>()
+        for (Expression a : args) {
+            Expression s = stripCasts(a)
+            if (cl == null && s instanceof ClosureExpression && ((ClosureExpression) s).parameters?.length == 2) cl = (ClosureExpression) s
+            else others.add(s)
+        }
+        if (cl == null || !carrierLawsDone.add(cl)) return
+        Parameter[] ps = cl.parameters
+        ClassNode t = ps[0].isDynamicTyped() ? null : ps[0].type
+        ClassNode t1 = ps[1].isDynamicTyped() ? null : ps[1].type
+        if (t == null && t1 == null) t = t1 = carrierElementType(declType ?: rt)   // `{ a, b -> … }`: the type argument
+        if (t != null) t = ClassHelper.getUnwrapper(t)
+        if (t1 != null) t1 = ClassHelper.getUnwrapper(t1)
+        if (t == null || t1 == null || t.name != t1.name) {
+            addStaticTypeError(Reporter.formatPostconditionSkipped(name,
+                "the ${kind} combiner's lambda must declare both parameters with one type"), cl)
+            return
+        }
+        List<String> formals = [ps[0].name, ps[1].name]
+        Expression e = Encoder.soleClosureExpr(cl)
+        if (e == null || !isPureOver(e, formals)) {
+            addStaticTypeError(Reporter.formatPostconditionSkipped(name,
+                "the ${kind} combiner is not an equational lambda the verifier can model"), cl)
+            return
+        }
+        // The lemma calls the lambda under a mangled name (a local named `max` must not meet a built-in handler
+        // first); the diagnostic shows the law in the developer's spelling.
+        String op = name + '__' + kind + 'Op'
+        Map<String, Object[]> extra = new HashMap<String, Object[]>()
+        extra.put(op + '/2', [formals, e] as Object[])
+        String base = name + '$' + kind
+        runLawLemma(base, owner, cl, t, 'associativity', ['a', 'b', 'c'],
+            "${op}(${op}(a, b), c) == ${op}(a, ${op}(b, c))".toString(),
+            [name, 'associativity', kind, "${name}(${name}(a, b), c) == ${name}(a, ${name}(b, c))".toString()] as String[], extra)
+        if (kind == 'Monoid' && others.size() == 1) {
+            String zero = literalSource(others[0])
+            if (zero == null) {
+                addStaticTypeError(Reporter.formatPostconditionSkipped(name,
+                    "the Monoid's identity element is not a literal the verifier can model"), others[0])
+                return
+            }
+            runLawLemma(base, owner, cl, t, 'identity', ['a'],
+                "${op}(a, ${zero}) == a && ${op}(${zero}, a) == a".toString(),
+                [name, 'identity', kind, "${name}(a, ${zero}) == a && ${name}(${zero}, a) == a".toString()] as String[], extra)
+        }
+    }
+
+    /** A literal identity element as re-parseable source ({@code 0}, {@code -1}, {@code 0.0d}, {@code ''}), else null. */
+    private static String literalSource(Expression z) {
+        Expression e = stripCasts(z)
+        String sign = ''
+        if (e instanceof UnaryMinusExpression) {
+            sign = '-'
+            e = stripCasts(((UnaryMinusExpression) e).expression)
+        }
+        if (!(e instanceof ConstantExpression)) return null
+        Object v = ((ConstantExpression) e).value
+        if (v instanceof String) return sign ? null : "'" + ((String) v).replace('\\', '\\\\').replace("'", "\\'") + "'"
+        if (v instanceof Integer || v instanceof BigDecimal) return sign + v
+        if (v instanceof BigInteger) return sign + v + 'G'
+        if (v instanceof Long) return sign + v + 'L'
+        if (v instanceof Double) return sign + v + 'd'
+        if (v instanceof Float) return sign + v + 'f'
+        if (v instanceof Boolean) return sign ? null : v.toString()
         null
     }
 
@@ -2243,6 +2408,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         collectChannelContracts(node)
         currentTupleTypes = collectTupleTypes(node)
         currentCombiners = collectCombiners(node)
+        if (extraLawCombiners != null) currentCombiners.putAll(extraLawCombiners)   // Phase 291 — a lambda's lemma
         currentCarrierTypes = collectCarrierTypes(node)
         currentFunctionReturnTypes = collectFunctionReturnTypes(node)
         currentBiFunctionReturnTypes = ContractNormalizer.biFunctionReturnTypes(node)
@@ -2289,6 +2455,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 136 — a @Monadic carrier asserts the monad/functor laws; discharge the Tier-1 identity laws it
         // claims, derived from the annotation (à la @Reducer). Best-effort.
         try { verifyMonadicLaws(classNode) } catch (Throwable ignored) { }
+        // Phase 291 — a Monoid/Semigroup field initialised from a visible lambda (the field names the combiner).
+        try {
+            for (FieldNode f : classNode.fields) {
+                if (f.initialValueExpression != null) verifyCarrierValueLaws(classNode, f.initialValueExpression, f.name, f.originType)
+            }
+        } catch (Throwable ignored) { }
         // Phase L1 (rely/guarantee) — discharge the well-formedness/compatibility lemmas of any @Rely/@Guarantee
         // conditions the class declares (reflexive/transitive relies, reflexive guarantees, G_i ⟹ R_j). Best-effort.
         try { verifyRelyGuarantee(classNode) } catch (Throwable ignored) { }
@@ -2510,6 +2682,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // `current*` state — fine, since nothing after this needs the combiner's context before the finally.
             try {
                 verifyReducerLaws(node)
+            } catch (Throwable ignored) {
+            }
+
+            // Phase 291 — Monoid/Semigroup VALUES built from a visible lambda in this body: discharge the laws
+            // the carrier asserts. Last for the same reason as the reducer laws (the lemmas reset `current*`).
+            try {
+                Statement cbody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+                if (cbody == null) cbody = node.code
+                if (cbody != null) verifyCarrierValueLaws(node.declaringClass, cbody, null, null)
             } catch (Throwable ignored) {
             }
         } finally {
@@ -8476,7 +8657,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // law-and-combiner wording (and skip the body-based PBT fallback — the lemma has no executable body).
             String[] redLaw = (String[]) node.getNodeMetaData(REDUCER_LAW_KEY)
             if (redLaw != null) {
-                addStaticTypeError(Reporter.formatReducerLawFailure(redLaw[0], redLaw[1], postAst?.text, r), anchor)
+                // Phase 291 — a carrier value's lemma names its kind and shows the law in the developer's spelling
+                String kind = redLaw.length > 2 ? redLaw[2] : '@Reducer'
+                String shown = redLaw.length > 3 ? redLaw[3] : postAst?.text
+                addStaticTypeError(Reporter.formatReducerLawFailure(kind, redLaw[0], redLaw[1], shown, r), anchor)
                 return
             }
             String[] monLaw = (String[]) node.getNodeMetaData(MONADIC_LAW_KEY)

@@ -154,7 +154,9 @@ concrete counterexample** (Dafny/Verus-style) rather than passing silently:
 - **Behavioural subtyping (Liskov)** — an override may only *weaken* a precondition and *strengthen* a
   postcondition, never the reverse.
 - **Algebraic laws** — a `@Reducer` combiner is proved to satisfy the monoid laws, and a `@Monadic` carrier the
-  monad / functor laws — automatically, from the annotation alone.
+  monad / functor laws — automatically, from the annotation alone. A library-style `Monoid` / `Semigroup` *value*
+  built from a visible lambda (`Monoid.monoid({ int a, int b -> a - b } as F2, 0)`) has the same laws proven, so
+  the subtraction monoid refutes even though every type checker, CombinerChecker included, accepts it.
 - **Exceptional contracts & specs for code you don't own** — `@ThrowsIf` proves a method throws *exactly*
   when its condition holds; shipped JDK spec skeletons make `Math.abs`, `Objects.checkIndex`,
   `indexOf`-then-`charAt` and friends provable at call sites — including *survival facts*

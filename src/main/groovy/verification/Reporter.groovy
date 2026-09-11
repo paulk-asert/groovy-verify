@@ -157,20 +157,27 @@ class Reporter {
      * wording names the law and the combiner rather than a synthetic method.
      */
     static String formatReducerLawFailure(String combinerName, String law, String lawText, CheckResult result) {
+        formatReducerLawFailure('@Reducer', combinerName, law, lawText, result)
+    }
+
+    /** {@code kind} is {@code @Reducer} for an annotated method, {@code Monoid}/{@code Semigroup} for a carrier
+     *  value built from a lambda (Phase 291). */
+    static String formatReducerLawFailure(String kind, String combinerName, String law, String lawText, CheckResult result) {
         StringBuilder sb = new StringBuilder()
         switch (result.status) {
             case CheckResult.Status.REFUTED:
-                sb.append("Cannot prove @Reducer ").append(law).append(" for combiner ").append(combinerName)
+                sb.append("Cannot prove ").append(kind).append(' ').append(law).append(" for combiner ").append(combinerName)
                 if (lawText) sb.append("\n    law: ").append(lawText)
-                appendModel(sb, result)
+                // a carrier value's lemma is synthetic end to end — its `fails on:` call would name no real method
+                appendModel(sb, result, kind == '@Reducer')
                 break
             case CheckResult.Status.UNKNOWN:
-                sb.append("Could not decide @Reducer ").append(law).append(" for combiner ").append(combinerName)
+                sb.append("Could not decide ").append(kind).append(' ').append(law).append(" for combiner ").append(combinerName)
                   .append(" (solver: ").append(result.reason).append(")")
                 if (lawText) sb.append("\n    law: ").append(lawText)
                 break
             default:
-                sb.append("@Reducer ").append(law).append(" verified — no error to report")
+                sb.append(kind).append(' ').append(law).append(" verified — no error to report")
         }
         sb.toString()
     }
@@ -858,6 +865,10 @@ class Reporter {
 
     /** Append the counterexample and, when reconstructed, the runnable failing call (Phase 9). */
     private static void appendModel(StringBuilder sb, CheckResult result) {
+        appendModel(sb, result, true)
+    }
+
+    private static void appendModel(StringBuilder sb, CheckResult result, boolean withCall) {
         if (result.counterexample) {
             sb.append("\n    counterexample: ").append(formatModel(result.counterexample))
         }
@@ -869,7 +880,7 @@ class Reporter {
         // (assert/junit/spock), the checker's withRepro renders the call inside that form instead — so suppress
         // this line then, rather than printing the call twice.
         boolean richFormat = REFUTATION_FORMAT != null && REFUTATION_FORMAT != 'message'
-        if (result.failingCall && !richFormat) {
+        if (withCall && result.failingCall && !richFormat) {
             sb.append("\n    fails on: ").append(result.failingCall)
         }
     }

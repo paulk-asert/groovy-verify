@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(proposed)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slice 1; opaque-carrier reporting open)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13070,8 +13070,42 @@ visible lambdas prove associativity and identity silently under both checkers ov
 *trusted*, and a map-merge body reports *skipped*, neither passing silently; (4) CAPABILITIES.md row
 "Monoids/semigroups — checked *and* proven" gains the value-carrier column, and the README `CombinerChecker`/`Sum` example gains
 a carrier-value sibling, one proven and one refuted; (5) tests in a new `P-carrier` group alongside `P-reducer`. The functional
-programming post's "Monoids and Semigroups, checked" section and the talk abstract both currently say the FJ path
-is trusted; both get a sentence when this ships.
+programming post ([*Groovy 6 features for Functional Programmers*](https://groovy.apache.org/blog/groovy6-functional),
+already linked from `examples/checkers.md`) says in "Monoids and Semigroups, checked" that FunctionalJava/HighJ
+`Monoid`/`Semigroup` types are *recognised* and flow through `sumParallel` unchanged. That is accurate for
+CombinerChecker, and it is the trust this phase removes for lambda-built carriers. The post can gain a sentence when
+this ships; a conference talk abstract derived from the post (not yet accepted) inherits it.
+
+**As shipped (slice 1).** DoD items 1, 2, 4 and 5 are done, and half of 3. Discovery is `verifyCarrierValueLaws`,
+run from `afterVisitMethod` for locals and from `afterVisitClass` for field initialisers. `carrierKind` is
+CombinerChecker's rule: the simple name of the type or any supertype, and Monoid wins over Semigroup. It matches
+any call whose inferred type, or class receiver, classifies, and whose arguments include a two-parameter lambda
+literal; for a Monoid, the remaining argument is the zero. The Phase-130 lemma core is now `runLawLemma`, which
+takes a name, an owner and an anchor instead of a MethodNode. A lambda has no MethodNode for `collectCombiners` to
+find, so its `(formals, E)` entry is seeded into the lemma's combiners under a mangled name (`sub__MonoidOp`). The
+mangling stops a local named `max` from reaching a built-in handler before the inliner. The diagnostic shows the
+law in the developer's spelling (`law: sub(sub(a, b), c) == sub(a, sub(b, c))`) and drops the synthetic
+`fails on:` call. The `@Reducer` wording is unchanged.
+
+Corrections to the text above, found while scoping:
+
+* **`xs.sumParallel(sub)` is not the call.** CombinerChecker's `carrierOwner` recognises a carrier only through a
+  method reference or a thin delegating closure, so the site is `xs.sumParallel(sub::sum)`. A bare variable is
+  unclassified: a silent pass when lenient, an error when strict.
+* **`P-carrier` is taken** (G222, the @Monadic wrapper). The group is `P291 monoid value`
+  (`G341_p291_monoid_values`), with FJ-style source stubs placed after the checked class, as G219 does.
+* **An untyped lambda** (`{ a, b -> a - b } as F2<Integer, Integer, Integer>`) is not skipped. It takes its type
+  from the carrier's type argument (`Monoid<Integer>` → `int`, from the declared type or else the inferred one).
+* **The `double` counterexample is not printed.** The model formatter only renders integral values, so the FP
+  refutation reports the law without a witness, as the existing FP postcondition refutations do.
+
+**Open (slice 2): opaque carriers, reported.** A parameter or library-constant carrier still passes silently,
+at the Phase-116 trust level. There is no "assumed, not proven" diagnostic channel; the monitor invariant's
+"assumed" exists only in prose. The real mechanism is `TrustLedger.record`: its `summary()` counts only the
+`in-place` and `external` kinds, and no case can assert on a ledger entry. The slice is a new `opaque carrier`
+kind, recorded at `sumParallel`/`injectParallel` sites whose method-reference receiver classifies but was not
+proven, plus a harness `trusted:` expectation. After that: FJ's curried `F<A, F<A, A>>` form, and the
+Palatable/Purefun factory spellings as cases.
 
 ---
 

@@ -215,6 +215,41 @@ checkers' error channels stay separate, and the synergy runs *both* ways:
   and stays silent at the `Minus.&sub` call site — but groovy-verify **refutes** the associativity law
   (`(a-b)-c ≠ a-(b-c)`) with a **`Cannot prove`**, catching the false annotation the shape checker cannot.
 
+**A carrier value, not an annotation.** Functional Java, Palatable and Purefun spell a monoid as a *value* —
+`Monoid.monoid(f, zero)`, `Semigroup.semigroup(f)` — and CombinerChecker classifies an `m::sum` call site by the
+carrier's simple name, accepting it as *"an assertion carrier, not a proof"*. So the canonical lying instance, the
+subtraction monoid, type-checks in Functional Java (as it does in Haskell and Cats) and passes the shape check. Where
+the carrier is **built from a lambda groovy-verify can see** — a local, or a field initialiser — the lambda is read
+as an anonymous combiner and the same laws are discharged: associativity for both kinds, identity against the
+supplied zero for a Monoid (Phase 291):
+
+<!-- doclint:ignore README illustration: carrier values built from a visible lambda (proven + refuted) -->
+```groovy
+@TypeChecked(extensions = ['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'])
+class Totals {
+    @Requires({ xs != null })
+    static int sum(List<Integer> xs) {
+        Monoid<Integer> add = Monoid.monoid({ int a, int b -> a + b } as F2<Integer, Integer, Integer>, 0)   // proves
+        xs.sumParallel(add::sum)
+    }
+
+    @Requires({ xs != null })
+    static int diff(List<Integer> xs) {
+        Monoid<Integer> sub = Monoid.monoid({ int a, int b -> a - b } as F2<Integer, Integer, Integer>, 0)   // refutes
+        xs.sumParallel(sub::sum)                     // …though CombinerChecker still accepts the carrier
+    }
+}
+```
+
+`sub` refutes on the lambda with `Cannot prove Monoid associativity for combiner sub`, the law in your spelling
+(`sub(sub(a, b), c) == sub(a, sub(b, c))`) and the witness `a = 0, b = 0, c = -1`; a wrong zero
+(`Monoid.monoid(add, 1)`) refutes `Monoid identity`. A `double` sum monoid refutes too — floating-point addition is
+not associative — which makes this the first checker in the family to tell an FP programmer their
+`Monoid<Double>` is a lie. An untyped lambda takes its type from the carrier's (`Monoid<Integer>` → `int`); a body
+outside the fragment (a call into unmodelled code) or a zero that is not a literal **skips loudly**, exactly as a
+non-equational `@Reducer` does. What stays trusted is a carrier with no body in sight — a parameter, or a library
+constant such as `Monoid.intAdditionMonoid`: the same trust level as before this phase.
+
 The loop *calling* the combiner works via **combiner inlining**: a no-`@Requires` method with
 `@Ensures({ result == E })` is translated as `E` at its call sites (sound — its `@Ensures` is verified when the
 combiner is checked), so `acc = Sum.add(acc, xs[i])` becomes `acc + xs[i]` and matches the inline aggregation
