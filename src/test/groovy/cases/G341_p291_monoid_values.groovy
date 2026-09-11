@@ -338,18 +338,71 @@ class G341_p291_monoid_values {
                         }
                     }''')],
 
-        // Composition is NOT chased: the Semigroup lambda local still has its associativity discharged where it is
-        // written (here, refuted), but the Monoid built from the VARIABLE is opaque — its identity is never
-        // discharged, so the site that relies on it is ledgered.
-        [group: 'P291 monoid value', name: 'a Palatable Monoid composed from a Semigroup local: sg refutes, m is ledgered',
-         expect: 'Cannot prove Semigroup associativity for combiner sg', refute: '__',
-         trusted: 'm (a Monoid) at sumParallel',
+        // Composition is chased: a Monoid built from a Semigroup VARIABLE resolves through the variable's initialiser.
+        // Associativity belongs to the lambda — discharged once, at sg's own site, under sg's name — and identity to
+        // the Monoid, anchored on its call. Neither site is ledgered: every law the reduction relies on was checked.
+        [group: 'P291 monoid value', name: 'a Palatable Monoid composed from a Semigroup local: sg refutes, m is not ledgered',
+         expect: 'Cannot prove Semigroup associativity for combiner sg', refute: ['__', 'Monoid associativity'],
+         untrusted: 'opaque carrier',
          src: palatable('''class PComposed {
                         @Requires({ xs != null })
                         static int total(List<Integer> xs) {
                             Semigroup<Integer> sg = { int a, int b -> a - b } as Semigroup<Integer>
                             Monoid<Integer> m = Monoid.monoid(sg, 0)
                             xs.sumParallel(m::apply)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a composed Palatable sum monoid proves (both laws, no ledger entry)', ok: true,
+         untrusted: 'opaque carrier',
+         src: palatable('''class PComposedOk {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Semigroup<Integer> sg = { int a, int b -> a + b } as Semigroup<Integer>
+                            Monoid<Integer> m = Monoid.monoid(sg, 0)
+                            xs.sumParallel(m::apply)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a composed monoid with a wrong zero refutes identity under the Monoid\'s name',
+         expect: 'Cannot prove Monoid identity for combiner m', refute: '__',
+         src: palatable('''class PComposedZero {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Semigroup<Integer> sg = { int a, int b -> a + b } as Semigroup<Integer>
+                            Monoid<Integer> m = Monoid.monoid(sg, 1)
+                            xs.sumParallel(m::apply)
+                        }
+                    }''')],
+        // What the chase will not follow: a Semigroup parameter, or a local reassigned from one.
+        [group: 'P291 monoid value', name: 'a Monoid composed from a Semigroup parameter is still ledgered', ok: true,
+         trusted: 'm (a Monoid) at sumParallel',
+         src: palatable('''class PComposedParam {
+                        @Requires({ xs != null && sg != null })
+                        static int total(List<Integer> xs, Semigroup<Integer> sg) {
+                            Monoid<Integer> m = Monoid.monoid(sg, 0)
+                            xs.sumParallel(m::apply)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a Monoid composed from a reassigned Semigroup local is ledgered', ok: true,
+         trusted: 'm (a Monoid) at sumParallel',
+         src: palatable('''class PComposedReassigned {
+                        @Requires({ xs != null && other != null })
+                        static int total(List<Integer> xs, Semigroup<Integer> other, boolean swap) {
+                            Semigroup<Integer> sg = { int a, int b -> a + b } as Semigroup<Integer>
+                            if (swap) sg = other
+                            Monoid<Integer> m = Monoid.monoid(sg, 0)
+                            xs.sumParallel(m::apply)
+                        }
+                    }''')],
+        // A plain function local (FJ's F2 is not a carrier) has no site of its own that discharges anything, so the
+        // Monoid built from it owes BOTH laws — associativity is reported at the Monoid, under its name.
+        [group: 'P291 monoid value', name: 'an FJ Monoid composed from an F2 function local refutes at the Monoid',
+         expect: 'Cannot prove Monoid associativity for combiner m', refute: '__',
+         src: both('''class FjComposed {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            F2<Integer, Integer, Integer> f = { int a, int b -> a - b } as F2<Integer, Integer, Integer>
+                            Monoid<Integer> m = Monoid.monoid(f, 0)
+                            xs.sumParallel(m::sum)
                         }
                     }''')],
 

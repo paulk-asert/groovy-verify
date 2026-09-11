@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–4)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–5)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13165,11 +13165,28 @@ set gets its own case source:
 * a Semigroup lambda field refutes;
 * `Monoid.integer()` is ledgered as an opaque carrier.
 
+**As shipped (slice 5): composed carriers, chased.** Suppose a factory call's combiner argument is a carrier
+VARIABLE rather than a lambda (`Monoid.monoid(sg, 0)`, where `sg` is itself built from one). `resolveCarrierLambda`
+follows the variable through its initialiser, to a bounded depth of 4. The variable must be a never-reassigned
+local or a final field of the class under check (`carrierInit`, now shared with slice 2's lambda-built check). The
+initialiser must be a lambda, coerced to a carrier or to a plain function type such as FJ's `F2`, or another
+carrier factory call whose own combiner resolves.
+
+The laws split by who owns them. **Associativity belongs to the lambda.** It is discharged, and any skip reported,
+once, at the first site that reaches it; the coerced lambdas are processed first so that a Semigroup local reports
+under its own name, at its own site. **Identity belongs to each Monoid.** A composed `Monoid.monoid(sg, 1)`
+refutes as `Cannot prove Monoid identity for combiner m`, anchored on its call. A plain `F2` function local has no
+site of its own (it is not a carrier), so the Monoid built from it owes both laws, under the Monoid's name. A
+per-call set keeps a factory call from owing its identity twice. Slice 2 now agrees: a chased `m` is not ledgered,
+while a Semigroup parameter, or a local reassigned from one, still is.
+
+Six cases. The slice-4 pin flips: `sg` refutes and `m` is NOT ledgered, with no duplicate associativity report
+under `m`. The composed sum monoid proves both laws without a ledger entry. A composed wrong zero refutes identity
+under the Monoid's name. A parameter Semigroup and a reassigned local stay ledgered. An FJ `F2` local refutes at
+the Monoid.
+
 **Still open:** consumer-facing surfacing of the ledger. Today it is the harness line and the `entries()` API,
-the same as for the other two kinds. A carrier composed from a Semigroup local
-(`Monoid.monoid(sg, 0)` where `sg` is itself a lambda) is not chased: `sg`'s associativity is still discharged
-where it is written, but the Monoid's identity is not, and the site is ledgered. A case pins both halves: a
-subtraction `sg` refutes, and `m` is ledgered.
+the same as for the other two kinds.
 
 ---
 

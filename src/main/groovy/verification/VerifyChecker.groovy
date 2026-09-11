@@ -619,6 +619,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // A lambda coerced straight to a carrier type — Palatable's and Purefun's Semigroup are functional
         // interfaces, so `Semigroup<Integer> s = { int a, int b -> a - b } as Semigroup<Integer>` needs no factory.
         List<Object[]> coerced = new ArrayList<Object[]>()   // [name, carrier type, lambda]
+        // Composition: a factory call handed a carrier VARIABLE is chased through that variable's initialiser.
+        Map<Variable, Expression> inits = new IdentityHashMap<Variable, Expression>()
+        Set<Variable> reassigned = Collections.newSetFromMap(new IdentityHashMap<Variable, Boolean>())
         if (nameHint != null && root instanceof Expression && stripCasts((Expression) root) instanceof MethodCallExpression) {
             named.put((MethodCallExpression) stripCasts((Expression) root), nameHint)
             if (hintType != null) declTypes.put((MethodCallExpression) stripCasts((Expression) root), hintType)
@@ -633,6 +636,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     named.put((MethodCallExpression) rhs, de.variableExpression.name)
                     declTypes.put((MethodCallExpression) rhs, de.variableExpression.originType)
                 }
+                if (!de.isMultipleAssignmentDeclaration()) inits.put(de.variableExpression, de.rightExpression)
                 if (!de.isMultipleAssignmentDeclaration() && rhs instanceof ClosureExpression) {
                     ClassNode ts = de.rightExpression instanceof CastExpression ?
                         ((CastExpression) de.rightExpression).type : de.variableExpression.originType
@@ -644,15 +648,83 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 calls.add(call)
                 super.visitMethodCallExpression(call)
             }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                noteReassignment(be, reassigned)
+                super.visitBinaryExpression(be)
+            }
         })
-        for (MethodCallExpression call : calls) {
-            dischargeCarrierLaws(owner, call, named.get(call) ?: 'lambda', declTypes.get(call))
-        }
+        // Coerced lambdas first: a lambda later composed into a factory call has its associativity reported under
+        // its own name, at its own site.
         for (Object[] c : coerced) {
             String kind = carrierKind((ClassNode) c[1])
             Object[] lam = kind == null ? null : combinerLambda((Expression) c[2])
-            if (lam != null) dischargeLambdaLaws(owner, lam, (String) c[0], kind, (ClassNode) c[1], Collections.<Expression> emptyList())
+            if (lam != null) dischargeLambdaLaws(owner, lam, (String) c[0], kind, (ClassNode) c[1], Collections.<Expression> emptyList(), null)
         }
+        for (MethodCallExpression call : calls) {
+            dischargeCarrierLaws(owner, call, named.get(call) ?: 'lambda', declTypes.get(call), inits, reassigned)
+        }
+    }
+
+    /** Record {@code v = …} (not a declaration) on a local: a reassigned carrier can no longer be relied on. */
+    private static void noteReassignment(BinaryExpression be, Set<Variable> reassigned) {
+        if (!(be instanceof DeclarationExpression) && be.operation.type == Types.ASSIGN
+                && be.leftExpression instanceof VariableExpression) {
+            Variable av = ((VariableExpression) be.leftExpression).accessedVariable
+            if (av != null) reassigned.add(av)
+        }
+    }
+
+    /** Factory calls already processed (a call must owe its identity law once). */
+    private final Set<MethodCallExpression> carrierCallsDone =
+        Collections.newSetFromMap(new IdentityHashMap<MethodCallExpression, Boolean>())
+
+    /** The initialiser behind a carrier reference this checker can rely on — a never-reassigned local, or a final
+     *  field of {@code owner} (whose initialiser {@link #afterVisitClass} also scans) — else null. */
+    private static Expression carrierInit(Expression r, ClassNode owner, Map<Variable, Expression> inits, Set<Variable> reassigned) {
+        FieldNode f = null
+        if (r instanceof VariableExpression) {
+            Variable av = ((VariableExpression) r).accessedVariable
+            if (av instanceof PropertyNode) f = ((PropertyNode) av).field
+            else if (av instanceof FieldNode) f = (FieldNode) av
+            else return av != null && !reassigned.contains(av) ? inits.get(av) : null
+        } else if (r instanceof FieldExpression) {
+            f = ((FieldExpression) r).field
+        } else if (r instanceof PropertyExpression) {
+            Expression obj = ((PropertyExpression) r).objectExpression
+            boolean own = (obj instanceof ClassExpression && obj.type.name == owner.name) ||
+                          (obj instanceof VariableExpression && ((VariableExpression) obj).isThisExpression())
+            if (own) f = owner.getField(((PropertyExpression) r).propertyAsString)
+        }
+        f != null && f.final && f.owner?.name == owner.name ? f.initialValueExpression : null
+    }
+
+    /** Composition — the combiner lambda behind a carrier-valued argument ({@code Monoid.monoid(sg, 0)}): the
+     *  reference's initialiser is a lambda (coerced to a carrier or function type), or a carrier factory call whose
+     *  own combiner resolves, to a bounded depth. Null when anything on the way is opaque. */
+    private Object[] resolveCarrierLambda(Expression arg, ClassNode owner, Map<Variable, Expression> inits,
+                                          Set<Variable> reassigned, int depth) {
+        if (depth > 4) return null
+        Expression init = carrierInit(stripCasts(arg), owner, inits, reassigned)
+        if (init == null) return null
+        Expression s = stripCasts(init)
+        if (s instanceof ClosureExpression) return combinerLambda(s)
+        if (!(s instanceof MethodCallExpression) || carrierKindOfCall((MethodCallExpression) s) == null) return null
+        List<Expression> args = argListOf((MethodCallExpression) s)
+        if (args == null) return null
+        for (Expression a : args) {
+            Object[] l = combinerLambda(a) ?: resolveCarrierLambda(a, owner, inits, reassigned, depth + 1)
+            if (l != null) return l
+        }
+        null
+    }
+
+    /** {@code 'Monoid'} / {@code 'Semigroup'} for a carrier factory call (its inferred type, else its class receiver). */
+    private String carrierKindOfCall(MethodCallExpression call) {
+        ClassNode rt = null
+        try { rt = getType(call) } catch (Throwable ignored) { }
+        String kind = carrierKind(rt)
+        if (kind == null && call.objectExpression instanceof ClassExpression) kind = carrierKind(call.objectExpression.type)
+        kind
     }
 
     /** The single type argument of a carrier type ({@code Monoid<Integer>} → {@code Integer}), else null. */
@@ -662,7 +734,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         gts[0].type
     }
 
-    private void dischargeCarrierLaws(ClassNode owner, MethodCallExpression call, String name, ClassNode declType) {
+    private void dischargeCarrierLaws(ClassNode owner, MethodCallExpression call, String name, ClassNode declType,
+                                      Map<Variable, Expression> inits, Set<Variable> reassigned) {
+        if (!carrierCallsDone.add(call)) return
         ClassNode rt = null
         try { rt = getType(call) } catch (Throwable ignored) { }
         String kind = carrierKind(rt)
@@ -672,22 +746,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (args == null) return
         Object[] lam = null
         List<Expression> others = new ArrayList<Expression>()
+        boolean composed = false
         for (Expression a : args) {
             Object[] l = lam == null ? combinerLambda(a) : null
+            if (lam == null && l == null) {   // composition: a carrier-valued argument whose own lambda resolves
+                l = resolveCarrierLambda(a, owner, inits, reassigned, 0)
+                composed = l != null
+            }
             if (l != null) lam = l
             else others.add(stripCasts(a))
         }
         if (lam == null) return
-        dischargeLambdaLaws(owner, lam, name, kind, declType ?: rt, others)
+        dischargeLambdaLaws(owner, lam, name, kind, declType ?: rt, others, composed ? call : null)
     }
 
     /** The laws a {@code kind} carrier asserts, discharged from its combiner lambda {@code lam} (see
      *  {@link #combinerLambda}); {@code typeSource} types an untyped lambda, {@code others} holds the factory's
      *  remaining arguments (a Monoid's zero). Shared by factory calls and lambdas coerced straight to the type. */
     private void dischargeLambdaLaws(ClassNode owner, Object[] lam, String name, String kind, ClassNode typeSource,
-                                     List<Expression> others) {
+                                     List<Expression> others, ASTNode identityAnchor) {
         ClosureExpression cl = (ClosureExpression) lam[0]
-        if (!carrierLawsDone.add(cl)) return
+        // Associativity belongs to the LAMBDA: discharged, and any skip reported, once — at the first site reaching
+        // it. Identity belongs to each Monoid built from it: a composed Monoid.monoid(sg, 0) owes its own, anchored
+        // on its call (identityAnchor).
+        boolean assoc = carrierLawsDone.add(cl)
+        boolean ident = kind == 'Monoid' && others.size() == 1
+        if (!assoc && !ident) return
         Parameter p0 = (Parameter) lam[1]
         Parameter p1 = (Parameter) lam[2]
         ClassNode t = p0.isDynamicTyped() ? null : p0.type
@@ -696,14 +780,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (t != null) t = ClassHelper.getUnwrapper(t)
         if (t1 != null) t1 = ClassHelper.getUnwrapper(t1)
         if (t == null || t1 == null || t.name != t1.name) {
-            addStaticTypeError(Reporter.formatPostconditionSkipped(name,
+            if (assoc) addStaticTypeError(Reporter.formatPostconditionSkipped(name,
                 "the ${kind} combiner's lambda must declare both parameters with one type"), cl)
             return
         }
         List<String> formals = [p0.name, p1.name]
         Expression e = (Expression) lam[3]
         if (e == null || !isPureOver(e, formals)) {
-            addStaticTypeError(Reporter.formatPostconditionSkipped(name,
+            if (assoc) addStaticTypeError(Reporter.formatPostconditionSkipped(name,
                 "the ${kind} combiner is not an equational lambda the verifier can model"), cl)
             return
         }
@@ -713,17 +797,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object[]> extra = new HashMap<String, Object[]>()
         extra.put(op + '/2', [formals, e] as Object[])
         String base = name + '$' + kind
-        runLawLemma(base, owner, cl, t, 'associativity', ['a', 'b', 'c'],
+        if (assoc) runLawLemma(base, owner, cl, t, 'associativity', ['a', 'b', 'c'],
             "${op}(${op}(a, b), c) == ${op}(a, ${op}(b, c))".toString(),
             [name, 'associativity', kind, "${name}(${name}(a, b), c) == ${name}(a, ${name}(b, c))".toString()] as String[], extra)
-        if (kind == 'Monoid' && others.size() == 1) {
+        if (ident) {
             String zero = literalSource(others[0])
             if (zero == null) {
                 addStaticTypeError(Reporter.formatPostconditionSkipped(name,
                     "the Monoid's identity element is not a literal the verifier can model"), others[0])
                 return
             }
-            runLawLemma(base, owner, cl, t, 'identity', ['a'],
+            runLawLemma(base, owner, identityAnchor ?: cl, t, 'identity', ['a'],
                 "${op}(a, ${zero}) == a && ${op}(${zero}, a) == a".toString(),
                 [name, 'identity', kind, "${name}(a, ${zero}) == a && ${name}(${zero}, a) == a".toString()] as String[], extra)
         }
@@ -799,37 +883,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** True when {@code recv} names a carrier whose laws this checker discharges where it is built: a local never
      *  reassigned, or a final field of {@code owner}, initialised from a lambda-literal carrier construction. */
     private boolean lambdaBuilt(Expression recv, ClassNode owner, Map<Variable, Expression> inits, Set<Variable> reassigned) {
-        Expression r = stripCasts(recv)
-        FieldNode f = null
-        if (r instanceof VariableExpression) {
-            Variable av = ((VariableExpression) r).accessedVariable
-            if (av instanceof PropertyNode) f = ((PropertyNode) av).field
-            else if (av instanceof FieldNode) f = (FieldNode) av
-            else return av != null && inits.containsKey(av) && !reassigned.contains(av) && isLambdaCarrier(inits.get(av))
-        } else if (r instanceof FieldExpression) {
-            f = ((FieldExpression) r).field
-        } else if (r instanceof PropertyExpression) {
-            Expression obj = ((PropertyExpression) r).objectExpression
-            boolean own = (obj instanceof ClassExpression && obj.type.name == owner.name) ||
-                          (obj instanceof VariableExpression && ((VariableExpression) obj).isThisExpression())
-            if (own) f = owner.getField(((PropertyExpression) r).propertyAsString)
-        }
-        f != null && f.final && f.owner?.name == owner.name && isLambdaCarrier(f.initialValueExpression)
+        Expression init = carrierInit(stripCasts(recv), owner, inits, reassigned)
+        init != null && isLambdaCarrier(init, owner, inits, reassigned)
     }
 
-    /** {@code init} is a carrier construction whose combiner is a two-parameter lambda literal. */
-    private boolean isLambdaCarrier(Expression init) {
+    /** {@code init} is a carrier construction whose combiner is a lambda — literally, coerced straight to the
+     *  carrier type, or (composition) behind a carrier-valued argument that {@link #resolveCarrierLambda} chases. */
+    private boolean isLambdaCarrier(Expression init, ClassNode owner, Map<Variable, Expression> inits, Set<Variable> reassigned) {
         Expression s = init == null ? null : stripCasts(init)
         if (s instanceof ClosureExpression) return combinerLambda(s) != null   // coerced straight to the carrier type
         if (!(s instanceof MethodCallExpression)) return false
         MethodCallExpression call = (MethodCallExpression) s
-        ClassNode rt = null
-        try { rt = getType(call) } catch (Throwable ignored) { }
-        String kind = carrierKind(rt)
-        if (kind == null && call.objectExpression instanceof ClassExpression) kind = carrierKind(call.objectExpression.type)
-        if (kind == null) return false
+        if (carrierKindOfCall(call) == null) return false
         List<Expression> args = argListOf(call)
-        args != null && args.any { Expression a -> combinerLambda(a) != null }
+        args != null && args.any { Expression a ->
+            combinerLambda(a) != null || resolveCarrierLambda(a, owner, inits, reassigned, 1) != null
+        }
     }
 
     /** A carrier argument's combiner lambda as {@code [anchor, p0, p1, body]}: the two-parameter form

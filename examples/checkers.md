@@ -250,7 +250,9 @@ F<Integer, F<Integer, Integer>>, 0)`, is read the same way, taking its formals f
 `Monoid.monoid(semigroup, identity)` (an eager identity, or a lazy `{ -> 0 }`) and Purefun's zero-first
 `Monoid.of(0, op)`. Both of those libraries make `Semigroup` a functional interface, so there a lambda can *be*
 the carrier: `Semigroup<Integer> sub = (int a, int b) -> a - b` is discovered and refuted with no factory call
-in sight. An untyped lambda takes its type from the carrier's (`Monoid<Integer>` → `int`); a body
+in sight. Composition is followed too: `Monoid.monoid(sg, 0)` over that `sg` owes only its identity — the
+associativity is `sg`'s, reported once, at `sg` — while a Semigroup that arrives as a parameter leaves the Monoid
+opaque. An untyped lambda takes its type from the carrier's (`Monoid<Integer>` → `int`); a body
 outside the fragment (a call into unmodelled code) or a zero that is not a literal **skips loudly**, exactly as a
 non-equational `@Reducer` does. What stays trusted is a carrier with no body in sight — a parameter, a library
 constant such as `Monoid.intAdditionMonoid`, or a lambda-built local later reassigned — and it stays trusted
