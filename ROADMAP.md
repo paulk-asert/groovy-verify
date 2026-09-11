@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–7)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–8)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13230,9 +13230,27 @@ Tests:
   `deny:throwsif;report` denies the `@ThrowsIf` and not the carrier; a malformed value fails;
 * two `TrustLedgerTest` tests: the parser rejects typos, and the first matching clause decides.
 
+**As shipped (slice 8): site-anchored `deny` errors.** Slice 6 anchored every denied fact on its class, because
+an external spec is recorded inside the static `SpecRegistry.lookup` with no node to point at. The other two
+kinds do have one, so `TrustLedger.record` gains an `anchor` overload. The anchor is held as `Object`, so the
+ledger stays AST-agnostic, and the pending list keeps `[fact, anchor]`. The sites:
+
+* an opaque carrier anchors on the combiner handed to the reduction (`m::sum`);
+* an in-place `@ThrowsIf` anchors on its trusted condition closure;
+* an external spec still falls back to the class.
+
+Pending records dedupe by fact AND site (`drainPendingSites`), so one opaque carrier used at two reductions fails
+at both lines, while `report` still prints each fact once.
+
+The harness `expect:` now takes a list, every element of which must appear, mirroring `refute:`'s Phase-257
+list. So a case can pin the diagnostic and its `@ line L, column C.` together. The three positions were
+cross-checked against the class line (the class-anchored malformed-setting error sits on the `@TypeChecked` line
+L−1). The carrier lands at L+2, column 77, exactly `Monoid.integer()::combine`, and the `@ThrowsIf` at L+1,
+column 43, exactly `{ s == null }`. A new case uses one carrier twice and expects both lines. Harvester joins a
+list `expect` rather than recording its `toString()`.
+
 **Possible next steps, not started:**
 
-* site-anchored `deny` errors for the two kinds that have an AST node (opaque carrier and in-place `@ThrowsIf`);
 * making the consumer-smoke CI job assert the `report` line too.
 
 ---

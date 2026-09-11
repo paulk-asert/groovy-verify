@@ -443,7 +443,9 @@ class G341_p291_monoid_values {
         // compile). `deny` turns every trusted fact into a compile error — an opaque carrier fails, a proven one
         // compiles clean, and the other ledger kinds are covered by the same switch.
         [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny: an opaque carrier fails the compile', trustMode: 'deny',
-         expect: 'Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FDenied#total — Monoid.integer() (a Monoid) at sumParallel',
+         // anchored at the SITE — the combiner handed to sumParallel (`Monoid.integer()::combine`), not the class
+         expect: ['Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FDenied#total — Monoid.integer() (a Monoid) at sumParallel',
+                  '@ line 39, column 77.'],
          src: purefun('''class FDenied {
                         @Requires({ xs != null })
                         static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
@@ -454,6 +456,18 @@ class G341_p291_monoid_values {
                         static int total(List<Integer> xs) {
                             Monoid<Integer> add = Monoid.of(0, { int a, int b -> a + b } as Operator2<Integer>)
                             xs.sumParallel(add::combine)
+                        }
+                    }''')],
+        // One fact reached from two sites fails at BOTH — the pending records dedupe by fact AND site.
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny: an opaque carrier used twice fails at both sites', trustMode: 'deny',
+         expect: ['Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FTwice#twice — m (a Monoid) at sumParallel',
+                  '@ line 40, column 52.', '@ line 41, column 52.'],
+         src: purefun('''class FTwice {
+                        @Requires({ xs != null && m != null })
+                        static int twice(List<Integer> xs, Monoid<Integer> m) {
+                            int a = xs.sumParallel(m::combine)
+                            int b = xs.sumParallel(m::combine)
+                            a + b
                         }
                     }''')],
         // The per-kind filter: `deny:carrier` fails only opaque carriers; other kinds stay in the ledger.
@@ -490,7 +504,9 @@ class G341_p291_monoid_values {
                         static int id(int a) { a }
                     }''')],
         [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny also covers an in-place trusted @ThrowsIf', trustMode: 'deny',
-         expect: 'Trusted without proof (VERIFY_TRUST=deny): [in-place @ThrowsIf] Parser#parse',
+         // anchored at the SITE — the trusted condition `{ s == null }` in the @ThrowsIf, not the class
+         expect: ['Trusted without proof (VERIFY_TRUST=deny): [in-place @ThrowsIf] Parser#parse',
+                  '@ line 38, column 43.'],
          src: tc('''class Parser {
                         @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
                         static Object parse(Object s) { return helper(s) }

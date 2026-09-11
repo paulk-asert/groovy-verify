@@ -857,7 +857,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (kind == null || lambdaBuilt(recv, node.declaringClass, inits, reassigned)) continue
             String laws = kind == 'Monoid' ? 'associativity and identity are' : 'associativity is'
             TrustLedger.record('opaque carrier', "${node.declaringClass.name}#${node.name}".toString(),
-                "${recv.text} (a ${kind}) at ${call.methodAsString}: its combiner has no visible body, so its ${laws} assumed, not proven".toString())
+                "${recv.text} (a ${kind}) at ${call.methodAsString}: its combiner has no visible body, so its ${laws} assumed, not proven".toString(),
+                args.get(args.size() - 1))   // the site: the combiner handed to the reduction
         }
     }
 
@@ -2698,16 +2699,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 291 — VERIFY_TRUST: surface the trusted facts this class relied on, now that its methods,
         // constructors and field initialisers are all checked — each fact reported, denied, or (outside every
         // clause's kinds) left in the ledger. A malformed setting fails loudly: a typo must not read as "strict".
+        // A denied fact is anchored at its SITE when it has one (an opaque carrier's combiner, a trusted @ThrowsIf);
+        // an external spec, recorded inside the static registry lookup, has none and falls back to the class.
         String trustSetting = TrustLedger.mode
         if (trustSetting != null) {
-            List<String> facts = TrustLedger.drainPending()
+            List<Object[]> sites = TrustLedger.drainPendingSites()
             if (TrustLedger.parsePolicy(trustSetting) == null) {
                 addStaticTypeError(Reporter.formatTrustSettingInvalid(trustSetting), classNode)
             } else {
-                for (String fact : facts) {
+                Set<String> reported = new HashSet<String>()
+                for (Object[] site : sites) {
+                    String fact = (String) site[0]
                     String action = TrustLedger.actionFor(fact)
-                    if (action == 'deny') addStaticTypeError(Reporter.formatTrustDenied(fact), classNode)
-                    else if (action == 'report') println "trusted: ${fact}"
+                    ASTNode at = site[1] instanceof ASTNode && ((ASTNode) site[1]).lineNumber > 0 ? (ASTNode) site[1] : classNode
+                    if (action == 'deny') addStaticTypeError(Reporter.formatTrustDenied(fact), at)
+                    else if (action == 'report' && reported.add(fact)) println "trusted: ${fact}"
                 }
             }
         }
@@ -9360,7 +9366,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // visible in the inventory).
         for (TiInstance ti : instances.findAll { it.trusted() }) {
             TrustLedger.record('in-place @ThrowsIf', "${node.declaringClass.name}#${node.name}",
-                "throws ${ti.exception != null ? ti.exception.nameWithoutPackage : 'Throwable'} iff ${ti.cond.text}")
+                "throws ${ti.exception != null ? ti.exception.nameWithoutPackage : 'Throwable'} iff ${ti.cond.text}",
+                ti.anchor ?: node)   // the site: the trusted @ThrowsIf itself
             SmtSession s = backend.session()
             try {
                 Encoder enc = mkEncoder(s)

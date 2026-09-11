@@ -57,7 +57,7 @@ class Harvester {
     /** Outcome from the case's declared spec (CI-proven to match reality), not by re-running the solver. */
     static Map outcomeOf(Map c) {
         if (c.ok == true) return [outcome: 'verifies', diagnostic: null]
-        String exp = (c.expect ?: '').toString()
+        String exp = c.expect instanceof List ? ((List) c.expect).join('\n') : (c.expect ?: '').toString()
         boolean skip = exp.toLowerCase().contains('skip') || exp.toLowerCase().contains('outside fragment')
         [outcome: skip ? 'skips' : 'refutes', diagnostic: exp ?: null]
     }
