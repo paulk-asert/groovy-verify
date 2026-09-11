@@ -246,8 +246,11 @@ class Totals {
 (`Monoid.monoid(add, 1)`) refutes `Monoid identity`. A `double` sum monoid refutes too — floating-point addition is
 not associative — which makes this the first checker in the family to tell an FP programmer their
 `Monoid<Double>` is a lie. Functional Java's curried spelling, `Monoid.monoid({ int a -> { int b -> a - b } } as
-F<Integer, F<Integer, Integer>>, 0)`, is read the same way, taking its formals from the two nested lambdas. An
-untyped lambda takes its type from the carrier's (`Monoid<Integer>` → `int`); a body
+F<Integer, F<Integer, Integer>>, 0)`, is read the same way, taking its formals from the two nested lambdas. So are Palatable's
+`Monoid.monoid(semigroup, identity)` (an eager identity, or a lazy `{ -> 0 }`) and Purefun's zero-first
+`Monoid.of(0, op)`. Both of those libraries make `Semigroup` a functional interface, so there a lambda can *be*
+the carrier: `Semigroup<Integer> sub = (int a, int b) -> a - b` is discovered and refuted with no factory call
+in sight. An untyped lambda takes its type from the carrier's (`Monoid<Integer>` → `int`); a body
 outside the fragment (a call into unmodelled code) or a zero that is not a literal **skips loudly**, exactly as a
 non-equational `@Reducer` does. What stays trusted is a carrier with no body in sight — a parameter, a library
 constant such as `Monoid.intAdditionMonoid`, or a lambda-built local later reassigned — and it stays trusted

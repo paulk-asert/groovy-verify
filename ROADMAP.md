@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–3)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–4)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13136,8 +13136,40 @@ a case pins that spelling. Five cases: curried add proves; curried subtraction r
 cast; a curried non-associative Semigroup refutes; and an untyped curried lambda refutes a wrong zero. The FJ
 stubs gain `F<A, B>` and the two curried overloads.
 
-**Still open:** the Palatable/Purefun factory spellings as cases, and consumer-facing surfacing of the ledger
-(today it is the harness line and the `entries()` API, the same as for the other two kinds).
+**As shipped (slice 4): the Palatable and Purefun spellings.** Checked against the libraries' sources on GitHub:
+
+* Palatable lambda: `Semigroup<A> extends Fn2<A, A, A>`, a `@FunctionalInterface`, and
+  `Monoid.monoid(Semigroup<A>, A identity)` with a lazy `Fn0<A>` identity overload.
+* Purefun: `Semigroup<T>` is a `@FunctionalInterface` over `combine`, `Monoid.of(T zero, Operator2<T>)` takes the
+  zero FIRST, and there are library constants such as `Monoid.integer()`.
+
+The factory calls needed no discovery change: the argument scan is position-agnostic, so a zero-first `of` works
+as it stands. The new shape is the one both libraries allow because their Semigroup is a functional interface: a
+lambda that IS the carrier, coerced with no factory call. `Semigroup<Integer> s = { int a, int b -> a - b } as
+Semigroup<Integer>`, a static-final field initialised the same way, and Groovy's native
+`Semigroup<Integer> s = (int a, int b) -> a - b` with no cast are all discovered. The kind comes from the cast
+type, else the declared type. `dischargeCarrierLaws` is split, so these and the factory calls share
+`dischargeLambdaLaws`; slice 2's lambda-built check accepts a closure initialiser, so a coerced local is not
+ledgered. `literalSource` reads Palatable's lazy identity `{ -> 0 }` as its literal.
+
+Nine cases over separate Palatable and Purefun stub sets. All three libraries use the same simple names, so each
+set gets its own case source:
+
+* the Palatable monoid proves;
+* the Palatable subtraction monoid refutes;
+* a bare-lambda Semigroup refutes;
+* a lazy `{ -> 1 }` identity refutes identity;
+* a native Groovy lambda refutes;
+* Purefun's `Monoid.of(0, add)` proves;
+* `Monoid.of(1, add)` refutes identity;
+* a Semigroup lambda field refutes;
+* `Monoid.integer()` is ledgered as an opaque carrier.
+
+**Still open:** consumer-facing surfacing of the ledger. Today it is the harness line and the `entries()` API,
+the same as for the other two kinds. A carrier composed from a Semigroup local
+(`Monoid.monoid(sg, 0)` where `sg` is itself a lambda) is not chased: `sg`'s associativity is still discharged
+where it is written, but the Monoid's identity is not, and the site is ledgered. A case pins both halves: a
+subtraction `sg` refutes, and `m` is ledgered.
 
 ---
 

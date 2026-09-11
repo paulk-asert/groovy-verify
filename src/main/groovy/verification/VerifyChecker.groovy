@@ -616,9 +616,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<MethodCallExpression, String> named = new IdentityHashMap<MethodCallExpression, String>()
         Map<MethodCallExpression, ClassNode> declTypes = new IdentityHashMap<MethodCallExpression, ClassNode>()
         List<MethodCallExpression> calls = new ArrayList<MethodCallExpression>()
+        // A lambda coerced straight to a carrier type — Palatable's and Purefun's Semigroup are functional
+        // interfaces, so `Semigroup<Integer> s = { int a, int b -> a - b } as Semigroup<Integer>` needs no factory.
+        List<Object[]> coerced = new ArrayList<Object[]>()   // [name, carrier type, lambda]
         if (nameHint != null && root instanceof Expression && stripCasts((Expression) root) instanceof MethodCallExpression) {
             named.put((MethodCallExpression) stripCasts((Expression) root), nameHint)
             if (hintType != null) declTypes.put((MethodCallExpression) stripCasts((Expression) root), hintType)
+        }
+        if (nameHint != null && root instanceof Expression && stripCasts((Expression) root) instanceof ClosureExpression) {
+            coerced.add([nameHint, root instanceof CastExpression ? ((CastExpression) root).type : hintType, root] as Object[])
         }
         root.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {
@@ -626,6 +632,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (!de.isMultipleAssignmentDeclaration() && rhs instanceof MethodCallExpression) {
                     named.put((MethodCallExpression) rhs, de.variableExpression.name)
                     declTypes.put((MethodCallExpression) rhs, de.variableExpression.originType)
+                }
+                if (!de.isMultipleAssignmentDeclaration() && rhs instanceof ClosureExpression) {
+                    ClassNode ts = de.rightExpression instanceof CastExpression ?
+                        ((CastExpression) de.rightExpression).type : de.variableExpression.originType
+                    coerced.add([de.variableExpression.name, ts, de.rightExpression] as Object[])
                 }
                 super.visitDeclarationExpression(de)
             }
@@ -636,6 +647,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         })
         for (MethodCallExpression call : calls) {
             dischargeCarrierLaws(owner, call, named.get(call) ?: 'lambda', declTypes.get(call))
+        }
+        for (Object[] c : coerced) {
+            String kind = carrierKind((ClassNode) c[1])
+            Object[] lam = kind == null ? null : combinerLambda((Expression) c[2])
+            if (lam != null) dischargeLambdaLaws(owner, lam, (String) c[0], kind, (ClassNode) c[1], Collections.<Expression> emptyList())
         }
     }
 
@@ -662,13 +678,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             else others.add(stripCasts(a))
         }
         if (lam == null) return
+        dischargeLambdaLaws(owner, lam, name, kind, declType ?: rt, others)
+    }
+
+    /** The laws a {@code kind} carrier asserts, discharged from its combiner lambda {@code lam} (see
+     *  {@link #combinerLambda}); {@code typeSource} types an untyped lambda, {@code others} holds the factory's
+     *  remaining arguments (a Monoid's zero). Shared by factory calls and lambdas coerced straight to the type. */
+    private void dischargeLambdaLaws(ClassNode owner, Object[] lam, String name, String kind, ClassNode typeSource,
+                                     List<Expression> others) {
         ClosureExpression cl = (ClosureExpression) lam[0]
         if (!carrierLawsDone.add(cl)) return
         Parameter p0 = (Parameter) lam[1]
         Parameter p1 = (Parameter) lam[2]
         ClassNode t = p0.isDynamicTyped() ? null : p0.type
         ClassNode t1 = p1.isDynamicTyped() ? null : p1.type
-        if (t == null && t1 == null) t = t1 = carrierElementType(declType ?: rt)   // `{ a, b -> … }`: the type argument
+        if (t == null && t1 == null) t = t1 = carrierElementType(typeSource)   // `{ a, b -> … }`: the type argument
         if (t != null) t = ClassHelper.getUnwrapper(t)
         if (t1 != null) t1 = ClassHelper.getUnwrapper(t1)
         if (t == null || t1 == null || t.name != t1.name) {
@@ -796,6 +820,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** {@code init} is a carrier construction whose combiner is a two-parameter lambda literal. */
     private boolean isLambdaCarrier(Expression init) {
         Expression s = init == null ? null : stripCasts(init)
+        if (s instanceof ClosureExpression) return combinerLambda(s) != null   // coerced straight to the carrier type
         if (!(s instanceof MethodCallExpression)) return false
         MethodCallExpression call = (MethodCallExpression) s
         ClassNode rt = null
@@ -828,6 +853,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** A literal identity element as re-parseable source ({@code 0}, {@code -1}, {@code 0.0d}, {@code ''}), else null. */
     private static String literalSource(Expression z) {
         Expression e = stripCasts(z)
+        if (e instanceof ClosureExpression && !((ClosureExpression) e).parameters) {   // a lazy identity `{ -> 0 }` (Palatable's Fn0)
+            Expression v = Encoder.soleClosureExpr((ClosureExpression) e)
+            return v == null || v instanceof ClosureExpression ? null : literalSource(v)
+        }
         String sign = ''
         if (e instanceof UnaryMinusExpression) {
             sign = '-'

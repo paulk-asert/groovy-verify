@@ -54,6 +54,56 @@ class G341_p291_monoid_values {
         tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], cls.stripIndent() + FJ.stripIndent())
     }
 
+    // Palatable lambda (com.jnape.palatable.lambda): Semigroup<A> extends Fn2<A, A, A> is a FUNCTIONAL interface —
+    // a lambda IS a Semigroup — and Monoid.monoid(Semigroup<A>, A identity) has a lazy Fn0<A> identity overload.
+    static final String PALATABLE = '''
+        interface Fn0<A> { A checkedApply() }
+        interface Fn2<A, B, C> {
+            C checkedApply(A a, B b)
+            default C apply(A a, B b) { checkedApply(a, b) }
+        }
+        interface Semigroup<A> extends Fn2<A, A, A> { }
+        interface Monoid<A> extends Semigroup<A> {
+            A identity()
+            static <A> Monoid<A> monoid(Semigroup<A> semigroup, A identity) { new PMonoid<A>(semigroup, { -> identity } as Fn0<A>) }
+            static <A> Monoid<A> monoid(Semigroup<A> semigroup, Fn0<A> identityFn0) { new PMonoid<A>(semigroup, identityFn0) }
+        }
+        class PMonoid<A> implements Monoid<A> {
+            final Semigroup<A> s
+            final Fn0<A> z
+            PMonoid(Semigroup<A> s, Fn0<A> z) { this.s = s; this.z = z }
+            A identity() { z.checkedApply() }
+            A checkedApply(A a, A b) { s.checkedApply(a, b) }
+        }
+        '''
+
+    // Purefun (com.github.tonivade.purefun.typeclasses): Semigroup<T> is a functional interface over `combine`, and
+    // Monoid.of(T zero, Operator2<T> combinator) takes the zero FIRST; Monoid.integer() is a library constant.
+    static final String PUREFUN = '''
+        interface Operator2<T> { T apply(T t1, T t2) }
+        interface Semigroup<T> { T combine(T t1, T t2) }
+        interface Monoid<T> extends Semigroup<T> {
+            T zero()
+            static <T> Monoid<T> of(T zero, Operator2<T> combinator) { new FMonoid<T>(zero, combinator) }
+            static Monoid<Integer> integer() { of(0, { Integer a, Integer b -> a + b } as Operator2<Integer>) }
+        }
+        class FMonoid<T> implements Monoid<T> {
+            final T z
+            final Operator2<T> op
+            FMonoid(T z, Operator2<T> op) { this.z = z; this.op = op }
+            T zero() { z }
+            T combine(T t1, T t2) { op.apply(t1, t2) }
+        }
+        '''
+
+    static String palatable(String cls) {
+        tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], cls.stripIndent() + PALATABLE.stripIndent())
+    }
+
+    static String purefun(String cls) {
+        tcExt(['groovy.typecheckers.CombinerChecker', 'verification.VerifyChecker'], cls.stripIndent() + PUREFUN.stripIndent())
+    }
+
     static final List<Map> CASES = [
         // CombinerChecker classifies `add::sum` by its owner's simple name (Monoid) and accepts it as "an assertion
         // carrier, not a proof"; groovy-verify now proves what the carrier asserts, from the lambda at the site.
@@ -237,6 +287,103 @@ class G341_p291_monoid_values {
                             if (other) add = m
                             xs.sumParallel(add::sum)
                         }
+                    }''')],
+
+        // Palatable lambda's spellings — a Semigroup lambda handed to Monoid.monoid, a bare lambda AS the Semigroup
+        // (a functional interface: no factory call at all), and the lazy Fn0 identity.
+        [group: 'P291 monoid value', name: 'Palatable Monoid.monoid(semigroup lambda, 0) proves', ok: true,
+         untrusted: 'opaque carrier',
+         src: palatable('''class PSums {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.monoid({ int a, int b -> a + b } as Semigroup<Integer>, 0)
+                            xs.sumParallel(add::apply)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'the Palatable subtraction monoid refutes associativity',
+         expect: 'Cannot prove Monoid associativity for combiner sub', refute: '__',
+         src: palatable('''class PDiffs {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> sub = Monoid.monoid({ int a, int b -> a - b } as Semigroup<Integer>, 0)
+                            xs.sumParallel(sub::apply)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a Palatable Semigroup that IS a lambda (no factory) refutes',
+         expect: 'Cannot prove Semigroup associativity for combiner sub', refute: '__', untrusted: 'opaque carrier',
+         src: palatable('''class PBare {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Semigroup<Integer> sub = { int a, int b -> a - b } as Semigroup<Integer>
+                            xs.sumParallel(sub::apply)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a Palatable lazy identity { -> 1 } for a sum refutes identity',
+         expect: 'Cannot prove Monoid identity for combiner add', refute: '__',
+         src: palatable('''class PLazy {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.monoid({ int a, int b -> a + b } as Semigroup<Integer>, { -> 1 } as Fn0<Integer>)
+                            xs.sumParallel(add::apply)
+                        }
+                    }''')],
+        // Groovy's native lambda syntax, assigned to the functional-interface type with no cast at all.
+        [group: 'P291 monoid value', name: 'a native Groovy lambda typed as a Palatable Semigroup refutes',
+         expect: 'Cannot prove Semigroup associativity for combiner sub', refute: '__',
+         src: palatable('''class PNative {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Semigroup<Integer> sub = (int a, int b) -> a - b
+                            xs.sumParallel(sub::apply)
+                        }
+                    }''')],
+
+        // Composition is NOT chased: the Semigroup lambda local still has its associativity discharged where it is
+        // written (here, refuted), but the Monoid built from the VARIABLE is opaque — its identity is never
+        // discharged, so the site that relies on it is ledgered.
+        [group: 'P291 monoid value', name: 'a Palatable Monoid composed from a Semigroup local: sg refutes, m is ledgered',
+         expect: 'Cannot prove Semigroup associativity for combiner sg', refute: '__',
+         trusted: 'm (a Monoid) at sumParallel',
+         src: palatable('''class PComposed {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Semigroup<Integer> sg = { int a, int b -> a - b } as Semigroup<Integer>
+                            Monoid<Integer> m = Monoid.monoid(sg, 0)
+                            xs.sumParallel(m::apply)
+                        }
+                    }''')],
+
+        // Purefun's spellings — Monoid.of with the zero FIRST, a Semigroup lambda field, and a library constant.
+        [group: 'P291 monoid value', name: 'Purefun Monoid.of(0, add) proves (zero first)', ok: true,
+         untrusted: 'opaque carrier',
+         src: purefun('''class FSums {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.of(0, { int a, int b -> a + b } as Operator2<Integer>)
+                            xs.sumParallel(add::combine)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'Purefun Monoid.of(1, add) refutes identity',
+         expect: 'Cannot prove Monoid identity for combiner add', refute: '__',
+         src: purefun('''class FWrongZero {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            Monoid<Integer> add = Monoid.of(1, { int a, int b -> a + b } as Operator2<Integer>)
+                            xs.sumParallel(add::combine)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a Purefun Semigroup lambda field refutes',
+         expect: 'Cannot prove Semigroup associativity for combiner SUB', refute: '__', untrusted: 'opaque carrier',
+         src: purefun('''class FField {
+                        static final Semigroup<Integer> SUB = { int a, int b -> a - b } as Semigroup<Integer>
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) { xs.sumParallel(SUB::combine) }
+                    }''')],
+        [group: 'P291 monoid value', name: 'the Purefun library constant Monoid.integer() is ledgered as an opaque carrier', ok: true,
+         trusted: 'Monoid.integer() (a Monoid) at sumParallel',
+         src: purefun('''class FLibrary {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
                     }''')],
     ]
 }
