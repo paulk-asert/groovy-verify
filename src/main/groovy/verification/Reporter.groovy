@@ -156,6 +156,15 @@ class Reporter {
      * groovy-verify could not prove. Derived automatically from the annotation + the combiner's equation, so the
      * wording names the law and the combiner rather than a synthetic method.
      */
+    /** Phase 292 — stash conservation: an actor that stashes, none of whose behaviours ever calls unstashAll(). */
+    static String formatStashNeverReplayed(String methodName, String actor, int stashLine) {
+        ("Stashed messages are never replayed: actor '${actor}' in ${methodName}() stashes (line ${stashLine}) but " +
+            "none of its behaviours calls unstashAll(). A stashed message comes back only through unstashAll(), so it " +
+            "never reaches a handler again, and at stop() it is rejected: a sendAndGet reply fails with " +
+            "IllegalStateException, a send is discarded. Call ctx.unstashAll() on the phase transition that can " +
+            "handle it, usually right after ctx.become(...)").toString()
+    }
+
     /** Phase 291 — {@code VERIFY_TRUST=deny}: a fact the compile assumed without proof, surfaced as an error. */
     static String formatTrustDenied(String fact) {
         "Trusted without proof (VERIFY_TRUST=deny): ${fact}. Prove it, or unset VERIFY_TRUST to accept it as an assumption.".toString()

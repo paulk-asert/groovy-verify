@@ -6015,6 +6015,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 super.visitBinaryExpression(be)
             }
         })
+        // Phase 292 — an actor callback's ActorContext is supplied by the runtime, never null (a reassigned one
+        // is still excluded below, like any other local)
+        news.addAll(ActorMailbox.contextParamNames(code))
         news.removeAll(reassigned)
         news
     }

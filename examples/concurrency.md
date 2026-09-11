@@ -351,6 +351,45 @@ one-shot FIFO model, and says so — because a handler runs once per **message**
 single process run. The mailbox verdict is independent of that skip, which is why the cases pin both: the
 channel certificate withheld, and the deadlock answer given.
 
+### The stash — deferred is not delivered (Phase 292)
+
+A context-aware actor can **defer** a message it cannot handle yet: `ctx.stash()` moves it out of the dispatch
+path, and `ctx.unstashAll()` replays everything deferred, oldest first, ahead of anything sent since — the
+FSM idiom the Groovy docs teach, *stash until ready, then `become` the ready phase and replay*. Both halves are
+measured (`ActorStashSemanticsTest`), and the first is the one that matters: a stashed message comes back
+**only** through `unstashAll()`. Without it, it never reaches a handler again, and at `stop()` it is rejected —
+a `sendAndGet` caller's reply fails with `IllegalStateException`, a plain send is discarded.
+
+So an actor that stashes while none of its behaviours ever replays loses every message it defers — a definite
+loss, which the checker refutes rather than warns about:
+
+<!-- doclint:case p292-actor-stash/a-reactor-that-stashes-with-no-replay-anywhere-is-refuted -->
+```groovy
+static void defers() {
+    Actor<String> deferrer = Actor.reactor({ ActorContext<String> ctx, String m ->
+        ctx.stash()
+        return m
+    } as ReactorHandler<String, String>)
+    deferrer.send('x')
+}
+```
+
+The diagnostic, `Stashed messages are never replayed`, names the stash and the fix: `ctx.unstashAll()` on the
+phase transition that can handle the message, usually right after `ctx.become(…)`. The behaviour *family* is
+what is searched — the handler, and every `become` target, inline or a local, including phases declared first
+and assigned afterwards as the docs' three-phase connection actor does — so the replay may live two phases
+away from the stash and still count.
+
+**What is not claimed.** A `become` target the checker cannot see (a method result, a field), a context handed
+to a helper, or an `unstashAll()` anywhere else in the method (a context-aware `onError` retry, say) and nothing
+is claimed: this finds the definite loss, and does not prove a replay happens — that would be a liveness claim
+about the trigger message ever arriving. The stash's own bound (`withStashBound(n, FAIL | DROP_OLDEST |
+REJECT)`) is the next slice.
+
+(On the way, the docs' FSM example turned out not to compile under the checker at all: every `ctx.become(…)`
+carried a *Possible NullPointerException*. The context the runtime passes a handler, a `become` target or a
+context-aware `onError` is never null, and is now treated so.)
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

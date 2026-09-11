@@ -17,6 +17,8 @@ package verification
 
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.CodeVisitorSupport
+import org.codehaus.groovy.ast.Parameter
+import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.CastExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
@@ -30,6 +32,7 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.syntax.Types
 
 /**
  * Phase 289 — the BOUNDED ACTOR MAILBOX, the first send in {@code groovy.concurrent} that really blocks.
@@ -74,6 +77,8 @@ class ActorMailbox {
         String policy                  // BLOCK / DROP_NEWEST / FAIL, or null when unbounded
         ClosureExpression handler
         int line
+        Expression handlerExpr         // the handler argument as written — a closure, or a behaviour local (Phase 292)
+        boolean stateful               // Actor.stateful: the context is the first of THREE handler params
     }
 
     /** A send to an actor, in program order within the method body. */
@@ -131,6 +136,59 @@ class ActorMailbox {
      *  local bound to one is never null (the same justification as a constructor call, Phase 277). */
     static boolean isActorFactory(Expression e) { actorFactoryArgs(e) != null }
 
+    /**
+     * Phase 292 — the context parameters of context-aware actor callbacks, by name. The {@code ActorContext} the
+     * runtime passes a handler, a {@code become} target or a context-aware {@code onError} is the dispatch's own
+     * context and never null — without this, the Groovy docs' own FSM example carried an undischargeable deref
+     * obligation on every {@code ctx.become(…)} / {@code ctx.stash()}. Recognised by: a first parameter typed
+     * {@code ActorContext}; a closure cast to {@code ReactorHandler} (context first of 2) or {@code StatefulHandler}
+     * (first of 3), which covers the docs' untyped {@code { ctx, s, m -> … } as StatefulHandler}; an actor factory's
+     * handler literal with the context-aware arity; and a three-parameter {@code onError} callback.
+     */
+    static Set<String> contextParamNames(Statement code) {
+        Set<String> out = new HashSet<String>()
+        if (code == null) return out
+        code.visit(new CodeVisitorSupport() {
+            private void addFirst(Expression e, int arity) {
+                Expression x = strip(e)
+                if (!(x instanceof ClosureExpression)) return
+                Parameter[] ps = ((ClosureExpression) x).parameters
+                if (ps != null && ps.length == arity) out.add(ps[0].name)
+            }
+            private void factoryHandler(Expression call, String method) {
+                TupleExpression args = actorFactoryArgs(call)
+                if (args == null) return
+                boolean stateful = method == 'stateful'
+                int hi = stateful ? 1 : 0
+                if (args.expressions.size() > hi) addFirst(args.expressions.get(hi), stateful ? 3 : 2)
+            }
+            @Override void visitClosureExpression(ClosureExpression cl) {
+                Parameter[] ps = cl.parameters
+                if (ps != null && ps.length > 0 && !ps[0].isDynamicTyped()
+                        && ps[0].type?.nameWithoutPackage == 'ActorContext') out.add(ps[0].name)
+                super.visitClosureExpression(cl)
+            }
+            @Override void visitCastExpression(CastExpression ce) {
+                String t = ce.type?.nameWithoutPackage
+                if (t == 'ReactorHandler') addFirst(ce.expression, 2)
+                else if (t == 'StatefulHandler') addFirst(ce.expression, 3)
+                super.visitCastExpression(ce)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+                factoryHandler(call, call.method)
+                super.visitStaticMethodCallExpression(call)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                factoryHandler(call, call.methodAsString)
+                if (call.methodAsString == 'onError' && call.arguments instanceof TupleExpression) {
+                    for (Expression a : ((TupleExpression) call.arguments).expressions) addFirst(a, 3)
+                }
+                super.visitMethodCallExpression(call)
+            }
+        })
+        out
+    }
+
     /** Read `…withBoundedMailbox(k, ActorOptions.Overflow.X)` off an options expression. */
     private static void readBound(Expression opts, ActorDecl d) {
         Expression e = strip(opts)
@@ -163,6 +221,9 @@ class ActorMailbox {
                         ActorDecl d = new ActorDecl()
                         d.name = ((VariableExpression) de.leftExpression).name
                         d.line = de.lineNumber
+                        d.stateful = factoryMethod(de.rightExpression) == 'stateful'
+                        int hi = d.stateful ? 1 : 0            // reactor(handler[, opts]) / stateful(init, handler[, opts])
+                        if (args.expressions.size() > hi) d.handlerExpr = strip(args.expressions.get(hi))
                         for (Expression a : args.expressions) {
                             Expression s = strip(a)
                             if (s instanceof ClosureExpression && d.handler == null) d.handler = (ClosureExpression) s
@@ -194,6 +255,133 @@ class ActorMailbox {
         out
     }
 
+    // ── Phase 292 — stash conservation ──────────────────────────────────────────────────────────────────────
+
+    /** The factory method an actor declaration used ({@code reactor} / {@code stateful}), else null. */
+    private static String factoryMethod(Expression rhs) {
+        Expression r = strip(rhs)
+        if (r instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) r).method
+        if (r instanceof MethodCallExpression) return ((MethodCallExpression) r).methodAsString
+        null
+    }
+
+    /** Behaviour locals: every closure a local is declared with or later assigned (`x = { … }`), by name — the
+     *  documented FSM idiom declares its phases first and assigns them afterwards, so both forms count. */
+    private static Map<String, List<ClosureExpression>> behaviourLocals(BlockStatement body) {
+        Map<String, List<ClosureExpression>> out = new HashMap<String, List<ClosureExpression>>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                Expression rhs = strip(be.rightExpression)
+                if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof VariableExpression
+                        && rhs instanceof ClosureExpression) {
+                    String n = ((VariableExpression) be.leftExpression).name
+                    List<ClosureExpression> cls = out.get(n)
+                    if (cls == null) { cls = new ArrayList<ClosureExpression>(); out.put(n, cls) }
+                    cls.add((ClosureExpression) rhs)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        out
+    }
+
+    /** The closures a handler / become argument denotes: itself if a literal, a behaviour local's closures, or
+     *  null when it is opaque (a method result, a field, a parameter) — and then nothing may be claimed. */
+    private static List<ClosureExpression> resolveBehaviour(Expression e, Map<String, List<ClosureExpression>> locals) {
+        Expression x = e == null ? null : strip(e)
+        if (x instanceof ClosureExpression) return [(ClosureExpression) x]
+        if (x instanceof VariableExpression) return locals.get(((VariableExpression) x).name)
+        null
+    }
+
+    /** A behaviour's context parameter: the first of a context-aware handler (reactor: 2 params, stateful: 3). */
+    private static String ctxParam(ClosureExpression cl, boolean stateful) {
+        Parameter[] ps = cl.parameters
+        ps != null && ps.length == (stateful ? 3 : 2) ? ps[0].name : null
+    }
+
+    private static class BehaviourScan {
+        MethodCallExpression stash
+        List<Expression> becomeTargets = new ArrayList<Expression>()
+        boolean escapes
+    }
+
+    /** One behaviour's own body — not its inline become targets, which are behaviours of their own: its first
+     *  {@code ctx.stash()}, its {@code ctx.become(…)} targets, and whether {@code ctx} ESCAPES (is used as
+     *  anything but the receiver of a direct context call — handed to a helper that might unstash, say). */
+    private static BehaviourScan scanBehaviour(ClosureExpression cl, String ctx) {
+        BehaviourScan s = new BehaviourScan()
+        cl.code?.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                Expression recv = strip(call.objectExpression)
+                if (recv instanceof VariableExpression && ((VariableExpression) recv).name == ctx) {
+                    List<Expression> args = call.arguments instanceof TupleExpression ?
+                        ((TupleExpression) call.arguments).expressions : Collections.<Expression> emptyList()
+                    if (call.methodAsString == 'stash' && args.isEmpty() && s.stash == null) s.stash = call
+                    if (call.methodAsString == 'become' && args.size() == 1) {
+                        s.becomeTargets.add(args.get(0))
+                        if (strip(args.get(0)) instanceof ClosureExpression) return   // scanned as its own behaviour
+                    }
+                    call.arguments.visit(this)          // the receiver `ctx` is a direct use, not an escape
+                    return
+                }
+                super.visitMethodCallExpression(call)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (ve.name == ctx) s.escapes = true
+            }
+        })
+        s
+    }
+
+    /**
+     * Phase 292 — stash conservation. A stashed message comes back ONLY through {@code unstashAll()} — measured,
+     * {@code ActorStashSemanticsTest}: without it the message never reaches a handler again, and at {@code stop()}
+     * a sendAndGet reply fails with IllegalStateException and a send is discarded. So an actor that stashes, none
+     * of whose behaviours ever calls {@code unstashAll()}, loses every message it stashes: a definite loss, not a
+     * possible one. The claim is made only when the whole behaviour family is visible — the handler and every
+     * {@code ctx.become(…)} target, inline or a local of this method — and nothing is claimed when anything is
+     * opaque: a become target from elsewhere, the context handed on, or an {@code unstashAll()} anywhere in the
+     * method (a context-aware onError callback, say).
+     */
+    private static List<Finding> stashFindings(String methodName, BlockStatement body, Map<String, ActorDecl> actors) {
+        List<Finding> out = new ArrayList<Finding>()
+        boolean[] unstashAnywhere = [false] as boolean[]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (call.methodAsString == 'unstashAll') unstashAnywhere[0] = true
+                super.visitMethodCallExpression(call)
+            }
+        })
+        if (unstashAnywhere[0]) return out
+        Map<String, List<ClosureExpression>> locals = behaviourLocals(body)
+        for (ActorDecl d : actors.values()) {
+            List<ClosureExpression> roots = resolveBehaviour(d.handlerExpr, locals)
+            if (roots == null) continue
+            Set<ClosureExpression> family = Collections.newSetFromMap(new IdentityHashMap<ClosureExpression, Boolean>())
+            Deque<ClosureExpression> todo = new ArrayDeque<ClosureExpression>(roots)
+            boolean opaque = false
+            MethodCallExpression firstStash = null
+            while (!todo.isEmpty() && !opaque) {
+                ClosureExpression cl = todo.poll()
+                if (!family.add(cl)) continue
+                String ctx = ctxParam(cl, d.stateful)
+                if (ctx == null) continue                     // no context: this behaviour can neither stash nor become
+                BehaviourScan scan = scanBehaviour(cl, ctx)
+                if (scan.escapes) { opaque = true; break }
+                if (firstStash == null && scan.stash != null) firstStash = scan.stash
+                for (Expression target : scan.becomeTargets) {
+                    List<ClosureExpression> next = resolveBehaviour(target, locals)
+                    if (next == null) { opaque = true; break }
+                    todo.addAll(next)
+                }
+            }
+            if (opaque || firstStash == null) continue
+            out.add(new Finding(Reporter.formatStashNeverReplayed(methodName, d.name, firstStash.lineNumber), firstStash))
+        }
+        out
+    }
+
     /**
      * The check. Returns the findings; the caller reports them (so this file stays free of the STC API).
      */
@@ -201,6 +389,7 @@ class ActorMailbox {
         List<Finding> out = new ArrayList<Finding>()
         Map<String, ActorDecl> actors = actorsIn(body)
         if (actors.isEmpty()) return out
+        out.addAll(stashFindings(methodName, body, actors))   // Phase 292 — needs no sends, so it comes first
 
         // Program-order pass over the body's own statements: sends to each actor, and sends on each channel.
         List<Send> sends = new ArrayList<Send>()

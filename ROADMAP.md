@@ -13007,7 +13007,8 @@ none of them needs a new mechanism:
   checking — new machinery. The most interesting of the three, and the expensive one.
 * *Stash conservation.* `stash()` with no matching `unstashAll()` loses messages, and
   `ActorOptions.withStashBound(n, StashOverflow)` means the runtime has a bound the code can exceed. The same
-  conservation shape as c04's token count (Phase 287): take one, put one back.
+  conservation shape as c04's token count (Phase 287): take one, put one back. The LOSS half SHIPPED as Phase
+  292; the bound half (a literal burst of stashes past `withStashBound(n, …)`) is its open slice 2.
 * *Bounded mailbox overflow.* SHIPPED as Phase 289 above — and it turned out to be the liveness item rather
   than the loss item, because `Overflow.BLOCK` makes the sender wait.
 
@@ -13264,6 +13265,83 @@ The CI job's step gains part 3:
 
 The step was run locally, as a bash script replicating the job (without the CI-only `fromEnv` toolchain flag):
 all three parts pass, including the `deny` failure at line 31. This closes the follow-ups the phase listed.
+
+---
+
+## Phase 292 — the actor stash, conserved: a stash nobody replays  *(shipped — slice 1; the stash bound open)*
+
+The second property on the Actor candidate list, taken before `become` conformance because it is the cheap one.
+Like Phase 289, the runtime was measured before anything was modelled. `ActorStashSemanticsTest` stays in the
+suite as the evidence, and it checks what `DefaultActor` and `ActorContext`'s javadoc say, unchanged since
+GROOVY-12033:
+
+* **A stashed message comes back only through `unstashAll()`.** Never unstashed, it never reaches a handler
+  again. At `stop()` it is rejected: the stashed `sendAndGet` failed with
+  `IllegalStateException: actor stopped with message in stash`, and the handler only ever saw the one message it
+  did not defer.
+* **`become` then `unstashAll()` replays FIFO, ahead of newer sends.** The new behaviour saw
+  `[first, second, third]`: the stash first, then the message sent after the transition.
+
+(The first run of that test failed for a reason worth recording. A polling helper named `await` is Groovy 6's
+async `await`, which tried to await the closure: "No Awaitable adapter found". Renamed `waitUntil`.)
+
+**The property.** An actor that stashes, none of whose behaviours ever calls `unstashAll()`, loses every message
+it defers. That is a definite loss, not a possible one, so the check refutes rather than warns. `ActorMailbox`
+(the Phase 289 engine source) walks the actor's behaviour family:
+
+* the handler, as a literal or a local;
+* every `ctx.become(…)` target, inline or a behaviour local. Locals are collected from declarations AND later
+  `x = { … }` assignments, because the Groovy docs' three-phase FSM declares its phases first and assigns them
+  afterwards.
+
+It reports the first `ctx.stash()` with the fix: `ctx.unstashAll()` on the transition that can handle it. The
+check runs before the mailbox analysis, which only looks at methods that send, because conservation does not
+depend on who sends.
+
+**What is not claimed.** Nothing is claimed when anything is opaque:
+
+* a `become` target from elsewhere (a method result, a field);
+* the context handed on (`helper(ctx)`, or any use of `ctx` other than as the receiver of a direct call);
+* an `unstashAll()` anywhere in the method, such as a context-aware `onError` retry.
+
+The check is a bug finder for the definite case, not a proof that stashed messages are replayed. Replay is a
+liveness claim about the trigger message arriving, and nothing here models that.
+
+**A false positive found on the way, and fixed.** The Groovy docs' own FSM example did not compile under the
+checker: every `ctx.become(…)`, `ctx.stash()` and `ctx.unstashAll()` carried a "Possible NullPointerException",
+because the context parameter was an unconstrained closure parameter. The context the runtime passes a handler,
+a `become` target or a context-aware `onError` is the dispatch's own context and never null.
+`ActorMailbox.contextParamNames` adds these names to the Phase 277 never-null set, beside constructor and
+actor-factory locals, and a reassigned one is still excluded. It recognises four forms:
+
+* a first parameter typed `ActorContext`;
+* a closure cast to `ReactorHandler` (context first of 2) or `StatefulHandler` (first of 3), which covers the
+  docs' untyped `{ ctx, s, m -> … } as StatefulHandler`;
+* an actor factory's handler literal with the context-aware arity;
+* a three-parameter `onError` callback.
+
+Like that set, it works by name, and it exempts deref obligations only: `ctx != null` is not a solver fact, so a
+helper with `@Requires({ c != null })` cannot be called with the context. The case's helper guards with
+`if (c != null) c.unstashAll()`. A second existing false positive turned up there and is recorded, not fixed:
+`c?.unstashAll()` also carried a "Possible NullPointerException", although safe navigation cannot throw one.
+
+Cases (G342, 8):
+
+* the docs' stash-until-ready idiom proves;
+* the same idiom without the replay refutes;
+* the docs' three-phase actor proves, and its replay-less variant refutes through two `become` steps from a
+  handler passed as a local;
+* a context-aware reactor that only defers refutes;
+* an opaque `become` target, a context handed to a helper, and an `unstashAll` in `onError` all withhold the
+  claim.
+
+P289's eight cases are unchanged.
+
+**Open (slice 2): the stash bound.** `withStashBound(n, FAIL | DROP_OLDEST | REJECT)` has three policies:
+`stash()` throws, the oldest stashed message is evicted with its reply failed, or the current message is
+rejected. A literal burst of more than `n` sends that the handler stashes before its trigger overruns the bound.
+That is Phase 289's burst counting against the stash instead of the mailbox. After that comes `become`
+conformance, which needs a become-graph and new machinery.
 
 ---
 
