@@ -180,5 +180,148 @@ class G342_p292_actor_stash {
                             actor.send('x')
                         }
                     }''')],
+
+        // ── Slice 2 — the stash BOUND. A "stash until 'open'" handler stashes every message this method sends
+        //    before 'open', so a literal burst is a count of the stash; each policy's outcome is measured.
+        [group: 'P292 actor stash', name: 'a burst past a FAIL stash bound fails the overflowing message',
+         expect: ["Stash overflow in 'burst': actor 'gate' stashes every message until 'open'", 'the 3rd stashed before it',
+                  'StashOverflow.FAIL: its stash() throws IllegalStateException'],
+         src: tc('''class C {
+                        static void burst() {
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                if (m == 'open') {
+                                    ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
+                                    ctx.unstashAll()
+                                    return m
+                                }
+                                ctx.stash()
+                                return m
+                            } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, ActorOptions.StashOverflow.FAIL))
+                            gate.send('a')
+                            gate.send('b')
+                            gate.send('c')
+                            gate.send('open')
+                        }
+                    }''')],
+        [group: 'P292 actor stash', name: 'a burst past a DROP_OLDEST stash bound evicts the first stashed message',
+         expect: ['StashOverflow.DROP_OLDEST: stashing it evicts the OLDEST stashed message (line'],
+         src: tc('''class C {
+                        static void burst() {
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                if (m == 'open') {
+                                    ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
+                                    ctx.unstashAll()
+                                    return m
+                                }
+                                ctx.stash()
+                                return m
+                            } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, ActorOptions.StashOverflow.DROP_OLDEST))
+                            gate.send('a')
+                            gate.send('b')
+                            gate.send('c')
+                            gate.send('open')
+                        }
+                    }''')],
+        // The stateful, if/else spelling of the same handler, under REJECT.
+        [group: 'P292 actor stash', name: 'a burst past a REJECT stash bound refuses the overflowing message (stateful, if/else)',
+         expect: ['StashOverflow.REJECT: it is rejected rather than stashed'],
+         src: tc('''class C {
+                        static void burst() {
+                            StatefulHandler<Integer, String> open = { ActorContext<String> c, Integer s, String n -> s + 1 } as StatefulHandler<Integer, String>
+                            Actor<String> gate = Actor.stateful(0, { ActorContext<String> ctx, Integer s, String m ->
+                                if (m == 'open') {
+                                    ctx.become(open)
+                                    ctx.unstashAll()
+                                } else {
+                                    ctx.stash()
+                                }
+                                s
+                            } as StatefulHandler<Integer, String>, ActorOptions.DEFAULTS.withStashBound(1, ActorOptions.StashOverflow.REJECT))
+                            gate.send('a')
+                            gate.send('b')
+                            gate.send('open')
+                        }
+                    }''')],
+        // ── what is left alone: a burst that fits, the trigger sent first, and an unbounded stash.
+        [group: 'P292 actor stash', name: 'a burst within the stash bound is left alone', ok: true,
+         refute: 'Stash overflow',
+         src: tc('''class C {
+                        static void fits() {
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                if (m == 'open') {
+                                    ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
+                                    ctx.unstashAll()
+                                    return m
+                                }
+                                ctx.stash()
+                                return m
+                            } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, ActorOptions.StashOverflow.FAIL))
+                            gate.send('a')
+                            gate.send('b')
+                            gate.send('open')
+                            gate.send('c')
+                        }
+                    }''')],
+        [group: 'P292 actor stash', name: 'an unbounded stash never overflows (the heap is the javadoc\'s warning, not this check\'s)', ok: true,
+         refute: 'Stash overflow',
+         src: tc('''class C {
+                        static void unbounded() {
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                if (m == 'open') {
+                                    ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
+                                    ctx.unstashAll()
+                                    return m
+                                }
+                                ctx.stash()
+                                return m
+                            } as ReactorHandler<String, String>)
+                            gate.send('a')
+                            gate.send('b')
+                            gate.send('c')
+                            gate.send('open')
+                        }
+                    }''')],
+        // ── what is not claimed: a message the checker cannot read could BE the trigger, and an actor handed on
+        //    could be sent the trigger by someone else first.
+        [group: 'P292 actor stash', name: 'a non-literal message before the trigger withholds the count', ok: true,
+         refute: 'Stash overflow',
+         src: tc('''class C {
+                        static void unknown(String first) {
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                if (m == 'open') {
+                                    ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
+                                    ctx.unstashAll()
+                                    return m
+                                }
+                                ctx.stash()
+                                return m
+                            } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, ActorOptions.StashOverflow.FAIL))
+                            gate.send(first)
+                            gate.send('b')
+                            gate.send('c')
+                            gate.send('open')
+                        }
+                    }''')],
+        [group: 'P292 actor stash', name: 'an actor handed to another method withholds the count', ok: true,
+         refute: 'Stash overflow',
+         src: tc('''class C {
+                        static void share(Actor<String> other) { }
+                        static void shared() {
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                if (m == 'open') {
+                                    ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
+                                    ctx.unstashAll()
+                                    return m
+                                }
+                                ctx.stash()
+                                return m
+                            } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, ActorOptions.StashOverflow.FAIL))
+                            share(gate)
+                            gate.send('a')
+                            gate.send('b')
+                            gate.send('c')
+                            gate.send('open')
+                        }
+                    }''')],
     ]
 }

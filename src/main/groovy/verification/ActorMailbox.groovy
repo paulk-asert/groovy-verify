@@ -31,6 +31,10 @@ import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.EmptyStatement
+import org.codehaus.groovy.ast.stmt.ExpressionStatement
+import org.codehaus.groovy.ast.stmt.IfStatement
+import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
 
@@ -79,6 +83,8 @@ class ActorMailbox {
         int line
         Expression handlerExpr         // the handler argument as written — a closure, or a behaviour local (Phase 292)
         boolean stateful               // Actor.stateful: the context is the first of THREE handler params
+        int stashCapacity = -1         // -1 = unbounded stash (no withStashBound) — Phase 292 slice 2
+        String stashPolicy             // FAIL / DROP_OLDEST / REJECT, or null
     }
 
     /** A send to an actor, in program order within the method body. */
@@ -86,6 +92,8 @@ class ActorMailbox {
         String actor; int ord; int line; boolean andGet; boolean conditional
         Expression anchor
         String replyVar                // the local the sendAndGet Awaitable is bound to, or null
+        Expression arg                 // the message, when the send has exactly one argument (Phase 292 slice 2)
+        boolean topLevel               // the send IS a statement of the body — not nested in an if / loop / closure
     }
 
     static Expression strip(Expression e) {
@@ -189,22 +197,34 @@ class ActorMailbox {
         out
     }
 
-    /** Read `…withBoundedMailbox(k, ActorOptions.Overflow.X)` off an options expression. */
+    /** Read `…withBoundedMailbox(k, ActorOptions.Overflow.X)` and `…withStashBound(n, ActorOptions.StashOverflow.Y)`
+     *  off an options expression — anywhere in the builder chain, the outermost call of each kind winning. */
     private static void readBound(Expression opts, ActorDecl d) {
         Expression e = strip(opts)
+        boolean mailboxSeen = false, stashSeen = false
         while (e instanceof MethodCallExpression) {
             MethodCallExpression m = (MethodCallExpression) e
-            if (m.methodAsString == 'withBoundedMailbox' && m.arguments instanceof TupleExpression) {
+            String mn = m.methodAsString
+            boolean mailbox = mn == 'withBoundedMailbox' && !mailboxSeen
+            boolean stash = mn == 'withStashBound' && !stashSeen   // Phase 292 slice 2
+            if ((mailbox || stash) && m.arguments instanceof TupleExpression) {
                 List<Expression> as = ((TupleExpression) m.arguments).expressions
                 if (as.size() == 2) {
                     Expression cap = strip(as.get(0)), pol = strip(as.get(1))
-                    if (cap instanceof ConstantExpression && ((ConstantExpression) cap).value instanceof Integer) {
-                        d.capacity = (Integer) ((ConstantExpression) cap).value
+                    Integer c = cap instanceof ConstantExpression && ((ConstantExpression) cap).value instanceof Integer ?
+                        (Integer) ((ConstantExpression) cap).value : null
+                    String p = pol instanceof PropertyExpression ? ((PropertyExpression) pol).propertyAsString :
+                               pol instanceof VariableExpression ? ((VariableExpression) pol).name : null
+                    if (mailbox) {
+                        if (c != null) d.capacity = c
+                        d.policy = p
+                        mailboxSeen = true
+                    } else {
+                        if (c != null) d.stashCapacity = c
+                        d.stashPolicy = p
+                        stashSeen = true
                     }
-                    if (pol instanceof PropertyExpression) d.policy = ((PropertyExpression) pol).propertyAsString
-                    else if (pol instanceof VariableExpression) d.policy = ((VariableExpression) pol).name
                 }
-                return
             }
             e = strip(m.objectExpression)          // walk back down the builder chain
         }
@@ -382,6 +402,126 @@ class ActorMailbox {
         out
     }
 
+    // ── Phase 292 slice 2 — the stash bound ─────────────────────────────────────────────────────────────────
+
+    private static final Object NO_TRIGGER = new Object()
+
+    /** The literal a message is compared with in {@code m == LIT} / {@code LIT == m}, else NO_TRIGGER. */
+    private static Object triggerLiteral(Expression cond, String msg) {
+        if (!(cond instanceof BinaryExpression)) return NO_TRIGGER
+        BinaryExpression be = (BinaryExpression) cond
+        if (be.operation.type != Types.COMPARE_EQUAL) return NO_TRIGGER
+        Expression l = strip(be.leftExpression), r = strip(be.rightExpression)
+        if (l instanceof VariableExpression && ((VariableExpression) l).name == msg && r instanceof ConstantExpression) {
+            return ((ConstantExpression) r).value
+        }
+        if (r instanceof VariableExpression && ((VariableExpression) r).name == msg && l instanceof ConstantExpression) {
+            return ((ConstantExpression) l).value
+        }
+        NO_TRIGGER
+    }
+
+    /** {@code stmt} is — or a block beginning with — the statement {@code ctx.stash()}. */
+    private static boolean isStashStatement(Statement stmt, String ctx) {
+        Statement s = stmt
+        if (s instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) s).statements
+            if (ss.isEmpty()) return false
+            s = ss.get(0)
+        }
+        if (!(s instanceof ExpressionStatement)) return false
+        Expression e = strip(((ExpressionStatement) s).expression)
+        if (!(e instanceof MethodCallExpression)) return false
+        MethodCallExpression c = (MethodCallExpression) e
+        Expression recv = strip(c.objectExpression)
+        c.methodAsString == 'stash' && recv instanceof VariableExpression && ((VariableExpression) recv).name == ctx &&
+            (!(c.arguments instanceof TupleExpression) || ((TupleExpression) c.arguments).expressions.isEmpty())
+    }
+
+    private static boolean endsInReturn(Statement stmt) {
+        if (stmt instanceof ReturnStatement) return true
+        if (stmt instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) stmt).statements
+            return !ss.isEmpty() && ss.get(ss.size() - 1) instanceof ReturnStatement
+        }
+        false
+    }
+
+    /**
+     * The "stash until LIT" handler — the documented idiom, recognised strictly: the handler's FIRST statement is
+     * {@code if (m == LIT) { … return … }} followed directly by {@code ctx.stash()}, or {@code if (m == LIT) { … }
+     * else { ctx.stash() … }}. Every message but LIT is then stashed, which is what makes a count of the messages
+     * sent before LIT a count of the stash. Any other shape: NO_TRIGGER, and nothing is claimed.
+     */
+    private static Object stashTrigger(ClosureExpression h, boolean stateful) {
+        Parameter[] ps = h?.parameters
+        if (ps == null || ps.length != (stateful ? 3 : 2) || !(h.code instanceof BlockStatement)) return NO_TRIGGER
+        String ctx = ps[0].name, msg = ps[ps.length - 1].name
+        List<Statement> ss = ((BlockStatement) h.code).statements
+        if (ss.isEmpty() || !(ss.get(0) instanceof IfStatement)) return NO_TRIGGER
+        IfStatement ifs = (IfStatement) ss.get(0)
+        Object lit = triggerLiteral(ifs.booleanExpression.expression, msg)
+        if (lit.is(NO_TRIGGER)) return NO_TRIGGER
+        boolean hasElse = ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)
+        if (hasElse) return isStashStatement(ifs.elseBlock, ctx) ? lit : NO_TRIGGER
+        endsInReturn(ifs.ifBlock) && ss.size() > 1 && isStashStatement(ss.get(1), ctx) ? lit : NO_TRIGGER
+    }
+
+    /** The actor local is used as anything but the receiver of its own send / sendAndGet / stop / close — handed on,
+     *  stored, captured by a closure — so another sender could deliver the trigger first and the count means nothing. */
+    private static boolean actorEscapes(String actor, BlockStatement body) {
+        Set<String> own = ['send', 'sendAndGet', 'stop', 'close', 'isActive', 'isTerminated'] as Set<String>
+        boolean[] escaped = [false] as boolean[]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && ((VariableExpression) de.leftExpression).name == actor) {
+                    de.rightExpression.visit(this)     // the declaration itself is not a use
+                    return
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                Expression recv = strip(call.objectExpression)
+                if (recv instanceof VariableExpression && ((VariableExpression) recv).name == actor && own.contains(call.methodAsString)) {
+                    call.arguments.visit(this)
+                    return
+                }
+                super.visitMethodCallExpression(call)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (ve.name == actor) escaped[0] = true
+            }
+        })
+        escaped[0]
+    }
+
+    /**
+     * Phase 292 slice 2 — a literal burst past {@code withStashBound(n, policy)}. For a "stash until LIT" handler, the
+     * messages this method sends before LIT are exactly the ones stashed (a single sender's order is preserved), so
+     * the (n+1)-th of them overruns the bound — and each policy's outcome is MEASURED (ActorStashSemanticsTest):
+     * FAIL fails that message, DROP_OLDEST evicts the first stashed, REJECT refuses that message. In every policy
+     * one message is lost. Nothing is claimed unless every send before LIT is a top-level literal (an unknown
+     * message could BE the trigger) and the actor never escapes this method (another sender could send LIT first).
+     */
+    private static Finding stashOverflow(String methodName, ActorDecl d, List<Send> mine, BlockStatement body,
+                                         Map<String, List<ClosureExpression>> behaviours) {
+        if (d.stashCapacity < 0 || d.stashPolicy == null) return null
+        List<ClosureExpression> hs = resolveBehaviour(d.handlerExpr, behaviours)
+        if (hs == null || hs.size() != 1) return null
+        Object lit = stashTrigger(hs.get(0), d.stateful)
+        if (lit.is(NO_TRIGGER) || actorEscapes(d.name, body)) return null
+        List<Send> stashed = new ArrayList<Send>()
+        for (Send s : mine) {
+            if (!s.topLevel || !(s.arg instanceof ConstantExpression)) return null
+            if (((ConstantExpression) s.arg).value == lit) break
+            stashed.add(s)
+        }
+        if (stashed.size() <= d.stashCapacity) return null
+        Send over = stashed.get(d.stashCapacity)
+        new Finding(Reporter.formatStashOverflow(methodName, d.name, lit, d.stashCapacity, d.stashPolicy,
+            over.line, d.stashCapacity + 1, stashed.get(0).line), over.anchor)
+    }
+
     /**
      * The check. Returns the findings; the caller reports them (so this file stays free of the STC API).
      */
@@ -390,6 +530,7 @@ class ActorMailbox {
         Map<String, ActorDecl> actors = actorsIn(body)
         if (actors.isEmpty()) return out
         out.addAll(stashFindings(methodName, body, actors))   // Phase 292 — needs no sends, so it comes first
+        Map<String, List<ClosureExpression>> behaviours = behaviourLocals(body)
 
         // Program-order pass over the body's own statements: sends to each actor, and sends on each channel.
         List<Send> sends = new ArrayList<Send>()
@@ -420,6 +561,13 @@ class ActorMailbox {
                         Send s = new Send()
                         s.actor = target; s.ord = o; s.line = call.lineNumber
                         s.andGet = (mn == 'sendAndGet'); s.anchor = call; s.replyVar = bound
+                        List<Expression> sargs = call.arguments instanceof TupleExpression ?
+                            ((TupleExpression) call.arguments).expressions : Collections.<Expression> emptyList()
+                        s.arg = sargs.size() == 1 ? strip(sargs.get(0)) : null
+                        Statement st = stmts.get(o)
+                        Expression top = st instanceof ExpressionStatement ? strip(((ExpressionStatement) st).expression) : null
+                        if (top instanceof DeclarationExpression) top = strip(((DeclarationExpression) top).rightExpression)
+                        s.topLevel = top != null && top.is(call)
                         sends.add(s)
                     } else if (mn == 'send' && !actors.containsKey(target)) {
                         if (!channelSendOrd.containsKey(target)) {
@@ -433,6 +581,10 @@ class ActorMailbox {
         for (ActorDecl d : actors.values()) {
             List<Send> mine = sends.findAll { Send s -> s.actor == d.name }.toList()
             if (mine.isEmpty()) continue
+
+            // Phase 292 slice 2 — the stash bound, independent of the mailbox bound (so before its skips).
+            Finding overflow = stashOverflow(methodName, d, mine, body, behaviours)
+            if (overflow != null) out.add(overflow)
 
             if (d.capacity < 0) continue                      // unbounded: a send never blocks, nothing to say
 

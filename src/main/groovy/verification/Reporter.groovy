@@ -156,6 +156,25 @@ class Reporter {
      * groovy-verify could not prove. Derived automatically from the annotation + the combiner's equation, so the
      * wording names the law and the combiner rather than a synthetic method.
      */
+    /** Phase 292 slice 2 — a literal burst past a stash bound; each policy's outcome as measured. */
+    static String formatStashOverflow(String methodName, String actor, Object trigger, int cap, String policy,
+                                      int line, int ordinal, int oldestLine) {
+        String lit = trigger instanceof String ? "'${trigger}'" : String.valueOf(trigger)
+        int m100 = ordinal % 100, m10 = ordinal % 10
+        String nth = ordinal + (m100 >= 11 && m100 <= 13 ? 'th' : m10 == 1 ? 'st' : m10 == 2 ? 'nd' : m10 == 3 ? 'rd' : 'th')
+        String outcome =
+            policy == 'FAIL' ? "its stash() throws IllegalStateException (stash full), so the handler fails on it — a " +
+                "sendAndGet reply is bound to that error and onError fires; the message is never processed" :
+            policy == 'DROP_OLDEST' ? "stashing it evicts the OLDEST stashed message (line ${oldestLine}), whose " +
+                "sendAndGet reply is failed with IllegalStateException; that message is never processed" :
+            policy == 'REJECT' ? "it is rejected rather than stashed — its sendAndGet reply is failed with " +
+                "IllegalStateException; the message is never processed" :
+            "the StashOverflow.${policy} policy decides what is lost"
+        ("Stash overflow in '${methodName}': actor '${actor}' stashes every message until ${lit}, and the send at line " +
+            "${line} is the ${nth} stashed before it — past the stash bound of ${cap} with StashOverflow.${policy}: " +
+            "${outcome}. Raise the bound above the burst, or send ${lit} sooner.").toString()
+    }
+
     /** Phase 292 — stash conservation: an actor that stashes, none of whose behaviours ever calls unstashAll(). */
     static String formatStashNeverReplayed(String methodName, String actor, int stashLine) {
         ("Stashed messages are never replayed: actor '${actor}' in ${methodName}() stashes (line ${stashLine}) but " +

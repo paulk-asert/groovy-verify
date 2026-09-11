@@ -13007,8 +13007,8 @@ none of them needs a new mechanism:
   checking — new machinery. The most interesting of the three, and the expensive one.
 * *Stash conservation.* `stash()` with no matching `unstashAll()` loses messages, and
   `ActorOptions.withStashBound(n, StashOverflow)` means the runtime has a bound the code can exceed. The same
-  conservation shape as c04's token count (Phase 287): take one, put one back. The LOSS half SHIPPED as Phase
-  292; the bound half (a literal burst of stashes past `withStashBound(n, …)`) is its open slice 2.
+  conservation shape as c04's token count (Phase 287): take one, put one back. SHIPPED as Phase 292: the loss
+  (slice 1) and the bound (slice 2, a literal burst of stashes past `withStashBound(n, …)`).
 * *Bounded mailbox overflow.* SHIPPED as Phase 289 above — and it turned out to be the liveness item rather
   than the loss item, because `Overflow.BLOCK` makes the sender wait.
 
@@ -13268,7 +13268,7 @@ all three parts pass, including the `deny` failure at line 31. This closes the f
 
 ---
 
-## Phase 292 — the actor stash, conserved: a stash nobody replays  *(shipped — slice 1; the stash bound open)*
+## Phase 292 — the actor stash, conserved: a stash nobody replays, and a burst past its bound  *(shipped — slices 1–2)*
 
 The second property on the Actor candidate list, taken before `become` conformance because it is the cheap one.
 Like Phase 289, the runtime was measured before anything was modelled. `ActorStashSemanticsTest` stays in the
@@ -13337,11 +13337,46 @@ Cases (G342, 8):
 
 P289's eight cases are unchanged.
 
-**Open (slice 2): the stash bound.** `withStashBound(n, FAIL | DROP_OLDEST | REJECT)` has three policies:
-`stash()` throws, the oldest stashed message is evicted with its reply failed, or the current message is
-rejected. A literal burst of more than `n` sends that the handler stashes before its trigger overruns the bound.
-That is Phase 289's burst counting against the stash instead of the mailbox. After that comes `become`
-conformance, which needs a become-graph and new machinery.
+**As shipped (slice 2): the stash bound.** Measured first. `ActorStashSemanticsTest` gains one test per
+`StashOverflow` policy, each with a bound of 2, three `sendAndGet`s stashed, then the trigger:
+
+| Policy | Failed reply | Replayed |
+|---|---|---|
+| `FAIL` | the 3rd: `stash full (capacity 2)` | `[m1, m2]` |
+| `DROP_OLDEST` | the 1st: `evicted from stash (capacity 2 exceeded)` | `[m2, m3]` |
+| `REJECT` | the 3rd: `stash full (capacity 2); message rejected` | `[m1, m2]` |
+
+Every policy loses exactly one message. The javadoc and the implementation agree.
+
+**The model is Phase 289's burst counting, pointed at the stash.** `readBound` now reads `withStashBound(n,
+policy)` beside `withBoundedMailbox`, walking the whole builder chain with the outermost call of each kind
+winning. The handler must be the documented "stash until LIT" shape, recognised strictly:
+
+* its FIRST statement is `if (m == LIT) { … return … }` directly followed by `ctx.stash()`; or
+* `if (m == LIT) { … } else { ctx.stash() … }`, in reactor or stateful form.
+
+For that handler every message but LIT is stashed. A single sender's order is preserved, so the messages this
+method sends before its first `send(LIT)` are exactly the stash, and the (n+1)-th of them overruns the bound.
+The finding names that send, the policy's measured outcome (for `DROP_OLDEST`, the line of the evicted first
+message), and the fix: raise the bound or send LIT sooner. It runs before the mailbox analysis's
+unbounded-mailbox skip, because the two bounds are independent.
+
+**What is not claimed**, each pinned by a case:
+
+* a send before the trigger that is not a top-level literal, since an unknown message could BE the trigger;
+* an actor that escapes the method (handed on, stored, captured), since another sender could deliver LIT
+  first;
+* any other handler shape;
+* an unbounded stash, where the heap is the javadoc's warning and not this check's.
+
+Sends now record their argument and whether they are a top-level statement of the body.
+
+Cases (G342, 7 more, 15 in all): one overrun per policy, with REJECT in the stateful `if/else` spelling; a burst
+within the bound; an unbounded stash; a non-literal message before the trigger; and an actor handed to another
+method. P289's eight cases are unchanged.
+
+**Next on the candidate list:** `become` conformance, which needs a become-graph and transition checking, new
+machinery.
 
 ---
 

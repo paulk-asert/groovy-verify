@@ -383,8 +383,24 @@ away from the stash and still count.
 **What is not claimed.** A `become` target the checker cannot see (a method result, a field), a context handed
 to a helper, or an `unstashAll()` anywhere else in the method (a context-aware `onError` retry, say) and nothing
 is claimed: this finds the definite loss, and does not prove a replay happens — that would be a liveness claim
-about the trigger message ever arriving. The stash's own bound (`withStashBound(n, FAIL | DROP_OLDEST |
-REJECT)`) is the next slice.
+about the trigger message ever arriving. 
+
+**The stash's own bound.** The stash is unbounded by default. The javadoc warns that it can exhaust the heap,
+and advises `withStashBound(n, policy)`. A bound is only as good as the burst it meets, though. For a handler of
+the documented "stash until `'open'`" shape, every message sent before `'open'` is stashed, and a single sender's
+order is preserved. So a literal burst from one method is a count of the stash, and the (n+1)-th message overruns
+the bound. Each policy's outcome is measured (`ActorStashSemanticsTest`, bound 2, three stashed):
+
+| Policy | What the overrun costs |
+|---|---|
+| `FAIL` | `stash()` throws, and the 3rd message fails: its `sendAndGet` reply is bound to the error |
+| `DROP_OLDEST` | the 1st stashed message is evicted, with its reply failed; the 2nd and 3rd are replayed |
+| `REJECT` | the 3rd message is refused, with its reply failed; the first two are replayed |
+
+In every policy, one message is never processed. The checker names the send that overruns the bound, what its
+policy does to it, and the fix: raise the bound above the burst, or send the trigger sooner. It counts only
+what it can see. A message it cannot read might BE the trigger, and an actor handed to another method might be
+sent the trigger by someone else first, so either withholds the count.
 
 (On the way, the docs' FSM example turned out not to compile under the checker at all: every `ctx.become(…)`
 carried a *Possible NullPointerException*. The context the runtime passes a handler, a `become` target or a

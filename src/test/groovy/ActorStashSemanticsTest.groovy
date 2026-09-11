@@ -15,6 +15,7 @@
  */
 import groovy.concurrent.Actor
 import groovy.concurrent.ActorContext
+import groovy.concurrent.ActorOptions
 import groovy.concurrent.ReactorHandler
 import org.junit.jupiter.api.Test
 
@@ -68,6 +69,59 @@ class ActorStashSemanticsTest {
         assertEquals(['ordinary'], seen, 'a stashed message must never reach a handler without unstashAll()')
         assertTrue(outcome.startsWith('failed: IllegalStateException'),
             "the stashed sendAndGet must be rejected at stop(), got: ${outcome}")
+    }
+
+    /**
+     * Phase 292 slice 2 — a BOUNDED stash overrun by one: bound 2, three messages stashed, then the trigger that
+     * replays. Records, per policy, which sendAndGet replies failed and what the replay delivered. The stash-bound
+     * check models exactly these outcomes.
+     */
+    private static Map overrun(ActorOptions.StashOverflow policy) {
+        List<String> seen = Collections.synchronizedList(new ArrayList<String>())
+        Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
+            if (m == 'open') {
+                ctx.become({ ActorContext<String> c, String n -> seen << n; n } as ReactorHandler<String, String>)
+                ctx.unstashAll()
+                return m
+            }
+            ctx.stash()
+            null
+        } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, policy))
+        Map<String, String> replies = new LinkedHashMap<String, String>()
+        try {
+            def r1 = a.sendAndGet('m1'), r2 = a.sendAndGet('m2'), r3 = a.sendAndGet('m3')
+            a.send('open')
+            [m1: r1, m2: r2, m3: r3].each { String k, def r ->
+                try { replies[k] = "ok(${r.get(5, TimeUnit.SECONDS)})" }
+                catch (Exception e) { Throwable c = e.cause ?: e; replies[k] = "failed(${c.class.simpleName}: ${c.message})" }
+            }
+            waitUntil { seen.size() >= 2 }
+        } finally {
+            a.stop()
+        }
+        println "  [runtime] stash bound 2, ${policy}: replies ${replies}; replayed ${seen}"
+        [replies: replies, seen: new ArrayList<String>(seen)]
+    }
+
+    @Test
+    void failThrowsFromStashSoTheOverflowingMessageFails() {
+        Map r = overrun(ActorOptions.StashOverflow.FAIL)
+        assertTrue(((Map) r.replies).m3.toString().startsWith('failed(IllegalStateException'), "FAIL: the 3rd reply must fail, got ${r.replies}")
+        assertEquals(['m1', 'm2'], r.seen, 'FAIL: the two stashed messages are replayed')
+    }
+
+    @Test
+    void dropOldestEvictsTheFirstStashedMessage() {
+        Map r = overrun(ActorOptions.StashOverflow.DROP_OLDEST)
+        assertTrue(((Map) r.replies).m1.toString().startsWith('failed(IllegalStateException'), "DROP_OLDEST: the 1st reply must fail, got ${r.replies}")
+        assertEquals(['m2', 'm3'], r.seen, 'DROP_OLDEST: the two newest are replayed')
+    }
+
+    @Test
+    void rejectRefusesTheOverflowingMessage() {
+        Map r = overrun(ActorOptions.StashOverflow.REJECT)
+        assertTrue(((Map) r.replies).m3.toString().startsWith('failed(IllegalStateException'), "REJECT: the 3rd reply must fail, got ${r.replies}")
+        assertEquals(['m1', 'm2'], r.seen, 'REJECT: the two stashed messages are replayed')
     }
 
     @Test
