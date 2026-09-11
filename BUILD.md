@@ -27,8 +27,10 @@ artifact targets **Java 17 bytecode** (Groovy 6's own floor), so consumers need 
 17 floor is held honest by a from-jar consumer smoke compile on a real JDK 17, since groovyc has no
 `--release`-style API fencing to catch a stray newer-JDK call at build time. That smoke is CI-enforced
 on every push: the `consumer-smoke` job publishes to mavenLocal and builds the standalone
-[`ci/consumer-smoke`](ci/consumer-smoke) fixture on a 17 toolchain — its good contract must verify and
-its broken one must refute (run it by hand with `./gradlew -p ci/consumer-smoke compileGroovy`; the
+[`ci/consumer-smoke`](ci/consumer-smoke) fixture on a 17 toolchain — its good contract must verify, its
+broken one must refute, and its trusted `@ThrowsIf` must surface through `VERIFY_TRUST` exactly as TOOLING.md
+tells consumers to wire it: printed under `-PverifyTrust=report`, a compile error at the `@ThrowsIf` line under
+`deny` (run it by hand with `./gradlew -p ci/consumer-smoke compileGroovy`; the
 must-refute half is `compileBadGroovy`, which is expected to fail). The snapshot-tracking
 period is over: the upstream `@ThrowsIf` exceptional contracts (GROOVY-12135), the `@Requires`
 `woven`/`direct` members (GROOVY-12136) and the groovy-contracts loop-annotation fixes

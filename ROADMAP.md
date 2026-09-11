@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–8)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–9)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13249,9 +13249,21 @@ L−1). The carrier lands at L+2, column 77, exactly `Monoid.integer()::combine`
 column 43, exactly `{ s == null }`. A new case uses one carrier twice and expects both lines. Harvester joins a
 list `expect` rather than recording its `toString()`.
 
-**Possible next steps, not started:**
+**As shipped (slice 9): the consumer smoke holds the recipe honest.** The slice-6 check was a scratch copy of
+`ci/consumer-smoke`, run once by hand. Now the fixture has a third source set, `trusted`, with a spec-only
+`@ThrowsIf`. Its compile task takes `-PverifyTrust`, which it passes to the forked compiler as `-Dverify.trust`:
+TOOLING.md's consumer recipe verbatim, and set on that task only, so the good and bad parts are unaffected.
 
-* making the consumer-smoke CI job assert the `report` line too.
+The CI job's step gains part 3:
+
+* under `report`, `compileTrustedGroovy` must succeed and print
+  `trusted: [in-place @ThrowsIf] smoke.Trusted#parse`;
+* under `deny`, it must fail with `Trusted without proof (VERIFY_TRUST=deny)` at the `@ThrowsIf` line. The
+  script reads that line from the source (`grep -n '@ThrowsIf('`), so an edit to the fixture cannot silently
+  break the assertion.
+
+The step was run locally, as a bash script replicating the job (without the CI-only `fromEnv` toolchain flag):
+all three parts pass, including the `deny` failure at line 31. This closes the follow-ups the phase listed.
 
 ---
 

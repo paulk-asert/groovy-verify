@@ -23,11 +23,14 @@
 // executed: it resolves `io.github.paulk-asert:groovy-verify` from repository coordinates
 // (mavenLocal, freshly published by the CI job; never this repo's source) on a 17 toolchain.
 //
-// Two halves, both required:
-//   compileGroovy     — a correct contract must VERIFY (solver runs, proof discharges on 17)
-//   compileBadGroovy  — a broken contract must REFUTE with the counterexample diagnostic
-// The second half is the teeth: a smoke that only checks "it compiled" would also pass if the
-// extension silently failed to engage.
+// Three parts, all required:
+//   compileGroovy         — a correct contract must VERIFY (solver runs, proof discharges on 17)
+//   compileBadGroovy      — a broken contract must REFUTE with the counterexample diagnostic
+//   compileTrustedGroovy  — a trusted fact must SURFACE: with -PverifyTrust=report it is printed and the
+//                           compile succeeds; with -PverifyTrust=deny the compile fails AT the fact's site
+// The second part is the teeth: a smoke that only checks "it compiled" would also pass if the
+// extension silently failed to engage. The third holds TOOLING.md's VERIFY_TRUST recipe honest in a real
+// from-jar build (the knob is passed to the forked compiler JVM, exactly as consumers are told to).
 //
 // `compileOnly` is deliberate — it is the scope BUILD.md tells consumers to use (the checker is
 // compile-time tooling; z3-turnkey's ~60 MB of natives must not leak into runtime graphs), so the
@@ -55,6 +58,14 @@ repositories {
 // single source set can't express.
 sourceSets {
     bad { groovy.srcDir 'src/bad/groovy' }
+    trusted { groovy.srcDir 'src/trusted/groovy' }
+}
+
+// The trusted-ledger part: VERIFY_TRUST reaches the checker as a system property of the FORKED compiler JVM —
+// TOOLING.md's consumer recipe, verbatim — set on this source set's compile only, from -PverifyTrust.
+def verifyTrust = providers.gradleProperty('verifyTrust')
+tasks.named('compileTrustedGroovy') {
+    if (verifyTrust.isPresent()) groovyOptions.forkOptions.jvmArgs += ['-Dverify.trust=' + verifyTrust.get()]
 }
 
 dependencies {
@@ -65,4 +76,8 @@ dependencies {
     badImplementation "org.apache.groovy:groovy:$groovyVer"
     badImplementation "org.apache.groovy:groovy-contracts:$groovyVer"
     badCompileOnly "io.github.paulk-asert:groovy-verify:$gvVersion"
+
+    trustedImplementation "org.apache.groovy:groovy:$groovyVer"
+    trustedImplementation "org.apache.groovy:groovy-contracts:$groovyVer"
+    trustedCompileOnly "io.github.paulk-asert:groovy-verify:$gvVersion"
 }

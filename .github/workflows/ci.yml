@@ -95,7 +95,7 @@ jobs:
         run: >
           ./gradlew publishToMavenLocal --no-daemon
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_25_X64
-      - name: Consume the jar on the JDK 17 floor — good verifies, bad refutes
+      - name: Consume the jar on the JDK 17 floor — good verifies, bad refutes, trusted facts surface
         run: |
           # Versions extracted from the root build, so a bump there can't leave this smoke silently
           # testing a stale artifact against a stale Groovy.
@@ -108,21 +108,49 @@ jobs:
           ARGS=(-p ci/consumer-smoke --no-daemon
                 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_25_X64
                 -PgvVersion="$GV_VERSION" -PgroovyVersion="$GROOVY_VERSION")
+          # Captured compile output lives under build/ (RAT-excluded, git-ignored), never the repo root — a
+          # local reproduction followed by `./gradlew check` must not trip the licence audit on stray logs.
+          LOGS=build/consumer-smoke-logs
+          mkdir -p "$LOGS"
           # Half 1 — the correct contracts must VERIFY (Z3 loads and solves on the 17 toolchain).
           ./gradlew "${ARGS[@]}" compileGroovy
           # Half 2 — the broken contract must REFUTE with its counterexample diagnostic. This is
           # what proves the extension engaged: a compile-only smoke would also pass if the checker
           # silently sat inert.
-          if ./gradlew "${ARGS[@]}" compileBadGroovy > bad.log 2>&1; then
+          if ./gradlew "${ARGS[@]}" compileBadGroovy > "$LOGS/bad.log" 2>&1; then
             echo 'FAIL: the must-refute case compiled cleanly — the checker did not engage'
             exit 1
           fi
-          grep -q 'Possible NullPointerException' bad.log || {
+          grep -q 'Possible NullPointerException' "$LOGS/bad.log" || {
             echo 'FAIL: compile failed but without the expected refutation diagnostic:'
-            cat bad.log
+            cat "$LOGS/bad.log"
             exit 1
           }
           echo 'refuted with the expected diagnostic, as required'
+          # Part 3 — the trusted-spec ledger reaches a consumer's OWN build, by TOOLING.md's recipe
+          # (-Dverify.trust on the forked compiler JVM). `report` prints the fact and compiles; `deny`
+          # fails AT the fact's site — the expected line is read from the source, not hard-coded.
+          ./gradlew "${ARGS[@]}" compileTrustedGroovy --rerun-tasks -PverifyTrust=report > "$LOGS/trusted-report.log" 2>&1 || {
+            echo 'FAIL: VERIFY_TRUST=report must not fail the compile:'
+            cat "$LOGS/trusted-report.log"
+            exit 1
+          }
+          grep -q 'trusted: \[in-place @ThrowsIf\] smoke.Trusted#parse' "$LOGS/trusted-report.log" || {
+            echo 'FAIL: VERIFY_TRUST=report did not print the trusted fact:'
+            cat "$LOGS/trusted-report.log"
+            exit 1
+          }
+          if ./gradlew "${ARGS[@]}" compileTrustedGroovy --rerun-tasks -PverifyTrust=deny > "$LOGS/trusted-deny.log" 2>&1; then
+            echo 'FAIL: VERIFY_TRUST=deny compiled a trusted @ThrowsIf cleanly'
+            exit 1
+          fi
+          SITE=$(grep -n '@ThrowsIf(' ci/consumer-smoke/src/trusted/groovy/smoke/Trusted.groovy | cut -d: -f1)
+          grep -q "Trusted.groovy: $SITE: .*Trusted without proof (VERIFY_TRUST=deny): \[in-place @ThrowsIf\]" "$LOGS/trusted-deny.log" || {
+            echo "FAIL: VERIFY_TRUST=deny must fail at the @ThrowsIf, line $SITE:"
+            cat "$LOGS/trusted-deny.log"
+            exit 1
+          }
+          echo 'the trusted ledger surfaced in the consumer build: reported, then denied at its site'
 
   # The session-type oracle: @Protocol → Scribble → nuScr, disagreement fails the job. Separate from
   # `check` so the OCaml toolchain never gates the proof suite; setup-ocaml's cache makes reruns cheap.
