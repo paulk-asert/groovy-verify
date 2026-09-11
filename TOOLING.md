@@ -31,7 +31,7 @@ default path byte-identical.
 | `VERIFY_PACKS` | select which [encoding packs](PACKS.md) run: `none` disables all, a comma-separated name list keeps only those — a bisection tool when triaging a suspect domain encoding (a deselected pack's vocabulary degrades to loud skips)  Since Phase 227 a deselected pack's DECLARED spec skeletons (`EncodingPack.specFqns()`) are deselected with it — lifecycle coherence for pack-shipped contracts |
 | `VERIFY_Z3_TIMEOUT_MS` | the per-check solver budget in milliseconds (default `2000`; also `-Dverify.z3.timeoutMs`). Refute-direction VCs are model searches and therefore hardware-speed sensitive: a refutation that is crisp on a dev laptop can come back `solver: timeout` on a slower CI runner. Raising the budget moves the decided-vs-undecided boundary only — it never changes what a returned verdict means. CI sets `8000` |
 | `VERIFY_SPECS` | a directory of external-spec skeletons overriding the classpath lookup (also `-Dverify.specs`) — JML's specspath analogue, for iterating on a spec before jarring it. Specs are TRUSTED axioms: the knob changes which trusted facts are consulted, so unlike the other knobs it can change what proves — every consumed spec is recorded (`SpecRegistry.consumed()`) for exactly that reason |
-| `VERIFY_TRUST=report\|deny` | surface the trusted-spec ledger (below) in your own build (also `-Dverify.trust`): `report` prints each fact a class relied on without proof as `trusted: […] owner#method — …` when the checker finishes that class; `deny` makes each one a compile error (`Trusted without proof (VERIFY_TRUST=deny): …`) — a strict mode for a build that wants every assumption acknowledged. Any other value is off |
+| `VERIFY_TRUST=report\|deny` | surface the trusted-spec ledger (below) in your own build (also `-Dverify.trust`): `report` prints each fact a class relied on without proof as `trusted: […] owner#method — …` when the checker finishes that class; `deny` makes each one a compile error (`Trusted without proof (VERIFY_TRUST=deny): …`) — a strict mode for a build that wants every assumption acknowledged. Narrow either to kinds and combine clauses, the first match deciding: `deny:carrier` fails only opaque carriers, `deny:carrier;report` fails those and prints the rest (kinds: `throwsif`, `spec`, `carrier`). A malformed value — an unknown action, a kind token naming no kind — is a compile error, never a silent off |
 
 **Trusted heritage in the explain read-out** (Phase 231). Every registry fact a proof leans on is
 labelled with its provenance and surfaced by the same load-bearing ablation as authored clauses:
@@ -79,6 +79,10 @@ tasks.withType(GroovyCompile).configureEach {
 Setting `VERIFY_TRUST` in the environment also works, as long as the daemon was started with it (`./gradlew
 --stop` first). Both routes are checked against a real from-jar consumer build: `report` prints at the default
 log level, and `deny` fails `compileGroovy` with the fact as the error.
+
+External specs such as `Math.abs` are everywhere by design, so a blanket `deny` means proving or avoiding every
+one. The per-kind form is usually what a build wants: `-Dverify.trust=deny:carrier;report` fails on a
+`Monoid`/`Semigroup` whose laws nobody checked, and lists every other assumption without failing.
 
 The first three act on one diagnostic, in three directions. Take an unguarded index access:
 

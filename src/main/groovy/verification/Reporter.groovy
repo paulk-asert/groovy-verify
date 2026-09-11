@@ -161,6 +161,12 @@ class Reporter {
         "Trusted without proof (VERIFY_TRUST=deny): ${fact}. Prove it, or unset VERIFY_TRUST to accept it as an assumption.".toString()
     }
 
+    /** Phase 291 — a {@code VERIFY_TRUST} value that does not parse: loud, since a typo must not read as "strict". */
+    static String formatTrustSettingInvalid(String raw) {
+        ("VERIFY_TRUST value '${raw}' is not recognised: expected report or deny, optionally narrowed to kinds " +
+            "(deny:carrier) and combined with ';' (deny:carrier;report) — kinds: throwsif, spec, carrier").toString()
+    }
+
     static String formatReducerLawFailure(String combinerName, String law, String lawText, CheckResult result) {
         formatReducerLawFailure('@Reducer', combinerName, law, lawText, result)
     }

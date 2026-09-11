@@ -75,9 +75,26 @@ class TrustLedgerTest {
     }
 
     @Test
-    void unknownTrustModeIsOff() {
-        assertNull(TrustLedger.normaliseMode('warn'), 'only report / deny switch surfacing on')
-        assertEquals('deny', TrustLedger.normaliseMode(' DENY '))
+    void trustPolicyParsesClausesAndRejectsTypos() {
+        assertNull(TrustLedger.parsePolicy('warn'), 'only report / deny are actions')
+        assertNull(TrustLedger.parsePolicy('deny:carriers'), 'a kind token naming no kind is malformed, not ignored')
+        assertNull(TrustLedger.parsePolicy('deny:'), 'an empty kind list is malformed')
+        assertEquals(2, TrustLedger.parsePolicy(' DENY:Carrier ; report ').size())
+    }
+
+    @Test
+    void firstMatchingClauseDecidesEachFact() {
+        String prior = TrustLedger.mode
+        try {
+            TrustLedger.mode = 'deny:carrier;report'
+            assertEquals('deny', TrustLedger.actionFor('[opaque carrier] A#f — m (a Monoid) at sumParallel: …'))
+            assertEquals('report', TrustLedger.actionFor('[external spec] java.lang.Math#abs/1 — registry skeleton'))
+            TrustLedger.mode = 'deny:throwsif,spec'
+            assertEquals('deny', TrustLedger.actionFor('[in-place @ThrowsIf] A#p — throws X iff c'))
+            assertNull(TrustLedger.actionFor('[opaque carrier] A#f — …'), 'outside every clause: left in the ledger')
+        } finally {
+            TrustLedger.mode = prior
+        }
     }
 
     @Test

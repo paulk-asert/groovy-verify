@@ -2696,12 +2696,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
         }
         // Phase 291 — VERIFY_TRUST: surface the trusted facts this class relied on, now that its methods,
-        // constructors and field initialisers are all checked. `report` prints them; `deny` fails the compile.
-        String trustMode = TrustLedger.mode
-        if (trustMode != null) {
-            for (String fact : TrustLedger.drainPending()) {
-                if (trustMode == 'deny') addStaticTypeError(Reporter.formatTrustDenied(fact), classNode)
-                else println "trusted: ${fact}"
+        // constructors and field initialisers are all checked — each fact reported, denied, or (outside every
+        // clause's kinds) left in the ledger. A malformed setting fails loudly: a typo must not read as "strict".
+        String trustSetting = TrustLedger.mode
+        if (trustSetting != null) {
+            List<String> facts = TrustLedger.drainPending()
+            if (TrustLedger.parsePolicy(trustSetting) == null) {
+                addStaticTypeError(Reporter.formatTrustSettingInvalid(trustSetting), classNode)
+            } else {
+                for (String fact : facts) {
+                    String action = TrustLedger.actionFor(fact)
+                    if (action == 'deny') addStaticTypeError(Reporter.formatTrustDenied(fact), classNode)
+                    else if (action == 'report') println "trusted: ${fact}"
+                }
             }
         }
     }

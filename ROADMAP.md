@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–6)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1–7)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13212,9 +13212,26 @@ compiled against the freshly published jar. The baseline is silent. `VERIFY_TRUS
 level. `-Dverify.trust=deny` fails `compileGroovy` with it. TOOLING.md carries the recipe; the forkOptions route
 is recommended because the daemon captures environment variables at startup.
 
+**As shipped (slice 7): the per-kind filter.** A blanket `deny` fails on every external spec as well, and
+`Math.abs` and friends are pervasive by design, so the useful strict setting is narrower. `VERIFY_TRUST` is now a
+list of clauses separated by `;`. Each clause is `report` or `deny`, optionally narrowed with `:kind[,kind]`,
+where the tokens are case-insensitive substrings of the ledger kinds (`throwsif`, `spec`, `carrier`). The first
+clause that matches a fact decides it. So `deny:carrier` fails only opaque carriers and leaves the rest in the
+ledger, and `deny:carrier;report` fails those and prints everything else.
+
+**A typo is loud.** An unknown action, an empty kind list, or a token that names no kind (`deny:carriers`) makes
+`parsePolicy` return null, and the class fails with `VERIFY_TRUST value '…' is not recognised`. Silently switching
+off would read as "strict" to a build that asked for `deny`. `TrustLedger.mode` now holds the raw setting;
+`parsePolicy` and `actionFor` replace `normaliseMode`.
+
+Tests:
+
+* four cases: `deny:carrier` fails a carrier; `deny:carrier` lets a `@ThrowsIf` through, still ledgered;
+  `deny:throwsif;report` denies the `@ThrowsIf` and not the carrier; a malformed value fails;
+* two `TrustLedgerTest` tests: the parser rejects typos, and the first matching clause decides.
+
 **Possible next steps, not started:**
 
-* a per-kind filter (`deny:opaque carrier`), since external specs such as `Math.abs` are pervasive by design;
 * site-anchored `deny` errors for the two kinds that have an AST node (opaque carrier and in-place `@ThrowsIf`);
 * making the consumer-smoke CI job assert the `report` line too.
 

@@ -52,14 +52,57 @@ class TrustLedger {
      * {@code VERIFY_TRUST} (also {@code -Dverify.trust}) — Phase 291: surfacing the ledger to a consumer's own build.
      * {@code report} prints each trusted fact a class relied on when the checker finishes that class
      * ({@code trusted: …} on stdout, the {@code VERIFY_EXPLAIN} channel); {@code deny} makes each one a compile
-     * error instead. Null — unset, or any other value — leaves the ledger an inventory only, the default path
-     * byte-identical. Mutable only as a test hook (the harness {@code trustMode:} key).
+     * error instead. Either can be narrowed to kinds and combined — see {@link #parsePolicy}. Null (unset) leaves
+     * the ledger an inventory only, the default path byte-identical; a malformed value is a compile error, never a
+     * silent off. The raw setting; mutable only as a test hook (the harness {@code trustMode:} key).
      */
-    static volatile String mode = normaliseMode(System.getenv('VERIFY_TRUST') ?: System.getProperty('verify.trust'))
+    static volatile String mode = (System.getenv('VERIFY_TRUST') ?: System.getProperty('verify.trust'))?.trim() ?: null
 
-    static String normaliseMode(String m) {
-        String t = m?.trim()?.toLowerCase()
-        t == 'report' || t == 'deny' ? t : null
+    /** The ledger's kinds, lower-cased — what a {@code VERIFY_TRUST} kind token must name part of. */
+    static final List<String> KINDS = ['in-place @throwsif', 'external spec', 'opaque carrier'].asImmutable()
+
+    /**
+     * A {@code VERIFY_TRUST} value as {@code [action, kindTokens]} clauses: clauses separated by {@code ;}, each
+     * {@code report} or {@code deny}, optionally {@code :kind[,kind]} — tokens matched as case-insensitive substrings
+     * of a fact's kind ({@code throwsif}, {@code spec}, {@code carrier}). The first clause that matches a fact
+     * decides it: {@code deny:carrier;report} fails on opaque carriers and prints the rest. Null when unset or
+     * malformed (an unknown action, an empty kind list, a token naming no kind).
+     */
+    static List<Object[]> parsePolicy(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return null
+        List<Object[]> out = new ArrayList<Object[]>()
+        for (String clause : raw.split(';')) {
+            String c = clause.trim().toLowerCase()
+            if (c.isEmpty()) continue
+            int i = c.indexOf(':')
+            String action = (i < 0 ? c : c.substring(0, i)).trim()
+            if (action != 'report' && action != 'deny') return null
+            List<String> kinds = new ArrayList<String>()
+            if (i >= 0) {
+                for (String k : c.substring(i + 1).split(',')) {
+                    String t = k.trim()
+                    if (t.isEmpty()) continue
+                    if (!KINDS.any { String kind -> kind.contains(t) }) return null
+                    kinds.add(t)
+                }
+                if (kinds.isEmpty()) return null
+            }
+            out.add([action, kinds] as Object[])
+        }
+        out.isEmpty() ? null : out
+    }
+
+    /** What the current {@link #mode} does with one recorded fact: {@code 'report'}, {@code 'deny'}, or null. */
+    static String actionFor(String fact) {
+        List<Object[]> policy = parsePolicy(mode)
+        if (policy == null) return null
+        int close = fact.indexOf(']')
+        String kind = fact.startsWith('[') && close > 0 ? fact.substring(1, close).toLowerCase() : ''
+        for (Object[] clause : policy) {
+            List<String> kinds = (List<String>) clause[1]
+            if (kinds.isEmpty() || kinds.any { String t -> kind.contains(t) }) return (String) clause[0]
+        }
+        null
     }
 
     /** Records made on this thread since the checker last surfaced them (only while {@link #mode} is set). */

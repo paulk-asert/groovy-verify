@@ -456,6 +456,39 @@ class G341_p291_monoid_values {
                             xs.sumParallel(add::combine)
                         }
                     }''')],
+        // The per-kind filter: `deny:carrier` fails only opaque carriers; other kinds stay in the ledger.
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny:carrier fails an opaque carrier', trustMode: 'deny:carrier',
+         expect: 'Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FDeniedKind#total',
+         src: purefun('''class FDeniedKind {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
+                    }''')],
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny:carrier lets an in-place @ThrowsIf through (still ledgered)',
+         trustMode: 'deny:carrier', ok: true, trusted: '[in-place @ThrowsIf] ParserKind#parse',
+         src: tc('''class ParserKind {
+                        @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
+                        static Object parse(Object s) { return helper(s) }
+                        static Object helper(Object s) { s }
+                    }''')],
+        // Clauses combine, first match deciding: deny the @ThrowsIf, report (not deny) the carrier.
+        [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny:throwsif;report denies only the @ThrowsIf fact',
+         trustMode: 'deny:throwsif;report',
+         expect: 'Trusted without proof (VERIFY_TRUST=deny): [in-place @ThrowsIf] FMixed#parse',
+         refute: 'Trusted without proof (VERIFY_TRUST=deny): [opaque carrier]',
+         src: purefun('''class FMixed {
+                        @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
+                        static Object parse(Object s) { return helper(s) }
+                        static Object helper(Object s) { s }
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
+                    }''')],
+        // A typo must not read as "strict": a kind token naming no kind fails the compile, whatever it contains.
+        [group: 'P291 monoid value', name: 'a malformed VERIFY_TRUST value fails loudly', trustMode: 'deny:carriers',
+         expect: "VERIFY_TRUST value 'deny:carriers' is not recognised",
+         src: tc('''class Plain {
+                        @Ensures({ result == a })
+                        static int id(int a) { a }
+                    }''')],
         [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny also covers an in-place trusted @ThrowsIf', trustMode: 'deny',
          expect: 'Trusted without proof (VERIFY_TRUST=deny): [in-place @ThrowsIf] Parser#parse',
          src: tc('''class Parser {
