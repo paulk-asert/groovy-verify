@@ -55,6 +55,7 @@ class G341_p291_monoid_values {
         // CombinerChecker classifies `add::sum` by its owner's simple name (Monoid) and accepts it as "an assertion
         // carrier, not a proof"; groovy-verify now proves what the carrier asserts, from the lambda at the site.
         [group: 'P291 monoid value', name: 'Monoid.monoid(add, 0): associativity + identity prove (both checkers)', ok: true,
+         untrusted: 'opaque carrier',
          src: both('''class Sums {
                         @Requires({ xs != null })
                         static int total(List<Integer> xs) {
@@ -109,7 +110,7 @@ class G341_p291_monoid_values {
                     }''')],
         // A static field initialised from a visible lambda is the same site, one level up.
         [group: 'P291 monoid value', name: 'a static-field Semigroup built from subtraction refutes',
-         expect: 'Cannot prove Semigroup associativity for combiner SUB', refute: '__',
+         expect: 'Cannot prove Semigroup associativity for combiner SUB', refute: '__', untrusted: 'opaque carrier',
          src: both('''class Fields {
                         static final Semigroup<Integer> SUB = Semigroup.semigroup({ int a, int b -> a - b } as F2<Integer, Integer, Integer>)
                         @Requires({ xs != null })
@@ -142,6 +143,46 @@ class G341_p291_monoid_values {
                         @Requires({ xs != null })
                         static int total(List<Integer> xs, int z) {
                             Monoid<Integer> add = Monoid.monoid({ int a, int b -> a + b } as F2<Integer, Integer, Integer>, z)
+                            xs.sumParallel(add::sum)
+                        }
+                    }''')],
+
+        // Slice 2 — a carrier with no body in sight stays trusted, but VISIBLY: an `opaque carrier` ledger entry at
+        // the parallel reduction that relies on it (the harness `trusted:` key reads this compile's records).
+        [group: 'P291 monoid value', name: 'a parameter carrier is ledgered as an opaque carrier', ok: true,
+         trusted: '[opaque carrier] Params#total — m (a Monoid) at sumParallel',
+         src: both('''class Params {
+                        @Requires({ xs != null && m != null })
+                        static int total(List<Integer> xs, Monoid<Integer> m) {
+                            xs.sumParallel(m::sum)
+                        }
+                    }''')],
+        [group: 'P291 monoid value', name: 'a library constant carrier is ledgered as an opaque carrier', ok: true,
+         trusted: 'Monoid.intAdditionMonoid (a Monoid) at sumParallel',
+         src: both('''class Library {
+                        @Requires({ xs != null })
+                        static int total(List<Integer> xs) {
+                            xs.sumParallel(Monoid.intAdditionMonoid::sum)
+                        }
+                    }''')],
+        // CombinerChecker's other carrier form: a thin closure delegating to the carrier's method. (Seedless: a
+        // seeded injectParallel over a Semigroup is a CombinerChecker error — there is no identity to match the seed.)
+        [group: 'P291 monoid value', name: 'a thin delegating closure over an opaque Semigroup is ledgered', ok: true,
+         trusted: 's (a Semigroup) at sumParallel: its combiner has no visible body, so its associativity is assumed',
+         src: both('''class Delegating {
+                        @Requires({ xs != null && s != null })
+                        static int total(List<Integer> xs, Semigroup<Integer> s) {
+                            xs.sumParallel { Integer a, Integer b -> s.sum(a, b) }
+                        }
+                    }''')],
+        // Built from a lambda, then possibly replaced by an opaque one: the site cannot rely on the proof.
+        [group: 'P291 monoid value', name: 'a lambda-built local that is reassigned from a parameter is ledgered', ok: true,
+         trusted: 'add (a Monoid) at sumParallel',
+         src: both('''class Reassigned {
+                        @Requires({ xs != null && m != null })
+                        static int total(List<Integer> xs, Monoid<Integer> m, boolean other) {
+                            Monoid<Integer> add = Monoid.monoid({ int a, int b -> a + b } as F2<Integer, Integer, Integer>, 0)
+                            if (other) add = m
                             xs.sumParallel(add::sum)
                         }
                     }''')],

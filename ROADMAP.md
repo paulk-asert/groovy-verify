@@ -13018,7 +13018,7 @@ coherence rather than about what other ecosystems do.
 
 ---
 
-## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slice 1; opaque-carrier reporting open)*
+## Phase 291 — the library-style monoid, proven: FJ/HighJ `Monoid`/`Semigroup` values built from a visible lambda  *(shipped — slices 1 and 2)*
 
 Phase 116/130 closed the annotation half of the monoid story: a `@Reducer`/`@Associative` *method* now derives and
 discharges its own laws, and a falsely `@Associative Minus.sub` refutes. The *value* half is still trusted on both
@@ -13099,13 +13099,35 @@ Corrections to the text above, found while scoping:
 * **The `double` counterexample is not printed.** The model formatter only renders integral values, so the FP
   refutation reports the law without a witness, as the existing FP postcondition refutations do.
 
-**Open (slice 2): opaque carriers, reported.** A parameter or library-constant carrier still passes silently,
-at the Phase-116 trust level. There is no "assumed, not proven" diagnostic channel; the monitor invariant's
-"assumed" exists only in prose. The real mechanism is `TrustLedger.record`: its `summary()` counts only the
-`in-place` and `external` kinds, and no case can assert on a ledger entry. The slice is a new `opaque carrier`
-kind, recorded at `sumParallel`/`injectParallel` sites whose method-reference receiver classifies but was not
-proven, plus a harness `trusted:` expectation. After that: FJ's curried `F<A, F<A, A>>` form, and the
-Palatable/Purefun factory spellings as cases.
+**As shipped (slice 2): opaque carriers, ledgered.** This completes DoD item 3. There was no "assumed, not
+proven" diagnostic channel: the monitor invariant's "assumed" exists only in prose, and warnings never reach
+verify's compile paths. So the channel is the Phase-216 `TrustLedger`, gaining a third kind, `opaque carrier`,
+beside in-place `@ThrowsIf` and external specs. `summary()` now counts it.
+
+`recordOpaqueCarriers` inspects CombinerChecker's call sites, `sumParallel` and `injectParallel`, whose combiner is
+one of CombinerChecker's two carrier forms: a method reference or pointer (`m::sum`, `m.&sum`), or a thin
+delegating closure (`{ a, b -> m.sum(a, b) }`). When the receiver classifies as a carrier, the site is ledgered —
+`[opaque carrier] Params#total — m (a Monoid) at sumParallel: its combiner has no visible body, so its
+associativity and identity are assumed, not proven` — unless this checker built the proof. That means a local
+never reassigned, or a final field of the class being checked, initialised from a lambda-literal carrier.
+
+Two points of soundness. A lambda-built local that is later reassigned (`if (other) add = m`) is ledgered, because
+the proof no longer covers every value reaching the site. And the owner must be the class under check: the
+FJ stub's own `Monoid.intAdditionMonoid` IS built from a lambda, but in a class this checker never visits, so
+nothing discharged it. A static method reference on a carrier class (`IntMonoid::sum`) is left to the `@Reducer`
+path.
+
+The harness gains `trusted:` / `untrusted:` keys: a substring that some ledger record made by THIS compile must, or
+must not, contain. The ledger dedupes JVM-wide and cases reuse class names, so records come from a thread-local
+capture that brackets each case's compile (`TrustLedger.capture()` / `captured()`). Four new cases: a parameter,
+a library constant, a thin delegating closure, and a reassigned local. The proven local and the lambda-built
+static field assert `untrusted: 'opaque carrier'`. The first draft of the delegating case seeded
+`injectParallel` over a Semigroup, which CombinerChecker rightly rejects (no identity to match the seed), so the
+case is seedless.
+
+**Still open:** FJ's curried `F<A, F<A, A>>` form, the Palatable/Purefun factory spellings as cases, and
+consumer-facing surfacing of the ledger (today it is the harness line and the `entries()` API, the same as for
+the other two kinds).
 
 ---
 

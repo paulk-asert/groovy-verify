@@ -33,6 +33,7 @@ import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.Variable
+import org.codehaus.groovy.ast.PropertyNode
 import org.codehaus.groovy.ast.VariableScope
 import org.codehaus.groovy.ast.builder.AstBuilder
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression
@@ -49,6 +50,7 @@ import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.MethodPointerExpression
 import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.FieldExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
@@ -697,6 +699,111 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             runLawLemma(base, owner, cl, t, 'identity', ['a'],
                 "${op}(a, ${zero}) == a && ${op}(${zero}, a) == a".toString(),
                 [name, 'identity', kind, "${name}(a, ${zero}) == a && ${name}(${zero}, a) == a".toString()] as String[], extra)
+        }
+    }
+
+    /** The parallel reductions whose correctness rests on the combiner's laws — CombinerChecker's call sites. */
+    private static final Set<String> PARALLEL_REDUCTIONS = ['sumParallel', 'injectParallel'] as Set<String>
+
+    /**
+     * Phase 291, slice 2 — a Monoid/Semigroup carrier reaching a parallel reduction ({@code xs.sumParallel(m::sum)},
+     * or CombinerChecker's thin delegating closure {@code { a, b -> m.sum(a, b) }}) whose combiner has no body in
+     * sight — a parameter, a library constant, a non-final field, a local copied from one — keeps the Phase-116
+     * trust level, but visibly: an {@code opaque carrier} TrustLedger entry. A carrier this checker built the
+     * proof for (a never-reassigned local, or a final field of this class, initialised from a lambda literal) is
+     * not ledgered: its laws were discharged, or refuted, where it was built.
+     */
+    private void recordOpaqueCarriers(MethodNode node, Statement body) {
+        Map<Variable, Expression> inits = new IdentityHashMap<Variable, Expression>()
+        Set<Variable> reassigned = Collections.newSetFromMap(new IdentityHashMap<Variable, Boolean>())
+        List<MethodCallExpression> sites = new ArrayList<MethodCallExpression>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (!de.isMultipleAssignmentDeclaration()) inits.put(de.variableExpression, de.rightExpression)
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (!(be instanceof DeclarationExpression) && be.operation.type == Types.ASSIGN
+                        && be.leftExpression instanceof VariableExpression) {
+                    Variable av = ((VariableExpression) be.leftExpression).accessedVariable
+                    if (av != null) reassigned.add(av)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (PARALLEL_REDUCTIONS.contains(call.methodAsString)) sites.add(call)
+                super.visitMethodCallExpression(call)
+            }
+        })
+        for (MethodCallExpression call : sites) {
+            List<Expression> args = argListOf(call)
+            if (args == null || args.isEmpty()) continue
+            Expression recv = carrierReceiver(stripCasts(args.get(args.size() - 1)))
+            if (recv == null || recv instanceof ClassExpression) continue   // a static method: the @Reducer path's
+            ClassNode rt = null
+            try { rt = getType(recv) } catch (Throwable ignored) { }
+            String kind = carrierKind(rt)
+            if (kind == null || lambdaBuilt(recv, node.declaringClass, inits, reassigned)) continue
+            String laws = kind == 'Monoid' ? 'associativity and identity are' : 'associativity is'
+            TrustLedger.record('opaque carrier', "${node.declaringClass.name}#${node.name}".toString(),
+                "${recv.text} (a ${kind}) at ${call.methodAsString}: its combiner has no visible body, so its ${laws} assumed, not proven".toString())
+        }
+    }
+
+    /** The carrier a parallel reduction's combiner draws on: the receiver of a method reference / pointer, or of
+     *  the one call a thin delegating closure {@code { a, b -> m.sum(a, b) }} makes (CombinerChecker's two forms). */
+    private static Expression carrierReceiver(Expression combiner) {
+        if (combiner instanceof MethodPointerExpression) return ((MethodPointerExpression) combiner).expression
+        if (!(combiner instanceof ClosureExpression)) return null
+        ClosureExpression cl = (ClosureExpression) combiner
+        if (cl.parameters == null || cl.parameters.length != 2) return null
+        Expression e = Encoder.soleClosureExpr(cl)
+        if (!(e instanceof MethodCallExpression)) return null
+        List<Expression> callArgs = argListOf((MethodCallExpression) e)
+        if (callArgs == null || callArgs.size() != 2) return null
+        Set<String> ps = [cl.parameters[0].name, cl.parameters[1].name] as Set<String>
+        for (Expression a : callArgs) {
+            if (!(a instanceof VariableExpression) || !ps.contains(((VariableExpression) a).name)) return null
+        }
+        if (((VariableExpression) callArgs[0]).name == ((VariableExpression) callArgs[1]).name) return null
+        ((MethodCallExpression) e).objectExpression
+    }
+
+    /** True when {@code recv} names a carrier whose laws this checker discharges where it is built: a local never
+     *  reassigned, or a final field of {@code owner}, initialised from a lambda-literal carrier construction. */
+    private boolean lambdaBuilt(Expression recv, ClassNode owner, Map<Variable, Expression> inits, Set<Variable> reassigned) {
+        Expression r = stripCasts(recv)
+        FieldNode f = null
+        if (r instanceof VariableExpression) {
+            Variable av = ((VariableExpression) r).accessedVariable
+            if (av instanceof PropertyNode) f = ((PropertyNode) av).field
+            else if (av instanceof FieldNode) f = (FieldNode) av
+            else return av != null && inits.containsKey(av) && !reassigned.contains(av) && isLambdaCarrier(inits.get(av))
+        } else if (r instanceof FieldExpression) {
+            f = ((FieldExpression) r).field
+        } else if (r instanceof PropertyExpression) {
+            Expression obj = ((PropertyExpression) r).objectExpression
+            boolean own = (obj instanceof ClassExpression && obj.type.name == owner.name) ||
+                          (obj instanceof VariableExpression && ((VariableExpression) obj).isThisExpression())
+            if (own) f = owner.getField(((PropertyExpression) r).propertyAsString)
+        }
+        f != null && f.final && f.owner?.name == owner.name && isLambdaCarrier(f.initialValueExpression)
+    }
+
+    /** {@code init} is a carrier construction whose combiner is a two-parameter lambda literal. */
+    private boolean isLambdaCarrier(Expression init) {
+        Expression s = init == null ? null : stripCasts(init)
+        if (!(s instanceof MethodCallExpression)) return false
+        MethodCallExpression call = (MethodCallExpression) s
+        ClassNode rt = null
+        try { rt = getType(call) } catch (Throwable ignored) { }
+        String kind = carrierKind(rt)
+        if (kind == null && call.objectExpression instanceof ClassExpression) kind = carrierKind(call.objectExpression.type)
+        if (kind == null) return false
+        List<Expression> args = argListOf(call)
+        args != null && args.any { Expression a ->
+            Expression x = stripCasts(a)
+            x instanceof ClosureExpression && ((ClosureExpression) x).parameters?.length == 2
         }
     }
 
@@ -2687,10 +2794,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
             // Phase 291 — Monoid/Semigroup VALUES built from a visible lambda in this body: discharge the laws
             // the carrier asserts. Last for the same reason as the reducer laws (the lemmas reset `current*`).
+            // A carrier reaching a parallel reduction with no body in sight is ledgered as trusted instead.
             try {
                 Statement cbody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
                 if (cbody == null) cbody = node.code
-                if (cbody != null) verifyCarrierValueLaws(node.declaringClass, cbody, null, null)
+                if (cbody != null) {
+                    recordOpaqueCarriers(node, cbody)
+                    verifyCarrierValueLaws(node.declaringClass, cbody, null, null)
+                }
             } catch (Throwable ignored) {
             }
         } finally {

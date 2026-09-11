@@ -247,8 +247,10 @@ class Totals {
 not associative — which makes this the first checker in the family to tell an FP programmer their
 `Monoid<Double>` is a lie. An untyped lambda takes its type from the carrier's (`Monoid<Integer>` → `int`); a body
 outside the fragment (a call into unmodelled code) or a zero that is not a literal **skips loudly**, exactly as a
-non-equational `@Reducer` does. What stays trusted is a carrier with no body in sight — a parameter, or a library
-constant such as `Monoid.intAdditionMonoid`: the same trust level as before this phase.
+non-equational `@Reducer` does. What stays trusted is a carrier with no body in sight — a parameter, a library
+constant such as `Monoid.intAdditionMonoid`, or a lambda-built local later reassigned — and it stays trusted
+*visibly*: the `sumParallel` / `injectParallel` site that relies on it gets an `opaque carrier` entry in the
+[trusted-spec ledger](../TOOLING.md), beside the in-place `@ThrowsIf` arms and external specs already there.
 
 The loop *calling* the combiner works via **combiner inlining**: a no-`@Requires` method with
 `@Ensures({ result == E })` is translated as `E` at its call sites (sound — its `@Ensures` is verified when the

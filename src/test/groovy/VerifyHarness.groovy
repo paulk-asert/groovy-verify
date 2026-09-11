@@ -100,13 +100,37 @@ class VerifyHarness {
     }
 
     /**
-     * Compile one case and judge it against its {@code ok} / {@code expect} / {@code refute} spec.
+     * Compile one case and judge it against its {@code ok} / {@code expect} / {@code refute} spec, plus the
+     * optional {@code trusted} / {@code untrusted} keys over the TrustLedger records this compile made (Phase 291).
      * Returns {@code [ok: boolean, detail: String, errors: List<String>]}. The single source of
      * truth for "did this case behave?", shared by {@link #main} (compact console runner) and the
      * {@link #verificationCases} JUnit factory (per-test IDE/CI reporting) — no duplicated judging.
      */
     static Map evaluate(Map c, String name) {
-        List<String> errors = compile(name, (String) c.src)
+        verification.TrustLedger.capture()
+        List<String> errors
+        List<String> trustedRecords
+        try {
+            errors = compile(name, (String) c.src)
+        } finally {
+            trustedRecords = verification.TrustLedger.captured()
+        }
+        Map judged = judge(c, errors)
+        // Phase 291 — `trusted:` a substring some TrustLedger record made by THIS compile must contain;
+        // `untrusted:` one no such record may contain (trust is quiet at the use site, so it is asserted here).
+        String recs = trustedRecords.join('\n')
+        if (judged.ok && c.trusted != null && !recs.contains((String) c.trusted)) {
+            judged = [ok: false, detail: "expected a trusted-ledger record containing '${c.trusted}', got:\n      " +
+                (recs ? recs.replaceAll('\n', '\n      ') : '(no records)'), errors: errors]
+        }
+        if (judged.ok && c.untrusted != null && recs.contains((String) c.untrusted)) {
+            judged = [ok: false, detail: "no trusted-ledger record should contain '${c.untrusted}', got:\n      " +
+                recs.replaceAll('\n', '\n      '), errors: errors]
+        }
+        judged
+    }
+
+    private static Map judge(Map c, List<String> errors) {
         boolean wantOk = c.ok == true
         boolean ok
         String detail

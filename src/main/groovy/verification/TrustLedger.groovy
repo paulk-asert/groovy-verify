@@ -28,6 +28,9 @@ import java.util.concurrent.ConcurrentHashMap
  *   <li><b>external spec</b> — a registry skeleton consumed for a library call
  *       ({@code java.lang.Math#abs}, Phase 215) — trusted by definition, since nobody proves the
  *       JDK's bodies.</li>
+ *   <li><b>opaque carrier</b> — a {@code Monoid}/{@code Semigroup} value handed to a parallel reduction whose
+ *       combiner has no body in sight (a parameter, a library constant): its laws are assumed, where a carrier
+ *       built from a visible lambda has them proven (Phase 291).</li>
  * </ul>
  *
  * The design principle from the {@code trusted} discussions: <b>trust that is visible is trust that
@@ -41,21 +44,38 @@ class TrustLedger {
 
     private static final Set<String> ENTRIES = ConcurrentHashMap.newKeySet()
 
-    /** Record one trusted fact: {@code kind} ∈ {in-place @ThrowsIf, external spec}, {@code where} is
-     *  the owning method (FQN#name), {@code what} the contract detail. Idempotent. */
+    /** Records made on this thread since {@link #capture} — duplicates included, so a test can see what ONE
+     *  compile recorded even when the JVM-wide set already held the entry. Null (no capture) by default. */
+    private static final ThreadLocal<List<String>> CAPTURED = new ThreadLocal<List<String>>()
+
+    /** Record one trusted fact: {@code kind} ∈ {in-place @ThrowsIf, external spec, opaque carrier}, {@code where}
+     *  is the owning method (FQN#name), {@code what} the contract detail. Idempotent. */
     static void record(String kind, String where, String what) {
-        ENTRIES.add("[${kind}] ${where} — ${what}".toString())
+        String e = "[${kind}] ${where} — ${what}".toString()
+        ENTRIES.add(e)
+        CAPTURED.get()?.add(e)
     }
 
     /** All recorded trusted facts, sorted for stable output. */
     static List<String> entries() { ENTRIES.sort() }
 
+    /** Start capturing this thread's records (the harness brackets one case's compile with this). */
+    static void capture() { CAPTURED.set(new ArrayList<String>()) }
+
+    /** The records captured on this thread since {@link #capture}, ending the capture. */
+    static List<String> captured() {
+        List<String> out = CAPTURED.get() ?: Collections.<String> emptyList()
+        CAPTURED.remove()
+        out
+    }
+
     /** One line for the harness stream, beside the perf report. */
     static String summary() {
         int inPlace = ENTRIES.count { it.startsWith('[in-place') } as int
         int external = ENTRIES.count { it.startsWith('[external') } as int
+        int opaque = ENTRIES.count { it.startsWith('[opaque carrier') } as int
         "trusted: ${ENTRIES.size()} fact(s) assumed without proof (${external} external spec(s), " +
-            "${inPlace} in-place trusted contract(s))"
+            "${inPlace} in-place trusted contract(s), ${opaque} opaque carrier(s))"
     }
 
     static void reset() { ENTRIES.clear() }
