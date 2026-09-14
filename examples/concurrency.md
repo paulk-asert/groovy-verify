@@ -501,6 +501,44 @@ reply's *production* is checked. Those semantics, and the rest (a deferred messa
 handles it; a throwing arm replies exceptionally; one still stashed at `stop()` fails), are measured in
 `ActorReplySemanticsTest` rather than assumed.
 
+### A reply inside a `choice` — the key/value actor (Phase 295)
+
+A request/reply actor usually has more than one request. The key/value actor is the canonical shape: `get` is
+answered with a value, `put` with an acknowledgement, and the client picks which conversation to have.
+
+<!-- doclint:ignore README illustration: per-branch replies in a @Protocol -->
+```groovy
+@Protocol({
+    loop {
+        choice(at: client) {
+            get: client >> gate
+            value: gate >> client
+        } or {
+            put: client >> gate
+            ok: gate >> client
+        }
+    }
+})
+```
+
+Which message a reply answers is decided by the **trace**, not by its label — the actor owes a reply to whatever
+the protocol just delivered on this branch. That matters in both directions. It means two branches may perfectly
+well acknowledge with the *same* label (the write-ack shape, `ack` for both `get` and `put`), which is not
+ambiguous at all: the branches are alternatives, so only one `ack` can ever be outstanding. And it means the
+branches are checked *apart*, which is what catches the **cross-wired reply** — the Phase 264 fair-server bug,
+in actor form:
+
+<!-- doclint:diagnostic p295-branch-replies/a-reactor-answering-get-with-the-put-branch-s-label-is-cross-wired -->
+```
+[Static type checking] - Protocol violation in run (role 'gate'): actor 'gate' replies 'ok' to 'get' in phase
+'the handler' after it receives 'get' where the protocol's reply is 'value' — a reactor's handler returns the
+value its sendAndGet is completed with. …
+```
+
+Deferral is per-branch too: an actor that defers `put` is stuck on *that* branch while `get` is answered
+normally. What must stay unique is the other direction — one message, one reply — because that is what tells a
+`sendAndGet` what to wait for; a message answered by two different labels is skipped loudly.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

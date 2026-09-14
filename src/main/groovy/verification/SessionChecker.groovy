@@ -187,13 +187,20 @@ class SessionChecker {
                 actorLabels.put(m.chan, m.to)
             }
         }
-        Map<String, String> answers = [:]                 // a reply's label → the message it answers
-        for (Map.Entry<Msg, Msg> e : answering.entrySet()) {
-            Msg m = e.key, req = e.value
-            if ((replyOf.containsKey(req.chan) && replyOf.get(req.chan) != m.chan) || (answers.containsKey(m.chan) && answers.get(m.chan) != req.chan)) {
-                out.add([Reporter.formatProtocolSkipped(methodName, "reply '${m.chan}' does not always answer the same message — an actor's reply is positional, so a label cannot answer two"), body] as Object[]); return out
+        // Phase 295 — which message a reply answers is decided PER TRACE, not by its label: the branches of a
+        // choice may answer `get` with 'value' and `put` with 'ok', and may equally answer both with the same
+        // 'ack'. What must be unique is the other direction — one message has one reply — since that is what
+        // tells a sendAndGet what to wait for.
+        // (A reply label SHARED by two messages is resolved by which of them was just delivered, which is sound
+        // because only one can be outstanding: par's own disjointness already forbids two parts sharing a label.)
+        Set<String> pairs = new LinkedHashSet<String>()    // "message|reply", the pairings the protocol allows
+        for (Msg m : msgs) {                              // in the protocol's own order, so the report is stable
+            Msg req = answering.get(m)
+            if (req == null) continue
+            if (replyOf.containsKey(req.chan) && replyOf.get(req.chan) != m.chan) {
+                out.add([Reporter.formatProtocolSkipped(methodName, "message '${req.chan}' is answered both by '${replyOf.get(req.chan)}' and by '${m.chan}' — a sendAndGet cannot know which reply to wait for"), body] as Object[]); return out
             }
-            replyOf.put(req.chan, m.chan); answers.put(m.chan, req.chan)
+            replyOf.put(req.chan, m.chan); pairs.add(req.chan + '|' + m.chan)
         }
         if (!replyLabels.disjoint(actorLabels.keySet() - replyLabels)) { out.add([Reporter.formatProtocolSkipped(methodName, "a reply label is also a message to an actor"), body] as Object[]); return out }
         ACTOR_ROLES.set(actorRoles); ACTOR_LABELS.set(actorLabels); ACTOR_REPLIES.set(replyOf); REPLY_LABELS.set(replyLabels)
@@ -301,7 +308,7 @@ class SessionChecker {
                 out.add([Reporter.formatProtocolSkipped(methodName, "the behaviours of actor '${r}' are not all visible as `if (m == LIT)` arms over become targets in this method"), body] as Object[])
                 continue
             }
-            String v = accepts(local.get(r), localFrag.get(r), graph, answers, ActorMailbox.repliesAreValues(body, r))
+            String v = accepts(local.get(r), localFrag.get(r), graph, replyOf, pairs, ActorMailbox.repliesAreValues(body, r))
             if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "actor '${r}' ${v}"), body] as Object[])
         }
         // conformance
@@ -915,17 +922,18 @@ class SessionChecker {
      * {@code stop()}, measured), and one that keeps delivering into a stashing phase grows the stash without bound.
      * Null when the actor takes every trace; else the violation, with the trace that reaches it.
      */
-    private static String accepts(Nfa l, Frag lf, List<ActorMailbox.Phase> g, Map<String, String> answers, boolean replyValues) {
-        Map<String, Object[]> seen = [:]                       // key → [local set, phase, stash, parentKey, message, reply]
+    private static String accepts(Nfa l, Frag lf, List<ActorMailbox.Phase> g, Map<String, String> replyOf,
+                                  Set<String> pairs, boolean replyValues) {
+        Map<String, Object[]> seen = [:]                       // key → [local set, phase, stash, parentKey, message, owed]
         List<Object[]> todo = []
         Set<Integer> l0 = closure(l, [lf.in] as Set<Integer>)
-        String k0 = actorKey(l0, 0, [], ActorMailbox.UNKNOWN_REPLY)
-        seen.put(k0, [l0, 0, [], null, null, ActorMailbox.UNKNOWN_REPLY] as Object[]); todo.add(seen.get(k0))
+        String k0 = actorKey(l0, 0, [], [:])
+        seen.put(k0, [l0, 0, [], null, null, [:]] as Object[]); todo.add(seen.get(k0))
         while (!todo.isEmpty()) {
             Object[] cur = todo.remove(0)
             Set<Integer> ls = (Set<Integer>) cur[0]; int ph = (int) cur[1]; List<String> st = (List<String>) cur[2]
-            Object produced = cur[5]
-            String ck = actorKey(ls, ph, st, produced)
+            Map<String, Object[]> owed = (Map<String, Object[]>) cur[5]      // reply label → [message, value produced]
+            String ck = actorKey(ls, ph, st, owed)
             if (lf.out != null && ls.contains((int) lf.out) && !st.isEmpty()) {
                 return "can reach the end of the conversation in phase '${g.get(ph).name}'${actorTrace(seen, ck)} with ${st.collect { "'" + it + "'" }.join(', ')} still stashed — never replayed, so rejected at stop()".toString()
             }
@@ -934,17 +942,23 @@ class SessionChecker {
             for (String label : labels) {
                 String msg = label.substring(1)
                 // Phase 294 — the actor's own send: the reply the peer is blocked on in `sendAndGet(req).get()`.
+                // Phase 295 — WHICH message it answers comes from the trace (a choice's branches may share a
+                // reply label), so it is the outstanding one, not a lookup by label.
                 if (label.startsWith('!')) {
-                    String req = answers.get(msg)
-                    if (req != null && st.contains(req)) {
-                        return "defers '${req}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)}, so the reply '${msg}' its sendAndGet is waiting for is never produced: the conversation is STUCK — the peer blocks on the reply, nothing further is delivered, and at stop() the reply fails with IllegalStateException".toString()
+                    Object[] due = owed.get(msg)
+                    if (due != null) {
+                        String req = (String) due[0]
+                        if (st.contains(req)) {
+                            return "defers '${req}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)}, so the reply '${msg}' its sendAndGet is waiting for is never produced: the conversation is STUCK — the peer blocks on the reply, nothing further is delivered, and at stop() the reply fails with IllegalStateException".toString()
+                        }
+                        if (replyValues && !due[1].is(ActorMailbox.UNKNOWN_REPLY) && String.valueOf(due[1]) != msg) {
+                            return "replies '${due[1]}' to '${req}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)} where the protocol's reply is '${msg}' — a reactor's handler returns the value its sendAndGet is completed with".toString()
+                        }
                     }
-                    if (replyValues && !produced.is(ActorMailbox.UNKNOWN_REPLY) && String.valueOf(produced) != msg) {
-                        return "replies '${produced}' to '${req}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)} where the protocol's reply is '${msg}' — a reactor's handler returns the value its sendAndGet is completed with".toString()
-                    }
+                    Map<String, Object[]> left = new LinkedHashMap<String, Object[]>(owed); left.remove(msg)
                     Set<Integer> nx = step(l, ls, label)
-                    String rk = actorKey(nx, ph, st, ActorMailbox.UNKNOWN_REPLY)
-                    if (!seen.containsKey(rk)) { seen.put(rk, [nx, ph, st, ck, null, ActorMailbox.UNKNOWN_REPLY] as Object[]); todo.add(seen.get(rk)) }
+                    String rk = actorKey(nx, ph, st, left)
+                    if (!seen.containsKey(rk)) { seen.put(rk, [nx, ph, st, ck, null, left] as Object[]); todo.add(seen.get(rk)) }
                     continue
                 }
                 Object[] r = deliver(g, ph, msg, st, 0)
@@ -954,8 +968,12 @@ class SessionChecker {
                     return "stashes '${msg}' in phase '${g.get((int) r[0]).name}'${actorTrace(seen, ck)} and the protocol can keep delivering into that stash without a replay: it grows without bound (the javadoc's heap warning — bound it with withStashBound, or handle '${msg}' there)".toString()
                 }
                 Set<Integer> next = step(l, ls, label)
-                String nk = actorKey(next, (int) r[0], ns, r[2])
-                if (!seen.containsKey(nk)) { seen.put(nk, [next, r[0], ns, ck, msg, r[2]] as Object[]); todo.add(seen.get(nk)) }
+                // a message the protocol answers now owes its reply, resolved to THIS message (Phase 295)
+                Map<String, Object[]> no = new LinkedHashMap<String, Object[]>(owed)
+                String rep = replyOf.get(msg)
+                if (rep != null && pairs.contains(msg + '|' + rep)) no.put(rep, [msg, r[2]] as Object[])
+                String nk = actorKey(next, (int) r[0], ns, no)
+                if (!seen.containsKey(nk)) { seen.put(nk, [next, r[0], ns, ck, msg, no] as Object[]); todo.add(seen.get(nk)) }
             }
         }
         null
@@ -990,9 +1008,9 @@ class SessionChecker {
         [to, st, arm.stash ? ActorMailbox.UNKNOWN_REPLY : arm.reply] as Object[]
     }
 
-    private static String actorKey(Set<Integer> ls, int ph, List<String> st, Object reply) {
+    private static String actorKey(Set<Integer> ls, int ph, List<String> st, Map<String, Object[]> owed) {
         new ArrayList<Integer>(ls).sort().join(',') + '|' + ph + '|' + st.join(',') + '|' +
-            (reply.is(ActorMailbox.UNKNOWN_REPLY) ? '?' : String.valueOf(reply))
+            owed.collect { String k, Object[] v -> k + '>' + v[0] + '>' + (v[1].is(ActorMailbox.UNKNOWN_REPLY) ? '?' : String.valueOf(v[1])) }.join(';')
     }
 
     private static String actorTrace(Map<String, Object[]> seen, String key) {

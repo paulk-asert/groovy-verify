@@ -13504,9 +13504,51 @@ skipped loudly. P293's own "an actor that replies is skipped loudly" case was na
 still holds — a send that answers nothing — since a send that DOES answer is now modelled. P292 (15) and
 P263 (10) are unchanged.
 
-**Open:** a reply inside a `choice` branch (the actor answering differently per branch); `sendAndGet` whose
-`Awaitable` is passed on rather than read at the site; and the two Phase 293 items — a default that moves, and
-an actor played across methods.
+**Open:** `sendAndGet` whose `Awaitable` is passed on rather than read at the site; and the two Phase 293 items
+— a default that moves, and an actor played across methods. The reply inside a `choice` branch shipped as
+Phase 295 below.
+
+---
+
+## Phase 295 — a reply inside a `choice` branch: the key/value actor  *(shipped — slice 1)*
+
+Phase 294 resolved a reply to the message it answers with a map keyed by the REPLY's label. That is wrong as
+soon as a `choice` is involved, and wrong in the direction that refuses working code: the key/value actor —
+`get` answered with a value, `put` answered with an acknowledgement — is the canonical request/reply actor, and
+the shape where both branches acknowledge with one shared `ack` label (a write-ack) was refused outright as
+`reply 'ack' does not always answer the same message`.
+
+**A reply is resolved by the trace, not by the label.** `accepts` now carries the replies currently OWED along
+each path — delivering a message the protocol answers owes its reply, and the actor's send discharges it — so
+on the `get` branch `ack` answers `get`, and on the `put` branch the same `ack` answers `put`. What must still
+be unique is the other direction: one message, one reply, since that is what tells a `sendAndGet` what to wait
+for. A message answered by two different labels is skipped loudly, now naming both in the protocol's own order.
+
+**A shared label can only ever be owed once at a time**, which is what makes the per-trace resolution sound
+rather than merely convenient: the branches of a choice are alternatives, and the one construct that could owe
+two at once — `par`'s interleaved sub-sessions — already requires its parts' channels to be disjoint, and a
+reply's label IS its channel. The guard written for that case turned out to be unreachable and was removed
+rather than shipped as an untested boundary.
+
+What the branch-wise pairing then finds is the **cross-wired reply**, the Phase 264 fair-server bug in actor
+form: a reactor answering `get` with the `put` branch's label refutes on the label, naming the branch. And
+STUCK becomes per-branch — an actor that defers `put` is stuck on that branch alone while `get` is answered
+normally, with Phase 292 silent because an `unstashAll()` exists.
+
+Engine notes. `accepts`'s search node carries `owed` (reply label → [message, value produced]) in place of the
+single last reply, and the node key with it; `pairs` records the pairings the protocol allows, so a send that
+discharges nothing claims nothing. The pairing loop walks the protocol's messages in order rather than an
+`IdentityHashMap`'s, whose iteration order had leaked into a diagnostic.
+
+Cases (G345, 6): each branch answered with its own label conforms; two branches sharing one reply label conform
+(the shape Phase 294 refused); a cross-wired reply refutes naming both labels; a deferred branch is STUCK alone,
+with Phase 292 silent; a bare `send` in one branch is refuted in that branch; a message answered by two labels
+is skipped loudly. P294 (6), P293 (7) and P292 (15) are unchanged. The key/value protocol joins `ScribbleExport`'s
+curated corpus as `ActorKeyValue` — an actor's reply is an ordinary Scribble message from the actor's role, so
+the exporter needed nothing new, and `nuscr` accepts it.
+
+**Open:** an actor that answers the same message differently per PHASE (the reply's label is per-message, not
+per-phase); and the Phase 294 items above.
 
 ---
 

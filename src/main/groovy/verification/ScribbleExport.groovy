@@ -179,6 +179,9 @@ class ScribbleExport {
         // Phase 293 — an actor role: the Groovy docs' connection actor, its messages labelled by the literals sent.
         // Its first message is spelled `login` here: the docs' `connect` is a Scribble reserved word (see above).
         ActorConnection: 'login: client -> gate; auth_ok: client -> gate; loop { cmd: client -> gate }',
+        // Phase 295 — an actor that REPLIES, per branch: the key/value actor's get/put choice. An actor's reply
+        // is an ordinary Scribble message from the actor's role, so the export needs nothing new.
+        ActorKeyValue: 'loop { choice at client { get: client -> gate; value: gate -> client } or { put: client -> gate; ok: gate -> client } }',
     ].asImmutable()
 
     /** Writes the corpus to {@code args[0]}: `.scr` per exportable protocol, `.outside-standard.txt` per refusal. */

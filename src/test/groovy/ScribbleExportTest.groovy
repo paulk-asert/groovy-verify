@@ -112,6 +112,28 @@ class ScribbleExportTest {
 ''', scr)
     }
 
+    /** Phase 295 — an actor that REPLIES is still an ordinary Scribble role: its reply is a message from it. */
+    @Test
+    void anActorsReplyIsAnOrdinaryScribbleMessage() {
+        List<String> errors = []
+        String scr = ScribbleExport.export('ActorKeyValue', ScribbleExport.CORPUS.ActorKeyValue, errors)
+        assertEquals([], errors)
+        assertEquals('''global protocol ActorKeyValue(role client, role gate) {
+    rec X1 {
+        choice at client {
+            get() from client to gate;
+            value() from gate to client;
+            continue X1;
+        } or {
+            put() from client to gate;
+            ok() from gate to client;
+            continue X1;
+        }
+    }
+}
+''', scr)
+    }
+
     /** Phase 293 — `connect` is a Scribble reserved word (measured with nuscr): refused with a note naming it,
      *  rather than exported as a file nuScr cannot parse. */
     @Test
