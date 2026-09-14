@@ -104,6 +104,29 @@ class SessionChecker {
 
     /** Findings as [message, anchor]; empty when every process conforms. */
     static List<Object[]> check(String methodName, String text, BlockStatement body, Set<String> chans, boolean arbitrated = false) {
+        try {
+            check0(methodName, text, body, chans, arbitrated)
+        } finally {
+            ACTOR_ROLES.remove(); ACTOR_LABELS.remove()
+        }
+    }
+
+    // ── Phase 293 — actor roles ────────────────────────────────────────────────────────────────
+    /** The actor roles of the protocol being checked, and each actor-addressed label's actor (for opsOf / pretty). */
+    private static final ThreadLocal<Set<String>> ACTOR_ROLES = new ThreadLocal<Set<String>>()
+    private static final ThreadLocal<Map<String, String>> ACTOR_LABELS = new ThreadLocal<Map<String, String>>()
+    /** How many messages a phase may hold in its stash along a protocol trace before "grows without bound". */
+    private static final int STASH_BOUND = 6
+
+    private static void collectMsgs(G g, List<Msg> out) {
+        if (g instanceof Msg) out.add((Msg) g)
+        else if (g instanceof Seq) for (G i : ((Seq) g).items) collectMsgs(i, out)
+        else if (g instanceof Loop) collectMsgs(((Loop) g).body, out)
+        else if (g instanceof Choice) for (G b : ((Choice) g).branches) collectMsgs(b, out)
+        else if (g instanceof Par) for (G p : ((Par) g).parts) collectMsgs(p, out)
+    }
+
+    private static List<Object[]> check0(String methodName, String text, BlockStatement body, Set<String> chans, boolean arbitrated) {
         List<Object[]> out = []
         List<String> errors = []
         G global = parse(text, errors)
@@ -115,7 +138,22 @@ class SessionChecker {
         collectRoles(global, roles)
         Set<String> protoChans = new LinkedHashSet<String>()
         collectChans(global, protoChans)
-        for (String c : protoChans) if (!chans.contains(c)) { out.add([Reporter.formatProtocolSkipped(methodName, "message '${c}' names no channel variable of the method"), body] as Object[]); return out }
+        // Phase 293 — a role named after an ACTOR local of the method is played by that actor's become-graph, and a
+        // message TO it is labelled by the literal message sent (`gate.send('connect')` is `connect: client -> gate`).
+        Set<String> actorLocals = ActorMailbox.actorNames(body)
+        Set<String> actorRoles = new LinkedHashSet<String>(roles.findAll { String r -> actorLocals.contains(r) })
+        Map<String, String> actorLabels = new LinkedHashMap<String, String>()
+        List<Msg> msgs = []
+        collectMsgs(global, msgs)
+        for (Msg m : msgs) {
+            if (actorRoles.contains(m.from)) { out.add([Reporter.formatProtocolSkipped(methodName, "role '${m.from}' is an actor that SENDS ('${m.chan}') — an actor's replies are not modelled yet, only the messages it receives"), body] as Object[]); return out }
+            if (actorRoles.contains(m.to)) {
+                if (chans.contains(m.chan)) { out.add([Reporter.formatProtocolSkipped(methodName, "'${m.chan}' is both a channel and a message to actor '${m.to}'"), body] as Object[]); return out }
+                actorLabels.put(m.chan, m.to)
+            }
+        }
+        ACTOR_ROLES.set(actorRoles); ACTOR_LABELS.set(actorLabels)
+        for (String c : protoChans) if (!chans.contains(c) && !actorLabels.containsKey(c)) { out.add([Reporter.formatProtocolSkipped(methodName, "message '${c}' names no channel variable of the method"), body] as Object[]); return out }
         // local types
         Map<String, Nfa> local = [:]
         Map<String, Frag> localFrag = [:]
@@ -140,6 +178,10 @@ class SessionChecker {
             Nfa pn = new Nfa()
             OpInfo oi = new OpInfo()
             Frag pf = processAutomaton((List<Statement>) p[1], pn, chans, oi)
+            for (List<Object[]> es : pn.edges.values()) for (Object[] e : es) if (e[0] == '!*') {   // Phase 293
+                out.add([Reporter.formatProtocolSkipped(methodName, "${p[0]} sends an actor of the protocol a message that is not a literal (line ${e[2]}), which no label can name"), (ASTNode) p[2]] as Object[])
+                return out
+            }
             for (List<Object[]> es : pn.edges.values()) for (Object[] e : es) {   // bare sends = '!' edges not from an offers-select
                 String l = (String) e[0]
                 if (l.startsWith('!') && !oi.offerSends.contains(l.substring(1))) oi.bareSends.add(l.substring(1))
@@ -158,7 +200,7 @@ class SessionChecker {
         for (Iterator<Object[]> it = unbound.iterator(); it.hasNext(); ) {
             Object[] u = it.next()
             Set<String> s = (Set<String>) u[3], q = (Set<String>) u[4]
-            List<String> fits = new ArrayList<String>(roles.findAll { String r -> !bound.containsKey(r) && roleSends.get(r).containsAll(s) && roleRecvs.get(r).containsAll(q) })
+            List<String> fits = new ArrayList<String>(roles.findAll { String r -> !bound.containsKey(r) && !actorRoles.contains(r) && roleSends.get(r).containsAll(s) && roleRecvs.get(r).containsAll(q) })
             if (fits.size() != 1) continue
             Object[] p = (Object[]) u[0]
             bound.put(fits.get(0), [p[0], u[1], u[2], p[2], s, q, opInfoOf.get(p)] as Object[])
@@ -168,7 +210,7 @@ class SessionChecker {
             Object[] p = (Object[]) u[0]
             out.add([Reporter.formatProtocolViolation(methodName, null, "${p[0]} plays no role of the protocol — it sends on ${u[3]} and receives from ${u[4]}, which is no role's projection"), (ASTNode) p[2]] as Object[])
         }
-        for (String r : roles) if (!bound.containsKey(r)) out.add([Reporter.formatProtocolViolation(methodName, r, "no process plays it (a process that sends on ${roleSends.get(r)} and receives from ${roleRecvs.get(r)})"), body] as Object[])
+        for (String r : roles) if (!bound.containsKey(r) && !actorRoles.contains(r)) out.add([Reporter.formatProtocolViolation(methodName, r, "no process plays it (a process that sends on ${roleSends.get(r)} and receives from ${roleRecvs.get(r)})"), body] as Object[])
         if (!out.isEmpty()) return out
         // Phase 267 — coherence of every MIXED choice: at most one bound process may be able to SEND an opener
         List<Choice> mixed = []
@@ -207,8 +249,20 @@ class SessionChecker {
             // exactly one initiator: the mixed choice degenerates to a choice at that role — certified silently
         }
         if (!out.isEmpty()) return out
+        // Phase 293 — an actor role is played by its become-graph, checked the other way round: the protocol delivers
+        // and the actor must take what it is given (see accepts)
+        for (String r : actorRoles) {
+            List<ActorMailbox.Phase> graph = ActorMailbox.becomeGraph(body, r)
+            if (graph == null) {
+                out.add([Reporter.formatProtocolSkipped(methodName, "the behaviours of actor '${r}' are not all visible as `if (m == LIT)` arms over become targets in this method"), body] as Object[])
+                continue
+            }
+            String v = accepts(local.get(r), localFrag.get(r), graph)
+            if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "actor '${r}' ${v}"), body] as Object[])
+        }
         // conformance
         for (String r : roles) {
+            if (actorRoles.contains(r)) continue
             Object[] b = bound.get(r)
             String v = conforms((Nfa) b[1], (Frag) b[2], local.get(r), localFrag.get(r))
             if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "${b[0]} ${v}"), (ASTNode) b[3]] as Object[])
@@ -666,6 +720,15 @@ class SessionChecker {
             @Override void visitMethodCallExpression(MethodCallExpression m) {
                 super.visitMethodCallExpression(m)
                 Expression r = strip(m.objectExpression)
+                Set<String> actors = ACTOR_ROLES.get()
+                if (r instanceof VariableExpression && actors != null && actors.contains(((VariableExpression) r).name)
+                        && (m.methodAsString == 'send' || m.methodAsString == 'sendAndGet')) {       // Phase 293
+                    List<Expression> margs = m.arguments instanceof TupleExpression ? ((TupleExpression) m.arguments).expressions : []
+                    Expression msg = margs.size() == 1 ? strip(margs.get(0)) : null
+                    out.add([msg instanceof ConstantExpression && ((ConstantExpression) msg).value != null ?
+                        '!' + ((ConstantExpression) msg).value.toString() : '!*', line] as Object[])
+                    return
+                }
                 if (r instanceof VariableExpression && chans.contains(((VariableExpression) r).name)) {
                     String c = ((VariableExpression) r).name
                     if ((m.methodAsString == 'first' || m.methodAsString == 'receive') && noArgs(m)) out.add(['?' + c, line] as Object[])
@@ -781,7 +844,97 @@ class SessionChecker {
     }
 
     private static String pretty(String label) {
-        label.startsWith('!') ? "sends on '${label.substring(1)}'" : "receives from '${label.substring(1)}'"
+        String base = label.substring(1)
+        String actor = ACTOR_LABELS.get()?.get(base)                                   // Phase 293 — a message, not a channel
+        if (actor != null) return label.startsWith('!') ? "sends '${base}' to '${actor}'" : "receives '${base}'"
+        label.startsWith('!') ? "sends on '${base}'" : "receives from '${base}'"
+    }
+
+    // ── Phase 293 — an actor role: L(local type) must be TAKEN by the become-graph ─────────────────
+
+    /**
+     * An actor's role is checked the other way round from a process's: a process must not DO what its local type
+     * forbids, but an actor does not choose what arrives — the protocol delivers, and the actor must take it. So
+     * the role's local type (receives only) is walked together with the actor's state — its phase and its stash —
+     * and each delivered message goes where the become-graph sends it: an explicit {@code m == LIT} arm moves to its
+     * target (replaying the stash if the arm calls {@code unstashAll()}, the replayed messages dispatched to the new
+     * phase in order); a stashing default defers it; a throwing default rejects it — a violation. And a stash is only
+     * as good as its replay: a protocol that can END with messages still stashed loses them (they are rejected at
+     * {@code stop()}, measured), and one that keeps delivering into a stashing phase grows the stash without bound.
+     * Null when the actor takes every trace; else the violation, with the trace that reaches it.
+     */
+    private static String accepts(Nfa l, Frag lf, List<ActorMailbox.Phase> g) {
+        Map<String, Object[]> seen = [:]                       // key → [local set, phase, stash, parentKey, message]
+        List<Object[]> todo = []
+        Set<Integer> l0 = closure(l, [lf.in] as Set<Integer>)
+        String k0 = actorKey(l0, 0, [])
+        seen.put(k0, [l0, 0, [], null, null] as Object[]); todo.add(seen.get(k0))
+        while (!todo.isEmpty()) {
+            Object[] cur = todo.remove(0)
+            Set<Integer> ls = (Set<Integer>) cur[0]; int ph = (int) cur[1]; List<String> st = (List<String>) cur[2]
+            String ck = actorKey(ls, ph, st)
+            if (lf.out != null && ls.contains((int) lf.out) && !st.isEmpty()) {
+                return "can reach the end of the conversation in phase '${g.get(ph).name}'${actorTrace(seen, ck)} with ${st.collect { "'" + it + "'" }.join(', ')} still stashed — never replayed, so rejected at stop()".toString()
+            }
+            Set<String> labels = new LinkedHashSet<String>()
+            for (int s : ls) for (Object[] e : l.edges.get(s)) if (e[0] != '' && ((String) e[0]).startsWith('?')) labels.add((String) e[0])
+            for (String label : labels) {
+                String msg = label.substring(1)
+                Object[] r = deliver(g, ph, msg, st, 0)
+                if (r[0] instanceof String) return "${r[0]}${actorTrace(seen, ck)}".toString()
+                List<String> ns = (List<String>) r[1]
+                if (ns.size() > STASH_BOUND) {
+                    return "stashes '${msg}' in phase '${g.get((int) r[0]).name}'${actorTrace(seen, ck)} and the protocol can keep delivering into that stash without a replay: it grows without bound (the javadoc's heap warning — bound it with withStashBound, or handle '${msg}' there)".toString()
+                }
+                Set<Integer> next = step(l, ls, label)
+                String nk = actorKey(next, (int) r[0], ns)
+                if (!seen.containsKey(nk)) { seen.put(nk, [next, r[0], ns, ck, msg] as Object[]); todo.add(seen.get(nk)) }
+            }
+        }
+        null
+    }
+
+    /** One message dispatched to a phase: [phase, stash] after it, or [violation text]. A replay dispatches the
+     *  replayed messages to the new phase in stash order (measured: FIFO, ahead of newer sends). */
+    private static Object[] deliver(List<ActorMailbox.Phase> g, int ph, String msg, List<String> stash, int depth) {
+        if (depth > 16) return ["replays its stash without end in phase '${g.get(ph).name}'".toString()] as Object[]
+        ActorMailbox.Phase p = g.get(ph)
+        ActorMailbox.Arm arm = null
+        for (Map.Entry<Object, ActorMailbox.Arm> e : p.on.entrySet()) if (String.valueOf(e.key) == msg) arm = e.value
+        if (arm == null) {
+            if (p.otherwise == 'rejects') return ["rejects '${msg}' in phase '${p.name}' (its default branch throws)".toString()] as Object[]
+            if (p.otherwise == 'stash') return [ph, stash + [msg]] as Object[]
+            return [ph, stash] as Object[]
+        }
+        if (arm.rejects) return ["rejects '${msg}' in phase '${p.name}' (its '${msg}' branch throws)".toString()] as Object[]
+        int to = arm.target >= 0 ? arm.target : ph
+        List<String> st = arm.stash ? stash + [msg] : stash
+        if (arm.unstash && !st.isEmpty()) {
+            List<String> replay = st
+            st = []
+            for (String m : replay) {
+                Object[] r = deliver(g, to, m, st, depth + 1)
+                if (r[0] instanceof String) return r
+                to = (int) r[0]; st = (List<String>) r[1]
+            }
+        }
+        [to, st] as Object[]
+    }
+
+    private static String actorKey(Set<Integer> ls, int ph, List<String> st) {
+        new ArrayList<Integer>(ls).sort().join(',') + '|' + ph + '|' + st.join(',')
+    }
+
+    private static String actorTrace(Map<String, Object[]> seen, String key) {
+        List<String> msgs = []
+        String k = key
+        int guard = 0
+        while (k != null && guard++ < 10000) {
+            Object[] node = seen.get(k)
+            if (node[4] != null) msgs.add(0, "'" + node[4] + "'")
+            k = (String) node[3]
+        }
+        msgs.isEmpty() ? ' at the start' : " after it receives ${msgs.join(', then ')}".toString()
     }
 
     /** null when the process conforms; else what it does that the protocol does not allow, with its trace. */

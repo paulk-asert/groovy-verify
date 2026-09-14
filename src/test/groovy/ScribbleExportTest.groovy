@@ -95,6 +95,33 @@ class ScribbleExportTest {
     rec X1 {'''))
     }
 
+    /** Phase 293 — an actor role exports as an ordinary Scribble role, its literal messages as ordinary labels. */
+    @Test
+    void anActorRoleIsAnOrdinaryScribbleRole() {
+        List<String> errors = []
+        String scr = ScribbleExport.export('ActorConnection', ScribbleExport.CORPUS.ActorConnection, errors)
+        assertEquals([], errors)
+        assertEquals('''global protocol ActorConnection(role client, role gate) {
+    login() from client to gate;
+    auth_ok() from client to gate;
+    rec X1 {
+        cmd() from client to gate;
+        continue X1;
+    }
+}
+''', scr)
+    }
+
+    /** Phase 293 — `connect` is a Scribble reserved word (measured with nuscr): refused with a note naming it,
+     *  rather than exported as a file nuScr cannot parse. */
+    @Test
+    void aReservedWordLabelIsRefusedNotExportedBroken() {
+        List<String> errors = []
+        String scr = ScribbleExport.export('Docs', 'connect: client -> gate; auth_ok: client -> gate', errors)
+        assertNull(scr)
+        assertTrue(errors.any { it.contains("'connect' is a reserved word in Scribble") }, "got: ${errors}")
+    }
+
     @Test
     void aMixedChoiceIsRefusedAsOutsideStandardScribble() {
         List<String> errors = []

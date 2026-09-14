@@ -41,6 +41,17 @@ class ScribbleExport {
     /** The protocol as standard Scribble, or null with the reasons in {@code errors}. */
     static String export(String name, String protocolText, List<String> errors) {
         SessionChecker.G g = SessionChecker.parse(protocolText, errors)
+        // Phase 293 — a label or role that is a Scribble reserved word exports as a file nuScr cannot parse (found
+        // when the connection actor's `connect` joined the corpus): refuse it with a note instead.
+        if (errors.isEmpty()) {
+            Set<String> used = new LinkedHashSet<String>()
+            namesIn(g, used)
+            List<String> reserved = used.findAll { String n -> SCRIBBLE_RESERVED.contains(n) }.toList()
+            if (!reserved.isEmpty()) {
+                errors.add("${reserved.collect { "'" + it + "'" }.join(', ')} ${reserved.size() == 1 ? 'is a' : 'are'} reserved word${reserved.size() == 1 ? '' : 's'} in Scribble (nuScr), so a message label or role spelled that way cannot be exported — rename it in the protocol".toString())
+                return null
+            }
+        }
         if (!errors.isEmpty()) return null
         Set<String> roles = new LinkedHashSet<String>()
         collectRoles(g, roles)
@@ -125,6 +136,32 @@ class ScribbleExport {
         false
     }
 
+    /** Phase 293 — words nuScr rejects as a message label, MEASURED by running nuscr on one-message protocols
+     *  (`accept` and `par` pass; everything here is a parse error). Roles are checked against the same list. */
+    static final Set<String> SCRIBBLE_RESERVED = ([
+        'connect', 'disconnect', 'wrap', 'aux', 'do', 'as', 'rec', 'continue', 'choice', 'at', 'or', 'and',
+        'from', 'to', 'role', 'global', 'protocol', 'sig', 'type', 'explicit', 'nested', 'calls', 'new',
+        'import', 'module',
+    ] as Set<String>).asImmutable()
+
+    /** Every message label and role of a parsed protocol. */
+    private static void namesIn(SessionChecker.G g, Set<String> out) {
+        if (g instanceof SessionChecker.Msg) {
+            SessionChecker.Msg m = (SessionChecker.Msg) g
+            out.add(m.chan); out.add(m.from); out.add(m.to)
+        } else if (g instanceof SessionChecker.Seq) {
+            for (SessionChecker.G i : ((SessionChecker.Seq) g).items) namesIn(i, out)
+        } else if (g instanceof SessionChecker.Loop) {
+            namesIn(((SessionChecker.Loop) g).body, out)
+        } else if (g instanceof SessionChecker.Choice) {
+            SessionChecker.Choice c = (SessionChecker.Choice) g
+            if (c.at != null) out.add(c.at)
+            for (SessionChecker.G b : c.branches) namesIn(b, out)
+        } else if (g instanceof SessionChecker.Par) {
+            for (SessionChecker.G p : ((SessionChecker.Par) g).parts) namesIn(p, out)
+        }
+    }
+
     /** Phase 270 — protocols standard Scribble carries but nuScr's grammar does not (its parser has no `par`
      *  token): the gate treats a nuscr rejection of these as the KNOWN gap, and an acceptance as news. */
     static final Map<String, String> NUSCR_FRAGMENT_GAPS = [
@@ -139,6 +176,9 @@ class ScribbleExport {
         CalcChoice: 'loop { choice at client { add: client -> server; sum: server -> client } or { neg: client -> server; res: server -> client } }',
         FairServerPar: 'par { loop { reqA: clientA -> server; replyA: server -> clientA } } and { loop { reqB: clientB -> server; replyB: server -> clientB } }',
         MixedPingPong: 'loop { choice { ping: left -> right } or { pong: right -> left } }',
+        // Phase 293 — an actor role: the Groovy docs' connection actor, its messages labelled by the literals sent.
+        // Its first message is spelled `login` here: the docs' `connect` is a Scribble reserved word (see above).
+        ActorConnection: 'login: client -> gate; auth_ok: client -> gate; loop { cmd: client -> gate }',
     ].asImmutable()
 
     /** Writes the corpus to {@code args[0]}: `.scr` per exportable protocol, `.outside-standard.txt` per refusal. */

@@ -402,6 +402,152 @@ class ActorMailbox {
         out
     }
 
+    // ── Phase 293 — the become-graph, for @Protocol conformance ────────────────────────────────────────────
+
+    /** The actor locals of a body, by name (their declarations are what SessionChecker binds actor roles to). */
+    static Set<String> actorNames(BlockStatement body) { new LinkedHashSet<String>(actorsIn(body).keySet()) }
+
+    /** One arm of a phase: what an explicit {@code m == LIT} branch does with LIT. */
+    static class Arm {
+        int target = -1                 // the phase it moves to (-1: stays in this one)
+        boolean stash, unstash, rejects
+    }
+
+    /** One phase — a behaviour closure — of an actor's become-graph. */
+    static class Phase {
+        String name
+        int line
+        final Map<Object, Arm> on = new LinkedHashMap<Object, Arm>()   // literal message → its explicit arm
+        String otherwise = 'handles'    // any other message: 'handles' (stays), 'stash', or 'rejects' (throws)
+    }
+
+    /**
+     * Phase 293 — an actor's become-graph, the automaton its role is checked with: the phases (the handler first,
+     * then every {@code ctx.become(…)} target, inline or a behaviour local) and, per phase, what each literal
+     * message does. Recognised strictly — a phase is a top-level chain of {@code if (m == LIT) { … }} arms, each
+     * leaving (a {@code return}) or chained by {@code else}, then a default for every other message; a context-free
+     * handler (a Function / BiFunction) is one catch-all phase. Null — nothing is claimed — for anything else: a
+     * condition that is not {@code m == LIT}, a target that is not visible, a behaviour local assigned twice, an
+     * arm or default whose effect cannot be read.
+     */
+    static List<Phase> becomeGraph(BlockStatement body, String actorName) {
+        ActorDecl d = actorsIn(body).get(actorName)
+        if (d == null) return null
+        Map<String, List<ClosureExpression>> locals = behaviourLocals(body)
+        List<Phase> phases = new ArrayList<Phase>()
+        Map<ClosureExpression, Integer> index = new IdentityHashMap<ClosureExpression, Integer>()
+        List<ClosureExpression> order = new ArrayList<ClosureExpression>()
+        ClosureExpression root = singleBehaviour(d.handlerExpr, locals)
+        if (root == null) return null
+        String rootName = strip(d.handlerExpr) instanceof VariableExpression ? ((VariableExpression) strip(d.handlerExpr)).name : 'the handler'
+        index.put(root, 0); order.add(root)
+        Phase first = new Phase(); first.name = rootName; first.line = root.lineNumber; phases.add(first)
+        for (int i = 0; i < order.size(); i++) {
+            ClosureExpression cl = order.get(i)
+            Phase ph = phases.get(i)
+            Parameter[] ps = cl.parameters
+            int ctxArity = d.stateful ? 3 : 2
+            if (ps == null || ps.length != ctxArity) {
+                if (ps != null && ps.length == ctxArity - 1) continue   // context-free: one catch-all phase
+                return null
+            }
+            String ctx = ps[0].name, msg = ps[ps.length - 1].name
+            if (!(cl.code instanceof BlockStatement)) return null
+            List<Statement> ss = ((BlockStatement) cl.code).statements
+            int k = 0
+            Statement defaultPart = null
+            List<Statement> after = null
+            Statement cur = ss.isEmpty() ? null : ss.get(0)
+            while (cur instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) cur
+                Object lit = triggerLiteral(ifs.booleanExpression.expression, msg)
+                if (lit.is(NO_TRIGGER) || ph.on.containsKey(lit)) return null
+                boolean hasElse = ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)
+                if (!hasElse && !endsInReturn(ifs.ifBlock)) return null      // the arm falls through into the default
+                Arm arm = readArm(ifs.ifBlock, ctx, locals, index, order, phases)
+                if (arm == null) return null
+                ph.on.put(lit, arm)
+                if (hasElse) {
+                    if (ifs.elseBlock instanceof IfStatement) { cur = ifs.elseBlock; continue }
+                    defaultPart = ifs.elseBlock
+                    after = ss.subList(1, ss.size())                         // statements after an if/else run for all
+                } else {
+                    after = ss.subList(k + 1, ss.size())
+                }
+                break
+            }
+            if (!(ss.isEmpty() || ss.get(0) instanceof IfStatement)) after = ss
+            // the default: the final else (if any) plus what follows the chain
+            List<Statement> dflt = new ArrayList<Statement>()
+            if (defaultPart != null) dflt.add(defaultPart)
+            if (after != null) dflt.addAll(after)
+            BlockStatement db = new BlockStatement(dflt, null)
+            Arm da = readArm(db, ctx, locals, index, order, phases)
+            if (da == null || da.target >= 0 || da.unstash) return null      // a default that moves or replays: not modelled
+            ph.otherwise = da.rejects ? 'rejects' : da.stash ? 'stash' : 'handles'
+            // an if/else's trailing statements also run for the matched message: fold their effect into each arm
+            if (defaultPart != null && after != null && !after.isEmpty()) {
+                Arm tail = readArm(new BlockStatement(new ArrayList<Statement>(after), null), ctx, locals, index, order, phases)
+                if (tail == null || tail.target >= 0 || tail.unstash || tail.stash || tail.rejects) return null
+            }
+        }
+        phases
+    }
+
+    /** A behaviour argument that denotes exactly one closure (a literal, or a local assigned once), else null. */
+    private static ClosureExpression singleBehaviour(Expression e, Map<String, List<ClosureExpression>> locals) {
+        List<ClosureExpression> cls = resolveBehaviour(e, locals)
+        cls != null && cls.size() == 1 ? cls.get(0) : null
+    }
+
+    /** What a block does, read for the protocol: its become target (registering a new phase), and whether it
+     *  stashes, replays, or throws. Null when it is not readable — two targets, an opaque one, the context handed on. */
+    private static Arm readArm(Statement block, String ctx, Map<String, List<ClosureExpression>> locals,
+                               Map<ClosureExpression, Integer> index, List<ClosureExpression> order, List<Phase> phases) {
+        Arm arm = new Arm()
+        boolean[] bad = [false] as boolean[]
+        List<Expression> targets = new ArrayList<Expression>()
+        block.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                Expression recv = strip(call.objectExpression)
+                if (recv instanceof VariableExpression && ((VariableExpression) recv).name == ctx) {
+                    String mn = call.methodAsString
+                    List<Expression> args = call.arguments instanceof TupleExpression ?
+                        ((TupleExpression) call.arguments).expressions : Collections.<Expression> emptyList()
+                    if (mn == 'stash') arm.stash = true
+                    else if (mn == 'unstashAll') arm.unstash = true
+                    else if (mn == 'become' && args.size() == 1) targets.add(args.get(0))
+                    else if (mn != 'self' && mn != 'scheduleOnce' && mn != 'scheduleAtFixedRate') bad[0] = true
+                    return                                   // a direct context call; its closure argument is a phase
+                }
+                super.visitMethodCallExpression(call)
+            }
+            @Override void visitVariableExpression(VariableExpression ve) { if (ve.name == ctx) bad[0] = true }
+            @Override void visitThrowStatement(org.codehaus.groovy.ast.stmt.ThrowStatement ts) {
+                arm.rejects = true
+                super.visitThrowStatement(ts)
+            }
+            @Override void visitClosureExpression(ClosureExpression c) { }   // a nested closure is not this dispatch
+        })
+        if (bad[0] || targets.size() > 1) return null
+        if (targets.size() == 1) {
+            ClosureExpression t = singleBehaviour(targets.get(0), locals)
+            if (t == null) return null
+            Integer ti = index.get(t)
+            if (ti == null) {
+                ti = order.size()
+                index.put(t, ti); order.add(t)
+                Phase p = new Phase()
+                Expression te = strip(targets.get(0))
+                p.name = te instanceof VariableExpression ? ((VariableExpression) te).name : "the phase at line ${t.lineNumber}".toString()
+                p.line = t.lineNumber
+                phases.add(p)
+            }
+            arm.target = ti
+        }
+        arm
+    }
+
     // ── Phase 292 slice 2 — the stash bound ─────────────────────────────────────────────────────────────────
 
     private static final Object NO_TRIGGER = new Object()

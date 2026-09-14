@@ -406,6 +406,48 @@ sent the trigger by someone else first, so either withholds the count.
 carried a *Possible NullPointerException*. The context the runtime passes a handler, a `become` target or a
 context-aware `onError` is never null, and is now treated so.)
 
+### `become` — the phases, checked against a protocol (Phase 293)
+
+An actor that `become`s is a state machine, and what matters about it is the order of the conversation: which
+messages it expects, in which phase, and what happens to the rest. That is exactly what a session type says, so
+the checker reuses the stock [`@Protocol`](kerridge.md): a role named after an actor local is played by that
+actor, and a message to it is labelled by the literal sent.
+
+<!-- doclint:ignore README illustration: an actor role in a @Protocol -->
+```groovy
+@Protocol({
+    connect: client >> gate
+    auth_ok: client >> gate
+    loop { cmd: client >> gate }
+})
+static void run() {
+    StatefulHandler<Integer, String> disconnected, authenticating, connected
+    // … the three phases of the Groovy docs' connection actor …
+    Actor<String> gate = Actor.stateful(0, disconnected)
+    gate.send('connect')
+    gate.send('auth_ok')
+    gate.send('cmd')
+}
+```
+
+Both sides are checked. **The sender's** sends follow its projection, as in any session: send `cmd` before
+`auth_ok` and the main body is named, with the trace. **The actor** is checked the other way round, because it
+does not choose what arrives. Every message the protocol can deliver must be taken, and the actor's stash is
+modelled as it behaves:
+
+* a message the current phase stashes is deferred, and the arm that calls `unstashAll()` replays it into the
+  next phase;
+* a protocol that can end with messages still stashed loses them;
+* a phase whose default throws rejects a message the protocol sends it.
+
+The pairing catches what neither half sees alone. The docs' actor with its trigger typo'd as `'auth-ok'` passes
+Phase 292, because an `unstashAll()` exists. Under the protocol it cannot: the phase never transitions, the
+protocol's own `auth_ok` is stashed, and the conversation ends with it still there.
+
+The graph is read strictly: `if (m == LIT)` arms, `become` targets it can see, and a default that handles,
+stashes or throws. Anything else is skipped loudly, as is an actor that replies (only what an actor *receives*
+is modelled yet).
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

@@ -13004,7 +13004,9 @@ none of them needs a new mechanism:
   first time round) but the SEQUENCE. Session types are the right frame, but calling this a REUSE of Phases
   263/264 was optimistic: those project a global `@Protocol` onto a role and check a METHOD's control flow
   against it, whereas `become` moves the state between dispatches. It needs a become-graph and transition
-  checking — new machinery. The most interesting of the three, and the expensive one.
+  checking — new machinery. The most interesting of the three, and the expensive one. SHIPPED as Phase 293,
+  reusing the stock `@Protocol` rather than new vocabulary: the actor is a role, the literals sent to it are its
+  labels, and its become-graph is checked against the role's projection.
 * *Stash conservation.* `stash()` with no matching `unstashAll()` loses messages, and
   `ActorOptions.withStashBound(n, StashOverflow)` means the runtime has a bound the code can exceed. The same
   conservation shape as c04's token count (Phase 287): take one, put one back. SHIPPED as Phase 292: the loss
@@ -13377,6 +13379,79 @@ method. P289's eight cases are unchanged.
 
 **Next on the candidate list:** `become` conformance, which needs a become-graph and transition checking, new
 machinery.
+
+---
+
+## Phase 293 — `become` conformance: an actor's phases checked against its `@Protocol`  *(shipped — slice 1)*
+
+The third property on the Actor candidate list, and the expensive one. The spec surface was a design choice, put
+to the maintainer and settled as reusing the stock `@Protocol` rather than a new typestate annotation. **A role
+named after an actor local of the method is played by that actor's become-graph, and a message to it is labelled
+by the literal sent.** So `gate.send('connect')` is `connect: client >> gate`. Nothing new to learn, and the
+Phase 263 machinery (projection to per-role NFAs, inclusion, traces) is reused rather than rebuilt.
+
+**Both sides are checked.**
+
+* **The sender.** `SessionChecker.opsOf` reads a send to an actor role as `!literal`, so the method body binds to
+  the sender's role by its alphabet as any process does, and Phase 263's conformance decides:
+  `the main body sends 'cmd' to 'gate' (line …) after it sends 'connect' to 'gate' where the protocol expects it to
+  sends 'auth_ok' to 'gate'`. A message that is not a literal is a loud skip.
+* **The actor, the other way round.** A process must not DO what its local type forbids, but an actor does not
+  choose what arrives: the protocol delivers, and the actor must take it. `accepts` walks the role's local type
+  (receives only) together with the actor's state, its phase and its stash, and each delivered message goes where
+  the become-graph sends it:
+  * an explicit `m == LIT` arm moves to its target, replaying the stash to the new phase in order if it calls
+    `unstashAll()`;
+  * a stashing default defers the message;
+  * a throwing default REJECTS it, which is a violation.
+
+  Two more violations are the ones only the pairing can see: the protocol can reach its END with messages still
+  stashed (rejected at `stop()`, measured in Phase 292), or keep delivering into a stashing phase, so the stash
+  grows past a bound of 6 (the javadoc's heap warning).
+
+**The become-graph** (`ActorMailbox.becomeGraph`) is recognised strictly. The phases are the handler (a literal
+or a behaviour local, the docs' declared-then-assigned phases included) and every `ctx.become(…)` target. A phase
+is a top-level chain of `if (m == LIT)` arms, each leaving with a `return` or chained by `else`, then a default
+for every other message; a context-free handler is one catch-all phase. Nothing is claimed, and the check says so
+loudly, for anything else: another condition, an opaque target, a behaviour local assigned twice, a default that
+moves or replays, or the context handed on. An actor role that SENDS (a reply) is also a loud skip: only
+receives are modelled.
+
+**What the pairing finds that Phase 292 cannot.** A trigger literal that misses its label. In the case,
+`'auth-ok'` stands against the protocol's `auth_ok`. The phase never transitions, so the protocol's own `auth_ok`
+is stashed with everything after it, and the conversation can end with it still there. Phase 292 is silent
+because an `unstashAll()` exists. Deferral that is replayed in time (`cmd` arriving during authentication,
+stashed, replayed by `auth_ok` into the connected phase) conforms, because the stash is modelled rather than
+treated as an error.
+
+Engine notes. `SessionChecker.check` is now a wrapper around `check0` that clears two thread-locals, the
+protocol's actor roles and each actor-addressed label's actor, which `opsOf` and `pretty` consult. Actor roles
+are excluded from process binding (both passes) and from "no process plays it". A label that also names a
+channel variable is refused as ambiguous.
+
+Cases (G343, 7):
+
+* the three-phase connection actor conforms;
+* a sender with `cmd` before `auth_ok` violates the client role;
+* the mismatched trigger literal refutes, with Phase 292 silent;
+* a phase that throws on the protocol's `ping` refutes;
+* replayed deferral conforms;
+* an opaque `become` target and a replying actor are skipped loudly.
+
+P263 (10) and P292 (15) are unchanged. The connection actor's protocol joins `ScribbleExport`'s curated
+corpus as `ActorConnection`, so the `nuscr` CI job cross-checks it against nuScr like the gallery's other
+protocols. An actor role is an ordinary Scribble role, and the literal labels are ordinary message labels,
+with one exception, found when the entry went in. The docs' first message, `connect`, is a Scribble RESERVED
+WORD, and nuScr rejected the export with a parse error. That was an exporter gap, not a nuScr one: any
+`@Protocol` with such a label exported invalid Scribble. The reserved set was measured by running `nuscr` on a
+one-message protocol per candidate word, giving 25 words (`connect`, `disconnect`, `rec`, `continue`, `choice`,
+`at`, `or`, `and`, `from`, `to`, `role`, …; `accept` and `par` pass). `ScribbleExport` now refuses a label or
+role that is one of them with an `.outside-standard.txt` note naming the word, and the corpus entry spells its
+first message `login`. The checker's own side is unaffected: Groovy has no such restriction, and the docs and
+cases keep `connect`.
+
+**Open:** an actor's REPLIES (`ack: gate >> client`, via `sendAndGet`), the reply as the actor role's send; a
+default that moves (`become` for any other message); and an actor played across methods (a field).
 
 ---
 
