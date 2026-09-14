@@ -1752,7 +1752,7 @@ static void ring() {
 
 
 Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 40) where
-the protocol expects it to receives from 'ca'"); make a client wait before asking and the trace says so. A
+the protocol expects it to receive from 'ca'"); make a client wait before asking and the trace says so. A
 choice belongs to one role (`choice at client { … } or { … }`, the client's `if`/`else` against the
 server's ALT); `par { … } and { … }` interleaves independent sub-sessions — the fair server's type — and a
 *mixed* choice (`choice { ping: left >> right } or { pong: right >> left }`, no `at`) is admitted with its

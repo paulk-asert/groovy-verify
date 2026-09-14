@@ -12057,7 +12057,7 @@ op-free statements between — are its branches; loops as stars, a `while (true)
 unions), and CONFORMANCE is language inclusion, decided on the product of the process NFA with the local
 type's subset-DFA: a process never performs an op its local type does not allow next, and never ends where
 the protocol continues. A violation is reported with the trace that reaches it — "the async arm at line 52
-receives from 'add' (line 56) after it receives from 'add' where the protocol expects it to sends on 'sum'"
+receives from 'add' (line 56) after it receives from 'add' where the protocol expects it to send on 'sum'"
 — and the binding failures are named: a role nobody plays, a process that plays no role. `verification.Protocol`
 is a SOURCE-retained method annotation; the check runs in the PAR walk, independent of the other rungs
 (their deadlock, liveness and value certificates stand on their own; what the protocol adds is ORDER across
@@ -12097,7 +12097,7 @@ inclusion check decides unchanged. Each client plays its own part (the other pro
 server plays the shuffle, and its ALT — take whichever request is ready, reply on that client's channel —
 is ONE conformant implementation (the shuffle also admits batching; the type does not over-commit). A
 cross-wired server (replyB for reqA) falls outside the shuffle and is named with its trace ("sends on
-'replyB' after it receives from 'reqA' where the protocol expects it to sends on 'replyA' or receives from
+'replyB' after it receives from 'reqA' where the protocol expects it to send on 'replyA' or receive from
 'reqB'").
 
 Conformance is the protocol's ORDER only, and the layers compose: the same typed server is clean on
@@ -13395,7 +13395,7 @@ Phase 263 machinery (projection to per-role NFAs, inclusion, traces) is reused r
 * **The sender.** `SessionChecker.opsOf` reads a send to an actor role as `!literal`, so the method body binds to
   the sender's role by its alphabet as any process does, and Phase 263's conformance decides:
   `the main body sends 'cmd' to 'gate' (line …) after it sends 'connect' to 'gate' where the protocol expects it to
-  sends 'auth_ok' to 'gate'`. A message that is not a literal is a loud skip.
+  send 'auth_ok' to 'gate'`. A message that is not a literal is a loud skip.
 * **The actor, the other way round.** A process must not DO what its local type forbids, but an actor does not
   choose what arrives: the protocol delivers, and the actor must take it. `accepts` walks the role's local type
   (receives only) together with the actor's state, its phase and its stash, and each delivered message goes where
@@ -13450,8 +13450,63 @@ role that is one of them with an `.outside-standard.txt` note naming the word, a
 first message `login`. The checker's own side is unaffected: Groovy has no such restriction, and the docs and
 cases keep `connect`.
 
-**Open:** an actor's REPLIES (`ack: gate >> client`, via `sendAndGet`), the reply as the actor role's send; a
-default that moves (`become` for any other message); and an actor played across methods (a field).
+**Open:** a default that moves (`become` for any other message); and an actor played across methods (a field).
+The REPLIES shipped as Phase 294 below.
+
+---
+
+## Phase 294 — an actor's REPLY: `sendAndGet` as the actor role's send  *(shipped — slice 1)*
+
+Phase 293 modelled only what an actor RECEIVES, and refused a `@Protocol` in which an actor role sends. This is
+the other direction: **`ack: gate >> client` is the value the peer's `sendAndGet('req')` is completed with.**
+
+**Measured first** (`ActorReplySemanticsTest`, the Phase 289 rule), because the modelling turns on four facts and
+three of them are not what an API reading would guess:
+
+* a **reactor**'s reply is its handler's own return — the label a protocol reply names; a **stateful** actor's
+  reply is its NEW STATE (`sendAndGet('a')` on a counter yields `1`, then `2`), because the handler's return is
+  the state, not a value it chooses;
+* a reply is produced exactly when the message is **handled** — including by a default that merely ignores it;
+* a **deferred** message is unanswered while it sits in the stash, and replies only once a replay finally
+  dispatches it (the reply follows the message through the stash);
+* a throwing arm completes the reply **exceptionally**, and a message still stashed at `stop()` **fails** it.
+
+**A reply is positional, not chosen.** The actor does not pick a label to send; the runtime completes the
+`Awaitable` of the message being dispatched. So the checker reads `ack: gate >> client` as the answer to the
+message directly before it, and refuses anything else loudly: an actor send that opens a sequence, a loop or a
+choice branch `answers nothing`, and a label that would answer two different messages is refused as ambiguous.
+
+**Both halves of the round trip are checked**, each a reuse.
+
+* **The peer must open the reply channel.** `opsOf` emits `!req` followed by `?ack` for a `sendAndGet` — and only
+  for a `sendAndGet`. A bare `send` where the protocol answers emits just `!req`, so Phase 263's conformance
+  names the miss at the next op: `the main body ends (it sends 'go' to 'gate') where the protocol still expects
+  it to receive the reply 'ack' from 'gate' (a sendAndGet)`.
+* **The actor must produce it.** `accepts` now follows the local type's SEND edges too. Reaching `!ack` with the
+  message it answers still in the stash is the finding this phase exists for: the peer is blocked in
+  `sendAndGet(req).get()`, so nothing further is delivered, so the replay that would answer it can never
+  arrive — `the conversation is STUCK`. Neither of the two phases before it can see this: Phase 292 is silent
+  (an `unstashAll()` exists) and Phase 293 is silent (nothing is left stashed at the end — the end is never
+  reached). And for a **reactor**, the arm's returned literal is the reply, so `return 'nak'` against a protocol
+  whose reply is `ack` refutes on the label. For a **stateful** actor the label is withheld, measured: its
+  return is the state.
+
+Engine notes. `ActorMailbox.Arm`/`Phase` gain the block's returned constant (`returnedConstant`, `UNKNOWN_REPLY`
+when it is not a readable literal) and `repliesAreValues` distinguishes a reactor from a stateful actor.
+`deliver` returns the reply a dispatch produced alongside the phase and stash, and `accepts`'s search node
+carries it. Incidental: `expectedText` now takes the bare infinitive (`expects it to send on 'sum'`, not
+`expects it to sends on 'sum'`) — the pinned quotes in ROADMAP/kerridge.md and one P263 case moved with it.
+
+Cases (G344, 6): the round trip conforms; a bare `send` where the protocol answers cannot receive the reply; a
+phase that defers the answered message leaves the peer STUCK; a reactor that returns the wrong literal refutes
+on the label; a stateful actor's label is withheld and it conforms; an actor send that answers nothing is
+skipped loudly. P293's own "an actor that replies is skipped loudly" case was narrowed to the boundary that
+still holds — a send that answers nothing — since a send that DOES answer is now modelled. P292 (15) and
+P263 (10) are unchanged.
+
+**Open:** a reply inside a `choice` branch (the actor answering differently per branch); `sendAndGet` whose
+`Awaitable` is passed on rather than read at the site; and the two Phase 293 items — a default that moves, and
+an actor played across methods.
 
 ---
 

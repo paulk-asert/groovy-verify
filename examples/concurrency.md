@@ -448,6 +448,59 @@ The graph is read strictly: `if (m == LIT)` arms, `become` targets it can see, a
 stashes or throws. Anything else is skipped loudly, as is an actor that replies (only what an actor *receives*
 is modelled yet).
 
+### `sendAndGet` — the reply, and the deadlock it can hide (Phase 294)
+
+Phase 293 models what an actor *receives*. The other direction is its **reply**: the value a `sendAndGet` is
+completed with. That is not a message the actor chooses — the runtime completes the caller's `Awaitable` with
+whatever the dispatch returns — so a reply is **positional**, and `ack: gate >> client` is read as the answer to
+the message directly before it.
+
+<!-- doclint:ignore README illustration: a reply in a @Protocol -->
+```groovy
+@Protocol({
+    req: client >> gate
+    ack: gate >> client
+    open: client >> gate
+})
+static void run() {
+    ReactorHandler<String, String> waiting, serving
+    serving = { ActorContext<String> ctx, String m -> 'ack' } as ReactorHandler<String, String>
+    waiting = { ActorContext<String> ctx, String m ->
+        if (m == 'open') { ctx.become(serving); ctx.unstashAll(); return 'ack' }
+        ctx.stash()                       // defer until we are open …
+        'ack'
+    } as ReactorHandler<String, String>
+    Actor<String> gate = Actor.reactor(waiting)
+    gate.sendAndGet('req').get()          // … but the caller is blocking on the reply to that very message
+    gate.send('open')
+}
+```
+
+This is the finding the phase exists for. The stash looks healthy: there *is* an `unstashAll()`, and `open`
+*would* replay `req` into a phase that answers it. But `open` is sent after the `get()`, and the `get()` never
+returns, because the message it is waiting on is the one sitting in the stash. The conversation is **stuck**:
+
+<!-- doclint:diagnostic p294-actor-replies/a-phase-that-defers-the-answered-message-leaves-the-peer-stuck-on-its-reply -->
+```
+[Static type checking] - Protocol violation in run (role 'gate'): actor 'gate' defers 'req' in phase
+'waiting' after it receives 'req', so the reply 'ack' its sendAndGet is waiting for is never produced: the
+conversation is STUCK — the peer blocks on the reply, nothing further is delivered, and at stop() the reply
+fails with IllegalStateException. …
+```
+
+Phase 292 is silent here (an `unstashAll()` exists) and so is Phase 293 (nothing is left stashed *at the end*,
+because the end is never reached).
+
+The peer's half is checked too: only `sendAndGet` opens a reply channel, so a bare `send` where the protocol
+answers is refuted as a conversation that *ends where the protocol still expects it to receive the reply*.
+
+And the reply's **label** is checked where it means something. For a `reactor` the handler's return *is* the
+reply, so `return 'nak'` against a protocol whose reply is `ack` refutes. For a `stateful` actor the return is
+the new **state** — `sendAndGet` on a counter yields `1`, then `2` — so the label is withheld there and only the
+reply's *production* is checked. Those semantics, and the rest (a deferred message replies only once a replay
+handles it; a throwing arm replies exceptionally; one still stashed at `stop()` fails), are measured in
+`ActorReplySemanticsTest` rather than assumed.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

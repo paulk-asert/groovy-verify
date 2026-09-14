@@ -23,12 +23,13 @@ import static cases.CaseDsl.*
  * is labelled by the literal sent. Both sides are checked: the method's sends against the sender's projection
  * (Phase 263's conformance, unchanged), and the become-graph against the actor's — the other way round, since an
  * actor does not choose what arrives: every message the protocol delivers must be taken, stashes must be replayed
- * before the conversation can end, and a stash must not grow without bound.
+ * before the conversation can end, and a stash must not grow without bound. (An actor's own SEND — the reply a
+ * {@code sendAndGet} is completed with — is Phase 294; what stays outside is a send that answers nothing.)
  */
 class G343_p293_actor_protocol {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 293 actor protocol conformance: a @Protocol role named after an actor local is played by the actor\'s become-graph (phases = the handler and its become targets, arms = `if (m == LIT)` branches, a default that handles / stashes / throws), a message to it labelled by the literal sent. The method\'s sends are checked against the sender\'s projection (Phase 263\'s conformance), and the become-graph against the actor\'s the other way round — every delivered message must be taken (a throwing default rejects it), a stash must be replayed before the conversation can end (a stash is rejected at stop(), measured), and a phase the protocol keeps stashing into grows without bound. A trigger literal that does not match its label, a sender out of order, and a phase that throws on a protocol message are refuted; deferral that is replayed in time conforms; an actor whose behaviours are not all visible, or that replies, is skipped loudly.'
+    static final String DESCRIPTION = 'Phase 293 actor protocol conformance: a @Protocol role named after an actor local is played by the actor\'s become-graph (phases = the handler and its become targets, arms = `if (m == LIT)` branches, a default that handles / stashes / throws), a message to it labelled by the literal sent. The method\'s sends are checked against the sender\'s projection (Phase 263\'s conformance), and the become-graph against the actor\'s the other way round — every delivered message must be taken (a throwing default rejects it), a stash must be replayed before the conversation can end (a stash is rejected at stop(), measured), and a phase the protocol keeps stashing into grows without bound. A trigger literal that does not match its label, a sender out of order, and a phase that throws on a protocol message are refuted; deferral that is replayed in time conforms; an actor whose behaviours are not all visible, or that sends unprompted (a send answering no message — its REPLY is Phase 294), is skipped loudly.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -122,12 +123,14 @@ class G343_p293_actor_protocol {
                             { ActorContext<String> c, Integer s, String m -> s } as StatefulHandler<Integer, String>
                         }
                     }''')],
-        [group: 'P293 actor protocol', name: 'an actor that replies is skipped loudly (only receives are modelled)',
-         expect: "role 'gate' is an actor that SENDS ('ack')",
+        // (Phase 294 narrowed this boundary: an actor send that ANSWERS the message before it is now its reply.
+        //  What stays outside is a send that answers nothing — see the P294 group.)
+        [group: 'P293 actor protocol', name: 'an actor that sends unprompted is skipped loudly (only its reply is modelled)',
+         expect: "is an actor that sends 'ack' where it answers nothing",
          src: tc('''class C {
                         @Protocol({
-                            go: client >> gate
                             ack: gate >> client
+                            go: client >> gate
                         })
                         static void run() {
                             Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m -> m } as ReactorHandler<String, String>)

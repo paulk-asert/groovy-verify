@@ -303,7 +303,7 @@ class G327_p263_session_types {
                         })""", CLIENT).replace('AsyncChannel<Integer> reply = AsyncChannel.create(4)', 'AsyncChannel<Integer> reply = AsyncChannel.create(4)\n                            AsyncChannel<Integer> log = AsyncChannel.create(4)'))],
         // Phase 267's subset binding improved this verdict: a send-only client FITS the client role (a
         // conformant process may use a subset of its alphabet), and conformance then names the real miss.
-        [group: 'P263 session types', name: 'a client that never listens is refuted in its role, the miss named', expect: 'the protocol expects it to receives from',
+        [group: 'P263 session types', name: 'a client that never listens is refuted in its role, the miss named', expect: 'the protocol expects it to receive from',
          src: tc(clientServer(REQ_REPLY, """int i = 0
                             @Invariant({ i >= 0 })
                             while (true) {                                       // only asks, never listens

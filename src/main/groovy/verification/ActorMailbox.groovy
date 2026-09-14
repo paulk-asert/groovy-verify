@@ -411,7 +411,11 @@ class ActorMailbox {
     static class Arm {
         int target = -1                 // the phase it moves to (-1: stays in this one)
         boolean stash, unstash, rejects
+        Object reply = UNKNOWN_REPLY    // Phase 294 — the constant the arm returns, when it is one
     }
+
+    /** Phase 294 — the arm's return is not a readable constant, so nothing is claimed about the reply's label. */
+    static final Object UNKNOWN_REPLY = new Object()
 
     /** One phase — a behaviour closure — of an actor's become-graph. */
     static class Phase {
@@ -419,6 +423,7 @@ class ActorMailbox {
         int line
         final Map<Object, Arm> on = new LinkedHashMap<Object, Arm>()   // literal message → its explicit arm
         String otherwise = 'handles'    // any other message: 'handles' (stays), 'stash', or 'rejects' (throws)
+        Object otherwiseReply = UNKNOWN_REPLY                          // Phase 294 — the default branch's reply
     }
 
     /**
@@ -485,6 +490,7 @@ class ActorMailbox {
             Arm da = readArm(db, ctx, locals, index, order, phases)
             if (da == null || da.target >= 0 || da.unstash) return null      // a default that moves or replays: not modelled
             ph.otherwise = da.rejects ? 'rejects' : da.stash ? 'stash' : 'handles'
+            ph.otherwiseReply = da.reply                                 // Phase 294
             // an if/else's trailing statements also run for the matched message: fold their effect into each arm
             if (defaultPart != null && after != null && !after.isEmpty()) {
                 Arm tail = readArm(new BlockStatement(new ArrayList<Statement>(after), null), ctx, locals, index, order, phases)
@@ -530,6 +536,7 @@ class ActorMailbox {
             @Override void visitClosureExpression(ClosureExpression c) { }   // a nested closure is not this dispatch
         })
         if (bad[0] || targets.size() > 1) return null
+        arm.reply = returnedConstant(block)                              // Phase 294
         if (targets.size() == 1) {
             ClosureExpression t = singleBehaviour(targets.get(0), locals)
             if (t == null) return null
@@ -582,6 +589,32 @@ class ActorMailbox {
         Expression recv = strip(c.objectExpression)
         c.methodAsString == 'stash' && recv instanceof VariableExpression && ((VariableExpression) recv).name == ctx &&
             (!(c.arguments instanceof TupleExpression) || ((TupleExpression) c.arguments).expressions.isEmpty())
+    }
+
+    /**
+     * Phase 294 — the constant a behaviour block yields: its terminal {@code return LIT} or trailing expression
+     * {@code LIT}. For a REACTOR that value is the reply a {@code sendAndGet} is completed with (measured); for a
+     * {@code stateful} actor it is the new STATE, so SessionChecker asks for it only of a reactor. UNKNOWN_REPLY
+     * when it is not a readable constant — nothing is claimed about the reply's label then.
+     */
+    static Object returnedConstant(Statement stmt) {
+        Statement last = stmt
+        if (last instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) last).statements
+            if (ss.isEmpty()) return UNKNOWN_REPLY
+            last = ss.get(ss.size() - 1)
+        }
+        Expression e = last instanceof ReturnStatement ? ((ReturnStatement) last).expression :
+                       (last instanceof ExpressionStatement ? ((ExpressionStatement) last).expression : null)
+        Expression v = e == null ? null : strip(e)
+        v instanceof ConstantExpression && ((ConstantExpression) v).value != null ?
+            ((ConstantExpression) v).value : UNKNOWN_REPLY
+    }
+
+    /** Phase 294 — true when the actor is a {@code reactor}: its handler's return IS the reply, not the state. */
+    static boolean repliesAreValues(BlockStatement body, String actorName) {
+        ActorDecl d = actorsIn(body).get(actorName)
+        d != null && !d.stateful
     }
 
     private static boolean endsInReturn(Statement stmt) {
