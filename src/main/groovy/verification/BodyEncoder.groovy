@@ -47,6 +47,8 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.expr.SwitchExpression
 import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.ast.stmt.BreakStatement
+import org.codehaus.groovy.ast.stmt.CaseStatement
 import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
@@ -627,25 +629,80 @@ class BodyEncoder {
                 "statement with no modelled effect (line ${s.lineNumber})")
         }
 
-        // Groovy 6.0.0-RC-3 — a switch EXPRESSION used as a method's implicit return is left as a plain
-        // `SwitchStatement` in tail position, where RC-2 and earlier wrapped it as
-        // `ExpressionStatement(SwitchExpression)` and it fell through to the implicit-return branch above.
-        // (`return switch (…)` still carries a first-class `SwitchExpression`, in both.) The three parts are
-        // the same, so the statement is read back as the expression it stands for and the ordinary
-        // switch-expression path takes it from there. A switch in NON-tail position is a genuine statement
-        // and stays unsupported, exactly as before.
-        if (s instanceof SwitchStatement && tail) {
+        // GROOVY-12399 (6.0.0-RC-3) settled that POSITION, not arm shape, decides whether a switch produces a
+        // value: in implicit-return position ReturnAdder turns each arm into a return, and anywhere else the
+        // switch is a plain statement whose arms are branches. Either way it is an n-way `if`/`else` on the
+        // subject, so it is walked as one — the same path splitting an IfStatement gets, which is what lets an
+        // arm hold real statements and lets a NON-tail switch be modelled at all. (A switch in EXPRESSION
+        // position, `return switch (…)`, is still a first-class `SwitchExpression` and keeps the ite-chain
+        // lowering in the encoder.)
+        if (s instanceof SwitchStatement) {
             SwitchStatement sw = (SwitchStatement) s
-            Path np = copy(prefix)
-            SwitchExpression se = new SwitchExpression(sw.expression, sw.caseStatements, sw.defaultStatement)
-            se.sourcePosition = sw
-            np.result = se
-            res.terminated.add(np)
+            List<CaseStatement> cases = sw.caseStatements
+            if (cases == null || cases.isEmpty()) {
+                throw new UnsupportedConstructException("switch with no cases (line ${sw.lineNumber})")
+            }
+            // Fall-through is not modelled: every arm must LEAVE, by the arrow form's implicit break or by an
+            // explicit break / return / throw. A colon-form arm that runs on into the next is refused loudly.
+            for (CaseStatement c : cases) {
+                if (!armLeaves(c.code)) {
+                    throw new UnsupportedConstructException(
+                        "switch case falls through to the next (line ${c.lineNumber}) — only arms that leave are modelled")
+                }
+            }
+            List<Expression> tested = new ArrayList<Expression>()
+            for (CaseStatement c : cases) {
+                Path p = copy(prefix)
+                for (Expression prev : tested) p.steps.add(new Guard(subjectEq(sw.expression, prev), false))
+                p.steps.add(new Guard(subjectEq(sw.expression, c.expression), true))
+                WalkResult r = walkStatements(armBody(c.code), [p] as List<Path>, tail)
+                res.terminated.addAll(r.terminated)
+                res.live.addAll(r.live)
+                tested.add(c.expression)
+            }
+            // nothing matched: the default's arm, or — with no default — the switch simply ends. In return
+            // position Groovy yields null there (measured), which is what makes a non-trivial postcondition
+            // refute on that path rather than the path being lost.
+            Path pDef = copy(prefix)
+            for (Expression prev : tested) pDef.steps.add(new Guard(subjectEq(sw.expression, prev), false))
+            Statement dflt = sw.defaultStatement
+            if (dflt != null && !(dflt instanceof EmptyStatement)) {
+                WalkResult rd = walkStatements(armBody(dflt), [pDef] as List<Path>, tail)
+                res.terminated.addAll(rd.terminated)
+                res.live.addAll(rd.live)
+            } else if (tail) {
+                pDef.result = ConstantExpression.NULL
+                res.terminated.add(pDef)
+            } else {
+                res.live.add(pDef)
+            }
             return res
         }
 
         throw new UnsupportedConstructException(
             "unsupported statement ${s.class.simpleName} (line ${s.lineNumber})")
+    }
+
+    /** `subject == label`, the guard a case arm runs under. */
+    private static Expression subjectEq(Expression subject, Expression label) {
+        BinaryExpression be = new BinaryExpression(subject,
+            Token.newSymbol(Types.COMPARE_EQUAL, subject.lineNumber, subject.columnNumber), label)
+        be.setSourcePosition(label)
+        be
+    }
+
+    /** An arm's statements with the trailing `break` dropped — it ends the arm, it has no other effect. */
+    private static List<Statement> armBody(Statement code) {
+        List<Statement> ss = code instanceof BlockStatement ? ((BlockStatement) code).statements : [code]
+        (!ss.isEmpty() && ss.get(ss.size() - 1) instanceof BreakStatement) ? ss.subList(0, ss.size() - 1) : ss
+    }
+
+    /** Does this arm LEAVE, rather than running on into the next one? */
+    private static boolean armLeaves(Statement code) {
+        List<Statement> ss = code instanceof BlockStatement ? ((BlockStatement) code).statements : [code]
+        if (ss.isEmpty()) return false
+        Statement last = ss.get(ss.size() - 1)
+        last instanceof BreakStatement || last instanceof ReturnStatement || last instanceof ThrowStatement
     }
 
     private static boolean isThisReceiver(Expression e) {

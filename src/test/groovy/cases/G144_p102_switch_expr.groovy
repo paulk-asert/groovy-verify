@@ -22,7 +22,7 @@ import static cases.CaseDsl.*
 class G144_p102_switch_expr {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'A switch expression (arrow form, int/String/range labels) folds to an ite-chain; an unmatched case or a false branch claim refutes.'
+    static final String DESCRIPTION = 'A switch in EXPRESSION position (`return switch (\u2026)`, a first-class SwitchExpression) folds to an ite-chain; a switch in STATEMENT position \u2014 including the implicit-return form, which GROOVY-12399 settled is decided by POSITION rather than arm shape \u2014 is walked as the n-way if/else it is, one path per arm, so an arm may do real work before yielding and a switch that is not the last statement is modelled too. An unmatched case (Groovy yields null), a false branch claim, or a wrong claim about either statement-position shape refutes; a colon-form arm that FALLS THROUGH into the next is refused loudly.'
 
     static final List<Map> CASES = [
         // Phase 102 — switch EXPRESSIONS (arrow form, simple literal labels) lower to an ite-chain
@@ -72,12 +72,79 @@ class G144_p102_switch_expr {
                             switch(i) { case 1 -> { yield 10 }; case 2 -> 20; default -> 0 }
                         }
                     }''')],
+        // ── no default, no match: Groovy yields null, so a non-trivial postcondition refutes on that path.
+        //    Groovy 6.0.0-RC-3's GROOVY-12399 removed the carve-out that GUARANTEED this ("a switch in
+        //    implicit-return position stayed an expression that yielded null when unmatched"), so the
+        //    behaviour now falls out of ordinary implicit-return handling rather than a rule written for it.
+        //    The encoder's no-default model — an unconstrained result, a sound conservative refute — rests on
+        //    it, which is why it is pinned here rather than left as an assumption.
+        [group: 'P102 switch expr', name: 'no default and no match yields null, so the postcondition refutes',
+         ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Ensures({ result == 'a' })
+                        static String unmatched(int i) {
+                            switch(i) { case 1 -> 'a' }
+                        }
+                    }''')],
         [group: 'P102 switch expr', name: 'string subject switch proves', ok: true,
          src: tc('''class C {
                         @Requires({ s in 'x'..'y' })
                         @Ensures({ result == 1 || result == 2 })
                         static int code(String s) {
                             switch(s) { case 'x' -> 1; case 'y' -> 2; default -> 0 }
+                        }
+                    }''')],
+
+        // ── Since GROOVY-12399 settled that POSITION decides whether a switch yields a value, a switch in
+        //    STATEMENT form is walked as the n-way if/else it is — one path per arm. Two shapes the
+        //    single-expression ite-chain could never reach follow, each with its refute twin so the proof is
+        //    shown to be real rather than a silent skip.
+        [group: 'P102 switch expr', name: 'an arm that does real work before yielding proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ i == 1 })
+                        @Ensures({ result == 6 })
+                        static int multi(int i) {
+                            switch(i) { case 1 -> { int t = 2; yield t * 3 }; default -> 0 }
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'a wrong claim about a working arm refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ i == 1 })
+                        @Ensures({ result == 99 })
+                        static int multi(int i) {
+                            switch(i) { case 1 -> { int t = 2; yield t * 3 }; default -> 0 }
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'a switch in statement position (not the last statement) proves', ok: true,
+         src: tc('''class C {
+                        @Requires({ i == 1 })
+                        @Ensures({ result == 7 })
+                        static int nonTail(int i) {
+                            int r = 0
+                            switch(i) { case 1 -> r = 7; default -> r = 9 }
+                            return r
+                        }
+                    }''')],
+        [group: 'P102 switch expr', name: 'a wrong claim about a statement-position switch refutes', ok: false, expect: 'postcondition',
+         src: tc('''class C {
+                        @Requires({ i == 1 })
+                        @Ensures({ result == 99 })
+                        static int nonTail(int i) {
+                            int r = 0
+                            switch(i) { case 1 -> r = 7; default -> r = 9 }
+                            return r
+                        }
+                    }''')],
+        // ── the boundary, said out loud: an arm that runs on into the next is not modelled.
+        [group: 'P102 switch expr', name: 'a colon-form arm that falls through is refused loudly',
+         expect: 'switch case falls through to the next',
+         src: tc('''class C {
+                        @Requires({ i == 1 })
+                        @Ensures({ result == 7 })
+                        static int fall(int i) {
+                            int r = 0
+                            switch(i) { case 1: r = 7; case 2: r = 9; break }
+                            return r
                         }
                     }''')],
     ]

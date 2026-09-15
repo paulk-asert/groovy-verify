@@ -5449,10 +5449,10 @@ class Encoder implements TheoryApi {
         Statement st = code
         for (int depth = 0; depth < 2 && st instanceof BlockStatement; depth++) {
             List<Statement> ss = ((BlockStatement) st).statements
-            // Groovy 6.0.0-RC-3 — an implicit-return switch expression compiles to a switch STATEMENT whose
-            // arms are break-terminated (`Block[Expr(e), Break]`), where the first-class `SwitchExpression`
-            // of `return switch (…)` carries `Block(Yield(e))`. The break ends the arm and does not change
-            // its value, so it is dropped; a body with real statements before it stays out of fragment.
+            // A break-terminated arm (`Block[Expr(e), Break]`) yields the same value — the break ends the arm
+            // and does nothing else — so it is dropped. Reached by the pre-beta-3 IIFE shape
+            // (`{ -> <SwitchStatement> }.call()`) on an older hosting runtime; since GROOVY-12399 a switch in
+            // STATEMENT position is walked as branches by BodyEncoder rather than lowered here.
             if (ss.size() == 2 && ss.get(1) instanceof BreakStatement) ss = ss.subList(0, 1)
             if (ss.size() != 1) return null
             st = ss.get(0)

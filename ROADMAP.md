@@ -13973,6 +13973,53 @@ and is tracked as the FP model-search variance item.
 
 ---
 
+## Phase 304 — a switch is an n-way `if`/`else`: the rule GROOVY-12399 settled, adopted  *(shipped)*
+
+The RC-3 housekeeping above adapted to the new switch shape in three layers, each a patch for the symptom in
+front of it. Then the upstream rationale arrived, and it names a RULE rather than a shape:
+
+> position, not arm shape, decides whether a switch produces a value
+
+GROOVY-12399 restored Java's rule and removed a carve-out that had kept a switch in implicit-return position an
+expression. The carve-out had made one piece of syntax mean two things — under `@CompileStatic` a
+declared-`Object` case label resolved statically in that position and dynamically once any statement followed
+the switch, so adding a trailing line changed how labels matched — and cost ~110 lines in `AstBuilder`
+duplicating what `ReturnAdder` already knew. Three things fall out of that reading for the checker.
+
+**The model gets simpler, and wider.** If POSITION decides, then in implicit-return position `ReturnAdder`
+makes each arm a return, and everywhere else the arms are plain branches. Either way a switch in STATEMENT form
+is an n-way `if`/`else` on the subject — so `BodyEncoder` walks it as one, with the path splitting an
+`IfStatement` already gets: a guard `subject == label` per arm, the earlier labels negated ahead of it, and a
+no-match path carrying the default's arm or, with none, `null` in return position (measured). That replaces the
+RC-3 stopgap, which synthesised a `SwitchExpression` from the statement's parts and pushed it through the
+ite-chain lowering — a lowering that requires each arm to be ONE expression. Two shapes it could never reach
+now verify: **an arm that does real work before yielding** (`case 1 -> { int t = 2; yield t * 3 }`) and **a
+switch that is not the method's last statement**. Both carry refute twins, because "compiles cleanly" is what a
+silent skip looks like too. A switch in EXPRESSION position (`return switch (…)`) is still a first-class
+`SwitchExpression` and keeps the ite-chain.
+
+**A boundary the branch model makes speakable.** Fall-through was never modelled and never could be by an
+ite-chain, which simply had no way to say so. As branches it is a precise condition — every arm must LEAVE, by
+the arrow form's implicit break or an explicit break/return/throw — and a colon-form arm that runs on into the
+next is now refused with `switch case falls through to the next (line N) — only arms that leave are modelled`
+instead of being lumped in with "outside fragment".
+
+**A soundness assumption checked rather than assumed.** The removed carve-out is what GUARANTEED an unmatched
+implicit-return switch yields `null`, and the encoder's no-default model — an unconstrained result, a sound
+conservative refute — rests on exactly that. Measured on RC-3: an unmatched switch still yields `null`, and the
+checker still refutes a non-trivial postcondition on that path. The behaviour is now incidental rather than
+specified, so it is pinned as a case instead of left as an assumption.
+
+Also of note, and requiring nothing: the `@CompileStatic` inconsistency the carve-out caused is gone, so label
+matching no longer depends on what follows the switch — one less piece of context the verifier would have had
+to model.
+
+Cases (G144, 12 — was 6): the existing six unchanged; the unmatched-yields-null pin; a working arm and its
+refute twin; a statement-position switch and its refute twin; and the fall-through refusal. Suite 2149/2149;
+`:test` 2207 tests, 0 failures; docLint 0 drift.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
