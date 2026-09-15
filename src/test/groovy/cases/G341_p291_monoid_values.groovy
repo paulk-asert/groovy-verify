@@ -445,7 +445,7 @@ class G341_p291_monoid_values {
         [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny: an opaque carrier fails the compile', trustMode: 'deny',
          // anchored at the SITE — the combiner handed to sumParallel (`Monoid.integer()::combine`), not the class
          expect: ['Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FDenied#total — Monoid.integer() (a Monoid) at sumParallel',
-                  '@ line 39, column 77.'],
+                  '@ line 5, column 77.'],
          src: purefun('''class FDenied {
                         @Requires({ xs != null })
                         static int total(List<Integer> xs) { xs.sumParallel(Monoid.integer()::combine) }
@@ -461,7 +461,7 @@ class G341_p291_monoid_values {
         // One fact reached from two sites fails at BOTH — the pending records dedupe by fact AND site.
         [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny: an opaque carrier used twice fails at both sites', trustMode: 'deny',
          expect: ['Trusted without proof (VERIFY_TRUST=deny): [opaque carrier] FTwice#twice — m (a Monoid) at sumParallel',
-                  '@ line 40, column 52.', '@ line 41, column 52.'],
+                  '@ line 6, column 52.', '@ line 7, column 52.'],
          src: purefun('''class FTwice {
                         @Requires({ xs != null && m != null })
                         static int twice(List<Integer> xs, Monoid<Integer> m) {
@@ -506,7 +506,7 @@ class G341_p291_monoid_values {
         [group: 'P291 monoid value', name: 'VERIFY_TRUST=deny also covers an in-place trusted @ThrowsIf', trustMode: 'deny',
          // anchored at the SITE — the trusted condition `{ s == null }` in the @ThrowsIf, not the class
          expect: ['Trusted without proof (VERIFY_TRUST=deny): [in-place @ThrowsIf] Parser#parse',
-                  '@ line 38, column 43.'],
+                  '@ line 4, column 43.'],
          src: tc('''class Parser {
                         @ThrowsIf(value = { s == null }, exception = NullPointerException, woven = false, direct = false)
                         static Object parse(Object s) { return helper(s) }

@@ -12056,8 +12056,8 @@ flow read as an automaton over the same ops (sends; receives, including those in
 op-free statements between — are its branches; loops as stars, a `while (true)` with no exit; ifs as
 unions), and CONFORMANCE is language inclusion, decided on the product of the process NFA with the local
 type's subset-DFA: a process never performs an op its local type does not allow next, and never ends where
-the protocol continues. A violation is reported with the trace that reaches it — "the async arm at line 52
-receives from 'add' (line 56) after it receives from 'add' where the protocol expects it to send on 'sum'"
+the protocol continues. A violation is reported with the trace that reaches it — "the async arm at line 18
+receives from 'add' (line 22) after it receives from 'add' where the protocol expects it to send on 'sum'"
 — and the binding failures are named: a role nobody plays, a process that plays no role. `verification.Protocol`
 is a SOURCE-retained method annotation; the check runs in the PAR walk, independent of the other rungs
 (their deadlock, liveness and value certificates stand on their own; what the protocol adds is ORDER across
@@ -12146,7 +12146,7 @@ UNBOUNDED under priority, a fresh `fair()`, `random()`, or the racing select; a 
 OWN branch's reply channel at the ALT's cost (so another client's reply channel is unreachable by
 construction — "no path", said) — then sums the hops along every simple path from c to d, and the WORST
 path decides (an element travels whichever exists). Refutations carry the path's arithmetic ("the path a ->
-the held fair() ALT at line 47 (2) -> merged -> the stage at line 55 (1) -> out totals 3 service step(s) —
+the held fair() ALT at line 13 (2) -> merged -> the stage at line 21 (1) -> out totals 3 service step(s) —
 the claimed 2 is below it"), an unbounded hop's own reason, "no path", or an unknown channel name. The fair
 server's request–reply latency is the two-role special case: `@DeliveredWithin(value = 2, from = 'reqA',
 to = 'replyA')` certifies on the claim runtime.
@@ -13588,6 +13588,15 @@ is global. A callback that defers, replays, hands its context on, or is installe
 graph, as does an arm that both throws and moves (which of the two won is not readable). Incidental coverage
 gain: an arm may now LEAVE its dispatch by throwing as well as by returning, so a throwing `if (m == LIT)` arm
 is read — before this only a throwing default was.
+
+**Incidental, and the reason the phase cost more than it should have.** Two of the cases needed
+`TriConsumer` / `BiConsumer`, so the imports went into `CaseDsl.HDR` — and renumbered every case in the corpus,
+breaking 17 pinned doc diagnostics at once. `HDR` is now emitted as exactly ONE line (a `List` of import
+statements joined with `;`, so the source stays readable): the header is line 1 whatever goes in it, and adding
+an import is a local change again. The one-time renumbering that came with it (−34 across 5 case expectations
+and 17 pinned blocks) is the last one. Nothing is lost by it — a case's line numbers were never the reader's
+own: they counted a 35-line header no one sees, which is why the docs' blockquoted diagnostics had already been
+hand-adjusted to their snippets.
 
 Cases (G346, 6): a throw a callback observes is still a lost message, with the recovery phase named; a callback
 on an actor that never throws changes nothing; a callback cannot rescue the promised reply; a two-parameter

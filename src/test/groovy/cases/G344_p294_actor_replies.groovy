@@ -60,7 +60,7 @@ class G344_p294_actor_replies {
 
         // ── the peer never opens the reply channel: send() has none, so the promised reply cannot reach it.
         [group: 'P294 actor replies', name: 'a bare send where the protocol answers cannot receive the reply',
-         expect: "the main body sends 'cmd' to 'gate' (line 49) after it sends 'req' to 'gate' where the protocol expects it to receive the reply 'ack' from 'gate' (a sendAndGet)",
+         expect: "the main body sends 'cmd' to 'gate' (line 15) after it sends 'req' to 'gate' where the protocol expects it to receive the reply 'ack' from 'gate' (a sendAndGet)",
          src: tc(reactor("if (m == 'req') { return 'ack' }", "gate.send('req')\n                            gate.send('cmd')"))],
 
         // ── the actor DEFERS the answered message: the peer blocks on a reply that never comes. The deadlock

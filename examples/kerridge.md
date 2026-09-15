@@ -440,7 +440,7 @@ static void fairServer() {
 <!-- doclint:diagnostic p246-kerridge-gallery/the-fair-server-per-client-liveness-withheld-with-the-runtime-s-reason -->
 ```
 [Static type checking] - Skipped network well-formedness check for fairServer (the receive on 'replyA'
-(line 48) is served only when the ALT in the loop at line 62 takes branch 0 — ChannelSelect prefers the
+(line 14) is served only when the ALT in the loop at line 28 takes branch 0 — ChannelSelect prefers the
 lowest ready index, so whether this client is ever chosen depends on timing; per-client liveness is not
 certified …). The deadlock-freedom certificate covers one-shot networks of unconditional sends and receives
 on local channels; outside that the network is neither certified nor refuted.
@@ -529,9 +529,9 @@ static int deadlockExercise() {
 <!-- doclint:diagnostic p246-kerridge-gallery/the-deadlock-exercise-a-mutual-receive-cycle-is-refuted -->
 ```
 [Static type checking] - Process-network deadlock in 'deadlockExercise': circular wait: the receive on
-'bToA' (line 41 in the task forked at line 41), which waits for the send on 'bToA' (line 42 in the task
-forked at line 42), which waits for the receive on 'aToB' (line 42 in the task forked at line 42), which
-waits for the send on 'aToB' (line 41 in the task forked at line 41), which waits for the first. A one-shot
+'bToA' (line 7 in the task forked at line 7), which waits for the send on 'bToA' (line 8 in the task
+forked at line 8), which waits for the receive on 'aToB' (line 8 in the task forked at line 8), which
+waits for the send on 'aToB' (line 7 in the task forked at line 7), which waits for the first. A one-shot
 channel network is deadlock-free exactly when its wait-for order is well-founded; this one blocks forever.
 Move the send before the blocking receive, fork the producer before awaiting its consumer, or let a
 concurrent task serve the channel.
@@ -559,7 +559,7 @@ static int missingPoison() {
 
 <!-- doclint:diagnostic p246-kerridge-gallery/the-missing-end-of-stream-an-unclosed-drain-is-refuted -->
 ```
-[Static type checking] - Process-network deadlock in 'missingPoison': the iteration over 'stream' (line 43)
+[Static type checking] - Process-network deadlock in 'missingPoison': the iteration over 'stream' (line 9)
 can never finish — no close() on 'stream' anywhere in the method. …
 ```
 
@@ -579,7 +579,7 @@ static int notOne2One() {
 <!-- doclint:diagnostic p246-kerridge-gallery/two-producers-race-a-one2one-channel-refuted -->
 ```
 [Static type checking] - Channel linearity violation in 'notOne2One': two concurrent senders on 'connect' —
-the async task forked at line 40 and the async task forked at line 41 both use its send-end, so the element
+the async task forked at line 6 and the async task forked at line 7 both use its send-end, so the element
 order is a race. A point-to-point channel has one live process per end — one sender, one receiver (FIFO
 per-element reasoning depends on it). Make the conflicting uses sequential, give each producer its own
 channel, or use a BroadcastChannel (subscribing before any sender starts) for one-to-many delivery.
@@ -601,7 +601,7 @@ static int overReceive(int x) {
 
 <!-- doclint:diagnostic p247-bounded-fifo/a-receive-past-the-last-send-can-never-be-satisfied -->
 ```
-[Static type checking] - Process-network deadlock in 'overReceive': the 2nd receive on 'src' (line 42) can
+[Static type checking] - Process-network deadlock in 'overReceive': the 2nd receive on 'src' (line 8) can
 never be satisfied — only 1 send on 'src' anywhere in the method. …
 ```
 
@@ -655,8 +655,8 @@ static int badPC() {
 
 <!-- doclint:diagnostic p272-rendezvous-channels/both-processes-write-before-they-read-the-send-send-knot-is-refuted -->
 ```
-[Static type checking] - Process-network deadlock in 'badPC': circular wait: the send on 'pToC' (line 41 in
-the task forked at line 41), which waits for the send on 'cToP' (line 42 in the task forked at line 42),
+[Static type checking] - Process-network deadlock in 'badPC': circular wait: the send on 'pToC' (line 7 in
+the task forked at line 7), which waits for the send on 'cToP' (line 8 in the task forked at line 8),
 which waits for the first. … On a rendezvous channel (created with capacity 0) a send blocks until its
 receive, so two processes that both write before they read wait on each other. Let one side receive before
 it sends, give the channel a buffer, or break the cycle in the client-server graph — a server must not be a
@@ -698,8 +698,8 @@ static int crossedClients() {
 <!-- doclint:diagnostic p272-rendezvous-channels/crossed-clients-two-servers-that-are-each-other-s-client-deadlock -->
 ```
 [Static type checking] - Process-network deadlock in 'crossedClients': circular wait: the send on 's0ToS1'
-(line 49 in the task forked at line 47), which waits for the send on 's1ToS0' (line 55 in the task forked at
-line 53), which waits for the first. …
+(line 15 in the task forked at line 13), which waits for the send on 's1ToS0' (line 21 in the task forked at
+line 19), which waits for the first. …
 ```
 
 Obey the rule — make server 1 a **pure** server and server 0 its only client, so the client–server graph is
@@ -779,7 +779,7 @@ static int overRead(int n) {
 
 <!-- doclint:diagnostic p252-streaming-consumers/a-consumer-reading-past-the-producer-may-block-forever -->
 ```
-[Static type checking] - Assertion may not hold: the receive on 'out' (line 57) may block forever — the
+[Static type checking] - Assertion may not hold: the receive on 'out' (line 23) may block forever — the
 element it reads may never be sent (the consumer loop reads past what the producer loop sends)
     counterexample: i = 0, … n = 0, …
     fails on: overRead(0)
@@ -844,8 +844,8 @@ static void clientServer(int n, int m) {
 
 <!-- doclint:diagnostic p261-finite-cycles/a-server-bounded-above-its-clients-waits-forever-for-a-request-refuted -->
 ```
-[Static type checking] - Assertion may not hold: the receive on 'request' (line 46) may block forever — the
-producer loop at line 52 sends n - 0 element(s) in all, and this loop reads past them
+[Static type checking] - Assertion may not hold: the receive on 'request' (line 12) may block forever — the
+producer loop at line 18 sends n - 0 element(s) in all, and this loop reads past them
     counterexample: … m = 1, n = 0 …
     fails on: clientServer(0, 1)
 ```
@@ -989,7 +989,7 @@ the one it always was, and it names both racing tasks:
 <!-- doclint:diagnostic p284-shared-ends/undeclared-sharing-is-still-refused -->
 ```
 [Static type checking] - Channel linearity violation in 'undeclared': two concurrent senders on 'service' —
-the async task forked at line 40 and the async task forked at line 41 both use its send-end, so the element
+the async task forked at line 6 and the async task forked at line 7 both use its send-end, so the element
 order is a race. A point-to-point channel has one live process per end — one sender, one receiver (FIFO
 per-element reasoning depends on it). …
 ```
@@ -1014,7 +1014,7 @@ is still named:
 
 <!-- doclint:diagnostic p284-shared-ends/a-shared-end-does-not-excuse-a-receive-nothing-sends-to -->
 ```
-[Static type checking] - Process-network deadlock in 'noSend': the receive on 'service' (line 40) can never
+[Static type checking] - Process-network deadlock in 'noSend': the receive on 'service' (line 6) can never
 be satisfied — no send on 'service' anywhere in the method. …
 ```
 
@@ -1464,8 +1464,8 @@ static int crossed() {
 
 <!-- doclint:diagnostic p277-barriers/two-barriers-synced-in-opposite-orders-circular-wait -->
 ```
-[Static type checking] - Process-network deadlock in 'crossed': circular wait: the sync on 'first' (line 42
-in the task forked at line 41), which waits for the sync on 'second' (line 45), which waits for the first.
+[Static type checking] - Process-network deadlock in 'crossed': circular wait: the sync on 'first' (line 8
+in the task forked at line 7), which waits for the sync on 'second' (line 11), which waits for the first.
 … Sync the barriers in the same order in every process, or use one barrier where the phases really are one
 phase.
 ```
@@ -1500,7 +1500,7 @@ Syncing on a barrier this process has resigned from is refused:
 
 <!-- doclint:diagnostic p277-barriers/a-sync-after-resigning-is-refused -->
 ```
-[Static type checking] - Barrier discipline violated in 'stale': this process syncs on 'gate' (line 44)
+[Static type checking] - Barrier discipline violated in 'stale': this process syncs on 'gate' (line 10)
 after having resigned from it, and it has no party to arrive with — the runtime raises rather than waiting.
 A resigned process must register() again before it syncs; the enroll / sync / resign pairing is what keeps a
 party out of the rounds it is not taking part in.
@@ -1530,9 +1530,9 @@ static int mixed() {
 
 <!-- doclint:diagnostic p277-barriers/a-knot-closed-by-a-barrier-and-a-channel-together -->
 ```
-[Static type checking] - Process-network deadlock in 'mixed': circular wait: the receive on 'ch' (line 42 in
-the task forked at line 41), which waits for the send on 'ch' (line 46), which waits for the sync on 'gate'
-(line 45), which waits for the first. … Put the communication and the synchronisation in the same order in
+[Static type checking] - Process-network deadlock in 'mixed': circular wait: the receive on 'ch' (line 8 in
+the task forked at line 7), which waits for the send on 'ch' (line 12), which waits for the sync on 'gate'
+(line 11), which waits for the first. … Put the communication and the synchronisation in the same order in
 every party: sync then exchange, or exchange then sync, but not one of each.
 ```
 
@@ -1566,7 +1566,7 @@ Phase 249:
 
 <!-- doclint:diagnostic p290-timer/a-select-nothing-sends-to-can-never-be-satisfied -->
 ```
-[Static type checking] - Process-network deadlock in 'quiet': the ALT over 'work' (line 40) can never be
+[Static type checking] - Process-network deadlock in 'quiet': the ALT over 'work' (line 6) can never be
 satisfied — no send left on any of its channels. …
 ```
 
@@ -1751,7 +1751,7 @@ static void ring() {
 ```
 
 
-Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 40) where
+Leave the priming out of the protocol and the first send is the violation ("sends on 'ab' (line 6) where
 the protocol expects it to receive from 'ca'"); make a client wait before asking and the trace says so. A
 choice belongs to one role (`choice at client { … } or { … }`, the client's `if`/`else` against the
 server's ALT); `par { … } and { … }` interleaves independent sub-sessions — the fair server's type — and a

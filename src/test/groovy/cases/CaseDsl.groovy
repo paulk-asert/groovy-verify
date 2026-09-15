@@ -24,42 +24,55 @@ package cases
  */
 class CaseDsl {
 
-    static final String HDR = '''
-        import groovy.transform.TypeChecked
-        import groovy.transform.Pure
-        import groovy.contracts.Requires
-        import groovy.contracts.Ensures
-        import groovy.contracts.Invariant
-        import groovy.contracts.Decreases
-        import groovy.contracts.Modifies
-        import groovy.contracts.ThrowsIf
-        import jakarta.validation.constraints.*
-        import groovy.concurrent.*
-        import groovy.test.GroovyAssert
-        import static groovy.test.GroovyAssert.shouldFail
-        import verification.Forall
-        import verification.Protocol
-        import verification.ServedWithin
-        import verification.DeliveredWithin
-        import verification.Sets
-        import verification.Sorted
-        import verification.Fib
-        import verification.Trib
-        import verification.Tetra
-        import verification.Gcd
-        import verification.Lcm
-        import verification.Fact
-        import verification.Binom
-        import verification.Bezout
-        import verification.CheckOverflow
-        import verification.Declassify
-        import verification.Label
-        import verification.SelfEnsures
-        import verification.Rely
-        import verification.Guarantee
-        import verification.UnderRely
-        import java.util.function.Function
-    '''.stripIndent()
+    /**
+     * The standard imports every case source is compiled with.
+     *
+     * <p>Emitted as exactly ONE line, deliberately. A case's diagnostics carry line numbers, and many of those
+     * are pinned verbatim — in the cases' own {@code expect}, and in the docs through {@code doclint:diagnostic}.
+     * While this header was a block of one import per line, ADDING AN IMPORT renumbered every case in the corpus
+     * and broke every one of those pins at once (17 of them, the first time it happened). Joined, it cannot:
+     * the header is line 1 whatever goes in it, so an import is a local change again.
+     */
+    private static final List<String> IMPORTS = [
+        'import groovy.transform.TypeChecked',
+        'import groovy.transform.Pure',
+        'import groovy.contracts.Requires',
+        'import groovy.contracts.Ensures',
+        'import groovy.contracts.Invariant',
+        'import groovy.contracts.Decreases',
+        'import groovy.contracts.Modifies',
+        'import groovy.contracts.ThrowsIf',
+        'import jakarta.validation.constraints.*',
+        'import groovy.concurrent.*',
+        'import groovy.util.function.TriConsumer',
+        'import java.util.function.BiConsumer',
+        'import groovy.test.GroovyAssert',
+        'import static groovy.test.GroovyAssert.shouldFail',
+        'import verification.Forall',
+        'import verification.Protocol',
+        'import verification.ServedWithin',
+        'import verification.DeliveredWithin',
+        'import verification.Sets',
+        'import verification.Sorted',
+        'import verification.Fib',
+        'import verification.Trib',
+        'import verification.Tetra',
+        'import verification.Gcd',
+        'import verification.Lcm',
+        'import verification.Fact',
+        'import verification.Binom',
+        'import verification.Bezout',
+        'import verification.CheckOverflow',
+        'import verification.Declassify',
+        'import verification.Label',
+        'import verification.SelfEnsures',
+        'import verification.Rely',
+        'import verification.Guarantee',
+        'import verification.UnderRely',
+        'import java.util.function.Function',
+    ]
+
+    static final String HDR = IMPORTS.join('; ') + '\n'
 
     /** A contracted producer reused by the cross-call precondition cases. */
     static final String PRODUCER = '''

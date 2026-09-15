@@ -53,7 +53,7 @@ class G346_p296_actor_on_error {
                             loop { cmd: client >> gate }
                         })'''
 
-    static final String BECOME_SAFE = "{ ActorContext<String> ctx, Throwable t, String msg -> ctx.become(safe) } as groovy.util.function.TriConsumer<ActorContext<String>, Throwable, String>"
+    static final String BECOME_SAFE = "{ ActorContext<String> ctx, Throwable t, String msg -> ctx.become(safe) } as TriConsumer<ActorContext<String>, Throwable, String>"
 
     static final List<Map> CASES = [
         // ── a callback does not make the throw conformant: the message the protocol delivered is still gone.
@@ -76,7 +76,7 @@ class G346_p296_actor_on_error {
                             StatefulHandler<Integer, String> safe
                             safe = { ActorContext<String> ctx, Integer s, String m -> s } as StatefulHandler<Integer, String>
                             Actor<String> gate = Actor.stateful(0, { ActorContext<String> ctx, Integer s, String m -> s } as StatefulHandler<Integer, String>)
-                            gate.onError({ ActorContext<String> ctx, Throwable t, String msg -> ctx.become(safe) } as groovy.util.function.TriConsumer<ActorContext<String>, Throwable, String>)
+                            gate.onError({ ActorContext<String> ctx, Throwable t, String msg -> ctx.become(safe) } as TriConsumer<ActorContext<String>, Throwable, String>)
                             gate.send('risky')
                             gate.send('cmd')
                         }
@@ -104,7 +104,7 @@ class G346_p296_actor_on_error {
                             Actor<String> gate = Actor.stateful(0, { ActorContext<String> ctx, Integer s, String m ->
                                 throw new IllegalStateException('boom')
                             } as StatefulHandler<Integer, String>)
-                            gate.onError({ Throwable t, String msg -> } as java.util.function.BiConsumer<Throwable, String>)
+                            gate.onError({ Throwable t, String msg -> } as BiConsumer<Throwable, String>)
                             gate.send('risky')
                             gate.send('cmd')
                         }
@@ -131,6 +131,6 @@ class G346_p296_actor_on_error {
         // ── loud boundary: a callback that replays the stash is Phase 292's business, not modelled here.
         [group: 'P296 actor onError', name: 'a callback that replays the stash withholds the whole graph',
          expect: "the behaviours of actor 'gate' are not all visible",
-         src: tc(actor("{ ActorContext<String> ctx, Throwable t, String msg -> ctx.unstashAll() } as groovy.util.function.TriConsumer<ActorContext<String>, Throwable, String>", PLAIN))],
+         src: tc(actor("{ ActorContext<String> ctx, Throwable t, String msg -> ctx.unstashAll() } as TriConsumer<ActorContext<String>, Throwable, String>", PLAIN))],
     ]
 }

@@ -318,10 +318,10 @@ static int knot() {
 
 <!-- doclint:diagnostic p289-actor-mailbox/filling-a-block-mailbox-before-feeding-its-handler-is-a-circular-wait -->
 ```
-[Static type checking] - Actor mailbox deadlock in 'knot': the send to 'worker' (line 44) is the 3rd to a
+[Static type checking] - Actor mailbox deadlock in 'knot': the send to 'worker' (line 10) is the 3rd to a
 mailbox bounded at 1 with Overflow.BLOCK — one message is being handled and 1 waits behind it, so this send
 parks the sending thread until the handler takes another. The handler cannot: it is waiting for the receive
-on 'gate' (line 40), which this method sends only at line 45, after the send that blocks. …
+on 'gate' (line 6), which this method sends only at line 11, after the send that blocks. …
 ```
 
 Both halves of the cycle are named, and the fix is arithmetic rather than advice: `gate.send(0)` before the
@@ -338,7 +338,7 @@ is **not** stranded, which is the good news, and a claim about that reply can ho
 <!-- doclint:diagnostic p289-actor-mailbox/a-claim-on-a-reply-past-a-drop-newest-bound-is-refused -->
 ```
 [Static type checking] - Reply from a full bounded mailbox in 'lossy': 'reply' is the Awaitable of a
-sendAndGet to 'worker' (line 43) whose mailbox is bounded at 1 with Overflow.DROP_NEWEST, and this send is
+sendAndGet to 'worker' (line 9) whose mailbox is bounded at 1 with Overflow.DROP_NEWEST, and this send is
 past that bound. … nothing ties this Awaitable to an answer, and a claim about its value can hold only by
 luck. …
 ```
