@@ -10204,8 +10204,10 @@ on the OpenJML licensing conversation, not engineering.
 
 ## Housekeeping — the `@ThrowsIf` upstream proposal drafted  *(in tree)*
 
-**[THROWSIF-PROPOSAL.md](THROWSIF-PROPOSAL.md)** — the JIRA-shaped draft for pushing `@ThrowsIf` to
-groovy-contracts, doubling as the design record. Captures the upstream priority ranking settled in
+**`THROWSIF-PROPOSAL.md`** — the JIRA-shaped draft for pushing `@ThrowsIf` to
+groovy-contracts, doubling as the design record. (**The file was never committed** — no history, no stash, no
+branch carries it — so what follows is the only surviving record of what it said. The link to it is removed
+rather than left dangling; recreate the file if the ask is still live.) Captures the upstream priority ranking settled in
 discussion: (0) groovy-verify's own Maven Central alpha first — every pitch lands better with a
 released consumer; (1) the small factual Groovy-core fixes (the MethodNode-anchored-diagnostics STC
 bug; shepherding the in-flight gc-loop fixes); (2) `@ThrowsIf` as the one big ask — standalone
@@ -12194,7 +12196,7 @@ the boundary moves to the runtime, exactly as it did with GROOVY-12320.
 
 Phase 267 refused the racing mixed choice because no arbitration exists to run it; this rung does for that
 boundary what Phase 256 did for `fairSelect`: pins it empirically, designs the runtime feature, and drafts
-the upstream ask. [`repro/MixedChoiceRepro.groovy`](repro/MixedChoiceRepro.groovy) (identical on beta-3 and
+the upstream ask. `repro/MixedChoiceRepro.groovy` (identical on beta-3 and
 the GROOVY-12320 snapshot): (1) the COLLISION — both peers open, both buffered sends succeed, left
 continues down the PONG branch while right continues down the PING branch, one session with two peers each
 sure of its own choice — local conformance intact, coherence broken, live; (2) ONE initiator — the
@@ -12202,7 +12204,7 @@ degenerate shape the checker certifies — works today; (3) both POLITE — inpu
 send", the session never starts (timeout); (4) what arbitration must give, hand-rolled — a CAS claim
 standing in for the two-phase commit: 1000 racing trials, exactly one branch committed in every one.
 
-[`repro/GROOVY-MixedChoice-jira-draft.md`](repro/GROOVY-MixedChoice-jira-draft.md) proposes claimable SEND
+`repro/GROOVY-MixedChoice-jira-draft.md` proposes claimable SEND
 offers — `offers(send(ping, i), receive(pong)).select()` — as the symmetric completion of GROOVY-12320's
 claim-based receive: offers register claimable, a claim tentatively pairs, commit only if both stand, a
 retired send leaves no buffered residue; `fair()`/`random()` order the offer scan as they do branches;
@@ -12212,6 +12214,9 @@ mixed-choice coherence check gains its second certified outcome — both may ope
 over RENDEZVOUS (capacity-0) opener channels only: a buffered send offer commits unilaterally against
 buffer space, and the collision reproduces through the new API (upstream review's catch, grounded as the
 repro's experiment 5) — the way Phase 257 followed GROOVY-12320, modelled where it runs, not before.
+
+(Both `repro/` files were themselves pruned on 2026-08-31, once GROOVY-12323 landed the arbitrated select the
+draft asked for — so the two names above are a record of what was filed, not links to anything still in tree.)
 
 Nothing else moved: the `repro/` directory returns (its previous occupants were pruned once GROOVY-12320
 was filed and fixed), and G331's verdicts are unchanged. Both runtimes green, 1953; `check` green.
@@ -13014,12 +13019,19 @@ none of them needs a new mechanism:
 * *Bounded mailbox overflow.* SHIPPED as Phase 289 above — and it turned out to be the liveness item rather
   than the loss item, because `Overflow.BLOCK` makes the sender wait.
 
-Also uncovered, and relevant to the timer proposal: `ActorContext` has `scheduleOnce` and
-`scheduleAtFixedRate`, so the ACTOR half of `groovy.concurrent` has timers while the CHANNEL half has none.
-That asymmetry is the strongest argument for `AsyncChannel.after(…)`, because it is about the library's own
-coherence rather than about what other ecosystems do. SHIPPED as Phase 297: the actor half is now modelled,
-which sharpens the argument rather than settling it — the proposal's case is now that the checked half has
-bugs the unchecked half cannot even express.
+Also uncovered: `ActorContext` has `scheduleOnce` and `scheduleAtFixedRate`. **Corrected — this paragraph
+used to read "the ACTOR half of `groovy.concurrent` has timers while the CHANNEL half has none", and called
+that the strongest argument for `AsyncChannel.after(…)`. It was already wrong when written**: GROOVY-12343 had
+landed the channel timer, and Phase 290 above models both of its spellings (`ChannelSelect.after(…)`, an offer
+re-armed each select; `AsyncChannel.after(…)`, a channel whose clock starts at creation). There is no
+`after(…)` proposal to make, and the error was repeated in a later phase before being caught.
+
+What the asymmetry actually is, which is narrower and still real: the channel timer is a one-shot READINESS
+deadline — a channel that becomes ready once — whereas the actor's timers deliver a VALUE THE CALLER CHOOSES,
+and `scheduleAtFixedRate` REPEATS. There is no periodic channel timer, and no way to make a chosen value arrive
+on a channel later. Whether that is worth an upstream ask is genuinely open; Phase 297 is the evidence either
+way, since the repeat is where the checker found the sharpest bug of the timer work (a stash the actor fills
+from the clock, with no peer involved at all).
 
 ---
 
