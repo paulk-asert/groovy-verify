@@ -49,8 +49,8 @@ java {
 repositories {
     mavenLocal()     // the freshly-published artifact under test
     mavenCentral()   // Groovy, groovy-contracts, and the artifact's z3 dependencies
-    // TEMPORARY: the 6.0.0-RC-2 release-vote staging repo — remove once RC-2 reaches Central
-    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1122' }
+    // TEMPORARY: the 6.0.0-RC-3 release-vote staging repo — remove once RC-3 reaches Central
+    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1123' }
 }
 
 // The must-refute half lives in its own source set so it gets its own compile task
