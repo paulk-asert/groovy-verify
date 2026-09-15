@@ -362,6 +362,32 @@ time), and the controlled-schedule run with per-iteration classloader reset is ~
 (the default is 1000). Lincheck and TLC are seconds. So Fray earns its place only where it's *distinct* —
 deadlock / lock-ordering on hand-threaded code, which Lincheck-on-operations doesn't exercise.
 
+### The channel cycle — Fray on a Kerridge deadlock
+
+The bank transfer is a deadlock over two MONITORS, fixed by a global lock order. The
+[Kerridge gallery](examples/kerridge.md)'s *deadlock exercise* is a deadlock over two CHANNELS, fixed by a
+priming send — two processes that each read from the other before writing. The checker refutes it at compile
+time, naming the circular wait; until now nothing ever **exhibited** the hang, so the gallery's most striking
+refutation had no runtime counterpart. That different mechanism is what earns it a place at this rung, on the
+same test's own terms: Fray is for deadlock on hand-threaded code that Lincheck-on-operations does not reach.
+
+`aPrimedCycleIsDeadlockFree` runs the repaired network — one process sends before it reads, so the other's
+receive is satisfied and the cycle never closes — over 200 schedules, clean. Enable
+`aMutualReceiveCycleDeadlocks` (both processes read first) and Fray reports a `DeadlockException` with both
+threads parked in the channel receive:
+
+```
+Thread-1204  Unsafe.park → LockSupport.park → DefaultGroovyMethods.first
+             ChannelCycleFrayTest.groovy:73      ← waits on bToA, never sends aToB
+Thread-1205  Unsafe.park → LockSupport.park → DefaultGroovyMethods.first
+             ChannelCycleFrayTest.groovy:74      ← waits on aToB, never sends bToA
+```
+
+Both halves drive the real `AsyncChannel`, with the two processes hand-threaded rather than run as `async {}`
+tasks so Fray schedules the application threads directly. The Groovy-specific settings are the ones the bank
+transfer already needed — `-Dgroovy.indy.callsite.cleaner.inline=true` and `ignoreTimedBlock = true` — so this
+cost nothing beyond the scenario itself.
+
 ### Dining philosophers — the N-fork generalisation
 
 The bank transfer is the two-resource case of a pattern that scales: **dining philosophers** is its N-fork

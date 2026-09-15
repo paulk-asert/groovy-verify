@@ -641,7 +641,7 @@ dependencies {
 
 tasks.register('frayCheck', Test) {
     group = 'verification'
-    description = 'Fray controlled-schedule check that the ordered-locking bank transfer is deadlock-free'
+    description = 'Fray controlled-schedule deadlock checks: ordered locking, dining philosophers, and a primed channel cycle'
     testClassesDirs = sourceSets.frayCheck.output.classesDirs
     classpath = sourceSets.frayCheck.runtimeClasspath
     useJUnitPlatform()                          // the plugin re-applies this with includeTags('FrayTest')

@@ -14075,6 +14075,48 @@ for multiplication would cover it, and the fall-through is already the mechanism
 
 ---
 
+## Phase 306 — Fray on a Kerridge deadlock: the refutation exhibited  *(shipped — rung 3 for the channel gallery)*
+
+The gallery's most striking refutations are DEADLOCKS — the deadlock exercise (two processes each reading from
+the other before writing), the forgotten `close()`, the send-send knot on rendezvous channels — and every one
+of them was a compile-time claim with no runtime counterpart. The three-rung stance says a proof is one rung of
+a concurrency argument; the channel gallery had been standing on one.
+
+`ChannelCycleFrayTest` adds the third. `aPrimedCycleIsDeadlockFree` drives the repaired network over 200
+controlled schedules, clean; `aMutualReceiveCycleDeadlocks` (`@Disabled`, like its bank-transfer sibling)
+reports a `DeadlockException` with both threads parked in the channel receive —
+`Unsafe.park → LockSupport.park → DefaultGroovyMethods.first` — one waiting on `bToA`, the other on `aToB`.
+
+**Why it belongs at this rung rather than duplicating one.** `CONCURRENCY.md` sets the bar itself: Fray "earns
+its place only where it's DISTINCT — deadlock / lock-ordering on hand-threaded code". The bank transfer is a
+cycle over two MONITORS repaired by a global lock order; this is a cycle over two CHANNELS repaired by a
+PRIMING SEND — a different mechanism and a different fix, which is exactly the pairing the books teach and the
+gallery's primed-ring case verifies at rung 1.
+
+Feasibility was checked before writing anything, since it is what decides whether Fray can see the hang at all:
+`groovy.concurrent` runs on PLATFORM threads (`Executors.newSingleThreadExecutor`, ForkJoinPool — no virtual
+threads, whose carrier scheduling a controlled scheduler would have to intercept). So the substrate is the one
+Fray already handles here, and the two Groovy-specific settings the bank transfer needed
+(`-Dgroovy.indy.callsite.cleaner.inline=true`, `ignoreTimedBlock = true`) carried over unchanged — the scenario
+was the only new cost. Both processes drive the real `AsyncChannel`, hand-threaded rather than run as
+`async {}` tasks so Fray schedules the application threads directly.
+
+The disabled twin was ENABLED and run before being committed as disabled: a deadlock-free half that passes
+proves nothing on its own if the deadlocking half cannot be found. It is found, in 61s of search.
+
+`frayCheck`: 3 classes, 3 enabled tests, 0 failures (3 skipped by design). The task description, which still
+named only the bank transfer, now says what it runs.
+
+**Open (the rungs for the rest):** Fray on the actor mailbox knot (Phase 289's burst filling a BLOCK mailbox
+whose handler waits on the filler — the same shape, one increment); TLC on a channel network, where
+deadlock-freedom is proved STRUCTURALLY at rung 1 so an exhaustive check is a genuinely independent oracle and
+TLA+'s `WF_vars` is the native vocabulary for Phase 255's weak-fairness assumption; and TLC on an actor with
+several concurrent senders, which is precisely what Phase 300 withholds. Lincheck is the weak fit for both —
+an actor is serialized by construction, so linearizability is close to definitional, and Lincheck-ing
+`AsyncChannel` would test Groovy's library rather than these proofs.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
