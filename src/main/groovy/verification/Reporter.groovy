@@ -184,6 +184,25 @@ class Reporter {
             "handle it, usually right after ctx.become(...)").toString()
     }
 
+    /** Phase 297 — a phase the actor can be in when its own timer fires THROWS on the scheduled message. */
+    static String formatTimerRejected(String methodName, String actor, String msg, boolean repeats, int line, String phase) {
+        ("Scheduled message rejected by its own actor: '${actor}' in ${methodName}() schedules '${msg}' for itself " +
+            "(line ${line}${repeats ? ', repeating' : ''}), but a timer fires into whichever behaviour is current AT " +
+            "THAT MOMENT, not the one that armed it — and phase '${phase}', reachable from there, throws on '${msg}'. " +
+            "Arm the timeout in the phase that can handle it, give '${phase}' a branch for '${msg}', or hold the " +
+            "Cancellable and cancel it on the transition — this one's is discarded.").toString()
+    }
+
+    /** Phase 297 — a repeating timer whose message a reachable phase stashes: the stash grows with the clock. */
+    static String formatTimerStashUnbounded(String methodName, String actor, String msg, int line, String phase) {
+        ("Unbounded stash from the actor's own timer: '${actor}' in ${methodName}() repeats '${msg}' " +
+            "(scheduleAtFixedRate, line ${line}) and phase '${phase}', reachable from there, stashes it. A repeat " +
+            "goes on firing across every become, so this stash grows with elapsed time rather than with anything a " +
+            "peer does — nothing has to happen for it to run out of heap (measured: 40 messages in 600ms for a 20ms " +
+            "period). Handle '${msg}' in '${phase}', bound the stash with withStashBound, or keep the Cancellable " +
+            "this one discards and cancel the repeat.").toString()
+    }
+
     /** Phase 291 — {@code VERIFY_TRUST=deny}: a fact the compile assumed without proof, surfaced as an error. */
     static String formatTrustDenied(String fact) {
         "Trusted without proof (VERIFY_TRUST=deny): ${fact}. Prove it, or unset VERIFY_TRUST to accept it as an assumption.".toString()

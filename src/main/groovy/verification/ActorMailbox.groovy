@@ -412,6 +412,16 @@ class ActorMailbox {
         int target = -1                 // the phase it moves to (-1: stays in this one)
         boolean stash, unstash, rejects
         Object reply = UNKNOWN_REPLY    // Phase 294 — the constant the arm returns, when it is one
+        List<Timer> timers              // Phase 297 — the self-messages this arm schedules, if any
+    }
+
+    /** Phase 297 — a message an actor schedules FOR ITSELF: {@code ctx.scheduleOnce / scheduleAtFixedRate}. */
+    static class Timer {
+        String msg                      // the literal scheduled, or null when it is not one
+        boolean repeats                 // scheduleAtFixedRate
+        boolean discarded               // the Cancellable it returns is thrown away, so it can never be stopped
+        Expression anchor
+        int line
     }
 
     /** Phase 294 — the arm's return is not a readable constant, so nothing is claimed about the reply's label. */
@@ -424,6 +434,8 @@ class ActorMailbox {
         final Map<Object, Arm> on = new LinkedHashMap<Object, Arm>()   // literal message → its explicit arm
         String otherwise = 'handles'    // any other message: 'handles' (stays), 'stash', or 'rejects' (throws)
         Object otherwiseReply = UNKNOWN_REPLY                          // Phase 294 — the default branch's reply
+        List<Timer> otherwiseTimers                                    // Phase 297 — the default branch's timers
+        boolean timersUnreadable                                       // Phase 297 — an onError arms one: not modelled
         int onError = NO_ON_ERROR       // Phase 296 — the phase a throw recovers into; the edge is the ACTOR's,
     }                                   // measured global (it fires inside become targets too), so every phase carries it
 
@@ -456,6 +468,7 @@ class ActorMailbox {
         // Phase 296 — the actor's onError callback, if any: a throw recovers into the phase it becomes (or stays
         // where it is). Registered before the worklist so a recovery phase is itself walked.
         int errorEdge = NO_ON_ERROR
+        boolean errorTimers = false
         Expression cb = onErrorCallback(body, actorName)
         if (cb != null) {
             ClosureExpression ecl = singleBehaviour(cb, locals)
@@ -469,6 +482,7 @@ class ActorMailbox {
                 // a recovery that defers or replays is not modelled: the stash is Phase 292's, measured there
                 if (ea == null || ea.stash || ea.unstash || ea.rejects) return null
                 errorEdge = ea.target
+                if (ea.timers != null) errorTimers = true               // Phase 297 — armed from any phase at all
             }
         }
         for (int i = 0; i < order.size(); i++) {
@@ -517,13 +531,14 @@ class ActorMailbox {
             if (da == null || da.target >= 0 || da.unstash) return null      // a default that moves or replays: not modelled
             ph.otherwise = da.rejects ? 'rejects' : da.stash ? 'stash' : 'handles'
             ph.otherwiseReply = da.reply                                 // Phase 294
+            ph.otherwiseTimers = da.timers                               // Phase 297
             // an if/else's trailing statements also run for the matched message: fold their effect into each arm
             if (defaultPart != null && after != null && !after.isEmpty()) {
                 Arm tail = readArm(new BlockStatement(new ArrayList<Statement>(after), null), ctx, locals, index, order, phases)
                 if (tail == null || tail.target >= 0 || tail.unstash || tail.stash || tail.rejects) return null
             }
         }
-        for (Phase ph : phases) ph.onError = errorEdge               // Phase 296 — the edge is the actor's, not a phase's
+        for (Phase ph : phases) { ph.onError = errorEdge; ph.timersUnreadable = errorTimers }   // Phase 296/297 — the actor's, not a phase's
         phases
     }
 
@@ -565,6 +580,7 @@ class ActorMailbox {
         Arm arm = new Arm()
         boolean[] bad = [false] as boolean[]
         List<Expression> targets = new ArrayList<Expression>()
+        final Set<Expression> bare = discardedSchedules(block)          // Phase 297
         block.visit(new CodeVisitorSupport() {
             @Override void visitMethodCallExpression(MethodCallExpression call) {
                 Expression recv = strip(call.objectExpression)
@@ -575,7 +591,17 @@ class ActorMailbox {
                     if (mn == 'stash') arm.stash = true
                     else if (mn == 'unstashAll') arm.unstash = true
                     else if (mn == 'become' && args.size() == 1) targets.add(args.get(0))
-                    else if (mn != 'self' && mn != 'scheduleOnce' && mn != 'scheduleAtFixedRate') bad[0] = true
+                    else if (mn == 'scheduleOnce' || mn == 'scheduleAtFixedRate') {          // Phase 297
+                        Timer t = new Timer()
+                        t.repeats = mn == 'scheduleAtFixedRate'
+                        Expression m0 = args.isEmpty() ? null : strip(args.get(0))
+                        t.msg = m0 instanceof ConstantExpression && ((ConstantExpression) m0).value != null ?
+                            ((ConstantExpression) m0).value.toString() : null
+                        t.anchor = call; t.line = call.lineNumber; t.discarded = bare.contains(call)
+                        if (arm.timers == null) arm.timers = new ArrayList<Timer>()
+                        arm.timers.add(t)
+                    }
+                    else if (mn != 'self') bad[0] = true
                     return                                   // a direct context call; its closure argument is a phase
                 }
                 super.visitMethodCallExpression(call)
@@ -764,6 +790,89 @@ class ActorMailbox {
             over.line, d.stashCapacity + 1, stashed.get(0).line), over.anchor)
     }
 
+    // ── Phase 297 — the actor's own timers ───────────────────────────────────────────────
+
+    /** Every phase the actor can be in once {@code from} has run: become targets, transitively, plus the onError edge. */
+    private static Set<Integer> reachableFrom(List<Phase> g, int from) {
+        Set<Integer> seen = new LinkedHashSet<Integer>()
+        List<Integer> todo = [from]
+        while (!todo.isEmpty()) {
+            int i = todo.remove(0)
+            if (!seen.add(i)) continue
+            Phase p = g.get(i)
+            for (Arm a : p.on.values()) if (a.target >= 0) todo.add(a.target)
+            if (p.onError >= 0) todo.add(p.onError)
+        }
+        seen
+    }
+
+    /** Phase 297 — the schedule calls made as bare STATEMENTS: their Cancellable is discarded, so nothing in the
+     *  code can ever stop them. One whose result is kept (a local, a field, an array slot) may yet be cancelled,
+     *  and nothing is claimed about it. */
+    private static Set<Expression> discardedSchedules(Statement block) {
+        final Set<Expression> out = Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
+        block.visit(new CodeVisitorSupport() {
+            @Override void visitExpressionStatement(ExpressionStatement es) {
+                Expression e = strip(es.expression)
+                if (e instanceof MethodCallExpression &&
+                        ((MethodCallExpression) e).methodAsString in ['scheduleOnce', 'scheduleAtFixedRate']) out.add(e)
+                super.visitExpressionStatement(es)
+            }
+            @Override void visitClosureExpression(ClosureExpression c) { }
+        })
+        out
+    }
+
+    /** The explicit arm a phase has for a literal message, else null. */
+    private static Arm armFor(Phase p, String msg) {
+        for (Map.Entry<Object, Arm> e : p.on.entrySet()) if (String.valueOf(e.key) == msg) return e.value
+        null
+    }
+
+    /**
+     * Phase 297 — a message an actor schedules for ITSELF lands in whatever phase is current WHEN THE TIMER FIRES,
+     * not the one that armed it (measured), and a repeat goes on firing across every {@code become} (measured). So
+     * the question is what each phase reachable from the arming point does with that message:
+     *
+     * <ul><li>one that THROWS on it kills the actor's own message — the classic armed-a-timeout-then-moved-on bug;
+     * <li>one that STASHES a REPEAT is an unbounded stash with CERTAINTY rather than possibility (Phase 293's
+     *     version needs the protocol to keep delivering; here the actor does it to itself — measured at 40 messages
+     *     in 600ms for a 20ms period).</ul>
+     *
+     * <p>A phase that merely IGNORES the message is not reported: dropping a timeout that no longer applies is how
+     * the idiom is written when there is no Cancellable to hand. Nothing is claimed when the become-graph is not
+     * readable, when the message is not a literal, when an {@code onError} arms a timer (it can fire from any
+     * phase at all), or when the method cancels anything — the repeat may then be stopped.
+     */
+    private static List<Finding> timerFindings(String methodName, BlockStatement body, Map<String, ActorDecl> actors) {
+        List<Finding> out = new ArrayList<Finding>()
+        for (String name : actors.keySet()) {
+            List<Phase> g = becomeGraph(body, name)
+            if (g == null || g.isEmpty() || g.get(0).timersUnreadable) continue
+            for (int i = 0; i < g.size(); i++) {
+                List<Timer> ts = new ArrayList<Timer>()
+                for (Arm a : g.get(i).on.values()) if (a.timers != null) ts.addAll(a.timers)
+                if (g.get(i).otherwiseTimers != null) ts.addAll(g.get(i).otherwiseTimers)
+                for (Timer t : ts) {
+                    if (t.msg == null || !t.discarded) continue      // kept the Cancellable: it may yet be stopped
+                    for (int q : reachableFrom(g, i)) {
+                        Phase r = g.get(q)
+                        Arm arm = armFor(r, t.msg)
+                        boolean rejects = arm != null ? arm.rejects : r.otherwise == 'rejects'
+                        boolean stashes = arm != null ? arm.stash : r.otherwise == 'stash'
+                        if (rejects) {
+                            out.add(new Finding(Reporter.formatTimerRejected(methodName, name, t.msg, t.repeats, t.line, r.name), t.anchor)); break
+                        }
+                        if (stashes && t.repeats) {
+                            out.add(new Finding(Reporter.formatTimerStashUnbounded(methodName, name, t.msg, t.line, r.name), t.anchor)); break
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /**
      * The check. Returns the findings; the caller reports them (so this file stays free of the STC API).
      */
@@ -772,6 +881,7 @@ class ActorMailbox {
         Map<String, ActorDecl> actors = actorsIn(body)
         if (actors.isEmpty()) return out
         out.addAll(stashFindings(methodName, body, actors))   // Phase 292 — needs no sends, so it comes first
+        out.addAll(timerFindings(methodName, body, actors))   // Phase 297 — likewise
         Map<String, List<ClosureExpression>> behaviours = behaviourLocals(body)
 
         // Program-order pass over the body's own statements: sends to each actor, and sends on each channel.

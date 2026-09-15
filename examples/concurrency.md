@@ -573,6 +573,50 @@ And when the thrown-on message is one the protocol **answers**, the clause the m
 reply 'ack' the protocol promises fails with that error too — an onError cannot rescue it*. It is worth saying
 out loud precisely because the callback is what makes it look handled.
 
+### The actor's own timers — a message source the protocol cannot see (Phase 297)
+
+`ctx.scheduleOnce` and `ctx.scheduleAtFixedRate` are the actor sending a message **to itself**, and one measured
+fact decides everything the checker can say about them: the message lands in whichever behaviour is current
+*when the timer fires*, not the one that armed it.
+
+<!-- doclint:ignore README illustration: a timeout armed before a become -->
+```groovy
+Actor<String> gate = Actor.reactor { ActorContext<String> ctx, String m ->
+    if (m == 'go') {
+        ctx.scheduleOnce('timeout', Duration.ofMillis(500))   // armed here …
+        ctx.become(later)                                     // … but it will land over there
+        return m
+    }
+    m
+}
+```
+
+Nothing in the source connects that `scheduleOnce` to the phase it arrives in, which is exactly why the bug is
+easy to write: arm a timeout, move on, and the phase you moved to throws on a message it has never heard of.
+So the question the checker asks is not what *this* phase does with `'timeout'` but what every phase
+**reachable** from here does — a question about the become-graph alone, needing no `@Protocol`.
+
+The second finding is the one worth the measurement. A repeat keeps firing across every `become`, so a repeat
+whose message a reachable phase *stashes* grows that stash **with the clock**:
+
+<!-- doclint:diagnostic p297-actor-timers/a-repeating-timer-into-a-stashing-phase-grows-the-stash-from-the-clock -->
+```
+[Static type checking] - Unbounded stash from the actor's own timer: 'gate' in run() repeats 'tick'
+(scheduleAtFixedRate, line 9) and phase 'later', reachable from there, stashes it. A repeat goes on firing
+across every become, so this stash grows with elapsed time rather than with anything a peer does — nothing has
+to happen for it to run out of heap …
+```
+
+That "nothing has to happen" is the difference from [Phase 293's unbounded stash](#become--the-phases-checked-against-a-protocol-phase-293),
+which needs the protocol to keep delivering. Here the actor feeds its own stash: 40 messages accumulated in
+600ms of pure idling at a 20ms period, with no peer in the picture at all.
+
+One thing the checker deliberately stays quiet about: a phase that merely **ignores** the scheduled message.
+Dropping a timeout that no longer applies is how the idiom is written when there is no `Cancellable` to hand,
+and a checker that called that a defect would be mistaking a design for a bug. Equally, a schedule whose
+`Cancellable` is *kept* withholds the claim — it may yet be cancelled; only a handle thrown away makes
+"this can never be stopped" a fact.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

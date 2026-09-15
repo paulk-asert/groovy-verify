@@ -13017,7 +13017,9 @@ none of them needs a new mechanism:
 Also uncovered, and relevant to the timer proposal: `ActorContext` has `scheduleOnce` and
 `scheduleAtFixedRate`, so the ACTOR half of `groovy.concurrent` has timers while the CHANNEL half has none.
 That asymmetry is the strongest argument for `AsyncChannel.after(…)`, because it is about the library's own
-coherence rather than about what other ecosystems do.
+coherence rather than about what other ecosystems do. SHIPPED as Phase 297: the actor half is now modelled,
+which sharpens the argument rather than settling it — the proposal's case is now that the checked half has
+bugs the unchecked half cannot even express.
 
 ---
 
@@ -13603,8 +13605,54 @@ on an actor that never throws changes nothing; a callback cannot rescue the prom
 callback leaves the actor where it is; with no callback the same throw is Phase 293's bare rejection; a callback
 that replays the stash withholds the graph. P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
 
-**Open:** `scheduleOnce` / `scheduleAtFixedRate` — the actor half of the library has timers while the channel
-half has none, which is the roadmap's own argument for `AsyncChannel.after(…)`; and the Phase 294/295 items.
+**Open:** the Phase 294/295 items. The timers shipped as Phase 297 below.
+
+---
+
+## Phase 297 — the actor's own timers: `scheduleOnce` / `scheduleAtFixedRate`  *(shipped — slice 1)*
+
+The last corner of the Actor API, and the one that adds a message source the `@Protocol` knows nothing about:
+a timer is the actor sending to ITSELF. Two measured facts decide the whole model
+(`ActorTimerSemanticsTest`, the Phase 289 rule):
+
+* a scheduled message lands in whichever behaviour is current **when the timer fires**, not the one that armed
+  it — so a timeout armed just before a `become` arrives in the phase moved to;
+* a repeat goes on firing **across every `become`** — the timer belongs to the actor, not to a phase.
+
+And three that keep the model honest: a scheduled message is otherwise ordinary (dispatched, stashed and
+replayed like any other), `stop()` cancels a repeat, and a kept `Cancellable`'s `cancel()` really stops one.
+
+**So the question is not "what does this phase do" but "what does every phase REACHABLE from here do".** The
+check is therefore over the become-graph alone, with no protocol needed — it lives in `ActorMailbox` beside
+Phase 292's stash pass rather than in `SessionChecker`, so it covers every actor in the gallery, not only the
+ones under a `@Protocol`. Two findings:
+
+* **a reachable phase that THROWS on the message** — the classic armed-a-timeout-then-moved-on bug, which the
+  measurement is what makes visible: nothing in the source connects the `scheduleOnce` to the phase it lands in;
+* **a reachable phase that STASHES a repeat** — an unbounded stash with CERTAINTY rather than possibility.
+  Phase 293's version of this needs the protocol to keep delivering; here the actor feeds the stash from the
+  clock, so nothing whatever has to happen for it to exhaust the heap. Measured at 40 messages in 600ms of pure
+  idling at a 20ms period.
+
+**What is deliberately NOT reported**: a phase that merely IGNORES the message. Dropping a timeout that no
+longer applies is how the idiom is written when there is no `Cancellable` to hand, and reporting it would be
+the checker mistaking a design for a defect.
+
+**The withholding rule went through a correction.** It began as "the method calls `cancel()` anywhere", which
+is blunt and — the giveaway — could not be demonstrated in a case without dragging in an unrelated null-deref
+obligation on the array slot holding the handle. The sharper rule is whether the `Cancellable` was KEPT at all:
+a schedule made as a bare statement throws its handle away and can never be stopped, which is what makes the
+claim certain; one whose result is bound to anything may yet be cancelled, and nothing is claimed. Nothing is
+claimed either when the become-graph is unreadable, the message is not a literal, or an `onError` arms a timer
+(it can fire from any phase at all — open).
+
+Cases (G347, 7): a timeout armed before a `become` landing in a throwing phase; a phase that handles it left
+alone; a phase that ignores a stale timeout left alone; a repeat into a stashing phase; a one-shot into the
+same phase, which is Phase 292's finding and not this one's; a kept `Cancellable` withholding; a non-literal
+message withholding. P296 (6), P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
+
+**Open:** an `onError` that arms a timer; a timer armed in one method and landing in a phase declared in
+another; and the Phase 294/295 items.
 
 ---
 
