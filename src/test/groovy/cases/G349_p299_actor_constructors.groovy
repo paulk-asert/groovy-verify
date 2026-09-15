@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G349_p299_actor_constructors {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 299 the actor built in a constructor: fields ASSIGNED in the class\'s constructor, static block or instance initialiser are read alongside Phase 298\'s field initialisers (an unqualified name or `this.x`), which is what makes a CYCLIC phase graph reachable — a field initialiser cannot name a field declared after it, so mutual become has to be written declare-then-assign, and the Groovy docs\' three-phase connection actor with its connected → disconnected back edge could not be expressed as a service class before. The whole gallery then reads it: the stash check, the timers and the @Protocol stack, with the mistyped trigger refuting exactly as it does for a method-local actor. Withheld, rather than guessed at: a class with more than one constructor, and any field given a MODELLED value twice (an actor factory or a behaviour closure, from an initialiser and a constructor or twice in one) — a null placeholder followed by a real assignment is one definition and is kept.'
+    static final String DESCRIPTION = 'Phase 299 the actor built in a constructor: fields ASSIGNED in the class\'s constructor, static block or instance initialiser are read alongside Phase 298\'s field initialisers (an unqualified name or `this.x`), which is what makes a CYCLIC phase graph reachable — a field initialiser cannot name a field declared after it, so mutual become has to be written declare-then-assign, and the Groovy docs\' three-phase connection actor with its connected → disconnected back edge could not be expressed as a service class before. The whole gallery then reads it: the stash check, the timers and the @Protocol stack, with the mistyped trigger refuting exactly as it does for a method-local actor. Withheld, rather than guessed at: any field given a MODELLED value twice (an actor factory or a behaviour closure, from an initialiser and a constructor or twice in one) — a null placeholder followed by a real assignment is one definition and is kept. (Phase 301 generalised the single-constructor reading to every constructor and method, so WHERE the actor is built is decided by counting the definitions; that group owns the multi-constructor case.)'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -138,14 +138,5 @@ class G349_p299_actor_constructors {
                         void run() { gate.send('a') }
                     }''')],
 
-        // ── withheld: more than one constructor, so which one built the actor is not decided by guessing.
-        [group: 'P299 actor constructors', name: 'a class with two constructors is left alone', ok: true,
-         refute: ['Stashed messages', 'Scheduled message', 'Unbounded stash'],
-         src: tc('''class C {
-                        Actor<String> gate
-                        C() { gate = Actor.reactor({ ActorContext<String> ctx, String m -> ctx.stash(); m } as ReactorHandler<String, String>) }
-                        C(int x) { gate = Actor.reactor({ ActorContext<String> ctx, String m -> m } as ReactorHandler<String, String>) }
-                        void run() { gate.send('a') }
-                    }''')],
     ]
 }

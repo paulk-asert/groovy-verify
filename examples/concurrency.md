@@ -688,6 +688,14 @@ silent skip look identical from the outside. Give it Phase 293's mistyped trigge
 — and the whole stack still refutes through it: *can reach the end of the conversation in phase
 'authenticating' … with 'auth_ok' still stashed*.
 
+Which constructor, though? A class usually has more than one, and the question turns out not to be *which* but
+**how many places give the field a value**. A secondary constructor that chains (`C() { this(5) }`) leaves one
+place that builds the actor, and so does a lifecycle `init()` — both are read. Two constructors that each build
+it are a *disjunction*, since only one runs per instance, and neither can be analysed alone. A method that
+**replaces** the actor is the same story, and that one mattered for soundness rather than reach: before the
+count was taken, a class whose initialiser built a stashing actor and whose `replace()` swapped in another had
+the initialiser's handler reported anyway, for an actor that may never be the live one.
+
 One edge is deliberately refused. A field can be given a value twice — an initialiser *and* a constructor — and
 letting the later one win would be guessing. For the actor itself that guess happens to match Groovy's
 initialisation order; for a *behaviour* it does not, and the overwritten closure would have been scanned as

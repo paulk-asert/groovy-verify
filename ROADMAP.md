@@ -13780,7 +13780,41 @@ left alone; and an unbounded actor with two senders saying nothing, since no bou
 checks (289, 292–297), all three declaration forms (298–300), and no part of `Actor` / `ActorContext`
 unmodelled.
 
-**Open:** a class with more than one constructor; and the Phase 294/295/297 items.
+**Open:** the Phase 294/295/297 items. The multi-constructor class shipped as Phase 301 below.
+
+---
+
+## Phase 301 — where the actor is BUILT: counting the definitions  *(shipped — slice 4, and a soundness hole closed)*
+
+The open item read "a class with more than one constructor", which sounded like a small compatibility gap. It
+was a blunt stand-in for the real question — **how many places give the field a value** — and answering that
+one covers every shape at once, including one that was not a gap at all but a hole.
+
+Phase 299 read a class's single constructor and skipped a class with two. Counting is better on every axis:
+
+* **secondary constructors that CHAIN** (`C() { this(5) }`, with `C(int)` building the actor) are one
+  definition, and are now read — whichever constructor you call, the same assignment runs;
+* **a lifecycle `init()`** is one definition too, so the `@PostConstruct`-shaped class is now read;
+* **two constructors that each build it** are a disjunction — only one runs per instance — so neither can be
+  analysed alone, and the field is not found. Same verdict as before, now for the right reason;
+* **a method that REPLACES the actor** is two definitions. And this one was a SOUNDNESS HOLE, live since Phase
+  298: a class whose initialiser built a stashing actor and whose `replace()` swapped in another had the
+  initialiser's handler reported anyway, for an actor that may not be the live one. Found by probing the
+  mechanism rather than by a failing case, and closed by the same counting.
+
+So `fieldDeclarations` now reads every constructor and every method of the class for whole-statement assignments
+to its own fields, and `dropContested` — unchanged since Phase 299 — decides. A method that only SENDS to the
+actor is not a build site and changes nothing. The multi-constructor case moves out of G349 into this group
+rather than sitting there stating a reason that is no longer the mechanism.
+
+Cases (G351, 6): a chaining secondary constructor read; a lifecycle `init()` read; two building constructors
+withheld as a disjunction; an actor a method replaces withheld (the hole); a send-only method not a build site;
+and the whole `@Protocol` stack still reaching an actor built through a chained constructor — Phase 295's
+cross-wired reply refutes through it. G349 drops to 7. P300 (6), P298 (5), P297 (7), P296 (6), P295 (6),
+P294 (6), P293 (7) and P292 (15) are unchanged.
+
+**Open:** the Phase 294/295/297 items — a default that `become`s, a `sendAndGet` whose `Awaitable` is passed on,
+per-phase reply labels, and an `onError` that arms a timer.
 
 ---
 

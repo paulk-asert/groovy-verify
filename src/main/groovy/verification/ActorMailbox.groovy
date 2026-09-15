@@ -938,8 +938,13 @@ class ActorMailbox {
      * name a field declared after it, so mutual {@code become} has to be written declare-then-assign. An
      * assignment carries no such restriction, and since the behaviours are resolved by NAME the order they appear
      * in does not matter. Only whole-statement assignments to this class's own fields are taken (an unqualified
-     * name or {@code this.x}); a class with more than one constructor is left alone rather than guessed at, and a
-     * field assigned twice resolves to two behaviours, which withholds the claim by the usual route.
+     * name or {@code this.x}).
+     *
+     * <p>Phase 301 — and it is every constructor and every method, not one constructor: a class whose secondary
+     * constructors chain to the one that builds the actor, or that builds it in a lifecycle {@code init()}, has a
+     * single definition just as much as a class that builds it inline. Counting is what decides, in
+     * {@link #dropContested}: two definitions are a disjunction (only one constructor runs per instance) or a
+     * replacement (a method swapping the actor out), and no analysis of a single one of them would be sound.
      */
     static BlockStatement fieldDeclarations(ClassNode owner) {
         List<Statement> ss = new ArrayList<Statement>()
@@ -948,12 +953,18 @@ class ActorMailbox {
             if (init == null) continue
             ss.add(fieldDecl(f, init, f))
         }
+        // Phase 301 — EVERY place the class gives the field a value: any constructor (however many there are), any
+        // method (a lifecycle `init()`, a `static` block's `<clinit>`), and the instance initialiser. Which of them
+        // is the definition is not decided here — dropContested decides, by counting: one is the definition, two
+        // are a disjunction no analysis of a single one would be sound about.
         List<Statement> assigned = new ArrayList<Statement>()
-        if (owner.declaredConstructors?.size() == 1) assigned.addAll(((ConstructorNode) owner.declaredConstructors.get(0)).code ? bodyOf(((ConstructorNode) owner.declaredConstructors.get(0)).code) : Collections.<Statement> emptyList())
-        if (owner.objectInitializerStatements != null) for (Statement st : owner.objectInitializerStatements) assigned.addAll(bodyOf(st))
-        for (MethodNode clinit : (owner.getDeclaredMethods('<clinit>') ?: Collections.<MethodNode> emptyList())) {
-            if (clinit.code != null) assigned.addAll(bodyOf(clinit.code))
+        for (ConstructorNode c : (owner.declaredConstructors ?: Collections.<ConstructorNode> emptyList())) {
+            if (c.code != null) assigned.addAll(bodyOf(c.code))
         }
+        for (MethodNode mn : (owner.methods ?: Collections.<MethodNode> emptyList())) {
+            if (mn.code != null) assigned.addAll(bodyOf(mn.code))
+        }
+        if (owner.objectInitializerStatements != null) for (Statement st : owner.objectInitializerStatements) assigned.addAll(bodyOf(st))
         for (Statement st : assigned) {
             if (!(st instanceof ExpressionStatement)) continue
             Expression e = ((ExpressionStatement) st).expression
@@ -970,11 +981,12 @@ class ActorMailbox {
     }
 
     /**
-     * Phase 299 — a field given a modelled value more than once (an actor factory or a behaviour closure, from
-     * an initialiser and a constructor, or twice in one) has two definitions competing, and which of them the
-     * field ends up holding is not something to decide by the order they were collected in. Both are dropped, so
-     * the field is simply not found. A field initialised to something we do not model (a {@code null} placeholder,
-     * say) and then assigned properly is one definition, and is kept.
+     * Phase 299/301 — a field given a modelled value more than once (an actor factory or a behaviour closure,
+     * from an initialiser and a constructor, twice in one, from two constructors of which only one ever runs, or
+     * from a method that REPLACES it later) has two definitions competing, and which of them the field ends up
+     * holding is not something to decide by the order they were collected in. Both are dropped, so the field is
+     * simply not found. A field initialised to something we do not model (a {@code null} placeholder, say) and
+     * then assigned properly is one definition, and is kept.
      */
     private static List<Statement> dropContested(List<Statement> ss) {
         Map<String, Integer> modelled = new LinkedHashMap<String, Integer>()
