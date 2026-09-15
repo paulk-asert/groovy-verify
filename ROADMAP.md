@@ -14020,6 +14020,61 @@ refute twin; a statement-position switch and its refute twin; and the fall-throu
 
 ---
 
+## Phase 305 — the witness fast path: an FP law refutation that is not a lottery  *(shipped)*
+
+The `double` sum monoid's associativity refutation had been failing intermittently on CI with
+`Could not decide … (solver: timeout)` while passing locally in ~190ms against an 8000ms budget. The diagnosis
+took two wrong turns worth recording, because each was cheap to believe and measurement killed both.
+
+**The first wrong turn: blaming the recent work.** Measured at the parent of the commit that had touched that
+case: identical, ~190ms. Exonerated, and the mechanism was absent anyway (the change moved line numbers, which
+do not reach SMT symbol names).
+
+**The second wrong turn, which was nearly shipped.** With no seed pinned in `Z3Backend`, the obvious reading
+was "search roulette, pin the seed". The whole corpus stayed green with `random_seed = 1`, which looked like
+validation. It was not: the seed was never measured against THIS query. It costs **3600ms under seed 1** where
+the unpinned run costs 188ms. Varying only the seed:
+
+| seed | 0 | 2 | 1 | 42 |
+|---|---|---|---|---|
+| cost | 188ms | 2021ms | 3600ms | **6845ms** |
+
+A **36x spread on identical input**, with seed 42 at 85% of the CI budget on a 12-core laptop — so the fix
+being proposed would have made the failure MORE likely, and the "40x headroom" reported from the local run was
+a lucky draw rather than headroom. It also means the dev default of 2000ms is calibrated to that luck: a bad
+draw fails locally too.
+
+**What it actually is.** Refuting a law over IEEE floats is a MODEL SEARCH, which Z3 bit-blasts — 3 x 64 bits
+of it. That is the lottery. But the refutation never needed a search: the witness is textbook, and checking a
+law at fixed values is evaluation.
+
+**The fix.** Before the general check, ask the law once with every parameter pinned to its position in
+`(1e16, -1e16, 1.0)` — the triple where `(a+b)+c` loses the `1.0` that `a+(b+c)` keeps. A REFUTED answer there
+refutes the law outright and the model names the values; anything else falls through to the ordinary check, so
+nothing that proves today stops proving, and the path can only ever turn a lottery into a decision. Gated on a
+law lemma (`REDUCER_LAW_KEY`) whose parameters are all floating-point, so every other law is untouched.
+
+**Two things the measurements settled about the implementation.**
+
+* **A disjunction is not enough.** Constraining each parameter to a CHOICE of witness values leaves a finite
+  search (125 combinations for a three-parameter law) and measured no better than the original. Pinning each
+  parameter to one value outright is what turns it into evaluation.
+* **Asking FIRST matters, not just asking.** Run as a fallback after an UNKNOWN, the witness check inherits a
+  solver carrying state from the failed search and times out too. Run first, it costs ~35ms.
+
+Result, against the seeds that provoked it: **39ms / 34ms / 40ms / 39ms for seeds 0 / 1 / 2 / 42** — seed
+independent, 175x faster than the worst draw, and the case still refutes with the budget turned down to 60ms.
+The P291 group's solver time fell from 201ms to 63ms, because the refutation no longer searches at all.
+
+Gates: suite 2149/2149; `:test` 2207 tests, 0 failures; docLint 0 drift. **No seed is pinned** — the point is
+that the answer no longer depends on one.
+
+**Open:** the same treatment for a floating-point law whose counterexample is NOT at this witness (a `double`
+product monoid, say) still falls through to the search and keeps the lottery; a second witness triple chosen
+for multiplication would cover it, and the fall-through is already the mechanism for adding one.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

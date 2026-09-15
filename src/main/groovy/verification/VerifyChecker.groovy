@@ -8373,6 +8373,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 305 — the textbook associativity witness, taken in parameter order: {@code (a+b)+c} loses the
+     *  {@code 1.0} that {@code a+(b+c)} keeps, because {@code 1e16 + 1.0} rounds back to {@code 1e16}. */
+    private static final List<Double> FP_WITNESSES =
+        Collections.unmodifiableList([1.0e16d, -1.0e16d, 1.0d] as List<Double>)
+
+    /**
+     * Phase 305 — ask the law with every parameter pinned to its {@link #FP_WITNESSES} value. The negated goal
+     * is already asserted on this session, so a REFUTED answer means the law genuinely fails at those values,
+     * which refutes it outright; the model names them. Returns null when this is not an all-floating-point
+     * lemma, or when the law holds at the witness — and the caller then runs the ordinary check, so this can
+     * only ever turn a lottery into a decision, never a decision into a different one. Safe to constrain the
+     * session in place: {@code checkPath} opens one per path and closes it here, and a refutation ends it.
+     */
+    private CheckResult refuteAtFpWitnesses(SmtSession session, Encoder enc, MethodNode node) {
+        Parameter[] ps = node.parameters
+        if (ps == null || ps.length == 0) return null
+        List<Object> pins = new ArrayList<Object>()
+        for (int i = 0; i < ps.length; i++) {
+            VariableExpression v = new VariableExpression(ps[i].name, ps[i].type)
+            if (!enc.isFpValued(v)) return null              // only the FP laws are a lottery
+            // ONE value per parameter, not a choice of several: the point is to leave the solver no search at
+            // all. A disjunction over candidates still costs a search (125 combinations for a three-parameter
+            // law), which measured no faster than the original — pinning outright is what makes it evaluation.
+            BinaryExpression eq = new BinaryExpression(v,
+                Token.newSymbol(Types.COMPARE_EQUAL, 0, 0),
+                new ConstantExpression(FP_WITNESSES.get(i % FP_WITNESSES.size())))
+            Object h = enc.translateBool(eq)
+            if (h == null) return null
+            pins.add(h)
+        }
+        session.assertExpr(pins.size() == 1 ? pins.get(0) : session.and(pins))
+        CheckResult w = session.check()
+        (w != null && w.status == CheckResult.Status.REFUTED) ? w : null
+    }
+
     private void checkPath(MethodNode node, Path p, Expression postAst, Expression reqAst,
                            List<Expression> classInvs) {
         SmtSession session = backend.session()
@@ -8883,7 +8918,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 conjuncts.get(0) : session.and(conjuncts)
             session.assertExpr(session.not(goal))
 
-            CheckResult r = session.check()
+            // Phase 305 — the witness fast path, tried BEFORE the general search. Refuting a law over IEEE
+            // floats is a MODEL SEARCH, which Z3 bit-blasts: measured, the same associativity counterexample
+            // costs 188ms or 6845ms on one machine depending only on the solver's random seed, so whether the
+            // refutation lands inside the budget is a lottery — and it is one this project cannot afford to
+            // play, because telling an FP developer their parallel sum is not associative IS the capability.
+            // It never needed a search: the witness is textbook, and checking a law at fixed values is
+            // evaluation. Asking first also matters, not just asking — after a failed search the solver
+            // carries state that makes the follow-up slow too (measured: 35ms asked first, still timing out
+            // asked second). A law that is not refuted at the witness falls through to the general check, so
+            // nothing that proves today stops proving.
+            CheckResult witnessed = node.getNodeMetaData(REDUCER_LAW_KEY) != null ?
+                refuteAtFpWitnesses(session, enc, node) : null
+            CheckResult r = witnessed != null ? witnessed : session.check()
             if (r.status == CheckResult.Status.REFUTED && postAst != null) {
                 appendOffendingElements(r, enc, session, [postAst])
             }
