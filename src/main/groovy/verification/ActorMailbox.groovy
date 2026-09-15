@@ -443,7 +443,8 @@ class ActorMailbox {
         String otherwise = 'handles'    // any other message: 'handles' (stays), 'stash', or 'rejects' (throws)
         Object otherwiseReply = UNKNOWN_REPLY                          // Phase 294 — the default branch's reply
         List<Timer> otherwiseTimers                                    // Phase 297 — the default branch's timers
-        boolean timersUnreadable                                       // Phase 297 — an onError arms one: not modelled
+        int otherwiseTarget = -1                                       // Phase 302 — a default that BECOMES (-1: stays)
+        List<Timer> errorTimers                                        // Phase 302 — timers the onError callback arms
         int onError = NO_ON_ERROR       // Phase 296 — the phase a throw recovers into; the edge is the ACTOR's,
     }                                   // measured global (it fires inside become targets too), so every phase carries it
 
@@ -476,7 +477,7 @@ class ActorMailbox {
         // Phase 296 — the actor's onError callback, if any: a throw recovers into the phase it becomes (or stays
         // where it is). Registered before the worklist so a recovery phase is itself walked.
         int errorEdge = NO_ON_ERROR
-        boolean errorTimers = false
+        List<Timer> errorTimers = null
         Expression cb = onErrorCallback(body, actorName)
         if (cb != null) {
             ClosureExpression ecl = singleBehaviour(cb, locals)
@@ -490,7 +491,7 @@ class ActorMailbox {
                 // a recovery that defers or replays is not modelled: the stash is Phase 292's, measured there
                 if (ea == null || ea.stash || ea.unstash || ea.rejects) return null
                 errorEdge = ea.target
-                if (ea.timers != null) errorTimers = true               // Phase 297 — armed from any phase at all
+                errorTimers = ea.timers                                 // Phase 302 — armed wherever the error fires
             }
         }
         for (int i = 0; i < order.size(); i++) {
@@ -536,7 +537,9 @@ class ActorMailbox {
             if (after != null) dflt.addAll(after)
             BlockStatement db = new BlockStatement(dflt, null)
             Arm da = readArm(db, ctx, locals, index, order, phases)
-            if (da == null || da.target >= 0 || da.unstash) return null      // a default that moves or replays: not modelled
+            if (da == null || da.unstash) return null                        // a default that REPLAYS is not modelled
+            // Phase 302 — but one that BECOMES is: "anything else moves me on" is an ordinary edge of the graph.
+            ph.otherwiseTarget = da.target
             ph.otherwise = da.rejects ? 'rejects' : da.stash ? 'stash' : 'handles'
             ph.otherwiseReply = da.reply                                 // Phase 294
             ph.otherwiseTimers = da.timers                               // Phase 297
@@ -546,7 +549,7 @@ class ActorMailbox {
                 if (tail == null || tail.target >= 0 || tail.unstash || tail.stash || tail.rejects) return null
             }
         }
-        for (Phase ph : phases) { ph.onError = errorEdge; ph.timersUnreadable = errorTimers }   // Phase 296/297 — the actor's, not a phase's
+        for (Phase ph : phases) { ph.onError = errorEdge; ph.errorTimers = errorTimers }   // Phase 296/302 — the actor's, not a phase's
         phases
     }
 
@@ -809,6 +812,7 @@ class ActorMailbox {
             if (!seen.add(i)) continue
             Phase p = g.get(i)
             for (Arm a : p.on.values()) if (a.target >= 0) todo.add(a.target)
+            if (p.otherwiseTarget >= 0) todo.add(p.otherwiseTarget)      // Phase 302 — a default that becomes
             if (p.onError >= 0) todo.add(p.onError)
         }
         seen
@@ -898,14 +902,27 @@ class ActorMailbox {
         List<Finding> out = new ArrayList<Finding>()
         for (String name : actors.keySet()) {
             List<Phase> g = becomeGraph(body, name)
-            if (g == null || g.isEmpty() || g.get(0).timersUnreadable) continue
-            for (int i = 0; i < g.size(); i++) {
+            if (g == null || g.isEmpty()) continue
+            for (int i = 0; i <= g.size(); i++) {
+                // Phase 302 — the last round is the onError callback's own timers. The error can fire in ANY
+                // phase, so they are armed from the phase it recovers into — or, when the callback takes no
+                // context and cannot become, from every phase there is.
+                boolean viaError = i == g.size()
                 List<Timer> ts = new ArrayList<Timer>()
-                for (Arm a : g.get(i).on.values()) if (a.timers != null) ts.addAll(a.timers)
-                if (g.get(i).otherwiseTimers != null) ts.addAll(g.get(i).otherwiseTimers)
+                Set<Integer> land
+                if (viaError) {
+                    if (g.get(0).errorTimers == null) continue
+                    ts.addAll(g.get(0).errorTimers)
+                    int rec = g.get(0).onError
+                    land = rec >= 0 ? reachableFrom(g, rec) : (0..<g.size()) as Set<Integer>
+                } else {
+                    for (Arm a : g.get(i).on.values()) if (a.timers != null) ts.addAll(a.timers)
+                    if (g.get(i).otherwiseTimers != null) ts.addAll(g.get(i).otherwiseTimers)
+                    land = reachableFrom(g, i)
+                }
                 for (Timer t : ts) {
                     if (t.msg == null || !t.discarded) continue      // kept the Cancellable: it may yet be stopped
-                    for (int q : reachableFrom(g, i)) {
+                    for (int q : land) {
                         Phase r = g.get(q)
                         Arm arm = armFor(r, t.msg)
                         boolean rejects = arm != null ? arm.rejects : r.otherwise == 'rejects'

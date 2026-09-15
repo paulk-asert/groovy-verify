@@ -116,8 +116,11 @@ class SessionChecker {
     /** The actor roles of the protocol being checked, and each actor-addressed label's actor (for opsOf / pretty). */
     private static final ThreadLocal<Set<String>> ACTOR_ROLES = new ThreadLocal<Set<String>>()
     private static final ThreadLocal<Map<String, String>> ACTOR_LABELS = new ThreadLocal<Map<String, String>>()
-    /** Phase 294 — a message an actor ANSWERS → the label of its reply, and the reply labels (for opsOf / pretty). */
-    private static final ThreadLocal<Map<String, String>> ACTOR_REPLIES = new ThreadLocal<Map<String, String>>()
+    /** Phase 294/303 — the messages an actor ANSWERS, and the reply labels (for opsOf / pretty). Which label
+     *  answers a given message is POSITIONAL, so the sender emits a wildcard and the local type decides. */
+    private static final ThreadLocal<Set<String>> ACTOR_REPLIES = new ThreadLocal<Set<String>>()
+    /** Phase 303 — "the reply the protocol expects here", whichever label that is. */
+    static final String ANY_REPLY = '\u0001reply'
     private static final ThreadLocal<Set<String>> REPLY_LABELS = new ThreadLocal<Set<String>>()
     /** How many messages a phase may hold in its stash along a protocol trace before "grows without bound". */
     private static final int STASH_BOUND = 6
@@ -183,7 +186,7 @@ class SessionChecker {
         // message the actor chooses to send. Anything else an actor role sends is a loud skip.
         Map<Msg, Msg> answering = new IdentityHashMap<Msg, Msg>()      // a reply → the message it answers
         pairReplies(global, actorRoles, answering)
-        Map<String, String> replyOf = [:]                 // the message answered → its reply's label
+        Set<String> answered = new LinkedHashSet<String>()   // the messages the protocol answers
         Set<String> replyLabels = new LinkedHashSet<String>()
         for (Msg m : msgs) {
             if (actorRoles.contains(m.from)) {
@@ -197,23 +200,17 @@ class SessionChecker {
                 actorLabels.put(m.chan, m.to)
             }
         }
-        // Phase 295 — which message a reply answers is decided PER TRACE, not by its label: the branches of a
-        // choice may answer `get` with 'value' and `put` with 'ok', and may equally answer both with the same
-        // 'ack'. What must be unique is the other direction — one message has one reply — since that is what
-        // tells a sendAndGet what to wait for.
-        // (A reply label SHARED by two messages is resolved by which of them was just delivered, which is sound
-        // because only one can be outstanding: par's own disjointness already forbids two parts sharing a label.)
-        Set<String> pairs = new LinkedHashSet<String>()    // "message|reply", the pairings the protocol allows
+        // Phase 295/303 — which message a reply answers, and which reply answers a message, are BOTH positional:
+        // the branches of a choice may answer `get` with 'value' and `put` with 'ok', or answer both with one
+        // 'ack', and a conversation may answer the same request differently at two of its points. Nothing needs
+        // to be unique, because neither side is looked up by label: the actor reads the reply it owes off its
+        // local type at that point, and the sender emits ANY_REPLY for the protocol to resolve.
         for (Msg m : msgs) {                              // in the protocol's own order, so the report is stable
             Msg req = answering.get(m)
-            if (req == null) continue
-            if (replyOf.containsKey(req.chan) && replyOf.get(req.chan) != m.chan) {
-                out.add([Reporter.formatProtocolSkipped(methodName, "message '${req.chan}' is answered both by '${replyOf.get(req.chan)}' and by '${m.chan}' — a sendAndGet cannot know which reply to wait for"), body] as Object[]); return out
-            }
-            replyOf.put(req.chan, m.chan); pairs.add(req.chan + '|' + m.chan)
+            if (req != null) answered.add(req.chan)
         }
         if (!replyLabels.disjoint(actorLabels.keySet() - replyLabels)) { out.add([Reporter.formatProtocolSkipped(methodName, "a reply label is also a message to an actor"), body] as Object[]); return out }
-        ACTOR_ROLES.set(actorRoles); ACTOR_LABELS.set(actorLabels); ACTOR_REPLIES.set(replyOf); REPLY_LABELS.set(replyLabels)
+        ACTOR_ROLES.set(actorRoles); ACTOR_LABELS.set(actorLabels); ACTOR_REPLIES.set(answered); REPLY_LABELS.set(replyLabels)
         for (String c : protoChans) if (!chans.contains(c) && !actorLabels.containsKey(c)) { out.add([Reporter.formatProtocolSkipped(methodName, "message '${c}' names no channel variable of the method"), body] as Object[]); return out }
         // local types
         Map<String, Nfa> local = [:]
@@ -261,7 +258,7 @@ class SessionChecker {
         for (Iterator<Object[]> it = unbound.iterator(); it.hasNext(); ) {
             Object[] u = it.next()
             Set<String> s = (Set<String>) u[3], q = (Set<String>) u[4]
-            List<String> fits = new ArrayList<String>(roles.findAll { String r -> !bound.containsKey(r) && !actorRoles.contains(r) && roleSends.get(r).containsAll(s) && roleRecvs.get(r).containsAll(q) })
+            List<String> fits = new ArrayList<String>(roles.findAll { String r -> !bound.containsKey(r) && !actorRoles.contains(r) && roleSends.get(r).containsAll(s) && receivesFit(roleRecvs.get(r), q) })
             if (fits.size() != 1) continue
             Object[] p = (Object[]) u[0]
             bound.put(fits.get(0), [p[0], u[1], u[2], p[2], s, q, opInfoOf.get(p)] as Object[])
@@ -318,7 +315,7 @@ class SessionChecker {
                 out.add([Reporter.formatProtocolSkipped(methodName, "the behaviours of actor '${r}' are not all visible as `if (m == LIT)` arms over become targets in this method (its phases, every become target, and its onError callback)"), body] as Object[])
                 continue
             }
-            String v = accepts(local.get(r), localFrag.get(r), graph, replyOf, pairs, ActorMailbox.repliesAreValues(actorScope, r))
+            String v = accepts(local.get(r), localFrag.get(r), graph, ActorMailbox.repliesAreValues(actorScope, r))
             if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "actor '${r}' ${v}"), body] as Object[])
         }
         // conformance
@@ -791,8 +788,8 @@ class SessionChecker {
                     out.add([lit == null ? '!*' : '!' + lit, line] as Object[])
                     // Phase 294 — only sendAndGet opens a reply channel; a bare send leaves the peer with no way to
                     // receive the reply the protocol promises it, and conformance says so at the next op.
-                    String reply = lit == null ? null : ACTOR_REPLIES.get()?.get(lit)
-                    if (reply != null && m.methodAsString == 'sendAndGet') out.add(['?' + reply, line] as Object[])
+                    boolean answered = lit != null && ACTOR_REPLIES.get()?.contains(lit)
+                    if (answered && m.methodAsString == 'sendAndGet') out.add(['?' + ANY_REPLY, line] as Object[])
                     return
                 }
                 if (r instanceof VariableExpression && chans.contains(((VariableExpression) r).name)) {
@@ -905,12 +902,19 @@ class SessionChecker {
 
     private static Set<Integer> step(Nfa n, Set<Integer> states, String label) {
         Set<Integer> out = new HashSet<Integer>()
-        for (int s : states) for (Object[] e : n.edges.get(s)) if (e[0] == label) out.add((Integer) e[1])
+        // Phase 303 — the sender's "receive the reply" matches whichever reply the protocol expects here
+        boolean any = label == '?' + ANY_REPLY
+        Set<String> replies = any ? REPLY_LABELS.get() : null
+        for (int s : states) for (Object[] e : n.edges.get(s)) {
+            String el = (String) e[0]
+            if (any ? (el.startsWith('?') && replies != null && replies.contains(el.substring(1))) : el == label) out.add((Integer) e[1])
+        }
         closure(n, out)
     }
 
     private static String pretty(String label) {
         String base = label.substring(1)
+        if (base == ANY_REPLY) return 'receives the reply it asked for (a sendAndGet)'          // Phase 303
         String actor = ACTOR_LABELS.get()?.get(base)                                   // Phase 293 — a message, not a channel
         if (actor != null && REPLY_LABELS.get()?.contains(base)) {                      // Phase 294
             return label.startsWith('!') ? "replies '${base}'" : "receives the reply '${base}' from '${actor}' (a sendAndGet)"
@@ -932,8 +936,7 @@ class SessionChecker {
      * {@code stop()}, measured), and one that keeps delivering into a stashing phase grows the stash without bound.
      * Null when the actor takes every trace; else the violation, with the trace that reaches it.
      */
-    private static String accepts(Nfa l, Frag lf, List<ActorMailbox.Phase> g, Map<String, String> replyOf,
-                                  Set<String> pairs, boolean replyValues) {
+    private static String accepts(Nfa l, Frag lf, List<ActorMailbox.Phase> g, boolean replyValues) {
         Map<String, Object[]> seen = [:]                       // key → [local set, phase, stash, parentKey, message, owed]
         List<Object[]> todo = []
         Set<Integer> l0 = closure(l, [lf.in] as Set<Integer>)
@@ -973,6 +976,12 @@ class SessionChecker {
                 }
                 Object[] r = deliver(g, ph, msg, st, 0)
                 if (r[0] instanceof String) return "${r[0]}${actorTrace(seen, ck)}".toString()
+                // Phase 303 — the reply this delivery owes is read off the local type at THIS POINT: whatever the
+                // role sends next. Positional, so the same message may be answered by different labels at
+                // different points of the conversation, and no map of message → reply is needed (nor its refusal
+                // when one message had two).
+                Set<Integer> after = step(l, ls, label)
+                String rep = soleSend(l, after)
                 // Phase 296 — the throw an onError observes. The actor survives, so the report says where it
                 // carries on; the message is still never processed, and a reply it owed cannot be rescued either
                 // — measured, a sendAndGet fails with that error whether or not a callback is installed.
@@ -980,20 +989,18 @@ class SessionChecker {
                     int rec = (int) r[1]
                     String where = rec == ph ? "stays in it (its callback takes no context, so it cannot become another)" :
                                                "carries on in phase '${g.get(rec).name}'".toString()
-                    String rep = replyOf.containsKey(msg) ? ", and the reply '${replyOf.get(msg)}' the protocol promises fails with that error too — an onError cannot rescue it".toString() : ''
-                    return "throws on '${msg}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)} (${r[2]}): its onError observes the error and the actor ${where}, but the message the protocol delivered is never processed${rep}".toString()
+                    String owedRep = rep == null ? '' : ", and the reply '${rep}' the protocol promises fails with that error too — an onError cannot rescue it".toString()
+                    return "throws on '${msg}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)} (${r[2]}): its onError observes the error and the actor ${where}, but the message the protocol delivered is never processed${owedRep}".toString()
                 }
                 List<String> ns = (List<String>) r[1]
                 if (ns.size() > STASH_BOUND) {
                     return "stashes '${msg}' in phase '${g.get((int) r[0]).name}'${actorTrace(seen, ck)} and the protocol can keep delivering into that stash without a replay: it grows without bound (the javadoc's heap warning — bound it with withStashBound, or handle '${msg}' there)".toString()
                 }
-                Set<Integer> next = step(l, ls, label)
                 // a message the protocol answers now owes its reply, resolved to THIS message (Phase 295)
                 Map<String, Object[]> no = new LinkedHashMap<String, Object[]>(owed)
-                String rep = replyOf.get(msg)
-                if (rep != null && pairs.contains(msg + '|' + rep)) no.put(rep, [msg, r[2]] as Object[])
-                String nk = actorKey(next, (int) r[0], ns, no)
-                if (!seen.containsKey(nk)) { seen.put(nk, [next, r[0], ns, ck, msg, no] as Object[]); todo.add(seen.get(nk)) }
+                if (rep != null) no.put(rep, [msg, r[2]] as Object[])
+                String nk = actorKey(after, (int) r[0], ns, no)
+                if (!seen.containsKey(nk)) { seen.put(nk, [after, r[0], ns, ck, msg, no] as Object[]); todo.add(seen.get(nk)) }
             }
         }
         null
@@ -1008,8 +1015,10 @@ class SessionChecker {
         for (Map.Entry<Object, ActorMailbox.Arm> e : p.on.entrySet()) if (String.valueOf(e.key) == msg) arm = e.value
         if (arm == null) {
             if (p.otherwise == 'rejects') return threw(p, ph, msg, stash, 'its default branch throws')
-            if (p.otherwise == 'stash') return [ph, stash + [msg], ActorMailbox.UNKNOWN_REPLY] as Object[]
-            return [ph, stash, p.otherwiseReply] as Object[]
+            // Phase 302 — a default that BECOMES moves on with whatever it did to the message
+            int to = p.otherwiseTarget >= 0 ? p.otherwiseTarget : ph
+            if (p.otherwise == 'stash') return [to, stash + [msg], ActorMailbox.UNKNOWN_REPLY] as Object[]
+            return [to, stash, p.otherwiseReply] as Object[]
         }
         if (arm.rejects) return threw(p, ph, msg, stash, "its '${msg}' branch throws")
         int to = arm.target >= 0 ? arm.target : ph
@@ -1040,6 +1049,25 @@ class SessionChecker {
     private static Object[] threw(ActorMailbox.Phase p, int ph, String msg, List<String> stash, String why) {
         if (p.onError == ActorMailbox.NO_ON_ERROR) return ["rejects '${msg}' in phase '${p.name}' (${why})".toString()] as Object[]
         [ActorMailbox.THREW, p.onError >= 0 ? p.onError : ph, why] as Object[]
+    }
+
+    /**
+     * Phase 303 — does a role receive everything this process does? The process's "receive the reply I asked
+     * for" is a WILDCARD, so it fits any role that receives some reply; which one is then decided by the
+     * conformance walk, position by position.
+     */
+    private static boolean receivesFit(Set<String> roleRecvs, Set<String> processRecvs) {
+        Set<String> q = new LinkedHashSet<String>(processRecvs)
+        if (!q.remove(ANY_REPLY)) return roleRecvs.containsAll(q)
+        Set<String> replies = REPLY_LABELS.get() ?: Collections.<String> emptySet()
+        roleRecvs.containsAll(q) && roleRecvs.any { String x -> replies.contains(x) }
+    }
+
+    /** Phase 303 — the one label a role sends from here, else null (none, or a choice of several). */
+    private static String soleSend(Nfa l, Set<Integer> states) {
+        Set<String> out = new LinkedHashSet<String>()
+        for (int s : states) for (Object[] e : l.edges.get(s)) if (e[0] != '' && ((String) e[0]).startsWith('!')) out.add(((String) e[0]).substring(1))
+        out.size() == 1 ? out.iterator().next() : null
     }
 
     private static String actorKey(Set<Integer> ls, int ph, List<String> st, Map<String, Object[]> owed) {

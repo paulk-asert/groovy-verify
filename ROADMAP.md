@@ -13506,7 +13506,7 @@ skipped loudly. P293's own "an actor that replies is skipped loudly" case was na
 still holds — a send that answers nothing — since a send that DOES answer is now modelled. P292 (15) and
 P263 (10) are unchanged.
 
-**Open:** `sendAndGet` whose `Awaitable` is passed on rather than read at the site; and the two Phase 293 items
+**Open (closed in Phase 302/303):** `sendAndGet` whose `Awaitable` is passed on rather than read at the site; and the two Phase 293 items
 — a default that moves, and an actor played across methods. The reply inside a `choice` branch shipped as
 Phase 295 below.
 
@@ -13651,7 +13651,7 @@ alone; a phase that ignores a stale timeout left alone; a repeat into a stashing
 same phase, which is Phase 292's finding and not this one's; a kept `Cancellable` withholding; a non-literal
 message withholding. P296 (6), P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
 
-**Open:** an `onError` that arms a timer; and the Phase 294/295 items. The actor held across methods shipped
+**Open (closed in Phase 302):** an `onError` that arms a timer; and the Phase 294/295 items. The actor held across methods shipped
 as Phase 298 below.
 
 ---
@@ -13813,8 +13813,50 @@ and the whole `@Protocol` stack still reaching an actor built through a chained 
 cross-wired reply refutes through it. G349 drops to 7. P300 (6), P298 (5), P297 (7), P296 (6), P295 (6),
 P294 (6), P293 (7) and P292 (15) are unchanged.
 
-**Open:** the Phase 294/295/297 items — a default that `become`s, a `sendAndGet` whose `Awaitable` is passed on,
-per-phase reply labels, and an `onError` that arms a timer.
+**Open (all four closed in Phases 302–303):** a default that `become`s, a `sendAndGet` whose `Awaitable` is
+passed on, per-phase reply labels, and an `onError` that arms a timer.
+
+---
+
+## Phases 302–303 — the four withheld corners  *(shipped — and one of them was already closed)*
+
+The Actor surface was complete; what remained were four corners where a check said nothing rather than guess.
+Taken together they are a good illustration of how differently items on such a list can turn out.
+
+**A default that `become`s (Phase 302).** `becomeGraph` withheld the WHOLE graph for it, which was
+disproportionate: "anything else moves me on" is an ordinary edge, and the only reason it was excluded is that
+`deliver` had nowhere to put the target. A `Phase.otherwiseTarget`, followed by `deliver` and by
+`reachableFrom`, and it is read like any other — so the protocol check follows the edge and names the phase it
+lands in.
+
+**An `onError` that arms a timer (Phase 302).** Withheld because the callback fires in ANY phase, so "where is
+this timer armed from" had no single answer. It does have one: the phase the callback RECOVERS into, which
+Phase 296 already computes — or every phase, when the callback takes no context and so cannot become. The timer
+pass gained one extra round over the error edge.
+
+**`sendAndGet` whose `Awaitable` is passed on (Phase 302).** This one was ALREADY CLOSED and the note was
+stale. The reply channel exists from the moment `sendAndGet` is called, so all four spellings — read at the
+site, bound and never read, discarded outright, passed to another method — receive the reply, and only a plain
+`send` does not. Probed before touching anything, and the outcome is five cases pinning it (with the `send`
+control) rather than a line of engine. Worth recording: an open item that is really a missing test reads
+exactly like one that is missing a feature.
+
+**Per-phase reply labels (Phase 303), which turned into a simplification.** The refusal was *message 'get' is
+answered both by 'value' and by 'other' — a sendAndGet cannot know which reply to wait for*, and lifting it
+looked disproportionate: a wildcard op and a lookahead, for a rare shape. It is the opposite. The reply a
+delivery owes is READ OFF THE LOCAL TYPE at that point — whatever the role sends next — so `accepts` needs no
+message → reply map at all, and the sender emits `ANY_REPLY` for the protocol to resolve, matched in `step` and
+in the role binding (`receivesFit`). The map, the `pairs` set and the refusal all went; both directions of the
+pairing are now positional, which is what Phase 295 had already made the other half. **Less engine, more
+covered.**
+
+Case churn. G345's "answered by two labels is skipped loudly" pinned the refusal that is gone; it becomes the
+REFUTATION that replaces it (an actor answering both points alike is caught at the second) plus a conforming
+counterpart — which is answered by a phase change in the actor's DEFAULT branch, so Phase 302 is what makes
+Phase 303's positive case writable. G345 goes to 7, and G352 adds 9.
+
+**Open:** nothing named. The Actor surface is complete, reaches every declaration and build form, and no check
+withholds for a reason that is merely mechanical.
 
 ---
 

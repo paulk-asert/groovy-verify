@@ -726,6 +726,32 @@ was asked for in the first place:
 With that the Actor surface is complete, and reaches the shape real code is written in: every check from the
 mailbox to the timers, over an actor declared as a local, a field initialiser, or built in a constructor.
 
+### The corners that were withheld (Phases 302–303)
+
+Four checks said nothing rather than guess, and clearing them showed how differently such items can turn out.
+
+A **default branch that `become`s** — "anything else moves me on" — used to withhold the *entire* become-graph.
+That was disproportionate: it is an ordinary edge, and the only reason it was excluded is that the dispatch had
+nowhere to put the target. The protocol check now follows it and names the phase it lands in. An **`onError`
+that arms a timer** was withheld because the callback fires in any phase, so "where is this armed from" had no
+single answer — except it does: the phase the callback *recovers into*, or every phase when the callback takes
+no context and so cannot `become`.
+
+A **`sendAndGet` whose `Awaitable` is passed on** turned out to be closed already, and the note stale. The reply
+channel exists from the moment `sendAndGet` is called, so reading it at the site, binding it and never reading
+it, discarding it outright and handing it to another method all receive the reply — and only a plain `send` does
+not. That one needed five cases, not a line of engine. An open item that is really a missing test reads exactly
+like one that is missing a feature.
+
+The last was **one message answered by different labels at different points**, refused with *a sendAndGet cannot
+know which reply to wait for*. Lifting it looked like adding machinery and was the reverse. The reply a delivery
+owes is simply **whatever the role sends next** — read off the local type at that point — so the actor side needs
+no message-to-reply map at all, and the sender emits a wildcard for the protocol to resolve. The map, the pair
+set and the refusal all went; both directions of the pairing are positional now, matching what
+[Phase 295](#a-reply-inside-a-choice--the-keyvalue-actor-phase-295) had already done for the other half. Less
+engine, more covered — and the conforming example needs a phase change in the actor's *default* branch, so the
+first corner is what makes the last one's positive case writable.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

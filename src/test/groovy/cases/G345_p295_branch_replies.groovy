@@ -26,7 +26,7 @@ import static cases.CaseDsl.*
 class G345_p295_branch_replies {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 295 actor replies inside a choice: an actor role\'s reply is resolved to the message the protocol just delivered on THIS branch, not by a lookup on the reply\'s label — so a key/value actor answering `get` with \'value\' and `put` with \'ok\' is checked branch by branch, and two branches may equally share one \'ack\' label (which Phase 294 wrongly refused as ambiguous; par\'s own channel disjointness is what keeps a shared label unowed twice at once). A reactor that returns the other branch\'s label is a cross-wired reply and refutes; a branch whose message the actor defers is STUCK on that branch alone, with Phase 292 silent because an unstashAll() exists; a bare send in one branch is refuted in that branch. A message answered by two different labels is skipped loudly — a sendAndGet cannot know which reply to wait for.'
+    static final String DESCRIPTION = 'Phase 295 actor replies inside a choice: an actor role\'s reply is resolved to the message the protocol just delivered on THIS branch, not by a lookup on the reply\'s label — so a key/value actor answering `get` with \'value\' and `put` with \'ok\' is checked branch by branch, and two branches may equally share one \'ack\' label (which Phase 294 wrongly refused as ambiguous; par\'s own channel disjointness is what keeps a shared label unowed twice at once). A reactor that returns the other branch\'s label is a cross-wired reply and refutes; a branch whose message the actor defers is STUCK on that branch alone, with Phase 292 silent because an unstashAll() exists; a bare send in one branch is refuted in that branch. (Phase 303 made the other direction positional too: one message may be answered by DIFFERENT labels at different points of the conversation, so the sender emits a wildcard the protocol resolves and the actor reads the reply it owes off its local type — no map of message → reply, and no refusal when one message had two.)'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -96,14 +96,38 @@ class G345_p295_branch_replies {
          src: tc(kv("if (m == 'get') { return 'value' }\n                                'ok'",
                     "if (flag) { gate.sendAndGet('get').get() } else { gate.send('put') }"))],
 
-        // ── the other direction MUST be unique: one message, one reply, or a sendAndGet cannot know what to await.
-        [group: 'P295 branch replies', name: 'a message answered by two different labels is skipped loudly',
-         expect: "message 'get' is answered both by 'value' and by 'other' — a sendAndGet cannot know which reply to wait for",
+        // ── the other direction is positional too (Phase 303): one message may be answered by DIFFERENT labels at
+        //    different points, and an actor that answers both the same way is refuted at the second.
+        [group: 'P295 branch replies', name: 'a message answered by two labels at two points refutes the actor that answers both alike',
+         expect: "actor 'gate' replies 'value' to 'get' in phase 'the handler' after it receives 'get', then 'get' where the protocol's reply is 'other'",
          src: tc(kv("'value'", "gate.sendAndGet('get').get()\n                            gate.sendAndGet('get').get()", '''@Protocol({
                             get: client >> gate
                             value: gate >> client
                             get: client >> gate
                             other: gate >> client
                         })'''))],
+
+        // ── and an actor that answers each point as the protocol says conforms — here by moving on in its
+        //    DEFAULT branch (Phase 302), so the second `get` is answered by the second phase.
+        [group: 'P295 branch replies', name: 'an actor that answers each point with its own label conforms', ok: true,
+         refute: ['Protocol violation', 'Skipped protocol check'],
+         src: tc('''class C {
+                        @Protocol({
+                            get: client >> gate
+                            value: gate >> client
+                            get: client >> gate
+                            other: gate >> client
+                        })
+                        static void run() {
+                            ReactorHandler<String, String> second
+                            second = { ActorContext<String> ctx, String m -> 'other' } as ReactorHandler<String, String>
+                            Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
+                                ctx.become(second)
+                                'value'
+                            } as ReactorHandler<String, String>)
+                            gate.sendAndGet('get').get()
+                            gate.sendAndGet('get').get()
+                        }
+                    }''')],
     ]
 }
