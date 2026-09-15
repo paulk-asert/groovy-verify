@@ -424,7 +424,13 @@ class ActorMailbox {
         final Map<Object, Arm> on = new LinkedHashMap<Object, Arm>()   // literal message → its explicit arm
         String otherwise = 'handles'    // any other message: 'handles' (stays), 'stash', or 'rejects' (throws)
         Object otherwiseReply = UNKNOWN_REPLY                          // Phase 294 — the default branch's reply
-    }
+        int onError = NO_ON_ERROR       // Phase 296 — the phase a throw recovers into; the edge is the ACTOR's,
+    }                                   // measured global (it fires inside become targets too), so every phase carries it
+
+    /** Phase 296 — no {@code onError} is installed: a throw is unhandled, and the message is simply rejected. */
+    static final int NO_ON_ERROR = -2
+    /** Phase 296 — the dispatch threw and an {@code onError} took it; the message was never processed. */
+    static final Object THREW = new Object()
 
     /**
      * Phase 293 — an actor's become-graph, the automaton its role is checked with: the phases (the handler first,
@@ -447,6 +453,24 @@ class ActorMailbox {
         String rootName = strip(d.handlerExpr) instanceof VariableExpression ? ((VariableExpression) strip(d.handlerExpr)).name : 'the handler'
         index.put(root, 0); order.add(root)
         Phase first = new Phase(); first.name = rootName; first.line = root.lineNumber; phases.add(first)
+        // Phase 296 — the actor's onError callback, if any: a throw recovers into the phase it becomes (or stays
+        // where it is). Registered before the worklist so a recovery phase is itself walked.
+        int errorEdge = NO_ON_ERROR
+        Expression cb = onErrorCallback(body, actorName)
+        if (cb != null) {
+            ClosureExpression ecl = singleBehaviour(cb, locals)
+            if (ecl == null) return null
+            Parameter[] eps = ecl.parameters
+            if (eps == null || (eps.length != 2 && eps.length != 3)) return null
+            if (eps.length == 2) errorEdge = -1                      // a (throwable, message) callback: no context
+            else {
+                if (!(ecl.code instanceof BlockStatement)) return null
+                Arm ea = readArm((BlockStatement) ecl.code, eps[0].name, locals, index, order, phases)
+                // a recovery that defers or replays is not modelled: the stash is Phase 292's, measured there
+                if (ea == null || ea.stash || ea.unstash || ea.rejects) return null
+                errorEdge = ea.target
+            }
+        }
         for (int i = 0; i < order.size(); i++) {
             ClosureExpression cl = order.get(i)
             Phase ph = phases.get(i)
@@ -468,9 +492,11 @@ class ActorMailbox {
                 Object lit = triggerLiteral(ifs.booleanExpression.expression, msg)
                 if (lit.is(NO_TRIGGER) || ph.on.containsKey(lit)) return null
                 boolean hasElse = ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)
-                if (!hasElse && !endsInReturn(ifs.ifBlock)) return null      // the arm falls through into the default
+                // the arm must LEAVE the dispatch, by a return or (Phase 296) by throwing, else it falls through
+                if (!hasElse && !endsInReturn(ifs.ifBlock) && !endsInThrow(ifs.ifBlock)) return null
                 Arm arm = readArm(ifs.ifBlock, ctx, locals, index, order, phases)
                 if (arm == null) return null
+                if (arm.rejects && arm.target >= 0) return null   // Phase 296 — throws AND moves: which won is not readable
                 ph.on.put(lit, arm)
                 if (hasElse) {
                     if (ifs.elseBlock instanceof IfStatement) { cur = ifs.elseBlock; continue }
@@ -497,8 +523,34 @@ class ActorMailbox {
                 if (tail == null || tail.target >= 0 || tail.unstash || tail.stash || tail.rejects) return null
             }
         }
+        for (Phase ph : phases) ph.onError = errorEdge               // Phase 296 — the edge is the actor's, not a phase's
         phases
     }
+
+    /** Phase 296 — the callback of `actor.onError(…)` / `Actor.reactor(h).onError(…)`, else null. Two of them
+     *  (the runtime keeps the last) are not modelled: the caller withholds the whole graph. */
+    private static Expression onErrorCallback(BlockStatement body, String actorName) {
+        final List<Expression> found = new ArrayList<Expression>()
+        final boolean[] many = [false] as boolean[]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                super.visitMethodCallExpression(call)
+                if (call.methodAsString != 'onError' || !(call.arguments instanceof TupleExpression)) return
+                List<Expression> args = ((TupleExpression) call.arguments).expressions
+                if (args.size() != 1) { many[0] = true; return }
+                Expression recv = strip(call.objectExpression)
+                boolean mine = (recv instanceof VariableExpression && ((VariableExpression) recv).name == actorName) ||
+                               actorFactoryArgs(recv) != null      // chained straight off Actor.reactor(…)
+                if (!mine) return
+                if (!found.isEmpty()) many[0] = true
+                found.add(args.get(0))
+            }
+        })
+        many[0] ? NOT_MODELLED : (found.isEmpty() ? null : found.get(0))
+    }
+
+    /** A marker callback that makes {@link #becomeGraph} withhold the whole graph. */
+    private static final Expression NOT_MODELLED = new ConstantExpression('not modelled')
 
     /** A behaviour argument that denotes exactly one closure (a literal, or a local assigned once), else null. */
     private static ClosureExpression singleBehaviour(Expression e, Map<String, List<ClosureExpression>> locals) {
@@ -615,6 +667,17 @@ class ActorMailbox {
     static boolean repliesAreValues(BlockStatement body, String actorName) {
         ActorDecl d = actorsIn(body).get(actorName)
         d != null && !d.stateful
+    }
+
+    /** Phase 296 — an arm that throws leaves the dispatch just as a return does (its message is not processed). */
+    private static boolean endsInThrow(Statement stmt) {
+        Statement last = stmt
+        if (last instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) last).statements
+            if (ss.isEmpty()) return false
+            last = ss.get(ss.size() - 1)
+        }
+        last instanceof org.codehaus.groovy.ast.stmt.ThrowStatement
     }
 
     private static boolean endsInReturn(Statement stmt) {

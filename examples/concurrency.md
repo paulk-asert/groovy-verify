@@ -539,6 +539,40 @@ Deferral is per-branch too: an actor that defers `put` is stuck on *that* branch
 normally. What must stay unique is the other direction — one message, one reply — because that is what tells a
 `sendAndGet` what to wait for; a message answered by two different labels is skipped loudly.
 
+### `onError` — what it observes, and what it cannot rescue (Phase 296)
+
+`onError` reads as supervision, and the first thing to do with a reading like that is measure it. Most of it
+does not hold. The actor survives a throwing dispatch **with or without** a callback — the next message is
+handled either way — and a `sendAndGet` on the failed message completes exceptionally **either way** too.
+
+What the callback really adds is an observation point and, for the three-parameter form, a `become`: a recovery
+edge that belongs to the *actor* rather than to a phase, since it fires for a throw inside a `become` target as
+well.
+
+<!-- doclint:ignore README illustration: an onError recovery edge -->
+```groovy
+Actor<String> gate = Actor.stateful(0) { ActorContext<String> ctx, Integer s, String m ->
+    if (m == 'risky') { throw new IllegalStateException('boom') }
+    s
+}
+gate.onError { ActorContext<String> ctx, Throwable t, String msg -> ctx.become(safe) }
+```
+
+So a callback does **not** make the throw conformant: the message the protocol delivered was never processed,
+callback or no callback. What it changes is what the checker can tell you — Phase 293's bare *rejects* becomes
+the error observed, and the phase the actor carried on into, named:
+
+<!-- doclint:diagnostic p296-actor-onerror/a-throw-an-onerror-observes-is-still-a-message-the-protocol-delivered-and-lost -->
+```
+[Static type checking] - Protocol violation in run (role 'gate'): actor 'gate' throws on 'risky' in phase 'the
+handler' at the start (its 'risky' branch throws): its onError observes the error and the actor carries on in
+phase 'safe', but the message the protocol delivered is never processed. …
+```
+
+And when the thrown-on message is one the protocol **answers**, the clause the measurement exists for: *the
+reply 'ack' the protocol promises fails with that error too — an onError cannot rescue it*. It is worth saying
+out loud precisely because the callback is what makes it look handled.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

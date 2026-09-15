@@ -305,7 +305,7 @@ class SessionChecker {
         for (String r : actorRoles) {
             List<ActorMailbox.Phase> graph = ActorMailbox.becomeGraph(body, r)
             if (graph == null) {
-                out.add([Reporter.formatProtocolSkipped(methodName, "the behaviours of actor '${r}' are not all visible as `if (m == LIT)` arms over become targets in this method"), body] as Object[])
+                out.add([Reporter.formatProtocolSkipped(methodName, "the behaviours of actor '${r}' are not all visible as `if (m == LIT)` arms over become targets in this method (its phases, every become target, and its onError callback)"), body] as Object[])
                 continue
             }
             String v = accepts(local.get(r), localFrag.get(r), graph, replyOf, pairs, ActorMailbox.repliesAreValues(body, r))
@@ -963,6 +963,16 @@ class SessionChecker {
                 }
                 Object[] r = deliver(g, ph, msg, st, 0)
                 if (r[0] instanceof String) return "${r[0]}${actorTrace(seen, ck)}".toString()
+                // Phase 296 — the throw an onError observes. The actor survives, so the report says where it
+                // carries on; the message is still never processed, and a reply it owed cannot be rescued either
+                // — measured, a sendAndGet fails with that error whether or not a callback is installed.
+                if (r[0].is(ActorMailbox.THREW)) {
+                    int rec = (int) r[1]
+                    String where = rec == ph ? "stays in it (its callback takes no context, so it cannot become another)" :
+                                               "carries on in phase '${g.get(rec).name}'".toString()
+                    String rep = replyOf.containsKey(msg) ? ", and the reply '${replyOf.get(msg)}' the protocol promises fails with that error too — an onError cannot rescue it".toString() : ''
+                    return "throws on '${msg}' in phase '${g.get(ph).name}'${actorTrace(seen, ck)} (${r[2]}): its onError observes the error and the actor ${where}, but the message the protocol delivered is never processed${rep}".toString()
+                }
                 List<String> ns = (List<String>) r[1]
                 if (ns.size() > STASH_BOUND) {
                     return "stashes '${msg}' in phase '${g.get((int) r[0]).name}'${actorTrace(seen, ck)} and the protocol can keep delivering into that stash without a replay: it grows without bound (the javadoc's heap warning — bound it with withStashBound, or handle '${msg}' there)".toString()
@@ -987,11 +997,11 @@ class SessionChecker {
         ActorMailbox.Arm arm = null
         for (Map.Entry<Object, ActorMailbox.Arm> e : p.on.entrySet()) if (String.valueOf(e.key) == msg) arm = e.value
         if (arm == null) {
-            if (p.otherwise == 'rejects') return ["rejects '${msg}' in phase '${p.name}' (its default branch throws)".toString()] as Object[]
+            if (p.otherwise == 'rejects') return threw(p, ph, msg, stash, 'its default branch throws')
             if (p.otherwise == 'stash') return [ph, stash + [msg], ActorMailbox.UNKNOWN_REPLY] as Object[]
             return [ph, stash, p.otherwiseReply] as Object[]
         }
-        if (arm.rejects) return ["rejects '${msg}' in phase '${p.name}' (its '${msg}' branch throws)".toString()] as Object[]
+        if (arm.rejects) return threw(p, ph, msg, stash, "its '${msg}' branch throws")
         int to = arm.target >= 0 ? arm.target : ph
         List<String> st = arm.stash ? stash + [msg] : stash
         if (arm.unstash && !st.isEmpty()) {
@@ -1006,6 +1016,20 @@ class SessionChecker {
         // Phase 294 — the value this dispatch returns: for a reactor, what its sendAndGet is completed with. A
         // message the arm stashed is not answered by it at all, so nothing is claimed about the reply.
         [to, st, arm.stash ? ActorMailbox.UNKNOWN_REPLY : arm.reply] as Object[]
+    }
+
+    /**
+     * Phase 296 — a dispatch that threw. The message is not processed either way, so it is a violation either
+     * way; what an {@code onError} changes is what the report can say. With no callback nothing in the code
+     * acknowledges the error at all (Phase 293's bare rejection, unchanged). With one, the callback observes it
+     * and the actor carries on — into the phase the callback becomes, or the one it is in for a two-parameter
+     * callback with no context (measured: the edge is the ACTOR's, firing inside become targets too) — but the
+     * message is gone all the same, so {@code accepts} names the recovery phase rather than pretending it was
+     * taken. Returned as a marker so the caller can add the reply clause it alone knows about.
+     */
+    private static Object[] threw(ActorMailbox.Phase p, int ph, String msg, List<String> stash, String why) {
+        if (p.onError == ActorMailbox.NO_ON_ERROR) return ["rejects '${msg}' in phase '${p.name}' (${why})".toString()] as Object[]
+        [ActorMailbox.THREW, p.onError >= 0 ? p.onError : ph, why] as Object[]
     }
 
     private static String actorKey(Set<Integer> ls, int ph, List<String> st, Map<String, Object[]> owed) {

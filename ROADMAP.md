@@ -13548,7 +13548,54 @@ curated corpus as `ActorKeyValue` — an actor's reply is an ordinary Scribble m
 the exporter needed nothing new, and `nuscr` accepts it.
 
 **Open:** an actor that answers the same message differently per PHASE (the reply's label is per-message, not
-per-phase); and the Phase 294 items above.
+per-phase); and the Phase 294 items above. The `onError` surface shipped as Phase 296 below.
+
+---
+
+## Phase 296 — `onError`: what it observes, and the reply it cannot rescue  *(shipped — slice 1)*
+
+The last untouched corner of the Actor surface bar the timers. `onError` reads as supervision — install a
+callback and the failure is handled — and the modelling had to start by finding out how much of that is true.
+
+**Measured** (`ActorErrorSemanticsTest`, the Phase 289 rule), and mostly it is not:
+
+* the actor survives a throwing dispatch **with or without** a callback — the next message is handled either
+  way, and the failed one is not retried;
+* the callback is handed the throwable **and** the offending message, and for the three-parameter form its
+  `ctx.become(…)` decides where the next message lands;
+* that edge is the **actor's, not a phase's**: it fires for a throw inside a `become` target too;
+* a `sendAndGet` on the failed message completes **exceptionally anyway** — a callback does not rescue the caller;
+* a stateful actor's state is neither advanced nor rolled back: the failed dispatch simply does not happen.
+
+**So a callback does not make a throw conformant.** The first model tried had a callback turn a throw into a
+declared outcome that the search could continue past — and the case that was meant to prove it caught the flaw
+instead: with a callback installed, *nothing* is ever a violation, because the recovery edge swallows every
+throw, including the recovery phase's own. A message the protocol delivered and the actor threw on was never
+processed, callback or not. What the callback buys is the **report**, and Phase 293's bare `rejects` becomes:
+
+> throws on 'risky' in phase 'the handler' at the start (its 'risky' branch throws): its onError observes the
+> error and the actor carries on in phase 'safe', but the message the protocol delivered is never processed
+
+— the recovery phase named (or *stays in it (its callback takes no context, so it cannot become another)* for
+the two-parameter form), which is where the become-graph earns its keep. And when the message is one the
+protocol ANSWERS, the clause that the measurement exists for: *and the reply 'ack' the protocol promises fails
+with that error too — an onError cannot rescue it*. Said explicitly, because the callback is exactly what makes
+it look handled.
+
+Engine notes. `becomeGraph` reads the actor's `onError` callback — chained off the factory or called on the
+local — and registers its `become` target as a phase like any other, storing the edge on every phase since it
+is global. A callback that defers, replays, hands its context on, or is installed twice withholds the whole
+graph, as does an arm that both throws and moves (which of the two won is not readable). Incidental coverage
+gain: an arm may now LEAVE its dispatch by throwing as well as by returning, so a throwing `if (m == LIT)` arm
+is read — before this only a throwing default was.
+
+Cases (G346, 6): a throw a callback observes is still a lost message, with the recovery phase named; a callback
+on an actor that never throws changes nothing; a callback cannot rescue the promised reply; a two-parameter
+callback leaves the actor where it is; with no callback the same throw is Phase 293's bare rejection; a callback
+that replays the stash withholds the graph. P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
+
+**Open:** `scheduleOnce` / `scheduleAtFixedRate` — the actor half of the library has timers while the channel
+half has none, which is the roadmap's own argument for `AsyncChannel.after(…)`; and the Phase 294/295 items.
 
 ---
 
