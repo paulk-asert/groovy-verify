@@ -831,6 +831,48 @@ class ActorMailbox {
         out
     }
 
+    /**
+     * Phase 300 — why this method's sends are not the whole count for a field-held actor, or null when they are.
+     * The field must be private (nothing outside the class can send to it) and exactly one method may send (no
+     * sibling can interleave a trigger). Repeat CALLS of that one method are then the only other source, and
+     * they can only repeat the same burst — which adds to a bound, never rescues one, so a refutation stands.
+     */
+    private static String exclusiveSenderReason(ClassNode owner, String actor, String methodName) {
+        if (owner == null) return "it is not declared in this method and its class is unknown here"
+        FieldNode f = owner.getField(actor)
+        if (f == null) return "it is not declared in this method"
+        // a field written without a modifier is a Groovy PROPERTY: the backing field is private but the generated
+        // accessor is not, so the actor is reachable from outside and anyone may send to it.
+        if (owner.getProperty(actor) != null || !f.private) {
+            return "'${actor}' is ${owner.getProperty(actor) != null ? 'a property, so its generated accessor lets code outside' : 'not a private field, so code outside'} ${owner.nameWithoutPackage} send to it too".toString()
+        }
+        List<String> senders = sendingMethods(owner, actor)
+        if (senders.size() > 1) {
+            return "${senders.size()} methods of ${owner.nameWithoutPackage} send to '${actor}' (${senders.join(', ')}), so this method's sends are not the whole count — a sibling can interleave with them".toString()
+        }
+        null
+    }
+
+    /** Phase 300 — the names of the methods and constructors of a class that send to a given actor. */
+    private static List<String> sendingMethods(ClassNode owner, String actor) {
+        final Set<String> out = new LinkedHashSet<String>()
+        List<MethodNode> all = new ArrayList<MethodNode>(owner.methods ?: Collections.<MethodNode> emptyList())
+        all.addAll(owner.declaredConstructors ?: Collections.<ConstructorNode> emptyList())
+        for (MethodNode mn : all) {
+            if (mn.code == null) continue
+            final String who = mn instanceof ConstructorNode ? "${owner.nameWithoutPackage}()".toString() : "${mn.name}()".toString()
+            mn.code.visit(new CodeVisitorSupport() {
+                @Override void visitMethodCallExpression(MethodCallExpression call) {
+                    Expression recv = strip(call.objectExpression)
+                    if ((call.methodAsString == 'send' || call.methodAsString == 'sendAndGet') &&
+                            recv instanceof VariableExpression && ((VariableExpression) recv).name == actor) out.add(who)
+                    super.visitMethodCallExpression(call)
+                }
+            })
+        }
+        new ArrayList<String>(out)
+    }
+
     /** The explicit arm a phase has for a literal message, else null. */
     private static Arm armFor(Phase p, String msg) {
         for (Map.Entry<Object, Arm> e : p.on.entrySet()) if (String.valueOf(e.key) == msg) return e.value
@@ -1007,13 +1049,27 @@ class ActorMailbox {
     /**
      * The check. Returns the findings; the caller reports them (so this file stays free of the STC API).
      */
-    static List<Finding> check(String methodName, BlockStatement body) {
+    static List<Finding> check(String methodName, BlockStatement body, ClassNode owner = null) {
         List<Finding> out = new ArrayList<Finding>()
-        Map<String, ActorDecl> actors = actorsIn(body)
+        Map<String, ActorDecl> local = actorsIn(body)
+        // Phase 300 — the send-dependent checks read this METHOD's sends, but the actor they are about may be
+        // declared on the class. Declarations and behaviours come from both; the program-order pass below still
+        // reads the method's own statements and nothing else.
+        BlockStatement scope = body
+        if (owner != null) {
+            List<Statement> fs = fieldDeclarations(owner).statements
+            if (!fs.isEmpty()) {
+                List<Statement> ss = new ArrayList<Statement>(fs); ss.addAll(body.statements)
+                scope = new BlockStatement(ss, null); scope.sourcePosition = body
+            }
+        }
+        Map<String, ActorDecl> actors = scope.is(body) ? local : actorsIn(scope)
         if (actors.isEmpty()) return out
-        out.addAll(stashFindings(methodName + '()', body, actors))   // Phase 292 — needs no sends, so it comes first
-        out.addAll(timerFindings(methodName + '()', body, actors))   // Phase 297 — likewise
-        Map<String, List<ClosureExpression>> behaviours = behaviourLocals(body)
+        // the behaviour-graph findings are about the ACTOR, so a field-held one has them raised once for the
+        // class (checkClass) rather than again in every method that sends to it
+        out.addAll(stashFindings(methodName + '()', body, local))    // Phase 292 — needs no sends, so it comes first
+        out.addAll(timerFindings(methodName + '()', body, local))    // Phase 297 — likewise
+        Map<String, List<ClosureExpression>> behaviours = behaviourLocals(scope)
 
         // Program-order pass over the body's own statements: sends to each actor, and sends on each channel.
         List<Send> sends = new ArrayList<Send>()
@@ -1064,6 +1120,20 @@ class ActorMailbox {
         for (ActorDecl d : actors.values()) {
             List<Send> mine = sends.findAll { Send s -> s.actor == d.name }.toList()
             if (mine.isEmpty()) continue
+            // Phase 300 — a field-held actor OUTLIVES the call, so this method's burst is only the whole story
+            // when nothing else can add to it or drain it. A count that is merely a LOWER bound would still be
+            // sound for the mailbox (other senders only fill it further), but not for the stash: a sibling method
+            // sending the trigger drains it, and a burst that overflows here would not there. So both are claimed
+            // only for a PRIVATE field that exactly one method sends to — said out loud when a bound was asked for.
+            if (!local.containsKey(d.name)) {
+                String why = exclusiveSenderReason(owner, d.name, methodName)
+                if (why != null) {
+                    if (d.capacity >= 0 || d.stashCapacity >= 0) {
+                        out.add(new Finding(Reporter.formatActorSendsNotWhole(methodName, d.name, why), mine.get(0).anchor))
+                    }
+                    continue
+                }
+            }
 
             // Phase 292 slice 2 — the stash bound, independent of the mailbox bound (so before its skips).
             Finding overflow = stashOverflow(methodName, d, mine, body, behaviours)

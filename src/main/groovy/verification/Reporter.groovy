@@ -587,6 +587,14 @@ class Reporter {
     }
 
     /** Phase 289 — a bounded mailbox the model cannot read: loud skip, no claim either way. */
+    /** Phase 300 — a field-held actor outlives the call, so this method's sends are not the whole count. */
+    static String formatActorSendsNotWhole(String methodName, String actor, String why) {
+        ("Skipped actor send certificate for '${actor}' in ${methodName} (${why}). An actor held in a field " +
+            "outlives the call, so a bound is only checkable against this method's sends when nothing else can " +
+            "add to them or drain them: make the field private and send to it from one method, or move the actor " +
+            "into the method that bursts.").toString()
+    }
+
     static String formatActorMailboxSkipped(String methodName, String actor, String why) {
         "Skipped actor mailbox certificate for '${actor}' in ${methodName} (${why}). The mailbox model " +
         "needs a literal capacity and a literal ActorOptions.Overflow constant to say whether a send " +

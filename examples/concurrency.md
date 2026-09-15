@@ -694,8 +694,29 @@ initialisation order; for a *behaviour* it does not, and the overwritten closure
 though it were live. Both definitions are dropped instead. A `null` placeholder followed by a real assignment is
 one definition, and is kept.
 
-Still out of reach: the send-dependent checks — the [bounded mailbox](#the-bounded-mailbox--the-other-send-that-blocks-phase-289) and the
-stash bound — read a method body alone, so a field-held actor's *sends* are not yet counted.
+### Counting a field-held actor's sends (Phase 300)
+
+The [bounded mailbox](#the-bounded-mailbox--the-other-send-that-blocks-phase-289) and the stash bound are
+different in kind from everything above, because they count *this method's* sends — and an actor held in a
+field outlives the call.
+
+The obvious move is to hand the send pass the class's declarations and stop. It does not hold. A method's burst
+is a **lower bound** on what the actor receives, which happens to be sound for the mailbox — other senders only
+fill it further — but not for the stash: a sibling method sending the trigger *drains* it, so a burst that
+overflows in isolation may never overflow in the class. And the field's own visibility matters more than it
+looks: a field written **without a modifier is a Groovy property**, whose generated accessor lets any code
+outside the class send to the actor.
+
+So the count is claimed exactly when it really is the whole story — a genuinely private field, sent to by one
+method. Repeat *calls* of that method are then the only other source, and they can only repeat the burst, which
+adds to a bound and never rescues one. Everything else is a loud skip naming the reason, and only when a bound
+was asked for in the first place:
+
+> Skipped actor send certificate for 'gate' in burst (2 methods of C send to 'gate' (burst(), other()), so this
+> method's sends are not the whole count — a sibling can interleave with them). …
+
+With that the Actor surface is complete, and reaches the shape real code is written in: every check from the
+mailbox to the timers, over an actor declared as a local, a field initialiser, or built in a constructor.
 
 ### Dataflow — the determinacy half via single-assignment
 

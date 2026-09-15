@@ -2773,7 +2773,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             try {
                 // Phase 289 — the bounded actor mailbox: the only send besides a rendezvous that blocks.
                 if (body instanceof BlockStatement) {
-                    for (ActorMailbox.Finding f : ActorMailbox.check(node.name, (BlockStatement) body)) {
+                    for (ActorMailbox.Finding f : ActorMailbox.check(node.name, (BlockStatement) body, node.declaringClass)) {
                         addStaticTypeError(f.message, f.anchor)
                     }
                 }

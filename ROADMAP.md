@@ -13737,8 +13737,50 @@ then a real assignment; an actor and a behaviour each given two competing defini
 two constructors, left alone. P298 (6, one case moved), P297 (7), P296 (6), P295 (6), P294 (6), P293 (7) and
 P292 (15) are otherwise unchanged.
 
-**Open:** the send-dependent checks over a field-held actor; a class with more than one constructor; and the
-Phase 294/295/297 items.
+**Open:** a class with more than one constructor; and the Phase 294/295/297 items. The send-dependent checks
+over a field-held actor shipped as Phase 300 below.
+
+---
+
+## Phase 300 — the send-dependent checks over a field-held actor  *(shipped — slice 3, and the field work closed)*
+
+The last thing on the Actor surface that could not see a service class. Phases 298–299 gave the BEHAVIOUR-graph
+checks their reach; the bounded mailbox (289) and the stash bound (292 slice 2) are different in kind, because
+they count THIS METHOD's sends — and a field-held actor outlives the call.
+
+**That difference is the whole phase, and it nearly got waved through.** The obvious move is to feed the send
+pass the class's declarations and stop. It does not hold. A method's burst is a LOWER bound on what the actor
+receives, and a lower bound happens to be sound for the mailbox — other senders only fill it further — but it
+is NOT sound for the stash: a sibling method sending the trigger DRAINS the stash, so a burst that overflows in
+isolation may never overflow in the class. Nor is the field's own reachability a detail: a field written
+without a modifier is a Groovy PROPERTY, and its generated accessor lets any code outside the class send to the
+actor, which was found by a case expecting a refutation and getting one it should not have had.
+
+So both checks are claimed exactly when the burst really is the whole story: the field is **genuinely private**
+(a real private field, not a property) and **exactly one method of the class sends to it**. Repeat CALLS of that
+one method are then the only other source, and they can only repeat the same burst — which adds to a bound and
+never rescues one, so a refutation stands. Anything else is a loud skip naming the reason, and only when a bound
+was actually asked for: *'gate' is a property, so its generated accessor lets code outside C send to it too*, or
+*2 methods of C send to 'gate' (burst(), other()) — a sibling can interleave with them*.
+
+Engine notes. `check` takes the owning `ClassNode` and reads declarations and behaviours from the class's
+initialisers plus the method body, while the program-order send pass still reads the method's own statements
+alone. The behaviour-graph findings keep using the METHOD-LOCAL actors only, so a field-held actor's stash and
+timers are still raised once for the class by `checkClass` rather than again in every method that sends to it.
+
+Phase 298's boundary case has now been superseded twice — first by 299 reaching the constructor, then by this
+phase reaching the sends — so it is retired rather than moved a third time; G348 keeps the five cases that are
+about fields as such. P299 (8), P297 (7), P296 (6), P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
+
+Cases (G350, 6): the stash-bound burst refuted with the actor on the class; the BLOCK mailbox knot likewise; a
+property-held actor skipped loudly; two sending methods skipped loudly, naming both; a burst within the bound
+left alone; and an unbounded actor with two senders saying nothing, since no bound was asked for.
+
+**With this the Actor surface is complete and reaches the shape real code is written in.** Nine phases of
+checks (289, 292–297), all three declaration forms (298–300), and no part of `Actor` / `ActorContext`
+unmodelled.
+
+**Open:** a class with more than one constructor; and the Phase 294/295/297 items.
 
 ---
 

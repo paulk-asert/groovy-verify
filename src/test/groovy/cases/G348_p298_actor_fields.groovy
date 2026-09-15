@@ -28,7 +28,7 @@ import static cases.CaseDsl.*
 class G348_p298_actor_fields {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 298 the actor as a field: an actor declared in a field initialiser, with its behaviours as fields too, is now read by the whole Actor gallery — the stash check (292), the timers (297) and the @Protocol stack (293-296) — where before every one of them was silent because they each read a single METHOD body. A field initialiser is a declaration, so the class\'s initialisers are presented as one and the existing machinery reads a class unchanged. The behaviour-graph findings (stash never replayed, the timers) are about the actor rather than about any method, so they are raised once for the CLASS and named as such however many methods send to it; the protocol checks stay per method, with the field actor playing its role. The constructor and static-block forms, and with them the cyclic phase graph, came next in Phase 299; what remains outside is the SEND-dependent half — the bounded mailbox (289) and the stash bound (292 slice 2) still read a method body alone, so a field-held actor\'s sends are not counted.'
+    static final String DESCRIPTION = 'Phase 298 the actor as a field: an actor declared in a field initialiser, with its behaviours as fields too, is now read by the whole Actor gallery — the stash check (292), the timers (297) and the @Protocol stack (293-296) — where before every one of them was silent because they each read a single METHOD body. A field initialiser is a declaration, so the class\'s initialisers are presented as one and the existing machinery reads a class unchanged. The behaviour-graph findings (stash never replayed, the timers) are about the actor rather than about any method, so they are raised once for the CLASS and named as such however many methods send to it; the protocol checks stay per method, with the field actor playing its role. The constructor and static-block forms, and with them the cyclic phase graph, came next in Phase 299, and the send-dependent half (the bounded mailbox and the stash bound) in Phase 300 — so what began here as one shape the gallery could not see is now covered end to end.'
 
     /** Runtime-rung tier (declared, not inferred — Phase 196): why this group's contracts aren't grid-run. */
     static final String RUNG_TIER = 'C — concurrency: the contract needs threads/scheduling, not a parameter grid'
@@ -107,27 +107,5 @@ class G348_p298_actor_fields {
                         }
                     }''')],
 
-        // ── the boundary that remains: the SEND-dependent checks still read a method body alone, so a field-held
-        //    actor's sends are not counted. The identical burst past a stash bound is refuted for a local
-        //    (P292) and silent here. (The constructor form was this case until Phase 299 reached it.)
-        [group: 'P298 actor fields', name: 'the send-dependent checks do not yet see a field-held actor\'s sends', ok: true,
-         refute: ['Stash overflow', 'Actor mailbox deadlock'],
-         src: tc('''class C {
-                        static Actor<String> gate = Actor.reactor({ ActorContext<String> ctx, String m ->
-                            if (m == 'open') {
-                                ctx.become({ ActorContext<String> c, String n -> n } as ReactorHandler<String, String>)
-                                ctx.unstashAll()
-                                return m
-                            }
-                            ctx.stash()
-                            return m
-                        } as ReactorHandler<String, String>, ActorOptions.DEFAULTS.withStashBound(2, ActorOptions.StashOverflow.FAIL))
-                        static void burst() {
-                            gate.send('a')
-                            gate.send('b')
-                            gate.send('c')
-                            gate.send('open')
-                        }
-                    }''')],
     ]
 }
