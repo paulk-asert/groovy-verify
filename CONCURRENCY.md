@@ -165,6 +165,41 @@ stuck dispenser, the step-by-step twin of groovy-verify's mutual-exclusion refut
 
 Same rung-2 limits as the buffer: action-grained, sequentially consistent, finite N and a bounded dispenser.
 
+### A third rung-2 artifact — the channel network, where rung 1's argument is *structural*
+
+`src/tlc/Network.tla`, run by `./gradlew tlcNetwork`. The [Kerridge gallery](examples/kerridge.md)'s
+**deadlock exercise** — two processes joined by two channels, each reading from the other before it writes —
+modelled as a state machine: channels by occupancy (content is irrelevant to blocking), each process by its
+position in its own two-step program, and a `Primed` constant selecting the repair.
+
+**Why this pairing is not the same argument twice.** Rung 1 refutes the cycle *structurally*: it builds the
+wait-for order and shows it is not well-founded, naming the cycle. "No interleaving reaches a stuck state" is a
+different claim, and TLC decides it by enumerating them. And the second property is one the sequential checker
+cannot state at all — Phase 255 certifies liveness *under weak fairness*, an assumption written in prose there
+and as `WF_vars` here, which is TLA+'s own vocabulary for it. The assumption gets checked rather than declared.
+
+`Network.cfg` (`Primed = TRUE`, the priming send the books teach) completes clean — 5 distinct states, no
+deadlock, `Progress` holds. `NetworkCycle.cfg` (`Primed = FALSE`, the student mistake) is expected to fail, and
+the failure is the point:
+
+```sh
+./gradlew tlcNetwork --args="-nowarning -config NetworkCycle.cfg Network.tla"
+```
+```
+Error: Deadlock reached.
+State 1: <Initial predicate>
+/\ bToA = 0   /\ aToB = 0
+/\ pcA = "s1" /\ pcB = "s1"
+```
+
+Both processes sitting at their first step with both channels empty: neither receive is enabled and nothing
+else can run. That is the rung-2 counterpart of the compile-time *"Process-network deadlock: circular wait"*,
+and of the `DeadlockException` Fray exhibits for the same network at rung 3 — one example, argued three ways.
+
+A note on the spec's `Terminating` disjunct: TLC calls any state with no successor a deadlock, so a network
+that simply *finishes* would be reported as one. Stuttering once both processes are done keeps the check
+honest — only a state where a process still has work to do but nothing is enabled counts.
+
 ## Rung 3 — Tested real bytecode
 
 The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — several ways: the

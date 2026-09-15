@@ -14127,12 +14127,46 @@ ITERATION against ~0.1s for the channel cycle.
 So the actor mailbox belongs at rung 2, not rung 3 — TLA+ can state weak fairness (`WF_vars`) and ask the
 question the property actually poses. Recorded here rather than left as an open invitation to retry it.
 
-**Open (the rungs for the rest):** TLC on a channel network, where
-deadlock-freedom is proved STRUCTURALLY at rung 1 so an exhaustive check is a genuinely independent oracle and
-TLA+'s `WF_vars` is the native vocabulary for Phase 255's weak-fairness assumption; and TLC on an actor with
-several concurrent senders, which is precisely what Phase 300 withholds. Lincheck is the weak fit for both —
-an actor is serialized by construction, so linearizability is close to definitional, and Lincheck-ing
-`AsyncChannel` would test Groovy's library rather than these proofs.
+**Open (the rungs for the rest):** TLC on a channel network — deadlock-freedom is proved STRUCTURALLY at
+rung 1, so an exhaustive check is a genuinely independent oracle, and TLA+'s `WF_vars` is the native vocabulary
+for Phase 255's weak-fairness assumption (SHIPPED as Phase 307 below); and TLC on an actor with several
+concurrent senders, which is precisely what Phase 300 withholds. Lincheck is the weak fit for both — an actor
+is serialized by construction, so linearizability is close to definitional, and Lincheck-ing `AsyncChannel`
+would test Groovy's library rather than these proofs.
+
+---
+
+## Phase 307 — TLC on a channel network: rung 2 for the Kerridge gallery  *(shipped)*
+
+The third rung-2 artifact, beside the Smith buffer and Leino's ticket lock: `src/tlc/Network.tla`, the
+gallery's **deadlock exercise** as a state machine — channels by OCCUPANCY (content is irrelevant to
+blocking), each process by its position in its own two-step program, and a `Primed` constant selecting
+between the student mistake and the repair the books teach.
+
+**The pairing is not the same argument twice, which is the test for whether a rung is worth adding.** Rung 1
+refutes the cycle STRUCTURALLY — it builds the wait-for order and shows it is not well-founded, naming the
+cycle. "No interleaving reaches a stuck state" is a different claim, and TLC decides it by enumerating them.
+The second property is stronger still: Phase 255 certifies liveness UNDER WEAK FAIRNESS, an assumption written
+in prose at rung 1 and as `WF_vars` here, which is TLA+'s own vocabulary for it — so the assumption is checked
+rather than declared.
+
+`Network.cfg` (`Primed = TRUE`) completes clean: 5 distinct states, no deadlock, `Progress` holds.
+`NetworkCycle.cfg` (`Primed = FALSE`) reports `Deadlock reached` in the INITIAL state — both processes at
+their first step, both channels empty, neither receive enabled — which is the rung-2 counterpart of the
+compile-time *"Process-network deadlock: circular wait"* and of the `DeadlockException` Fray exhibits for the
+same network at rung 3. **One example, argued three ways**, which is what the three-rung stance claims is
+possible and had not been demonstrated end to end before.
+
+One modelling note worth keeping: TLC calls ANY state with no successor a deadlock, so a network that simply
+finishes would be reported as one. The spec stutters once both processes are done, so only a state where a
+process still has work to do but nothing is enabled counts.
+
+`tlcNetwork` runs it; CI's rung-2 step now runs all three models. Gates unchanged elsewhere (this touches no
+checker code): docLint 0 drift.
+
+**Open:** the actor mailbox at this rung. The Fray attempt above established WHY it belongs here — a sender
+released when the handler drains is a fairness property, not a deadlock property — and `WF_vars` is how to
+say it. That, plus an actor with several concurrent senders, which is precisely what Phase 300 withholds.
 
 ---
 

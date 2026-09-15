@@ -605,6 +605,17 @@ tasks.register('tlcCheck', JavaExec) {
 // safety+liveness proof (Phases 170-175). Secure spec at N=3: mutual exclusion + the `valid` invariant on
 // every reachable state, plus fair-schedule eventually-eats — the general-N reach the N=2 proof can't make.
 // The broken-dispenser variant is a manual run: java -cp <jar> tlc2.TLC -config TicketBad.cfg Ticket.tla
+tasks.register('tlcNetwork', JavaExec) {
+    group = 'verification'
+    description = 'Model-check src/tlc/Network.tla (the Kerridge deadlock exercise, primed) with TLA+ TLC — rung 2'
+    dependsOn tlcPrepare
+    classpath = configurations.tlc
+    mainClass = 'tlc2.TLC'
+    workingDir = tlcWorkDir
+    args = ['-nowarning', 'Network.tla']        // Network.cfg is picked up by name; TypeOK + Bounds + Progress
+    jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
+}
+
 tasks.register('tlcTicket', JavaExec) {
     group = 'verification'
     description = 'Model-check src/tlc/Ticket.tla (Leino ticket lock, N=3) with TLA+ TLC — rung 2 of CONCURRENCY.md'
