@@ -144,8 +144,8 @@ closed) it is **wired into `check`** — a new confirmed proof-vs-runtime diverg
 **`VERIFY_RUNG_INDY=false`** recompiles every rung case with **classic call-site bytecode** instead of
 invokedynamic — a differential lever for the less-exercised legacy code generator: same corpus, same
 grid, same cross-validation, different codegen. Sweeps on 6.0.0-SNAPSHOT, 6.0.0-beta-1 (655
-runnable proofs), 6.0.0-beta-2 (664), 6.0.0-beta-3 (672) and 6.0.0-RC-2 (672) came back **byte-identical to the indy
-run** — no classic-codegen divergence surfaced.
+runnable proofs), 6.0.0-beta-2 (664), 6.0.0-beta-3 (672), 6.0.0-RC-2 (672) and 6.0.0-RC-3 (681) came back
+**byte-identical to the indy run** — no classic-codegen divergence surfaced.
 (Set with a fresh daemon: the gradle daemon captures the environment at startup.) Since GROOVY-12185,
 classic call sites live in the optional **`groovy-callsite`** module rather than core `groovy`, so the
 build carries it as a `testRuntimeOnly` dependency purely for this lever — without it the classic
