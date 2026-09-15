@@ -655,9 +655,47 @@ actor, not about any method, so raising them per method would report one defect 
 it — two above, and rising. They are raised for the **class** instead, and named that way. A class with two
 sending methods emits exactly one.
 
-Still out of reach, saying nothing rather than guessing: an actor assigned in a **constructor** or an
-initialiser block. That also means a *cyclic* phase graph is not found — mutual `become` needs the
-declare-then-assign idiom, and an initialiser cannot name a field declared after it.
+### The constructor, and the cycle it unlocks (Phase 299)
+
+Reading field *initialisers* sounds like it covers the field case, and it nearly does — except for the one
+thing the docs' own example needs. **A field initialiser cannot name a field declared after it**, so mutual
+`become` has to be written declare-then-assign. The three-phase connection actor of
+[Phase 293](#become--the-phases-checked-against-a-protocol-phase-293) has a `connected → disconnected` back
+edge, and so could not be written as a service class at all:
+
+<!-- doclint:ignore README illustration: a cyclic phase graph built in a constructor -->
+```groovy
+class Gate {
+    StatefulHandler<Integer, String> disconnected, authenticating, connected
+    Actor<String> gate
+
+    Gate() {
+        disconnected   = { ctx, s, m -> if (m == 'connect') { ctx.become(authenticating); return s }; s }
+        authenticating = { ctx, s, m -> if (m == 'auth_ok') { ctx.become(connected); ctx.unstashAll(); return s }
+                                        ctx.stash(); s }
+        connected      = { ctx, s, m -> if (m == 'bye') { ctx.become(disconnected); return s }; s + 1 }
+        gate = Actor.stateful(0, disconnected)
+    }
+}
+```
+
+Fields assigned in the constructor — and in an instance initialiser, and in a `static` block — are now read the
+same way initialisers are. Behaviours resolve by *name*, so the order they are assigned in does not matter and
+the cycle closes.
+
+It is worth being clear that this class is genuinely **checked** and not merely unreported, since a pass and a
+silent skip look identical from the outside. Give it Phase 293's mistyped trigger — `'auth-ok'` for `auth_ok`
+— and the whole stack still refutes through it: *can reach the end of the conversation in phase
+'authenticating' … with 'auth_ok' still stashed*.
+
+One edge is deliberately refused. A field can be given a value twice — an initialiser *and* a constructor — and
+letting the later one win would be guessing. For the actor itself that guess happens to match Groovy's
+initialisation order; for a *behaviour* it does not, and the overwritten closure would have been scanned as
+though it were live. Both definitions are dropped instead. A `null` placeholder followed by a real assignment is
+one definition, and is kept.
+
+Still out of reach: the send-dependent checks — the [bounded mailbox](#the-bounded-mailbox--the-other-send-that-blocks-phase-289) and the
+stash bound — read a method body alone, so a field-held actor's *sends* are not yet counted.
 
 ### Dataflow — the determinacy half via single-assignment
 

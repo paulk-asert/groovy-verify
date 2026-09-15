@@ -13694,8 +13694,51 @@ actor left alone; a timer armed in one field behaviour landing in another's; the
 with the role played by a field; Phase 295's cross-wired reply refuting through it; and a constructor-assigned
 actor claiming nothing. P297 (7), P296 (6), P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
 
-**Open:** the constructor and initialiser-block forms (and with them the cyclic phase graph); the
-send-dependent checks over a field-held actor; and the Phase 294/295/297 items.
+**Open:** the send-dependent checks over a field-held actor; and the Phase 294/295/297 items. The constructor
+and initialiser-block forms, and with them the cyclic phase graph, shipped as Phase 299 below.
+
+---
+
+## Phase 299 — the actor BUILT in a constructor, and the cycle it unlocks  *(shipped — slice 2 of the field work)*
+
+Phase 298 read field INITIALISERS, and left the constructor as an open item that sounded like extra syntax for
+completeness. It is not: it is the shape the docs' own example needs. **A field initialiser cannot name a field
+declared after it**, so mutual `become` has to be written declare-then-assign — which meant the three-phase
+connection actor of Phases 293–296, with its `connected → disconnected` back edge, could not be written as a
+service class at all. The cycle was the missing piece, not the syntax.
+
+`fieldDeclarations` now also reads the fields ASSIGNED in the class's single constructor, its instance
+initialiser and its `static` block — an unqualified name or `this.x` — synthesising each as the declaration it
+amounts to, exactly as Phase 298 does for an initialiser. Since behaviours resolve by NAME, the order the
+assignments appear in does not matter, and a true cycle resolves. The AST shapes were checked rather than
+assumed (an unqualified field assignment is a `VariableExpression` whose `accessedVariable` is the `FieldNode`,
+`this.x` a `PropertyExpression`, and a `static` block a `<clinit>` method whose code needs flattening).
+
+**And it is genuinely CHECKED, not merely unreported** — the distinction worth pinning, since "compiles cleanly"
+is what both a pass and a silent skip look like. The service-class version of the docs' actor conforms, and the
+same class with Phase 293's mistyped trigger refutes through the whole stack: *can reach the end of the
+conversation in phase 'authenticating' … with 'auth_ok' still stashed*.
+
+**A soundness edge found while probing, and closed.** A field can be given a modelled value twice — an
+initialiser and a constructor, or twice in one constructor — and collecting them in order would silently let one
+win. It happens that last-wins matches Groovy's own initialisation order for the ACTOR, but not for a
+BEHAVIOUR: `stashFindings` resolves a behaviour to every closure assigned to it, so it would have scanned the
+OVERWRITTEN one and reported a stash that the code does not have. Both are dropped instead, so the field is not
+found. A `null` placeholder followed by a real assignment is one modelled definition, and is kept.
+
+Phase 298's case pinning the constructor form as out of reach is superseded, and moves to the boundary that
+still holds: the send-dependent checks (the bounded mailbox of Phase 289, the stash bound of Phase 292 slice 2)
+read a method body alone, so a field-held actor's sends are still not counted — the identical burst past a
+stash bound is refuted for a local and silent for a field.
+
+Cases (G349, 8): the docs' three-phase actor as a service class conforming with its back edge; the same class
+refuting on a mistyped trigger; the constructor form, `this.`-qualified; a static block; a `null` placeholder
+then a real assignment; an actor and a behaviour each given two competing definitions, withheld; a class with
+two constructors, left alone. P298 (6, one case moved), P297 (7), P296 (6), P295 (6), P294 (6), P293 (7) and
+P292 (15) are otherwise unchanged.
+
+**Open:** the send-dependent checks over a field-held actor; a class with more than one constructor; and the
+Phase 294/295/297 items.
 
 ---
 

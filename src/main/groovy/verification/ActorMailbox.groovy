@@ -36,7 +36,12 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.ConstructorNode
+import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.PropertyNode
+import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
@@ -886,27 +891,99 @@ class ActorMailbox {
      * {@code Actor<String> gate = Actor.reactor(h)}, so synthesising it lets {@code actorsIn},
      * {@code behaviourLocals} and {@code becomeGraph} read a class with no change at all.
      *
-     * <p>Initialisers only, and in declaration order — which is also the order Groovy initialises them in, so a
-     * behaviour can be named by a later one but not by an earlier. A phase graph with a CYCLE therefore cannot be
-     * written this way (it needs the declare-then-assign idiom, in a constructor or an initialiser block), and
-     * nothing is claimed about those: they are simply not found here.
+     * <p>Phase 299 — the fields ASSIGNED in the class's constructor, its initialiser block and its {@code static}
+     * block are read the same way, which is what makes a CYCLIC phase graph reachable: a field initialiser cannot
+     * name a field declared after it, so mutual {@code become} has to be written declare-then-assign. An
+     * assignment carries no such restriction, and since the behaviours are resolved by NAME the order they appear
+     * in does not matter. Only whole-statement assignments to this class's own fields are taken (an unqualified
+     * name or {@code this.x}); a class with more than one constructor is left alone rather than guessed at, and a
+     * field assigned twice resolves to two behaviours, which withholds the claim by the usual route.
      */
     static BlockStatement fieldDeclarations(ClassNode owner) {
         List<Statement> ss = new ArrayList<Statement>()
         for (FieldNode f : owner.fields) {
             Expression init = f.initialValueExpression
             if (init == null) continue
-            VariableExpression lhs = new VariableExpression(f.name, f.type)
-            lhs.sourcePosition = f
-            DeclarationExpression de = new DeclarationExpression(lhs, Token.newSymbol(Types.ASSIGN, f.lineNumber, f.columnNumber), init)
-            de.sourcePosition = f
-            ExpressionStatement es = new ExpressionStatement(de)
-            es.sourcePosition = f
-            ss.add(es)
+            ss.add(fieldDecl(f, init, f))
         }
-        BlockStatement b = new BlockStatement(ss, null)
+        List<Statement> assigned = new ArrayList<Statement>()
+        if (owner.declaredConstructors?.size() == 1) assigned.addAll(((ConstructorNode) owner.declaredConstructors.get(0)).code ? bodyOf(((ConstructorNode) owner.declaredConstructors.get(0)).code) : Collections.<Statement> emptyList())
+        if (owner.objectInitializerStatements != null) for (Statement st : owner.objectInitializerStatements) assigned.addAll(bodyOf(st))
+        for (MethodNode clinit : (owner.getDeclaredMethods('<clinit>') ?: Collections.<MethodNode> emptyList())) {
+            if (clinit.code != null) assigned.addAll(bodyOf(clinit.code))
+        }
+        for (Statement st : assigned) {
+            if (!(st instanceof ExpressionStatement)) continue
+            Expression e = ((ExpressionStatement) st).expression
+            if (!(e instanceof BinaryExpression) || e instanceof DeclarationExpression) continue
+            BinaryExpression be = (BinaryExpression) e
+            if (be.operation.type != Types.ASSIGN) continue
+            FieldNode f = assignedField(be.leftExpression, owner)
+            if (f == null) continue
+            ss.add(fieldDecl(f, be.rightExpression, st))
+        }
+        BlockStatement b = new BlockStatement(dropContested(ss), null)
         b.sourcePosition = owner
         b
+    }
+
+    /**
+     * Phase 299 — a field given a modelled value more than once (an actor factory or a behaviour closure, from
+     * an initialiser and a constructor, or twice in one) has two definitions competing, and which of them the
+     * field ends up holding is not something to decide by the order they were collected in. Both are dropped, so
+     * the field is simply not found. A field initialised to something we do not model (a {@code null} placeholder,
+     * say) and then assigned properly is one definition, and is kept.
+     */
+    private static List<Statement> dropContested(List<Statement> ss) {
+        Map<String, Integer> modelled = new LinkedHashMap<String, Integer>()
+        for (Statement st : ss) {
+            DeclarationExpression de = (DeclarationExpression) ((ExpressionStatement) st).expression
+            String n = ((VariableExpression) de.leftExpression).name
+            Expression r = strip(de.rightExpression)
+            if (r instanceof ClosureExpression || actorFactoryArgs(r) != null) modelled.put(n, (modelled.get(n) ?: 0) + 1)
+        }
+        Set<String> contested = modelled.findAll { String k, Integer v -> v > 1 }.keySet()
+        if (contested.isEmpty()) return ss
+        ss.findAll { Statement st ->
+            !contested.contains(((VariableExpression) ((DeclarationExpression) ((ExpressionStatement) st).expression).leftExpression).name)
+        }
+    }
+
+    /** The statements of a block, flattened (a static block arrives wrapped in one), else the statement itself. */
+    private static List<Statement> bodyOf(Statement code) {
+        if (!(code instanceof BlockStatement)) return [code]
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : ((BlockStatement) code).statements) out.addAll(bodyOf(st))
+        out
+    }
+
+    /** The field of {@code owner} an assignment's left side names — {@code x} or {@code this.x} — else null. */
+    private static FieldNode assignedField(Expression lhs, ClassNode owner) {
+        Expression l = strip(lhs)
+        if (l instanceof VariableExpression) {
+            Variable av = ((VariableExpression) l).accessedVariable
+            if (av instanceof FieldNode && ((FieldNode) av).owner?.name == owner.name) return (FieldNode) av
+            if (av instanceof PropertyNode && ((PropertyNode) av).field?.owner?.name == owner.name) return ((PropertyNode) av).field
+            return owner.getField(((VariableExpression) l).name)
+        }
+        if (l instanceof PropertyExpression) {
+            Expression o = strip(((PropertyExpression) l).objectExpression)
+            boolean own = (o instanceof VariableExpression && ((VariableExpression) o).isThisExpression()) ||
+                          (o instanceof ClassExpression && o.type?.name == owner.name)
+            if (own) return owner.getField(((PropertyExpression) l).propertyAsString)
+        }
+        null
+    }
+
+    /** One synthesised declaration: the field's name and type, bound to the expression that gives it its value. */
+    private static ExpressionStatement fieldDecl(FieldNode f, Expression value, ASTNode at) {
+        VariableExpression lhs = new VariableExpression(f.name, f.type)
+        lhs.sourcePosition = at
+        DeclarationExpression de = new DeclarationExpression(lhs, Token.newSymbol(Types.ASSIGN, at.lineNumber, at.columnNumber), value)
+        de.sourcePosition = at
+        ExpressionStatement es = new ExpressionStatement(de)
+        es.sourcePosition = at
+        es
     }
 
     /**
