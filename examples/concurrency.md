@@ -617,6 +617,48 @@ and a checker that called that a defect would be mistaking a design for a bug. E
 `Cancellable` is *kept* withholds the claim — it may yet be cancelled; only a handle thrown away makes
 "this can never be stopped" a fact.
 
+### The actor as a field — reach, for everything above (Phase 298)
+
+Every actor check to this point reads a single *method* body. The corpus never minded, because the corpus is
+written the way the Groovy docs are — actor and behaviours as locals of the method that sends to them. Real
+code is not written that way. A service class owns the actor as a **field**, and its methods send to it:
+
+<!-- doclint:ignore README illustration: a field-held actor -->
+```groovy
+class Gate {
+    static Actor<String> gate = Actor.reactor { ActorContext<String> ctx, String m ->
+        ctx.stash()
+        m
+    }
+    static void run()   { gate.send('a') }
+    static void other() { gate.send('b') }
+}
+```
+
+Against that shape the whole gallery used to be silent — the *identical* defect a method-local actor is refuted
+for. It is not silent now:
+
+<!-- doclint:diagnostic p298-actor-fields/a-field-held-actor-that-stashes-without-replay-is-refuted-once-for-the-class -->
+```
+[Static type checking] - Stashed messages are never replayed: actor 'gate' in the class C stashes (line 5) but
+none of its behaviours calls unstashAll(). …
+```
+
+A field initialiser **is** a declaration, so the class's initialisers are presented as one block and
+`becomeGraph` reads a class exactly as it read a method. The `@Protocol` stack gets the same treatment: the
+field plays its role, and a [cross-wired reply](#a-reply-inside-a-choice--the-keyvalue-actor-phase-295) refutes
+through it. Process binding and conformance still read the method's own statements, so a field can never be
+mistaken for a process.
+
+The part that needed thought is *where* such a finding belongs. The stash and the timers are facts about the
+actor, not about any method, so raising them per method would report one defect once per method that mentions
+it — two above, and rising. They are raised for the **class** instead, and named that way. A class with two
+sending methods emits exactly one.
+
+Still out of reach, saying nothing rather than guessing: an actor assigned in a **constructor** or an
+initialiser block. That also means a *cyclic* phase graph is not found — mutual `become` needs the
+declare-then-assign idiom, and an initialiser cannot name a field declared after it.
+
 ### Dataflow — the determinacy half via single-assignment
 
 Locks and actors both assume *mutual exclusion / serialization*. A **dataflow** network assumes something

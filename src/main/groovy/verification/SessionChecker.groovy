@@ -103,9 +103,10 @@ class SessionChecker {
     // ── entry ──────────────────────────────────────────────────────────────────────────────────
 
     /** Findings as [message, anchor]; empty when every process conforms. */
-    static List<Object[]> check(String methodName, String text, BlockStatement body, Set<String> chans, boolean arbitrated = false) {
+    static List<Object[]> check(String methodName, String text, BlockStatement body, Set<String> chans,
+                                boolean arbitrated = false, org.codehaus.groovy.ast.ClassNode owner = null) {
         try {
-            check0(methodName, text, body, chans, arbitrated)
+            check0(methodName, text, body, chans, arbitrated, owner)
         } finally {
             ACTOR_ROLES.remove(); ACTOR_LABELS.remove(); ACTOR_REPLIES.remove(); REPLY_LABELS.remove()
         }
@@ -149,7 +150,8 @@ class SessionChecker {
         else if (g instanceof Par) for (G q : ((Par) g).parts) pairReplies(q, actorRoles, out)
     }
 
-    private static List<Object[]> check0(String methodName, String text, BlockStatement body, Set<String> chans, boolean arbitrated) {
+    private static List<Object[]> check0(String methodName, String text, BlockStatement body, Set<String> chans,
+                                         boolean arbitrated, org.codehaus.groovy.ast.ClassNode owner) {
         List<Object[]> out = []
         List<String> errors = []
         G global = parse(text, errors)
@@ -163,7 +165,15 @@ class SessionChecker {
         collectChans(global, protoChans)
         // Phase 293 — a role named after an ACTOR local of the method is played by that actor's become-graph, and a
         // message TO it is labelled by the literal message sent (`gate.send('connect')` is `connect: client -> gate`).
-        Set<String> actorLocals = ActorMailbox.actorNames(body)
+        // Phase 298 — an actor role may be played by a FIELD of the enclosing class as well as by a local of the
+        // method: the class's initialisers are prepended for the actor machinery only, so the process binding and
+        // conformance below still read the method's own statements and nothing else.
+        BlockStatement actorScope = body
+        if (owner != null) {
+            List<Statement> ss = new ArrayList<Statement>(ActorMailbox.fieldDeclarations(owner).statements)
+            if (!ss.isEmpty()) { ss.addAll(body.statements); actorScope = new BlockStatement(ss, null) }
+        }
+        Set<String> actorLocals = ActorMailbox.actorNames(actorScope)
         Set<String> actorRoles = new LinkedHashSet<String>(roles.findAll { String r -> actorLocals.contains(r) })
         Map<String, String> actorLabels = new LinkedHashMap<String, String>()
         List<Msg> msgs = []
@@ -303,12 +313,12 @@ class SessionChecker {
         // Phase 293 — an actor role is played by its become-graph, checked the other way round: the protocol delivers
         // and the actor must take what it is given (see accepts)
         for (String r : actorRoles) {
-            List<ActorMailbox.Phase> graph = ActorMailbox.becomeGraph(body, r)
+            List<ActorMailbox.Phase> graph = ActorMailbox.becomeGraph(actorScope, r)
             if (graph == null) {
                 out.add([Reporter.formatProtocolSkipped(methodName, "the behaviours of actor '${r}' are not all visible as `if (m == LIT)` arms over become targets in this method (its phases, every become target, and its onError callback)"), body] as Object[])
                 continue
             }
-            String v = accepts(local.get(r), localFrag.get(r), graph, replyOf, pairs, ActorMailbox.repliesAreValues(body, r))
+            String v = accepts(local.get(r), localFrag.get(r), graph, replyOf, pairs, ActorMailbox.repliesAreValues(actorScope, r))
             if (v != null) out.add([Reporter.formatProtocolViolation(methodName, r, "actor '${r}' ${v}"), body] as Object[])
         }
         // conformance

@@ -36,6 +36,9 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.FieldNode
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 
 /**
@@ -364,7 +367,7 @@ class ActorMailbox {
      * opaque: a become target from elsewhere, the context handed on, or an {@code unstashAll()} anywhere in the
      * method (a context-aware onError callback, say).
      */
-    private static List<Finding> stashFindings(String methodName, BlockStatement body, Map<String, ActorDecl> actors) {
+    private static List<Finding> stashFindings(String where, BlockStatement body, Map<String, ActorDecl> actors) {
         List<Finding> out = new ArrayList<Finding>()
         boolean[] unstashAnywhere = [false] as boolean[]
         body.visit(new CodeVisitorSupport() {
@@ -397,7 +400,7 @@ class ActorMailbox {
                 }
             }
             if (opaque || firstStash == null) continue
-            out.add(new Finding(Reporter.formatStashNeverReplayed(methodName, d.name, firstStash.lineNumber), firstStash))
+            out.add(new Finding(Reporter.formatStashNeverReplayed(where, d.name, firstStash.lineNumber), firstStash))
         }
         out
     }
@@ -844,7 +847,7 @@ class ActorMailbox {
      * readable, when the message is not a literal, when an {@code onError} arms a timer (it can fire from any
      * phase at all), or when the method cancels anything — the repeat may then be stopped.
      */
-    private static List<Finding> timerFindings(String methodName, BlockStatement body, Map<String, ActorDecl> actors) {
+    private static List<Finding> timerFindings(String where, BlockStatement body, Map<String, ActorDecl> actors) {
         List<Finding> out = new ArrayList<Finding>()
         for (String name : actors.keySet()) {
             List<Phase> g = becomeGraph(body, name)
@@ -861,15 +864,66 @@ class ActorMailbox {
                         boolean rejects = arm != null ? arm.rejects : r.otherwise == 'rejects'
                         boolean stashes = arm != null ? arm.stash : r.otherwise == 'stash'
                         if (rejects) {
-                            out.add(new Finding(Reporter.formatTimerRejected(methodName, name, t.msg, t.repeats, t.line, r.name), t.anchor)); break
+                            out.add(new Finding(Reporter.formatTimerRejected(where, name, t.msg, t.repeats, t.line, r.name), t.anchor)); break
                         }
                         if (stashes && t.repeats) {
-                            out.add(new Finding(Reporter.formatTimerStashUnbounded(methodName, name, t.msg, t.line, r.name), t.anchor)); break
+                            out.add(new Finding(Reporter.formatTimerStashUnbounded(where, name, t.msg, t.line, r.name), t.anchor)); break
                         }
                     }
                 }
             }
         }
+        out
+    }
+
+    // ── Phase 298 — the actor held in a FIELD ─────────────────────────────────────────────
+
+    /**
+     * Phase 298 — the class's field initialisers, presented as the declarations they are. Every actor check so
+     * far reads a METHOD body, which meant the whole gallery was silent on the shape real code is written in:
+     * the actor is a field of a service class, not a local of the method that sends to it. A field
+     * {@code static Actor<String> gate = Actor.reactor(h)} is exactly the declaration
+     * {@code Actor<String> gate = Actor.reactor(h)}, so synthesising it lets {@code actorsIn},
+     * {@code behaviourLocals} and {@code becomeGraph} read a class with no change at all.
+     *
+     * <p>Initialisers only, and in declaration order — which is also the order Groovy initialises them in, so a
+     * behaviour can be named by a later one but not by an earlier. A phase graph with a CYCLE therefore cannot be
+     * written this way (it needs the declare-then-assign idiom, in a constructor or an initialiser block), and
+     * nothing is claimed about those: they are simply not found here.
+     */
+    static BlockStatement fieldDeclarations(ClassNode owner) {
+        List<Statement> ss = new ArrayList<Statement>()
+        for (FieldNode f : owner.fields) {
+            Expression init = f.initialValueExpression
+            if (init == null) continue
+            VariableExpression lhs = new VariableExpression(f.name, f.type)
+            lhs.sourcePosition = f
+            DeclarationExpression de = new DeclarationExpression(lhs, Token.newSymbol(Types.ASSIGN, f.lineNumber, f.columnNumber), init)
+            de.sourcePosition = f
+            ExpressionStatement es = new ExpressionStatement(de)
+            es.sourcePosition = f
+            ss.add(es)
+        }
+        BlockStatement b = new BlockStatement(ss, null)
+        b.sourcePosition = owner
+        b
+    }
+
+    /**
+     * Phase 298 — the findings that are about the actor's BEHAVIOUR GRAPH alone, for an actor declared as a
+     * field. They say nothing about any one method, so they are reported once for the class rather than once per
+     * method that happens to mention it. The send-dependent checks (the bounded mailbox, the stash bound) still
+     * read a method body and do not see a field-held actor yet.
+     */
+    static List<Finding> checkClass(ClassNode owner) {
+        List<Finding> out = new ArrayList<Finding>()
+        if (owner == null || owner.fields == null) return out
+        BlockStatement decls = fieldDeclarations(owner)
+        Map<String, ActorDecl> actors = actorsIn(decls)
+        if (actors.isEmpty()) return out
+        String where = "the class ${owner.nameWithoutPackage}".toString()
+        out.addAll(stashFindings(where, decls, actors))
+        out.addAll(timerFindings(where, decls, actors))
         out
     }
 
@@ -880,8 +934,8 @@ class ActorMailbox {
         List<Finding> out = new ArrayList<Finding>()
         Map<String, ActorDecl> actors = actorsIn(body)
         if (actors.isEmpty()) return out
-        out.addAll(stashFindings(methodName, body, actors))   // Phase 292 — needs no sends, so it comes first
-        out.addAll(timerFindings(methodName, body, actors))   // Phase 297 — likewise
+        out.addAll(stashFindings(methodName + '()', body, actors))   // Phase 292 — needs no sends, so it comes first
+        out.addAll(timerFindings(methodName + '()', body, actors))   // Phase 297 — likewise
         Map<String, List<ClosureExpression>> behaviours = behaviourLocals(body)
 
         // Program-order pass over the body's own statements: sends to each actor, and sends on each channel.

@@ -13452,8 +13452,8 @@ role that is one of them with an `.outside-standard.txt` note naming the word, a
 first message `login`. The checker's own side is unaffected: Groovy has no such restriction, and the docs and
 cases keep `connect`.
 
-**Open:** a default that moves (`become` for any other message); and an actor played across methods (a field).
-The REPLIES shipped as Phase 294 below.
+**Open:** a default that moves (`become` for any other message). The REPLIES shipped as Phase 294 below, and
+the actor played across methods as Phase 298.
 
 ---
 
@@ -13651,8 +13651,51 @@ alone; a phase that ignores a stale timeout left alone; a repeat into a stashing
 same phase, which is Phase 292's finding and not this one's; a kept `Cancellable` withholding; a non-literal
 message withholding. P296 (6), P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
 
-**Open:** an `onError` that arms a timer; a timer armed in one method and landing in a phase declared in
-another; and the Phase 294/295 items.
+**Open:** an `onError` that arms a timer; and the Phase 294/295 items. The actor held across methods shipped
+as Phase 298 below.
+
+---
+
+## Phase 298 — the actor held in a FIELD: the shape real code is written in  *(shipped — slice 1)*
+
+Nine phases of Actor machinery (289, 292–297) and every one of them read a single METHOD body. The corpus
+never noticed, because the corpus is written the way the Groovy docs are: actor and behaviours declared as
+locals of the method that sends to them. Real code is not. A service class owns the actor as a FIELD and its
+methods send to it — and against that shape the entire gallery was silent. Measured before deciding it was
+worth doing, with the identical defect twice:
+
+| shape | verdict |
+|---|---|
+| actor declared local to the method | `Stashed messages are never replayed: actor 'gate' in run() stashes (line 6)…` |
+| actor declared as a field, handler identical | *compiles cleanly* |
+
+**The fix is almost entirely presentational, which is the point.** A field
+`static Actor<String> gate = Actor.reactor(h)` IS the declaration `Actor<String> gate = Actor.reactor(h)`, so
+`fieldDeclarations(ClassNode)` synthesises the class's initialisers as a block of declarations and `actorsIn`,
+`behaviourLocals` and `becomeGraph` read a class with no change at all. The `@Protocol` stack gets the same
+block PREPENDED to the method body for the actor machinery only — process binding and conformance still read
+the method's own statements and nothing else, so a field cannot be mistaken for a process.
+
+**What genuinely is new is WHERE a finding is raised.** The behaviour-graph checks — the stash, the timers —
+say nothing about any particular method, so raising them per method would report the same defect once for every
+method that happens to mention the actor. They move to `afterVisitClass` and are reported once, named for the
+class: `actor 'gate' in the class C stashes (line 5)`. Verified by counting, not by assuming: a class with two
+sending methods emits exactly one. The `Reporter` wording generalised from a method name to a site, leaving the
+method case byte-identical.
+
+**Deliberately not reached yet, and each says nothing rather than guessing.** An actor assigned in a
+CONSTRUCTOR or an initialiser block (only initialisers are read) — which also means a phase graph with a CYCLE
+cannot be found, since mutual `become` needs the declare-then-assign idiom and an initialiser cannot name a
+later field. And the send-dependent checks (the bounded mailbox of Phase 289, the stash bound of Phase 292
+slice 2) still read a method body alone, so they do not yet see a field-held actor's sends.
+
+Cases (G348, 6): the stash defect as a field, reported once for a class with two sending methods; a clean field
+actor left alone; a timer armed in one field behaviour landing in another's; the protocol round trip conforming
+with the role played by a field; Phase 295's cross-wired reply refuting through it; and a constructor-assigned
+actor claiming nothing. P297 (7), P296 (6), P295 (6), P294 (6), P293 (7) and P292 (15) are unchanged.
+
+**Open:** the constructor and initialiser-block forms (and with them the cyclic phase graph); the
+send-dependent checks over a field-held actor; and the Phase 294/295/297 items.
 
 ---
 

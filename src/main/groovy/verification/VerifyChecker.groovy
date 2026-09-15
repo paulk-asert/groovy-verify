@@ -2676,6 +2676,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     void afterVisitClass(ClassNode classNode) {
         if (classNode == null) return
         verifyTraitDefaultMethods(classNode)
+        // Phase 298 — an actor held in a FIELD: its behaviour-graph findings belong to the class, not to any one
+        // method that sends to it, so they are raised here rather than once per method.
+        try {
+            for (ActorMailbox.Finding f : ActorMailbox.checkClass(classNode)) addStaticTypeError(f.message, f.anchor)
+        } catch (Throwable ignored) {
+        }
         // Phase 136 — a @Monadic carrier asserts the monad/functor laws; discharge the Tier-1 identity laws it
         // claims, derived from the annotation (à la @Reducer). Best-effort.
         try { verifyMonadicLaws(classNode) } catch (Throwable ignored) { }
@@ -5468,7 +5474,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         collectPhaserVars((BlockStatement) body, ctx.phaserParties)           // Phase 277 — barriers
         parWalkStatement(body, ctx)
         String protocol = protocolTextOf(node)                                // Phase 263 — a session type for the network
-        if (protocol != null) for (Object[] f : SessionChecker.check(node.name, protocol, (BlockStatement) body, chanVars, ARBITRATED_SELECT)) addStaticTypeError((String) f[0], (ASTNode) f[1])
+        if (protocol != null) for (Object[] f : SessionChecker.check(node.name, protocol, (BlockStatement) body, chanVars, ARBITRATED_SELECT, node.declaringClass)) addStaticTypeError((String) f[0], (ASTNode) f[1])
         int chanFindings = checkChannelLinearity(node, ctx, (BlockStatement) body, derivedChans, broadcastChans)
         // Phase 243/245 — the network well-formedness check: runs unless a RACE-class finding
         // re-shaped the network's meaning (its own loud report stands). Model-limit skips only

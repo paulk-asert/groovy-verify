@@ -176,8 +176,8 @@ class Reporter {
     }
 
     /** Phase 292 — stash conservation: an actor that stashes, none of whose behaviours ever calls unstashAll(). */
-    static String formatStashNeverReplayed(String methodName, String actor, int stashLine) {
-        ("Stashed messages are never replayed: actor '${actor}' in ${methodName}() stashes (line ${stashLine}) but " +
+    static String formatStashNeverReplayed(String where, String actor, int stashLine) {
+        ("Stashed messages are never replayed: actor '${actor}' in ${where} stashes (line ${stashLine}) but " +
             "none of its behaviours calls unstashAll(). A stashed message comes back only through unstashAll(), so it " +
             "never reaches a handler again, and at stop() it is rejected: a sendAndGet reply fails with " +
             "IllegalStateException, a send is discarded. Call ctx.unstashAll() on the phase transition that can " +
@@ -185,8 +185,8 @@ class Reporter {
     }
 
     /** Phase 297 — a phase the actor can be in when its own timer fires THROWS on the scheduled message. */
-    static String formatTimerRejected(String methodName, String actor, String msg, boolean repeats, int line, String phase) {
-        ("Scheduled message rejected by its own actor: '${actor}' in ${methodName}() schedules '${msg}' for itself " +
+    static String formatTimerRejected(String where, String actor, String msg, boolean repeats, int line, String phase) {
+        ("Scheduled message rejected by its own actor: '${actor}' in ${where} schedules '${msg}' for itself " +
             "(line ${line}${repeats ? ', repeating' : ''}), but a timer fires into whichever behaviour is current AT " +
             "THAT MOMENT, not the one that armed it — and phase '${phase}', reachable from there, throws on '${msg}'. " +
             "Arm the timeout in the phase that can handle it, give '${phase}' a branch for '${msg}', or hold the " +
@@ -194,8 +194,8 @@ class Reporter {
     }
 
     /** Phase 297 — a repeating timer whose message a reachable phase stashes: the stash grows with the clock. */
-    static String formatTimerStashUnbounded(String methodName, String actor, String msg, int line, String phase) {
-        ("Unbounded stash from the actor's own timer: '${actor}' in ${methodName}() repeats '${msg}' " +
+    static String formatTimerStashUnbounded(String where, String actor, String msg, int line, String phase) {
+        ("Unbounded stash from the actor's own timer: '${actor}' in ${where} repeats '${msg}' " +
             "(scheduleAtFixedRate, line ${line}) and phase '${phase}', reachable from there, stashes it. A repeat " +
             "goes on firing across every become, so this stash grows with elapsed time rather than with anything a " +
             "peer does — nothing has to happen for it to run out of heap (measured: 40 messages in 600ms for a 20ms " +
