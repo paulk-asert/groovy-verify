@@ -30,14 +30,14 @@
 //   - JitPack:          built from a GitHub tag/commit on demand
 
 plugins {
-    id 'com.github.ben-manes.versions' version '0.61.0'
-    id 'org.nosphere.apache.rat' version '0.8.1'
+    id 'io.github.ben-manes.versions' version '0.63.0'
+    id 'org.nosphere.apache.rat' version '0.11.0'
     id 'groovy'
     id 'java-library'
     id 'maven-publish'
     // Maven Central publishing (signs + uploads to the Central Portal). Inert until its own tasks
     // (`jreleaserDeploy` / `jreleaserConfig`) are invoked — does not touch build / verify / check.
-    id 'org.jreleaser' version '1.25.0'
+    id 'org.jreleaser' version '1.26.0'
     // Fray controlled-schedule concurrency testing (rung 3 for the lock-ordering / deadlock half). Pointed at
     // the isolated `frayCheck` task below, so it never touches the main `test` execution. Run: ./gradlew frayCheck
     id 'org.pastalab.fray.gradle' version '0.9.0'
@@ -76,8 +76,8 @@ tasks.named('rat') {
 // snapshot repo below; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
-    // TEMPORARY: the 6.0.0-RC-2 release-vote staging repo — remove once RC-2 reaches Central
-    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1122' }
+    // TEMPORARY: the 6.0.0-RC-3 release-vote staging repo — remove once RC-3 reaches Central
+    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1123' }
     // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 
