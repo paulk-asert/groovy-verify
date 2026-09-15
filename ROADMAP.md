@@ -14107,8 +14107,27 @@ proves nothing on its own if the deadlocking half cannot be found. It is found, 
 `frayCheck`: 3 classes, 3 enabled tests, 0 failures (3 skipped by design). The task description, which still
 named only the bank transfer, now says what it runs.
 
-**Open (the rungs for the rest):** Fray on the actor mailbox knot (Phase 289's burst filling a BLOCK mailbox
-whose handler waits on the filler — the same shape, one increment); TLC on a channel network, where
+**Tried and rejected: Fray on the actor mailbox knot.** This was written up above as "the same shape, one
+increment". It is not, and the reason is worth more than the test would have been. Phase 289's knot was ported
+(a burst into a `BLOCK`-bounded mailbox whose handler waits on a gate fed only afterwards) along with its
+untied twin, and the twin FAILED: Fray reported a `DeadlockException` on the scenario that is deadlock-free,
+with only the MAIN thread in the report and the actor's dispatch thread absent from it entirely. The same
+scenario run as a plain JUnit test terminates immediately, and a trivial actor round-trip passes under Fray —
+so Fray can drive an actor, but not one whose sender is parked on a bounded mailbox.
+
+Two things follow. The mechanical one: the actor's dispatch thread is created INTERNALLY by the library rather
+than by the test, and Fray's view of it is not good enough to schedule a mailbox-blocking scenario — a second,
+deeper Groovy-runtime interaction than the `PIC-Cleaner` one the bank transfer documents. The conceptual one
+matters more: "a sender blocked on a full mailbox is released when the handler drains" is a LIVENESS property
+under a fair scheduler, not deadlock-freedom. A controlled scheduler exploring adversarial interleavings may
+simply never run the handler, and no amount of tuning makes that a deadlock — it makes it starvation. Fray is a
+deadlock oracle; this property is not a deadlock property. Cost said the same thing more bluntly: ~10-35s per
+ITERATION against ~0.1s for the channel cycle.
+
+So the actor mailbox belongs at rung 2, not rung 3 — TLA+ can state weak fairness (`WF_vars`) and ask the
+question the property actually poses. Recorded here rather than left as an open invitation to retry it.
+
+**Open (the rungs for the rest):** TLC on a channel network, where
 deadlock-freedom is proved STRUCTURALLY at rung 1 so an exhaustive check is a genuinely independent oracle and
 TLA+'s `WF_vars` is the native vocabulary for Phase 255's weak-fairness assumption; and TLC on an actor with
 several concurrent senders, which is precisely what Phase 300 withholds. Lincheck is the weak fit for both —
