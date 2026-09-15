@@ -69,7 +69,7 @@ jobs:
           # per-check solver budget a dev laptop needs for the same crisp refutations.
           VERIFY_Z3_TIMEOUT_MS: '8000'
       - name: TLC exhaustive models (rung 2)
-        run: ./gradlew tlcCheck tlcTicket tlcNetwork --no-daemon
+        run: ./gradlew tlcCheck tlcTicket tlcNetwork tlcMailbox --no-daemon
 
   # The JDK 17 floor of the published artifact, exercised end to end: bytecode (class file 61),
   # module-metadata resolvability (org.gradle.jvm.version = 17 — with only a toolchain configured

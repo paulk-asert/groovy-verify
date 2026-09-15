@@ -14164,9 +14164,48 @@ process still has work to do but nothing is enabled counts.
 `tlcNetwork` runs it; CI's rung-2 step now runs all three models. Gates unchanged elsewhere (this touches no
 checker code): docLint 0 drift.
 
-**Open:** the actor mailbox at this rung. The Fray attempt above established WHY it belongs here — a sender
-released when the handler drains is a fairness property, not a deadlock property — and `WF_vars` is how to
-say it. That, plus an actor with several concurrent senders, which is precisely what Phase 300 withholds.
+**Open:** nothing named for the channel gallery. The actor mailbox followed as Phase 308 below.
+
+---
+
+## Phase 308 — TLC on the actor mailbox: the property Fray could not pose  *(shipped — the rungs closed)*
+
+`src/tlc/Mailbox.tla`, the fourth rung-2 artifact. Phase 289's knot — a `BLOCK`-bounded mailbox filled by a
+burst while the handler is blocked on a channel the burst only feeds afterwards — as a state machine.
+
+**It is at this rung because rung 3 was tried and was the wrong one**, and that is the more useful half of the
+result. The property is "a sender blocked on a full mailbox is eventually released, because the handler drains
+it": a LIVENESS property under a fair scheduler, not deadlock-freedom. A controlled scheduler exploring
+adversarial interleavings may simply never run the handler — starvation, not deadlock — so no amount of tuning
+would have made Fray the right oracle. It also misfired empirically (a `DeadlockException` on the
+deadlock-FREE scenario, the actor's internally-created dispatch thread missing from the report, ~10-35s per
+iteration). `WF_vars` states the property directly, so it can be posed rather than approximated.
+
+**Two open items closed by one spec.** `Mailbox.cfg` runs the repair with TWO CONCURRENT SENDERS — which is
+what Phase 300 declines to claim at rung 1, since once more than one method can send to the actor "this
+method's sends are not the whole count". Here the siblings interleave exhaustively: 35 distinct states,
+`Bounds` (the mailbox never exceeds its cap) holds throughout, `Progress` holds. `MailboxKnot.cfg` reports
+`Deadlock reached`, and the trace is the mechanism rather than a verdict:
+
+```
+State 1  box = 0, busy = FALSE, gate = 0, sent = 0
+State 2  <Send>  box = 1,                 sent = 1
+State 3  <Take>  box = 0, busy = TRUE          ← handler now blocked on the gate
+State 4  <Send>  box = 1,                 sent = 2
+         ← stuck: box full, handler waiting on an empty gate, and the feed that would
+           release it comes after the send that is stuck
+```
+
+One message in flight ON TOP of the `Cap` the box holds is exactly why the (Cap+2)-th send is the one that
+waits — the arithmetic rung 1 does symbolically, here enumerated.
+
+`tlcMailbox` runs it; CI's rung-2 step now runs all four models. This touches no checker code; docLint 0 drift.
+
+**Where the three rungs now stand.** The Kerridge deadlock exercise is argued three ways (structural refutation,
+exhaustive model, Fray exhibiting the hang). The actor mailbox is argued twice, at the two rungs where its
+property can actually be stated. Lincheck remains the weak fit for both and is recorded as such rather than
+attempted: an actor is serialized by construction so linearizability is close to definitional, and
+Lincheck-ing `AsyncChannel` would test Groovy's library rather than these proofs.
 
 ---
 

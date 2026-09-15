@@ -616,6 +616,17 @@ tasks.register('tlcNetwork', JavaExec) {
     jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
 }
 
+tasks.register('tlcMailbox', JavaExec) {
+    group = 'verification'
+    description = 'Model-check src/tlc/Mailbox.tla (the actor mailbox knot, two senders, repaired) with TLA+ TLC — rung 2'
+    dependsOn tlcPrepare
+    classpath = configurations.tlc
+    mainClass = 'tlc2.TLC'
+    workingDir = tlcWorkDir
+    args = ['-nowarning', 'Mailbox.tla']        // Mailbox.cfg is picked up by name; TypeOK + Bounds + Progress
+    jvmArgs = ['-XX:+UseParallelGC']            // the GC TLC asks for
+}
+
 tasks.register('tlcTicket', JavaExec) {
     group = 'verification'
     description = 'Model-check src/tlc/Ticket.tla (Leino ticket lock, N=3) with TLA+ TLC — rung 2 of CONCURRENCY.md'

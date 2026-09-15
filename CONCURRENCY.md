@@ -200,6 +200,44 @@ A note on the spec's `Terminating` disjunct: TLC calls any state with no success
 that simply *finishes* would be reported as one. Stuttering once both processes are done keeps the check
 honest — only a state where a process still has work to do but nothing is enabled counts.
 
+### A fourth rung-2 artifact — the actor mailbox, where rung 3 was the WRONG rung
+
+`src/tlc/Mailbox.tla`, run by `./gradlew tlcMailbox`. Phase 289's knot: a bounded mailbox with
+`Overflow.BLOCK` — the only send in `groovy.concurrent` besides a rendezvous channel that blocks its
+*sender* — filled by a burst while the handler is itself blocked on a channel the burst only feeds afterwards.
+
+**This one is here because Fray was tried first and was the wrong tool**, which is the more useful half of the
+result. The property is *"a sender blocked on a full mailbox is eventually released, because the handler
+drains it"* — a **liveness property under a fair scheduler**, not deadlock-freedom. A controlled scheduler
+exploring adversarial interleavings may simply never run the handler; that is starvation, not deadlock, and no
+amount of tuning turns it into one. (Empirically it also misfired: Fray reported a `DeadlockException` on the
+scenario that is deadlock-*free*, with the actor's internally-created dispatch thread absent from the report,
+at ~10–35 s per iteration.) TLA+ states the property directly with `WF_vars`, so the question can be posed
+rather than approximated.
+
+`Mailbox.cfg` runs the **repair** — the gate fed before the burst — with **two concurrent senders**, which is
+the second thing this artifact buys: rung 1 *declines* to claim a bound once more than one method can send to
+the same actor (Phase 300's "this method's sends are not the whole count"), and here the siblings really do
+interleave, exhaustively. 35 distinct states, `Bounds` holds throughout, `Progress` holds.
+
+`MailboxKnot.cfg` is expected to fail, and the trace is the mechanism spelled out:
+
+```sh
+./gradlew tlcMailbox --args="-nowarning -config MailboxKnot.cfg Mailbox.tla"
+```
+```
+Error: Deadlock reached.
+State 1: <Initial predicate>            box = 0, busy = FALSE, gate = 0, sent = 0
+State 2: <Send>                         box = 1                       sent = 1
+State 3: <Take>                         box = 0, busy = TRUE          ← handler now blocked on the gate
+State 4: <Send>                         box = 1                       sent = 2
+                                        ← and stuck: the box is full, the handler waits on an empty gate,
+                                          and the feed that would release it comes after the stuck send
+```
+
+One message in flight *on top of* the `Cap` the box holds is exactly why the (Cap+2)-th send is the one that
+waits — the arithmetic rung 1 does symbolically, here enumerated.
+
 ## Rung 3 — Tested real bytecode
 
 The atomicity/ordering assumption, discharged against *real bytecode* across real schedules — several ways: the
