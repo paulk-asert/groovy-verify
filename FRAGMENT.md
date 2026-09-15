@@ -385,7 +385,7 @@ executable contract over a small grid of integer inputs and reports any concrete
 best-effort `fails on:` repro (Phase 62). See `Encoder` and the roadmap for the exact boundaries.
 
 Groovy 6's **concurrency sugar** has its own fragment, structural as well as value-level (the SEQ/PAR
-ladder, Phases 240–270 — full treatment in [the concurrency gallery](examples/concurrency.md), [the
+ladder — full treatment in [the concurrency gallery](examples/concurrency.md), [the
 Kerridge gallery](examples/kerridge.md), and the per-phase [CAPABILITIES](CAPABILITIES.md) rows). The
 value model: a *safe* `async { e }` reads out as `e` (gathers as the value list, racing combinators as a
 nondeterministic choice), a `DataflowVariable` as a write-once scalar, and an `AsyncChannel` as the
@@ -408,6 +408,22 @@ per-client liveness decided by the selection policy's own arithmetic, quantitati
 (`@ServedWithin`, `@DeliveredWithin` — head-of-line service, queueing loudly not claimed); and a
 `@Protocol` session type (a Groovy closure, or text) projected onto each role and enforced by
 conformance, `par` interleaving independent sub-sessions and a mixed choice held to one initiator.
-*Out, and said so:* queueing delay (arrival rates), racing arbitration (output guards — proposed
-upstream), and the scheduler, the JMM, and atomicity, which stay with the runtime rungs in
-[CONCURRENCY.md](CONCURRENCY.md).
+
+**Actors** are the other half of `groovy.concurrent`, and their fragment is structural rather than
+value-level: what is modelled is the message ORDER, not the payload. An `Actor` is a monitor whose mutual
+exclusion comes from processing one message at a time, so a class `@Invariant` is checked preserved by each
+handler with no lock annotation. On top of that the behaviours themselves are read — the handler, every
+`become` target, the `onError` recovery edge — as a graph whose arms are `if (m == LIT)` branches, which
+makes the message sequence checkable against a `@Protocol` role the actor plays: what it must take, what a
+stash defers and when it must be replayed, and the REPLY a `sendAndGet` is completed with. The runtime's own
+rules are measured, not assumed — a bounded mailbox blocks or drops by its policy, a stash returns only
+through `unstashAll()`, a timer fires into whichever behaviour is current rather than the one that armed it,
+and an `onError` observes an error without rescuing the reply. The actor may be a local of the method or a
+field of the class (initialiser, constructor, `static` block). *Out:* the payload of a message beyond a
+literal label, an actor whose behaviours are not all visible (an opaque `become` target, a context handed
+on), and anything that would need two competing definitions of the same actor resolved by guessing.
+
+*Out, and said so:* queueing delay (arrival rates), and the scheduler, the JMM, and atomicity, which stay
+with the runtime rungs in [CONCURRENCY.md](CONCURRENCY.md). (Racing arbitration was on this list while
+output guards were only proposed upstream; GROOVY-12323 landed the arbitrated select, so a racing mixed
+choice is now certified where the runtime carries it and refused with the exact missing piece otherwise.)
