@@ -60,6 +60,7 @@ import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.ast.stmt.BreakStatement
 import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.stmt.YieldStatement
 import org.codehaus.groovy.ast.expr.SwitchExpression
@@ -5448,6 +5449,11 @@ class Encoder implements TheoryApi {
         Statement st = code
         for (int depth = 0; depth < 2 && st instanceof BlockStatement; depth++) {
             List<Statement> ss = ((BlockStatement) st).statements
+            // Groovy 6.0.0-RC-3 — an implicit-return switch expression compiles to a switch STATEMENT whose
+            // arms are break-terminated (`Block[Expr(e), Break]`), where the first-class `SwitchExpression`
+            // of `return switch (…)` carries `Block(Yield(e))`. The break ends the arm and does not change
+            // its value, so it is dropped; a body with real statements before it stays out of fragment.
+            if (ss.size() == 2 && ss.get(1) instanceof BreakStatement) ss = ss.subList(0, 1)
             if (ss.size() != 1) return null
             st = ss.get(0)
         }

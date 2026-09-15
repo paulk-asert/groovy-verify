@@ -19,6 +19,8 @@ import groovy.concurrent.ActorOptions
 import groovy.concurrent.ReactorHandler
 import org.junit.jupiter.api.Test
 
+import java.util.concurrent.CopyOnWriteArrayList
+
 import java.util.concurrent.TimeUnit
 
 import static org.junit.jupiter.api.Assertions.assertEquals
@@ -44,7 +46,7 @@ class ActorStashSemanticsTest {
 
     @Test
     void aStashedMessageThatIsNeverUnstashedIsLost() {
-        List<String> seen = Collections.synchronizedList(new ArrayList<String>())
+        List<String> seen = new CopyOnWriteArrayList<String>()
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
             if (m.startsWith('defer')) { ctx.stash(); return null }
             seen << m
@@ -77,7 +79,7 @@ class ActorStashSemanticsTest {
      * check models exactly these outcomes.
      */
     private static Map overrun(ActorOptions.StashOverflow policy) {
-        List<String> seen = Collections.synchronizedList(new ArrayList<String>())
+        List<String> seen = new CopyOnWriteArrayList<String>()
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
             if (m == 'open') {
                 ctx.become({ ActorContext<String> c, String n -> seen << n; n } as ReactorHandler<String, String>)
@@ -126,7 +128,7 @@ class ActorStashSemanticsTest {
 
     @Test
     void unstashAllAfterBecomeReplaysTheStashOldestFirst() {
-        List<String> seen = Collections.synchronizedList(new ArrayList<String>())
+        List<String> seen = new CopyOnWriteArrayList<String>()
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
             if (m == 'open') {
                 ctx.become({ ActorContext<String> c, String n -> seen << n; n } as ReactorHandler<String, String>)

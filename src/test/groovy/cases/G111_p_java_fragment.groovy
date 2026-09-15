@@ -59,7 +59,9 @@ class G111_p_java_fragment {
         // closure, so it doesn't parse — use `[…]` (a Groovy list coerces to the array) or `new int[]{…}`.
         [group: 'P-java-fragment', name: 'java array initializer new int[]{} verifies', ok: true,
          src: tc('class C { @Ensures({ result == 10 }) static int first() { int[] a = new int[]{10, 20, 30}; return a[0]; } }')],
-        [group: 'P-java-fragment', name: 'bare brace array initializer does not parse (use a list)', expect: 'Unexpected input',
+        // (The expected text pins that it does not PARSE, not the parser's wording for why: Groovy 6.0.0-RC-3
+        //  reports "Unexpected ','" where RC-2 reported "Unexpected input". Same lesson, different message.)
+        [group: 'P-java-fragment', name: 'bare brace array initializer does not parse (use a list)', expect: 'Unexpected',
          src: tc('class C { static int first() { int[] a = {10, 20, 30}; return a[0]; } }')],
     ]
 }

@@ -19,6 +19,8 @@ import groovy.concurrent.Cancellable
 import groovy.concurrent.ReactorHandler
 import org.junit.jupiter.api.Test
 
+import java.util.concurrent.CopyOnWriteArrayList
+
 import java.time.Duration
 
 import static org.junit.jupiter.api.Assertions.assertEquals
@@ -45,7 +47,7 @@ class ActorTimerSemanticsTest {
 
     @Test
     void aTimerLandsInThePhaseCurrentWhenItFiresNotTheOneThatArmedIt() {
-        List<String> log = Collections.synchronizedList(new ArrayList<String>())
+        List<String> log = new CopyOnWriteArrayList<String>()
         ReactorHandler<String, String> later
         later = { ActorContext<String> ctx, String m -> log << "later:${m}".toString(); m } as ReactorHandler<String, String>
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
@@ -62,7 +64,7 @@ class ActorTimerSemanticsTest {
 
     @Test
     void aRepeatKeepsFiringAcrossABecomeAndStopsAtStop() {
-        List<String> ticks = Collections.synchronizedList(new ArrayList<String>())
+        List<String> ticks = new CopyOnWriteArrayList<String>()
         ReactorHandler<String, String> other
         other = { ActorContext<String> ctx, String m -> ticks << "other:${m}".toString(); m } as ReactorHandler<String, String>
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
@@ -83,7 +85,7 @@ class ActorTimerSemanticsTest {
 
     @Test
     void aScheduledMessageIsStashedAndReplayedLikeAnyOther() {
-        List<String> log = Collections.synchronizedList(new ArrayList<String>())
+        List<String> log = new CopyOnWriteArrayList<String>()
         ReactorHandler<String, String> open
         open = { ActorContext<String> ctx, String m -> log << "open:${m}".toString(); m } as ReactorHandler<String, String>
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
@@ -105,7 +107,7 @@ class ActorTimerSemanticsTest {
 
     @Test
     void aRepeatIntoAStashingPhaseGrowsTheStashWithTheClock() {
-        List<String> drained = Collections.synchronizedList(new ArrayList<String>())
+        List<String> drained = new CopyOnWriteArrayList<String>()
         ReactorHandler<String, String> drain
         drain = { ActorContext<String> ctx, String m -> drained << m; m } as ReactorHandler<String, String>
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
@@ -127,7 +129,7 @@ class ActorTimerSemanticsTest {
 
     @Test
     void aKeptCancellableStopsTheRepeat() {
-        List<String> log = Collections.synchronizedList(new ArrayList<String>())
+        List<String> log = new CopyOnWriteArrayList<String>()
         Cancellable[] held = new Cancellable[1]
         Actor<String> a = Actor.reactor({ ActorContext<String> ctx, String m ->
             if (m == 'go') { held[0] = ctx.scheduleAtFixedRate('tick', Duration.ofMillis(30), Duration.ofMillis(30)); return m }

@@ -45,7 +45,9 @@ import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
+import org.codehaus.groovy.ast.expr.SwitchExpression
 import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
 
@@ -623,6 +625,23 @@ class BodyEncoder {
             }
             throw new UnsupportedConstructException(
                 "statement with no modelled effect (line ${s.lineNumber})")
+        }
+
+        // Groovy 6.0.0-RC-3 — a switch EXPRESSION used as a method's implicit return is left as a plain
+        // `SwitchStatement` in tail position, where RC-2 and earlier wrapped it as
+        // `ExpressionStatement(SwitchExpression)` and it fell through to the implicit-return branch above.
+        // (`return switch (…)` still carries a first-class `SwitchExpression`, in both.) The three parts are
+        // the same, so the statement is read back as the expression it stands for and the ordinary
+        // switch-expression path takes it from there. A switch in NON-tail position is a genuine statement
+        // and stays unsupported, exactly as before.
+        if (s instanceof SwitchStatement && tail) {
+            SwitchStatement sw = (SwitchStatement) s
+            Path np = copy(prefix)
+            SwitchExpression se = new SwitchExpression(sw.expression, sw.caseStatements, sw.defaultStatement)
+            se.sourcePosition = sw
+            np.result = se
+            res.terminated.add(np)
+            return res
         }
 
         throw new UnsupportedConstructException(

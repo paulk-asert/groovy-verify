@@ -526,7 +526,7 @@ simply remains outside.
 
 ## Building & using
 
-Built with JDK 25 against `org.apache.groovy:6.0.0-RC-2`; the published
+Built with JDK 25 against `org.apache.groovy:6.0.0-RC-3`; the published
 artifact targets Java 17 bytecode, Groovy 6's own floor. `./gradlew verify`
 runs the compact console suite (one line per case); `./gradlew test` runs the same `CASES` data list as
 JUnit 6 dynamic tests, and `./gradlew check` additionally enforces the doc-drift lints. Consume it from

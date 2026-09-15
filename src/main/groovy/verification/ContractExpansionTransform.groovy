@@ -59,6 +59,8 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.CatchStatement
+import org.codehaus.groovy.ast.stmt.SwitchStatement
+import org.codehaus.groovy.ast.stmt.CaseStatement
 import org.codehaus.groovy.ast.stmt.TryCatchStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
@@ -848,6 +850,23 @@ class ContractExpansionTransform implements ASTTransformation {
             IfStatement i = (IfStatement) s
             IfStatement out = new IfStatement((BooleanExpression) copyExpr(i.booleanExpression, freshen),
                 copyBody(i.ifBlock, freshen), copyBody(i.elseBlock, freshen))
+            out.setSourcePosition(s); out.copyNodeMetaData(s)
+            return out
+        }
+        // Groovy 6.0.0-RC-3 — a switch EXPRESSION used as an implicit return is compiled as a
+        // `SwitchStatement` (RC-2 and earlier wrapped it as `ExpressionStatement(SwitchExpression)`), which
+        // makes its ARMS containers groovy-contracts restructures in place: it injects
+        // `result = …; if (!post) …; return result` into each one, and a shared node leaks that weaving back
+        // into the snapshot — the encoder then sees the instrumented arm instead of the author's value.
+        // Owned here for the same reason an IfStatement's branches are.
+        if (s instanceof SwitchStatement) {
+            SwitchStatement sw = (SwitchStatement) s
+            SwitchStatement out = new SwitchStatement(sw.expression, copyBody(sw.defaultStatement, freshen))
+            for (CaseStatement cs : sw.caseStatements) {
+                CaseStatement co = new CaseStatement(cs.expression, copyBody(cs.code, freshen))
+                co.setSourcePosition(cs); co.copyNodeMetaData(cs)
+                out.addCase(co)
+            }
             out.setSourcePosition(s); out.copyNodeMetaData(s)
             return out
         }

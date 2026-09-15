@@ -13921,6 +13921,58 @@ trigger that would change that is a slim-core release or a third-party pack auth
 
 ---
 
+## Housekeeping — Groovy 6.0.0-RC-3  *(shipped)*
+
+`gradle.properties` moves `groovyVersion` from RC-2 to `org.apache.groovy:6.0.0-RC-3`, resolved from its
+release-vote staging repository (`orgapachegroovy-1123` — the TEMPORARY `maven { url … }` entry in
+`build.gradle`, `examples-dsl/build.gradle` and `ci/consumer-smoke/build.gradle`, repointed from RC-2's
+now-deleted `…1122`). Drop it once RC-3 is on Central. Built-against wording refreshed in README, BUILD.md,
+the `build.gradle` comment and the consumer-smoke fallback.
+
+**Unlike RC-2, this one needed code**, and finding out why took three layers.
+
+**The change.** A switch EXPRESSION used as a method's IMPLICIT return is now compiled as a plain
+`SwitchStatement`; RC-2 and earlier wrapped it as `ExpressionStatement(SwitchExpression)`. `return switch (…)`
+still carries a first-class `SwitchExpression` in both. Confirmed INTENDED upstream. Runtime semantics are
+unchanged — both forms still yield their value — so this is an AST-consumer change, not a user-visible one.
+
+**Three layers, because each fix exposed the next.** The first symptom was `unsupported statement
+SwitchStatement`: `BodyEncoder` never saw a value, because the body was a statement rather than a tail
+expression. Reading a tail `SwitchStatement` back as the `SwitchExpression` it stands for (same three parts)
+moved the failure to `return expression … is outside fragment` — the encoder's `caseValueExpr` requires one
+statement per arm, and RC-3's arms are break-terminated (`Block[Expr(e), Break]`) where a first-class
+`SwitchExpression` carries `Block(Yield(e))`. Dropping a trailing `break` (it ends the arm, it does not change
+its value) moved the failure again, to the arms arriving ALREADY WOVEN —
+`Block[Expr(result = 'a'), If, Return(result)]`.
+
+**That third layer is the one worth recording**, because it is the load-bearing invariant of the whole design.
+`ContractExpansionTransform.copyBody` deliberately rebuilds only the containers groovy-contracts restructures
+IN PLACE — `BlockStatement`, `IfStatement`, `TryCatchStatement` — and shares everything else so that STC's
+later metadata stays visible. RC-3 promoted `SwitchStatement` into that set: with the switch in return
+position, groovy-contracts injects `result = …; if (!post) …; return result` into each ARM, and a shared node
+leaked that weaving into the clean-body snapshot. The encoder was reading the instrumented arm instead of the
+author's value. `SwitchStatement` is now owned by `copyBody` for exactly the reason an `IfStatement`'s branches
+are.
+
+Also: Groovy's parser now reports `Unexpected ','` where it reported `Unexpected input` for a bare brace array
+initializer. The P-java-fragment case pins that the form does not PARSE, not the wording for why, so the
+expectation narrows to the stable part — the same treatment the hardware-dependent FizzBuzz slot got.
+
+**A defect of our own, found by the fuller run.** `ActorTimerSemanticsTest` failed with a
+`ConcurrentModificationException`, not a timing threshold: the Phase 292–297 semantics tests collect actor
+output into `Collections.synchronizedList`, which guards individual operations but NOT iteration — and the test
+thread runs `count {}` / `any {}` / a copy constructor while the actor thread is still appending. Latent since
+those tests were written and exposed once a replay was still in flight. All 13 shared lists across the three
+files are now `CopyOnWriteArrayList`, whose iteration has snapshot semantics, which removes the hazard class
+rather than guarding each site.
+
+Gates on the RC-3 artifacts, all green: suite 2143/2143; `:test` 2201 tests, 0 failures; docLint 0 drift
+(191 case links, 37 pinned diagnostics); nuscr 5 protocols ok. The P291 double-monoid solver timeout seen on
+CI is unrelated to this bump — it predates it, does not reproduce locally (~190ms against an 8000ms budget),
+and is tracked as the FP model-search variance item.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

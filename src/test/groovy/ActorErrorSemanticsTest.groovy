@@ -20,6 +20,8 @@ import groovy.concurrent.StatefulHandler
 import groovy.util.function.TriConsumer
 import org.junit.jupiter.api.Test
 
+import java.util.concurrent.CopyOnWriteArrayList
+
 import java.util.concurrent.TimeUnit
 import java.util.function.BiConsumer
 
@@ -56,14 +58,14 @@ class ActorErrorSemanticsTest {
 
     @Test
     void theActorSurvivesAThrowWithOrWithoutACallback() {
-        List<String> bare = Collections.synchronizedList(new ArrayList<String>())
+        List<String> bare = new CopyOnWriteArrayList<String>()
         Actor<String> a = Actor.reactor(boomOn('boom', bare, 'bare'))
         a.send('boom'); a.send('after')
         waitUntil { bare.contains('bare:after') }
         a.stop()
 
-        List<String> errs = Collections.synchronizedList(new ArrayList<String>())
-        List<String> watched = Collections.synchronizedList(new ArrayList<String>())
+        List<String> errs = new CopyOnWriteArrayList<String>()
+        List<String> watched = new CopyOnWriteArrayList<String>()
         Actor<String> b = Actor.reactor(boomOn('boom', watched, 'watched'))
         b.onError({ Throwable t, String msg -> errs << "${t.class.simpleName}/${msg}".toString() } as BiConsumer<Throwable, String>)
         b.send('boom'); b.send('after')
@@ -78,7 +80,7 @@ class ActorErrorSemanticsTest {
 
     @Test
     void theRecoveryEdgeIsTheActorsAndFiresInsideBecomeTargets() {
-        List<String> log = Collections.synchronizedList(new ArrayList<String>())
+        List<String> log = new CopyOnWriteArrayList<String>()
         ReactorHandler<String, String> second, safe
         safe = { ActorContext<String> ctx, String m -> log << "safe:${m}".toString(); m } as ReactorHandler<String, String>
         second = boomOn('boom', log, 'second')
@@ -98,7 +100,7 @@ class ActorErrorSemanticsTest {
 
     @Test
     void aCallbackCannotRescueTheSendAndGetReply() {
-        Actor<String> a = Actor.reactor(boomOn('boom', Collections.synchronizedList(new ArrayList<String>()), 'x'))
+        Actor<String> a = Actor.reactor(boomOn('boom', new CopyOnWriteArrayList<String>(), 'x'))
         a.onError({ Throwable t, String msg -> } as BiConsumer<Throwable, String>)
         def reply = a.sendAndGet('boom')
         waitUntil { reply.isDone() }
