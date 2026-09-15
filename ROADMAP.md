@@ -13872,6 +13872,55 @@ withholds for a reason that is merely mechanical.
 
 ---
 
+## Candidate — packs for specialist TOPICS, not only libraries  *(not started; the reasoning recorded so it is not lost)*
+
+`PACKS.md`'s boundary is **"packs model libraries; the core models the language"** — ints, arrays, operators,
+closures, collections and `String` theory on the language side; JSR 385 quantities, a money or time library on
+the pack side. The question this candidate records is whether that is the right axis, because it cannot decide
+the case that prompted it: the `groovy.concurrent` work. That vocabulary is FIRST-PARTY Groovy, so it is not a
+library in the JSR 385 sense; but it is used by a minority of programs, which makes it specialist in a way
+`String` theory is not. The proposed restatement is **universal vs specialist** rather than language vs
+library — one paragraph in `PACKS.md`, which would settle the other candidates for free.
+
+**The triage, which is most of the value of writing this down.** The three bodies of work that look
+pack-shaped are not the same kind of thing:
+
+* **the Kerridge gallery** is a CORPUS over a vocabulary something else checks, with no engine code of its
+  own — it would be a pack's `corpusGroups()`, never a pack;
+* **the Smith work** is groovy-verify's OWN annotation family (`@Label`, `@Rely`, `@Guarantee`,
+  `@UnderRely`, `@Declassify`) plus the information-flow and rely/guarantee analyses — not a library
+  vocabulary at all, and closer to `@Invariant` than to a pack. It stays in the core whatever the axis;
+* **the `groovy.concurrent` work** is the only genuine candidate.
+
+**The code is already pack-shaped; the SPI is what blocks it.** Roughly 6,700 lines already live in
+concurrency-only files (`ChannelDesugar`, `ActorMailbox`, `SessionChecker`, `ScribbleExport`, plus the
+annotations), and the seams into `VerifyChecker` are three named pass entry points and ten call sites. What
+the `EncodingPack` SPI cannot host is the rest: `ChannelDesugar` REWRITES method bodies before encoding and
+there is no body-rewrite surface; `checkNetworkWellFormedness` (~450 lines) runs mid-flow with the encoder
+context; and the channel-as-list model is not call-by-call translation, so `translateCall` cannot express it.
+Two passes DO fit `checkMethod` as it stands — `checkParInterference` (~84 lines) and `checkCrewDiscipline`
+(~47) — the surface `UnitsPack` already uses for its kind-vector check.
+
+**The payoff is smaller than it looks, and that is worth knowing before starting.** Measured rather than
+assumed: the concurrency passes bail after a cheap `collectChannelVars` walk when a method touches no
+channels, so a non-concurrent codebase already pays close to nothing and `VERIFY_PACKS` deselection would not
+buy meaningful compile time. What remains is architectural discipline and the option of a slim core jar —
+real, but not urgent.
+
+**A staged path, each step useful alone.** (0) Restate the boundary in `PACKS.md` on the universal/specialist
+axis, or rule explicitly that first-party Groovy vocabulary stays in the core. (1) Move the two
+`checkMethod`-shaped passes into a `ConcurrencyPack` on the EXISTING SPI — ~130 lines, reversible, and it
+proves the seam and the corpus provenance for real rather than on paper. (2) Let the gap name itself: with a
+working consumer, the missing surfaces (a pre-encoding body-rewrite hook, a network-analysis hook carrying
+encoder context) are demand-driven additions, which is how the SPI grew in the first place. (3) Migrate the
+heavy files behind those surfaces — only if (1) and (2) make it look worth it.
+
+**Assessment.** Steps 0 and 1 are cheap and convert an open design question into a measured one. Step 3 is a
+large refactor of a body of work with 2,100+ green cases, justified today by tidiness rather than by need; the
+trigger that would change that is a slim-core release or a third-party pack author appearing.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
