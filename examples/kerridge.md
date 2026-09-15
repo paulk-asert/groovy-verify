@@ -27,7 +27,7 @@ Welch/Martin design-rule school.
 
 This gallery ports those teaching shapes onto Groovy 6's `groovy.concurrent` (channels as `AsyncChannel`,
 `PAR` arms as `async {}` tasks, the delta as `BroadcastChannel`, `ALT` as `ChannelSelect`) and runs them
-under the [SEQ/PAR ladder](concurrency.md) (Phases 240–286) — where the corresponding certificates are
+under the [SEQ/PAR ladder](concurrency.md) — where the corresponding certificates are
 issued **in the compiler**, as ordinary static type-checking errors, rather than established offline. The
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
@@ -76,29 +76,29 @@ to see the diagnostics and counterexamples rather than one line of pass/fail per
 
 | Kerridge / JCSP | groovy.concurrent | What the checker does with it |
 | --- | --- | --- |
-| `Channel.one2one()` | `AsyncChannel<Integer> c = AsyncChannel.create(n)` | one live process per end, checked (Phase 241); a bounded FIFO — the *k*-th write is the *k*-th read (Phase 247) |
-| an *unbuffered* `one2one` (the JCSP default — a write blocks until the read) | `AsyncChannel.create(0)` — a rendezvous | the send is a blocking event too, and a send and its receive are one synchronisation: the send-send knot two write-first processes make is a named deadlock (Phase 272) |
-| a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked (Phase 240) |
-| typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives (Phase 242) |
-| the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error (Phase 243) |
-| poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error (Phase 245) |
+| `Channel.one2one()` | `AsyncChannel<Integer> c = AsyncChannel.create(n)` | one live process per end, checked; a bounded FIFO — the *k*-th write is the *k*-th read |
+| an *unbuffered* `one2one` (the JCSP default — a write blocks until the read) | `AsyncChannel.create(0)` — a rendezvous | the send is a blocking event too, and a send and its receive are one synchronisation: the send-send knot two write-first processes make is a named deadlock |
+| a `CSProcess` under `PAR` | an `async { }` task | fork-window disjointness, checked |
+| typed channel discipline | Bean Validation bounds on the element type | checked at sends, assumed at opaque receives |
+| the client-server design rule | the wait-for order | deadlock-freedom proved as well-foundedness; a cycle is a spelled-out error |
+| poison pill / formal termination | `close()` | a drain provably finishes; a missing close is a named error |
 | `GDelta` (copy to every branch) | `BroadcastChannel.subscribe()` | every subscriber sees the element — fan-out *proves* |
-| `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves (Phase 248) |
-| `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified (Phase 250); the drained sequence proves element by element — the channel is the list the loop builds (Phase 251) |
-| a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" (Phase 252) |
-| a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values (Phase 254); liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it (Phase 255) |
-| `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order (Phase 249) |
-| `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever" (Phase 253); modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named (Phase 256) |
-| the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })` (Phases 259/260); bound a law a *partner* relies on by the ghost's own size |
-| starvation-freedom in the large (served within a bound) | `@ServedWithin(n)` on the method | certified for a held `fair()` over k <= n branches (the rotation's own arithmetic); refuted with the policy's reason otherwise (Phase 265) |
-| end-to-end latency through a pipeline | `@DeliveredWithin(value = n, from = 'c', to = 'd')` | the head-of-line service bound, summed hop by hop (a stage is 1, a held `fair()` ALT its branch count), the worst path deciding; queueing is loudly not claimed (Phase 266) |
-| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol({ loop { request: client >> server; reply: server >> client } })` on the method — plain Groovy, parsed by Groovy (`text = '''…'''` keeps the string form; `./gradlew nuscrCheck` exports the corpus as real Scribble for the MPST tools, the mixed choice refused as outside their fragment) | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server (Phases 263/264) |
-| `select(preCon)` — a guard masked off while keeping its index | `receive(c).when { cond }` on an offer, or `select(boolean… enabled)` positionally | the committed branch is one whose flag holds, so a guarded arm's assertion and the loop's `@Invariant` prove from the guard (Phases 275/276); the positional form must drop branches only from the END, or `r.index` moves |
-| `CSTimer` in the `Guard[]` (a timeout as a branch of the `ALT`) | `ChannelSelect.after(millis)` as an offer, or `AsyncChannel.after(millis)` as a channel | from 6.0.0 (GROOVY-12343): the offer re-arms each select, so a *held* instance keeps its `fair()` rotation while carrying a per-round deadline; the channel's clock starts at creation, one fixed deadline for every round. A timer always fires, so an ALT carrying one **waits on no other process** — the liveness certificate that a deadline buys (Phase 290) |
-| `Barrier` (`sync` / `enroll` / `resign`) | `java.util.concurrent.Phaser` — `arriveAndAwaitAdvance()`, `register()`, `arriveAndDeregister()` | a round is one n-way synchronisation, so a knot has to close through some other event; short party counts and a sync after resigning are named (Phases 277/278) |
-| `any2one` / `one2any` (shared channel ends) | `@SharedSend` / `@SharedReceive` on the declaration | declared, never inferred — undeclared sharing still refuses; the positional model is given up loudly, the element contract and deadlock-freedom survive, and a client claiming a shared reply is its own is refused (Phases 284/285) |
-| `Crew` (concurrent read, exclusive write) | `@WithReadLock` / `@WithWriteLock` | the transforms stay transparent to the prover; what is refused is a write taken under the READ lock, and read and write halves on different locks (Phase 282) |
-| `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason (Phases 256/257) |
+| `GNumbers` with a literal count | a `for (n in 1..N)` producer loop | unrolled: the stream is bounded traffic, the pipeline proves |
+| `GNumbers(n)`, symbolic | a `while (i < n) { … i = i + 1 }` producer loop with `@Invariant` / `@Decreases` + `close()` | termination certified; the drained sequence proves element by element — the channel is the list the loop builds |
+| a looping process (`GPrint`, `GSquares` as a `while` reading its input) | a `while (i < n) { v = in.first(); … }` loop with `@Invariant` / `@Decreases` | reads element *k*; reading past the producer "may block forever" |
+| a process that never stops (`GNumbers`, `GPrint`, a server, as the book writes them) | `while (true) { … }` with an `@Invariant` | safety certified — invariant, send contracts, received values; liveness certified under weak fairness — a receive-first cycle is a circular wait in every iteration, a priming send breaks it |
+| `ALT` | `await ChannelSelect.from(a, b).select()` | a choice among the branches that can be ready — value *and* index proved; an OR node in the wait-for order |
+| `ALT` in a loop (the multiplexer, the fair server's read side) | `while (j < n) { Result r = await ChannelSelect.from(a, b).select(); … }` | ghost cursors per branch; the merged count proves, the order is nondeterministic, one iteration too many "may block forever"; modelled as the runtime selects — lowest ready index, losers re-sent — with starvation hazards named |
+| the history of a channel (a trace) | `c.taken` / `c.sent` in a loop `@Invariant` | the elements this loop has taken from / sent on `c` so far, lists the invariant quantifies over — `Forall.range(0, i, { int k -> c.taken[k] == 2 * k + 1 })`, `Forall.range(0, c.sent.size(), { int k -> c.sent[k] == Fib.of(k) })`; bound a law a *partner* relies on by the ghost's own size |
+| starvation-freedom in the large (served within a bound) | `@ServedWithin(n)` on the method | certified for a held `fair()` over k <= n branches (the rotation's own arithmetic); refuted with the policy's reason otherwise |
+| end-to-end latency through a pipeline | `@DeliveredWithin(value = n, from = 'c', to = 'd')` | the head-of-line service bound, summed hop by hop (a stage is 1, a held `fair()` ALT its branch count), the worst path deciding; queueing is loudly not claimed |
+| a protocol / a session (Kerridge's process interfaces as a conversation) | `@Protocol({ loop { request: client >> server; reply: server >> client } })` on the method — plain Groovy, parsed by Groovy (`text = '''…'''` keeps the string form; `./gradlew nuscrCheck` exports the corpus as real Scribble for the MPST tools, the mixed choice refused as outside their fragment) | the network's global type, projected onto each role and checked against every process's control flow — a violation named with its trace; `par { … } and { … }` interleaves independent sub-sessions, which types the fair server |
+| `select(preCon)` — a guard masked off while keeping its index | `receive(c).when { cond }` on an offer, or `select(boolean… enabled)` positionally | the committed branch is one whose flag holds, so a guarded arm's assertion and the loop's `@Invariant` prove from the guard; the positional form must drop branches only from the END, or `r.index` moves |
+| `CSTimer` in the `Guard[]` (a timeout as a branch of the `ALT`) | `ChannelSelect.after(millis)` as an offer, or `AsyncChannel.after(millis)` as a channel | from 6.0.0 (GROOVY-12343): the offer re-arms each select, so a *held* instance keeps its `fair()` rotation while carrying a per-round deadline; the channel's clock starts at creation, one fixed deadline for every round. A timer always fires, so an ALT carrying one **waits on no other process** — the liveness certificate that a deadline buys |
+| `Barrier` (`sync` / `enroll` / `resign`) | `java.util.concurrent.Phaser` — `arriveAndAwaitAdvance()`, `register()`, `arriveAndDeregister()` | a round is one n-way synchronisation, so a knot has to close through some other event; short party counts and a sync after resigning are named |
+| `any2one` / `one2any` (shared channel ends) | `@SharedSend` / `@SharedReceive` on the declaration | declared, never inferred — undeclared sharing still refuses; the positional model is given up loudly, the element contract and deadlock-freedom survive, and a client claiming a shared reply is its own is refused |
+| `Crew` (concurrent read, exclusive write) | `@WithReadLock` / `@WithWriteLock` | the transforms stay transparent to the prover; what is refused is a write taken under the READ lock, and read and write halves on different locks |
+| `fairSelect` / `priSelect` | `ChannelSelect alt = ChannelSelect.from(a, b).fair()` held before the loop / plain `select()` | from Groovy 6.0.0-beta-4 (GROOVY-12320): a held `fair()` rotates from the last winner — the fair server's per-client liveness is certified; before it, withheld with the runtime's reason |
 
 A note on spelling: the ports declare their channels with the **element type on the left** —
 `AsyncChannel<Integer> c = AsyncChannel.create(n)` — because that is what tells static type checking (and
@@ -106,8 +106,8 @@ the checker) what flows through the channel: `create(n)` has no argument that co
 `def c = AsyncChannel.create(n)` is an `AsyncChannel<Object>` and neither side can say anything about its
 elements. (`def` / `var` / `val` with a type witness, `val c = AsyncChannel.<Integer>create(n)`, is also supported
 and pinned by a case; but an element *contract* — `AsyncChannel<@PositiveOrZero
-Integer>`, Phase 242 — has to sit on a declared generic anyway.) The one place a declared type is required
-rather than merely idiomatic is an ALT's result, `ChannelSelect.Result r = await …` (Phase 249).
+Integer>` — has to sit on a declared generic anyway.) The one place a declared type is required
+rather than merely idiomatic is an ALT's result, `ChannelSelect.Result r = await …`.
 
 ## The one-shot shapes verify end to end
 
@@ -125,7 +125,7 @@ static String helloWorld() {
 ```
 
 The *literal* `ProduceHW` / `ConsumeHW` pair — two messages, `"Hello"` then `"World"`, down one channel — was
-the gallery's first named boundary; the bounded FIFO of Phase 247 proves it end to end, **in order** (read
+the gallery's first named boundary; the bounded FIFO model proves it end to end, **in order** (read
 them back the other way round and the postcondition is refuted — [below](#the-student-mistakes-are-named-compile-errors)):
 
 <!-- doclint:case p246-kerridge-gallery/the-literal-two-write-producehw-consumehw-proves-in-order -->
@@ -145,7 +145,7 @@ transform proves; **GPlus** joins one value from each of two input channels and 
 right: each producer owns its own channel); **GDelta** is `BroadcastChannel` fan-out, both branches proved
 to see the element; **GPrint**'s drain-until-end-of-stream is certified to finish because its `close()`
 dependency is satisfiable. With a *literal* trip count the whole c03 network certifies: `GNumbers` as a `for (n in 1..3)` producer loop
-unrolls (Phase 248), `GSquares` composes, and `GPrint`'s drain proves the printed sum — deadlock-freedom
+unrolls, `GSquares` composes, and `GPrint`'s drain proves the printed sum — deadlock-freedom
 included, since the drain's `close()` dependency is satisfiable:
 
 <!-- doclint:case p246-kerridge-gallery/c03-gnumbers-gsquares-gprint-bounded-the-sum-proves -->
@@ -169,7 +169,7 @@ static int squaresPipeline() {
 ```
 
 And with a *symbolic* count — `GNumbers(n)` as the book means it, `n` a parameter — the same network proves
-its drained sequence element by element (Phase 251): the channel is modelled as the list the generator loop
+its drained sequence element by element: the channel is modelled as the list the generator loop
 builds, its size and element facts injected into the loop's spec, so the author writes only the generator's
 own `@Invariant` / `@Decreases`:
 
@@ -195,7 +195,7 @@ static List<Integer> squares(int n) {
 ```
 
 And c03 **as the book writes it** — a `PAR` of three *looping* processes, each with its own loop, `GSquares`
-receiving *and* sending — proves the printed squares for symbolic `n` (Phase 252): every process carries
+receiving *and* sending — proves the printed squares for symbolic `n`: every process carries
 only its own `@Invariant` / `@Decreases`; the channels' sequence facts, the block-forever obligation on each
 receive, and the renaming-apart of the three loops' counters are the checker's:
 
@@ -241,8 +241,8 @@ static List<Integer> network(int n) {
 ```
 
 And c03 **as the book actually writes it** — every process `while (true)`, nothing ever stopping — is
-certified for **safety** (Phase 254): every value `GPrint` accumulates is a square, `GPrint`'s own invariant
-preserved through `GSquares`' and `GNumbers`' relations — and for **liveness under weak fairness** (Phase 255):
+certified for **safety**: every value `GPrint` accumulates is a square, `GPrint`'s own invariant
+preserved through `GSquares`' and `GNumbers`' relations — and for **liveness under weak fairness**:
 no receive in the pipeline waits on itself within an iteration, so every one is eventually served. Termination
 alone is not claimed; none is meant:
 
@@ -281,7 +281,7 @@ static void network() {
 
 And the **server that answers forever** — the client sending a request then waiting for its reply, the
 server waiting for a request then replying, both `while (true)` — is certified **live under weak
-fairness** (Phase 255): the request is always one message ahead of the wait for its reply. Let the client
+fairness**: the request is always one message ahead of the wait for its reply. Let the client
 wait before asking and it is the mutual-receive deadlock — *in every iteration*, spelled out:
 
 <!-- doclint:case p246-kerridge-gallery/client-and-server-forever-live-under-weak-fairness -->
@@ -346,7 +346,7 @@ static int alt(int x, int y) {
 
 And the **multiplexer** — `ALT` *in a loop*, the shape every merging process and fair server in the books is
 built on — over two generators: the merged count proves for symbolic counts, the interleaving stays what it
-is (an order claim is refuted, honestly), and one iteration too many is the named hang (Phase 253):
+is (an order claim is refuted, honestly), and one iteration too many is the named hang:
 
 <!-- doclint:case p246-kerridge-gallery/the-multiplexer-alt-in-a-loop-merges-two-generators-count-proved -->
 ```groovy
@@ -586,7 +586,7 @@ channel, or use a BroadcastChannel (subscribing before any sender starts) for on
 ```
 
 **Reading more than was written.** A consumer that takes a second message from a producer that sent one —
-the FIFO pairing of Phase 247 knows there is no send to match it:
+the FIFO pairing knows there is no send to match it:
 
 <!-- doclint:case p247-bounded-fifo/a-receive-past-the-last-send-can-never-be-satisfied -->
 ```groovy
@@ -640,7 +640,7 @@ read, so two writers block on each other; give the same channel a buffer and it 
 Every shape above this point used buffered channels, and the certificate rested on *a send never blocks* —
 so this entire class was invisible, and the network compiled in silence. Declaring the channel
 `AsyncChannel.create(0)` — a rendezvous, which is what JCSP's `one2one` is — makes the send a blocking
-event, and the knot is named (Phase 272):
+event, and the knot is named:
 
 <!-- doclint:case p272-rendezvous-channels/both-processes-write-before-they-read-the-send-send-knot-is-refuted -->
 ```groovy
@@ -734,7 +734,7 @@ where the channel makes it one, and the checker says so only there.
 
 The rule that "capacity decides whether a send can block" outlives channels, which is worth knowing before
 leaving this chapter: a bounded actor mailbox declared `Overflow.BLOCK` parks its sender the same way, and
-[fills the same kind of knot](concurrency.md#the-bounded-mailbox--the-other-send-that-blocks-phase-289)
+[fills the same kind of knot](concurrency.md#the-bounded-mailbox--the-other-send-that-blocks)
 when the handler is waiting on the process doing the filling. Those two are the only blocking sends in
 `groovy.concurrent`; everywhere else a send is queued and returns.
 
@@ -745,7 +745,7 @@ an unmatched receive, the cited chain of waits **is** the witness — there is n
 nothing about the values decides it. Every claim that ranges over *values*, though, is refuted the way the
 rest of the verifier refutes: with an instantiation you can go and run.
 
-**Reading one element past the producer** (Phase 252) — the off-by-one every teaching pipeline meets. The
+**Reading one element past the producer** — the off-by-one every teaching pipeline meets. The
 consumer loops `n + 1` times over a generator that sends `n`:
 
 <!-- doclint:case p252-streaming-consumers/a-consumer-reading-past-the-producer-may-block-forever -->
@@ -790,7 +790,7 @@ reads once. It is the same shape as the wrap-around philosopher in the
 [concurrency gallery](concurrency.md) — the verifier doesn't say "this might hang", it hands back the
 trip count at which it does.
 
-**Claiming an order the ALT does not give** (Phase 253). Strengthen the multiplexer's `@Ensures` from the
+**Claiming an order the ALT does not give**. Strengthen the multiplexer's `@Ensures` from the
 count to `result.size() == na + nb && result[0] == 0` — "the first merged element is the left producer's
 first" — and the honest answer comes back:
 
@@ -811,7 +811,7 @@ same case answers `merge(1, 7720)` on 6.0.0-beta-3 and `merge(1, 1)` on a beta-4
 witnesses to the same gap. Contrast `overRead(0)` and `clientServer(0, 1)`: those *are* forced — the
 obligation admits no smaller failure — and they come back identical on both runtimes.
 
-**A server bounded above its clients** (Phase 261) — a cycle whose members both terminate, but not
+**A server bounded above its clients** — a cycle whose members both terminate, but not
 together. The server loops `m` times, the client asks `n < m` times, and the server's last read waits for a
 request that never comes:
 
@@ -1038,7 +1038,7 @@ one-in-two chance of matching the receive against the blocked one and crying dea
 runs. The disjunction has no such coin to flip.
 
 `@SharedReceive` is the mirror — one writer, many *competing* readers — and is not the
-[broadcast fan-out](concurrency.md) of Phase 241, where every subscriber sees every element. Here each
+[broadcast fan-out](concurrency.md), where every subscriber sees every element. Here each
 element goes to exactly one reader, which is what `one2any` means and what a work queue needs.
 
 ### The canteen, both halves
@@ -1561,8 +1561,8 @@ is a **channel** whose clock starts at creation: one fixed deadline shared by ev
 
 What a timer changes is not the value but the **liveness**, and the pair below is the whole of it. Every
 other branch of an `ALT` waits for some other process to send; a timer waits for the clock. So take a select
-that cannot be satisfied — nothing anywhere sends to its only channel — which the gallery has refused since
-Phase 249:
+that cannot be satisfied — nothing anywhere sends to its only channel — which the gallery has refused ever
+since it modelled the `ALT`:
 
 <!-- doclint:diagnostic p290-timer/a-select-nothing-sends-to-can-never-be-satisfied -->
 ```
@@ -1622,7 +1622,7 @@ when there is something to report" — which is pinned so that the liveness exem
 The certificates above rest on a small number of mechanisms, each worth knowing by name.
 
 **Deadlock is well-foundedness of the wait-for order.** Every receive waits for a send, every drain waits
-for a close, and on a rendezvous channel every send waits for its receive as well (Phase 272 — a send and
+for a close, and on a rendezvous channel every send waits for its receive as well (a send and
 the receive that takes its element being one synchronisation, so a matched pair is not itself a cycle); the
 checker builds that graph and demands it be well-founded. For a one-shot network the graph
 must be acyclic — a cycle *is* the deadlock, and the error spells out the loop of waits, receive by receive
@@ -1779,9 +1779,9 @@ every loop is the straight-line code before it, and liveness assumes weak fairne
 The first of those is **measured rather than assumed**, which matters because so much rests on it: eight
 sends into a capacity-2 channel with nothing draining all return, so a channel's capacity is a hint to the
 reader and not a bound on the sender. Two constructs are the exceptions, and both are modelled as blocking —
-a channel declared with capacity 0, which is a rendezvous (Phase 272), and a
-[bounded actor mailbox](concurrency.md#the-bounded-mailbox--the-other-send-that-blocks-phase-289)
-declared `Overflow.BLOCK` (Phase 289, in the concurrency gallery: an actor is not a CSP process, so it is
+a channel declared with capacity 0, which is a rendezvous, and a
+[bounded actor mailbox](concurrency.md#the-bounded-mailbox--the-other-send-that-blocks)
+declared `Overflow.BLOCK` (in the concurrency gallery: an actor is not a CSP process, so it is
 documented there rather than here).
 
 **What is genuinely outside today.** The *queueing* half of latency — delay behind a backlog, which needs

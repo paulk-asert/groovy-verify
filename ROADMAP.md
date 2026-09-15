@@ -68,7 +68,7 @@ the same taxonomy applies here.
   - dereference `r.m(...)` → `r != null`
 - A **size oracle** mints an integer constant `<recv>.size >= 0` on demand; a
   **nullity oracle** mints a boolean per reference. The size constant is shared
-  with the `.length`/`.size()` contract syntax of [Phase 4](#phase-4--richer-fragment-in-requiresensures-shipped),
+  with the `.length`/`.size()` contract syntax of [Phase 4](#phase-4--richer-fragment-in-requiresensures--shipped),
   so a contract that bounds a collection's size and an indexing check inside the
   body agree on the same symbol.
 
@@ -96,7 +96,7 @@ class Demo {
 **Path-sensitivity, and the value-flow that followed.** The implicit checks are
 path-sensitive (they honour enclosing `if`s). Originally *value-flow-blind* — local
 assignments untracked, loop obligations checked without the `@Invariant` — both gaps
-were closed by [Phase 5](#phase-5--value-flow--loop-fused-safety-obligations-shipped).
+were closed by [Phase 5](#phase-5--value-flow--loop-fused-safety-obligations--shipped).
 Counterexamples report integer values; nullity is boolean, so a null-dereference
 refutation names the obligation but not a concrete value.
 
@@ -255,7 +255,7 @@ even though they are obviously safe:
 
 Both now verify. The work stayed entirely inside the QF_LIA + oracle fragment —
 no new theory, no quantifiers — the opposite of
-[Phase 6](#phase-6--quantifiers-shipped)'s trigger cliff.
+[Phase 6](#phase-6--quantifiers--shipped)'s trigger cliff.
 
 **How it works:**
 
@@ -340,7 +340,7 @@ groovy-contracts rather than a parallel annotation.
 `6.0.0-SNAPSHOT`: earlier groovy-contracts builds rejected *any* parameterised
 closure (and `it`) nested inside a contract closure, which would have forced an
 awkward static-marker workaround. The method-call surface is still the spike form
-— [Phase 9](#phase-9--programmer-facing-surface-authoring--diagnostics) owns a
+— [Phase 9](#phase-9--programmer-facing-surface-authoring--diagnostics--shipped) owns a
 closer-to-idiom spelling.
 
 **Read *and* write: `select` and `store`.** Reading covers proofs like binary
@@ -379,7 +379,7 @@ solver-constrained array *contents* and a runnable `fails on:` repro, though
 unconstrained element values and a full array-model pretty-printer (cross-cutting
 risks) stay open. UNKNOWN on a stalled quantifier stays a loud "could not decide"; the
 user-supplied trigger/instantiation hint that would rescue it is the lightest
-borrow from [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints).
+borrow from [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints--8a-shipped-8b8c-opt-in).
 
 ---
 
@@ -487,7 +487,7 @@ the SMT side.
   and encoding must commit to the *same* integer model or the tool lies.
 - **Purity and termination.** Only side-effect-free, terminating methods are safe
   to evaluate — exactly the property `@Decreases` already reasons about, so there
-  is real synergy with [Phase 3](#phase-3--loops-invariant--decreases-shipped).
+  is real synergy with [Phase 3](#phase-3--loops-invariant--decreases--shipped).
 
 ### 8b — Structured proof decomposition *(opt-in, philosophy-compatible)*
 
@@ -3223,7 +3223,7 @@ Receiver discrimination handles all three AST shapes the type-checker produces:
 (post-resolution). `isStringReceiver` extended to recognise these as String-producing
 expressions, so `Integer.toString(n).length()` resolves correctly.
 
-**Semantic gaps — *closed* in [Phase 54](#phase-54--sign-faithful-integer-tostring--parseint-shipped).**
+**Semantic gaps — *closed* in [Phase 54](#phase-54--sign-faithful-integertostring--parseint--shipped).**
 At this phase the conversions were the raw Z3 primitives, whose SMT-LIB semantics diverge from Java
 for negatives: `int.to.str(-5)` is `""` (Java `"-5"`), and `str.to.int` is `-1` for any
 non-`[0-9]+` string. That was **silent unsoundness** (the engine *verified* `Integer.toString(n <
@@ -3518,7 +3518,7 @@ restriction and adds the missing `/` / `%` dispatch.
   `mkDiv` / `mkMod`. Operator-text matching (`be.operation.text == '/'` and `== '%'`)
   rather than `Types.DIVIDE`/`Types.MOD` — Groovy's parser doesn't assign `%` the
   `Types.MOD` token (a caveat the existing `ObligationCollector` already documented).
-  > **Corrected in [Phase 50](#phase-50--groovy-faithful-division--modulo-shipped).** This
+  > **Corrected in [Phase 50](#phase-50--groovy-faithful-division--modulo--shipped).** This
   > mapping was *Java*-shaped and unsound for Groovy: Groovy's `/` is **BigDecimal** division
   > (`5 / 2 == 2.5G`), not integer division, and `%` is the **sign-of-dividend** remainder
   > (`-5 % 2 == -1`), not Euclidean. Phase 50 re-grounds all of div/mod on Groovy semantics.
@@ -3549,7 +3549,7 @@ static int isEven(int n) { (n % 2 == 0) ? 1 : 0 }
 
 **Known semantic gap — Java vs SMT-LIB div/mod**:
 
-*Superseded by [Phase 50](#phase-50--groovy-faithful-division--modulo-shipped).* The original
+*Superseded by [Phase 50](#phase-50--groovy-faithful-division--modulo--shipped).* The original
 Phase 48 mapping (`/` → `mkDiv`, `%` → `mkMod`, both Euclidean) was **Java-shaped and silently
 unsound for Groovy** — it modelled `/` as integer division (Groovy gives a `BigDecimal`) and `%` as
 the non-negative Euclidean remainder (Groovy is sign-of-dividend). Phase 50 re-grounds the whole
@@ -6882,7 +6882,7 @@ Things deliberately not pursued, because they don't pay back:
   This is the opposite of a push-button compile-time checker, and adopting it
   would make this a proof assistant rather than a better Groovy type-checker. The
   *bounded* borrows — instantiation hints and structured `assert … by`
-  decomposition — live in [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints);
+  decomposition — live in [Phase 8](#phase-8--beyond-smt-proof-by-computation-and-proof-hints--8a-shipped-8b8c-opt-in);
   the full tactic engine does not.
 - **IDE squiggles.** Diagnostics go through `addStaticTypeError`, which IDEs
   surface via their Gradle integration. Going further — inline counterexample

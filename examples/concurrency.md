@@ -285,8 +285,7 @@ changes — mutual exclusion → serialization. That's the point: the same local
 **shared-memory locking *and* message-passing actors**. Drop the `count < capacity` guard and it refutes, lock
 or no lock. (We still don't prove the runtime *is* serial — that's the agent's contract, the half we rely on.)
 
-### The bounded mailbox — the other send that blocks (Phase 289)
-
+### The bounded mailbox — the other send that blocks
 The invariant above is what an actor *maintains*. Its **mailbox** is a different question, and the first one
 in this gallery whose answer had to be measured rather than reasoned about.
 
@@ -351,8 +350,7 @@ one-shot FIFO model, and says so — because a handler runs once per **message**
 single process run. The mailbox verdict is independent of that skip, which is why the cases pin both: the
 channel certificate withheld, and the deadlock answer given.
 
-### The stash — deferred is not delivered (Phase 292)
-
+### The stash — deferred is not delivered
 A context-aware actor can **defer** a message it cannot handle yet: `ctx.stash()` moves it out of the dispatch
 path, and `ctx.unstashAll()` replays everything deferred, oldest first, ahead of anything sent since — the
 FSM idiom the Groovy docs teach, *stash until ready, then `become` the ready phase and replay*. Both halves are
@@ -406,8 +404,7 @@ sent the trigger by someone else first, so either withholds the count.
 carried a *Possible NullPointerException*. The context the runtime passes a handler, a `become` target or a
 context-aware `onError` is never null, and is now treated so.)
 
-### `become` — the phases, checked against a protocol (Phase 293)
-
+### `become` — the phases, checked against a protocol
 An actor that `become`s is a state machine, and what matters about it is the order of the conversation: which
 messages it expects, in which phase, and what happens to the rest. That is exactly what a session type says, so
 the checker reuses the stock [`@Protocol`](kerridge.md): a role named after an actor local is played by that
@@ -441,16 +438,15 @@ modelled as it behaves:
 * a phase whose default throws rejects a message the protocol sends it.
 
 The pairing catches what neither half sees alone. The docs' actor with its trigger typo'd as `'auth-ok'` passes
-Phase 292, because an `unstashAll()` exists. Under the protocol it cannot: the phase never transitions, the
+[the stash check](#the-stash--deferred-is-not-delivered), because an `unstashAll()` exists. Under the protocol it cannot: the phase never transitions, the
 protocol's own `auth_ok` is stashed, and the conversation ends with it still there.
 
 The graph is read strictly: `if (m == LIT)` arms, `become` targets it can see, and a default that handles,
 stashes or throws. Anything else is skipped loudly, as is an actor that replies (only what an actor *receives*
 is modelled yet).
 
-### `sendAndGet` — the reply, and the deadlock it can hide (Phase 294)
-
-Phase 293 models what an actor *receives*. The other direction is its **reply**: the value a `sendAndGet` is
+### `sendAndGet` — the reply, and the deadlock it can hide
+The protocol check above models what an actor *receives*. The other direction is its **reply**: the value a `sendAndGet` is
 completed with. That is not a message the actor chooses — the runtime completes the caller's `Awaitable` with
 whatever the dispatch returns — so a reply is **positional**, and `ack: gate >> client` is read as the answer to
 the message directly before it.
@@ -488,8 +484,8 @@ conversation is STUCK — the peer blocks on the reply, nothing further is deliv
 fails with IllegalStateException. …
 ```
 
-Phase 292 is silent here (an `unstashAll()` exists) and so is Phase 293 (nothing is left stashed *at the end*,
-because the end is never reached).
+[The stash check](#the-stash--deferred-is-not-delivered) is silent here (an `unstashAll()` exists), and so is
+the protocol check (nothing is left stashed *at the end*, because the end is never reached).
 
 The peer's half is checked too: only `sendAndGet` opens a reply channel, so a bare `send` where the protocol
 answers is refuted as a conversation that *ends where the protocol still expects it to receive the reply*.
@@ -501,8 +497,7 @@ reply's *production* is checked. Those semantics, and the rest (a deferred messa
 handles it; a throwing arm replies exceptionally; one still stashed at `stop()` fails), are measured in
 `ActorReplySemanticsTest` rather than assumed.
 
-### A reply inside a `choice` — the key/value actor (Phase 295)
-
+### A reply inside a `choice` — the key/value actor
 A request/reply actor usually has more than one request. The key/value actor is the canonical shape: `get` is
 answered with a value, `put` with an acknowledgement, and the client picks which conversation to have.
 
@@ -525,8 +520,8 @@ Which message a reply answers is decided by the **trace**, not by its label — 
 the protocol just delivered on this branch. That matters in both directions. It means two branches may perfectly
 well acknowledge with the *same* label (the write-ack shape, `ack` for both `get` and `put`), which is not
 ambiguous at all: the branches are alternatives, so only one `ack` can ever be outstanding. And it means the
-branches are checked *apart*, which is what catches the **cross-wired reply** — the Phase 264 fair-server bug,
-in actor form:
+branches are checked *apart*, which is what catches the **cross-wired reply** — the fair server's cross-wired
+reply from the [Kerridge gallery](kerridge.md), in actor form:
 
 <!-- doclint:diagnostic p295-branch-replies/a-reactor-answering-get-with-the-put-branch-s-label-is-cross-wired -->
 ```
@@ -539,8 +534,7 @@ Deferral is per-branch too: an actor that defers `put` is stuck on *that* branch
 normally. What must stay unique is the other direction — one message, one reply — because that is what tells a
 `sendAndGet` what to wait for; a message answered by two different labels is skipped loudly.
 
-### `onError` — what it observes, and what it cannot rescue (Phase 296)
-
+### `onError` — what it observes, and what it cannot rescue
 `onError` reads as supervision, and the first thing to do with a reading like that is measure it. Most of it
 does not hold. The actor survives a throwing dispatch **with or without** a callback — the next message is
 handled either way — and a `sendAndGet` on the failed message completes exceptionally **either way** too.
@@ -559,8 +553,8 @@ gate.onError { ActorContext<String> ctx, Throwable t, String msg -> ctx.become(s
 ```
 
 So a callback does **not** make the throw conformant: the message the protocol delivered was never processed,
-callback or no callback. What it changes is what the checker can tell you — Phase 293's bare *rejects* becomes
-the error observed, and the phase the actor carried on into, named:
+callback or no callback. What it changes is what the checker can tell you — the bare *rejects* of the
+protocol check becomes the error observed, and the phase the actor carried on into, named:
 
 <!-- doclint:diagnostic p296-actor-onerror/a-throw-an-onerror-observes-is-still-a-message-the-protocol-delivered-and-lost -->
 ```
@@ -573,8 +567,7 @@ And when the thrown-on message is one the protocol **answers**, the clause the m
 reply 'ack' the protocol promises fails with that error too — an onError cannot rescue it*. It is worth saying
 out loud precisely because the callback is what makes it look handled.
 
-### The actor's own timers — a message source the protocol cannot see (Phase 297)
-
+### The actor's own timers — a message source the protocol cannot see
 `ctx.scheduleOnce` and `ctx.scheduleAtFixedRate` are the actor sending a message **to itself**, and one measured
 fact decides everything the checker can say about them: the message lands in whichever behaviour is current
 *when the timer fires*, not the one that armed it.
@@ -607,8 +600,8 @@ across every become, so this stash grows with elapsed time rather than with anyt
 to happen for it to run out of heap …
 ```
 
-That "nothing has to happen" is the difference from [Phase 293's unbounded stash](#become--the-phases-checked-against-a-protocol-phase-293),
-which needs the protocol to keep delivering. Here the actor feeds its own stash: 40 messages accumulated in
+That "nothing has to happen" is the difference from [the unbounded stash the protocol check
+finds](#become--the-phases-checked-against-a-protocol), which needs the protocol to keep delivering. Here the actor feeds its own stash: 40 messages accumulated in
 600ms of pure idling at a 20ms period, with no peer in the picture at all.
 
 One thing the checker deliberately stays quiet about: a phase that merely **ignores** the scheduled message.
@@ -617,8 +610,7 @@ and a checker that called that a defect would be mistaking a design for a bug. E
 `Cancellable` is *kept* withholds the claim — it may yet be cancelled; only a handle thrown away makes
 "this can never be stopped" a fact.
 
-### The actor as a field — reach, for everything above (Phase 298)
-
+### The actor as a field — reach, for everything above
 Every actor check to this point reads a single *method* body. The corpus never minded, because the corpus is
 written the way the Groovy docs are — actor and behaviours as locals of the method that sends to them. Real
 code is not written that way. A service class owns the actor as a **field**, and its methods send to it:
@@ -646,7 +638,7 @@ none of its behaviours calls unstashAll(). …
 
 A field initialiser **is** a declaration, so the class's initialisers are presented as one block and
 `becomeGraph` reads a class exactly as it read a method. The `@Protocol` stack gets the same treatment: the
-field plays its role, and a [cross-wired reply](#a-reply-inside-a-choice--the-keyvalue-actor-phase-295) refutes
+field plays its role, and a [cross-wired reply](#a-reply-inside-a-choice--the-keyvalue-actor) refutes
 through it. Process binding and conformance still read the method's own statements, so a field can never be
 mistaken for a process.
 
@@ -655,13 +647,12 @@ actor, not about any method, so raising them per method would report one defect 
 it — two above, and rising. They are raised for the **class** instead, and named that way. A class with two
 sending methods emits exactly one.
 
-### The constructor, and the cycle it unlocks (Phase 299)
-
+### The constructor, and the cycle it unlocks
 Reading field *initialisers* sounds like it covers the field case, and it nearly does — except for the one
 thing the docs' own example needs. **A field initialiser cannot name a field declared after it**, so mutual
-`become` has to be written declare-then-assign. The three-phase connection actor of
-[Phase 293](#become--the-phases-checked-against-a-protocol-phase-293) has a `connected → disconnected` back
-edge, and so could not be written as a service class at all:
+`become` has to be written declare-then-assign. The [three-phase connection
+actor](#become--the-phases-checked-against-a-protocol) has a `connected → disconnected` back edge, and so could
+not be written as a service class at all:
 
 <!-- doclint:ignore README illustration: a cyclic phase graph built in a constructor -->
 ```groovy
@@ -684,7 +675,7 @@ same way initialisers are. Behaviours resolve by *name*, so the order they are a
 the cycle closes.
 
 It is worth being clear that this class is genuinely **checked** and not merely unreported, since a pass and a
-silent skip look identical from the outside. Give it Phase 293's mistyped trigger — `'auth-ok'` for `auth_ok`
+silent skip look identical from the outside. Give it the mistyped trigger — `'auth-ok'` for `auth_ok`
 — and the whole stack still refutes through it: *can reach the end of the conversation in phase
 'authenticating' … with 'auth_ok' still stashed*.
 
@@ -702,9 +693,8 @@ initialisation order; for a *behaviour* it does not, and the overwritten closure
 though it were live. Both definitions are dropped instead. A `null` placeholder followed by a real assignment is
 one definition, and is kept.
 
-### Counting a field-held actor's sends (Phase 300)
-
-The [bounded mailbox](#the-bounded-mailbox--the-other-send-that-blocks-phase-289) and the stash bound are
+### Counting a field-held actor's sends
+The [bounded mailbox](#the-bounded-mailbox--the-other-send-that-blocks) and the stash bound are
 different in kind from everything above, because they count *this method's* sends — and an actor held in a
 field outlives the call.
 
@@ -726,8 +716,7 @@ was asked for in the first place:
 With that the Actor surface is complete, and reaches the shape real code is written in: every check from the
 mailbox to the timers, over an actor declared as a local, a field initialiser, or built in a constructor.
 
-### The corners that were withheld (Phases 302–303)
-
+### The corners that were withheld
 Four checks said nothing rather than guess, and clearing them showed how differently such items can turn out.
 
 A **default branch that `become`s** — "anything else moves me on" — used to withhold the *entire* become-graph.
@@ -747,8 +736,8 @@ The last was **one message answered by different labels at different points**, r
 know which reply to wait for*. Lifting it looked like adding machinery and was the reverse. The reply a delivery
 owes is simply **whatever the role sends next** — read off the local type at that point — so the actor side needs
 no message-to-reply map at all, and the sender emits a wildcard for the protocol to resolve. The map, the pair
-set and the refusal all went; both directions of the pairing are positional now, matching what
-[Phase 295](#a-reply-inside-a-choice--the-keyvalue-actor-phase-295) had already done for the other half. Less
+set and the refusal all went; both directions of the pairing are positional now, matching what [the branch
+replies](#a-reply-inside-a-choice--the-keyvalue-actor) had already done for the other half. Less
 engine, more covered — and the conforming example needs a phase change in the actor's *default* branch, so the
 first corner is what makes the last one's positive case writable.
 
@@ -825,10 +814,9 @@ value.) The functional transform `(x + 1) * 2` proves; claim `result == x + 1` i
 counterexample. As everywhere in this section, FIFO delivery is the assumed half — we prove *what each element
 becomes*, not that the channel delivers or terminates.
 
-### Channel-end linearity — one process per end (Phase 241)
-
-The per-element proof above has its own side condition, and Phase 241 makes it real (slice 2 of the SEQ/PAR
-ladder, the channel sibling of [the Phase 240 fork-window check](#par-disjointness--the-fork-window-interference-check-phase-240)):
+### Channel-end linearity — one process per end
+The per-element proof above has its own side condition, and this rung makes it real (slice 2 of the SEQ/PAR
+ladder, the channel sibling of [the fork-window check](#par-disjointness--the-fork-window-interference-check)):
 a point-to-point channel has **one live process per end**. Two concurrent senders interleave
 nondeterministically; two concurrent receivers split the stream (each element is delivered to exactly one).
 Before this phase the scalar rewrite quietly *proved* scheduler-dependent values on both shapes — racing
@@ -848,7 +836,7 @@ static int race() {
 > Channel linearity violation in 'race': two concurrent senders on 'src' — the async tasks forked at lines 5
 > and 6 both use its send-end, so the element order is a race…
 
-Conflicts are judged over the same fork-join windows as Phase 240, so *sequential* uses by two processes
+Conflicts are judged over the same fork-join windows as the fork-window check, so *sequential* uses by two processes
 stay legal, and the errors cover the whole discipline: send/send, receive/receive, a send into a
 **pipeline-derived** channel (its upstream stage owns that end), and — for broadcasts — a `subscribe()`
 while a sender is live (a late subscriber may miss elements). Errors, not skips: each is a race in the code.
@@ -883,11 +871,10 @@ producer owning its **own** channel — also stays green, pinning that the linea
 per-method. Honest boundaries: uses are recognised at a direct channel-variable receiver (`send`/`close`,
 `first`/`receive`, the pipeline ops, `subscribe`); `merge`/`tap` argument-side ends are
 not tracked (those shapes already fall outside the value model); iteration became a receive-end use in
-[drain discipline](#drain-discipline--iteration-blocks-until-close-phase-245) below. Delivery and
+[drain discipline](#drain-discipline--iteration-blocks-until-close) below. Delivery and
 termination are assumed here — the later rungs check them.
 
-### Channel contracts — the element type is the protocol invariant (Phase 242)
-
+### Channel contracts — the element type is the protocol invariant
 With the ends disciplined, the next question is *what flows through them*: a
 channel's element type may carry Bean Validation bounds — `AsyncChannel<@PositiveOrZero Integer>` — and that
 type IS the channel's contract, the monitor-invariant reduction transplanted to channels. The invariant is
@@ -917,7 +904,7 @@ two-sided `@Min(1) @Max(6)` "die" contract flows whole to the receiver; the awai
 spelling binds the same way. And the honesty case: an **unconstrained** channel has no contract to assume, so
 the same consumer postcondition *refutes* — the channel may deliver any value — rather than skipping.
 (`@NotNull` on the handle discharges the ordinary null-deref obligation; the handle's nullity is separate
-from the element contract.) Local pipeline channels get the identical send assert inside the Phase 119
+from the element contract.) Local pipeline channels get the identical send assert inside the pipeline
 rewrite, so a `@Requires`-guarded producer proves and an unguarded one refutes.
 
 Two model repairs shipped with this: the channel rewrite is now **single-assignment** (the send *declares*
@@ -933,8 +920,7 @@ element **skips loudly**, neither checked nor assumed. Receives bind at a local 
 (`int v = ch.first()`); sends are checked at statement position. A bare `ch.receive()` without an await is an
 `Awaitable`, not a value, and does not bind. Delivery and termination remain rungs 2/3.
 
-### Network well-formedness — deadlock-freedom as well-foundedness (Phase 243)
-
+### Network well-formedness — deadlock-freedom as well-foundedness
 Slice 4 closes the structural claim the section kept disclaiming — for the fragment where it can actually be
 *exact*. In the one-element model a method's channel network is a tiny wait-for system: the **blocking**
 operations are receives (`first()`, awaited `receive()`) and joins (`await t`) — a statement-position send
@@ -963,7 +949,7 @@ static int joinWait() {
 The other refuted shapes: a receive before the only send **in the same process**; a receive before the
 producer task is even **forked**; two tasks in a **mutual receive cycle** (each reads from the other before
 writing); and a receive whose root channel — directly or through a pipeline derivation — is **never sent to**
-("can never be satisfied", the precise name for what Phase 242's never-sent repair could only refute). The
+("can never be satisfied", the precise name for what the element contract's never-sent repair could only refute). The
 well-ordered twin verifies end to end — send the request (non-blocking), fork the replier, then block:
 
 <!-- doclint:case p243-network-well-formedness/request-reply-in-the-right-order-proves -->
@@ -981,15 +967,15 @@ static int reqReply(int x) {
 The certificate covers exactly what it says, loudly at the edges: a **conditional** channel op (inside an
 if/loop/catch) makes the network uncertifiable — loud skip, no claim either way; an **escaping** channel (a
 call argument, a return, an alias) and a channel-typed **parameter** may be served elsewhere, so they carry
-no local claim — the modular assumption, same as Phase 242's receives. The check runs only when the Phase 241
-linearity pass is silent (its findings already re-shape the network's meaning). What remains at rungs 2/3:
+no local claim — the modular assumption, same as the element contract's receives. The check runs only when the
+[linearity pass](#channel-end-linearity--one-process-per-end) is silent (its findings already re-shape the network's meaning). What remains at rungs 2/3:
 per-task termination, conditional/multi-element networks, and the scheduler itself.
 
-### Drain discipline — iteration blocks until close (Phase 245)
-
+### Drain discipline — iteration blocks until close
 The last slice of the SEQ/PAR ladder closes the termination story's drain side. `for (v in ch)` and the
 drain ops (`toList()`, `each {}`, `collect {}`) are **whole-stream receives**: they block until the channel
-is *closed*, not until an element arrives — a new dependency family in the Phase 243 wait-for graph. An
+is *closed*, not until an element arrives — a new dependency family in the
+[wait-for graph](#network-well-formedness--deadlock-freedom-as-well-foundedness). An
 iteration completes only when its root channel's `close()` executes, so the classic forgotten-close hang is
 now a named compile error, and a close *behind* the iteration is a circular wait like any other. The
 well-ordered shape is certified silently:
@@ -1014,22 +1000,22 @@ Drop the `close()` and the checker names the hang — *"the iteration over 'src'
 close() on 'src' anywhere in the method"*; put the close *after* the iteration in the same process, or in a
 task forked only after main has blocked at the loop, and the circular wait is spelled out as a
 Process-network deadlock. A **conditional** close is uncertifiable (loud skip), and two concurrent iterators
-trip the Phase 241 receiver rule unchanged — an iteration is a receive-end use like any other.
+trip the [linearity](#channel-end-linearity--one-process-per-end) receiver rule unchanged — an iteration is a
+receive-end use like any other.
 
 Two honest boundaries shipped with it. The **value** of drained traffic stays unmodelled: the scalar
 rewrite's guard now also refuses loops and drain ops outright, pinned by a loop-producer case whose
 FIFO-false claim *skips loudly* instead of proving. And locally-constructed channels (`create()`,
 `subscribe()`, pipeline stages) are recognised as factory results — never null, so the raw un-rewritten
 calls in drain shapes carry no spurious deref obligations, while a channel *parameter* keeps its honest
-`@NotNull` discharge. Together with Phase 243 this completes the ladder's termination claim: **in a clean
+`@NotNull` discharge. Together with the well-formedness check this completes the ladder's termination claim: **in a clean
 one-shot network every blocking operation — read, iteration, join — provably completes**, with per-task
 loop termination (`@Decreases`) and the scheduler itself remaining rungs 2/3.
 
-### Bounded FIFO traffic — the k-th send is the k-th receive (Phase 247)
-
-The ladder's first rung *past* the one-shot fragment. Phases 119–246 carried **one in-flight element** per
-channel and refused everything else; the Kerridge gallery's literal two-message `ProduceHW` was its named
-boundary. Phase 247 widens the channel model to a **bounded FIFO**: the *k*-th send on a channel declares
+### Bounded FIFO traffic — the k-th send is the k-th receive
+The ladder's first rung *past* the one-shot fragment. Every rung before it carried **one in-flight element**
+per channel and refused everything else; the Kerridge gallery's literal two-message `ProduceHW` was its named
+boundary. This rung widens the channel model to a **bounded FIFO**: the *k*-th send on a channel declares
 its *k*-th element, the *k*-th receive on a stream reads it, a `map {}` stage transforms whichever element
 flows through, and every broadcast subscriber has its own cursor over the same sequence. The pairing is
 *exact* — FIFO delivery is the channel's contract — whenever one process owns each end and every
@@ -1048,11 +1034,12 @@ static int twoReceives(int x, int y) {
 }
 ```
 
-Drains yield the sequence itself — the "drained values" boundary Phase 245 recorded. `toList()` and
+Drains yield the sequence itself — the "drained values" boundary [drain
+discipline](#drain-discipline--iteration-blocks-until-close) recorded. `toList()` and
 `collect {}` become the element list; `for (v in ch)` **unrolls** over the known sequence, the body copied
 once per element with its locals renamed apart — so an accumulating drain proves its sum with no loop
 invariant at all (exact for a closed, bounded stream; the drain's *blocking* until `close()` is still
-certified separately, by Phase 245 on the original body):
+certified separately, by the drain-discipline check on the original body):
 
 <!-- doclint:case p247-bounded-fifo/an-accumulating-for-in-drain-proves-its-sum -->
 ```groovy
@@ -1080,11 +1067,10 @@ count-changing stage (`filter` / `split` / `merge` / `tap`), or an `each {}` dra
 carries no invariant — use `for (v in ch)` or `toList()`). The counts are *static*: producer
 **loops** are the following sections' subject.
 
-### Bounded streaming — literal-bounded channel loops unroll (Phase 248)
-
+### Bounded streaming — literal-bounded channel loops unroll
 A loop that carries channel traffic is "not one-shot" to the ladder: its operations are conditional to the
 structural walk and beyond the bounded FIFO. When the loop's bound is a **literal** — `for (i in 0..<3)`,
-`for (i in 1..3)`, `for (int i = 0; i < 3; i++)`, nested — the trip count is static, and Phase 248 unrolls
+`for (i in 1..3)`, `for (int i = 0; i < 3; i++)`, nested — the trip count is static, and this rung unrolls
 it *before* the structural walk: the body is copied per iteration with the index frozen to its constant and
 the body's locals renamed apart (async arms are rebuilt, never mutated — their nodes are shared with the
 live AST). The stream becomes straight-line traffic that every later pass certifies exactly — the sends
@@ -1116,13 +1102,12 @@ elements in order), and a producer loop of two against a consumer loop of three 
 deadlock — *"the 3rd receive on 'src' can never be satisfied — only 2 sends"*. This is bounded model
 checking in the compiler, and says so: literal bounds only, up to 32 iterations; a **symbolic** bound
 (`for (i in 0..<n)`) stays a loop and skips loudly here — carrying the count by a loop invariant instead is
-[symbolic streaming](#symbolic-streaming--the-channel-as-the-sequence-its-producer-loop-builds-phase-251) below.
+[symbolic streaming](#symbolic-streaming--the-channel-as-the-sequence-its-producer-loop-builds) below.
 
-### ALT — `ChannelSelect` as a nondeterministic choice among the ready branches (Phase 249)
-
+### ALT — `ChannelSelect` as a nondeterministic choice among the ready branches
 occam's `ALT` (JCSP's `Alternative`) is the construct the gallery had left as future work. In
 `groovy.concurrent` it is `ChannelSelect`: `await ChannelSelect.from(a, b).select()` blocks until *some*
-branch has an element and returns which (`index`) and what (`value`). Phase 249 models the one-shot form on
+branch has an element and returns which (`index`) and what (`value`). This rung models the one-shot form on
 both sides of the ladder. On the **value** side the choice is nondeterministic — `r.index` binds to one of
 the branches that can be ready, `r.value` to that branch's head element, the two exactly correlated (an
 if-then-else chain over the index), so a spec must hold for *every* possibly-ready branch, and a branch-wise
@@ -1181,13 +1166,12 @@ channels". The one-shot discipline is loud: a receive *after* an ALT on one of i
 consumed the element depends on its choice), two ALTs over one channel, or a result used beyond
 `.index` / `.value` all skip with the channel and the reason named (a `ChannelSelect` *held in a variable*
 is a supported shape — the rotation state of a `fair()` lives in it). The looping multiplexer —
-`while (true) { alt.select() … }` — is [the looping ALT](#the-looping-alt--the-multiplexer-phase-253) below.
+`while (true) { alt.select() … }` — is [the looping ALT](#the-looping-alt--the-multiplexer) below.
 
-### Streaming termination — a loop send never blocks (Phase 250)
-
+### Streaming termination — a loop send never blocks
 The structural half of streaming, taken on its own. The earlier network rungs voided the
 well-formedness certificate for *any* channel operation inside a loop or `if`; but a **send never blocks** — it stalls
-nobody — so a conditional send only makes its channel's element *count* non-static. Phase 250 drops it from
+nobody — so a conditional send only makes its channel's element *count* non-static. This rung drops it from
 the wait-for graph and remembers the root: an **iteration** (`for (v in ch)`, `toList()`), which waits for
 the *close*, not for a count, is unaffected — so the book's generator as the book means it, `GNumbers(n)`
 with symbolic `n`, feeding `GPrint`, is certified to terminate for every `n`, deadlock-freedom included:
@@ -1217,10 +1201,9 @@ the element count is not static, so the receive cannot be paired with a send"* (
 channel likewise). What this certificate does **not** say is anything about the drained *values*: the value
 model still refuses loop traffic loudly (`Skipped channel verification … not one-shot`), and carrying the
 count symbolically — the channel as a sequence the producer's loop invariant describes — is
-[symbolic streaming](#symbolic-streaming--the-channel-as-the-sequence-its-producer-loop-builds-phase-251), next.
+[symbolic streaming](#symbolic-streaming--the-channel-as-the-sequence-its-producer-loop-builds), next.
 
-### Symbolic streaming — the channel as the sequence its producer loop builds (Phase 251)
-
+### Symbolic streaming — the channel as the sequence its producer loop builds
 The value half of streaming. A channel whose
 *only* send is the send statement of a unit-counter loop carrying `@Invariant` / `@Decreases` is modelled as
 the **list that loop builds**: `send` appends, a `map {}` stage appends its transform in lockstep, `toList()`
@@ -1266,8 +1249,7 @@ a stream, which is the loop engine's own "a loop after a list-building loop" ski
 drained-value spelling. The looping consumer proper — the ALT multiplexer, the fair server, where the
 count is not the whole story — is the following sections' subject.
 
-### Streaming consumers — the looping process (Phase 252)
-
+### Streaming consumers — the looping process
 The rung the gallery named last: the **looping consumer**. A specified unit-counter loop that receives once
 per iteration from a streaming channel reads element *k* of the shadow list (`x.first()` → `x$q[i − a]`),
 with the **block-forever obligation** asserted before it — the element it reads must exist — and the producer
@@ -1321,22 +1303,22 @@ static List<Integer> network(int n) {
 Read one element more than the producer sends and the diagnostic is the runtime's hang, spelled: *"the
 receive on 'out' (line N) may block forever — the element it reads may never be sent (the consumer loop
 reads past what the producer loop sends)"*. Two enablers fell out. The loop engine can now summarise a loop
-**after a list-building loop** (Phase 207's sequential loops had refused a predecessor that mutates a
+**after a list-building loop** (the sequential loop engine had refused a predecessor that mutates a
 collection: size and contents are havoc'd, then its invariant characterises the list), and **arm locals are
 renamed apart** before the flattening — both loops naturally count with `i`, and the flattened
-single-assignment model had conflated them since Phase 119. Loud boundary: a receive in a loop without a
+single-assignment model had conflated them since the pipeline rewrite. Loud boundary: a receive in a loop without a
 spec or a unit counter, or twice per iteration on one channel, is named — as before, the counter is the
 variable the guard tests. The ALT multiplexer as a *looping* process — its per-iteration choice the
 one-shot ALT's, its readiness across iterations not a count — is
-[the looping ALT](#the-looping-alt--the-multiplexer-phase-253), next.
+[the looping ALT](#the-looping-alt--the-multiplexer), next.
 
-### The looping ALT — the multiplexer (Phase 253)
-
+### The looping ALT — the multiplexer
 The last shape the gallery had left open. A specified unit-counter loop whose body takes one element per
 iteration from whichever of its streaming inputs has one — `Result r = await ChannelSelect.from(a, b).select()`
 — is the **multiplexer**. Readiness now changes per iteration, so the model gives each branch a **ghost
 cursor** (`a$c`, `b$c`, declared before the loop): the choice ranges over the branches whose cursor is below
-their list's size, the value is an element of the chosen branch at or beyond its cursor (Phase 256 — the runtime re-sends a
+their list's size, the value is an element of the chosen branch at or beyond its cursor ([the runtime's own
+selection semantics](#selection-semantics--the-runtimes-alt-modelled-as-it-is) — it re-sends a
 losing branch's element to the back of its queue, so within a contended branch the order of taking is not
 FIFO), the chosen cursor steps, and the injected invariant `0 ≤ a$c ≤ |a| ∧ 0 ≤ b$c ≤ |b| ∧ a$c + b$c == i − a₀`
 ties the cursors to the iterations. "No branch
@@ -1396,8 +1378,7 @@ What remains after this rung is a different kind of boundary: the **non-terminat
 (`while (true)`), whose properties are safety-per-iteration and *liveness under fairness* — not a count, and
 not something a `@Decreases` can carry.
 
-### Non-terminating processes — the safety half of `while (true)` (Phase 254)
-
+### Non-terminating processes — the safety half of `while (true)`
 The book's processes do not stop: `GNumbers` counts forever, `GPrint` prints forever, a server answers
 forever. A `while (true)` loop with an `@Invariant` (no `@Decreases` — none is possible) is now certified for
 **safety**: its invariant is preserved per iteration, its send-side channel contract is checked per
@@ -1405,7 +1386,8 @@ iteration, and what its consumers receive carries its element relation. Terminat
 one thing a consumer of an infinite stream cannot be *proved* by safety alone — that its next receive is
 eventually served — is **assumed and said so**, as a network note: *"… is served by a non-terminating
 producer — that it is eventually served is a liveness property, not certified here (…); the safety of the
-values received is certified under that assumption"* (Phase 255, next, discharges that note wherever its
+values received is certified under that assumption"* ([liveness under weak
+fairness](#liveness-under-weak-fairness--the-lifted-wait-for-graph), next, discharges that note wherever its
 fairness argument applies — as it does here). The book's network, as the book writes it:
 
 <!-- doclint:case p254-non-terminating-processes/gnumbers-gsquares-gprint-all-forever-safety-proved-liveness-certified-under-weak-fairness -->
@@ -1457,12 +1439,12 @@ What is left after this is the **liveness** half proper — eventual delivery, a
 client, network-wide deadlock-freedom over infinite runs — which needs a fairness assumption about the
 scheduler and about `ALT`, and a temporal argument the sequential fragment has no word for.
 
-### Liveness under weak fairness — the lifted wait-for graph (Phase 255)
-
+### Liveness under weak fairness — the lifted wait-for graph
 The last half. **Assumption:** *weak fairness* — a process whose next operation is enabled eventually
 executes it. Under it, a looping network is live — every receive eventually served, every process making
 progress forever or to its own end — exactly when no operation waits, *in every iteration*, on something that
-transitively waits on itself in the same iteration. Lift the Phase 243 wait-for graph to the iteration
+transitively waits on itself in the same iteration. Lift the
+[wait-for graph](#network-well-formedness--deadlock-freedom-as-well-foundedness) to the iteration
 index: a receive of element *k* waits on the producer's iteration *k − pre* (*pre* = the producer's priming
 sends before its loop), program order within an iteration has weight 0, the wrap to the previous iteration
 weight −1. Every weight is ≤ 0, so a cycle of weight ≥ 0 — a deadlock — exists iff the **weight-0 subgraph
@@ -1503,14 +1485,14 @@ value carried by the invariant). A looping `ALT` is live when a branch is fed by
 producer loop with no receives of its own; over dependent branches only it is left undecided, loudly,
 because that would need a fairness assumption about the ALT's *choice*, which is not made.
 
-Where the analysis certifies, the Phase 254 "liveness not claimed" note is discharged: the book's forever
+Where the analysis certifies, the [`while (true)` safety rung](#non-terminating-processes--the-safety-half-of-while-true)'s
+"liveness not claimed" note is discharged: the book's forever
 `GNumbers → GSquares → GPrint` now compiles clean — safety per iteration *and* liveness under weak
 fairness, with termination alone unclaimed because none is meant. What the certificate rests on is stated
 in one line: the scheduler is weakly fair, sends never block, and the base case is the pre-loop
 straight-line code.
 
-### Selection semantics — the runtime's ALT, modelled as it is (Phase 256)
-
+### Selection semantics — the runtime's ALT, modelled as it is
 The rung that was to be "fairness of the ALT's choice" turned into something more useful: reading what
 the racing `ChannelSelect.select()` actually does. It issues a `receive()` on every branch and
 completes with the first; when several are ready the **lowest index wins** (priority by list order), and a
@@ -1527,8 +1509,8 @@ within a channel". Fair selection is therefore not an assumption the checker can
   ChannelSelect prefers the lowest ready index, so whether this client is ever chosen depends on timing;
   per-client liveness is not certified (a fair selection would need runtime support)"*.
 
-ALT-*loop* liveness itself needs no choice fairness at all: the weight-0 completion fixpoint of Phase 255
-treats the ALT as an OR node (Phase 249's rule, per iteration), so a multiplexer over dependent stages is
+ALT-*loop* liveness itself needs no choice fairness at all: the weight-0 completion fixpoint of the liveness
+rung treats the ALT as an OR node (the ALT rule, per iteration), so a multiplexer over dependent stages is
 certified live, and an ALT whose every branch waits on its own output is a circular wait in every iteration:
 
 <!-- doclint:case p256-selection/an-alt-whose-branches-all-wait-on-its-own-output-circular-wait-in-every-iteration -->
@@ -1662,8 +1644,7 @@ half, Lincheck/Fray territory, not this proof. That half is exercised for real i
 a Lincheck stress test confirms the safe fan-out/gather is deterministic on actual threads, and catches the
 shared-mutation race on the unsafe twin.
 
-### PAR disjointness — the fork-window interference check (Phase 240)
-
+### PAR disjointness — the fork-window interference check
 "The tasks don't interfere" stopped being an assumption and became a **checked side condition** — the
 disjointness premise of the Hoare/CSL PAR rule, and slice 1 of the SEQ/PAR ladder. The safe-value model above
 resolves a task's captured reads against the bindings in scope *at the read-out site*; if the enclosing body

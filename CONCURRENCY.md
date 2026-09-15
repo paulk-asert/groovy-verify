@@ -301,7 +301,7 @@ runtime checker catches it — the same safe-vs-unsafe split as the lock-guarded
 (Since Phase 240 the *disjointness* half of that discipline is also checked at rung 1: an async task whose
 captured state is concurrently written — the RacyGather shape in checker-visible source — refutes at compile
 time as "Parallel interference", so what remains for this rung is completion and the real scheduler; see
-[the fork-window check](examples/concurrency.md#par-disjointness--the-fork-window-interference-check-phase-240).)
+[the fork-window check](examples/concurrency.md#par-disjointness--the-fork-window-interference-check).)
 
 ### The locks example — both disclaimed halves
 
