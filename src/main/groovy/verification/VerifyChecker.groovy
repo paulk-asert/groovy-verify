@@ -9975,6 +9975,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         LoopSite site = new LoopSite()
         site.loopStmt = top.get(idx)
         site.spec = (LoopSpec) site.loopStmt.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        // Phase 310 — in a `.each` closure, `return` ends that element's call and the iteration CONTINUES; the
+        // early-exit machinery below would read it as a METHOD return, and checkUse would then assume its guard
+        // false on the fall-through path — ruling out real runs (`a.each { if (n == 0) return 2 }; return n == 0 ? 5 : 2`
+        // "proved" result == 2, though f(new int[0], 0) returns 5). Skip loudly until `continue` is modelled.
+        if (site.spec.fromEach && site.spec.body.any { containsReturnOutsideClosures(it) }) {
+            throw new UnsupportedConstructException(
+                "a `return` inside a `.each` closure ends only that element's call (it acts like `continue`), " +
+                "not the method — not yet modelled")
+        }
         site.originalPrefix = new ArrayList<Statement>(top.subList(0, idx))
         // Phase 59 — a desugared for-loop's init runs immediately before the loop, after any
         // real pre-loop statements, so append it to the prefix (the value-flow/establishment
@@ -10000,6 +10009,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             partitionEarlyExits(site.spec.body, 'inBody', site.earlyExits)
         }
         return site
+    }
+
+    /** True iff {@code st} contains a {@code return} that is not inside a nested closure (a nested closure's
+     *  {@code return} belongs to that closure). */
+    private static boolean containsReturnOutsideClosures(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement rs) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
     }
 
     /**
@@ -10965,15 +10985,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
-            // Phase 49 — assume no early-exit fired in either region (we reached the natural
-            // return-after-loop path). Each early-exit's @Ensures is verified independently in
-            // {@link #checkEarlyExit}.
-            for (EarlyExit ex : site.earlyExits) {
-                Object gh = enc.translate(ex.guard)
-                if (gh != null) s.assertExpr(s.not(gh))
+            // Phase 49 — on the natural return-after-loop path no early exit fired; each exit's @Ensures is
+            // verified independently in {@link #checkEarlyExit}. Phase 310 — but "didn't fire" is a fact about the
+            // state the guard was EVALUATED in, and this check sees the state AFTER the loop. An in-body guard
+            // may never have run (a zero-iteration loop) or ran against earlier values of what it reads (`if (i == 3)
+            // return` never sees the exit value i == n), so asserting ¬guard here ruled out real runs and "proved"
+            // false postconditions. Only a prefix-exit guard whose inputs provably can't change afterwards carries.
+            if (!assumePrefixThenSummary(site, enc, s)) {
+                for (EarlyExit ex : site.earlyExits) {
+                    if (ex.region != 'prefix' || !prefixGuardStable(ex, site)) continue
+                    Object gh = enc.translate(ex.guard)
+                    if (gh != null) s.assertExpr(s.not(gh))
+                }
+                s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
+                s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             }
-            s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
-            s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
             // Phase 78 — a list-literal return (e.g. `return [s, p]`) binds result's contents as a factory,
             // so result.size()/result[k] fold; otherwise the scalar-handle binding + size/array alias.
@@ -10995,6 +11021,84 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     withRepro(Reporter.formatPostconditionFailure(node.name, postAst.text, r), r, 'AssertionError'), anchor)
             }
         } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    /** Phase 310 — the precise fall-through context, used when a prefix exit's guard reads something that changes
+     *  later (so its ¬guard can't be assumed in the post-loop state): replay the prefix in order, asserting each
+     *  prefix exit's ¬guard WHERE it was evaluated, then summarise the loop (havoc its writes, assume inv ∧ ¬guard).
+     *  Without it the post-loop symbols float free of the prefix and the reported repro can be a call that takes
+     *  the early exit. Plain while/for loops only; returns false (→ the coarse, still-sound context) for anything
+     *  else, including a loop whose writes {@link LoopEncoder#summarizeInner} can't frame; a false return leaves
+     *  the session untouched. A prefix statement symExec can't model throws part-way — that propagates as the
+     *  loop's loud skip, never a half-built context that's then checked. */
+    private boolean assumePrefixThenSummary(LoopSite site, Encoder enc, SmtSession s) {
+        boolean needed = site.earlyExits.any { it.region == 'prefix' && !prefixGuardStable(it, site) }
+        if (!needed || site.spec.forInVar != null || site.spec.isDoWhile || site.spec.fromEach) return false
+        if (!LoopEncoder.innerFrame(site.spec.body, new HashSet<String>(), new HashSet<String>(), new HashSet<String>())) return false
+        Set<Statement> exitNodes = new HashSet<Statement>(site.earlyExits.findAll { it.region == 'prefix' }*.node)
+        for (Statement st : site.originalPrefix) {
+            if (exitNodes.contains(st)) {
+                Object gh = enc.translate(((IfStatement) st).booleanExpression)
+                if (gh != null) s.assertExpr(s.not(gh))
+            } else {
+                LoopEncoder.symExec([st], enc, s)
+            }
+        }
+        LoopEncoder.summarizeInner(site.spec, enc, s)
+        true
+    }
+
+    /** Phase 310 — may a prefix early-exit's {@code ¬guard} be assumed in the post-loop state? Only when nothing
+     *  after the guard can change what it reads: every variable in it is a parameter or local of a VALUE type
+     *  (primitive, boxed, String — no call can mutate it in place), and no assignment form (`=`, compound `op=`,
+     *  `++`/`--`) targets any of them in the rest of the prefix or anywhere in the loop. Deliberately narrow: a
+     *  guard outside this shape simply isn't assumed, which can only lose facts. */
+    private static boolean prefixGuardStable(EarlyExit ex, LoopSite site) {
+        Set<String> reads = new HashSet<String>()
+        boolean[] ok = [true]
+        ex.guard.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                Variable av = ve.accessedVariable
+                boolean local = av instanceof Parameter || av instanceof VariableExpression
+                if (!local || !isValueType(av.originType ?: av.type)) ok[0] = false
+                else reads.add(ve.name)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) { ok[0] = false }
+        })
+        if (!ok[0]) return false
+        List<Statement> after = new ArrayList<Statement>()
+        int at = site.originalPrefix.indexOf(ex.node)
+        if (at < 0) return false
+        after.addAll(site.originalPrefix.subList(at + 1, site.originalPrefix.size()))
+        after.add(site.loopStmt)
+        Set<String> written = new HashSet<String>()
+        for (Statement st : after) {
+            st.visit(new CodeVisitorSupport() {
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                        written.add(((VariableExpression) be.leftExpression).name)
+                    }
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitPrefixExpression(PrefixExpression pe) {
+                    if (pe.expression instanceof VariableExpression) written.add(((VariableExpression) pe.expression).name)
+                    super.visitPrefixExpression(pe)
+                }
+                @Override void visitPostfixExpression(PostfixExpression pe) {
+                    if (pe.expression instanceof VariableExpression) written.add(((VariableExpression) pe.expression).name)
+                    super.visitPostfixExpression(pe)
+                }
+            })
+        }
+        reads.every { !written.contains(it) }
+    }
+
+    private static boolean isValueType(ClassNode t) {
+        if (t == null) return false
+        String n = t.name
+        ClassHelper.isPrimitiveType(t) || n == 'java.lang.String' || n == 'java.lang.Boolean' ||
+            n == 'java.lang.Integer' || n == 'java.lang.Long' || n == 'java.lang.Short' || n == 'java.lang.Byte' ||
+            n == 'java.lang.Character' || n == 'java.lang.Double' || n == 'java.lang.Float'
     }
 
     private static String invText(LoopSite site) {

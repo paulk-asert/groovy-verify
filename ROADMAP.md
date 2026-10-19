@@ -14320,6 +14320,63 @@ VCs.
 
 ---
 
+## Phase 310 — early exits and the fall-through path: a soundness fix  *(shipped — engine change)*
+
+**A soundness fix to Phase 49/49b, found while checking how GROOVY-12126 (non-local control flow for closures)
+would interact with the `break` work.** On the natural path out of a loop, `checkUse` assumed **every**
+early-return guard false — in the state *after* the loop. A guard is a fact about the state it was evaluated in,
+and the post-loop state is not that state:
+
+- **An in-body guard ran against earlier iterations' values.** `while (i < n) { if (i == 3) return 0; i++ }`
+  never evaluates the guard at `i == 3` when `n == 3`; the loop stops first and returns `i == 3`. Assuming
+  `i != 3` at exit ruled that run out, so `@Ensures({ result != 3 })` "proved". `f(3)` fails at runtime.
+- **A zero-iteration loop never evaluates its in-body guard at all**, even one over an unchanging parameter.
+- **A prefix guard over a variable the loop changes** was assumed in the post-loop state. `int j = k; if (j == 0)
+  return 2; while (j > 0) j--` drives `j` to 0, so assuming `j != 0` after the loop made the path contradictory
+  and *any* postcondition proved.
+- **A `return` inside a `.each` closure** (the GROOVY-12126 route) ends only that element's call: the iteration
+  continues. The `.each` → for-in modelling kept it as a `return`, which Phase 49b then read as a *method* return.
+  `a.each { if (n == 0) return 2 }; return n == 0 ? 5 : 2` "proved" `result == 2`, though `f(new int[0], 0)` returns
+  5. In the other direction it refuted true claims (`result = 8`).
+
+All four were confirmed against groovy-contracts at runtime (`PostconditionViolation`). The runtime rung missed
+them because no corpus case had these shapes — every early-exit proof in the corpus gets its natural-path facts
+from its invariant, which is also why no existing case changed when the assumption was dropped.
+
+**The fix (`VerifyChecker`):**
+
+1. `checkUse` never assumes an **in-body** guard false on the fall-through path.
+2. A **prefix** guard is assumed false only when nothing after it can change what it reads (`prefixGuardStable`):
+   every variable in it is a parameter or local of a value type (primitive, boxed, String — nothing can mutate it
+   in place), and no assignment form (`=`, `op=`, `++`/`--`) targets it in the rest of the prefix or the loop.
+   This deliberately doesn't reuse `modifiedLocations`, which misses compound assignment, `++`/`--` and most mutators.
+3. When a prefix guard *isn't* stable, a plain `while`/`for` loop gets the precise context
+   (`assumePrefixThenSummary`): replay the prefix, assert each prefix guard false where it was evaluated, then
+   summarise the loop with the nested-loop summary (`LoopEncoder.summarizeInner`: havoc its writes, assume
+   `inv ∧ ¬guard`). Without it the refutation was right but the reproduction wasn't: the post-loop symbols floated
+   free of the prefix, and `fails on: f(0)` named a call that takes the early exit. Other loop shapes, and loops
+   whose writes the summary can't frame, keep the coarse context, which is still sound.
+4. A `.each`/`.eachWithIndex`-derived loop (`LoopSpec.fromEach`) whose closure body contains a `return` outside
+   nested closures skips loudly — "acts like `continue`" — until `continue` is modelled. The skip also covers
+   preservation: those iterations would otherwise be excluded from the preservation check.
+
+**Shipped tests (group `P310 early exits and the fall-through path`, 6 cases):** the counter guard refutes with
+`fails on: f(3)`; the zero-iteration loop refutes; a prefix guard on an unchanged parameter still carries (proves);
+a prefix guard on a variable the loop changes refutes with the real failing call `f(1)`; `.each` and
+`.eachWithIndex` closure returns skip loudly.
+
+**Seen on the way, not fixed:** a counterexample over a *reassigned parameter* shows its post-loop value as the
+argument (`k = 0`, `fails on: f(0)`, where the failing call is `f(1)`). The P310 case uses a local copy so its
+pinned reproduction is the true one; the reproduction builder should read a parameter's entry value.
+
+**GROOVY-12126, when it lands:** plain loop `break`/`continue` are untouched (the rewriter only touches statements
+inside closures passed to a call). Inside `.each`, `break`/`continue` would reach the checker as
+`throw LoopControl.BREAK` / `CONTINUE`, since the rewriter runs at CANONICALIZATION and edits in place the closure
+statements this project's CONVERSION-time `.each` modelling shares. The `break` slice will recognise
+`LoopControl.BREAK` as a break in `.each`-derived loops; `CONTINUE` joins the closure `return` as `continue`.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

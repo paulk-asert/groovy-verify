@@ -1027,7 +1027,9 @@ class ContractExpansionTransform implements ASTTransformation {
         }
         ForStatement forIn = new ForStatement(elem, mce.objectExpression, cl.code)
         forIn.setSourcePosition(st)
-        buildLoopSpec(forIn, source, inferLoops, mn, idxName)
+        LoopSpec spec = buildLoopSpec(forIn, source, inferLoops, mn, idxName)
+        if (spec != null) spec.fromEach = true
+        spec
     }
 
     /** True iff the class is checked by VerifyChecker with the {@code inferLoops: true} option, i.e.

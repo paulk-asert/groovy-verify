@@ -69,6 +69,10 @@ class LoopSpec {
     // loud-skips when the body writes anything beyond the loop variable / synthetic index (an accumulating
     // `.each` would need an @Invariant, which is a Groovy parse error on a method-call statement).
     boolean autoInvariantOnly = false
+    // Phase 310 — the loop came from `xs.each { … }` / `.eachWithIndex { … }`: its body is a CLOSURE's code, where
+    // `return` ends only the current element's call (like `continue`), never the method. The loop-site builder
+    // uses this to keep such a `return` from being read as a method early-exit.
+    boolean fromEach = false
 }
 
 /**
