@@ -14625,7 +14625,7 @@ them unrolls.
   ("assignment 'gate = new java.util.concurrent.Phaser(2)' is outside fragment"), so an `@Ensures` on a
   barrier-synchronised computation is skipped loudly, not proved. A barrier moves no data, so treating the
   declaration and its syncs as value no-ops would be sound for partial correctness, given PAR disjointness
-  (Phase 240). That is a candidate slice.
+  (Phase 240). That is now Phase 317.
 
 **Shipped tests (group `P316 barrier loops`, 5 cases):**
 - certified: a lockstep of literal-bounded loops;
@@ -14636,6 +14636,39 @@ them unrolls.
 The Phase 315 loop case is now a refutation, so that case moved to a symbolic bound (renamed "a sync in a
 symbolic-bound loop withholds the certificate"), keeping a test of the skip. Docs: the barrier-count paragraph
 of `examples/kerridge.md` and a CAPABILITIES row.
+
+---
+
+## Phase 317 — a barrier moves no data: values across barrier rounds  *(shipped)*
+
+The gap Phase 316 found. A method that declares a Phaser was outside the value model ("assignment 'gate = new
+java.util.concurrent.Phaser(2)' is outside fragment"), so `@Ensures` on a barrier-synchronised computation was
+skipped. That includes the Phase 316 lockstep with work between its rounds, and c14's sync-then-exchange. A
+barrier orders processes and reads and writes no program state. With PAR disjointness (Phase 240) holding, the
+values a method computes are those of its body without the barrier.
+
+- **The pass.** `ChannelDesugar.desugarBarriers` runs after the network checks, which use the barrier ops on the
+  body as written, and before the Phase 118 dataflow desugaring. It drops each Phaser's declaration and every
+  statement that is just a call on it, with the result discarded. It works in the body, nested blocks,
+  if-branches and `async` arms, rebuilding them with `rebuildAsyncCall` rather than mutating them, since they
+  share nodes with the live AST. A bare arm left empty is dropped too: an empty `async { }` would otherwise be a
+  "standalone call" the value model refuses.
+- **Two claims, independent.** Ordering and progress are the barrier certificate's claim. Values are the value
+  model's, partial correctness as everywhere else. A stuck barrier is still refuted next to a value claim that
+  proves, and a sync in a branch skips the barrier certificate while the value claim is decided.
+- **Honest boundary.** A Phaser referenced any other way, such as its phase number read (`int p =
+  gate.arriveAndAwaitAdvance()`) or passed to a call, is left alone, so the value model keeps its loud skip
+  rather than seeing a dangling name. A sync inside a loop that survives unrolling isn't dropped (loops carry
+  `@Invariant` and the loop encoder keys on the statement), so it keeps the skip too.
+
+**Shipped tests (group `P317 barrier values`, 7 cases):**
+- proved: a value computed across lockstep rounds; a reply after a barrier phase, over a parameter; sequential
+  code around a sync; a sync in a branch, where the barrier skips and the value proves;
+- refuted: a wrong value across lockstep rounds; a stuck barrier beside a value claim;
+- skipped: a phase number read.
+
+Docs: a paragraph after the barrier counts in `examples/kerridge.md` (one linked case; the example count goes to
+41) and a CAPABILITIES row.
 
 ---
 

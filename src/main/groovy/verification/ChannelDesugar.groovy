@@ -116,6 +116,142 @@ class ChannelDesugar {
         new BlockStatement(out, ((BlockStatement) body).variableScope)
     }
 
+    // ── Phase 317 — a barrier moves no data ───────────────────────────────────────────────────────
+    /** Drop the Phasers from a body for the VALUE model: each one's declaration, and every statement that is
+     *  just a call on it (its result discarded). A barrier orders processes; it reads and writes no program
+     *  state, so with PAR disjointness (Phase 240) holding, the values a method computes are those of the body
+     *  without it. Ordering and progress are the network check's business, which runs before this on the
+     *  undesugared body. A Phaser referenced any other way (its phase read, passed to a call) is left alone,
+     *  so the value model still skips it loudly rather than seeing a dangling name. Descends into nested
+     *  blocks, if-branches and async arms (rebuilt, never mutated); a loop is left as it is — a sync still in
+     *  one keeps the loud skip. Returns the same body when there is nothing to drop. */
+    static Statement desugarBarriers(Statement body) {
+        if (!(body instanceof BlockStatement)) return body
+        Map<String, int[]> refs = new HashMap<String, int[]>()     // name → [all refs, droppable refs]
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression && isPhaserNew(de.rightExpression)) {
+                    refs.put(((VariableExpression) de.leftExpression).name, [0, 0] as int[])
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+        if (refs.isEmpty()) return body
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                int[] c = refs.get(ve.name)
+                if (c != null) c[0]++
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (barrierDeclName(de, refs.keySet()) != null) refs.get(barrierDeclName(de, refs.keySet()))[1]++
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitExpressionStatement(ExpressionStatement st) {
+                String n = barrierCallName(st.expression, refs.keySet())
+                if (n != null) refs.get(n)[1]++
+                super.visitExpressionStatement(st)
+            }
+        })
+        Set<String> bars = new HashSet<String>()
+        for (Map.Entry<String, int[]> e : refs.entrySet()) if (e.value[0] == e.value[1]) bars.add(e.key)
+        if (bars.isEmpty()) return body
+        boolean[] changed = [false]
+        BlockStatement out = dropBarrierBlock((BlockStatement) body, bars, changed)
+        changed[0] ? out : body
+    }
+
+    static boolean isPhaserNew(Expression e) {
+        Expression x = stripCasts(e)
+        x instanceof ConstructorCallExpression && ((ConstructorCallExpression) x).type?.nameWithoutPackage == 'Phaser'
+    }
+
+    /** The barrier a declaration introduces (`def gate = new Phaser(n)`), or null. */
+    static String barrierDeclName(DeclarationExpression de, Set<String> bars) {
+        if (!(de.leftExpression instanceof VariableExpression) || !isPhaserNew(de.rightExpression)) return null
+        String n = ((VariableExpression) de.leftExpression).name
+        bars.contains(n) ? n : null
+    }
+
+    /** The barrier a statement-level call is made on (`gate.arriveAndAwaitAdvance()`), or null. */
+    static String barrierCallName(Expression e, Set<String> bars) {
+        if (!(e instanceof MethodCallExpression)) return null
+        Expression r = stripCasts(((MethodCallExpression) e).objectExpression)
+        (r instanceof VariableExpression && bars.contains(((VariableExpression) r).name)) ? ((VariableExpression) r).name : null
+    }
+
+    static BlockStatement dropBarrierBlock(BlockStatement b, Set<String> bars, boolean[] changed) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : b.statements) {
+            Statement s = dropBarrierStatement(st, bars, changed)
+            if (s != null) out.add(s)
+        }
+        BlockStatement nb = new BlockStatement(out, b.variableScope)
+        nb.setSourcePosition(b); nb.copyNodeMetaData(b)
+        nb
+    }
+
+    /** The statement without its barrier ops — null when it IS one; the same node when it holds none. */
+    static Statement dropBarrierStatement(Statement st, Set<String> bars, boolean[] changed) {
+        if (st instanceof BlockStatement) {
+            boolean[] inner = [false]
+            BlockStatement nb = dropBarrierBlock((BlockStatement) st, bars, inner)
+            if (!inner[0]) return st
+            changed[0] = true
+            return nb
+        }
+        if (st instanceof IfStatement) {
+            IfStatement i = (IfStatement) st
+            boolean[] inner = [false]
+            Statement ib = dropBarrierBranch(i.ifBlock, bars, inner)
+            Statement eb = dropBarrierBranch(i.elseBlock, bars, inner)
+            if (!inner[0]) return st
+            changed[0] = true
+            IfStatement ni = new IfStatement(i.booleanExpression, ib, eb)
+            ni.setSourcePosition(st); ni.copyNodeMetaData(st)
+            return ni
+        }
+        if (!(st instanceof ExpressionStatement)) return st
+        Expression e = ((ExpressionStatement) st).expression
+        if (barrierCallName(e, bars) != null ||
+            (e instanceof DeclarationExpression && barrierDeclName((DeclarationExpression) e, bars) != null)) {
+            changed[0] = true
+            return null
+        }
+        // An async arm, in the three shapes the unroller knows: bare, declared, assigned.
+        Expression call = e
+        if (e instanceof DeclarationExpression) call = stripCasts(((DeclarationExpression) e).rightExpression)
+        else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) call = stripCasts(((BinaryExpression) e).rightExpression)
+        ClosureExpression cl = asyncClosure(call)
+        if (cl == null || !(cl.code instanceof BlockStatement)) return st
+        boolean[] inner = [false]
+        BlockStatement nb = dropBarrierBlock((BlockStatement) cl.code, bars, inner)
+        if (!inner[0]) return st
+        changed[0] = true
+        if (nb.isEmpty() && call.is(e)) return null       // a bare arm that only synced: an empty task does nothing
+        Expression rebuilt = rebuildAsyncCall(call, cl, nb)
+        Expression ne
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            ne = new DeclarationExpression(de.leftExpression, de.operation, rebuilt)
+        } else if (e instanceof BinaryExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            ne = new BinaryExpression(be.leftExpression, be.operation, rebuilt)
+        } else {
+            ne = rebuilt
+        }
+        ne.setSourcePosition(e); ne.copyNodeMetaData(e)
+        ExpressionStatement ns = new ExpressionStatement(ne)
+        ns.setSourcePosition(st); ns.copyNodeMetaData(st)
+        ns
+    }
+
+    /** An if-branch without its barrier ops: an emptied branch is an empty block, never null. */
+    static Statement dropBarrierBranch(Statement s, Set<String> bars, boolean[] changed) {
+        if (s == null || s instanceof EmptyStatement) return s
+        Statement r = dropBarrierStatement(s, bars, changed)
+        r == null ? new BlockStatement() : r
+    }
+
     static void collectDataflowVars(BlockStatement body, Set<String> df) {
         body.visit(new CodeVisitorSupport() {
             @Override void visitDeclarationExpression(DeclarationExpression de) {

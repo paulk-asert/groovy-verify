@@ -2797,6 +2797,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 body = deSend
             }
 
+            // Phase 317 — a barrier moves no data: the value model sees the body without its Phasers. The
+            // network check above has already had the barrier ops; ordering and progress are its claim.
+            Statement deBar = desugarBarriers(body)
+            if (!deBar.is(body)) {
+                node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, deBar)
+                body = deBar
+            }
+
             // Phase 118 — desugar Groovy's dataflow constructs into plain single-assignment code: a
             // `DataflowVariable` is a write-once local, so `x << v` is `x = v`, `await(x)`/`x.get()`/`x.val`
             // is a read of `x`, and `async { … }` is transparent (sound — single-assignment makes the result

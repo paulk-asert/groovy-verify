@@ -32,8 +32,8 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-<!-- doclint:count 40 -->
-**What is in it.** Forty worked examples, every one linked to a case that runs in CI, and the
+<!-- doclint:count 41 -->
+**What is in it.** Forty-one worked examples, every one linked to a case that runs in CI, and the
 compiler messages beside them quoted verbatim from those same cases.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
@@ -50,7 +50,7 @@ the mistake it is there to catch.
 
 **What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
 twenty-two rows of the table below are the JCSP/occam vocabulary the books are built on, and the
-forty examples are the smallest programs that exercise each. Measured against the books' own corpus
+forty-one examples are the smallest programs that exercise each. Measured against the books' own corpus
 it is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and c02, c03, c04,
 c05, c07, c08, c09, c10, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
 fair-server and token-ring shapes recur across the later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
@@ -1522,6 +1522,34 @@ symbolic bound or more than 32 iterations. Such syncs used to be passed over sil
 certified. They now withhold the certificate out loud, as a non-one-shot channel operation always has. A
 `while (true)` lockstep falls under the same skip: it's fine at runtime, but the certificate counts rounds,
 and that loop has no count.
+
+**Values across a barrier** (Phase 317). A barrier orders processes and moves no data, so the value model
+sees the body without it. Given PAR disjointness, the values a method computes are the same either way. A
+claim about what the processes compute between phases is then proved like any other channel value:
+
+<!-- doclint:case p317-barrier-values/a-reply-after-a-barrier-phase-proves-over-a-parameter -->
+```groovy
+@Ensures({ result == 2 * v })
+static int run(int v) {
+    java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
+    AsyncChannel<Integer> req = AsyncChannel.create(1)
+    AsyncChannel<Integer> rep = AsyncChannel.create(1)
+    async {
+        gate.arriveAndAwaitAdvance()
+        int x = req.first()
+        rep.send(2 * x)
+    }
+    gate.arriveAndAwaitAdvance()
+    req.send(v)
+    return rep.first()
+}
+```
+
+Until this phase that `@Ensures` was skipped as outside the fragment, because a `Phaser` declaration isn't a
+value. The two claims stay independent: the barrier certificate is about ordering and progress and is
+decided first, on the code as written, and a stuck barrier is still refuted next to a value claim that
+proves. The phase number *is* a value, though (`int p = gate.arriveAndAwaitAdvance()`), and not one the model
+has. A Phaser used that way is left in, and the value claim is skipped loudly.
 
 **Dynamic enrolment** is what c14 actually uses: a target resigns up front, then each round enrols, syncs
 and resigns again, so it takes part only in the rounds it is active for. Once enrolment moves at runtime a
