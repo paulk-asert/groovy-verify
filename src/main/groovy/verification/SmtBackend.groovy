@@ -217,6 +217,10 @@ interface SmtSession extends AutoCloseable {
      *  (Int → number, String/Seq → quoted text), or null if there's no model / unsupported sort. */
     String evalDisplay(Object handle)
 
+    /** Phase 311 — show {@code term}'s model value as {@code name} in a counterexample: a source variable whose value
+     *  at the reported point is an internal (hidden, {@code #}-named) symbol. Display-only; asserts nothing. */
+    void displayAs(String name, Object term)
+
     // Phase 73 — IEEE-754 floating point (Z3's FP theory): faithful double/float, bit-exact with the
     // JVM runtime (round-nearest-even, NaN, ±inf, signed zero). Arithmetic rounds RNE; `fpEq` is IEEE
     // equality (NaN != NaN), distinct from structural eq. `isDouble` picks Float64 vs Float32.

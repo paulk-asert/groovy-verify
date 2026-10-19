@@ -67,6 +67,8 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.AssertStatement
+import org.codehaus.groovy.ast.stmt.BreakStatement
+import org.codehaus.groovy.ast.stmt.ContinueStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -4260,6 +4262,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             dischargeRegion(spec.body, reqAst, bodyAssumed, null, Collections.<Statement>emptyList(), true)
             // 4. The region after this loop up to the next one (or the method end): inv ∧ ¬guard.
             dischargeRegion(site.segmentAfter, reqAst, spec.invariants, spec.guard)
+            // 4b. Phase 312 — and from each `break`: an arbitrary iteration (inv ∧ guard), the body up to the break
+            // with earlier exits not taken, the break's condition, its lead. The after-loop code must be safe from
+            // every state the loop can be left in, not just inv ∧ ¬guard.
+            List<Expression> iterEntry = new ArrayList<Expression>(spec.invariants)
+            iterEntry.add(spec.guard)
+            for (EarlyExit ex : site.earlyExits) {
+                if (!ex.isBreak) continue
+                List<Statement> atBreak = new ArrayList<Statement>()
+                for (Statement st : spec.body) {
+                    if (st === ex.node) break
+                    atBreak = isExitIf(st) ? withAssume(atBreak, new NotExpression(((IfStatement) st).booleanExpression))
+                                           : (atBreak + [st]) as List<Statement>
+                }
+                atBreak = withAssume(atBreak, ex.guard)
+                atBreak.addAll(ex.lead)
+                dischargeRegion(site.segmentAfter, reqAst, iterEntry, null, atBreak)
+            }
             // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
             // discharged in the INNER loop's own context (inner_inv ∧ inner_guard), where the inner index is
             // constrained — not under the outer invariant, where it isn't. dischargeRegion (step 3) skips them.
@@ -4316,29 +4335,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Obligations in the if-condition itself: discharge with short-circuit awareness —
                 // {@code xs[i] != null && xs[i].m()} needs the right deref to see the left guard.
                 dischargeExpression(ifs.booleanExpression, reqAst, assumePos, assumeNeg, preceding)
-                List<Expression> thenAssume = new ArrayList<Expression>(assumePos)
-                thenAssume.add(ifs.booleanExpression)
-                dischargeRegion(topStatements(ifs.ifBlock), reqAst, thenAssume, assumeNeg, preceding, handleAsserts)
+                // Phase 311 — the branch condition holds in the state AT the if, i.e. after `preceding`, so it is
+                // an assume marker at the end of `preceding`, not an `assumePos` fact (those are asserted in the
+                // region's ENTRY state, before the replay: `i = i + 1; if (i > 0) 10.intdiv(i - 1)` assumed the
+                // OLD i > 0 and so "proved" the divisor non-zero).
+                dischargeRegion(topStatements(ifs.ifBlock), reqAst, assumePos, assumeNeg,
+                    withAssume(preceding, ifs.booleanExpression), handleAsserts)
                 Statement elseBlk = ifs.elseBlock
                 boolean hasElse = elseBlk != null && !(elseBlk instanceof EmptyStatement)
                 if (hasElse) {
-                    List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
-                    elseAssume.add(new NotExpression(ifs.booleanExpression))
-                    dischargeRegion(topStatements(elseBlk), reqAst, elseAssume, assumeNeg, preceding, handleAsserts)
+                    dischargeRegion(topStatements(elseBlk), reqAst, assumePos, assumeNeg,
+                        withAssume(preceding, new NotExpression(ifs.booleanExpression)), handleAsserts)
                 }
-                // Early-exit narrowing, as in collectVfObligations — the same idiom has to work on the SSA
-                // fallback path (a body the value-flow pass bailed on: a re-assignment, a loop). Rebinding
-                // `assumePos` narrows every later site in this region; `preceding` is untouched, so the
-                // SSA replay still threads this `if` exactly as before.
-                boolean thenExits = alwaysExits(ifs.ifBlock)
-                boolean elseExits = hasElse && alwaysExits(elseBlk)
-                if (thenExits && elseExits) return           // neither arm falls through — the rest is dead
-                if (thenExits || elseExits) {
-                    List<Expression> cont = new ArrayList<Expression>(assumePos)
-                    cont.add(elseExits ? ifs.booleanExpression
-                                       : (Expression) new NotExpression(ifs.booleanExpression))
-                    assumePos = cont
-                }
+                // Early-exit narrowing (`if (c) return …` → the rest of the region runs under ¬c): later sites
+                // carry this `if` in their `preceding`, and LoopEncoder.replay asserts ¬c there, at the right
+                // state (Phase 311 — it used to be an entry-state `assumePos` fact too).
+                if (alwaysExits(ifs.ifBlock) && hasElse && alwaysExits(elseBlk)) return   // neither arm falls through
                 continue
             }
             // Non-if statement: walk each top-level expression with short-circuit awareness too,
@@ -4364,28 +4376,35 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e instanceof BinaryExpression) {
             int op = ((BinaryExpression) e).operation.type
+            // Phase 311 — `x = l && r` / `boolean ok = c ? a : b`: the short-circuit structure is in the value, so
+            // discharge the target's own sites as a leaf and descend into the value (it used to be one leaf).
+            if (op == Types.ASSIGN) {
+                BinaryExpression be = (BinaryExpression) e
+                if (!(be.leftExpression instanceof VariableExpression)) {
+                    for (Object site : sitesInExpression(be.leftExpression)) dischargeSeeded(site, reqAst, assumePos, assumeNeg, preceding)
+                }
+                dischargeExpression(be.rightExpression, reqAst, assumePos, assumeNeg, preceding)
+                return
+            }
             if (op == Types.LOGICAL_AND || op == Types.LOGICAL_OR) {
                 BinaryExpression be = (BinaryExpression) e
                 dischargeExpression(be.leftExpression, reqAst, assumePos, assumeNeg, preceding)
-                List<Expression> rightAssume = new ArrayList<Expression>(assumePos)
                 // && short-circuits when left is false → right runs when left is TRUE.
                 // || short-circuits when left is true  → right runs when left is FALSE.
-                rightAssume.add(op == Types.LOGICAL_AND
-                    ? be.leftExpression
-                    : new NotExpression(be.leftExpression))
-                dischargeExpression(be.rightExpression, reqAst, rightAssume, assumeNeg, preceding)
+                // Phase 311 — evaluated at this statement's state: an assume marker after `preceding`.
+                dischargeExpression(be.rightExpression, reqAst, assumePos, assumeNeg,
+                    withAssume(preceding, op == Types.LOGICAL_AND ? be.leftExpression
+                                                                  : (Expression) new NotExpression(be.leftExpression)))
                 return
             }
         }
         if (e instanceof TernaryExpression) {
             TernaryExpression te = (TernaryExpression) e
             dischargeExpression(te.booleanExpression, reqAst, assumePos, assumeNeg, preceding)
-            List<Expression> thenAssume = new ArrayList<Expression>(assumePos)
-            thenAssume.add(te.booleanExpression)
-            dischargeExpression(te.trueExpression, reqAst, thenAssume, assumeNeg, preceding)
-            List<Expression> elseAssume = new ArrayList<Expression>(assumePos)
-            elseAssume.add(new NotExpression(te.booleanExpression))
-            dischargeExpression(te.falseExpression, reqAst, elseAssume, assumeNeg, preceding)
+            dischargeExpression(te.trueExpression, reqAst, assumePos, assumeNeg,
+                withAssume(preceding, te.booleanExpression))
+            dischargeExpression(te.falseExpression, reqAst, assumePos, assumeNeg,
+                withAssume(preceding, new NotExpression(te.booleanExpression)))
             return
         }
         // Leaf: collect any obligations syntactically present, discharge each under the
@@ -4439,6 +4458,124 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 311 — marks a synthetic {@link AssertStatement} in a {@code preceding} list as an assumption: a branch
+     *  or short-circuit condition that holds at that point of the path. */
+    static final String REPLAY_ASSUME_KEY = 'verification.replayAssume'
+
+    /** {@code preceding} followed by an assume marker for {@code cond} (a new list; the input is untouched). */
+    private static List<Statement> withAssume(List<Statement> preceding, Expression cond) {
+        AssertStatement marker = new AssertStatement(new BooleanExpression(cond))
+        marker.putNodeMetaData(REPLAY_ASSUME_KEY, Boolean.TRUE)
+        List<Statement> out = new ArrayList<Statement>(preceding)
+        out.add(marker)
+        out
+    }
+
+    /**
+     * Phase 311 — replay {@code stmts} to reach a later point, never leaving a stale value behind. Each statement
+     * goes through {@link LoopEncoder#replay} (exit-aware); assume markers are asserted (quantifier-stripped when
+     * {@code stripQ}, and collected into {@code assumed} for the caller's lemma context). If a statement can't be
+     * replayed, everything it and every later statement may write is havoc'd; a later marker is still assumed when it
+     * sits after the last real statement (it holds in that final state) or reads nothing that was havoc'd (its
+     * inputs are the same at its point and at the end). Previously the replay just stopped,
+     * so an obligation after an early-exit `if` was checked against values from before later writes
+     * (`if (a[i] == 7) return 1; i = i + 1; a[i]` missed an out-of-bounds read).
+     */
+    private void replaySafely(List<Statement> stmts, Encoder enc, SmtSession s, boolean stripQ, List<Expression> assumed) {
+        if (stmts == null) return
+        for (int i = 0; i < stmts.size(); i++) {
+            Statement st = stmts.get(i)
+            if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) {
+                assumeMarker((AssertStatement) st, enc, s, stripQ, assumed)
+                continue
+            }
+            try {
+                LoopEncoder.replay([st] as List<Statement>, enc, s)
+            } catch (Throwable ignored) {
+                List<Statement> rest = stmts.subList(i, stmts.size())
+                int lastReal = -1
+                for (int k = 0; k < rest.size(); k++) if (rest.get(k).getNodeMetaData(REPLAY_ASSUME_KEY) == null) lastReal = k
+                Set<String> havocked = havocWritesOf(rest, enc)
+                for (int k = 0; k < rest.size(); k++) {
+                    Statement m = rest.get(k)
+                    if (m.getNodeMetaData(REPLAY_ASSUME_KEY) == null) continue
+                    if (k > lastReal || namesRead(((AssertStatement) m).booleanExpression).every { !havocked.contains(it) }) {
+                        assumeMarker((AssertStatement) m, enc, s, stripQ, assumed)
+                    }
+                }
+                return
+            }
+        }
+    }
+
+    private static void assumeMarker(AssertStatement m, Encoder enc, SmtSession s, boolean stripQ, List<Expression> assumed) {
+        Expression c = m.booleanExpression.expression
+        Object h = enc.translate(stripQ ? dropQuantifierConjuncts(c) : c)
+        if (h != null) s.assertExpr(h)
+        if (assumed != null) assumed.add(c)
+        // The condition reads the state at its point, which a replay may have bound to internal (#-named, hidden)
+        // symbols — e.g. the index a select() chose this iteration. Show those values under the source names.
+        c.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                if (ve.name.contains('#')) return
+                Object t = enc.translate(ve)
+                if (t != null && t.toString().contains('#')) s.displayAs(ve.name, t)
+            }
+        })
+    }
+
+    /** Havoc everything {@code stmts} may write: assignment targets of every form (`=`, `op=`, `++`/`--`, element and
+     *  field stores), receivers of any method call and reference-typed call arguments (a call may mutate them), and —
+     *  for an implicit-this call — every instance field. Over-approximates on purpose; it backs the replay fallback. */
+    private Set<String> havocWritesOf(List<Statement> stmts, Encoder enc) {
+        Set<String> names = new LinkedHashSet<String>()
+        boolean[] thisCall = [false]
+        for (Statement st : stmts) {
+            if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) continue
+            st.visit(new CodeVisitorSupport() {
+                void target(Expression t) {
+                    if (t instanceof VariableExpression) names.add(((VariableExpression) t).name)
+                    else if (t instanceof BinaryExpression && ((BinaryExpression) t).operation.type == Types.LEFT_SQUARE_BRACKET) target(((BinaryExpression) t).leftExpression)
+                    else if (t instanceof PropertyExpression) names.add(((PropertyExpression) t).propertyAsString)
+                }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) target(be.leftExpression)
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) target(de.leftExpression)
+                    super.visitDeclarationExpression(de)
+                }
+                @Override void visitPrefixExpression(PrefixExpression pe) { target(pe.expression); super.visitPrefixExpression(pe) }
+                @Override void visitPostfixExpression(PostfixExpression pe) { target(pe.expression); super.visitPostfixExpression(pe) }
+                @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                    if (mce.implicitThis) thisCall[0] = true
+                    else target(mce.objectExpression)
+                    Expression args = mce.arguments
+                    if (args instanceof TupleExpression) for (Expression a : ((TupleExpression) args).expressions) {
+                        if (a instanceof VariableExpression && !isValueType(((VariableExpression) a).originType ?: a.type)) target(a)
+                    }
+                    super.visitMethodCallExpression(mce)
+                }
+            })
+        }
+        if (thisCall[0] && currentMethod?.declaringClass != null) {
+            for (FieldNode f : currentMethod.declaringClass.fields) if (!f.isStatic()) names.add(f.name)
+        }
+        for (String n : names) havocLocation(enc, n)
+        names
+    }
+
+    /** Every variable and property name {@code e} reads. */
+    private static Set<String> namesRead(Expression e) {
+        Set<String> out = new HashSet<String>()
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) { out.add(ve.name) }
+            @Override void visitPropertyExpression(PropertyExpression pe) { out.add(pe.propertyAsString); super.visitPropertyExpression(pe) }
+        })
+        out
+    }
+
     /**
      * Fresh session: assume {@code @Requires}, the positive facts and the
      * optional negated fact, then bind-thread the preceding straight-line
@@ -4478,11 +4615,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 Object h = enc.translate(assumeNeg)
                 if (h != null) s.assertExpr(s.not(h))
             }
-            try {
-                LoopEncoder.symExec(preceding, enc, s)
-            } catch (UnsupportedConstructException ignored) {
-                // Can't model the preceding statements → leave those vars havoc (sound).
-            }
+            List<Expression> assumed = new ArrayList<Expression>()
+            replaySafely(preceding, enc, s, stripQ, assumed)
             // Phase 91b — NIA monotonicity hint for array-index bounds (e.g. a flat `a[i*m + j]` fill,
             // where the bound `i*m + j < a.length` needs `i*m + m <= n*m` from `i < n ∧ m >= 0`, which Z3's
             // nonlinear tactic won't derive). Emit guarded ground lemmas for products that share a factor.
@@ -4490,6 +4624,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Expression> ctx = new ArrayList<Expression>()
                 if (reqAst != null) ctx.add(reqAst)
                 if (assumePos != null) ctx.addAll(assumePos)
+                ctx.addAll(assumed)
                 ctx.add(((IndexSite) site).index)
                 emitMonotonicityLemmas(s, enc, ctx)
             }
@@ -9936,6 +10071,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean beforeLoop    // legacy: true for prefix, false otherwise (kept for Slice A code)
         String region         // 'prefix' | 'inBody' (Slice B) — 'suffix' deferred
         Statement node
+        /** Phase 312 — a `break` exit: leaves the LOOP, not the method, so its continuation is the code after the
+         *  loop; {@code lead} are the statements the then-block runs before the `break` ({@code result} is null). */
+        boolean isBreak
+        List<Statement> lead = Collections.<Statement> emptyList()
     }
 
     /**
@@ -10037,11 +10176,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Expression> priorGuards = new ArrayList<Expression>()
         for (Statement st : stmts) {
             Expression returnExpr = earlyExitReturnFor(st)
-            if (returnExpr != null) {
+            List<Statement> breakLead = region == 'inBody' ? breakExitLead(st) : null
+            if (returnExpr != null || breakLead != null) {
                 IfStatement ifs = (IfStatement) st
                 EarlyExit ex = new EarlyExit()
                 ex.guard = ifs.booleanExpression
                 ex.result = returnExpr
+                if (breakLead != null) { ex.isBreak = true; ex.lead = breakLead }
                 ex.priorStmts = new ArrayList<Statement>(kept)
                 ex.priorGuards = new ArrayList<Expression>(priorGuards)
                 ex.beforeLoop = (region == 'prefix')
@@ -10080,6 +10221,47 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         null
     }
 
+    /** Phase 312 — the statements before the `break` if {@code st} is {@code if (c) break} or {@code if (c) { s1; …;
+     *  sn; break }} (no else, an unlabelled break, and no other exit or loop in the lead); otherwise null. */
+    private static List<Statement> breakExitLead(Statement st) {
+        if (!(st instanceof IfStatement)) return null
+        IfStatement ifs = (IfStatement) st
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return null
+        return breakLeaf(ifs.ifBlock)
+    }
+
+    /** The lead of a `break`-ending leaf ({@code break} or {@code { s1; …; sn; break }}), or null. */
+    private static List<Statement> breakLeaf(Statement leaf) {
+        if (leaf instanceof BreakStatement) return ((BreakStatement) leaf).label == null ? Collections.<Statement> emptyList() : null
+        if (!(leaf instanceof BlockStatement)) return null
+        List<Statement> ss = ((BlockStatement) leaf).statements
+        if (ss.isEmpty() || !(ss.get(ss.size() - 1) instanceof BreakStatement) ||
+            ((BreakStatement) ss.get(ss.size() - 1)).label != null) return null
+        List<Statement> lead = new ArrayList<Statement>(ss.subList(0, ss.size() - 1))
+        lead.any { containsExitOrLoop(it) } ? null : lead
+    }
+
+    /** True if {@code st} contains a return / throw / break / continue or a loop (closures aside). */
+    private static boolean containsExitOrLoop(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement r) { found[0] = true }
+            @Override void visitThrowStatement(ThrowStatement t) { found[0] = true }
+            @Override void visitBreakStatement(BreakStatement b) { found[0] = true }
+            @Override void visitContinueStatement(ContinueStatement c) { found[0] = true }
+            @Override void visitWhileLoop(WhileStatement w) { found[0] = true }
+            @Override void visitForLoop(ForStatement f) { found[0] = true }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
+    }
+
+    /** An early-exit {@code if} of either kind: {@code if (c) return e} or a break exit. */
+    private static boolean isExitIf(Statement st) {
+        earlyExitReturnFor(st) != null || breakExitLead(st) != null
+    }
+
     /**
      * Phase 49c — lift a `return` nested in an if/else(-if) chain in TAIL position of the loop body
      * into the top-level {@code if (pathCond) return e} shape Phase 49b ({@link #partitionEarlyExits})
@@ -10102,18 +10284,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static List<Statement> desugarTailReturns(List<Statement> body) {
         if (body == null || body.isEmpty()) return body
         Statement last = body.get(body.size() - 1)
-        if (!(last instanceof IfStatement) || !statementContainsReturn(last)) return body
-        List<Object[]> leaves = new ArrayList<Object[]>()   // [Expression pathCond, Expression retExpr|null]
+        if (!(last instanceof IfStatement) || !(statementContainsReturn(last) || statementContainsBreak(last))) return body
+        // [Expression pathCond, Expression retExpr|null, List<Statement> breakLead|null] — Phase 312 adds break leaves
+        List<Object[]> leaves = new ArrayList<Object[]>()
         if (!enumerateChainLeaves((IfStatement) last, new ArrayList<Expression>(), leaves)) return body
         List<Statement> lifted = new ArrayList<Statement>()
         for (Object[] leaf : leaves) {
             Expression ret = (Expression) leaf[1]
-            if (ret == null) continue   // a continuing leaf — stays only in the residual
+            List<Statement> brk = (List<Statement>) leaf[2]
+            if (ret == null && brk == null) continue   // a continuing leaf — stays only in the residual
+            Statement exitBlk
+            if (ret != null) exitBlk = new ReturnStatement(ret)
+            else {
+                BlockStatement bs = new BlockStatement()
+                for (Statement l : brk) bs.addStatement(l)
+                bs.addStatement(new BreakStatement())
+                exitBlk = bs
+            }
             IfStatement liftedIf = new IfStatement(new BooleanExpression((Expression) leaf[0]),
-                new ReturnStatement(ret), EmptyStatement.INSTANCE)
+                exitBlk, EmptyStatement.INSTANCE)
             // Stamp a real source position (the tail chain's) — a diagnostic anchored to a synthetic
             // node with no line info is silently dropped by the static type checker.
-            liftedIf.setSourcePosition(ret instanceof ASTNode ? (ASTNode) ret : last)
+            liftedIf.setSourcePosition(ret instanceof ASTNode ? (ASTNode) ret : (brk != null && !brk.isEmpty() ? brk.get(0) : last))
             lifted.add(liftedIf)
         }
         if (lifted.isEmpty()) return body
@@ -10138,23 +10330,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             elseConds.add(new NotExpression(ifs.booleanExpression))
             Statement elseBlk = ifs.elseBlock
             if (elseBlk == null || elseBlk instanceof EmptyStatement) {
-                out.add([conjoin(elseConds), null] as Object[])      // implicit empty else → continuing leaf
+                out.add([conjoin(elseConds), null, null] as Object[])      // implicit empty else → continuing leaf
                 return true
             }
             return enumerateChainLeaves(elseBlk, elseConds, out)
         }
         Statement leaf = stmt
+        // Phase 312 — `break` or `{ s1; …; sn; break }`: a break leaf, lifted with its lead
+        List<Statement> brk = breakLeaf(leaf)
+        if (brk != null) {
+            out.add([conjoin(accConds), null, brk] as Object[])
+            return true
+        }
         if (leaf instanceof BlockStatement) {
             List<Statement> ss = ((BlockStatement) leaf).statements
             if (ss.size() == 1) leaf = ss.get(0)              // unwrap `{ return e }` / `{ x = … }`
-            else if (ss.any { statementContainsReturn(it) }) return false   // multi-stmt leaf with a return
+            else if (ss.any { statementContainsReturn(it) || statementContainsBreak(it) }) return false   // multi-stmt leaf with an exit
         }
         if (leaf instanceof ReturnStatement) {
-            out.add([conjoin(accConds), ((ReturnStatement) leaf).expression] as Object[])
+            out.add([conjoin(accConds), ((ReturnStatement) leaf).expression, null] as Object[])
             return true
         }
-        if (statementContainsReturn(leaf)) return false       // a return buried somewhere unexpected
-        out.add([conjoin(accConds), null] as Object[])         // ordinary continuing leaf
+        if (statementContainsReturn(leaf) || statementContainsBreak(leaf)) return false   // an exit buried somewhere unexpected
+        out.add([conjoin(accConds), null, null] as Object[])         // ordinary continuing leaf
         true
     }
 
@@ -10176,11 +10374,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 nElse == null ? EmptyStatement.INSTANCE : nElse)
         }
         if (stmt instanceof ReturnStatement) return EmptyStatement.INSTANCE
+        if (breakLeaf(stmt) != null) return EmptyStatement.INSTANCE   // Phase 312 — the lifted break exit covers it
         if (stmt instanceof BlockStatement) {
             List<Statement> ss = ((BlockStatement) stmt).statements
             if (ss.size() == 1 && ss.get(0) instanceof ReturnStatement) return EmptyStatement.INSTANCE
         }
         stmt
+    }
+
+    /** True if {@code st} contains a {@code break} anywhere in its if/block structure. */
+    private static boolean statementContainsBreak(Statement st) {
+        if (st == null) return false
+        if (st instanceof BreakStatement) return true
+        if (st instanceof IfStatement) {
+            return statementContainsBreak(((IfStatement) st).ifBlock) || statementContainsBreak(((IfStatement) st).elseBlock)
+        }
+        if (st instanceof BlockStatement) return ((BlockStatement) st).statements.any { statementContainsBreak(it) }
+        false
     }
 
     /** True if {@code st} contains a {@code return} anywhere in its if/block structure. */
@@ -10437,6 +10647,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // evaluates (pure in-fragment). Recognising it keeps the write-set finite for bodies with
         // early returns (e.g. the desugared binary search), so loop-stable @Requires aren't dropped.
         if (st instanceof ReturnStatement) return collectWritesExpr(((ReturnStatement) st).expression, ws)
+        // Phase 312 — a `break` leaves the loop and writes nothing (without this, the write-set bailed to "unbounded"
+        // and every loop-stable @Requires — `arr.isSorted()` for binary search — was dropped from preservation)
+        if (st instanceof BreakStatement) return true
         // Phase 91 — a nested loop writes whatever its guard + body do; recurse so the outer write-set
         // stays a sound over-approximation (and the inner-loop case below isn't dropped as "unknown").
         if (st instanceof LoopingStatement) {
@@ -10589,8 +10802,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // sym-exec of non-exit body statements:
                 for (Statement st : site.spec.body) {
                     if (st === ex.node) break
-                    Expression retExpr = earlyExitReturnFor(st)
-                    if (retExpr != null) {
+                    if (isExitIf(st)) {
                         Object gh = enc.translate(((IfStatement) st).booleanExpression)
                         if (gh != null) s.assertExpr(s.not(gh))
                     } else {
@@ -10604,16 +10816,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Assume the exit's own guard (we did take this exit).
             Object guardH = enc.translate(ex.guard)
             if (guardH != null) s.assertExpr(guardH)
+            // Phase 312 — a `break` leaves the loop: run its lead, then the code after the loop, exactly as checkUse
+            // does from the natural exit — so the postcondition is checked from the state at the break.
+            Expression resultExpr = ex.result
+            if (ex.isBreak) {
+                LoopEncoder.symExec(ex.lead, enc, s)
+                resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
+            }
             // Bind result to the return expression (factory-aware, mirroring checkUse): a tuple / list-literal
             // / map-literal return (`return Tuple.tuple(i, j)`) records result's slots so `result.v1`/`.v2`
             // (and `result.size()`/`result[k]`) fold in the @Ensures; otherwise the scalar-handle binding +
             // size/array alias. Phase 110 — the early-exit path previously bound only the scalar handle, so a
             // tuple-returning in-body/inner exit couldn't resolve its slot accessors.
-            if (ex.result == null || (!enc.tryRecordFactoryAssign('result', ex.result) &&
-                                      !enc.tryRecordSetBinopAssign('result', ex.result))) {
-                Object resH = enc.translate(ex.result)
+            if (resultExpr == null || (!enc.tryRecordFactoryAssign('result', resultExpr) &&
+                                       !enc.tryRecordSetBinopAssign('result', resultExpr))) {
+                Object resH = enc.translate(resultExpr)
                 if (resH != null) enc.bind('result', resH)
-                aliasResultToReturnedListLocal(s, enc, ex.result)
+                aliasResultToReturnedListLocal(s, enc, resultExpr)
             }
             Object post = enc.translateGoal(postAst)
             if (post == null) {
@@ -10890,6 +11109,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!annotatedInnerLoops(innerSpec.body).isEmpty()) {
             throw new UnsupportedConstructException("loops nested 3+ deep — not yet supported")
         }
+        // Phase 312 — an inner `break` continues into the rest of the OUTER body, which the inner summary
+        // (inner_inv ∧ ¬inner_guard) doesn't account for.
+        if (LoopEncoder.containsLoopBreak(innerSpec.body)) {
+            throw new UnsupportedConstructException("a `break` in a nested loop is not yet modelled")
+        }
         LoopSite innerSite = new LoopSite()
         innerSite.loopStmt = innerLoop
         innerSite.spec = innerSpec
@@ -10964,8 +11188,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private void symExecBodyWithExits(LoopSite site, Encoder enc, SmtSession s) {
         for (Statement st : site.spec.body) {
-            Expression retExpr = earlyExitReturnFor(st)
-            if (retExpr != null) {
+            if (isExitIf(st)) {
                 IfStatement ifs = (IfStatement) st
                 Object g = enc.translate(ifs.booleanExpression)
                 if (g != null) s.assertExpr(s.not(g))
@@ -11315,10 +11538,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                             Object g = enc.translate(spec.guard)
                             if (g != null) session.assertExpr(g)
                         }
-                        try {
-                            LoopEncoder.symExec(inLoopPrefix, enc, session)
-                        } catch (Throwable ignored) {
-                        }
+                        replaySafely(inLoopPrefix, enc, session, false, null)
                         handledInLoop = true
                     }
                 }
@@ -12333,11 +12553,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 protected SourceUnit getSourceUnit() { null }
                 @Override
                 void visitBinaryExpression(BinaryExpression be) {
-                    if (be.operation.type == Types.ASSIGN) {
+                    // Phase 311 — every assignment form (`op=` too), not just `=`
+                    if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) {
                         String w = writtenLocation(be.leftExpression)
                         if (w != null) out.add(w)
                     }
                     super.visitBinaryExpression(be)
+                }
+                @Override
+                void visitPrefixExpression(PrefixExpression pe) {
+                    String w = writtenLocation(pe.expression)
+                    if (w != null) out.add(w)
+                    super.visitPrefixExpression(pe)
+                }
+                @Override
+                void visitPostfixExpression(PostfixExpression pe) {
+                    String w = writtenLocation(pe.expression)
+                    if (w != null) out.add(w)
+                    super.visitPostfixExpression(pe)
                 }
                 @Override
                 void visitMethodCallExpression(MethodCallExpression mce) {

@@ -23,13 +23,13 @@ import static cases.CaseDsl.*
 class G354_lemmascript_port {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter — with the overflow LemmaScript\'s unbounded `number` cannot see.'
+    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter — loops leaving by `break` as LemmaScript\'s do, with the overflow LemmaScript\'s unbounded `number` cannot see.'
 
     static final List<Map> CASES = [
         // ---------- LemmaScript port (lemmascript.org front page + examples/*.ts) ----------
-        // binarySearch.ts — the front page's example. LemmaScript exits the loop with `break` plus a
-        // `//@ done_with` exit condition; Groovy's verifier takes the early `return` (the loop-exit fact is then just
-        // the invariant and the negated guard). The invariants are LemmaScript's, inclusive `hi` and all.
+        // binarySearch.ts — the front page's example, verbatim: LemmaScript's invariants (inclusive `hi` and all),
+        // and its `break` out of the loop once the target is found (Phase 312). No `//@ done_with` counterpart is
+        // needed: the code after the loop is checked from the break's state as well as the natural exit.
         [group: 'LemmaScript port', name: 'binarySearch', ok: true,
          src: tc('''class C {
                         /** Finds target in a sorted array, or reports -1. */
@@ -40,17 +40,19 @@ class G354_lemmascript_port {
                         static int binarySearch(int[] arr, int target) {
                             int lo = 0
                             int hi = arr.length - 1
+                            int result = -1
                             @Invariant({ 0 <= lo && lo <= arr.length && -1 <= hi && hi < arr.length })
                             @Invariant({ (0..<lo).every { arr[it] != target } })
                             @Invariant({ (hi + 1..<arr.length).every { arr[it] != target } })
+                            @Invariant({ result == -1 || (result >= 0 && result < arr.length && arr[result] == target) })
                             @Decreases({ hi - lo + 1 })
                             while (lo <= hi) {
                                 int mid = lo + (hi - lo).intdiv(2)
-                                if (arr[mid] == target) return mid
+                                if (arr[mid] == target) { result = mid; break }
                                 else if (arr[mid] < target) lo = mid + 1
                                 else hi = mid - 1
                             }
-                            return -1
+                            return result
                         }
                     }''')],
         // Refute control: drop sortedness and the excluded-region invariant is no longer preserved.
@@ -60,17 +62,19 @@ class G354_lemmascript_port {
                         static int binarySearch(int[] arr, int target) {
                             int lo = 0
                             int hi = arr.length - 1
+                            int result = -1
                             @Invariant({ 0 <= lo && lo <= arr.length && -1 <= hi && hi < arr.length })
                             @Invariant({ (0..<lo).every { arr[it] != target } })
                             @Invariant({ (hi + 1..<arr.length).every { arr[it] != target } })
+                            @Invariant({ result == -1 || (result >= 0 && result < arr.length && arr[result] == target) })
                             @Decreases({ hi - lo + 1 })
                             while (lo <= hi) {
                                 int mid = lo + (hi - lo).intdiv(2)
-                                if (arr[mid] == target) return mid
+                                if (arr[mid] == target) { result = mid; break }
                                 else if (arr[mid] < target) lo = mid + 1
                                 else hi = mid - 1
                             }
-                            return -1
+                            return result
                         }
                     }''')],
         // clamp.ts — mutable local, conditional assignment.
@@ -86,7 +90,7 @@ class G354_lemmascript_port {
                             return result
                         }
                     }''')],
-        // linearSearch.ts — `break` again becomes an early `return`.
+        // linearSearch.ts — verbatim, `break` and all.
         [group: 'LemmaScript port', name: 'linearSearch', ok: true,
          src: tc('''class C {
                         /** Returns the first index of target, or -1 when it is absent. */
@@ -95,14 +99,16 @@ class G354_lemmascript_port {
                         @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
                         static int linearSearch(int[] arr, int target) {
                             int i = 0
+                            int result = -1
                             @Invariant({ 0 <= i && i <= arr.length })
                             @Invariant({ (0..<i).every { arr[it] != target } })
+                            @Invariant({ result == -1 || (result >= 0 && result < arr.length && arr[result] == target) })
                             @Decreases({ arr.length - i })
                             while (i < arr.length) {
-                                if (arr[i] == target) return i
+                                if (arr[i] == target) { result = i; break }
                                 i = i + 1
                             }
-                            return -1
+                            return result
                         }
                     }''')],
         // maxElement.ts — LemmaScript's forall/exists pair as native .every/.any.
@@ -126,7 +132,7 @@ class G354_lemmascript_port {
                             return max
                         }
                     }''')],
-        // isSorted.ts — a boolean result specified in both directions.
+        // isSorted.ts — a boolean result specified in both directions, its flag set before the `break`.
         [group: 'LemmaScript port', name: 'isSorted', ok: true,
          src: tc('''class C {
                         /** Reports whether a non-empty array is in ascending order. */
@@ -134,15 +140,17 @@ class G354_lemmascript_port {
                         @Ensures({ result ==> (0..<arr.length - 1).every { arr[it] <= arr[it + 1] } })
                         @Ensures({ !result ==> (0..<arr.length - 1).any { arr[it] > arr[it + 1] } })
                         static boolean isSorted(int[] arr) {
+                            boolean result = true
                             int i = 0
                             @Invariant({ 0 <= i && i < arr.length })
-                            @Invariant({ (0..<i).every { arr[it] <= arr[it + 1] } })
+                            @Invariant({ result ==> (0..<i).every { arr[it] <= arr[it + 1] } })
+                            @Invariant({ !result ==> (0..<arr.length - 1).any { arr[it] > arr[it + 1] } })
                             @Decreases({ arr.length - i })
                             while (i + 1 < arr.length) {
-                                if (arr[i] > arr[i + 1]) return false
+                                if (arr[i] > arr[i + 1]) { result = false; break }
                                 i = i + 1
                             }
-                            return true
+                            return result
                         }
                     }''')],
         // arraySum.ts — LemmaScript's `sumTo(arr, i)` helper is Groovy's own range sum.

@@ -39,7 +39,7 @@ and are © their authors, used under LemmaScript's MIT licence.
 | `==>` | `==>` |
 | `sorted(arr)` | `arr.isSorted()` |
 | `//@ type i nat` | `0 <= i` in an invariant |
-| `break` plus `//@ done_with` | an early `return` |
+| `break` plus `//@ done_with` | `break` (the exit condition needs no annotation) |
 
 LemmaScript's `//@ contract` line is a plain-English statement of intent that sits beside the formal contract, so a
 reviewer can check one against the other. Groovy doesn't have an annotation for that yet, so the ports carry the
@@ -66,9 +66,10 @@ what the agent writes.
 //@ ensures  \result === -1 ==> forall(k, 0 <= k && k < arr.length ==> arr[k] !== target)
 ```
 
-The Groovy keeps LemmaScript's invariants, including the inclusive `hi`. LemmaScript leaves the loop with
-`break` and states the exit condition with `//@ done_with`. Here an early `return` does the same job, and the
-loop's exit fact is just the invariant plus the negated guard:
+The Groovy keeps LemmaScript's invariants, including the inclusive `hi`, and its `break`. LemmaScript also states
+the exit condition with `//@ done_with`. groovy-verify needs no counterpart: it checks the code after the loop
+from every way out, the normal exit (the invariant plus the negated guard) and the state at each `break`. The
+iteration that breaks doesn't have to shrink `[lo, hi]` or re-establish the invariant:
 
 <!-- doclint:case lemmascript-port/binarysearch -->
 ```groovy
@@ -80,17 +81,19 @@ loop's exit fact is just the invariant plus the negated guard:
 static int binarySearch(int[] arr, int target) {
     int lo = 0
     int hi = arr.length - 1
+    int result = -1
     @Invariant({ 0 <= lo && lo <= arr.length && -1 <= hi && hi < arr.length })
     @Invariant({ (0..<lo).every { arr[it] != target } })
     @Invariant({ (hi + 1..<arr.length).every { arr[it] != target } })
+    @Invariant({ result == -1 || (result >= 0 && result < arr.length && arr[result] == target) })
     @Decreases({ hi - lo + 1 })
     while (lo <= hi) {
         int mid = lo + (hi - lo).intdiv(2)
-        if (arr[mid] == target) return mid
+        if (arr[mid] == target) { result = mid; break }
         else if (arr[mid] < target) lo = mid + 1
         else hi = mid - 1
     }
-    return -1
+    return result
 }
 ```
 
@@ -183,7 +186,8 @@ static int clamp(int x, int lo, int hi) {
 
 ### Linear search
 
-As with binary search, LemmaScript's `break` becomes an early `return`:
+Also verbatim, `break` and all. The `result` set just before the `break` is what the code after the loop
+returns:
 
 <!-- doclint:case lemmascript-port/linearsearch -->
 ```groovy
@@ -193,14 +197,16 @@ As with binary search, LemmaScript's `break` becomes an early `return`:
 @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
 static int linearSearch(int[] arr, int target) {
     int i = 0
+    int result = -1
     @Invariant({ 0 <= i && i <= arr.length })
     @Invariant({ (0..<i).every { arr[it] != target } })
+    @Invariant({ result == -1 || (result >= 0 && result < arr.length && arr[result] == target) })
     @Decreases({ arr.length - i })
     while (i < arr.length) {
-        if (arr[i] == target) return i
+        if (arr[i] == target) { result = i; break }
         i = i + 1
     }
-    return -1
+    return result
 }
 ```
 
@@ -231,7 +237,7 @@ static int maxElement(int[] arr) {
 
 ### Is it sorted?
 
-A boolean result specified in both directions:
+A boolean result specified in both directions, its flag set just before the `break`:
 
 <!-- doclint:case lemmascript-port/issorted -->
 ```groovy
@@ -240,15 +246,17 @@ A boolean result specified in both directions:
 @Ensures({ result ==> (0..<arr.length - 1).every { arr[it] <= arr[it + 1] } })
 @Ensures({ !result ==> (0..<arr.length - 1).any { arr[it] > arr[it + 1] } })
 static boolean isSorted(int[] arr) {
+    boolean result = true
     int i = 0
     @Invariant({ 0 <= i && i < arr.length })
-    @Invariant({ (0..<i).every { arr[it] <= arr[it + 1] } })
+    @Invariant({ result ==> (0..<i).every { arr[it] <= arr[it + 1] } })
+    @Invariant({ !result ==> (0..<arr.length - 1).any { arr[it] > arr[it + 1] } })
     @Decreases({ arr.length - i })
     while (i + 1 < arr.length) {
-        if (arr[i] > arr[i + 1]) return false
+        if (arr[i] > arr[i + 1]) { result = false; break }
         i = i + 1
     }
-    return true
+    return result
 }
 ```
 
@@ -475,8 +483,9 @@ static int highScore(int[] scores) { scores.max() }
 
 These examples hit the edges of what groovy-verify proves today:
 
-- **`break` with `done_with`.** A `break` inside a verified loop is outside the fragment. Every port above that
-  uses it in LemmaScript was rewritten to an early `return`, which proves, but isn't a verbatim port.
+- **`continue`, and `break` from a nested loop.** A `break` at the top level of a loop body, or ending a branch of
+  the body's final `if`/`else` chain, is supported. A `continue`, or a `break` out of an inner loop, still skips
+  loudly.
 - **Boyer–Moore majority vote** (`majority.ts`). Its invariants count occurrences in a prefix with a recursive
   `occOf(arr, x, i)`. The Groovy spelling, `arr[0..<i].count(x)`, has no supporting axioms yet: `count` works as
   a whole-array permutation fact, but a loop accumulating it times out.

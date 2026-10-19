@@ -117,6 +117,7 @@ class Z3Session implements SmtSession {
     private final Context ctx
     private final Solver solver
     private Model lastModel    // Phase 126 — retained after a SAT check so callers can eval extra terms (array elements)
+    private final Map<String, Expr> displayAliases = new LinkedHashMap<String, Expr>()   // Phase 311 — see displayAs
     private final Map<String, IntExpr> vars = [:]
     private final Map<String, BoolExpr> boolVars = [:]
     private final Map<String, FuncDecl> funcs = [:]
@@ -518,6 +519,8 @@ class Z3Session implements SmtSession {
     @Override boolean isInt(Object handle) { ((Expr) handle).getSort().equals(ctx.getIntSort()) }
     @Override boolean isSeq(Object handle) { ((Expr) handle).getSort().equals(stringSort()) }
     @Override boolean isBool(Object handle) { ((Expr) handle).getSort().equals(ctx.getBoolSort()) }
+    @Override void displayAs(String name, Object term) { if (name != null && term != null) displayAliases[name] = (Expr) term }
+
     @Override String evalDisplay(Object handle) {
         if (lastModel == null || handle == null) return null
         try {
@@ -1400,6 +1403,14 @@ class Z3Session implements SmtSession {
         boolVars.each { name, var ->
             Expr v = m.evaluate(var, false)
             if (v.isTrue()) ce[name] = 1L
+            else if (v.isFalse()) ce[name] = 0L
+        }
+        // Phase 311 — source names whose value at the reported point is a hidden internal symbol (the state AFTER a
+        // replay); shown under the source name, overriding that name's entry-state symbol.
+        displayAliases.each { String name, Expr t ->
+            Expr v = m.evaluate(t, false)
+            if (v instanceof IntNum) ce[name] = clampInt64((IntNum) v)
+            else if (v.isTrue()) ce[name] = 1L
             else if (v.isFalse()) ce[name] = 0L
         }
         // Array contents the model committed to (Phase 9 slice 2): `recv[k]` for k in [0, size).

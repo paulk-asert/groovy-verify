@@ -31,6 +31,15 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
+import org.codehaus.groovy.ast.stmt.ThrowStatement
+import org.codehaus.groovy.ast.stmt.BreakStatement
+import org.codehaus.groovy.ast.stmt.ContinueStatement
+import org.codehaus.groovy.ast.stmt.WhileStatement
+import org.codehaus.groovy.ast.stmt.ForStatement
+import org.codehaus.groovy.ast.stmt.DoWhileStatement
+import org.codehaus.groovy.ast.stmt.SwitchStatement
+import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.syntax.Types
 
@@ -165,6 +174,73 @@ class LoopEncoder {
     }
 
     /**
+     * Phase 311 — replay a region to reach a LATER point on the same path (an obligation's {@code preceding}, a
+     * call site's in-loop prefix). Unlike {@link #symExec} — the strict walk the loop VCs use, which rejects an exit
+     * so an unrecognised one loud-skips — an {@code if} whose branch always leaves (return / throw / break /
+     * continue) is fine here: the point we're heading for lies on the CONTINUING path, so that branch's condition
+     * was false (or the else-branch's true) and the other branch is replayed as straight-line code. Both branches
+     * leaving makes the rest of the region unreachable. Anything else defers to {@link #symExec}; an exception
+     * propagates so the caller can havoc what it couldn't replay.
+     */
+    static void replay(List<Statement> stmts, Encoder enc, SmtSession s) {
+        stmts = Encoder.expandIncDecStatements(stmts)
+        for (Statement st : stmts) {
+            if (st instanceof BlockStatement) { replay(((BlockStatement) st).statements, enc, s); continue }
+            if (st instanceof IfStatement) {
+                IfStatement ifs = (IfStatement) st
+                Statement elseBlk = ifs.elseBlock
+                boolean hasElse = elseBlk != null && !(elseBlk instanceof EmptyStatement)
+                boolean thenLeaves = leaves(ifs.ifBlock), elseLeaves = hasElse && leaves(elseBlk)
+                if (thenLeaves || elseLeaves) {
+                    Object cond = tr(enc, ifs.booleanExpression, "if-condition")
+                    if (thenLeaves && elseLeaves) { s.assertExpr(s.boolLit(false)); return }
+                    if (thenLeaves) {
+                        s.assertExpr(s.not(cond))
+                        if (hasElse) replay(asList(elseBlk), enc, s)
+                    } else {
+                        s.assertExpr(cond)
+                        replay(asList(ifs.ifBlock), enc, s)
+                    }
+                    continue
+                }
+            }
+            symExec([st] as List<Statement>, enc, s)
+        }
+    }
+
+    /** True iff {@code body} has a {@code break} that leaves THIS loop: not inside a nested loop, switch or closure. */
+    static boolean containsLoopBreak(List<Statement> body) {
+        boolean[] found = [false]
+        CodeVisitorSupport v = new CodeVisitorSupport() {
+            @Override void visitBreakStatement(BreakStatement b) { found[0] = true }
+            @Override void visitWhileLoop(WhileStatement w) { }
+            @Override void visitForLoop(ForStatement f) { }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { }
+            @Override void visitSwitch(SwitchStatement sw) { }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        }
+        for (Statement st : body) st.visit(v)
+        found[0]
+    }
+
+    /** True iff control never falls out of {@code st}: it ends in return / throw / break / continue, or is an
+     *  if/else whose branches both leave. */
+    static boolean leaves(Statement st) {
+        if (st instanceof ReturnStatement || st instanceof ThrowStatement ||
+            st instanceof BreakStatement || st instanceof ContinueStatement) return true
+        if (st instanceof BlockStatement) {
+            List<Statement> ss = ((BlockStatement) st).statements
+            return !ss.isEmpty() && leaves(ss.get(ss.size() - 1))
+        }
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            return ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement) &&
+                leaves(ifs.ifBlock) && leaves(ifs.elseBlock)
+        }
+        false
+    }
+
+    /**
      * Phase 91 — replace a nested annotated loop with its inductive summary: havoc the variables it
      * writes — scalars (`havoc`) and array contents (`havocArray`) — then assume `inner_inv ∧
      * ¬inner_guard` (its post-state). Used by *both* the VC body walk and the obligation pass's
@@ -175,6 +251,10 @@ class LoopEncoder {
      * a length-changing inner loop (a collection mutator) is rejected by {@code innerFrame}.
      */
     static void summarizeInner(LoopSpec inner, Encoder enc, SmtSession s) {
+        // Phase 312 — inv ∧ ¬guard is the post-state of a loop that only leaves through its guard
+        if (containsLoopBreak(inner.body)) {
+            throw new UnsupportedConstructException("a `break` in a nested loop is not yet modelled")
+        }
         Set<String> scalars = new HashSet<String>()
         Set<String> arrays = new HashSet<String>()
         Set<String> lists = new HashSet<String>()

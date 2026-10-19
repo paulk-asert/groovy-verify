@@ -333,7 +333,12 @@ discipline; early exits combined with sequential loops stay a loud skip) — `wh
 (Phase 161, modelled as that same for-in — the explicit element param *or* the implicit `it`), or
 `xs.eachWithIndex { x, i -> … }` (the closure's second param becomes the loop's *user-named* index, with `x = xs[i]`),
 all desugaring to the same machinery (Phases 59 & 63; the for-in's index is synthesised and hidden — except for
-`eachWithIndex`, where the developer named it — and the loop variable keeps its name). A for-in / `.each` carries an auto **bounds
+`eachWithIndex`, where the developer named it — and the loop variable keeps its name). A loop may leave early by
+`return` (Phases 49/49b/49c) or by **`break`** (Phase 312: `if (c) break` / `if (c) { …; break }` at the top level of
+the body or ending a branch of its final `if`/`else` chain — the code after the loop is checked from each `break` as
+well as the natural exit, and the breaking iteration needn't preserve the invariant or decrease the variant); a
+`continue`, a `break` out of a nested loop, and a `return` inside a `.each` closure (which only ends that element)
+skip loudly. A for-in / `.each` carries an auto **bounds
 invariant** (`0 <= idx <= size`) and a `size - idx` **variant**, so a body asserting a **per-element property**
 (or reading bounded slots) verifies with no hand-written `@Invariant` — only an *accumulating* body needs one,
 and since a statement-level `@Invariant` is a Groovy parse error on a `.each` call, such a body **loud-skips**

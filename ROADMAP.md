@@ -14377,6 +14377,106 @@ statements this project's CONVERSION-time `.each` modelling shares. The `break` 
 
 ---
 
+## Phase 311 — replaying to an obligation: a soundness fix  *(shipped — engine change)*
+
+**Found while designing `break` support, whose after-loop checks replay the body up to each `break`.** An
+implicit obligation inside a loop body (an index, a divisor) is discharged by `dischargeSeeded`: assert the
+region's entry facts (`assumePos`, e.g. invariant ∧ guard), replay the statements before the obligation
+(`preceding`), check. Two holes, both confirmed at runtime and both missed:
+
+- **R1 — stale values after an early-exit `if`.** `while (i < a.length) { if (a[i] == 7) return 1; i = i + 1;
+  int x = a[i] }` — `f([1] as int[])` throws `ArrayIndexOutOfBoundsException`. The replay reached the exit `if`,
+  `LoopEncoder.symExec` threw on the `return`, and the exception was swallowed with the comment "leave those vars
+  havoc". They weren't havoc'd: every write after the throw point simply never applied, so `a[i]` was checked
+  against the `i` from before `i = i + 1`.
+- **R2 — a branch condition assumed in the wrong state.** `while (i < n) { i = i + 1; if (i > 0) { x =
+  10.intdiv(i - 1) } }` — `f(1)` divides by zero. The branch condition was added to `assumePos`, which is asserted
+  in the region's *entry* state, before `preceding` is replayed. So it assumed "the old `i` > 0", which makes the
+  divisor look non-zero. The same shape applied to the early-exit narrowing (`if (c) return` → the rest of the
+  region runs under `¬c`) and to `&&` / `||` / ternary guards.
+
+Also fixed on the way: **R3** — the straight-line call-site replay havocs a statement it can't model using
+`modifiedLocations`, which saw only `=` (not `op=`, `++`/`--`); `int i = 0; i++; g(i)` checked `g`'s
+precondition against `i == 0`. And an **assignment's value** (`ok = l && r`, `boolean b = c ? x : y`) was one leaf
+for the short-circuit discharge, so its guards were ignored entirely — a false positive that also meant a
+short-circuit refute proved nothing about the state fix until it was handled.
+
+**The fix:**
+
+1. **Conditions are assumed where they're evaluated.** A branch, ternary or `&&`/`||` condition is no longer an
+   `assumePos` fact; it becomes an assume marker (a synthetic `AssertStatement` tagged `REPLAY_ASSUME_KEY`,
+   `withAssume`) at the end of `preceding`, so it is asserted after the replay reaches its point. Entry facts
+   (precondition, invariant, guard) stay in `assumePos`. Markers still feed the index-site quantifier stripping
+   and the NIA monotonicity-lemma context, as the `assumePos` conditions did.
+2. **An exit-aware replay** (`LoopEncoder.replay`): an `if` whose branch always leaves (return / throw / break /
+   continue) asserts the condition false (or the else-branch's condition true) and replays the other branch as
+   straight-line code; both leaving makes the rest unreachable. This replaces the region-level narrowing. The loop
+   VCs keep the strict `symExec`, so an exit shape they don't recognise still loud-skips.
+3. **Nothing stale when a replay fails** (`replaySafely`): a statement that can't be replayed havocs everything it
+   and every later statement may write (`havocWritesOf` — every assignment form, element and field stores, call
+   receivers, reference arguments, all instance fields for an implicit-this call), and only the markers after the
+   last real statement are still assumed. Used by `dischargeSeeded` and the call-site check's in-loop prefix.
+4. `modifiedLocations` sees every assignment form and `++`/`--`.
+5. `dischargeExpression` descends into an assignment's value.
+6. **Counterexamples keep the branch value** (`SmtSession.displayAs`). Assuming a condition at the right point
+   means it now reads the replayed state, which can be an internal `#`-named symbol the counterexample display
+   hides — the Kerridge ALT witnesses lost `r$index = 1` (the `select()` branch taken) because that value is now
+   this iteration's `select#k`, not the entry-state symbol the old (wrong-state) assumption happened to show. A
+   marker's variables whose current binding is hidden are displayed under their source names; display-only. The
+   two quoted diagnostics in `examples/kerridge.md` match again unchanged.
+7. In the replay fallback, a marker after the failure point is still assumed when it reads nothing that was
+   havoc'd.
+
+**Shipped tests (group `P311 replaying to an obligation`, 7 cases):** R1 refutes with `fails on: f([8] as int[])`,
+and the guarded read proves; R2 refutes with `f(1)`, and `i > 1` proves; the short-circuit form refutes and
+proves the same way (the `i > 0` refute is only possible if the guard is assumed about the new `i`); `i++` before
+`g(i)` refutes. No existing case changed: 2186/2186.
+
+---
+
+## Phase 312 — `break`  *(shipped — engine change)*
+
+Gap 1 from the LemmaScript port: every LemmaScript loop that leaves with `break` (plus `//@ done_with`) had to be
+rewritten to an early `return`. A `break` is an early exit whose continuation is the code after the loop rather
+than the end of the method, so it rides the Phase 49b in-body exit machinery with a different continuation.
+
+- **Recognition.** `if (c) break` and `if (c) { s1; …; sn; break }` at the top level of the loop body (an
+  `EarlyExit` with `isBreak` and its `lead` statements), and a `break` leaf of the body's final `if`/`else` chain,
+  lifted by the Phase 49c desugar exactly as a `return` leaf is — LemmaScript's binary search has the break leaf
+  *first* (`if (arr[mid] == target) { result = mid; break } else if …`). The lead may not itself exit or loop.
+- **Inside the loop**, nothing new: preservation and progress already run on the path where each exit's condition
+  is false, so the breaking iteration need not preserve the invariant or decrease the variant — Dafny's semantics,
+  and why the flag rewrite needed an awkward `hi - lo + (result == -1 ? 2 : 1)` measure.
+- **After the loop**, from every way out. The postcondition is checked per `break` (`checkEarlyExitPath`: inv ∧
+  guard at body entry, the body up to the break with earlier exits not taken, the break's condition, its lead,
+  then the code after the loop) as well as from the natural exit. The after-loop region's implicit obligations
+  are discharged from each `break` too (inv ∧ guard as entry facts; the body prefix, the break condition as an
+  assume marker and the lead as `preceding`) — through Phase 311's replay, which is why 311 came first. `//@
+  done_with` needs no counterpart.
+- **One bug on the way:** `loopWriteSet` bailed on a `BreakStatement` as "unknown statement", which made the loop's
+  write set unbounded and silently dropped every loop-stable `@Requires` from preservation — binary search lost
+  `arr.isSorted()` and refuted. A `break` writes nothing.
+- **Loud skips:** `continue`; a `break` out of a nested loop (`containsLoopBreak` in `summarizeInner` and the
+  nested-loop checks — the inner summary `inner_inv ∧ ¬inner_guard` doesn't cover it); a `break` buried deeper
+  than the recognised shapes (the strict body walk still rejects it).
+
+**Shipped tests (group `P312 break`, 12 cases):** LemmaScript's linear search, binary search and isSorted verbatim;
+a classic `for` whose `break` skips the update; `while (true)` left only by its `break`; a break lead that leaves
+the invariant behind and still proves; refutes for a postcondition wrong only from the break (`fails on:
+firstNegative([-1] as int[])`), one wrong only on the natural exit (`firstNegative(new int[0])`), and an after-loop
+division safe from the natural exit but not from the break (`f([-1] as int[])`); loud skips for a nested-loop
+break, a buried break and `continue`.
+
+**The LemmaScript port** (`examples/lemmascript.md`) now runs LemmaScript's binary search, linear search and
+isSorted with their own `result` + `break` loops; the mapping table's `break` row and the "Not ported yet" list
+are updated.
+
+**GROOVY-12126, not done here:** recognising `throw LoopControl.BREAK` as a break in `.each`-derived loops (Phase
+310 note). That class doesn't exist in Groovy 6, so the code couldn't be tested; it's ready to add once the
+change lands.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
