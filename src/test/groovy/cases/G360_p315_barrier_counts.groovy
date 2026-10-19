@@ -118,16 +118,17 @@ class G360_p315_barrier_counts {
                     }""")],
 
         // ---------- syncs that are not one-shot ----------
-        // A sync in a loop: two rounds against a partner's one. Skipped silently before, so it certified.
-        [group: 'P315 barrier counts', name: 'a sync in a loop withholds the certificate',
+        // A sync in a loop with a symbolic bound: n rounds against a partner's one. Skipped silently before, so
+        // it certified. (A literal bound is counted since Phase 316 — see P316 barrier loops.)
+        [group: 'P315 barrier counts', name: 'a sync in a symbolic-bound loop withholds the certificate',
          expect: "Skipped barrier certificate for 'gate' in run (its arriveAndAwaitAdvance() at line 10 is not one-shot",
          src: tc("""class C {
-                        static int run() {
+                        static int run(int n) {
                             java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
                             async {
                                 gate.arriveAndAwaitAdvance()
                             }
-                            for (int i in 0..1) {
+                            for (int i in 0..<n) {
                                 gate.arriveAndAwaitAdvance()
                             }
                             return 0

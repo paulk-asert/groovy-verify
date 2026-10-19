@@ -1511,11 +1511,17 @@ forever. …
 More processes than parties is refuted when the one-shot arrivals aren't a whole number of rounds: three
 processes on a `Phaser(2)` arrive three times, so the last round never fills, whatever the schedule. When the
 arrivals are a whole number of rounds, it's skipped loudly instead, because which processes meet in which
-round is up to the scheduler. A sync that isn't one-shot (inside an `if`, loop, `catch` or closure, in either
-process) makes the count unknown. Such syncs used to be passed over silently, and the barrier certified, so
-a two-iteration loop against a partner's single sync hung clean. They now withhold the certificate out loud,
-as a non-one-shot channel operation always has. A `while (true)` lockstep falls under the same skip: it's
-fine at runtime, but the certificate counts rounds, and that loop has no count.
+round is up to the scheduler.
+
+c14 itself runs its phases in a loop, and a loop with a **literal** bound is counted (Phase 316). Like a
+literal-bounded channel loop, it unrolls before the check, so `for (i in 0..<3) gate.arriveAndAwaitAdvance()`
+is three one-shot syncs. Two such loops in lockstep certify, a loop of two against a partner's single sync is
+refuted at round 2, and barriers crossed inside the loops are the named circular wait. Any other sync that
+isn't one-shot makes the count unknown: one inside an `if`, a `catch` or a closure, or in a loop with a
+symbolic bound or more than 32 iterations. Such syncs used to be passed over silently, and the barrier
+certified. They now withhold the certificate out loud, as a non-one-shot channel operation always has. A
+`while (true)` lockstep falls under the same skip: it's fine at runtime, but the certificate counts rounds,
+and that loop has no count.
 
 **Dynamic enrolment** is what c14 actually uses: a target resigns up front, then each round enrols, syncs
 and resigns again, so it takes part only in the rounds it is active for. Once enrolment moves at runtime a

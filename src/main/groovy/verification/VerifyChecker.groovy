@@ -2753,6 +2753,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // channel rewrite both see one-shot traffic (a symbolic bound stays a loop: the frontier).
             Set<String> streamChans = new HashSet<String>()
             if (body instanceof BlockStatement) collectChannelVars((BlockStatement) body, streamChans)
+            // Phase 316 — and literal-bounded barrier loops, so a `for (i in 0..<k)` lockstep is k one-shot syncs
+            // the Phase 315 counts can certify, rather than a sync that is not one-shot.
+            if (body instanceof BlockStatement) {
+                Map<String, Integer> phasers = new LinkedHashMap<String, Integer>()
+                collectPhaserVars((BlockStatement) body, phasers)
+                streamChans.addAll(phasers.keySet())
+            }
             if (!streamChans.isEmpty()) {
                 Statement unrolled = unrollLiteralChannelLoops(body, streamChans)
                 if (!unrolled.is(body)) {

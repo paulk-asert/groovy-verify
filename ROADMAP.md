@@ -14590,7 +14590,7 @@ unconditional run of the enclosing process.
 - **Fewer processes than parties** is Phase 277's existing refutation, unchanged.
 - **Honest boundary.** A `while (true)` lockstep is fine at runtime but now skips: its count is unbounded, and the
   certificate counts rounds. Counting a literal-bounded loop's syncs (the way Phase 248 unrolls channel traffic)
-  would certify `for (i in 0..<k)` lockstep, which is a possible follow-up. Dynamic enrolment (Phase 278) is
+  would certify `for (i in 0..<k)` lockstep. That is now Phase 316. Dynamic enrolment (Phase 278) is
   untouched.
 
 **Shipped tests (group `P315 barrier counts`, 11 cases):**
@@ -14601,6 +14601,41 @@ unconditional run of the enclosing process.
 
 All 11 Phase 277 cases are unchanged. Docs: a paragraph in the barrier section of `examples/kerridge.md` (one
 linked case and its diagnostic) and a CAPABILITIES row.
+
+---
+
+## Phase 316 — literal-bounded barrier loops are counted  *(shipped)*
+
+The follow-up Phase 315 named. c14 runs its phases in a loop, and after Phase 315 any loop sync was a loud
+skip, so even a correct `for (i in 0..<3)` lockstep got no certificate. The Phase 248 unroller already turns a
+literal-bounded channel loop into straight-line one-shot traffic before the structural walk, in the method body
+and inside forked tasks. It is keyed on a set of variable names: a `for` whose body calls a method on one of
+them unrolls.
+
+- **The change.** One line of intent: the Phaser variables (`collectPhaserVars`) join the channel variables in
+  that set. A literal-bounded loop that syncs a barrier is then k one-shot syncs, and the Phase 315 count checks
+  decide it with no change of their own:
+  - a lockstep of loops certifies (a for-in in one process and a C-style `for` in the other is fine);
+  - a loop of k against a partner's m ≠ k is refuted at round m + 1;
+  - barriers crossed inside the loops are the named circular wait.
+- **Boundary, unchanged from Phase 248.** Literal bounds only, at most `CHANNEL_UNROLL_LIMIT` (32) iterations,
+  and a body inside the copying fragment. Anything else stays a loop and keeps the Phase 315 not-one-shot skip:
+  a symbolic bound, an over-limit loop, `while (true)`, and a sync inside a closure such as `each`.
+- **Found, not fixed: values across a barrier.** A method that declares a Phaser is outside the value model
+  ("assignment 'gate = new java.util.concurrent.Phaser(2)' is outside fragment"), so an `@Ensures` on a
+  barrier-synchronised computation is skipped loudly, not proved. A barrier moves no data, so treating the
+  declaration and its syncs as value no-ops would be sound for partial correctness, given PAR disjointness
+  (Phase 240). That is a candidate slice.
+
+**Shipped tests (group `P316 barrier loops`, 5 cases):**
+- certified: a lockstep of literal-bounded loops;
+- refuted: a loop of two against a single sync; loops with different literal bounds; barriers crossed inside
+  literal loops;
+- skipped: a loop over the unroll limit.
+
+The Phase 315 loop case is now a refutation, so that case moved to a symbolic bound (renamed "a sync in a
+symbolic-bound loop withholds the certificate"), keeping a test of the skip. Docs: the barrier-count paragraph
+of `examples/kerridge.md` and a CAPABILITIES row.
 
 ---
 
