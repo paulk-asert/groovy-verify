@@ -4987,6 +4987,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final List<ParArm> arms = new ArrayList<ParArm>()
         final List<ChanUse> chanUses = new ArrayList<ChanUse>()
+        // Phase 313 — a catch's close twinned with the same channel's close in its try block: the failure-path
+        // copy of a close the network already has. Not recorded (it is no second, conditional close), and the
+        // bypass analysis counts it as covering what the try block throws.
+        final Set<Expression> twinCloses =
+            Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         // Phase 277 — barrier syncs are kept OUT of chanUses: a barrier is not a channel, and every
         // channel pass (linearity, FIFO pairing, streams) would have to special-case it. They join the
         // wait-for graph directly instead, which is the only pass that has anything to say about them.
@@ -5037,6 +5042,168 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Phase 245 — a blocking-until-close consumption: a `for (v in ch)` (recorded as 'iterate') or a drain op. */
     private static boolean isIterateUse(ChanUse u) { u.method == 'iterate' || u.method in CHANNEL_DRAIN_OPS }
 
+    // ── Phase 313 — a failing producer: the close an iteration waits for must be reached ────────────
+    // A process that throws before its close() never sends it, and every iteration of that channel hangs
+    // (GROOVY-12459). The throws looked for: an explicit `throw`, and a call to a method of the enclosing
+    // class that throws (transitively), declares a throws clause, or carries @ThrowsIf. A library call is
+    // assumed to return normally, and the implicit throw-sites (division, parsing, dereference) are proof
+    // obligations of their own — discharged, they cannot throw. A finally that closes the channel, or a
+    // catch that catches everything and closes it, covers the try block it guards.
+
+    /** The process code of an arm: its async closure, or its actor handler (Phase 289). */
+    private static ClosureExpression processClosure(ParArm arm) {
+        asyncClosure(arm.anchor) ?: ActorMailbox.handlerClosure(arm.anchor)
+    }
+
+    /** `c.close()` as a statement directly in {@code block}: the closed channel names. */
+    private static Set<String> closedAtTopLevel(Statement block, Set<String> chanVars) {
+        Set<String> out = new HashSet<String>()
+        List<Statement> ss = block instanceof BlockStatement ? ((BlockStatement) block).statements : (block == null ? [] : [block])
+        for (Statement s : ss) {
+            MethodCallExpression c = closeCallOf(s)
+            if (c != null && chanVars.contains(((VariableExpression) stripCasts(c.objectExpression)).name)) {
+                out.add(((VariableExpression) stripCasts(c.objectExpression)).name)
+            }
+        }
+        out
+    }
+
+    /** {@code s} is the statement `v.close()` (no arguments, a variable receiver): that call, else null. */
+    private static MethodCallExpression closeCallOf(Statement s) {
+        if (!(s instanceof ExpressionStatement)) return null
+        Expression e = ((ExpressionStatement) s).expression
+        if (!(e instanceof MethodCallExpression)) return null
+        MethodCallExpression c = (MethodCallExpression) e
+        (c.methodAsString == 'close' && noArgs(c) && stripCasts(c.objectExpression) instanceof VariableExpression) ? c : null
+    }
+
+    /** A catch's top-level close of a channel its try block also closes at top level: the failure-path twin. */
+    private static void collectTwinCloses(TryCatchStatement t, ParCtx ctx) {
+        Set<String> closed = closedAtTopLevel(t.tryStatement, ctx.chanVars)
+        if (closed.isEmpty()) return
+        for (CatchStatement c : t.catchStatements) {
+            List<Statement> ss = c.code instanceof BlockStatement ? ((BlockStatement) c.code).statements : [c.code]
+            for (Statement s : ss) {
+                MethodCallExpression call = closeCallOf(s)
+                if (call != null && closed.contains(((VariableExpression) stripCasts(call.objectExpression)).name)) ctx.twinCloses.add(call)
+            }
+        }
+    }
+
+    /** A catch that catches every exception a producer can throw here: untyped, Exception or Throwable. */
+    private static boolean catchesAll(CatchStatement c) {
+        String n = c.exceptionType?.name
+        n == null || n == 'java.lang.Object' || n == 'java.lang.Exception' || n == 'java.lang.Throwable'
+    }
+
+    /** The try statement closes {@code chan} on every failure path of its try block. */
+    private static boolean closesOnFailure(TryCatchStatement t, String chan) {
+        Set<String> one = Collections.singleton(chan)
+        if (t.finallyStatement != null && closedAtTopLevel(t.finallyStatement, one).contains(chan)) return true
+        t.catchStatements.any { CatchStatement c -> catchesAll(c) && closedAtTopLevel(c.code, one).contains(chan) }
+    }
+
+    private static boolean containsNode(ASTNode n, Expression target) {
+        boolean[] found = [false]
+        n.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (call.is(target)) { found[0] = true; return }
+                super.visitMethodCallExpression(call)
+            }
+        })
+        found[0]
+    }
+
+    /** The first uncovered throw that runs before {@code closeCall} in {@code code}, described for the
+     *  diagnostic ("someCall(…) (line 9) throws — someCall throws (line 4)"), or null when the close is
+     *  always reached. */
+    private static String closeBypass(Statement code, Expression closeCall, String chan, ClassNode cls) {
+        String[][] found = [null]
+        bypassWalk(code, closeCall, chan, cls, false, found)
+        String[] t = found[0]
+        t == null ? null : t[0] == null ? "the throw at line ${t[2]} is taken".toString() : "${t[0]} (line ${t[2]}) throws — ${t[0].replaceFirst(/\(.*/, '')} ${t[1]}".toString()
+    }
+
+    /** True once the walk stops: the close is reached, or a throw before it was found. */
+    private static boolean bypassWalk(Statement s, Expression closeCall, String chan, ClassNode cls,
+                                      boolean covered, String[][] found) {
+        if (s == null) return false
+        if (!containsNode(s, closeCall)) {
+            if (!covered) found[0] = firstThrow(s, cls, new HashSet<MethodNode>())
+            return found[0] != null
+        }
+        if (s instanceof BlockStatement) {
+            for (Statement x : ((BlockStatement) s).statements) if (bypassWalk(x, closeCall, chan, cls, covered, found)) return true
+            return false
+        }
+        if (s instanceof TryCatchStatement) {
+            TryCatchStatement t = (TryCatchStatement) s
+            if (containsNode(t.tryStatement, closeCall)) {
+                return bypassWalk(t.tryStatement, closeCall, chan, cls, covered || closesOnFailure(t, chan), found)
+            }
+            // a close in the finally runs whatever the try block throws
+            if (t.finallyStatement != null && containsNode(t.finallyStatement, closeCall)) {
+                return bypassWalk(t.finallyStatement, closeCall, chan, cls, covered, found)
+            }
+        }
+        true      // the close itself (a close nested in an if / loop / catch is a conditional close, refused elsewhere)
+    }
+
+    /** The first throw {@code n} can raise uncaught, as [callee spelling or null for a `throw`, why the callee
+     *  throws, line], or null. Nested async closures are other processes. */
+    private static String[] firstThrow(ASTNode n, ClassNode cls, Set<MethodNode> visited) {
+        String[][] found = [null]
+        n.visit(new CodeVisitorSupport() {
+            int caught = 0
+            @Override void visitTryCatchFinally(TryCatchStatement t) {
+                boolean all = t.catchStatements.any { catchesAll(it) }
+                if (all) caught++
+                try { t.tryStatement?.visit(this) } finally { if (all) caught-- }
+                for (CatchStatement c : t.catchStatements) c.visit(this)
+                t.finallyStatement?.visit(this)
+            }
+            @Override void visitThrowStatement(ThrowStatement t) {
+                // a throw with no source position is woven (a loop @Invariant / @Decreases check) — proved, it never fires
+                if (t.lineNumber < 0) return
+                if (caught == 0 && found[0] == null) found[0] = [null, null, String.valueOf(t.lineNumber)] as String[]
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression call) {
+                if (asyncClosure(call) != null) return
+                Expression o = call.objectExpression
+                boolean own = call.implicitThis || isThisRef(o) || (o instanceof ClassExpression && o.type == cls)
+                if (own) callee(call.methodAsString, call.arguments, call.lineNumber)
+                super.visitMethodCallExpression(call)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression call) {
+                if (asyncClosure(call) != null) return
+                if (call.ownerType == cls) callee(call.method, call.arguments, call.lineNumber)
+                super.visitStaticMethodCallExpression(call)
+            }
+            private void callee(String name, Expression args, int line) {
+                if (caught > 0 || found[0] != null || name == null) return
+                for (MethodNode m : cls.getMethods(name)) {
+                    String why = mayThrow(m, cls, visited)
+                    // the arguments elided: an unrolled loop (Phase 248) would echo its constants, not the source
+                    boolean none = args instanceof TupleExpression && ((TupleExpression) args).expressions.isEmpty()
+                    if (why != null) { found[0] = [name + (none ? '()' : '(…)'), why, String.valueOf(line)] as String[]; return }
+                }
+            }
+        })
+        found[0]
+    }
+
+    /** Why a method of the class may throw (declared, specified, or a throw in its body — transitively), or null. */
+    private static String mayThrow(MethodNode m, ClassNode cls, Set<MethodNode> visited) {
+        if (m.exceptions != null && m.exceptions.length > 0) return "declares throws ${m.exceptions*.nameWithoutPackage.join(', ')}".toString()
+        if (!tiAnnotations(m).isEmpty()) return 'carries @ThrowsIf'
+        if (!visited.add(m)) return null
+        Statement code = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (code == null) return null
+        String[] t = firstThrow(code, cls, visited)
+        if (t == null) return null
+        t[0] == null ? "throws (line ${t[2]})".toString() : "calls ${t[0].replaceFirst(/\(.*/, '')} (line ${t[2]}), which ${t[1]}".toString()
+    }
+
     /** Phase 249 — `ChannelSelect.from(c0, c1, …)`: a RECV-kind use ('select') of EVERY channel-var
      *  argument, all sharing the call as anchor (the network check groups them into one ALT node). */
     private static void recordSelectUsesIfAny(Expression call, ParCtx ctx, ParArm proc, int ord,
@@ -5063,6 +5230,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!(recv instanceof VariableExpression)) return
         String name = ((VariableExpression) recv).name
         if (!ctx.chanVars.contains(name)) return
+        if (ctx.twinCloses.contains(call)) return                    // Phase 313 — the failure-path copy
         int k = chanUseKindOf(call.methodAsString)
         if (k >= 0) ctx.chanUse(name, call.methodAsString, k, proc, ord, call.lineNumber, seq, conditional, anchor)
     }
@@ -5320,6 +5488,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 armCondDepth++
                 try { st.loopBlock?.visit(this) } finally { armCondDepth-- }
             }
+            @Override void visitTryCatchFinally(TryCatchStatement st) {
+                // Phase 313 — a catch runs only on the failure path, as on the main side (it used to count as
+                // unconditional here, so a close only in a catch passed for the close the drain waits for).
+                st.tryStatement?.visit(this)
+                collectTwinCloses(st, ctx)
+                armCondDepth++
+                try { for (CatchStatement c : st.catchStatements) c.visit(this) } finally { armCondDepth-- }
+                st.finallyStatement?.visit(this)
+            }
             @Override void visitVariableExpression(VariableExpression ve) {
                 if (!local.contains(ve.name)) reads.add(ve.name)
             }
@@ -5397,6 +5574,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (st instanceof org.codehaus.groovy.ast.stmt.TryCatchStatement) {
             org.codehaus.groovy.ast.stmt.TryCatchStatement t = (org.codehaus.groovy.ast.stmt.TryCatchStatement) st
             parWalkStatement(t.tryStatement, ctx)
+            collectTwinCloses(t, ctx)                        // Phase 313
             ctx.condDepth++
             try { for (org.codehaus.groovy.ast.stmt.CatchStatement c : t.catchStatements) parWalkStatement(c.code, ctx) }
             finally { ctx.condDepth-- }
@@ -6558,6 +6736,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     (root == it.chan ? "'${root}'" : "its source channel '${root}'") +
                     " anywhere in the method"), it.anchor)
                 return
+            }
+            // Phase 313 — the close the iteration waits for must be REACHED: a closing process that throws
+            // first never sends it (GROOVY-12459), and the iteration hangs while the failure sits on a
+            // discarded task handle. (The same process throwing first never reaches its own iteration.)
+            ChanUse close = closeByRoot.get(root)
+            if (!close.proc.is(it.proc)) {
+                Statement code = close.proc == null ? body : processClosure(close.proc)?.code
+                String bypass = code == null ? null : closeBypass(code, close.anchor, root, node.declaringClass)
+                if (bypass != null) {
+                    addStaticTypeError(Reporter.formatNetworkSkipped(node.name,
+                        "the close of '${root}' (line ${close.line}) is not reached if ${bypass}, and the iteration over " +
+                        "'${it.chan}' (line ${it.line}) then never finishes — a producer that fails leaves its channel " +
+                        "open; close it in a finally, or in a catch as well as after the sends"), close.anchor)
+                    return
+                }
             }
         }
         // Phase 249 — an ALT's alternatives: for each branch, the send that would satisfy its next

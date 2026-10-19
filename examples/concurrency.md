@@ -1012,6 +1012,50 @@ calls in drain shapes carry no spurious deref obligations, while a channel *para
 one-shot network every blocking operation — read, iteration, join — provably completes**, with per-task
 loop termination (`@Decreases`) and the scheduler itself remaining rungs 2/3.
 
+**A close has to be reached, not just written** (Phase 313). An iteration waits for the close, and a producer
+that throws on the way to its `close()` never sends it: the drain hangs, and the failure sits on a task
+handle nobody awaits ([GROOVY-12459](https://issues.apache.org/jira/browse/GROOVY-12459)). Until this phase
+the certificate checked only that the close was *there*, so this shape compiled clean and hung at runtime:
+
+<!-- doclint:case p313-failing-producer/a-producer-that-can-throw-before-its-close-withholds-the-drain -->
+```groovy
+static void someCall(int i) {
+    if (i == 2) throw new IllegalStateException('boom')
+}
+static int run() {
+    AsyncChannel<Integer> out = AsyncChannel.create(2)
+    async {
+        for (int i = 1; i <= 3; i++) {
+            someCall(i)
+            out.send(i * i)
+        }
+        out.close()
+    }
+    int seen = 0
+    for (v in out) {
+        seen = seen + 1
+    }
+    return seen
+}
+```
+
+<!-- doclint:diagnostic p313-failing-producer/a-producer-that-can-throw-before-its-close-withholds-the-drain -->
+```
+[Static type checking] - Skipped network well-formedness check for run (the close of 'out' (line 14) is not
+reached if someCall(…) (line 11) throws — someCall throws (line 5), and the iteration over 'out' (line 17)
+then never finishes — a producer that fails leaves its channel open; close it in a finally, or in a catch as
+well as after the sends). …
+```
+
+The throws looked for are an explicit `throw`, and a call to a method of the class that throws (transitively),
+declares a `throws` clause, or carries `@ThrowsIf`. A library call is assumed to return normally. Division,
+parsing and dereference are proof obligations already, and once discharged they can't throw. Closing on the
+failure path certifies the drain again: a close in a `finally`, or a `catch` that closes the channel as well as
+the try block's own close (`try { …; out.close() } catch (Exception e) { out.close() }`). A close *only* in a
+`catch` runs only when something fails, so it's a conditional close (loud skip), on the task side as on the main
+side. Once GROOVY-12459's `close(failure)` lands, the catch can hand the failure to the consumer, and the claim
+becomes "the drain finishes, or rethrows the producer's failure".
+
 ### Bounded FIFO traffic — the k-th send is the k-th receive
 The ladder's first rung *past* the one-shot fragment. Every rung before it carried **one in-flight element**
 per channel and refused everything else; the Kerridge gallery's literal two-message `ProduceHW` was its named

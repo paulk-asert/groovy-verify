@@ -14477,6 +14477,56 @@ change lands.
 
 ---
 
+## Phase 313 — a failing producer: the close has to be reached  *(shipped — a soundness fix to Phase 245)*
+
+Found by checking the ladder against two open upstream PRs. apache/groovy#2987
+([GROOVY-12459](https://issues.apache.org/jira/browse/GROOVY-12459)) is about a producer that throws before
+`channel.close()`: `for await` hangs, and the exception stays on the `async` handle that was thrown away.
+Phase 245 made an iteration depend on its root's close, but it treated a close as unconditional whenever it
+wasn't syntactically inside an if, loop or catch. So it ignored the **exceptional path**, and the hang
+compiled clean. A probe confirmed it: `async { out.send(boom()); out.close() }` with `boom()` always
+throwing, drained by `for (v in out)`, was silently certified.
+
+- **The check.** When the network analysis finds the close an iteration waits for, and that close is in a
+  different process, it walks the closing process (`closeBypass`) for a throw that runs before the close and
+  isn't covered. If it finds one, it withholds the certificate with a loud network skip naming the throw. "Can
+  throw" means an explicit `throw`, or a call to a method of the enclosing class (implicit `this`, a static
+  call, or `C.m()`) that declares `throws`, carries `@ThrowsIf`, or has a body that throws (transitively,
+  through further own-class calls). A throw inside a `try` with a catch-everything clause (untyped, `Exception`,
+  `Throwable`) doesn't count.
+- **Covered:** a `finally` that closes the channel, or a catch-everything `catch` that closes it. The JIRA's
+  fixed shape (`try { …; out.close() } catch (Exception e) { out.close() }`) certifies. The catch's close is
+  its **twin**: the same close on the failure path. `collectTwinCloses` keeps it out of the recorded uses, so it
+  isn't a second, conditional close.
+- **A second hole on the way.** The task-side use walk had no `visitTryCatchFinally`, so a close only in a
+  task's `catch` counted as unconditional, and a drain waiting on it was certified while hanging on the
+  success path. Catches now count as conditional on the task side, as they already did on the main side.
+- **Honest boundary.** A library call is assumed to return normally (it's opaque everywhere else in the
+  fragment too). Implicit throw-sites (division, parsing, dereference, index) are proof obligations already,
+  and discharged they can't throw. A throw in the *same* process as the iteration is out of scope: it exits
+  before the wait. Arguments are elided in the message (`someCall(…)`), because a Phase 248-unrolled loop would
+  otherwise echo its frozen constants rather than the source. A `throw` with no source position is ignored:
+  woven loop `@Invariant`/`@Decreases` checks have none, and they're proved. The first full run withheld 10
+  streaming certificates on exactly those before this was added.
+- **Not yet:** `close(Throwable)` / `getCloseCause()` from #2987 aren't in the 6.0.0 pin. Once they land, a
+  `catch (e) { out.close(e) }` should count as covering too, and the drain claim becomes "finishes, or rethrows
+  the producer's failure after the values already sent" (with the propagation through
+  `map`/`filter`/`merge`/`split`/`tap` the PR specifies).
+
+**Shipped tests (group `P313 failing producer`, 11 cases):** withheld for the JIRA's own loop shape, a one-shot
+send whose argument throws, a transitive thrower, an explicit `throw`, a `throws IOException` callee and an
+`@ThrowsIf` callee; certified for a close in `finally`, the twinned catch close, a producer calling a total
+method, and a throw the producer catches itself; a close only in a `catch` is the conditional-close skip.
+Docs: the drain-discipline subsection of `examples/concurrency.md` (one linked case and its diagnostic) and a
+CAPABILITIES row.
+
+**The other PR, #2986** ([GROOVY-12457](https://issues.apache.org/jira/browse/GROOVY-12457)): blocking
+callbacks in `eachParallel`/`@Parallel` can leave a queued sibling unrun on a ForkJoinPool. gv doesn't model
+parallel collections, so no claim was wrong. But the bug breaks the weak-fairness assumption Phase 255 rests
+on, so a loud skip for blocking syncs inside parallel-collection callbacks is a candidate next slice.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
