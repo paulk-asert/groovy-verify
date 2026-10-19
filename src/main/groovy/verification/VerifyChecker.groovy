@@ -5393,7 +5393,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         final int ord
         final ParCtx ctx
         private int awaitDepth      // > 0 while inside an `await(...)` — an arm forked there joins in place
+        private int closureDepth    // Phase 315 — > 0 inside a non-async closure: it may run zero times or many
         ParScanner(int ord, ParCtx ctx) { this.ord = ord; this.ctx = ctx }
+
+        @Override void visitClosureExpression(ClosureExpression e) {
+            closureDepth++
+            try { super.visitClosureExpression(e) } finally { closureDepth-- }
+        }
 
         @Override void visitMethodCallExpression(MethodCallExpression call) {
             ClosureExpression cl = asyncClosure(call) ?: ActorMailbox.handlerClosure(call)   // Phase 289
@@ -5401,7 +5407,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             recordParallelUsesIfAny(call, ctx)                                       // Phase 314
             // Phase 241 — a main-body channel end-use (seq = the statement ordinal)
             recordChanUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
-            recordBarrierUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
+            recordBarrierUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0 || closureDepth > 0, call)
             recordSelectUsesIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0)     // Phase 249
             boolean isAwait = call.methodAsString == 'await'
             if (isAwait) awaitDepth++
@@ -5537,12 +5543,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             private int armSeq = 0
             private int armCondDepth = 0
+            private int armClosureDepth = 0     // Phase 315 — a nested closure may run zero times or many
             @Override void visitMethodCallExpression(MethodCallExpression call) {
                 // Phase 241 — an arm-side end-use; seq is the arm's own op order (Phase 243 needs it)
                 recordParallelUsesIfAny(call, ctx)                                   // Phase 314
                 int seq = ++armSeq
                 recordChanUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
-                recordBarrierUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
+                recordBarrierUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0 || armClosureDepth > 0, call)
                 recordSelectUsesIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0)   // Phase 249
                 super.visitMethodCallExpression(call)
             }
@@ -5590,7 +5597,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             @Override void visitClosureExpression(ClosureExpression c2) {
                 if (c2.parameters != null) for (Parameter p : c2.parameters) local.add(p.name)
-                super.visitClosureExpression(c2)
+                armClosureDepth++
+                try { super.visitClosureExpression(c2) } finally { armClosureDepth-- }
             }
         })
     }
@@ -6458,17 +6466,56 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (u.method == 'arriveAndDeregister') enrolled.put(key, false)
         }
         Set<String> dyn = dynamicBarriers(ctx)
+        // Phase 315 — a sync that is not one-shot (inside an if / loop / catch / closure) may run zero times or
+        // many, so the per-process count every check below rests on is unknown. It used to be skipped
+        // silently, and the barrier certified: a loop syncing twice against a partner syncing once hung clean.
+        Set<String> skipped = new LinkedHashSet<String>(dyn)
+        for (ChanUse u : ctx.barrierUses) {
+            if (!u.conditional || skipped.contains(u.chan)) continue
+            skipped.add(u.chan)
+            addStaticTypeError(Reporter.formatBarrierNotOneShot(node.name, u.chan, barrierOpName(u.method), u.line), u.anchor)
+        }
         for (Map.Entry<String, Integer> e : ctx.phaserParties.entrySet()) {
-            if (dyn.contains(e.key)) continue                    // Phase 278 — the count is a runtime value
-            Set<Object> procs = new HashSet<Object>()
-            ChanUse first = null
+            if (skipped.contains(e.key)) continue                // Phase 278 / 315 — the count is a runtime value
+            // Per process, in first-sync order: how many times it syncs (each one-shot, so exactly that many).
+            Map<Object, List<ChanUse>> byProc = new LinkedHashMap<Object, List<ChanUse>>()
             for (ChanUse u : barrierSyncs(ctx)) if (u.chan == e.key) {
-                procs.add(u.proc == null ? 'main' : u.proc)
-                if (first == null) first = u
+                Object k = u.proc == null ? 'main' : u.proc
+                List<ChanUse> l = byProc.get(k)
+                if (l == null) { l = new ArrayList<ChanUse>(); byProc.put(k, l) }
+                l.add(u)
             }
-            if (first == null) continue                          // declared but never synced
-            if (procs.size() < e.value) {
-                addStaticTypeError(Reporter.formatBarrierParties(node.name, e.key, e.value, procs.size()), first.anchor)
+            if (byProc.isEmpty()) continue                       // declared but never synced
+            ChanUse first = byProc.values().iterator().next().get(0)
+            if (byProc.size() < e.value) {
+                addStaticTypeError(Reporter.formatBarrierParties(node.name, e.key, e.value, byProc.size()), first.anchor)
+                return true
+            }
+            // Phase 315 — more syncing processes than parties: a round is whichever N arrive first, decided at
+            // runtime. Every sync is one-shot, so the arrivals in all are known: if they are not a whole number of
+            // rounds the last never fills, whatever the schedule. Otherwise it can work out — or strand a process.
+            if (byProc.size() > e.value) {
+                int arrivals = 0
+                for (List<ChanUse> l : byProc.values()) arrivals += l.size()
+                if (arrivals % e.value != 0) {
+                    addStaticTypeError(Reporter.formatBarrierArrivals(node.name, e.key, e.value, byProc.size(), arrivals), first.anchor)
+                    return true
+                }
+                addStaticTypeError(Reporter.formatBarrierSurplus(node.name, e.key, e.value, byProc.size()), first.anchor)
+                skipped.add(e.key)
+                continue
+            }
+            // Phase 315 — exactly N processes, so every round needs every one of them. A process that has run out
+            // of syncs never arrives again (finishing does not deregister), so the round after the fewest is stuck.
+            List<ChanUse> most = null, fewest = null
+            for (List<ChanUse> l : byProc.values()) {
+                if (most == null || l.size() > most.size()) most = l
+                if (fewest == null || l.size() < fewest.size()) fewest = l
+            }
+            if (most.size() != fewest.size()) {
+                ChanUse stuck = most.get(fewest.size())
+                addStaticTypeError(Reporter.formatBarrierRoundShort(node.name, e.key, e.value,
+                    barrierProcName(most.get(0)), most.size(), barrierProcName(fewest.get(0)), fewest.size(), stuck.line), stuck.anchor)
                 return true
             }
         }
@@ -6479,7 +6526,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (ChanUse u : ctx.barrierUses) if (u.chan == bar && u.method != 'sync') { at = u; break }
             if (at != null) addStaticTypeError(Reporter.formatBarrierDynamic(node.name, bar), at.anchor)
         }
-        if (!dyn.isEmpty()) return true
+        if (!skipped.isEmpty()) return true
         List<ChanUse> evs = new ArrayList<ChanUse>(barrierSyncs(ctx))
         Map<ChanUse, Integer> id = new IdentityHashMap<ChanUse, Integer>()
         for (int i = 0; i < evs.size(); i++) id.put(evs.get(i), i)
@@ -6519,6 +6566,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<ChanUse> out = new ArrayList<ChanUse>()
         for (ChanUse u : ctx.barrierUses) if (u.method == 'sync') out.add(u)
         out
+    }
+
+    /** Phase 315 — a barrier op as the developer wrote it ('sync' is the recorded name of arriveAndAwaitAdvance). */
+    private static String barrierOpName(String op) { op == 'sync' ? 'arriveAndAwaitAdvance' : op }
+
+    /** Phase 315 — the process a barrier op belongs to, for a diagnostic. */
+    private static String barrierProcName(ChanUse u) {
+        u.proc == null ? 'the method body' : "the task forked at line ${u.proc.line}".toString()
     }
 
     /** Phase 278 — barriers whose enrolment changes at runtime: their party count is not the constructor's,

@@ -14558,13 +14558,49 @@ Unaffected: a non-blocking `collectParallel`, and a lockstep barrier beside a no
 certified). A barrier that really is one process short still refutes. Docs: a paragraph closing the weak-fairness
 section of `examples/concurrency.md` (one linked case and its diagnostic) and a CAPABILITIES row.
 
-**Found on the way, not fixed: a Phase 277 barrier soundness hole (candidate Phase 315).** A barrier sync that
-isn't one-shot is recorded `conditional`, and the barrier checks skip conditional syncs *silently* ("no claim
-either way"), so the method still compiles clean. Three probes compile clean but hang at runtime, all with a
-`Phaser(2)` and a forked partner that syncs once: the main body syncs in a two-iteration `for` loop; it syncs in a
-sequential `[1, 2].each { … }` (closure bodies count as one unconditional sync); or the sync is in a closure that
-is never called. The fix is the loud-skip treatment the channel side already has, or counting a literal-bounded
-loop's syncs (as Phase 248 does for channel traffic).
+**Found on the way:** a Phase 277 barrier soundness hole, fixed as Phase 315 below.
+
+---
+
+## Phase 315 — barrier counts: every round needs every party  *(shipped — a soundness fix to Phase 277)*
+
+Found while probing Phase 314. With static enrolment the barrier certificate rests on each process's **sync
+count**, because every round needs every party. Phase 277 checked only that there were *enough* processes.
+Probes showed five shapes compiling clean that hang at runtime:
+- two straight-line ones: the method body syncing twice against a task syncing once, and three processes on a
+  `Phaser(2)`;
+- three non-one-shot ones: a sync in a two-iteration `for`, in a sequential `[1, 2].each { … }`, and in a
+  closure that's never called.
+
+The round check never saw them. A round with a single member is skipped (`ids.size() < 2`), and conditional
+syncs were passed over silently ("no claim either way"). The scanners counted a non-async closure body as one
+unconditional run of the enclosing process.
+
+- **Not one-shot → loud skip.** A barrier op inside an `if`, loop, `catch` or **closure** is conditional. The
+  main-side `ParScanner` and the task-side walk now track closure depth for barrier ops. Any conditional op on a
+  barrier withholds its certificate (`formatBarrierNotOneShot`), as a non-one-shot channel op always has (the
+  channel side was already loud). Like Phase 278's dynamic-enrolment skip, it stops the rest of the method's
+  network check.
+- **Exactly N processes, unequal counts → refuted** (`formatBarrierRoundShort`): "can never complete round m+1 …
+  the method body syncs 2 times but the task forked at line 6 only 1". A finished process doesn't deregister, so
+  the round after the fewest never fills. This is certain, whatever the schedule.
+- **More processes than parties.** One-shot arrivals that aren't a whole number of rounds are **refuted**
+  (`formatBarrierArrivals`): the last round never fills. A whole number of rounds is **skipped** loudly
+  (`formatBarrierSurplus`), since which processes meet in which round is the scheduler's call.
+- **Fewer processes than parties** is Phase 277's existing refutation, unchanged.
+- **Honest boundary.** A `while (true)` lockstep is fine at runtime but now skips: its count is unbounded, and the
+  certificate counts rounds. Counting a literal-bounded loop's syncs (the way Phase 248 unrolls channel traffic)
+  would certify `for (i in 0..<k)` lockstep, which is a possible follow-up. Dynamic enrolment (Phase 278) is
+  untouched.
+
+**Shipped tests (group `P315 barrier counts`, 11 cases):**
+- refuted: one sync more than the partner, either way round; a surplus process that can never be partnered;
+- skipped: surplus processes in whole rounds; a sync in a loop, an `if`, an `each` closure, a closure never
+  called, a task's nested closure, and a `while (true)` lockstep;
+- certified: three processes in lockstep for two rounds.
+
+All 11 Phase 277 cases are unchanged. Docs: a paragraph in the barrier section of `examples/kerridge.md` (one
+linked case and its diagnostic) and a CAPABILITIES row.
 
 ---
 

@@ -32,8 +32,8 @@ issued **in the compiler**, as ordinary static type-checking errors, rather than
 shapes are **inspired by UCaPE, written ourselves** — the repository carries no licence and JCSP is LGPL, so
 ideas are ported, never sources (the same rule as the jcstress-inspired examples).
 
-<!-- doclint:count 39 -->
-**What is in it.** Thirty-nine worked examples, every one linked to a case that runs in CI, and the
+<!-- doclint:count 40 -->
+**What is in it.** Forty worked examples, every one linked to a case that runs in CI, and the
 compiler messages beside them quoted verbatim from those same cases.
 [Twelve shapes that verify](#the-one-shot-shapes-verify-end-to-end) — c02's hello-world; the literal
 two-message `ProduceHW` / `ConsumeHW`, proved in order; `GSquares`, `GPlus`, `GDelta`, `GPrint`; c03 three
@@ -50,7 +50,7 @@ the mistake it is there to catch.
 
 **What it covers, and what it does not.** The gallery is organised by *construct*, not by chapter: the
 twenty-two rows of the table below are the JCSP/occam vocabulary the books are built on, and the
-thirty-seven examples are the smallest programs that exercise each. Measured against the books' own corpus
+forty examples are the smallest programs that exercise each. Measured against the books' own corpus
 it is still a slice — UCaPE's examples run c02 to c25, with a parallel tree of exercises, and c02, c03, c04,
 c05, c07, c08, c09, c10, c12, c13 and c14 are the chapters ported here by name; the client–server, `ALT`, multiplexer,
 fair-server and token-ring shapes recur across the later chapters rather than belonging to any one of them. GPP is cited as the tradition this work answers,
@@ -1481,6 +1481,41 @@ that do arrive block forever. Construct it for the number of processes that sync
 parties arrive (register()/arriveAndDeregister() adjust the count at runtime, which this certificate does
 not model).
 ```
+
+**The count is per process, not just per barrier** (Phase 315). With static enrolment every round needs every
+party, so having enough processes isn't enough: each must sync the same number of times. A process that has
+finished never arrives again (finishing doesn't deregister it). Until Phase 315 only "too few processes" was
+checked, so the plainest hang of all compiled clean:
+
+<!-- doclint:case p315-barrier-counts/one-more-sync-than-the-partner-is-refuted -->
+```groovy
+static int run() {
+    java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
+    async {
+        gate.arriveAndAwaitAdvance()
+    }
+    gate.arriveAndAwaitAdvance()
+    gate.arriveAndAwaitAdvance()
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p315-barrier-counts/one-more-sync-than-the-partner-is-refuted -->
+```
+[Static type checking] - Barrier 'gate' in 'run' can never complete round 2: its 2 parties are the 2
+processes that sync on it, and the method body syncs 2 times but the task forked at line 6 only 1. A process
+that has finished never arrives again (finishing does not deregister it), so the sync at line 10 waits
+forever. …
+```
+
+More processes than parties is refuted when the one-shot arrivals aren't a whole number of rounds: three
+processes on a `Phaser(2)` arrive three times, so the last round never fills, whatever the schedule. When the
+arrivals are a whole number of rounds, it's skipped loudly instead, because which processes meet in which
+round is up to the scheduler. A sync that isn't one-shot (inside an `if`, loop, `catch` or closure, in either
+process) makes the count unknown. Such syncs used to be passed over silently, and the barrier certified, so
+a two-iteration loop against a partner's single sync hung clean. They now withhold the certificate out loud,
+as a non-one-shot channel operation always has. A `while (true)` lockstep falls under the same skip: it's
+fine at runtime, but the certificate counts rounds, and that loop has no count.
 
 **Dynamic enrolment** is what c14 actually uses: a target resigns up front, then each round enrols, syncs
 and resigns again, so it takes part only in the rounds it is active for. Once enrolment moves at runtime a

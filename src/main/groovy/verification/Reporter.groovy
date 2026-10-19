@@ -573,6 +573,42 @@ class Reporter {
         "count at runtime, which this certificate does not model)."
     }
 
+    /** Phase 315 — a barrier op that may run zero times or many: the per-process count is unknown. */
+    static String formatBarrierNotOneShot(String methodName, String barrier, String op, int line) {
+        "Skipped barrier certificate for '${barrier}' in ${methodName} (its ${op}() at line ${line} is not " +
+        "one-shot — inside an if / loop / catch / closure). The certificate counts each process's syncs, and " +
+        "every round needs every party, so a sync that may run zero times or many leaves the count unknown: " +
+        "neither the party count nor deadlock-freedom is certified for this method's network."
+    }
+
+    /** Phase 315 — more syncing processes than parties: who meets in which round is decided at runtime. */
+    static String formatBarrierSurplus(String methodName, String barrier, int declared, int syncing) {
+        "Skipped barrier certificate for '${barrier}' in ${methodName} (${syncing} processes sync on it, but it " +
+        "is constructed for ${declared} part${declared == 1 ? 'y' : 'ies'}). A round releases as soon as " +
+        "${declared} have arrived, so which processes meet in which round is decided at runtime, and one may be " +
+        "left waiting with no partner still to come. Neither the party count nor deadlock-freedom is certified " +
+        "for this method's network. Construct the barrier for every process that syncs on it."
+    }
+
+    /** Phase 315 — one-shot arrivals that are not a whole number of rounds: the last round never fills. */
+    static String formatBarrierArrivals(String methodName, String barrier, int parties, int syncing, int arrivals) {
+        "Barrier '${barrier}' in '${methodName}' always leaves a process waiting: it is constructed for ${parties} " +
+        "part${parties == 1 ? 'y' : 'ies'}, and the ${syncing} processes that sync on it arrive ${arrivals} times " +
+        "in all — not a whole number of rounds of ${parties}, so whatever the schedule, the last round never " +
+        "fills. Construct the barrier for every process that syncs on it."
+    }
+
+    /** Phase 315 — exactly N processes with unequal sync counts: the round after the fewest never fills. */
+    static String formatBarrierRoundShort(String methodName, String barrier, int parties, String more, int moreCount,
+                                          String fewer, int fewerCount, int line) {
+        "Barrier '${barrier}' in '${methodName}' can never complete round ${fewerCount + 1}: its ${parties} " +
+        "part${parties == 1 ? 'y is' : 'ies are'} the ${parties} process${parties == 1 ? '' : 'es'} that sync on it, " +
+        "and ${more} syncs ${moreCount} time${moreCount == 1 ? '' : 's'} but ${fewer} only ${fewerCount}. A " +
+        "process that has finished never arrives again (finishing does not deregister it), so the sync at line " +
+        "${line} waits forever. Give every process the same number of syncs, or have the one that finishes " +
+        "early resign with arriveAndDeregister()."
+    }
+
     /** Phase 289 — a burst into a bounded BLOCK mailbox whose handler cannot drain: a wait-for cycle. */
     static String formatActorMailboxDeadlock(String methodName, String actor, int capacity, int sendLine,
                                              int nth, String gate, int waitLine, int feedLine) {
