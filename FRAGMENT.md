@@ -338,7 +338,11 @@ all desugaring to the same machinery (Phases 59 & 63; the for-in's index is synt
 the body or ending a branch of its final `if`/`else` chain — the code after the loop is checked from each `break` as
 well as the natural exit, and the breaking iteration needn't preserve the invariant or decrease the variant); a
 `continue`, a `break` out of a nested loop, and a `return` inside a `.each` closure (which only ends that element)
-skip loudly. A for-in / `.each` carries an auto **bounds
+skip loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
+loop never writes keeps that value at the loop head, in the body and after the loop (`int n = len - str.length()`
+needs no invariant restating it), and an allocation the loop only stores into keeps `x != null`, plus
+`x.length` for an array. A list's size, an array's contents, anything the loop or a closure reassigns, and every
+fact when the loop's writes can't be bounded are not framed. A for-in / `.each` carries an auto **bounds
 invariant** (`0 <= idx <= size`) and a `size - idx` **variant**, so a body asserting a **per-element property**
 (or reading bounded slots) verifies with no hand-written `@Invariant` — only an *accumulating* body needs one,
 and since a statement-level `@Invariant` is a Groovy parse error on a `.each` call, such a body **loud-skips**

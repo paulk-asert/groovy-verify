@@ -45,7 +45,10 @@ import org.codehaus.groovy.ast.expr.ClosureListExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.Expression
+import org.codehaus.groovy.ast.expr.ArrayExpression
+import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.ListExpression
+import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
@@ -4267,20 +4270,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // 1b. Phase 207 — the region between the previous loop and this one is the previous site's
             // segmentAfter (discharged below under ITS inv ∧ ¬guard); nothing extra here.
             // 2. Guard expression: evaluated whenever the invariant holds.
+            // Phase 318 — the prefix facts the loop keeps hold at every point below, alongside the invariant.
+            List<Expression> framed = new ArrayList<Expression>(spec.invariants)
+            framed.addAll(loopFrameFacts(site))
             for (Object s : sitesInExpression(spec.guard)) {
-                dischargeSeeded(s, reqAst, spec.invariants, null, Collections.<Statement>emptyList())
+                dischargeSeeded(s, reqAst, framed, null, Collections.<Statement>emptyList())
             }
             // 3. Body: invariant ∧ guard, threaded through the (straight-line) body. handleAsserts=true so an
             // in-loop `assert` (the masking-fix class-invariant assert after a shared write) is discharged here.
-            List<Expression> bodyAssumed = new ArrayList<Expression>(spec.invariants)
+            List<Expression> bodyAssumed = new ArrayList<Expression>(framed)
             bodyAssumed.add(spec.guard)
             dischargeRegion(spec.body, reqAst, bodyAssumed, null, Collections.<Statement>emptyList(), true)
             // 4. The region after this loop up to the next one (or the method end): inv ∧ ¬guard.
-            dischargeRegion(site.segmentAfter, reqAst, spec.invariants, spec.guard)
+            dischargeRegion(site.segmentAfter, reqAst, framed, spec.guard)
             // 4b. Phase 312 — and from each `break`: an arbitrary iteration (inv ∧ guard), the body up to the break
             // with earlier exits not taken, the break's condition, its lead. The after-loop code must be safe from
             // every state the loop can be left in, not just inv ∧ ¬guard.
-            List<Expression> iterEntry = new ArrayList<Expression>(spec.invariants)
+            List<Expression> iterEntry = new ArrayList<Expression>(framed)
             iterEntry.add(spec.guard)
             for (EarlyExit ex : site.earlyExits) {
                 if (!ex.isBreak) continue
@@ -4543,8 +4549,20 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  field stores), receivers of any method call and reference-typed call arguments (a call may mutate them), and —
      *  for an implicit-this call — every instance field. Over-approximates on purpose; it backs the replay fallback. */
     private Set<String> havocWritesOf(List<Statement> stmts, Encoder enc) {
-        Set<String> names = new LinkedHashSet<String>()
         boolean[] thisCall = [false]
+        Set<String> names = writeTargetsOf(stmts, thisCall)
+        if (thisCall[0] && currentMethod?.declaringClass != null) {
+            for (FieldNode f : currentMethod.declaringClass.fields) if (!f.isStatic()) names.add(f.name)
+        }
+        for (String n : names) havocLocation(enc, n)
+        names
+    }
+
+    /** Everything {@code stmts} may write except instance fields through an implicit-this call ({@code thisCall[0]}
+     *  is set when there is one): assignment targets of every form, call receivers and reference-typed call
+     *  arguments. Shared by the replay fallback and the Phase 318 loop frame. */
+    private static Set<String> writeTargetsOf(List<Statement> stmts, boolean[] thisCall = [false] as boolean[]) {
+        Set<String> names = new LinkedHashSet<String>()
         for (Statement st : stmts) {
             if (st.getNodeMetaData(REPLAY_ASSUME_KEY) != null) continue
             st.visit(new CodeVisitorSupport() {
@@ -4574,10 +4592,6 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             })
         }
-        if (thisCall[0] && currentMethod?.declaringClass != null) {
-            for (FieldNode f : currentMethod.declaringClass.fields) if (!f.isStatic()) names.add(f.name)
-        }
-        for (String n : names) havocLocation(enc, n)
         names
     }
 
@@ -10413,6 +10427,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Statement> originalSuffix
         /** Phase 49 — early-return paths in prefix and suffix, in source order. */
         List<EarlyExit> earlyExits = new ArrayList<EarlyExit>()
+        /** Phase 318 — the prefix facts the loop can't invalidate (computed once by {@code loopFrameFacts}). */
+        List<Expression> frameFacts
     }
 
     /**
@@ -10796,6 +10812,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 64 — the precondition conjuncts the loop body provably can't invalidate, sound to
         // assume in preservation/progress (computed once; establishment/use already see the full reqAst).
         List<Expression> stableReqs = loopStableRequires(reqAst, site)
+        stableReqs = new ArrayList<Expression>(stableReqs)
+        stableReqs.addAll(loopFrameFacts(site))                // Phase 318 — what the prefix set and the loop keeps
         // The `.count(v)` values the loop tracks — from its @Invariant (where a permutation property lives) and
         // the method @Requires/@Ensures — so an inline array store in the body emits the per-store count law
         // (LoopEncoder reads this thread-local; held as AST since each VC translates in its own session).
@@ -10923,6 +10941,134 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Object h = enc.translate(c)
             if (h != null) s.assertExpr(h)
         }
+    }
+
+    // ── Phase 318 — loop frame facts ───────────────────────────────────────────────────────────
+    // Every loop VC but establishment starts from a fresh state: the invariant, the guard and the loop-stable
+    // @Requires (Phase 64). A local the prefix set and the loop never touches lost its value there, so
+    // `int n = len - str.length()` had to be restated as an invariant, and `int[] r = new int[n]` forgot
+    // `r != null` and `r.length == n` because the body stores into it. Dafny frames these for free. Two
+    // kinds of fact, both checked against a sound over-approximation of what the loop and the rest of the
+    // prefix write:
+    //   - VALUE: `x = e` with x never written again and e pure over locals/params none of which is written.
+    //   - SHAPE: `x = new T[len]` / `[]` / `[:]` / `new C(…)` with x never REASSIGNED (content writes are
+    //     fine — an element store or a list mutator changes neither nullness nor, for an array, the length):
+    //     `x != null`, plus `x.length == len` for an array whose length expression is itself stable.
+    // A body whose writes can't be bounded gets no facts (the Phase 64 default), and a local assigned
+    // inside any closure of the method is never framed (a call of the closure could reassign it).
+
+    /** The prefix facts the loop can't invalidate — sound to assume at its head, in its body and after it. */
+    private List<Expression> loopFrameFacts(LoopSite site) {
+        if (site.frameFacts != null) return site.frameFacts
+        List<Expression> out = new ArrayList<Expression>()
+        site.frameFacts = out
+        if (site.prefix == null || site.prefix.isEmpty()) return out
+        Set<String> written = new HashSet<String>()
+        if (!collectWritesStmts(site.spec.body, written) || !collectWritesExpr(site.spec.guard, written)) return out
+        Set<String> scalars = new HashSet<String>(), arrays = new HashSet<String>(), lists = new HashSet<String>()
+        Set<String> contentOnly = new HashSet<String>()
+        if (LoopEncoder.innerFrame(site.spec.body, scalars, arrays, lists)) {
+            contentOnly.addAll(arrays); contentOnly.addAll(lists); contentOnly.removeAll(scalars)
+        }
+        Set<String> reassigned = new HashSet<String>(written)
+        reassigned.removeAll(contentOnly)
+        Set<String> closureAssigned = currentMethod?.code == null ? new HashSet<String>() : closureAssignedNames(currentMethod.code)
+        List<Statement> pre = site.prefix
+        for (int k = 0; k < pre.size(); k++) {
+            Statement st = pre.get(k)
+            if (!(st instanceof ExpressionStatement)) continue
+            Expression e = ((ExpressionStatement) st).expression
+            String x = null; Expression rhs = null
+            if (e instanceof DeclarationExpression && ((DeclarationExpression) e).leftExpression instanceof VariableExpression) {
+                x = ((VariableExpression) ((DeclarationExpression) e).leftExpression).name; rhs = ((DeclarationExpression) e).rightExpression
+            } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN &&
+                       ((BinaryExpression) e).leftExpression instanceof VariableExpression) {
+                x = ((VariableExpression) ((BinaryExpression) e).leftExpression).name; rhs = ((BinaryExpression) e).rightExpression
+            }
+            if (x == null || rhs == null || rhs instanceof EmptyExpression) continue
+            List<Statement> later = pre.subList(k + 1, pre.size())
+            Set<String> laterReassigned = reassignedNames(later)
+            if (closureAssigned.contains(x) || reassigned.contains(x) || laterReassigned.contains(x)) continue
+            Set<String> laterAny = writeTargetsOf(later)
+            Set<String> unstable = new HashSet<String>(written)
+            unstable.addAll(laterAny); unstable.addAll(closureAssigned)
+            unstable.add(x)                         // `m = m + 1` reads the OLD m: as a fact it would be false
+            Expression r = stripCasts(rhs)
+            if (r instanceof ArrayExpression || r instanceof ListExpression || r instanceof MapExpression ||
+                r instanceof ConstructorCallExpression) {
+                out.add(frameCompare(new VariableExpression(x), Types.COMPARE_NOT_EQUAL, ConstantExpression.NULL))
+                List<Expression> dims = r instanceof ArrayExpression ? ((ArrayExpression) r).sizeExpression : null
+                if (dims != null && dims.size() == 1 && frameStable(dims.get(0), unstable)) {
+                    out.add(frameCompare(new PropertyExpression(new VariableExpression(x), 'length'), Types.COMPARE_EQUAL, dims.get(0)))
+                }
+                continue
+            }
+            if (written.contains(x) || laterAny.contains(x) || !frameStable(r, unstable)) continue
+            out.add(frameCompare(new VariableExpression(x), Types.COMPARE_EQUAL, r))
+        }
+        out
+    }
+
+    /** Pure (no writes, only pure-read calls), over parameters and locals only, none of them {@code unstable}. */
+    private static boolean frameStable(Expression e, Set<String> unstable) {
+        Set<String> w = new HashSet<String>()
+        if (!collectWritesExpr(e, w) || !w.isEmpty()) return false
+        boolean[] ok = [true]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression ve) {
+                Variable av = ve.accessedVariable
+                if (!(av instanceof Parameter || av instanceof VariableExpression) || unstable.contains(ve.name)) ok[0] = false
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (isThisRef(pe.objectExpression)) ok[0] = false
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) { ok[0] = false }
+        })
+        ok[0]
+    }
+
+    private static Expression frameCompare(Expression l, int op, Expression r) {
+        BinaryExpression b = new BinaryExpression(l, Token.newSymbol(op, -1, -1), r)
+        b.setSourcePosition(r)
+        b
+    }
+
+    /** Names assigned (`=`, `op=`, `++`/`--`, a declaration) anywhere in {@code stmts}, nested statements included. */
+    private static Set<String> reassignedNames(List<Statement> stmts) {
+        Set<String> out = new HashSet<String>()
+        for (Statement st : stmts) st.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof VariableExpression) {
+                    out.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) out.add(((VariableExpression) de.leftExpression).name)
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name)
+                super.visitPrefixExpression(pe)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name)
+                super.visitPostfixExpression(pe)
+            }
+        })
+        out
+    }
+
+    /** Names assigned inside any closure of {@code code}: a call of the closure may reassign them at any point. */
+    private static Set<String> closureAssignedNames(Statement code) {
+        Set<String> out = new HashSet<String>()
+        code.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) {
+                if (ce.code != null) out.addAll(reassignedNames([ce.code] as List<Statement>))
+            }
+        })
+        out
     }
 
     /** Split a (possibly nested) `a && b && c` into its conjuncts; anything else is a single conjunct. */
@@ -11157,6 +11303,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // abstraction that hides "how many iterations ran"). Mirrors checkPreservation/Progress.
                     s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
                     s.assertExpr(LoopEncoder.tr(enc, site.spec.guard, "guard"))
+                    assumeStableRequires(s, enc, loopFrameFacts(site))   // Phase 318
                 }
                 // Walk the body up to ex.node, interleaving ¬each-prior-in-body-guard with
                 // sym-exec of non-exit body statements:
@@ -11583,6 +11730,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 s.assertExpr(LoopEncoder.conj(enc, s, site.spec.invariants))
                 s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             }
+            assumeStableRequires(s, enc, loopFrameFacts(site))  // Phase 318 — still true after the loop
             Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
             // Phase 78 — a list-literal return (e.g. `return [s, p]`) binds result's contents as a factory,
             // so result.size()/result[k] fold; otherwise the scalar-handle binding + size/array alias.

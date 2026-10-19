@@ -14310,7 +14310,8 @@ through the callee's contract — and that need is what exposed this phase's gap
 block Boyer–Moore majority; list building (`findAll`, list recursion, element facts after `add` — `pruneWindow`
 proves only its size bound); nonlinear arithmetic (the front page's money-splitting `allocate`). Also met on the
 way: a loop that writes a local's *contents* forgets facts the loop can't change (`r != null`, `r.length`, and
-`leftPad`'s `n == len - str.length()`), so ports restate them as invariants where Dafny frames them for free.
+`leftPad`'s `n == len - str.length()`), so ports restate them as invariants where Dafny frames them for free. (Closed by
+Phase 318. `break` was closed by Phase 312.)
 
 **Perf ceilings re-based.** `test` reached 7,093 solver checks against the 7,000 ceiling (distinct VCs 4,239
 of 4,500). The engine change is not the cause: the corpus before this phase measured 6,818 checks in `verify`,
@@ -14669,6 +14670,49 @@ values a method computes are those of its body without the barrier.
 
 Docs: a paragraph after the barrier counts in `examples/kerridge.md` (one linked case; the example count goes to
 41) and a CAPABILITIES row.
+
+---
+
+## Phase 318 — loop frame facts: what the loop can't change, it keeps  *(shipped — engine change)*
+
+Gap 3 of the LemmaScript ports (Phase 309's "also met on the way"). Every loop VC but establishment starts from a
+fresh state: the invariant, the guard and Phase 64's loop-stable `@Requires` conjuncts. A local the prefix set and
+the loop never touches therefore lost its value there. `leftPad` had to restate `n == len - str.length()`;
+`int[] r = new int[n]` filled by `r[i] = 0` forgot `r.length == n` (a spurious out-of-bounds and a failed
+postcondition); `List out = []` built by `add` got a spurious null-dereference on `out.add`; and `int n =
+a.length` didn't bound `a[i]` in the body. Parameters already kept their facts (Phase 64), but locals didn't. Dafny
+frames all of these for free.
+
+- **The facts** (`loopFrameFacts`, computed once per site):
+  - **Value:** `x == e` for a top-level prefix assignment `x = e`. Neither `x` nor any name in `e` may be written
+    by the loop (its guard included) or by the rest of the prefix, or assigned in any closure of the method. `e`
+    must be pure (`collectWritesExpr` finds no write) and read only parameters and locals, never fields.
+  - **Shape:** for `x = new T[len]`, `[]`, `[:]` or `new C(…)` that the loop doesn't reassign but may write
+    into: `x != null`, and for an array `x.length == len` when `len` is itself stable. Content writes are told
+    apart by `LoopEncoder.innerFrame` (arrays: element stores; lists: mutators), intersected with the
+    conservative `collectWritesStmts`, so a write hidden in an assignment's right-hand side still counts.
+  - **No facts at all** when the loop's writes can't be bounded: the Phase 64 default.
+- **Where they're assumed:** with the stable `@Requires` in preservation, progress and the for-in per-element check;
+  after the loop in the use check; at an in-body early exit; and in the implicit-obligation pass (guard, body,
+  after the loop, at each `break`).
+- **A trap, caught by a probe before it shipped:** `int m = k; m = m + 1` would have produced the fact
+  `m == m + 1`. The right-hand side reads the *old* `m`, so as a fact it's false and proves everything. The
+  assigned name is excluded from its own right-hand side's stable set.
+- **Boundary:** a local assigned twice in the prefix isn't framed, because neither assignment survives the
+  other, so `m == k + 1` isn't proved. Composing successive prefix assignments would close that. Facts come from
+  top-level prefix statements only.
+- **The LemmaScript ports are verbatim again.** `leftPad` proves with exactly the original's four invariants,
+  and `pruneWindow`'s invariant drops its `out != null`.
+
+**Shipped tests (group `P318 loop frame`, 14 cases):**
+- proved: leftPad's shortfall, a local copy of a parameter, a filled array's length and nullness, a list built by
+  `add`, a local array length bounding the body's index, and the Phase 64 parameter case;
+- refuted, the soundness half: a local the loop reassigns, a local whose source the loop writes, a
+  self-referencing prefix update, an array the loop reassigns, a list's size, an array length whose source the
+  loop writes, and an array's contents;
+- the boundary: a local updated twice before the loop.
+
+Docs: `examples/lemmascript.md` (leftPad's prose and both ports), FRAGMENT's loop paragraph, and a CAPABILITIES row.
 
 ---
 

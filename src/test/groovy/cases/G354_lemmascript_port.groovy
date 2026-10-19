@@ -182,8 +182,8 @@ class G354_lemmascript_port {
                             return arr
                         }
                     }''')],
-        // leftPad.ts — the npm left-pad, as LemmaScript adapts it. One invariant more than the original: `n` is fixed
-        // before the loop, but the verifier needs it restated to keep it across iterations.
+        // leftPad.ts — the npm left-pad, as LemmaScript adapts it, with exactly the original's invariants: `n` is fixed
+        // before the loop, and since Phase 318 the loop keeps that without it being restated.
         [group: 'LemmaScript port', name: 'leftPad', ok: true,
          src: tc('''class C {
                         /** Pads str on the left with ch until it is len characters long. */
@@ -194,7 +194,7 @@ class G354_lemmascript_port {
                             String result = str
                             int n = len - str.length()
                             int i = 0
-                            @Invariant({ i >= 0 && n == len - str.length() && result.length() == str.length() + i })
+                            @Invariant({ result.length() == str.length() + i && i >= 0 })
                             @Invariant({ n > 0 ==> i <= n })
                             @Invariant({ n <= 0 ==> result == str })
                             @Decreases({ n - i })
@@ -292,7 +292,7 @@ class G354_lemmascript_port {
                         static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
                             List<Integer> out = []
                             int i = 0
-                            @Invariant({ 0 <= i && i <= log.size() && out != null && out.size() <= i })
+                            @Invariant({ 0 <= i && i <= log.size() && out.size() <= i })
                             @Decreases({ log.size() - i })
                             while (i < log.size()) {
                                 if (log[i] > now - w) out.add(log[i])

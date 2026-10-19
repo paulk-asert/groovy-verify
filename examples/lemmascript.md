@@ -132,7 +132,7 @@ the size bound proves:
 static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
     List<Integer> out = []
     int i = 0
-    @Invariant({ 0 <= i && i <= log.size() && out != null && out.size() <= i })
+    @Invariant({ 0 <= i && i <= log.size() && out.size() <= i })
     @Decreases({ log.size() - i })
     while (i < log.size()) {
         if (log[i] > now - w) out.add(log[i])
@@ -326,9 +326,9 @@ function leftPad(str: string, len: number, ch: string): string {
 }
 ```
 
-The Groovy names the shortfall `n` rather than reusing the parameter. It also needs one invariant the original
-doesn't: `n == len - str.length()`. `n` never changes inside the loop, but the verifier forgets a local's
-relationship to values outside the loop unless an invariant restates it, a gap Dafny doesn't have.
+The Groovy names the shortfall `n` rather than reusing the parameter, because a contract reads a parameter's
+current value. Its invariants are exactly the original's. `n` never changes inside the loop, so its value from
+before the loop, `len - str.length()`, holds throughout without being restated, as it does in Dafny.
 
 <!-- doclint:case lemmascript-port/leftpad -->
 ```groovy
@@ -340,7 +340,7 @@ static String leftPad(String str, int len, String ch) {
     String result = str
     int n = len - str.length()
     int i = 0
-    @Invariant({ i >= 0 && n == len - str.length() && result.length() == str.length() + i })
+    @Invariant({ result.length() == str.length() + i && i >= 0 })
     @Invariant({ n > 0 ==> i <= n })
     @Invariant({ n <= 0 ==> result == str })
     @Decreases({ n - i })
