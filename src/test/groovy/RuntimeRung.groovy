@@ -446,6 +446,28 @@ class RuntimeRung {
         if ('false' == v) cfg.optimizationOptions['indy'] = false
     }
 
+    /** The codegen the rung's compiles ACTUALLY produce, read off the bytecode rather than the knob: a classic
+     *  call-site class carries a synthetic {@code $getCallSiteArray}, an indy one does not. Printed in the header so
+     *  a classic sweep is self-evidencing (two identical reports prove nothing if the knob never reached the fork),
+     *  and fatal when it disagrees with what was asked for. */
+    static String codegenProbe() {
+        def cfg = new org.codehaus.groovy.control.CompilerConfiguration()
+        applyIndyChoice(cfg)
+        def gcl = new GroovyClassLoader(RuntimeRung.classLoader, cfg)
+        try {
+            Class k = gcl.parseClass('class CodegenProbe { def f(x) { x.toString() } }', 'CodegenProbe.groovy')
+            boolean classic = k.declaredMethods.any { it.name == '$getCallSiteArray' }
+            boolean wantClassic = cfg.optimizationOptions['indy'] == false
+            if (classic != wantClassic) {
+                System.err.println "FATAL: asked for ${wantClassic ? 'classic' : 'indy'} codegen but the bytecode is ${classic ? 'classic' : 'indy'} — aborting."
+                System.exit(2)
+            }
+            classic ? 'classic call sites (VERIFY_RUNG_INDY=false)' : 'invokedynamic (default)'
+        } finally {
+            try { gcl.close() } catch (ignored) {}
+        }
+    }
+
     static GroovyClassLoader offLoader() {
         def cfg = new org.codehaus.groovy.control.CompilerConfiguration()
         applyIndyChoice(cfg)
@@ -673,6 +695,7 @@ class RuntimeRung {
 
     static void main(String[] args) {
         println '── Runtime rung (Slice 2 — Tier A differential soundness oracle, with corroboration) ' + ('─' * 4)
+        println "codegen: ${codegenProbe()}"
         selfTest()
         corroborateSelfTest()
         println 'self-test OK: contract assertions fire at runtime, and corroboration distinguishes confirmed vs quirk.\n'

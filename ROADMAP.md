@@ -14245,6 +14245,14 @@ like a linter (exit 0 when everything proves, 1 on a refutation), and the short 
 (checked in a real `compileGroovy`). One rough edge: the one-line join puts no separator before each label
 (`…return path ensured: …`).
 
+**Classic-codegen sweep on 6.0.0** (`VERIFY_RUNG_INDY=false`, fresh daemon per run): 674/681 clean, the same 2
+allowlisted divergences, report byte-identical to the indy run. The first attempt raised a gap: the report never
+said which codegen it ran, so a matching pair could not rule out the knob failing to reach the forked rung JVM.
+`RuntimeRung.codegenProbe()` now compiles a one-method class with the rung's own configuration, reads the mode off
+the bytecode (classic call sites leave a synthetic `$getCallSiteArray`; indy does not), prints it as the header's
+`codegen:` line, and exits 2 when it disagrees with what was asked for. Re-run with the probe: `invokedynamic
+(default)` and `classic call sites (VERIFY_RUNG_INDY=false)`, reports otherwise identical.
+
 ---
 
 ## Definition of done, per increment
