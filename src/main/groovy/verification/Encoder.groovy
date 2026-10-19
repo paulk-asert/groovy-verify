@@ -2855,6 +2855,7 @@ class Encoder implements TheoryApi {
         // Ranges & their spread/toList copies first: `[*4..8]` is a ListExpression too, so the generic
         // list-factory below would otherwise count the single spread element as size 1.
         if (tryRecordRangeAssign(name, rhs)) return true
+        if (tryRecordFindAllAssign(name, rhs)) return true                // Phase 320
         FactoryContainer f = factoryContainerFor(rhs)
         if (f == null) return tryRecordSizedArrayAssign(name, rhs)
         localFactories.put(name, f)
@@ -2871,6 +2872,60 @@ class Encoder implements TheoryApi {
             session.assertExpr(session.eq(sizeOf(name), session.intLit((long) f.entryCount())))
         }
         true
+    }
+
+    /**
+     * Phase 320 — {@code src.findAll { t -> p(t) }} (gap 5 of the LemmaScript ports) as a fresh list bound to
+     * {@code name}: non-null, {@code 0 <= size <= src.size()}, and every element both satisfies {@code p} and is
+     * drawn from {@code src} — {@code r[k] == src[idx(k)]} through a skolem index function, so membership costs a
+     * single universal rather than a nested {@code ∀∃}. That is all of findAll's contract a claim like
+     * {@code result.every { … }} or a size bound needs. Not modelled, so not claimable: which elements are kept
+     * (completeness), their order, and duplicates. Int-element sources and a single-expression predicate the
+     * encoder can translate only; anything else returns false and stays the loud skip it was.
+     */
+    private boolean tryRecordFindAllAssign(String name, Expression rhs) {
+        Expression e = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (!(e instanceof MethodCallExpression) || ((MethodCallExpression) e).methodAsString != 'findAll') return false
+        MethodCallExpression m = (MethodCallExpression) e
+        String src = receiverArrayName(m.objectExpression)
+        if (src == null) return false
+        List<Expression> args = m.arguments instanceof TupleExpression ? ((TupleExpression) m.arguments).expressions : null
+        if (args == null || args.size() != 1 || !(args.get(0) instanceof ClosureExpression)) return false
+        ClosureExpression cl = (ClosureExpression) args.get(0)
+        if (cl.parameters != null && cl.parameters.length > 1) return false
+        String param = (cl.parameters != null && cl.parameters.length == 1) ? cl.parameters[0].name : 'it'
+        Expression body = null
+        if (cl.code instanceof BlockStatement && ((BlockStatement) cl.code).statements.size() == 1) {
+            Statement st = ((BlockStatement) cl.code).statements.get(0)
+            if (st instanceof ExpressionStatement) body = ((ExpressionStatement) st).expression
+            else if (st instanceof ReturnStatement) body = ((ReturnStatement) st).expression
+        }
+        if (body == null || arraySortsFor(src)[1] != session.intSort()) return false
+        try {
+            Object srcArr = arrayFor(src)
+            Object srcSize = sizeOf(src)
+            int n = quantCounter++
+            Object arr = session.arrayVar(name + '$findAll' + n)
+            Object size = session.intVar(name + '$findAll$size' + n)
+            Object zero = session.intLit(0L)
+            Object k = session.boundIntVar('fa$k' + n)
+            Object elem = session.select(arr, k)
+            Object pk = translateWith(body, [(param): elem] as Map<String, Object>)
+            if (pk == null) return false
+            Object idx = session.applyUF('findAllIdx$' + n, [k], session.intSort())
+            Object kept = session.and([pk, session.le(zero, idx), session.lt(idx, srcSize),
+                                       session.eq(elem, session.select(srcArr, idx))])
+            session.assertExpr(session.and([session.ge(size, zero), session.le(size, srcSize)]))
+            session.assertExpr(session.forall([k],
+                session.implies(session.and([session.le(zero, k), session.lt(k, size)]), kept), [elem]))
+            localFactories.remove(name)
+            bindArray(name, arr)
+            bindSize(name, size)
+            session.assertExpr(session.not(nullityOf(name)))
+            return true
+        } catch (UnsupportedConstructException ignored) {
+            return false
+        }
     }
 
     /**

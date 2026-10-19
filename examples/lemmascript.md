@@ -122,19 +122,21 @@ export function pruneWindow(log: number[], now: number, W: number): number[] {
 }
 ```
 
-This one only partly ports. Recursing over `log.drop(1)` and rebuilding with `[log[0]] + rest` is outside the
-verifier's fragment, and so is the idiomatic `log.findAll { it > now - w }`. As a loop that appends with `add`,
-the size bound proves:
+Both postconditions port. LemmaScript recurses over `log.slice(1)` and rebuilds with `[log[0], ...rest]`; as a
+loop that appends with `add`, the Groovy keeps the same contract, and an element invariant carries the window
+bound:
 
-<!-- doclint:case lemmascript-port/prunewindow-size-bound -->
+<!-- doclint:case lemmascript-port/prunewindow -->
 ```groovy
 /** Keeps only the requests still inside the sliding time window. */
-@Requires({ log != null })
+@Requires({ log != null && log.every { int t -> t <= now } })
 @Ensures({ result.size() <= log.size() })
+@Ensures({ result.every { int t -> now - w < t && t <= now } })
 static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
     List<Integer> out = []
     int i = 0
     @Invariant({ 0 <= i && i <= log.size() && out.size() <= i })
+    @Invariant({ out.every { int t -> now - w < t && t <= now } })
     @Decreases({ log.size() - i })
     while (i < log.size()) {
         if (log[i] > now - w) out.add(log[i])
@@ -144,8 +146,27 @@ static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
 }
 ```
 
-The second postcondition, that every kept entry is inside the window, needs facts about the elements `add`
-appended, and list-building loops only track the size today.
+The lower bound `now - w < t` comes from the `if`. The upper bound comes from the precondition, and until Phase
+320 it couldn't reach the loop: the `List<Integer> out = []` before the loop made the verifier give up on
+bounding what the loop writes, so it assumed none of the precondition inside it. And the idiomatic one-liner
+proves too:
+
+<!-- doclint:case p320-list-building/prunewindow-by-findall -->
+```groovy
+/** Keeps only the requests still inside the sliding time window. */
+@Requires({ log != null && log.every { int t -> t <= now } })
+@Ensures({ result.size() <= log.size() })
+@Ensures({ result.every { int t -> now - w < t && t <= now } })
+static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
+    return log.findAll { int t -> t > now - w }
+}
+```
+
+`findAll` is modelled as a list no longer than its source whose every element passes the predicate and comes
+from the source. That's what these claims need. It isn't modelled to keep *every* passing element, or to keep
+their order, so a claim that depends on either doesn't prove. The recursive original is still out of reach:
+`log.drop(1)` as a list value, `[x] + rest`, and a list returned by a recursive call are each outside the
+fragment.
 
 ### Splitting money
 
@@ -605,8 +626,9 @@ These examples hit the edges of what groovy-verify proves today:
   modelled by different functions with no bridge between them, so a loop that maintains the prefix form can't
   conclude the whole-array form (the [majority vote](#majority-vote) states its postconditions as prefix counts
   over the full length, which is what `occOf(arr, x, arr.length)` is anyway).
-- **Building lists.** `findAll`, recursion that rebuilds a list, and element facts about values a loop appended
-  are all outside the fragment, which is why `pruneWindow` above proves only its size bound.
+- **Recursion that rebuilds a list.** LemmaScript's `pruneWindow` recurses over `log.slice(1)` and rebuilds with
+  `[log[0], ...rest]`. `log.drop(1)` as a list value, `[x] + rest`, and a list a recursive call returns are each
+  outside the fragment, so the port is a loop (or `findAll`) instead.
 - **Nonlinear arithmetic.** The money-splitting `allocate`, and the largest-remainder allocation behind the
   bill-splitting case studies, multiply and divide variables by each other.
 

@@ -282,17 +282,20 @@ class G354_lemmascript_port {
                         @Ensures({ (0..<scores.length).every { scores[it] <= result } })
                         static int highScore(int[] scores) { scores.max() }
                     }''')],
-        // pruneWindow (the front page's core.verified.ts), as a loop. The size bound proves; the window bound on
-        // the elements needs element facts about what `add` appended, which list-building loops don't carry yet.
-        [group: 'LemmaScript port', name: 'pruneWindow size bound', ok: true,
+        // pruneWindow (the front page's core.verified.ts), as a loop, with both of LemmaScript's postconditions. The
+        // window bound needs the precondition's `t <= now` inside the loop, which Phase 320 restored (a `[]` prefix
+        // used to drop every loop-stable @Requires).
+        [group: 'LemmaScript port', name: 'pruneWindow', ok: true,
          src: tc('''class C {
                         /** Keeps only the requests still inside the sliding time window. */
-                        @Requires({ log != null })
+                        @Requires({ log != null && log.every { int t -> t <= now } })
                         @Ensures({ result.size() <= log.size() })
+                        @Ensures({ result.every { int t -> now - w < t && t <= now } })
                         static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
                             List<Integer> out = []
                             int i = 0
                             @Invariant({ 0 <= i && i <= log.size() && out.size() <= i })
+                            @Invariant({ out.every { int t -> now - w < t && t <= now } })
                             @Decreases({ log.size() - i })
                             while (i < log.size()) {
                                 if (log[i] > now - w) out.add(log[i])

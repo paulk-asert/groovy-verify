@@ -48,6 +48,7 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ArrayExpression
 import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.ListExpression
+import org.codehaus.groovy.ast.expr.MapEntryExpression
 import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
@@ -11201,6 +11202,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             return collectWritesExpr(te.booleanExpression, ws) &&
                    collectWritesExpr(te.trueExpression, ws) &&
                    collectWritesExpr(te.falseExpression, ws)
+        }
+        // Phase 320 — a list / map / array literal writes nothing of its own: its effects are its elements'. These
+        // used to bail as "unknown", so a prefix like `List out = []` dropped every loop-stable @Requires.
+        if (e instanceof ListExpression) {
+            for (Expression x : ((ListExpression) e).expressions) if (!collectWritesExpr(x, ws)) return false
+            return true
+        }
+        if (e instanceof MapExpression) {
+            for (MapEntryExpression me : ((MapExpression) e).mapEntryExpressions) {
+                if (!collectWritesExpr(me.keyExpression, ws) || !collectWritesExpr(me.valueExpression, ws)) return false
+            }
+            return true
+        }
+        if (e instanceof ArrayExpression) {
+            ArrayExpression ae = (ArrayExpression) e
+            for (Expression x : (ae.sizeExpression ?: [])) if (!collectWritesExpr(x, ws)) return false
+            for (Expression x : (ae.expressions ?: [])) if (!collectWritesExpr(x, ws)) return false
+            return true
         }
         if (e instanceof PostfixExpression) return recordTarget(((PostfixExpression) e).expression, ws)
         if (e instanceof PrefixExpression)  return recordTarget(((PrefixExpression) e).expression, ws)

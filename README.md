@@ -199,7 +199,7 @@ you write:
   `char[]`).
 - **Collections & data** — arrays and lists (read, update, bounds), finite `Set` and `Map` (membership, mutation,
   cardinality, the full set algebra `∪ ∩ − ^`), `Tuple` / `TupleN` and Groovy's map-as-named-tuple returns,
-  immutable factories, and a `.limit(n)` / `.take(n)`-bounded `every` / `any` over an infinite `Stream.iterate`
+  immutable factories, `findAll` (its elements pass the filter and come from the source), and a `.limit(n)` / `.take(n)`-bounded `every` / `any` over an infinite `Stream.iterate`
   (proven by induction over the prefix) — all reasoned over with bounded **universal *and* existential**
   quantifiers that nest. *Out:* `.keySet()` / `.values()` projection, nested-set mutation, and that same infinite stream
   `every` / `any` with no `.limit` (it never returns).

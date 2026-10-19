@@ -165,6 +165,10 @@ a coverage metric. In expressions the fragment is:
 - list element nullability: `xs[i].method()` / `xs.get(i).method()` is an implicit NPE obligation
   against a per-element nullity oracle, discharged by `@Requires({ xs[i] != null })` or an
   `if` guard;
+- `src.findAll { t -> p(t) }` over an `Int`-element list or array (Phase 320): a fresh non-null list with
+  `0 <= size <= src.size()` whose every element passes `p` and is drawn from `src`, so `result.every { … }`
+  claims and size bounds prove. Not modelled: completeness (every passing element is kept), order and
+  duplicates, so a claim needing them doesn't prove;
 - immutable container factories — `List.of(args)` / `Set.of(args)` / `Map.of(k,v,…)` and Groovy
   literals `[a, b, c]` / `[k: v]` (and `as Set` casts) peephole-fold to ground SMT terms on
   `.size()`, `.contains` / `containsKey` / `containsValue` / `in`, and `.get(literal_i)` —

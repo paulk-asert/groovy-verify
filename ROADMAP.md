@@ -14763,6 +14763,42 @@ reworded in FRAGMENT, CAPABILITIES, `examples/dafny.md` and the P207 group descr
 
 ---
 
+## Phase 320 — list building: element facts, findAll, and a write-set bail  *(shipped — engine change)*
+
+Gap 5 of the LemmaScript ports, recorded as "`findAll`, list recursion, element facts after `add`". Probing showed
+element facts after `add` already worked: `(0..<out.size()).every { k -> out[k] > 0 }` and the exact
+`out[k] == 2 * xs[k]` both proved. What failed `pruneWindow`'s second postcondition was something else.
+
+- **The write-set bail.** The window bound needs the precondition's `t <= now` inside the loop. Phase 64 assumes
+  the `@Requires` conjuncts a loop can't invalidate, but its write-set walk (`collectWritesExpr`) treated a list,
+  map or array literal as an "unknown expression kind" and bailed to "unbounded writes". So a prefix as ordinary
+  as `List<Integer> out = []` dropped *every* loop-stable precondition from preservation and progress. That was
+  never unsound, only weaker than it should have been, which is why no case caught it. A literal now writes
+  exactly what its elements write. `pruneWindow`'s LemmaScript port carries both postconditions (case renamed
+  from "pruneWindow size bound" to "pruneWindow").
+- **`findAll`.** `Encoder.tryRecordFindAllAssign`, hooked into `tryRecordFactoryAssign` (so declarations, loop-body
+  assignments and returns all see it), binds `src.findAll { t -> p(t) }` to a fresh non-null list with
+  `0 <= size <= src.size()`. Every element passes `p` and is drawn from `src`, through a skolem index function
+  (`r[k] == src[idx(k)]`), so membership is one universal, not a nested `∀∃`. Membership is what lets `pruneWindow`
+  by `findAll` prove its upper bound from the precondition. Not modelled: completeness, order, duplicates. Int
+  elements and a single-expression predicate only; anything else stays the loud skip.
+- **Still out: recursion that rebuilds a list.** LemmaScript's original `pruneWindow` recurses on `log.slice(1)` and
+  rebuilds with `[log[0], ...rest]`. That needs three things this phase didn't add: `drop(n)` as a list value,
+  `[x] + rest` concatenation, and a list-valued call result (bound to a local, passed as an argument). Each skips
+  loudly today.
+
+**Shipped tests (group `P320 list building`, 12 cases):**
+- the literal-prefix fix after a list, an array and a map literal;
+- a filter loop's and a map loop's element facts;
+- `findAll`: a basic claim, `pruneWindow`, and an indexed local;
+- the soundness half: completeness, order, a stronger predicate, a later `add`, and a possibly-null receiver.
+
+Docs: the `pruneWindow` section of `examples/lemmascript.md` (both postconditions, plus the `findAll` one-liner,
+two linked cases), its "Not ported yet" narrowed to the recursion, FRAGMENT and README collections, and a
+CAPABILITIES row.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:
