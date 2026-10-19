@@ -59,7 +59,7 @@ tasks.named('rat') {
 }
 
 // Everything this project needs from Groovy 6 has been on Central since the 6.0.0-beta-1 release
-// (the build tracks 6.0.0-RC-3, staged for its release vote — see the temporary repo below): the
+// (the build tracks the 6.0.0 GA release): the
 // 6.0.0-alpha-2 surface — static @Ensures, method-level @Decreases (GROOVY-12060), nested closures in
 // contract conditions including @Ensures (GROOVY-12059 — enables the `any` / membership existential
 // surface), the native primitive `int[]` GDK `isSorted()` overload the sortedness idiom
@@ -76,8 +76,6 @@ tasks.named('rat') {
 // snapshot repo below; if a freshly-published snapshot looks stale, `--refresh-dependencies`.)
 repositories {
     mavenCentral()
-    // TEMPORARY: the 6.0.0-RC-3 release-vote staging repo — remove once RC-3 reaches Central
-    maven { url = 'https://repository.apache.org/content/repositories/orgapachegroovy-1123' }
     // maven { url = 'https://repository.apache.org/content/repositories/snapshots' }   // for 6.0.0-SNAPSHOT testing
 }
 

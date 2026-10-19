@@ -21,8 +21,7 @@ own build. For *what* it proves and *why*, see [README.md](README.md).
 
 ## Building & testing
 
-Built using JDK 25 against `org.apache.groovy:6.0.0-RC-3` (from its release-vote staging repository until
-it reaches Maven Central — the temporary `maven { url … }` entry in each build file); the published
+Built using JDK 25 against `org.apache.groovy:6.0.0` (the GA release), from Maven Central; the published
 artifact targets **Java 17 bytecode** (Groovy 6's own floor), so consumers need JDK 17+, not 25 — the
 17 floor is held honest by a from-jar consumer smoke compile on a real JDK 17, since groovyc has no
 `--release`-style API fencing to catch a stray newer-JDK call at build time. That smoke is CI-enforced
@@ -255,8 +254,8 @@ declare it in a compile-only scope:
 
 ```groovy
 dependencies {
-    implementation "org.apache.groovy:groovy:6.0.0-RC-3"            // you supply Groovy …
-    implementation "org.apache.groovy:groovy-contracts:6.0.0-RC-3"  // … and groovy-contracts
+    implementation "org.apache.groovy:groovy:6.0.0"                 // you supply Groovy …
+    implementation "org.apache.groovy:groovy-contracts:6.0.0"       // … and groovy-contracts
     compileOnly   "io.github.paulk-asert:groovy-verify:0.1.0"         // Maven: <scope>provided</scope>
 }
 ```

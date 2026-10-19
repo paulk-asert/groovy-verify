@@ -13926,8 +13926,20 @@ trigger that would change that is a slim-core release or a third-party pack auth
 `gradle.properties` moves `groovyVersion` from RC-2 to `org.apache.groovy:6.0.0-RC-3`, resolved from its
 release-vote staging repository (`orgapachegroovy-1123` — the TEMPORARY `maven { url … }` entry in
 `build.gradle`, `examples-dsl/build.gradle` and `ci/consumer-smoke/build.gradle`, repointed from RC-2's
-now-deleted `…1122`). Drop it once RC-3 is on Central. Built-against wording refreshed in README, BUILD.md,
-the `build.gradle` comment and the consumer-smoke fallback.
+now-deleted `…1122`). Built-against wording refreshed in README, BUILD.md, the `build.gradle` comment and the
+consumer-smoke fallback.
+
+**RC-3 has since been RELEASED, and the temporary entries are gone** — all six modules the build uses
+(`groovy`, `groovy-contracts`, `groovy-test`, `groovy-typecheckers`, `groovy-macro`, `groovy-callsite`) answer
+from Central, and the staging repository `…1123` was already deleted, so the entries were by then pointing at
+nothing rather than merely being redundant. That is the second vote repo in a row to be removed only after it
+had gone (RC-2's `…1122` was found 404 as well): a staging entry is dead the moment the vote closes, not when
+someone remembers it. The build now resolves from `mavenCentral()` alone, verified with
+`--refresh-dependencies` rather than against a warm cache.
+
+Gates re-run on the released artifacts, from Central: suite 2149/2149; `check` green end to end (2207 tests,
+runtime rung 674/681 clean with the same 2 allowlisted spec-throw divergences, 0 needing review); docLint 0
+drift; all four TLA+ models "No error has been found"; `frayCheck` green; nuscr 5 protocols ok.
 
 **Unlike RC-2, this one needed code**, and finding out why took three layers.
 
@@ -14206,6 +14218,32 @@ exhaustive model, Fray exhibiting the hang). The actor mailbox is argued twice, 
 property can actually be stated. Lincheck remains the weak fit for both and is recorded as such rather than
 attempted: an actor is serialized by construction so linearizability is close to definitional, and
 Lincheck-ing `AsyncChannel` would test Groovy's library rather than these proofs.
+
+---
+
+## Housekeeping — Groovy 6.0.0  *(shipped)*
+
+`gradle.properties` moves `groovyVersion` from RC-3 to the GA release, `org.apache.groovy:6.0.0`. All six modules
+the build uses (`groovy`, `groovy-contracts`, `groovy-test`, `groovy-typecheckers`, `groovy-macro`,
+`groovy-callsite`) were on Central at once, so this time there was no staging repository to add and later remove.
+Built-against wording refreshed in README, BUILD.md (including the consumer dependency snippet), the
+`build.gradle` comment and the consumer-smoke fallback. No code changes.
+
+Gates on the released artifacts, resolved with `--refresh-dependencies`, all green: suite 2149/2149; `check` green
+end to end (2207 tests, 0 failures; runtime rung 674/681 clean with the same 2 allowlisted spec-throw divergences,
+0 needing review; docLint clean); all four TLA+ models "No error has been found"; `frayCheck` green; nuscr 5
+protocols ok; the CI consumer-smoke step, run locally, against Groovy 6.0.0 on the JDK 17 floor.
+
+**Two 6.0.0 compiler features were assessed and left out of the build.** `groovyc --check` stops at
+`CLASS_GENERATION`, so every check runs but no class files are written. `--error-format=short`
+(`CompilerConfiguration.errorFormat`, GROOVY-12312) prints one `file:line:column: severity: message` line per
+diagnostic. Neither changes anything here. The harness compiles in memory and reads each error with `toString()`,
+while the format is applied only when `ErrorCollector.write` prints the whole report, so the `@ line L, column C.`
+anchors the cases check for are unaffected. Both do work for consumers without changes: `--check` runs verification
+like a linter (exit 0 when everything proves, 1 on a refutation), and the short format keeps the counterexample and
+`fails on:` call on its single line. In Gradle the short format is set through `groovyOptions.configurationScript`
+(checked in a real `compileGroovy`). One rough edge: the one-line join puts no separator before each label
+(`…return path ensured: …`).
 
 ---
 
