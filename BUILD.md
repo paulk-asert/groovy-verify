@@ -177,11 +177,12 @@ imperfect (it reports `result >= a && result >= b` violated for a `max` that ret
 **Slice 2 corroborates**: on a postcondition violation it gets the raw return value from a contracts-*disabled*
 compile and re-evaluates the spec independently — `false` is a **confirmed** divergence, `true` is a
 groovy-contracts quirk (verifier correct, *recovered* as validated). A confirmed divergence not in the
-`KNOWN_DIVERGENCES` allowlist **fails the run**; the catalogue currently holds three, each a genuine
-verifier-vs-runtime difference, not a logic bug: the `a[i] = i++` / `src[++i]` subscript **evaluation order**
-(Groovy evaluates the index *after* the increment; the verifier models Java's snapshot-before), and Groovy's
-`[].sum()` being **null not 0** at the empty edge (the verifier models the empty sum as 0). A non-empty
-`a.max()`/`a.min()` well-definedness gap is still flagged for review.
+`KNOWN_DIVERGENCES` allowlist **fails the run**. The catalogue is now **empty**. It once held three genuine
+verifier-vs-runtime differences, none of them logic bugs. Two were the `a[i] = i++` / `src[++i]` subscript
+**evaluation order**, which cleared when GROOVY-12097 made Groovy evaluate the LHS subscript before the RHS
+increment, the JLS order the verifier models. The third was `[].sum()` being **null, not 0** at the empty
+edge, which the verifier now refuses itself. A non-empty `a.max()`/`a.min()` well-definedness gap is still
+flagged for review.
 
 ## Keeping the docs in sync
 

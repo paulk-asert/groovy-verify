@@ -408,7 +408,12 @@ structural rules are checked on top, not assumed: task/window interference (240)
 channel end, `BroadcastChannel.subscribe()` the sanctioned fan-out (241); Bean Validation element bounds
 as the channel's contract (242); wait-for **well-foundedness** — one-shot networks as a DAG, looping
 networks per iteration index — with a cycle, an unsatisfiable receive, or an iteration over a
-never-closed channel a named error (243, 245, 255); `@Guarantee` proved (244); starvation hazards and
+never-closed channel a named error (243, 245, 255), and the close an iteration waits for required to be
+*reached*: a producer that can throw before it withholds the certificate unless a `finally` or a twinned
+`catch` closes it too (313); `java.util.concurrent.Phaser` barriers with a literal party count, each process's
+sync count checked against every other's (a round that can never fill is refuted, a sync in an `if` / loop /
+closure skips loudly, and a literal-bounded loop is counted by unrolling), with the enroll / resign discipline
+of dynamic enrolment (277, 278, 315, 316), and a barrier transparent to the value model (317); `@Guarantee` proved (244); starvation hazards and
 per-client liveness decided by the selection policy's own arithmetic, quantitative bounds as claims
 (`@ServedWithin`, `@DeliveredWithin` — head-of-line service, queueing loudly not claimed); and a
 `@Protocol` session type (a Groovy closure, or text) projected onto each role and enforced by
@@ -428,7 +433,9 @@ field of the class (initialiser, constructor, `static` block). *Out:* the payloa
 literal label, an actor whose behaviours are not all visible (an opaque `become` target, a context handed
 on), and anything that would need two competing definitions of the same actor resolved by guessing.
 
-*Out, and said so:* queueing delay (arrival rates), and the scheduler, the JMM, and atomicity, which stay
-with the runtime rungs in [CONCURRENCY.md](CONCURRENCY.md). (Racing arbitration was on this list while
+*Out, and said so:* queueing delay (arrival rates); a barrier sync, channel op or drain inside a
+parallel-collection callback (`eachParallel` and the other `*Parallel` methods, or a `@Parallel` loop), whose
+callbacks are pool tasks rather than processes, so weak fairness doesn't hold (314, GROOVY-12457); and the
+scheduler, the JMM, and atomicity, which stay with the runtime rungs in [CONCURRENCY.md](CONCURRENCY.md). (Racing arbitration was on this list while
 output guards were only proposed upstream; GROOVY-12323 landed the arbitrated select, so a racing mixed
 choice is now certified where the runtime carries it and refused with the exact missing piece otherwise.)

@@ -123,8 +123,8 @@ the engine proves end-to-end, not "point it at anything":
   rely/guarantee concurrency, a mutual-exclusion protocol proved safe **and live** (Leino's ticket lock — the
   fair-schedule "a hungry process eventually enters", at any process count, with each round's progress derived from the transition relation), **process-network
   certification** over Groovy 6's `groovy.concurrent` channels (one live process per channel end, the element
-  type as the channel's contract, deadlock-freedom proved as well-foundedness of the wait-for order — a cycle
-  or a forgotten `close()` is a named compile error), **actor protocol conformance** (an actor's `become`
+  type as the channel's contract, deadlock-freedom proved as well-foundedness of the wait-for order — a cycle,
+  a forgotten `close()` or a barrier round that can never fill is a named compile error), **actor protocol conformance** (an actor's `become`
   phases read as a state machine and checked against a session type — the message it must take, the stash it
   must replay, the reply a `sendAndGet` is owed), dimensional analysis of
   JSR 385 units, and termination.
@@ -206,7 +206,7 @@ you write:
 - **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
   nested) with `@Invariant` / `@Decreases`; the `xs.each { x -> … }` / `xs.eachWithIndex { x, i -> … }` iteration
   forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant); early
-  `return`; and `switch` *expressions* — the arrow form (`case 1 -> …`, a block with `yield` too) with literal /
+  `return`, and `break` at the top level of a loop body or ending a branch of its final `if`/`else`; and `switch` *expressions* — the arrow form (`case 1 -> …`, a block with `yield` too) with literal /
   range labels (since Groovy 6.0.0-beta-3 static type checking requires a switch expression to be exhaustive —
   a `default`, or an enum subject with every constant covered — and the verifier's part is knowing when that
   `default` is *dead* under the precondition); plus
@@ -214,7 +214,7 @@ you write:
   happy path walked exactly, each handler entered with sound catch-entry state (and, when the try's
   throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
   after `Math.floorDiv(a, b)` knows `b == 0`).
-  *Out:* `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  *Out:* `continue`, a `break` out of a nested loop, `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 
@@ -233,8 +233,8 @@ The *"sound within it"* half of that claim is itself cross-checked. Because `gro
 also *runtime* assertions, a differential **runtime rung** (`./gradlew runtimeRung`) recompiles each proved
 contract with the verifier off, runs it over an input grid, and confirms the proof holds when the same
 annotation actually executes — corroborating any disagreement against the real returned value, so a genuine
-verifier-vs-runtime divergence is *caught* rather than assumed (the few that exist, like `a[i] = ++i`
-evaluation order, are catalogued semantic differences, not logic bugs). See
+verifier-vs-runtime divergence is *caught* rather than assumed. The catalogue of known ones is empty: the last
+entries, a subscript evaluation-order difference, cleared when GROOVY-12097 fixed it upstream. See
 **[BUILD.md](BUILD.md#the-runtime-rung--a-differential-soundness-oracle)**.
 
 That stance — a compile-time proof is *one rung*, only as good as what it assumes — carries over to concurrency,
@@ -335,8 +335,8 @@ Read **[the five-act tour](examples/tour.md)** for all of it. More worked-and-ve
 - **[Dafny ports & cross-tool credentials](examples/dafny.md)** — `SumMax` (VSComp'10), `Find`, `BinarySearch`; Hillel Wayne's *Theorem Prover Showdown* with full specs (leftpad — imperative **and** functional-by-induction — fulcrum's argmin, unique with a bidirectional spec); mergesort's `merge` proved sorted *and* a permutation (math-comp's `path.v`); and Leino's *Modeling Concurrency in Dafny* ticket lock, reproduced end to end: mutual exclusion in both of the paper's formulations (enum-bounded and symbolic-N), the fair-schedule liveness at any process count with per-round progress derived from the transition relation, and a TLA+/TLC model as the second rung.
 - **[OpenJML ports](examples/openjml.md)** — `Max by elimination` and `ChangeCase`, from the JVM's closest prior art (CC BY-NC).
 - **[LemmaScript ports](examples/lemmascript.md)** — the examples of TypeScript's contract verifier, structure for structure: binary and linear search, leftPad, duplicates, a bounded counter, and zigzag encoding, whose round-trip laws prove over mathematical integers and break on Java's `int`. What doesn't port yet is listed too.
-- **[Concurrency](examples/concurrency.md)** — locks, agents, dataflow and rely/guarantee proved *locally*; for **channel networks** the *structural* half too, the SEQ/PAR ladder running from task disjointness, channel-end linearity and element contracts through **deadlock-freedom as well-foundedness**, drain termination, bounded FIFO traffic, streaming, `ChannelSelect` and its liveness under weak fairness, `@Protocol` session types, and bounded service (`@ServedWithin` / `@DeliveredWithin`). **Actors** get the same treatment, every rule measured against the runtime before it is modelled: bounded mailbox, stash, `become` phases checked against a protocol, `sendAndGet` replies, `onError`, and timers. The runtime rungs (Lincheck / TLA+ TLC / Fray) remain the [three rungs](CONCURRENCY.md).
-- **[The Kerridge gallery](examples/kerridge.md)** — the CSP teaching shapes from Jon Kerridge's *Using Concurrency and Parallelism Effectively* (JCSP/groovyJCSP, the occam plugAndPlay vocabulary) ported to `groovy.concurrent` and certified: hello-world (including the literal two-message `ProduceHW`, proved in order), GSquares, GPlus, GDelta, client-server, the GNumbers → GSquares → GPrint network (bounded, symbolic, as three looping processes, and as the book writes it — every process forever, live under weak fairness), the forever client–server, ALT one-shot and as the looping multiplexer — values proved, deadlock-freedom mechanised — with the classic student mistakes (the mutual-receive deadlock exercise, the missing poison pill, a receive with nothing left to receive) as *named compile errors*, and the streaming frontier stated honestly.
+- **[Concurrency](examples/concurrency.md)** — locks, agents, dataflow and rely/guarantee proved *locally*; for **channel networks** the *structural* half too, the SEQ/PAR ladder running from task disjointness, channel-end linearity and element contracts through **deadlock-freedom as well-foundedness**, drain termination, bounded FIFO traffic, streaming, `ChannelSelect` and its liveness under weak fairness, `Phaser` barriers (party counts and rounds, per process), `@Protocol` session types, and bounded service (`@ServedWithin` / `@DeliveredWithin`). **Actors** get the same treatment, every rule measured against the runtime before it is modelled: bounded mailbox, stash, `become` phases checked against a protocol, `sendAndGet` replies, `onError`, and timers. The runtime rungs (Lincheck / TLA+ TLC / Fray) remain the [three rungs](CONCURRENCY.md).
+- **[The Kerridge gallery](examples/kerridge.md)** — the CSP teaching shapes from Jon Kerridge's *Using Concurrency and Parallelism Effectively* (JCSP/groovyJCSP, the occam plugAndPlay vocabulary) ported to `groovy.concurrent` and certified: hello-world (including the literal two-message `ProduceHW`, proved in order), GSquares, GPlus, GDelta, client-server, the GNumbers → GSquares → GPrint network (bounded, symbolic, as three looping processes, and as the book writes it — every process forever, live under weak fairness), the forever client–server, ALT one-shot and as the looping multiplexer, c14's barrier phases — values proved, deadlock-freedom mechanised — with the classic student mistakes (the mutual-receive deadlock exercise, the missing poison pill, a receive with nothing left to receive) as *named compile errors*, and the streaming frontier stated honestly.
 - **[Units of measurement](examples/units.md)** — the Mars-orbiter bug, three ways: JSR 385 dimensions (the unchecked `as Quantity<K>` cast), JSR 385 value/scale, and a bespoke `record` units type with verified `+`.
 - **[Bean Validation](examples/validation.md)** — `jakarta.validation` / `javax.validation` constraints (`@Positive`, `@Min` / `@Max`, `@Size`, `@NotEmpty`) read as compile-time preconditions, discharged for free from annotations you already wrote.
 - **[Miscellaneous](examples/miscellaneous.md)** — ring buffer, Duplets, FizzBuzz, a string-concat law, a type hierarchy (inheritance / traits / Liskov), inline `assert` lemmas, and invariant inference.
