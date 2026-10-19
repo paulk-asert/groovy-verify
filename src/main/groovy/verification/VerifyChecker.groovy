@@ -10976,6 +10976,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Statement> pre = site.prefix
         for (int k = 0; k < pre.size(); k++) {
             Statement st = pre.get(k)
+            LoopSpec earlier = (LoopSpec) st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+            if (earlier != null) { frameEarlierLoop(earlier, pre.subList(k + 1, pre.size()), written, closureAssigned, out); continue }
             if (!(st instanceof ExpressionStatement)) continue
             Expression e = ((ExpressionStatement) st).expression
             String x = null; Expression rhs = null
@@ -11007,6 +11009,24 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             out.add(frameCompare(new VariableExpression(x), Types.COMPARE_EQUAL, r))
         }
         out
+    }
+
+    /** Phase 319 — an earlier annotated loop's exit facts, framed into a later loop that leaves them alone: each
+     *  invariant conjunct, and the negated guard, none of whose names this loop or the code since writes. Dafny
+     *  keeps these without restating them (Phase 207 used to make the later loop restate every one). Not for a
+     *  loop with a `break` (the breaking iteration needn't preserve the invariant, nor falsify the guard), nor
+     *  across an implicit-this call (it may change a field the invariant reads). */
+    private static void frameEarlierLoop(LoopSpec earlier, List<Statement> later, Set<String> written,
+                                         Set<String> closureAssigned, List<Expression> out) {
+        if (LoopEncoder.containsLoopBreak(earlier.body)) return
+        boolean[] thisCall = [false]
+        Set<String> unstable = writeTargetsOf(later, thisCall)
+        if (thisCall[0]) return
+        unstable.addAll(written); unstable.addAll(closureAssigned)
+        List<Expression> conjuncts = new ArrayList<Expression>()
+        for (Expression inv : earlier.invariants) splitConjuncts(inv, conjuncts)
+        for (Expression c : conjuncts) if (Collections.disjoint(freeNames(c), unstable)) out.add(c)
+        if (earlier.guard != null && Collections.disjoint(freeNames(earlier.guard), unstable)) out.add(new NotExpression(earlier.guard))
     }
 
     /** Pure (no writes, only pure-read calls), over parameters and locals only, none of them {@code unstable}. */

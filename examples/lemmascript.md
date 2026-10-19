@@ -40,6 +40,8 @@ and are © their authors, used under LemmaScript's MIT licence.
 | `sorted(arr)` | `arr.isSorted()` |
 | `//@ type i nat` | `0 <= i` in an invariant |
 | `break` plus `//@ done_with` | `break` (the exit condition needs no annotation) |
+| a recursive pure count, `occOf(arr, x, n)` | the prefix count `arr[0..<n].count(x)` |
+| `forall(y: int, P)`, `exists(x: nat, P)` over all values | `arr.every { y -> P }`, `arr.any { x -> P }` over the values that occur |
 
 LemmaScript's `//@ contract` line is a plain-English statement of intent that sits beside the formal contract, so a
 reviewer can check one against the other. Groovy doesn't have an annotation for that yet, so the ports carry the
@@ -379,6 +381,119 @@ static boolean containsDuplicate(int[] nums) {
 }
 ```
 
+### Majority vote
+
+LemmaScript's `majority.ts` is Boyer–Moore's vote. Pass 1 keeps a candidate and a counter; pass 2 checks the
+candidate by counting it. Its invariants count occurrences in a prefix through a recursive helper:
+
+```ts
+//@ pure
+function occOf(arr: number[], x: number, n: number): number {
+  //@ requires 0 <= n && n <= arr.length
+  //@ decreases n
+  return n === 0 ? 0 : occOf(arr, x, n - 1) + (arr[n - 1] === x ? 1 : 0);
+}
+export function majority(arr: number[]): number {
+  //@ requires forall(k: nat, k < arr.length ==> arr[k] >= 0)
+  //@ ensures \result === -1 || (\result >= 0 && 2 * occOf(arr, \result, arr.length) > arr.length)
+  //@ ensures (exists(x: nat, 2 * occOf(arr, x, arr.length) > arr.length)) ==> \result !== -1
+  let cand = 0;
+  let cnt = 0;
+  let i = 0;
+  while (i < arr.length) {
+    //@ invariant 0 <= i && i <= arr.length
+    //@ invariant cnt >= 0
+    //@ invariant cand >= 0
+    //@ invariant 2 * occOf(arr, cand, i) <= i + cnt
+    //@ invariant forall(y: int, y !== cand ==> 2 * occOf(arr, y, i) <= i - cnt)
+    //@ decreases arr.length - i
+    if (cnt === 0) {
+      cand = arr[i];
+      cnt = 1;
+    } else if (arr[i] === cand) {
+      cnt = cnt + 1;
+    } else {
+      cnt = cnt - 1;
+    }
+    i = i + 1;
+  }
+  let occ = 0;
+  let j = 0;
+  while (j < arr.length) {
+    //@ invariant 0 <= j && j <= arr.length
+    //@ invariant occ === occOf(arr, cand, j)
+    //@ decreases arr.length - j
+    if (arr[j] === cand) {
+      occ = occ + 1;
+    }
+    j = j + 1;
+  }
+  if (2 * occ > arr.length) {
+    return cand;
+  } else {
+    return -1;
+  }
+}
+```
+
+`occOf(arr, x, n)` is the prefix count `arr[0..<n].count(x)`, so the Groovy needs no helper. The two unbounded
+quantifiers, over every `int` `y` and every `nat` `x`, range over the array's own values instead. A value that
+never occurs has count 0, so it adds nothing to the `exists`, and for the `forall` the only thing it needs is
+`cnt <= i`, which joins the first invariant:
+
+<!-- doclint:case p319-majority/majority-ts-verbatim-boyer-moore-majority-vote -->
+```groovy
+/** Returns the value occurring in more than half of arr, or -1 when there is none. */
+@Requires({ arr.every { int k -> k >= 0 } })
+@Ensures({ result == -1 || (result >= 0 && 2 * arr[0..<arr.length].count(result) > arr.length) })
+@Ensures({ arr.any { int x -> 2 * arr[0..<arr.length].count(x) > arr.length } ==> result != -1 })
+static int majority(int[] arr) {
+    int cand = 0
+    int cnt = 0
+    int i = 0
+    @Invariant({ 0 <= i && i <= arr.length && cnt >= 0 && cnt <= i && cand >= 0 })
+    @Invariant({ 2 * arr[0..<i].count(cand) <= i + cnt })
+    @Invariant({ arr.every { int y -> y == cand || 2 * arr[0..<i].count(y) <= i - cnt } })
+    @Decreases({ arr.length - i })
+    while (i < arr.length) {
+        if (cnt == 0) {
+            cand = arr[i]
+            cnt = 1
+        } else if (arr[i] == cand) {
+            cnt = cnt + 1
+        } else {
+            cnt = cnt - 1
+        }
+        i = i + 1
+    }
+    int occ = 0
+    int j = 0
+    @Invariant({ 0 <= j && j <= arr.length && occ == arr[0..<j].count(cand) })
+    @Decreases({ arr.length - j })
+    while (j < arr.length) {
+        if (arr[j] == cand) {
+            occ = occ + 1
+        }
+        j = j + 1
+    }
+    if (2 * occ > arr.length) {
+        return cand
+    } else {
+        return -1
+    }
+}
+```
+
+The second loop's invariant says nothing about `cand`, yet the postcondition needs everything the first loop
+established about it. The second loop never writes `cand`, `cnt` or `i`, so those facts carry across it, as
+they do in Dafny. Until Phase 319 each later loop had to restate them. Neither of pass 1's two counting
+invariants is inductive on its own: when `cnt` reaches 0 the body adopts `arr[i]` as the new candidate, and
+bounding its count takes the "others" invariant.
+
+One boundary shows here. A *wrong* claim about `majority`, such as `result != -1`, is not refuted with a
+counterexample: Z3 can't build a model through the quantified count axioms, so the verdict is "could not
+decide". That's loud, and never a false proof, but it gives no failing input.
+
 ### Zigzag encoding
 
 Protocol Buffers' trick for storing signed integers as small unsigned numbers folds the number line onto the
@@ -486,9 +601,10 @@ These examples hit the edges of what groovy-verify proves today:
 - **`continue`, and `break` from a nested loop.** A `break` at the top level of a loop body, or ending a branch of
   the body's final `if`/`else` chain, is supported. A `continue`, or a `break` out of an inner loop, still skips
   loudly.
-- **Boyer–Moore majority vote** (`majority.ts`). Its invariants count occurrences in a prefix with a recursive
-  `occOf(arr, x, i)`. The Groovy spelling, `arr[0..<i].count(x)`, has no supporting axioms yet: `count` works as
-  a whole-array permutation fact, but a loop accumulating it times out.
+- **Whole-array counts beside prefix counts.** `arr.count(x)` on an array and `arr[0..<arr.length].count(x)` are
+  modelled by different functions with no bridge between them, so a loop that maintains the prefix form can't
+  conclude the whole-array form (the [majority vote](#majority-vote) states its postconditions as prefix counts
+  over the full length, which is what `occOf(arr, x, arr.length)` is anyway).
 - **Building lists.** `findAll`, recursion that rebuilds a list, and element facts about values a loop appended
   are all outside the fragment, which is why `pruneWindow` above proves only its size bound.
 - **Nonlinear arithmetic.** The money-splitting `allocate`, and the largest-remainder allocation behind the

@@ -14716,6 +14716,53 @@ Docs: `examples/lemmascript.md` (leftPad's prose and both ports), FRAGMENT's loo
 
 ---
 
+## Phase 319 — Boyer–Moore majority: later loops keep earlier loops' exit facts  *(shipped — engine change)*
+
+Gap 4 of the LemmaScript ports, `majority.ts`. Its invariants count occurrences in a prefix through a recursive
+`occOf(arr, x, n)`, which is `arr[0..<n].count(x)` in Groovy. The gap was recorded as "prefix counts have no
+axioms", but that was out of date: Phase 208's range count already has base and step axioms, and pass 2's
+counting loop proved at once. Probing in layers found two real blockers.
+
+- **The second loop forgot the first.** The postcondition check of the last loop asserted `@Requires`, its own
+  invariant and its negated guard, but nothing about `cand`, which the first loop had established. The dumped
+  query left `cand` free; with `result = cand` negative it was satisfiable, and Z3 returned UNKNOWN through the
+  quantifiers. Phase 207 made every later loop restate such facts (the OpenJML `maintaining` discipline). Dafny
+  doesn't: the second loop never writes `cand`, `cnt` or `i`. **The fix extends Phase 318's frame**
+  (`frameEarlierLoop`): for an annotated loop in the prefix, each invariant conjunct, and the negated guard, none
+  of whose names the current loop, the code between, or a closure writes, is a frame fact everywhere Phase 318's
+  facts are assumed. Not for a loop with a `break` (its breaking iteration needn't preserve the invariant or
+  falsify the guard), nor across an implicit-this call. Phase 207's "teeth" case still refutes: its dropped fact
+  is over an array the later loop writes.
+- **The trailing `if`/`else` return.** `majority.ts` ends with `if (2 * occ > arr.length) return cand else return
+  -1` after its last loop, which was "unsupported statement IfStatement after loop". `LoopEncoder.returnedBy` reads
+  an `if`/`else` (and `else if` chains) both of whose branches only return as the matching ternary. An `if`
+  without an `else` falls through, so it keeps the loud skip.
+- **Ruled out on the way: a matching loop in the step axiom.** The step `bcount(l,h) == bcount(l,h-1) + …` is
+  triggered on `bcount` and mints a fresh `bcount` term each time it fires. I tried Dafny's limited-function
+  (fuel) encoding, a twin `bcountL$` the step unfolds into. Neither `majority` nor its refutations needed it, so
+  it didn't ship.
+- **Unbounded quantifiers.** LemmaScript's `forall(y: int, …)` and `exists(x: nat, …)` have no native Groovy
+  spelling. The port ranges them over the array's own values (`arr.every` / `arr.any`). A value that never
+  occurs has count 0, so it adds nothing to the `exists`, and `cnt <= i` covers it for the `forall`.
+- **Boundaries.** A wrong claim under the quantified count axioms (`result != -1`) comes back "could not decide",
+  not with a counterexample: Z3 can't build a model through them, with or without the limited encoding. The
+  whole-array `arr.count(x)` of an array and the prefix `arr[0..<arr.length].count(x)` are different functions with
+  no bridge, so the port states its postconditions as full-length prefix counts, which is what `occOf(arr, x,
+  arr.length)` is.
+
+**Shipped tests (group `P319 majority`, 9 cases):**
+- proved: `majority.ts` verbatim; pass 1 alone (its two counting invariants together); pass 2 alone; a later loop
+  keeping an earlier loop's exit facts; an `else if` return chain after a loop;
+- refuted: not kept when the code between the loops writes them, or when the later loop does;
+- skipped: an `if` without an `else` after a loop;
+- undecided, the boundary: a wrong majority claim.
+
+Docs: a "Majority vote" section in `examples/lemmascript.md` (one linked case; its "Not ported yet" entry
+replaced by the whole-array-count boundary; two rows in its translation table), and the Phase 207 restate rule
+reworded in FRAGMENT, CAPABILITIES, `examples/dafny.md` and the P207 group description. Plus a CAPABILITIES row.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

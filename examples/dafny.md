@@ -274,7 +274,7 @@ refutes at the exit check.
 [`java`](https://github.com/hwayne/lets-prove-leftpad/tree/master/java) entry is **OpenJML** — the same
 JML-annotated `char[]` spec, with *two* sequential annotated loops; both forms verify here (the
 single-loop body above, and the two-loop OpenJML shape — sequential annotated loops landed with each
-later loop restating the facts it needs, exactly the `maintaining` discipline); since Java is largely a
+later loop restating the facts over state it writes, exactly the `maintaining` discipline); since Java is largely a
 syntactic subset of Groovy, that entry is line-for-line comparable with ours. The
 [`verus (rust)`](https://github.com/hwayne/lets-prove-leftpad/tree/master/verus%20(rust)) entry — the tool
 whose HumanEval suite the repo already ports — uses a *functional* `spec fn` + a recursive `proof fn`
@@ -369,7 +369,7 @@ static int[] merge(int[] a, int[] b, int[] r, int v) {
 ```
 
 Two spelling disciplines are worth naming. Facts must **cross loop boundaries through the invariants** —
-each later loop restates what it relies on (the sorted prefix, the frontier bounds), including guarded
+each later loop restates what it relies on over the arrays it writes (the sorted prefix, the frontier bounds), including guarded
 facts that are *vacuous while that loop runs* but carry the state over its no-op path (the
 `j < b.length ==> …` frontier in the first drain exists purely so the second drain can establish). And the
 permutation layer rides `r[0..<k].count(v)` — a bounded range count with base/step axioms and a

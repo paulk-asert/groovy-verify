@@ -19,6 +19,7 @@ import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
@@ -445,6 +446,9 @@ class LoopEncoder {
                     throw new UnsupportedConstructException(
                         "statement with no modelled effect after loop (line ${st.lineNumber})")
                 }
+            } else if (last && st instanceof IfStatement && returnedBy(st) != null) {
+                result = returnedBy(st)   // Phase 319 — `if (c) return a else return b` is `return c ? a : b`
+                break
             } else {
                 throw new UnsupportedConstructException(
                     "unsupported statement ${st.class.simpleName} after loop (line ${st.lineNumber})")
@@ -454,6 +458,24 @@ class LoopEncoder {
             throw new UnsupportedConstructException("no return value after loop")
         }
         return result
+    }
+
+    /** Phase 319 — the value a statement that only returns returns: a `return e`, a block holding just one, or an
+     *  `if`/`else` (`else if` chains too) both of whose branches only return — as the matching ternary. Null for
+     *  anything else, including an `if` without an `else` (it falls through). */
+    static Expression returnedBy(Statement st) {
+        if (st instanceof ReturnStatement) return ((ReturnStatement) st).expression
+        if (st instanceof BlockStatement && ((BlockStatement) st).statements.size() == 1) return returnedBy(((BlockStatement) st).statements.get(0))
+        if (st instanceof IfStatement) {
+            IfStatement i = (IfStatement) st
+            if (i.elseBlock == null || i.elseBlock instanceof EmptyStatement) return null
+            Expression a = returnedBy(i.ifBlock), b = returnedBy(i.elseBlock)
+            if (a == null || b == null) return null
+            TernaryExpression t = new TernaryExpression(i.booleanExpression, a, b)
+            t.setSourcePosition(st)
+            return t
+        }
+        null
     }
 
     private static boolean isAssign(Expression e) {
