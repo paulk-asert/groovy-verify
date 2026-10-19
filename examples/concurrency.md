@@ -1536,6 +1536,41 @@ fairness, with termination alone unclaimed because none is meant. What the certi
 in one line: the scheduler is weakly fair, sends never block, and the base case is the pre-loop
 straight-line code.
 
+**Where weak fairness doesn't hold: parallel-collection callbacks** (Phase 314). The callbacks of
+`eachParallel`, `collectParallel` and the other `*Parallel` methods, and the body of a `@Parallel` for loop
+(which lowers to `eachParallel`), are tasks on a ForkJoin pool, not processes. How many of them run at once
+depends on the pool's size and the element count, and a callback that blocks can hold its worker while the
+sibling it waits for stays queued ([GROOVY-12457](https://issues.apache.org/jira/browse/GROOVY-12457)). Before
+this phase, a barrier sync inside a callback counted as the calling process's, so two siblings meeting at a
+two-party barrier were refuted as "one process short". At runtime two tasks do arrive, provided the pool runs
+them together. Neither verdict is honest, so the certificate is withheld:
+
+<!-- doclint:case p314-parallel-callbacks/sibling-callbacks-syncing-a-barrier-withhold-the-certificate -->
+```groovy
+static int run() {
+    java.util.concurrent.Phaser gate = new java.util.concurrent.Phaser(2)
+    [1, 2].eachParallel { gate.arriveAndAwaitAdvance() }
+    return 0
+}
+```
+
+<!-- doclint:diagnostic p314-parallel-callbacks/sibling-callbacks-syncing-a-barrier-withhold-the-certificate -->
+```
+[Static type checking] - Skipped barrier certificate for 'gate' in run (its arriveAndAwaitAdvance() at line 6
+is inside the eachParallel callback on the same line). Parallel-collection callbacks run as tasks on a
+ForkJoin pool, not as processes of their own: how many run at once depends on the pool's size and the
+element count, and a callback that blocks can hold its worker while the sibling it waits for stays queued
+(GROOVY-12457). …
+```
+
+The same applies to a channel operation, a `select()` or a drain inside a callback: the network check is
+skipped for that channel. It applies wherever the call sits, including inside a forked process. A `@Parallel`
+loop is named as written ("inside the @Parallel loop at line N"). A callback that blocks on nothing, such as
+`[1, 2, 3].collectParallel { int v -> v * 2 }`, is unaffected. For callbacks that really do wait on each
+other, fork them as processes with `async { }`, which the certificates do cover. Otherwise, run the call
+inside `ParallelScope.withPool(n)` with `n` at least the number of concurrent blockers. That makes it work at
+runtime, but gv doesn't check the pool size.
+
 ### Selection semantics — the runtime's ALT, modelled as it is
 The rung that was to be "fairness of the ALT's choice" turned into something more useful: reading what
 the racing `ChannelSelect.select()` actually does. It issues a `receive()` on every branch and

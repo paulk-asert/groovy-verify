@@ -4972,6 +4972,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean conditional    // inside an if-branch / loop / catch — execution not guaranteed
         Expression anchor
         List<String> alts      // Phase 249 — an ALT node's channels (set on the group's representative)
+        String via; int viaLine    // Phase 314 — a parallel use's callback, as written, and its line
     }
 
     private static class ParCtx {
@@ -4996,6 +4997,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // channel pass (linearity, FIFO pairing, streams) would have to special-case it. They join the
         // wait-for graph directly instead, which is the only pass that has anything to say about them.
         final List<ChanUse> barrierUses = new ArrayList<ChanUse>()
+        // Phase 314 — the medium uses inside a parallel-collection callback (GROOVY-12457), kept out of every
+        // process's uses: the callbacks are pool tasks, not processes, so the certificates are withheld instead.
+        final List<ChanUse> parallelUses = new ArrayList<ChanUse>()
+        final Set<Expression> parallelOps =
+            Collections.newSetFromMap(new IdentityHashMap<Expression, Boolean>())
         final Map<String, Integer> phaserParties = new LinkedHashMap<String, Integer>()
         final Map<String, List<ParAccess>> mainWrites = new HashMap<String, List<ParAccess>>()
         final Map<String, List<ParAccess>> mainReads = new HashMap<String, List<ParAccess>>()
@@ -5211,6 +5217,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 257 — the ALT's op is the select() CALL (inline chain or a held instance), so a held instance's
         // uses are recorded where the process blocks, not where the instance was declared.
         if (!(call instanceof MethodCallExpression) || ((MethodCallExpression) call).methodAsString != 'select' || !noArgs((MethodCallExpression) call)) return
+        if (ctx.parallelOps.contains(call)) return                   // Phase 314 — a parallel callback's
         SelectRef ref = selectRefOf(((MethodCallExpression) call).objectExpression, ctx.selectRefs)
         if (ref == null) return
         if (!ref.timerAt.isEmpty()) ctx.timedSelects.add(call)          // Phase 290 — this ALT has a deadline
@@ -5231,6 +5238,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String name = ((VariableExpression) recv).name
         if (!ctx.chanVars.contains(name)) return
         if (ctx.twinCloses.contains(call)) return                    // Phase 313 — the failure-path copy
+        if (ctx.parallelOps.contains(call)) return                   // Phase 314 — a parallel callback's
         int k = chanUseKindOf(call.methodAsString)
         if (k >= 0) ctx.chanUse(name, call.methodAsString, k, proc, ord, call.lineNumber, seq, conditional, anchor)
     }
@@ -5246,12 +5254,85 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!(recv instanceof VariableExpression)) return
         String name = ((VariableExpression) recv).name
         if (!ctx.phaserParties.containsKey(name)) return
+        if (ctx.parallelOps.contains(call)) return                   // Phase 314 — a parallel callback's
         // Phase 278 — the enrolment ops join the syncs: `register()` is JCSP's enroll and
         // `arriveAndDeregister()` its resign, and c14's whole discipline is the order they come in.
         String m = call.methodAsString
         if (m == 'arriveAndAwaitAdvance' || m == 'register' || m == 'arriveAndDeregister') {
             ctx.barrierUse(name, m == 'arriveAndAwaitAdvance' ? 'sync' : m, proc, ord, call.lineNumber, seq, conditional, anchor)
         }
+    }
+
+    // ── Phase 314 — a blocking sync inside a parallel-collection callback (GROOVY-12457) ───────────────
+    // The callbacks of `xs.eachParallel { … }` (and of a `@Parallel` for loop, which lowers to one) run as
+    // tasks on a ForkJoin pool, not as processes: how many run at once is the pool's size against the
+    // element count, and a callback that blocks can hold its worker while the sibling it waits for stays
+    // queued. Weak fairness — what the deadlock and liveness certificates rest on — does not hold there.
+    // Their medium uses are recorded apart, and the method's certificates are withheld, loudly.
+
+    /** The `*Parallel` methods of `ParallelCollectionExtensions` that take a callback. */
+    static final Set<String> PARALLEL_CALLBACK_METHODS = ['anyParallel', 'collectManyParallel', 'collectParallel',
+        'countParallel', 'eachParallel', 'eachWithIndexParallel', 'everyParallel', 'findAllParallel',
+        'findAnyParallel', 'findParallel', 'grepParallel', 'groupByParallel', 'injectParallel', 'maxParallel',
+        'minParallel', 'splitParallel', 'sumParallel'] as Set<String>
+
+    /** The callback of a parallel-collection call, or null. */
+    private static ClosureExpression parallelCallback(MethodCallExpression call) {
+        if (!PARALLEL_CALLBACK_METHODS.contains(call.methodAsString)) return null
+        Expression a = call.arguments
+        List<Expression> args = (a instanceof TupleExpression) ? ((TupleExpression) a).expressions : [a]
+        for (Expression x : args) if (x instanceof ClosureExpression) return (ClosureExpression) x
+        null
+    }
+
+    /** How the developer wrote it: a `@Parallel` loop's lowered callback has its parameter renamed `$parallel_…`. */
+    private static String parallelCallbackName(MethodCallExpression call, ClosureExpression cl) {
+        Parameter[] ps = cl.parameters
+        (ps != null && ps.length == 1 && ps[0].name.startsWith('$parallel_')) ? 'the @Parallel loop' :
+            "the ${call.methodAsString} callback".toString()
+    }
+
+    /** Record the barrier / channel / select uses inside a parallel-collection call's callback as
+     *  parallel uses, and mark them so the per-process recorders pass over them. */
+    private static void recordParallelUsesIfAny(MethodCallExpression call, ParCtx ctx) {
+        ClosureExpression cl = parallelCallback(call)
+        if (cl == null || cl.code == null) return
+        String via = parallelCallbackName(call, cl)
+        int viaLine = call.lineNumber > 0 ? call.lineNumber : cl.lineNumber
+        cl.code.visit(new CodeVisitorSupport() {
+            private void note(String medium, String op, Expression at, int line) {
+                ctx.parallelOps.add(at)
+                ChanUse u = new ChanUse()
+                u.chan = medium; u.method = op; u.kind = -1; u.line = line; u.anchor = at
+                u.via = via; u.viaLine = viaLine
+                ctx.parallelUses.add(u)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                Expression recv = stripCasts(m.objectExpression)
+                String n = recv instanceof VariableExpression ? ((VariableExpression) recv).name : null
+                String op = m.methodAsString
+                if (n != null && ctx.phaserParties.containsKey(n) &&
+                    (op == 'arriveAndAwaitAdvance' || op == 'register' || op == 'arriveAndDeregister')) note(n, op, m, m.lineNumber)
+                else if (n != null && ctx.chanVars.contains(n) && chanUseKindOf(op) >= 0) note(n, op, m, m.lineNumber)
+                else if (op == 'select' && noArgs(m)) {
+                    SelectRef ref = selectRefOf(m.objectExpression, ctx.selectRefs)
+                    if (ref != null) for (Expression c : ref.chans) {
+                        Expression x = stripCasts(c)
+                        if (x instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) x).name)) {
+                            note(((VariableExpression) x).name, 'select', m, m.lineNumber)
+                        }
+                    }
+                }
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitForLoop(ForStatement st) {
+                Expression coll = stripCasts(st.collectionExpression)
+                if (coll instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) coll).name)) {
+                    note(((VariableExpression) coll).name, 'iterate', coll, coll.lineNumber)
+                }
+                super.visitForLoop(st)
+            }
+        })
     }
 
     /** `new Phaser(n)` declarations: var name → the literal party count. A non-literal count, or any
@@ -5317,6 +5398,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         @Override void visitMethodCallExpression(MethodCallExpression call) {
             ClosureExpression cl = asyncClosure(call) ?: ActorMailbox.handlerClosure(call)   // Phase 289
             if (cl != null) { recordArm(call, cl, null); return }
+            recordParallelUsesIfAny(call, ctx)                                       // Phase 314
             // Phase 241 — a main-body channel end-use (seq = the statement ordinal)
             recordChanUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
             recordBarrierUseIfAny(call, ctx, null, ord, ord, ctx.condDepth > 0, call)
@@ -5457,6 +5539,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             private int armCondDepth = 0
             @Override void visitMethodCallExpression(MethodCallExpression call) {
                 // Phase 241 — an arm-side end-use; seq is the arm's own op order (Phase 243 needs it)
+                recordParallelUsesIfAny(call, ctx)                                   // Phase 314
                 int seq = ++armSeq
                 recordChanUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
                 recordBarrierUseIfAny(call, ctx, arm, arm.fork, seq, arm.conditional || armCondDepth > 0, call)
@@ -5475,7 +5558,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             @Override void visitForLoop(ForStatement st) {
                 // Phase 245 — an arm-side `for (v in ch)` is a whole-stream receive (blocks until close).
                 Expression coll = stripCasts(st.collectionExpression)
-                if (coll instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) coll).name)) {
+                if (coll instanceof VariableExpression && ctx.chanVars.contains(((VariableExpression) coll).name) &&
+                    !ctx.parallelOps.contains(coll)) {                              // Phase 314
                     ctx.chanUse(((VariableExpression) coll).name, 'iterate', CHAN_RECV, arm, arm.fork,
                         coll.lineNumber, ++armSeq, arm.conditional || armCondDepth > 0, arm.anchor)
                 }
@@ -6478,6 +6562,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private void checkNetworkWellFormedness(MethodNode node, ParCtx ctx, BlockStatement body,
                                             Map<String, String> chanParent, Set<String> broadcastChans) {
         List<ChanUse> uses = ctx.chanUses
+        // Phase 314 — a medium a parallel-collection callback blocks on: no certificate for the method, said
+        // once per medium. The callback also blocks the process that called it (the call returns when every
+        // callback has), so the rest of the network's progress rests on the same pool scheduling.
+        if (!ctx.parallelUses.isEmpty()) {
+            Set<String> said = new HashSet<String>()
+            for (ChanUse u : ctx.parallelUses) {
+                if (!said.add(u.chan)) continue
+                boolean barrier = ctx.phaserParties.containsKey(u.chan)
+                addStaticTypeError(Reporter.formatParallelCallbackSkipped(node.name, u.chan, barrier,
+                    u.method, u.line, u.via, u.viaLine), u.anchor)
+            }
+            return
+        }
         // Phase 277 — barriers first: the enrolment check needs nothing else, and a network of barriers
         // and nothing else (two processes and a Phaser is already deadlockable) never reaches the channel
         // machinery below, whose every path is about sends and receives.

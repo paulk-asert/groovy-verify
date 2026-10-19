@@ -549,6 +549,21 @@ class Reporter {
      * it never advances and every party that did arrive waits forever. The static half of JCSP's enrolment
      * discipline (`java.util.concurrent.Phaser` being that Barrier under another name).
      */
+    /** Phase 314 — a barrier / channel a parallel-collection callback blocks on (GROOVY-12457). */
+    static String formatParallelCallbackSkipped(String methodName, String medium, boolean barrier, String op,
+                                                int line, String via, int viaLine) {
+        String what = barrier ? "barrier certificate for '${medium}'" : "network well-formedness check for '${medium}'"
+        String use = op == 'iterate' ? 'its iteration' : "its ${op}()"
+        String where = viaLine == line ? "${via} on the same line" : "${via} at line ${viaLine}"
+        "Skipped ${what} in ${methodName} (${use} at line ${line} is inside ${where}). " +
+        "Parallel-collection callbacks run as tasks on a ForkJoin pool, not as processes of their own: how many " +
+        "run at once depends on the pool's size and the element count, and a callback that blocks can hold its " +
+        "worker while the sibling it waits for stays queued (GROOVY-12457). The call also blocks its caller " +
+        "until every callback has returned. Neither deadlock-freedom nor ${barrier ? 'the party count' : 'liveness'} " +
+        "is certified. For callbacks that wait on each other, fork them as processes with async { }, or run the " +
+        "call inside ParallelScope.withPool(n) with n at least the number of concurrent blockers."
+    }
+
     static String formatBarrierParties(String methodName, String barrier, int declared, int arriving) {
         "Barrier '${barrier}' in '${methodName}' can never advance: it is constructed for ${declared} " +
         "part${declared == 1 ? 'y' : 'ies'} but only ${arriving} process${arriving == 1 ? '' : 'es'} " +

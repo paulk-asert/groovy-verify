@@ -14520,10 +14520,51 @@ method, and a throw the producer catches itself; a close only in a `catch` is th
 Docs: the drain-discipline subsection of `examples/concurrency.md` (one linked case and its diagnostic) and a
 CAPABILITIES row.
 
-**The other PR, #2986** ([GROOVY-12457](https://issues.apache.org/jira/browse/GROOVY-12457)): blocking
-callbacks in `eachParallel`/`@Parallel` can leave a queued sibling unrun on a ForkJoinPool. gv doesn't model
-parallel collections, so no claim was wrong. But the bug breaks the weak-fairness assumption Phase 255 rests
-on, so a loud skip for blocking syncs inside parallel-collection callbacks is a candidate next slice.
+**The other PR, #2986** ([GROOVY-12457](https://issues.apache.org/jira/browse/GROOVY-12457)) is Phase 314, below.
+
+---
+
+## Phase 314 — parallel-collection callbacks are pool tasks, not processes  *(shipped)*
+
+The other PR from that check: apache/groovy#2986
+([GROOVY-12457](https://issues.apache.org/jira/browse/GROOVY-12457)). A blocking callback in
+`eachParallel`/`@Parallel` can hold its ForkJoin worker while a sibling it waits for stays queued. Even with the
+fix, a pool of size `n` hosts at most `n` concurrent blockers, and the common pool is still exposed to
+contention. The Phase 255 liveness certificates and the Phase 243/277 deadlock certificates assume weak fairness,
+which doesn't hold here. The probe was expected to show a scope gap. It showed **a wrong verdict**: the
+use walk scans a non-async closure as code of the enclosing process, so a sibling barrier
+(`Phaser(2)`, `[1, 2].eachParallel { gate.arriveAndAwaitAdvance() }`) was refuted as "constructed for 2 parties
+but only 1 process arrives". The same happened with a `@Parallel` loop (it lowers to `eachParallel` at semantic
+analysis) and with callbacks inside a forked process.
+
+- **The check.** `recordParallelUsesIfAny` recognises the callback of the 17 callback-taking `*Parallel` methods
+  of `ParallelCollectionExtensions` on both walks (main side and task side). Inside it, every barrier op, channel
+  end-use, `select()` and `for (v in ch)` is recorded in `ParCtx.parallelUses`, and marked (`parallelOps`) so the
+  per-process recorders pass over it. If there are any, `checkNetworkWellFormedness` withholds the method's
+  barrier and network certificates with one loud skip per medium, naming the op and the callback. The skip says
+  "the @Parallel loop" when the callback's parameter has the lowering's `$parallel_` prefix, so it echoes the
+  source.
+- **Why the whole method.** The call blocks its caller until every callback returns, so the rest of the network's
+  progress rests on the same pool scheduling.
+- **Honest boundary.** Name-based recognition (the receiver isn't type-checked). Media gv doesn't model
+  (`CyclicBarrier`, `CountDownLatch`, the PR's own example) carry no claim either way, so nothing is said. A
+  callback that blocks on nothing is unaffected. A shape that is certain to deadlock, where the callback waits for
+  something its caller does only *after* the call returns (`[1].eachParallel { ch.first() }; ch.send(1)`), is
+  skipped rather than refuted. Refuting it is a possible follow-up.
+
+**Shipped tests (group `P314 parallel callbacks`, 8 cases):** withheld for a sibling barrier, a `@Parallel` loop
+body (named as such), callbacks inside a forked process, a sibling channel exchange and a drain inside a callback.
+Unaffected: a non-blocking `collectParallel`, and a lockstep barrier beside a non-blocking callback (still
+certified). A barrier that really is one process short still refutes. Docs: a paragraph closing the weak-fairness
+section of `examples/concurrency.md` (one linked case and its diagnostic) and a CAPABILITIES row.
+
+**Found on the way, not fixed: a Phase 277 barrier soundness hole (candidate Phase 315).** A barrier sync that
+isn't one-shot is recorded `conditional`, and the barrier checks skip conditional syncs *silently* ("no claim
+either way"), so the method still compiles clean. Three probes compile clean but hang at runtime, all with a
+`Phaser(2)` and a forked partner that syncs once: the main body syncs in a two-iteration `for` loop; it syncs in a
+sequential `[1, 2].each { … }` (closure bodies count as one unconditional sync); or the sync is in a closure that
+is never called. The fix is the loud-skip treatment the channel side already has, or counting a literal-bounded
+loop's syncs (as Phase 248 does for channel traffic).
 
 ---
 
