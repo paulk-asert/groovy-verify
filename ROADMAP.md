@@ -14255,6 +14255,71 @@ the bytecode (classic call sites leave a synthetic `$getCallSiteArray`; indy doe
 
 ---
 
+## Phase 309 — call results as arguments, and the LemmaScript port  *(shipped — engine change)*
+
+Porting LemmaScript's examples (TypeScript with `//@` contracts, proved through Dafny) surfaced a gap in the
+inter-procedural core: a contracted call's result could not reach **another call's `@Requires`**. Minimised:
+
+```groovy
+@Ensures({ result >= 0 }) static int f(int n) { n >= 0 ? n : 0 }
+@Requires({ z >= 0 })      static int g(int z) { z }
+static int h(int n) { int c = f(n); return g(c) }   // refuted: c = -1, n = Integer.MIN_VALUE
+```
+
+Three shapes, three routes, one cause. The call-site precondition check (Phase 24) replays the straight-line
+prefix to the call. A scalar local bound from a call was **havoc'd** there, so `f`'s `result >= 0` never reached
+`g`'s check. The postcondition path had always assumed the callee's `@Ensures` for the same local (Phase 7), which
+is why `@Ensures({ result >= 0 }) h` proved while `g(c)` refuted. The direct form `g(f(n))` didn't get that far:
+the actual argument didn't translate, so the precondition was skipped as outside the fragment. And on the
+postcondition side, `return decode(encode(n))` skipped too: the Phase 206 return-position hoist tried the outer
+call first and gave up because its argument was a call. Sound throughout (havoc and skip lose facts, never invent
+them), but the counterexample sat exactly where the havoc left the value open, which made it look meaningful.
+
+**The fix (`VerifyChecker`):**
+
+1. **`replayScalarCall`**, the scalar twin of Phase 144's `replayCarrierCall`: in the prefix replay, an
+   int-like, boolean or String local declared or assigned from a contracted call gets a fresh handle constrained
+   by the callee's `@Ensures` (`assumeCalleeEnsures`, `result` bound to the handle). No usable `@Ensures` → false
+   → the old havoc. List- and tuple-valued locals keep their own oracle routes.
+2. **Nested call arguments.** In the call-site check, an actual that is itself a contracted call is bound
+   through the same helper, so `g(f(n))` discharges like `int c = f(n); g(c)`.
+3. **Inside-out return hoist.** The Phase 206 hoist now rewrites a call's *arguments* first, so `decode(encode(n))`
+   hoists `encode(n)` and then `decode(…)` over the temp. Arguments only; a call receiver (`a.f().g()`) keeps
+   its carrier-chain route.
+
+The hoist's temporaries were named `ret$call$k` and showed up in counterexamples; they are now `ret$call#k`,
+hidden by the existing `#` filter (a case pins the absence).
+
+**Shipped tests (group `P309 call results as arguments`, 9 cases):** the local, reassigned-local, nested-argument
+and boolean forms prove; a too-weak callee `@Ensures` still refutes in both the local and the nested form; an
+uncontracted callee whose body can go negative refutes (an uncontracted body that can't — `n >= 0 ? n : 0` —
+correctly proves, since such bodies are read); the nested return proves, and a wrong claim over it **refutes**
+rather than skips, which pins that the return expression is really reasoned about.
+
+**The LemmaScript port** — `examples/lemmascript.md`, group `LemmaScript port` (15 cases, 14 linked). The
+front page's binary search, and from LemmaScript's `examples/` folder clamp, linear search, max, isSorted, sum,
+swap, leftPad, duplicate detection, zigzag encoding, a bounded counter and `Math.max(...)`. LemmaScript's
+`//@ contract` sentence is carried as a groovydoc comment until `@Spec` lands. Zigzag is the instructive one:
+its round-trip laws prove over mathematical integers (LemmaScript's `number` model), and `@CheckOverflow`
+refutes the same `encode` on Java's 32-bit `int` (`encode(Integer.MIN_VALUE)` is really `-1`). Zigzag also needs
+`decode` to state what it computes — Dafny sees through a function body at a call site, groovy-verify reasons
+through the callee's contract — and that need is what exposed this phase's gap.
+
+**Open (recorded in the doc's "Not ported yet"):** `break` in a verified loop (every LemmaScript `break` +
+`done_with` became an early `return`); prefix counts (`arr[0..<i].count(x)`, LemmaScript's `occOf`), which
+block Boyer–Moore majority; list building (`findAll`, list recursion, element facts after `add` — `pruneWindow`
+proves only its size bound); nonlinear arithmetic (the front page's money-splitting `allocate`). Also met on the
+way: a loop that writes a local's *contents* forgets facts the loop can't change (`r != null`, `r.length`, and
+`leftPad`'s `n == len - str.length()`), so ports restate them as invariants where Dafny frames them for free.
+
+**Perf ceilings re-based.** `test` reached 7,093 solver checks against the 7,000 ceiling (distinct VCs 4,239
+of 4,500). The engine change is not the cause: the corpus before this phase measured 6,818 checks in `verify`,
+and adding the first seven P309 cases took it to 6,838 — about three checks a case, with the existing corpus
+unchanged. The ceiling was simply within 200 of the corpus at 6.0.0. Re-based to 8,000 checks and 5,000 distinct
+VCs.
+
+---
+
 ## Definition of done, per increment
 
 An increment is done when:

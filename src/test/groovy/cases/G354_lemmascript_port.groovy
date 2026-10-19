@@ -1,0 +1,297 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package cases
+
+import static cases.CaseDsl.*
+
+/** 'LemmaScript port' — the verified TypeScript examples of LemmaScript (lemmascript.org, MIT) ported structure for
+ *  structure; examples/lemmascript.md links each block here. LemmaScript's `//@ contract` sentence is carried as a
+ *  plain groovydoc comment. Shared import header and wrappers come from {@link CaseDsl}. */
+class G354_lemmascript_port {
+
+    /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
+    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter — with the overflow LemmaScript\'s unbounded `number` cannot see.'
+
+    static final List<Map> CASES = [
+        // ---------- LemmaScript port (lemmascript.org front page + examples/*.ts) ----------
+        // binarySearch.ts — the front page's example. LemmaScript exits the loop with `break` plus a
+        // `//@ done_with` exit condition; Groovy's verifier takes the early `return` (the loop-exit fact is then just
+        // the invariant and the negated guard). The invariants are LemmaScript's, inclusive `hi` and all.
+        [group: 'LemmaScript port', name: 'binarySearch', ok: true,
+         src: tc('''class C {
+                        /** Finds target in a sorted array, or reports -1. */
+                        @Requires({ arr.isSorted() })
+                        @Ensures({ result >= -1 && result < arr.length })
+                        @Ensures({ result >= 0 ==> arr[result] == target })
+                        @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
+                        static int binarySearch(int[] arr, int target) {
+                            int lo = 0
+                            int hi = arr.length - 1
+                            @Invariant({ 0 <= lo && lo <= arr.length && -1 <= hi && hi < arr.length })
+                            @Invariant({ (0..<lo).every { arr[it] != target } })
+                            @Invariant({ (hi + 1..<arr.length).every { arr[it] != target } })
+                            @Decreases({ hi - lo + 1 })
+                            while (lo <= hi) {
+                                int mid = lo + (hi - lo).intdiv(2)
+                                if (arr[mid] == target) return mid
+                                else if (arr[mid] < target) lo = mid + 1
+                                else hi = mid - 1
+                            }
+                            return -1
+                        }
+                    }''')],
+        // Refute control: drop sortedness and the excluded-region invariant is no longer preserved.
+        [group: 'LemmaScript port', name: 'binarySearch without sortedness refutes', expect: 'Cannot prove loop invariant is preserved',
+         src: tc('''class C {
+                        @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
+                        static int binarySearch(int[] arr, int target) {
+                            int lo = 0
+                            int hi = arr.length - 1
+                            @Invariant({ 0 <= lo && lo <= arr.length && -1 <= hi && hi < arr.length })
+                            @Invariant({ (0..<lo).every { arr[it] != target } })
+                            @Invariant({ (hi + 1..<arr.length).every { arr[it] != target } })
+                            @Decreases({ hi - lo + 1 })
+                            while (lo <= hi) {
+                                int mid = lo + (hi - lo).intdiv(2)
+                                if (arr[mid] == target) return mid
+                                else if (arr[mid] < target) lo = mid + 1
+                                else hi = mid - 1
+                            }
+                            return -1
+                        }
+                    }''')],
+        // clamp.ts — mutable local, conditional assignment.
+        [group: 'LemmaScript port', name: 'clamp', ok: true,
+         src: tc('''class C {
+                        /** Clamps x into the closed range [lo, hi]. */
+                        @Requires({ lo <= hi })
+                        @Ensures({ result >= lo && result <= hi })
+                        static int clamp(int x, int lo, int hi) {
+                            int result = x
+                            if (result < lo) result = lo
+                            if (result > hi) result = hi
+                            return result
+                        }
+                    }''')],
+        // linearSearch.ts — `break` again becomes an early `return`.
+        [group: 'LemmaScript port', name: 'linearSearch', ok: true,
+         src: tc('''class C {
+                        /** Returns the first index of target, or -1 when it is absent. */
+                        @Ensures({ result >= -1 && result < arr.length })
+                        @Ensures({ result >= 0 ==> arr[result] == target })
+                        @Ensures({ result == -1 ==> (0..<arr.length).every { arr[it] != target } })
+                        static int linearSearch(int[] arr, int target) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= arr.length })
+                            @Invariant({ (0..<i).every { arr[it] != target } })
+                            @Decreases({ arr.length - i })
+                            while (i < arr.length) {
+                                if (arr[i] == target) return i
+                                i = i + 1
+                            }
+                            return -1
+                        }
+                    }''')],
+        // maxElement.ts — LemmaScript's forall/exists pair as native .every/.any.
+        [group: 'LemmaScript port', name: 'maxElement', ok: true,
+         src: tc('''class C {
+                        /** Returns the largest element of a non-empty array. */
+                        @Requires({ arr.length > 0 })
+                        @Ensures({ (0..<arr.length).every { arr[it] <= result } })
+                        @Ensures({ (0..<arr.length).any { arr[it] == result } })
+                        static int maxElement(int[] arr) {
+                            int max = arr[0]
+                            int i = 1
+                            @Invariant({ 1 <= i && i <= arr.length })
+                            @Invariant({ (0..<i).every { arr[it] <= max } })
+                            @Invariant({ (0..<i).any { arr[it] == max } })
+                            @Decreases({ arr.length - i })
+                            while (i < arr.length) {
+                                if (arr[i] > max) max = arr[i]
+                                i = i + 1
+                            }
+                            return max
+                        }
+                    }''')],
+        // isSorted.ts — a boolean result specified in both directions.
+        [group: 'LemmaScript port', name: 'isSorted', ok: true,
+         src: tc('''class C {
+                        /** Reports whether a non-empty array is in ascending order. */
+                        @Requires({ arr.length > 0 })
+                        @Ensures({ result ==> (0..<arr.length - 1).every { arr[it] <= arr[it + 1] } })
+                        @Ensures({ !result ==> (0..<arr.length - 1).any { arr[it] > arr[it + 1] } })
+                        static boolean isSorted(int[] arr) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i < arr.length })
+                            @Invariant({ (0..<i).every { arr[it] <= arr[it + 1] } })
+                            @Decreases({ arr.length - i })
+                            while (i + 1 < arr.length) {
+                                if (arr[i] > arr[i + 1]) return false
+                                i = i + 1
+                            }
+                            return true
+                        }
+                    }''')],
+        // arraySum.ts — LemmaScript's `sumTo(arr, i)` helper is Groovy's own range sum.
+        [group: 'LemmaScript port', name: 'arraySum', ok: true,
+         src: tc('''class C {
+                        /** Sums the elements of a non-empty array. */
+                        @Requires({ arr.length > 0 })
+                        @Ensures({ result == arr.sum() })
+                        static int arraySum(int[] arr) {
+                            int sum = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= arr.length })
+                            @Invariant({ i == 0 ? sum == 0 : sum == arr[0..<i].sum() })
+                            @Decreases({ arr.length - i })
+                            while (i < arr.length) { sum = sum + arr[i]; i = i + 1 }
+                            return sum
+                        }
+                    }''')],
+        // swap.ts — `old` names the pre-state that TypeScript's aliasing `let result = arr` leaves implicit.
+        [group: 'LemmaScript port', name: 'swap', ok: true,
+         src: tc('''class C {
+                        /** Swaps two elements of an array in place. */
+                        @Requires({ 0 <= i && i < arr.length && 0 <= j && j < arr.length })
+                        @Ensures({ result.length == arr.length && result[i] == old.arr[j] && result[j] == old.arr[i] })
+                        static int[] swap(int[] arr, int i, int j) {
+                            int tmp = arr[i]
+                            arr[i] = arr[j]
+                            arr[j] = tmp
+                            return arr
+                        }
+                    }''')],
+        // leftPad.ts — the npm left-pad, as LemmaScript adapts it. One invariant more than the original: `n` is fixed
+        // before the loop, but the verifier needs it restated to keep it across iterations.
+        [group: 'LemmaScript port', name: 'leftPad', ok: true,
+         src: tc('''class C {
+                        /** Pads str on the left with ch until it is len characters long. */
+                        @Requires({ str != null && ch != null && ch.length() == 1 && len >= 0 })
+                        @Ensures({ str.length() >= len ==> result == str })
+                        @Ensures({ str.length() < len ==> result.length() == len })
+                        static String leftPad(String str, int len, String ch) {
+                            String result = str
+                            int n = len - str.length()
+                            int i = 0
+                            @Invariant({ i >= 0 && n == len - str.length() && result.length() == str.length() + i })
+                            @Invariant({ n > 0 ==> i <= n })
+                            @Invariant({ n <= 0 ==> result == str })
+                            @Decreases({ n - i })
+                            while (i < n) { result = ch + result; i = i + 1 }
+                            return result
+                        }
+                    }''')],
+        // containsDuplicate.ts — LemmaScript tracks seen values in a Set; this is the nested-loop form, the outer
+        // invariant saying no pair starting before i is a duplicate.
+        [group: 'LemmaScript port', name: 'containsDuplicate', ok: true,
+         src: tc('''class C {
+                        /** Reports whether any value occurs twice. */
+                        @Ensures({ !result ==> (0..<nums.length).every { int a -> (a + 1..<nums.length).every { int b -> nums[a] != nums[b] } } })
+                        static boolean containsDuplicate(int[] nums) {
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= nums.length })
+                            @Invariant({ (0..<i).every { int a -> (a + 1..<nums.length).every { int b -> nums[a] != nums[b] } } })
+                            @Decreases({ nums.length - i })
+                            while (i < nums.length) {
+                                int j = i + 1
+                                @Invariant({ 0 <= i && i < j && j <= nums.length })
+                                @Invariant({ (i + 1..<j).every { int b -> nums[i] != nums[b] } })
+                                @Decreases({ nums.length - j })
+                                while (j < nums.length) {
+                                    if (nums[i] == nums[j]) return true
+                                    j = j + 1
+                                }
+                                i = i + 1
+                            }
+                            return false
+                        }
+                    }''')],
+        // zigzag.ts — Protocol Buffers' signed-to-unsigned fold, and its round-trip laws. Proved over mathematical
+        // integers, the same model LemmaScript's `number` gets.
+        [group: 'LemmaScript port', name: 'zigzag round trips', ok: true,
+         src: tc('''class C {
+                        /** Folds a signed integer onto a non-negative zigzag code. */
+                        @Ensures({ result >= 0 && result == (n >= 0 ? 2 * n : -2 * n - 1) })
+                        static int encode(int n) { n >= 0 ? 2 * n : -2 * n - 1 }
+
+                        /** Unfolds a zigzag code back to its signed integer: the integer whose code it is. */
+                        @Requires({ z >= 0 })
+                        @Ensures({ z == (result >= 0 ? 2 * result : -2 * result - 1) })
+                        static int decode(int z) { z % 2 == 0 ? z.intdiv(2) : -(z + 1).intdiv(2) }
+
+                        /** Decoding an encoded integer recovers it. */
+                        @Ensures({ result == n })
+                        static int roundTrip(int n) { decode(encode(n)) }
+
+                        /** Encoding a decoded code recovers it. */
+                        @Requires({ z >= 0 })
+                        @Ensures({ result == z })
+                        static int reverseRoundTrip(int z) { encode(decode(z)) }
+                    }''')],
+        // The same encode on Java's 32-bit int: @CheckOverflow finds the doubling overflows at both ends — a
+        // fact about Java's int that a proof over unbounded integers cannot see.
+        [group: 'LemmaScript port', name: 'zigzag encode overflows 32-bit int', expect: 'multiplication overflows 32-bit signed range',
+         src: tc('''class C {
+                        @CheckOverflow
+                        @Ensures({ result >= 0 })
+                        static int encode(int n) { n >= 0 ? 2 * n : -2 * n - 1 }
+                    }''')],
+        // counter.ts — a class with a bounded count.
+        [group: 'LemmaScript port', name: 'Counter', ok: true,
+         src: tc('''class Counter {
+                        int count = 0
+                        final int max
+
+                        Counter(int max) { this.max = max }
+
+                        /** Advances the count, returning its previous value. */
+                        @Requires({ count < max })
+                        @Ensures({ count <= max && result == old.count })
+                        int increment() { int o = count; count = count + 1; return o }
+
+                        /** Reports whether the count has reached its bound. */
+                        @Ensures({ result == (count >= max) })
+                        boolean isAtMax() { count >= max }
+                    }''')],
+        // maxSpread.ts — `Math.max(...scores)` is Groovy's own `scores.max()`.
+        [group: 'LemmaScript port', name: 'highScore', ok: true,
+         src: tc('''class C {
+                        /** Returns the highest of a non-empty set of scores. */
+                        @Requires({ scores != null && scores.length > 0 })
+                        @Ensures({ (0..<scores.length).every { scores[it] <= result } })
+                        static int highScore(int[] scores) { scores.max() }
+                    }''')],
+        // pruneWindow (the front page's core.verified.ts), as a loop. The size bound proves; the window bound on
+        // the elements needs element facts about what `add` appended, which list-building loops don't carry yet.
+        [group: 'LemmaScript port', name: 'pruneWindow size bound', ok: true,
+         src: tc('''class C {
+                        /** Keeps only the requests still inside the sliding time window. */
+                        @Requires({ log != null })
+                        @Ensures({ result.size() <= log.size() })
+                        static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
+                            List<Integer> out = []
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= log.size() && out != null && out.size() <= i })
+                            @Decreases({ log.size() - i })
+                            while (i < log.size()) {
+                                if (log[i] > now - w) out.add(log[i])
+                                i = i + 1
+                            }
+                            return out
+                        }
+                    }''')],
+    ]
+}

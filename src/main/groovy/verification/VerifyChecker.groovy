@@ -8829,6 +8829,28 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         ExpressionTransformer tr = null
                         tr = { Expression e ->
                             if (isCallExpr(e)) {
+                                // Phase 309 — inside-out: hoist calls in the ARGUMENTS first, so `decode(encode(n))`
+                                // sees `decode(ret$call$local$k)` (an argument assumeCalleeEnsures can translate).
+                                // Unhoistable inner calls leave the outer as it was, which then skips loudly as before.
+                                // Arguments only — a call RECEIVER (`a.f().g()`) keeps its carrier-chain route.
+                                Expression inner = null
+                                if (e instanceof MethodCallExpression) {
+                                    MethodCallExpression mce = (MethodCallExpression) e
+                                    Expression args = mce.arguments.transformExpression(tr)
+                                    if (args != mce.arguments) {
+                                        MethodCallExpression r = new MethodCallExpression(mce.objectExpression, mce.method, args)
+                                        r.implicitThis = mce.implicitThis
+                                        inner = r
+                                    }
+                                } else if (e instanceof StaticMethodCallExpression) {
+                                    StaticMethodCallExpression sce = (StaticMethodCallExpression) e
+                                    Expression args = sce.arguments.transformExpression(tr)
+                                    if (args != sce.arguments) inner = new StaticMethodCallExpression(sce.ownerType, sce.method, args)
+                                }
+                                if (inner != null && hoistedAny[0]) {
+                                    inner.setSourcePosition(e)
+                                    e = inner
+                                }
                                 // Phase 206 — mint the hoist local in the CALLEE's return sort: a String- (or
                                 // otherwise non-Int-) returning recursive call previously got an Int handle,
                                 // and the callee's @Ensures over result.length() crashed the seq sort
@@ -8840,8 +8862,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                                 ClassNode hrt = hoistCallee?.returnType
                                 Object hSort = (hrt != null && !isIntElement(hrt)) ? enc.sortForType(hrt) : null
                                 Object fresh = hSort != null ?
-                                    session.varOfSort('ret$call$' + (++ssaVersion), hSort) :
-                                    session.intVar('ret$call$' + (++ssaVersion))
+                                    session.varOfSort('ret$call#' + (++ssaVersion), hSort) :
+                                    session.intVar('ret$call#' + (++ssaVersion))
                                 if (assumeCalleeEnsures(session, enc, e, node, fresh, hasDecreases(node))) {
                                     String nm = 'ret$call$local$' + ssaVersion
                                     enc.bind(nm, fresh)
@@ -11228,6 +11250,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (argHandle == null && Encoder.isCarrier(formals[i].type)) {
                     argHandle = carrierValueOf(session, enc, argExprs[i], currentMethod)
                 }
+                // A scalar argument that is itself a contracted call (`g(f(n))`): bind it to a fresh local carrying
+                // the inner callee's @Ensures, as the replayed `int c = f(n); g(c)` form does (replayScalarCall).
+                if (argHandle == null && isCallExpr(argExprs[i])) {
+                    String tmp = '$arg' + (havocCounter++) + '#call'
+                    if (replayScalarCall(enc, session, tmp, argExprs[i], formals[i].type)) argHandle = enc.translate(new VariableExpression(tmp))
+                }
                 if (argHandle == null) {
                     addStaticTypeError(
                         Reporter.formatSkipped(target.name,
@@ -12072,7 +12100,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 ClassNode declType = ((VariableExpression) de.leftExpression).originType ?: de.leftExpression.type
                 Object rhs = enc.translate(de.rightExpression)
                 if (rhs != null) enc.bind(name, rhs)
-                else if (!replayCarrierCall(enc, s, name, de.rightExpression, declType)) havocLocation(enc, name)
+                else if (!replayCarrierCall(enc, s, name, de.rightExpression, declType) &&
+                         !replayScalarCall(enc, s, name, de.rightExpression, declType)) havocLocation(enc, name)
                 Object kn = enc.nullityOfExpr(de.rightExpression)   // Phase 142b — thread known nullity (a `new X(…)` local is non-null)
                 if (kn != null) enc.bindNullity(name, kn)
                 return true
@@ -12112,7 +12141,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String name = ((VariableExpression) lhs).name
                 Object rhs = enc.translate(be.rightExpression)
                 if (rhs != null) enc.bind(name, rhs)
-                else if (!replayCarrierCall(enc, s, name, be.rightExpression, ((VariableExpression) lhs).originType ?: lhs.type)) havocLocation(enc, name)
+                else {
+                    ClassNode lt = ((VariableExpression) lhs).originType ?: lhs.type
+                    if (!replayCarrierCall(enc, s, name, be.rightExpression, lt) &&
+                        !replayScalarCall(enc, s, name, be.rightExpression, lt)) havocLocation(enc, name)
+                }
                 return true
             }
             if (lhs instanceof PropertyExpression &&
@@ -12158,6 +12191,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!isCallExpr(rhsE)) return false
         Object fresh = s.varOfSort(name + '#replay' + (havocCounter++), carrierSort)
         if (!assumeCalleeEnsures(s, enc, rhsE, currentMethod, fresh, hasDecreases(currentMethod))) return false
+        enc.bind(name, fresh)
+        return true
+    }
+
+    /** The scalar twin of {@link #replayCarrierCall}: an int-like / boolean / String local bound from a contracted
+     *  call in the replayed prefix (`int c = f(n); g(c)`) carries the callee's @Ensures to the call site, exactly as
+     *  the postcondition path's call-assignment branch does. Without it the local was havoc'd, so `f`'s
+     *  `result >= 0` never reached `g`'s `@Requires({ z >= 0 })` (sound, but a spurious refute). Returns false
+     *  (→ the caller's plain havoc) when the callee has nothing to assume. List- and tuple-valued locals keep their
+     *  own oracle routes and are not handled here. */
+    private boolean replayScalarCall(Encoder enc, SmtSession s, String name, Expression rhs, ClassNode declType) {
+        if (declType == null || !isCallExpr(rhs)) return false
+        String tn = declType.name
+        boolean isBool = tn == 'boolean' || tn == 'java.lang.Boolean'
+        if (!isIntElement(declType) && !isBool && tn != 'java.lang.String') return false
+        String fn = name + '#replay' + (havocCounter++)
+        Object fresh = isIntElement(declType) ? s.intVar(fn) :
+            (isBool ? s.boolVar(fn) : s.varOfSort(fn, enc.sortForType(declType)))
+        if (!assumeCalleeEnsures(s, enc, rhs, currentMethod, fresh, currentMethod != null && hasDecreases(currentMethod))) return false
         enc.bind(name, fresh)
         return true
     }

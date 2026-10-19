@@ -50,6 +50,7 @@ boundary), [FRAGMENT.md](FRAGMENT.md); for the increment history, [ROADMAP.md](R
 | **Recursion by induction (self-`@Ensures` + termination)** | `@Decreases({ n })` on a method | ✅ Phase 7 (slice 2) |
 | **Lemmas: prove a `void` method by induction, call to apply** | `lemma(args)` as a statement | ✅ Phase 7 (slice 3) |
 | **Flow-sensitive precondition (use the preceding call's `@Ensures`)** | `sort(a, n-1); insert(a, n-1)` | ✅ Phase 7 (slice 4) |
+| **Call results as arguments** — a scalar call result reaching another call's `@Requires`, through a local or nested, and a call nested inside a returned call | `int c = f(n); g(c)` / `g(f(n))` / `return decode(encode(n))` | ✅ Phase 309 |
 | **Recursive insertion sort — *sortedness*, end-to-end** | `insert` + `sort` by induction | ✅ Phase 7 |
 | **Closed-constant folding (normalise-then-SMT)** | `(2 + 2) * (2 + 2)`, `a[(1 + 1) * 2]` | ✅ Phase 8a (slice 1) |
 | **Closed pure-function evaluation** | `pow2(10)`, `factorial(5)` in a contract/body | ✅ Phase 8a (slice 2) |
