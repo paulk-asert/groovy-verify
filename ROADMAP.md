@@ -14975,7 +14975,8 @@ where neither the Phase 312 break lifting nor the nested-loop break summary look
   continue. The rest is made continue-free first, so several continues chain. The flag is a body-local, so it is
   re-declared each iteration and needs no invariant, and its `#` keeps it out of counterexamples. Without an exit
   in the rest, Phase 324's branch rewrite stands unchanged.
-- **Still out:** a `continue` nested in an `if` ahead of an exit (the old rewrite buries the exit, so loud skip).
+- **Still out:** a `continue` nested in an `if` ahead of an exit (the old rewrite buries the exit, so loud skip;
+  Phase 327 lifts it).
   Separately, and not new: a `for` loop whose body ends in an `if`/`else` chain with a `return` or `break` has its
   update appended after that chain, so the Phase 49c tail lifting doesn't find it (loud skip, with or without a
   `continue`; the `while` form proves). Phase 326 lifts it.
@@ -15015,6 +15016,30 @@ still running on the continuing leaf (a step of 2 refutes preservation), a neste
 `for` loop establishing its invariant from its init (and refuted when the init breaks it).
 
 Docs: FRAGMENT's loop paragraph, a CAPABILITIES row.
+
+## Phase 327 — a nested `continue` ahead of a `break` or `return`  *(shipped — capture change)*
+
+Phase 325's boundary: `if (p) { A; if (c) continue; B }; if (d) break` still took Phase 324's branch rewrite,
+which moves the exit into both branches of the outer `if`, where the exit lifting doesn't look.
+
+- **A flag set where it continues.** In `ContractExpansionTransform.continueFree`, an `if` that may continue
+  (other than Phase 325's top-level `if (c) continue`) whose rest has a `break` or `return` becomes
+  `boolean cont#<line>_<col> = false; if (p) { ⟦A; if (c) continue; B⟧ }`, followed by the rest guarded as in
+  Phase 325. `flagged` rewrites each branch: an unlabelled `continue` becomes `cont = true` and ends its list,
+  and what follows an inner `if` that may set the flag becomes `if (cont) {} else s`, so `B` runs only when the
+  iteration didn't continue. It recurses through blocks and nested `if`s and refuses, so the loud skip stands,
+  for a labelled `continue`, one under anything else, and a guard that would move a loop into a branch.
+- The flag is a body-local declared before the `if`, so it is reset each iteration, needs no invariant, and stays
+  out of counterexamples.
+
+**Shipped tests:** group `P327 nested continue ahead of an exit`, 7 cases: a continue nested in an `if` ahead of a
+break, one in an `else` that keeps a return from seeing negatives, the rest of the continuing branch skipped
+(`s - 1` only when `s != 0`), a continue that doesn't cover the exit and a non-preserving continuing iteration
+(both refuted), a nested loop's nested continue ahead of its break, and a nested continue ahead of a loop (loud
+skip). `P325`'s "a continue nested in an if ahead of a break skips loudly" case now proves and moved here as the
+first case.
+
+Docs: FRAGMENT's loop paragraph, README's *Out:* list, a CAPABILITIES row.
 
 ---
 

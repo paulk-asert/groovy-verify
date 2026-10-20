@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G370_p325_continue_flag {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 325 continue ahead of an exit: a top-level if (c) continue or if (c) { lead; continue } followed by a break or return records the continue in a body-local flag and guards what follows by it, so if (d) break / if (d) { lead; break } / if (d) return e stay top-level exits (with condition !cont && d, short-circuited so d is only evaluated when the iteration did not continue), in an outer loop and in a nested one; a continue nested in an if ahead of an exit still skips loudly.'
+    static final String DESCRIPTION = 'Phase 325 continue ahead of an exit: a top-level if (c) continue or if (c) { lead; continue } followed by a break or return records the continue in a body-local flag and guards what follows by it, so if (d) break / if (d) { lead; break } / if (d) return e stay top-level exits (with condition !cont && d, short-circuited so d is only evaluated when the iteration did not continue), in an outer loop and in a nested one.'
 
     static final List<Map> CASES = [
 
@@ -197,27 +197,6 @@ class G370_p325_continue_flag {
                                 i = i + 1
                             }
                             return s
-                        }
-                    }''')],
-
-        // ---------- still out ----------
-        [group: 'P325 continue ahead of an exit', name: 'a continue nested in an if ahead of a break skips loudly', expect: 'Skipped loop verification',
-         src: tc('''class C {
-                        @Requires({ a != null })
-                        @Ensures({ result >= 0 })
-                        static int f(int[] a, int t) {
-                            int i = 0
-                            @Invariant({ 0 <= i && i <= a.length })
-                            @Decreases({ a.length - i })
-                            while (i < a.length) {
-                                i = i + 1
-                                if (t > 0) {
-                                    if (a[i - 1] < 0) continue
-                                    t = t - 1
-                                }
-                                if (a[i - 1] == t) break
-                            }
-                            return i
                         }
                     }''')],
     ]

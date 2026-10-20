@@ -1370,6 +1370,24 @@ class ContractExpansionTransform implements ASTTransformation {
                 for (Statement t : tail) out.add(unlessContinued(flag, t))
                 return out
             }
+            if (rest.any { containsLoopExit(it) }) {
+                // Phase 327 — the continue is nested in this if: a flag false at the if, set where it continues
+                // (the rest of that branch guarded by it), then guards what follows the if as in Phase 325
+                VariableExpression flag = new VariableExpression("cont#${ifs.lineNumber}_${ifs.columnNumber}".toString(), ClassHelper.boolean_TYPE)
+                List<Statement> t = flagged(branchStatements(ifs.ifBlock), flag), e = flagged(branchStatements(ifs.elseBlock), flag)
+                List<Statement> tail = continueFree(new ArrayList<Statement>(rest))
+                if (t == null || e == null || tail == null) return null
+                DeclarationExpression decl = new DeclarationExpression(flag, Token.newSymbol(Types.ASSIGN, -1, -1), ConstantExpression.FALSE)
+                decl.setSourcePosition(ifs)
+                ExpressionStatement declSt = new ExpressionStatement(decl)
+                declSt.setSourcePosition(ifs)
+                out.add(declSt)
+                IfStatement rebuilt = new IfStatement(ifs.booleanExpression, block(t), e.isEmpty() ? EmptyStatement.INSTANCE : block(e))
+                rebuilt.setSourcePosition(ifs)
+                out.add(rebuilt)
+                for (Statement r : tail) out.add(unlessContinued(flag, r))
+                return out
+            }
             List<Statement> thenSs = branchStatements(ifs.ifBlock), elseSs = branchStatements(ifs.elseBlock)
             thenSs.addAll(rest); elseSs.addAll(rest)
             List<Statement> t = continueFree(thenSs), e = continueFree(elseSs)
@@ -1377,6 +1395,49 @@ class ContractExpansionTransform implements ASTTransformation {
             IfStatement rebuilt = new IfStatement(ifs.booleanExpression, block(t), e.isEmpty() ? EmptyStatement.INSTANCE : block(e))
             rebuilt.setSourcePosition(ifs)
             out.add(rebuilt)
+            return out
+        }
+        out
+    }
+
+    /** Phase 327 — {@code ss} with each unlabelled {@code continue} replaced by {@code flag = true} and what follows
+     *  an {@code if} that may set it guarded by {@code if (flag) {} else s}; null for a labelled {@code continue},
+     *  one under anything but blocks and {@code if}s, or a guard that would move a loop into a branch. */
+    private static List<Statement> flagged(List<Statement> ss, VariableExpression flag) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (int i = 0; i < ss.size(); i++) {
+            Statement st = ss.get(i)
+            if (st instanceof ContinueStatement) {
+                if (((ContinueStatement) st).label != null) return null
+                ExpressionStatement set = new ExpressionStatement(new BinaryExpression(flagRef(flag),
+                    Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), ConstantExpression.TRUE))
+                set.setSourcePosition(st)
+                out.add(set)
+                return out
+            }
+            if (!containsLoopContinue(st)) { out.add(st); continue }
+            List<Statement> rest = new ArrayList<Statement>(ss.subList(i + 1, ss.size()))
+            if (st instanceof BlockStatement) {
+                List<Statement> flat = new ArrayList<Statement>(((BlockStatement) st).statements)
+                flat.addAll(rest)
+                List<Statement> tail = flagged(flat, flag)
+                if (tail == null) return null
+                out.addAll(tail)
+                return out
+            }
+            if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
+            IfStatement ifs = (IfStatement) st
+            List<Statement> t = flagged(branchStatements(ifs.ifBlock), flag), e = flagged(branchStatements(ifs.elseBlock), flag)
+            List<Statement> tail = flagged(rest, flag)
+            if (t == null || e == null || tail == null) return null
+            IfStatement rebuilt = new IfStatement(ifs.booleanExpression, block(t), e.isEmpty() ? EmptyStatement.INSTANCE : block(e))
+            rebuilt.setSourcePosition(ifs)
+            out.add(rebuilt)
+            for (Statement r : tail) {
+                IfStatement guarded = new IfStatement(new BooleanExpression(flagRef(flag)), block(new ArrayList<Statement>()), r)
+                guarded.setSourcePosition(r)
+                out.add(guarded)
+            }
             return out
         }
         out

@@ -215,7 +215,7 @@ you write:
   happy path walked exactly, each handler entered with sound catch-entry state (and, when the try's
   throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
   after `Math.floorDiv(a, b)` knows `b == 0`).
-  *Out:* a labelled `continue`, a `continue` nested in an `if` ahead of a `break`/`return`, `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  *Out:* a labelled `continue`, `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 
