@@ -348,15 +348,17 @@ and must restate only a fact over state it writes, the OpenJML `maintaining` dis
 all desugaring to the same machinery (Phases 59 & 63; the for-in's index is synthesised and hidden — except for
 `eachWithIndex`, where the developer named it — and the loop variable keeps its name). A loop may leave early by
 `return` (Phases 49/49b/49c) or by **`break`** (Phase 312: `if (c) break` / `if (c) { …; break }` at the top level of
-the body or ending a branch of its final `if`/`else` chain — the code after the loop is checked from each `break` as
+the body or ending a branch of its final `if`/`else` chain, in a `for` loop too, where the update follows the
+chain (Phase 326) — the code after the loop is checked from each `break` as
 well as the natural exit, and the breaking iteration needn't preserve the invariant or decrease the variant). A
-nested loop may break too, by a top-level `if (c) break` / `if (c) { …; break }` (Phase 324): its summary then
+nested loop may break too, by a top-level `if (c) break` / `if (c) { …; break }` (Phase 324) or from its final
+chain (Phase 326): its summary then
 carries each break's exit state beside `inv ∧ ¬guard`. An unlabelled **`continue`** is desugared (Phase 324): what
 follows an `if` that may continue moves into its branches, so the continuing iteration must preserve the invariant
 (a `for` loop's update still runs), as in Dafny. A top-level `if (c) continue` / `if (c) { …; continue }` ahead of
 a `break` or `return` is recorded in a flag instead, and what follows is guarded by it, so those exits stay
 top-level (Phase 325). A labelled `continue`, a rewrite that would move a loop into a branch, a `continue` nested
-in an `if` ahead of an exit, a nested loop's break buried in an `if`, and a `return` inside a `.each` closure
+in an `if` ahead of an exit, a nested loop's break buried in an `if` elsewhere, and a `return` inside a `.each` closure
 (which only ends that element) skip loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
 loop never writes keeps that value at the loop head, in the body and after the loop (`int n = len - str.length()`
 needs no invariant restating it), and an allocation the loop only stores into keeps `x != null`, plus

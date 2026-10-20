@@ -62,6 +62,9 @@ class LoopSpec {
     // loop prefix and {@code update} is appended to {@code body} at capture time, so
     // every downstream path (loop VCs and value-flow) sees a plain while-shaped loop.
     List<Statement> init = null   // null for while/do-while
+    // Phase 326 — the appended update itself (null for while/do-while), so a tail if/else chain just ahead of it is
+    // still found as the body's tail (Phase 49c's exit lifting).
+    Statement update = null
     // Phase 63/65 — for a {@code for (x in xs)} loop, the loop variable's name and the synthetic
     // {@code x = xs[idx]} binding. groovy-contracts checks the invariant at *body-entry* (x bound),
     // so an invariant clause referencing {@code x} is a per-element check (Phase 65), not a loop-head

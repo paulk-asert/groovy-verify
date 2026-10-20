@@ -14978,7 +14978,7 @@ where neither the Phase 312 break lifting nor the nested-loop break summary look
 - **Still out:** a `continue` nested in an `if` ahead of an exit (the old rewrite buries the exit, so loud skip).
   Separately, and not new: a `for` loop whose body ends in an `if`/`else` chain with a `return` or `break` has its
   update appended after that chain, so the Phase 49c tail lifting doesn't find it (loud skip, with or without a
-  `continue`; the `while` form proves).
+  `continue`; the `while` form proves). Phase 326 lifts it.
 
 **Shipped tests:**
 - group `P325 continue ahead of an exit`, 10 cases: a continue ahead of a break, a search whose break condition
@@ -14989,6 +14989,32 @@ where neither the Phase 312 break lifting nor the nested-loop break summary look
 - `P312 break` drops its "a continue ahead of a break skips loudly" case, which now proves (the first P325 case).
 
 Docs: FRAGMENT's loop paragraph, README's *Out:* list, a CAPABILITIES row.
+
+## Phase 326 — a `for` loop body ending in a `return`/`break` chain  *(shipped — loop-site change)*
+
+The boundary Phase 325 recorded. Phase 49c lifts the exits of the `if`/`else` chain that ends a loop body (each
+returning or breaking leaf becomes a top-level `if (pathCond) exit`, ahead of the chain with those leaves
+emptied), but only when the chain is the body's last statement. A `for` or for-in loop's update is appended to the
+captured body (Phase 59), so the chain never was, and the loop skipped loudly.
+
+- **The update is known.** `LoopSpec.update` records the appended statement at capture. `desugarTailReturns`
+  takes it and, when the body ends with it, lifts the chain just ahead and keeps the update last. Sound: a lifted
+  exit fires at the chain's entry state and leaves before the update would run (a `break` skips a `for` loop's
+  update, a `return` leaves the method), while every continuing leaf still runs it.
+- **Nested loops too.** The lifting now also runs on the body of each nested loop when the outer site is built
+  (idempotent: an already-lifted body ends in its exit-free residual chain), so a nested loop's chain breaks
+  reach `summarizeWithBreaks` as top-level exits, for a nested `while` as much as a `for`.
+- **Fixed: a nested `for` loop's init.** `checkNestedEstablishment` ran the outer-body statements before the inner
+  loop, but not the inner loop's `init`, so `for (int j = 0; …)` met its invariant with `j` unconstrained: every
+  classic `for` nested in a loop was refuted on entry (a false refutation, never a false proof). The init now
+  runs before the check.
+
+**Shipped tests:** group `P326 for loop tail chain`, 9 cases: a return/break chain ending a `for` body, breaks
+with leads, a for-in body, continues ahead of the chain (Phase 325's flag), a wrong return refuted, the update
+still running on the continuing leaf (a step of 2 refutes preservation), a nested `for` loop's chain, and a nested
+`for` loop establishing its invariant from its init (and refuted when the init breaks it).
+
+Docs: FRAGMENT's loop paragraph, a CAPABILITIES row.
 
 ---
 

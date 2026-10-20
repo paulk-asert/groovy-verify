@@ -10522,7 +10522,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // Phase 49c — first lift any `return` nested in a tail-position if/else chain into the
             // top-level `if (pathCond) return e` shape, so the binary-search idiom (`else return mid`)
             // is handled by the same Slice B machinery below.
-            site.spec.body = desugarTailReturns(site.spec.body)
+            site.spec.body = desugarTailReturns(site.spec.body, site.spec.update)
+            // Phase 326 — and a nested loop's, so its chain's breaks reach the inner summary as top-level exits
+            for (Statement st : site.spec.body) {
+                LoopSpec inner = (LoopSpec) st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                if (inner != null && inner.body != null) inner.body = desugarTailReturns(inner.body, inner.update)
+            }
             partitionEarlyExits(site.spec.body, 'inBody', site.earlyExits)
         }
         return site
@@ -10659,8 +10664,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code return e} (no preceding statements in the leaf) is rewritten; any other shape is left
      * untouched so {@link LoopEncoder} still rejects it as an honest skip.
      */
-    private static List<Statement> desugarTailReturns(List<Statement> body) {
+    private static List<Statement> desugarTailReturns(List<Statement> body, Statement update = null) {
         if (body == null || body.isEmpty()) return body
+        // Phase 326 — a for loop's update is appended after the chain: the chain is the tail of the user's body,
+        // and its lifted exits leave before the update would run, so lift it and keep the update last
+        if (update != null && body.size() >= 2 && body.get(body.size() - 1).is(update)) {
+            List<Statement> lifted = desugarTailReturns(new ArrayList<Statement>(body.subList(0, body.size() - 1)))
+            List<Statement> out = new ArrayList<Statement>(lifted)
+            out.add(update)
+            return out
+        }
         Statement last = body.get(body.size() - 1)
         if (!(last instanceof IfStatement) || !(statementContainsReturn(last) || statementContainsBreak(last))) return body
         // [Expression pathCond, Expression retExpr|null, List<Statement> breakLead|null] — Phase 312 adds break leaves
@@ -11667,6 +11680,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         innerSite.originalPrefix = Collections.<Statement> emptyList()
         innerSite.originalSuffix = Collections.<Statement> emptyList()
         List<Statement> before = stmtsBefore(site.spec.body, innerLoop)
+        // Phase 326 — a nested for loop's init (`int j = 0`) runs before its invariant is first checked
+        if (innerSpec.init != null) before.addAll(innerSpec.init)
         checkNestedEstablishment(node, site, innerSite, before, reqAst)
         List<Expression> innerStable = loopStableRequires(reqAst, innerSite)
         checkPreservation(node, innerSite, innerStable)
