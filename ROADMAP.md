@@ -15103,6 +15103,30 @@ two limits, a lead that writes a conjunct and the negated guard, both refuted.
 
 Docs: FRAGMENT's loop paragraph, a CAPABILITIES row.
 
+## Phase 330 — several nested loops in one body  *(shipped — loop-site change)*
+
+`verifyNestedLoops` threw "more than one nested loop in the loop body — not yet supported" for a second annotated
+loop in an outer body (row-wise matrix work, two passes per row). Everything else already took several: the
+outer VCs summarise each nested loop as symExec reaches it, and the obligations pass and Phase 326's tail lifting
+iterate over all of them.
+
+- **Each nested loop in turn.** `verifyNestedLoop` is the old single-loop body. Its establishment runs the outer
+  body up to the loop (`stmtsBefore`), so the nested loops before it are summarised there and their exit facts
+  reach it (`k <= j` from the first loop's `j == n`). Preservation, progress and the loop's returns don't depend
+  on its neighbours.
+- **A nested return in an earlier sequential loop.** `verifyLoop` passed a null postcondition to the nested
+  checks of every outer loop but the last (Phase 207 keeps `@Ensures` for the last site), so a nested loop's
+  `return` there wasn't checked. It wasn't a silent pass: the last site can't summarise an outer loop holding a
+  nested loop, so the method skipped loudly. It now gets the `@Ensures` whichever site it sits in, and a wrong
+  return is refuted, but the correct version still skips at the last loop.
+
+**Shipped tests:** group `P330 several nested loops`, 7 cases: two nested loops in one body; a second whose
+establishment needs the first's exit fact; a wrong establishment and a wrong preservation of the second (refuted);
+a return in the second, and a wrong one (refuted); a nested return in an earlier one of sequential loops
+(refuted).
+
+Docs: FRAGMENT's loop paragraph, README's control-flow list, a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment

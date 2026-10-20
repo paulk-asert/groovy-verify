@@ -10842,7 +10842,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (site.spec.variant != null) checkProgress(node, site, stableReqs)
             // Phase 91 — a nested annotated loop in the outer body: the outer VCs above already summarised
             // it; now discharge its own establish/preserve/progress (without which the summary is unsound).
-            verifyNestedLoops(node, site, reqAst, postAst)
+            // Phase 330 — a nested loop's return leaves the method whichever of sequential loops it sits in
+            verifyNestedLoops(node, site, reqAst, postAst ?: (findEnsures(node) != null ? contractAstFor(node, 'ensures') : null))
             if (!perElement.isEmpty()) checkForInElement(node, site, perElement, stableReqs)
             // A for-in / `.each` standing on the auto bounds invariant alone can prove the postcondition only
             // when the body accumulates nothing — `0 <= idx <= size` doesn't frame a variable the body writes,
@@ -11686,13 +11687,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     //   • progress  — the inner @Decreases strictly decreases and stays ≥ 0
     // Preserve/progress reuse the standard checks verbatim against an inner {@link LoopSite}.
     private void verifyNestedLoops(MethodNode node, LoopSite site, Expression reqAst, Expression postAst) {
-        List<Statement> inners = annotatedInnerLoops(site.spec.body)
-        if (inners.isEmpty()) return
-        if (inners.size() > 1) {
-            throw new UnsupportedConstructException(
-                "more than one nested loop in the loop body — not yet supported")
-        }
-        Statement innerLoop = inners.get(0)
+        // Phase 330 — each nested loop in turn: its establishment runs the outer body up to it, where symExec
+        // summarises the nested loops before it; its own preservation, progress and returns don't depend on them
+        for (Statement innerLoop : annotatedInnerLoops(site.spec.body)) verifyNestedLoop(node, site, innerLoop, reqAst, postAst)
+    }
+
+    private void verifyNestedLoop(MethodNode node, LoopSite site, Statement innerLoop, Expression reqAst, Expression postAst) {
         LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
         // ≤ 2 levels for this slice: the inner body must not itself contain a loop we'd have to summarise.
         if (!annotatedInnerLoops(innerSpec.body).isEmpty()) {

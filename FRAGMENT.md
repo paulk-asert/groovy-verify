@@ -373,7 +373,8 @@ invariant** (`0 <= idx <= size`) and a `size - idx` **variant**, so a body asser
 and since a statement-level `@Invariant` is a Groovy parse error on a `.each` call, such a body **loud-skips**
 (honest, not silently passed). The for-in / `.each` may have **a second loop nested inside it** (Phase 91, two
 levels, scalar accumulators or array-filling inner bodies — and the inner loop may **`return` a witness** on a
-match, so a doubly-nested search verifies, Phase 109 — see below). A `do … while` is `B; while (G) B` — its body runs once
+match, so a doubly-nested search verifies, Phase 109 — see below; several nested loops may follow one another in
+a body, each verified in turn with the ones before it summarised, Phase 330). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
 plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
 explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts
