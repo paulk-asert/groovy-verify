@@ -7824,7 +7824,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // Phase 40 — same trick for removeLast()/pop(): the implicit precondition
                     // {@code xs.size() > 0} maps to IndexSite(xs, 0), so pop-on-empty refutes with
                     // the standard bounds-check diagnostic.
-                    synthIndexSiteFor(mce, v.name)
+                    synthIndexSiteFor(mce, v.name, recvType)
                 } else if (accessed instanceof FieldNode && v.name != 'this' && v.name != 'super') {
                     // Phase 43 — instance field receiver: synthesise the IndexSite for the
                     // runtime-throwing shapes only ({@code get(i)}, {@code first()}, {@code head()},
@@ -7834,7 +7834,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     // adding a scalar nullity obligation here would regress them. The bounds
                     // check on a field's runtime-throwing read still fires — pop-on-empty
                     // refutes uniformly whether xs is a parameter or a field.
-                    synthIndexSiteFor(mce, v.name)
+                    synthIndexSiteFor(mce, v.name, ((FieldNode) accessed).type)
                 }
             } else if (!mce.implicitThis) {
                 // Phase 37 — xs[i].method() and xs.get(i).method() shapes. The dereference target
@@ -7856,12 +7856,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
          * {@code .get(i)} lifts the arg expression. Used by both the parameter-receiver branch
          * (Phase 39/40) and the field-receiver branch (Phase 43).
          */
-        private void synthIndexSiteFor(MethodCallExpression mce, String name) {
+        private void synthIndexSiteFor(MethodCallExpression mce, String name, ClassNode recvType = null) {
             String mName = mce.methodAsString
             List<Expression> margs = mce.arguments instanceof ArgumentListExpression ?
                 ((ArgumentListExpression) mce.arguments).expressions :
                 Collections.<Expression>emptyList()
             if (mName == 'get' && margs.size() == 1) {
+                indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
+            } else if (mName == 'set' && margs.size() == 2 && isListType(recvType)) {
+                // Phase 340 — List.set(i, v) throws IndexOutOfBoundsException outside [0, size): the bounds obligation
+                // of a get(i) (a BitSet's set(int, boolean) has two arguments too, hence the receiver type)
                 indexSites.add(new IndexSite(node: mce, receiver: name, index: margs.get(0)))
             } else if ((mName == 'first' || mName == 'head' ||
                         mName == 'removeLast' || mName == 'pop' ||
@@ -10779,6 +10783,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /** Phase 340 — a void method (not a constructor, which yields {@code this}). */
+    private static boolean isVoidMethod(MethodNode m) {
+        m != null && !(m instanceof ConstructorNode) && m.returnType == ClassHelper.VOID_TYPE
+    }
+
     /** Phase 336 — {@code m}'s parameter names and the names its body declares (closures excluded). */
     private static Set<String> paramsAndLocals(MethodNode m) {
         Set<String> out = new HashSet<String>()
@@ -11639,6 +11648,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (st instanceof AssertStatement) return collectWritesExpr(((AssertStatement) st).booleanExpression, ws)
         // Phase 91 — a nested loop writes whatever its guard + body do; recurse so the outer write-set
         // stays a sound over-approximation (and the inner-loop case below isn't dropped as "unknown").
+        // Phase 340 — an annotated loop writes what its captured init, guard and body do: its raw loopBlock carries
+        // groovy-contracts' woven invariant checks, unknown calls that made every outer loop holding one "unbounded"
+        LoopSpec spec = (LoopSpec) st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (spec != null) {
+            return (spec.init == null || collectWritesStmts(spec.init, ws)) && collectWritesExpr(spec.guard, ws) &&
+                   collectWritesStmts(spec.body, ws)
+        }
         if (st instanceof LoopingStatement) {
             LoopingStatement ls = (LoopingStatement) st
             Expression g = (ls instanceof WhileStatement) ? ((WhileStatement) ls).booleanExpression :
@@ -11817,7 +11833,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression resultExpr = ex.result
             if (ex.isBreak) {
                 LoopEncoder.symExec(ex.lead, enc, s)
-                resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
+                resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s, isVoidMethod(node))
             }
             // Bind result to the return expression (factory-aware, mirroring checkUse): a tuple / list-literal
             // / map-literal return (`return Tuple.tuple(i, j)`) records result's slots so `result.v1`/`.v2`
@@ -12256,10 +12272,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 s.assertExpr(s.not(LoopEncoder.tr(enc, site.spec.guard, "guard")))
             }
             assumeStableRequires(s, enc, loopFrameFacts(site))  // Phase 318 — still true after the loop
-            Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s)
+            Expression resultExpr = LoopEncoder.resultExpr(site.suffix, enc, s, isVoidMethod(node))
             // Phase 78 — a list-literal return (e.g. `return [s, p]`) binds result's contents as a factory,
             // so result.size()/result[k] fold; otherwise the scalar-handle binding + size/array alias.
-            if (resultExpr == null || (!enc.tryRecordFactoryAssign('result', resultExpr) &&
+            // Phase 340 — a void method has no result to bind (its @Ensures reads fields and parameters).
+            if (resultExpr != null && (!enc.tryRecordFactoryAssign('result', resultExpr) &&
                                        !enc.tryRecordSetBinopAssign('result', resultExpr))) {
                 enc.bind('result', LoopEncoder.tr(enc, resultExpr, "return expression"))
                 // Phase 45b — alias result's size/array oracles to the returned list local so

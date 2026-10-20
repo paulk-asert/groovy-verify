@@ -15354,6 +15354,36 @@ from the break state, and one the break state misses; the rest of the branch aft
 update skipped; a write in an `if` before the exit reaching the break state; an inner break's state refuting the
 outer claim; a labelled break skipping loudly. G357's two "buried break skips loudly" cases now verify.
 
+## Phase 340 — a nested loop writing a field or collection  *(shipped — loop-body stores, plus three fixes)*
+
+A nested loop that assigned `this.count`, called `m.put(k, v)` or `xs.set(i, v)` skipped the method: "nested loop
+writes a field/collection or unbounded construct". A bare field, a field array element and a list `add` already
+worked. Two layers refused the other three: `innerFrame` (the summary's write set) and the loop engine itself, which
+could not execute them as body statements in any loop ("assignment to a non-variable target", "unsupported
+statement in loop region").
+
+- **The stores they are.** `LoopEncoder.asStore` rewrites `this.f = v` to `f = v` (the name a bare `f` reads),
+  `m.put(k, v)` on a map to `m[k] = v` (Phase 186's map store), and `xs.set(i, v)` on a list to `xs[i] = v`, before
+  `applyAssign`. `innerFrame` takes the same writes: `this.f` as a scalar, `put`/`set` as content writes (havocked
+  like an array or map, size kept), their arguments write-free.
+- **`List.set` bounds.** `set(i, v)` throws outside `[0, size)` but carried no obligation, in straight-line code too
+  (`xs[i] = v` did). `ObligationCollector` now synthesises the `get(i)` index site for a two-argument `set` on a
+  `List`-typed receiver (a `BitSet`'s `set(int, boolean)` excluded by type).
+- **Fixed: no frame facts around a nested loop.** `collectWritesStmt` read a nested loop's raw `loopBlock`, where
+  groovy-contracts weaves its invariant checks; those calls made the write set "unbounded", so `loopFrameFacts`
+  returned nothing for every outer loop holding a nested loop (`out = []` lost `out != null`, so `out.add(i)` in the
+  inner body raised a false NPE). An annotated loop now contributes its `LoopSpec`'s init, guard and body.
+- **Fixed: a void method's `@Ensures` after a loop** skipped with "no return value after loop". `resultExpr` returns
+  null for a void method and `result` is left unbound.
+
+**Shipped tests:** group `P340 nested loop writing a field or collection`, 16 cases: `this.count` in a nested loop
+(bounded and exact `n * m`), a bare field, wrong claims and a field fact the nested loop changes refuting; a list
+built in a nested loop, a list field, a map `put`, list `set` in bounds; an overwritten map key and list element
+refuting the old value; an out-of-bounds `set` refuting in a nested loop and in straight-line code; a field array;
+a void `@Ensures` after a loop, and a wrong one refuting.
+
+**Still out:** `xs << v` in a loop body ("unsupported statement in loop region"), in any loop.
+
 ---
 
 ## Definition of done, per increment

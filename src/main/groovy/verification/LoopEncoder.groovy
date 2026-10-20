@@ -17,12 +17,14 @@ package verification
 
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
+import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
@@ -43,6 +45,7 @@ import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 
 /**
@@ -375,7 +378,43 @@ class LoopEncoder {
         for (Statement st : stmts) if (!innerFrameStmt(st, scalars, arrays, lists)) return false
         true
     }
+    /**
+     * Phase 340 — writes the loop body models as the assignments they are: {@code this.f = v} is {@code f = v} (the
+     * name a bare {@code f} reads), a map's {@code m.put(k, v)} is {@code m[k] = v}, and a list's {@code xs.set(i, v)}
+     * is {@code xs[i] = v}, an in-bounds store, since {@code set} throws otherwise (its result unused as a statement).
+     * Anything else is returned as it is.
+     */
+    static Expression asStore(Expression e, Encoder enc) {
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
+            BinaryExpression be = (BinaryExpression) e
+            Expression t = be.leftExpression
+            if (t instanceof PropertyExpression && ((PropertyExpression) t).objectExpression instanceof VariableExpression &&
+                ((VariableExpression) ((PropertyExpression) t).objectExpression).name == 'this') {
+                VariableExpression f = new VariableExpression(((PropertyExpression) t).propertyAsString)
+                f.setSourcePosition(t)
+                BinaryExpression r = new BinaryExpression(f, be.operation, be.rightExpression)
+                r.setSourcePosition(be)
+                return r
+            }
+            return e
+        }
+        if (!(e instanceof MethodCallExpression)) return e
+        MethodCallExpression m = (MethodCallExpression) e
+        if (!(m.objectExpression instanceof VariableExpression) || !(m.arguments instanceof TupleExpression)) return e
+        String recv = ((VariableExpression) m.objectExpression).name
+        List<Expression> args = ((TupleExpression) m.arguments).expressions
+        if (args.size() != 2) return e
+        boolean store = (m.methodAsString == 'put' && enc.isMapName(recv)) || (m.methodAsString == 'set' && enc.isListName(recv))
+        if (!store) return e
+        BinaryExpression at = new BinaryExpression(m.objectExpression, Token.newSymbol(Types.LEFT_SQUARE_BRACKET, -1, -1), args.get(0))
+        at.setSourcePosition(m)
+        BinaryExpression r = new BinaryExpression(at, Token.newSymbol(Types.ASSIGN, -1, -1), args.get(1))
+        r.setSourcePosition(m)
+        r
+    }
+
     private static final List<String> LIST_MUTATORS = ['add', 'clear', 'removeLast', 'pop'].asImmutable()
+    private static final List<String> CONTENT_WRITERS = ['put', 'set'].asImmutable()
     private static boolean innerFrameStmt(Statement st, Set<String> scalars, Set<String> arrays, Set<String> lists) {
         if (st == null || st instanceof EmptyStatement) return true
         if (st instanceof BlockStatement) return innerFrame(((BlockStatement) st).statements, scalars, arrays, lists)
@@ -391,6 +430,12 @@ class LoopEncoder {
                 MethodCallExpression m = (MethodCallExpression) e
                 if (m.objectExpression instanceof VariableExpression && m.methodAsString in LIST_MUTATORS) {
                     lists.add(((VariableExpression) m.objectExpression).name); return true
+                }
+                // Phase 340 — a content write that keeps the size: a map's put/remove (havocMap via `arrays`, Phase
+                // 186) or a list's set. Its arguments must write nothing themselves.
+                if (m.objectExpression instanceof VariableExpression && m.methodAsString in CONTENT_WRITERS &&
+                    guardWritesNothing(m.arguments)) {
+                    arrays.add(((VariableExpression) m.objectExpression).name); return true
                 }
             }
             return innerFrameExpr(e, scalars, arrays)
@@ -453,6 +498,11 @@ class LoopEncoder {
 
     private static boolean innerFrameTarget(Expression t, Set<String> scalars, Set<String> arrays) {
         if (t instanceof VariableExpression) { scalars.add(((VariableExpression) t).name); return true }
+        // Phase 340 — `this.f = v` writes the field f, the name a bare `f` reads
+        if (t instanceof PropertyExpression && ((PropertyExpression) t).objectExpression instanceof VariableExpression &&
+            ((VariableExpression) ((PropertyExpression) t).objectExpression).name == 'this') {
+            scalars.add(((PropertyExpression) t).propertyAsString); return true
+        }
         if (t instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) t
             if (be.operation.type == Types.LEFT_SQUARE_BRACKET && be.leftExpression instanceof VariableExpression) {
@@ -562,7 +612,7 @@ class LoopEncoder {
      * Execute the post-loop region and return the expression whose value the
      * method yields (explicit {@code return} or trailing expression).
      */
-    static Expression resultExpr(List<Statement> stmts, Encoder enc, SmtSession s) {
+    static Expression resultExpr(List<Statement> stmts, Encoder enc, SmtSession s, boolean voidMethod = false) {
         Expression result = null
         for (int i = 0; i < stmts.size(); i++) {
             Statement st = stmts.get(i)
@@ -592,6 +642,7 @@ class LoopEncoder {
                     "unsupported statement ${st.class.simpleName} after loop (line ${st.lineNumber})")
             }
         }
+        if (result == null && voidMethod) return null   // Phase 340 — a void method's @Ensures reads state, not result
         if (result == null) {
             throw new UnsupportedConstructException("no return value after loop")
         }
@@ -628,6 +679,7 @@ class LoopEncoder {
         // assignment paths apply.
         if (Encoder.isIncDec(e)) e = Encoder.desugarIncDec(e)
         else if (Encoder.isCompoundAssign(e)) e = Encoder.desugarCompoundAssign((BinaryExpression) e)
+        e = asStore(e, enc)   // Phase 340 — this.f = v, m.put(k, v), xs.set(i, v)
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
             if (!(de.leftExpression instanceof VariableExpression)) {
