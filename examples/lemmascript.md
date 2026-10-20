@@ -40,6 +40,7 @@ and are © their authors, used under LemmaScript's MIT licence.
 | `sorted(arr)` | `arr.isSorted()` |
 | `//@ type i nat` | `0 <= i` in an invariant |
 | `break` plus `//@ done_with` | `break` (the exit condition needs no annotation) |
+| `continue` | `continue` |
 | a recursive pure count, `occOf(arr, x, n)` | the prefix count `arr[0..<n].count(x)` |
 | `forall(y: int, P)`, `exists(x: nat, P)` over all values | `arr.every { y -> P }`, `arr.any { x -> P }` over the values that occur |
 | `log.slice(1)` | `log.drop(1)` |
@@ -701,11 +702,8 @@ static int highScore(int[] scores) { scores.max() }
 
 ## Not ported yet
 
-These examples hit the edges of what groovy-verify proves today:
+One edge of what groovy-verify does today shows in these ports:
 
-- **`continue`, and `break` from a nested loop.** A `break` at the top level of a loop body, or ending a branch of
-  the body's final `if`/`else` chain, is supported. A `continue`, or a `break` out of an inner loop, still skips
-  loudly.
 - **Refuting nonlinear sums.** [`allocate`](#splitting-money) proves, but a wrong claim in the same territory (the
   first attempt, a bump by two) is "could not decide" rather than a counterexample.
 

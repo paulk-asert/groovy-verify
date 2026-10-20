@@ -607,6 +607,16 @@ interface SmtSession extends AutoCloseable {
     void assertExpr(Object boolExpr)
 
     /**
+     * Phase 324 — make every {@link #assertExpr} until the matching {@link #popAssertGuard} assert
+     * {@code guard ⟹ e} instead of {@code e} (guards nest, conjoined). For replaying one alternative of a
+     * disjunction in place: a nested loop's break exit is executed under {@code sel == k}, so the facts its replay
+     * asserts, including the encoder's own (a non-null fact, a minted axiom), hold only on that alternative.
+     */
+    void pushAssertGuard(Object guard)
+
+    void popAssertGuard()
+
+    /**
      * Check the current assertion set. Returns:
      *   - VERIFIED if UNSAT (i.e. the property holds)
      *   - REFUTED with a counterexample if SAT

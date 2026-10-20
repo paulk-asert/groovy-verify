@@ -206,7 +206,8 @@ you write:
 - **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
   nested) with `@Invariant` / `@Decreases`; the `xs.each { x -> … }` / `xs.eachWithIndex { x, i -> … }` iteration
   forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant); early
-  `return`, and `break` at the top level of a loop body or ending a branch of its final `if`/`else`; and `switch` *expressions* — the arrow form (`case 1 -> …`, a block with `yield` too) with literal /
+  `return`, `break` at the top level of a loop body or ending a branch of its final `if`/`else` (a nested loop's
+  top-level `break` too), and `continue`; and `switch` *expressions* — the arrow form (`case 1 -> …`, a block with `yield` too) with literal /
   range labels (since Groovy 6.0.0-beta-3 static type checking requires a switch expression to be exhaustive —
   a `default`, or an enum subject with every constant covered — and the verifier's part is knowing when that
   `default` is *dead* under the precondition); plus
@@ -214,7 +215,7 @@ you write:
   happy path walked exactly, each handler entered with sound catch-entry state (and, when the try's
   throw sources are spec-characterised, the *reason* it was entered: `catch (ArithmeticException e)`
   after `Math.floorDiv(a, b)` knows `b == 0`).
-  *Out:* `continue`, a `break` out of a nested loop, `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
+  *Out:* a labelled `continue`, a `continue` ahead of a top-level `break`, `finally`, an *accumulating* `.each` (needs an `@Invariant` a `.each` statement can't carry), the older colon-style `switch` *statement* (`case 1:` … `break`) and
   type-pattern cases (`case String s`); closures and lambdas appear only as specification predicates
   (`every` / `any` / `inject`) and as law-carriers (`@Monadic` / `@Reducer`).
 

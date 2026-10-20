@@ -183,8 +183,8 @@ class G357_p312_break {
                             return i
                         }
                     }''')],
-        // A break in a nested loop continues into the rest of the OUTER body, which the inner summary doesn't cover.
-        [group: 'P312 break', name: 'break in a nested loop skips loudly', expect: 'a `break` in a nested loop is not yet modelled',
+        // A nested loop's break is modelled at the top level of the inner body (Phase 324); one buried in an if skips.
+        [group: 'P312 break', name: 'buried break in a nested loop skips loudly', expect: 'a `break` in a nested loop is modelled only as a top-level',
          src: tc('''class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result >= 0 })
@@ -198,7 +198,7 @@ class G357_p312_break {
                                 @Invariant({ 0 <= j && j <= n })
                                 @Decreases({ n - j })
                                 while (j < n) {
-                                    if (j == i) break
+                                    if (j > 0) { if (j == i) break }
                                     j = j + 1
                                 }
                                 s = s + j
@@ -222,21 +222,22 @@ class G357_p312_break {
                             return i
                         }
                     }''')],
-        // continue is not modelled yet: loud skip.
-        [group: 'P312 break', name: 'continue still skips loudly', expect: 'Skipped loop verification',
+        // continue is desugared (Phase 324), but moving the rest of the body into a branch buries a top-level break,
+        // which then skips loudly.
+        [group: 'P312 break', name: 'a continue ahead of a break skips loudly', expect: 'Skipped loop verification',
          src: tc('''class C {
+                        @Requires({ a != null })
                         @Ensures({ result >= 0 })
-                        static int f(int[] a) {
+                        static int f(int[] a, int t) {
                             int i = 0
-                            int s = 0
-                            @Invariant({ 0 <= i && i <= a.length && s >= 0 })
+                            @Invariant({ 0 <= i && i <= a.length })
                             @Decreases({ a.length - i })
                             while (i < a.length) {
+                                if (a[i] < 0) { i = i + 1; continue }
+                                if (a[i] == t) break
                                 i = i + 1
-                                if (a[i - 1] < 0) continue
-                                s = s + a[i - 1]
                             }
-                            return s
+                            return i
                         }
                     }''')],
     ]

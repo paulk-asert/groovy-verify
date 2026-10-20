@@ -1238,9 +1238,20 @@ class Z3Session implements SmtSession {
     @Override
     void assertExpr(Object boolExpr) {
         BoolExpr be = (BoolExpr) boolExpr
+        if (!assertGuards.isEmpty()) {
+            BoolExpr g = assertGuards.size() == 1 ? assertGuards.get(0) : ctx.mkAnd(assertGuards as BoolExpr[])
+            be = ctx.mkImplies(g, be)
+        }
         solver.add(be)
         assertedExprs.add(be)
     }
+
+    /** Phase 324 — the active {@link SmtSession#pushAssertGuard} guards, innermost last. */
+    private final List<BoolExpr> assertGuards = new ArrayList<BoolExpr>()
+
+    @Override void pushAssertGuard(Object guard) { assertGuards.add((BoolExpr) guard) }
+
+    @Override void popAssertGuard() { assertGuards.remove(assertGuards.size() - 1) }
 
     @Override
     void explainRegister(Object preTerm, List<String> labels, List<Object> clauseTerms) {

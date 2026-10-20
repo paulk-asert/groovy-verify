@@ -25,6 +25,7 @@ import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.CodeVisitorSupport
+import org.codehaus.groovy.ast.VariableScope
 import org.codehaus.groovy.ast.ConstructorNode
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.ImportNode
@@ -61,6 +62,7 @@ import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.CatchStatement
 import org.codehaus.groovy.ast.stmt.SwitchStatement
 import org.codehaus.groovy.ast.stmt.CaseStatement
+import org.codehaus.groovy.ast.stmt.ContinueStatement
 import org.codehaus.groovy.ast.stmt.TryCatchStatement
 import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
@@ -1182,7 +1184,7 @@ class ContractExpansionTransform implements ASTTransformation {
         spec.guard = guard
         List<Statement> body = new ArrayList<Statement>()
         if (bodyPrefix != null) body.addAll(bodyPrefix)             // for-in: x = xs[idx]; …
-        body.addAll(loopBodyCopy(loop))
+        body.addAll(desugarContinue(loopBodyCopy(loop)))           // Phase 324 — before the update is appended
         if (updateStmt != null) body.add(updateStmt)                // for/for-in: …; update
         spec.body = body
         spec.init = initStmts
@@ -1309,6 +1311,83 @@ class ContractExpansionTransform implements ASTTransformation {
     private static boolean isPositiveIntLiteral(Expression e) {
         e instanceof ConstantExpression && ((ConstantExpression) e).value instanceof Integer &&
             ((Integer) ((ConstantExpression) e).value).intValue() > 0
+    }
+
+    /**
+     * Phase 324 — rewrite the loop body so it has no {@code continue}: what follows an {@code if} that may continue
+     * moves into both its branches, and a {@code continue} drops the rest of its branch. So
+     * {@code P; if (c) { L; continue }; Q} becomes {@code P; if (c) { L } else { Q }}, and a trailing
+     * {@code continue} disappears. That is the jump to the loop head exactly, since an iteration that continues
+     * still runs a {@code for} loop's update (appended after this) and must re-establish the invariant, as in Dafny.
+     * Returns {@code body} unchanged, so the downstream loud skip stands, when a {@code continue} is labelled or sits
+     * under anything but blocks and {@code if}s, or when the rewrite would move a loop into a branch (nested loops
+     * are verified as loops only at the top level of a body).
+     */
+    /* package */ static List<Statement> desugarContinue(List<Statement> body) {
+        if (!body.any { containsLoopContinue(it) }) return body
+        List<Statement> out = continueFree(body)
+        out != null ? out : body
+    }
+
+    private static List<Statement> continueFree(List<Statement> ss) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (int i = 0; i < ss.size(); i++) {
+            Statement st = ss.get(i)
+            if (st instanceof ContinueStatement) return ((ContinueStatement) st).label == null ? out : null
+            if (!containsLoopContinue(st)) { out.add(st); continue }
+            List<Statement> rest = ss.subList(i + 1, ss.size())
+            if (st instanceof BlockStatement) {
+                List<Statement> flat = new ArrayList<Statement>(((BlockStatement) st).statements)
+                flat.addAll(rest)
+                List<Statement> tail = continueFree(flat)
+                if (tail == null) return null
+                out.addAll(tail)
+                return out
+            }
+            if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
+            IfStatement ifs = (IfStatement) st
+            List<Statement> thenSs = branchStatements(ifs.ifBlock), elseSs = branchStatements(ifs.elseBlock)
+            thenSs.addAll(rest); elseSs.addAll(rest)
+            List<Statement> t = continueFree(thenSs), e = continueFree(elseSs)
+            if (t == null || e == null) return null
+            IfStatement rebuilt = new IfStatement(ifs.booleanExpression, block(t), e.isEmpty() ? EmptyStatement.INSTANCE : block(e))
+            rebuilt.setSourcePosition(ifs)
+            out.add(rebuilt)
+            return out
+        }
+        out
+    }
+
+    private static List<Statement> branchStatements(Statement st) {
+        if (st == null || st instanceof EmptyStatement) return new ArrayList<Statement>()
+        if (st instanceof BlockStatement) return new ArrayList<Statement>(((BlockStatement) st).statements)
+        new ArrayList<Statement>([st])
+    }
+
+    private static BlockStatement block(List<Statement> ss) { new BlockStatement(ss, new VariableScope()) }
+
+    /** True iff {@code st} has a {@code continue} for the enclosing loop: not inside a nested loop or closure. */
+    private static boolean containsLoopContinue(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitContinueStatement(ContinueStatement c) { found[0] = true }
+            @Override void visitWhileLoop(WhileStatement w) { }
+            @Override void visitForLoop(ForStatement f) { }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
+    }
+
+    private static boolean containsLoop(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitWhileLoop(WhileStatement w) { found[0] = true }
+            @Override void visitForLoop(ForStatement f) { found[0] = true }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
     }
 
     private static List<Statement> loopBodyCopy(LoopingStatement loop) {

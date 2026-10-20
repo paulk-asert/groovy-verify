@@ -11656,11 +11656,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!annotatedInnerLoops(innerSpec.body).isEmpty()) {
             throw new UnsupportedConstructException("loops nested 3+ deep — not yet supported")
         }
-        // Phase 312 — an inner `break` continues into the rest of the OUTER body, which the inner summary
-        // (inner_inv ∧ ¬inner_guard) doesn't account for.
-        if (LoopEncoder.containsLoopBreak(innerSpec.body)) {
-            throw new UnsupportedConstructException("a `break` in a nested loop is not yet modelled")
-        }
+        // Phase 324 — an inner `break` continues into the rest of the OUTER body: the inner summary
+        // (LoopEncoder.summarizeInner) carries each break's exit state alongside inner_inv ∧ ¬inner_guard, and the
+        // inner preservation/progress below already run on the path where no break fires.
         LoopSite innerSite = new LoopSite()
         innerSite.loopStmt = innerLoop
         innerSite.spec = innerSpec
@@ -11681,7 +11679,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // postcondition unchecked.
         if (postAst != null) {
             partitionEarlyExits(innerSpec.body, 'inBody', innerSite.earlyExits)
-            for (EarlyExit ex : innerSite.earlyExits) checkEarlyExit(node, innerSite, ex, reqAst, postAst)
+            // a break leaves only the inner loop, so it has no @Ensures of its own (Phase 324)
+            for (EarlyExit ex : innerSite.earlyExits) if (!ex.isBreak) checkEarlyExit(node, innerSite, ex, reqAst, postAst)
         }
     }
 

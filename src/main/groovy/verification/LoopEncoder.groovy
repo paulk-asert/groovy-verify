@@ -252,9 +252,19 @@ class LoopEncoder {
      * a length-changing inner loop (a collection mutator) is rejected by {@code innerFrame}.
      */
     static void summarizeInner(LoopSpec inner, Encoder enc, SmtSession s) {
-        // Phase 312 — inv ∧ ¬guard is the post-state of a loop that only leaves through its guard
+        // Phase 312 — inv ∧ ¬guard is the post-state of a loop that only leaves through its guard. Phase 324 — a
+        // loop that also leaves by a top-level `if (c) break` / `if (c) { lead; break }` has one more exit state per
+        // break; anything else that breaks still skips loudly.
+        List<Integer> breaks = new ArrayList<Integer>()
         if (containsLoopBreak(inner.body)) {
-            throw new UnsupportedConstructException("a `break` in a nested loop is not yet modelled")
+            for (int k = 0; k < inner.body.size(); k++) {
+                Statement st = inner.body.get(k)
+                if (breakLead(st) != null) breaks.add(k)
+                else if (containsLoopBreak([st])) {
+                    throw new UnsupportedConstructException(
+                        "a `break` in a nested loop is modelled only as a top-level `if (c) break` or `if (c) { …; break }`")
+                }
+            }
         }
         Set<String> scalars = new HashSet<String>()
         Set<String> arrays = new HashSet<String>()
@@ -271,8 +281,82 @@ class LoopEncoder {
         // contents and the length: havoc both oracles, then its invariant ∧ ¬guard characterises the list
         // (a producer loop's `q.size() == i - a` and its element relation survive into the loop after it).
         for (String nm : lists) { enc.havocArray(nm); enc.havocSize(nm) }
-        s.assertExpr(conj(enc, s, inner.invariants))
-        s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
+        if (breaks.isEmpty()) {
+            s.assertExpr(conj(enc, s, inner.invariants))
+            s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
+            return
+        }
+        summarizeWithBreaks(inner, breaks, enc, s)
+    }
+
+    private static int breakSelCounter = 0
+
+    /**
+     * Phase 324 — the post-state of a nested loop that can also leave by {@code break}. Its writes are havocked
+     * (state H, above); then one alternative per way out, chosen by a fresh selector {@code sel}:
+     * <ul>
+     *   <li>{@code sel == 0}, the natural exit: {@code inv ∧ ¬guard} in H;</li>
+     *   <li>{@code sel == k}, break k: H is the state at the start of the breaking iteration, so
+     *       {@code inv ∧ guard}, the body up to the break replayed with earlier exits not taken, the break's
+     *       condition, then its lead.</li>
+     * </ul>
+     * Each alternative runs under {@link SmtSession#pushAssertGuard} ({@code sel == k}), so what its replay
+     * asserts holds only there, and the bindings are merged as an ite over {@code sel}. A break's state isn't
+     * required to satisfy the invariant, as in Dafny. Sound because H ranges over every state the loop can be in
+     * at an iteration start (inv holds there: the inner loop's establishment and preservation are checked).
+     */
+    private static void summarizeWithBreaks(LoopSpec inner, List<Integer> breaks, Encoder enc, SmtSession s) {
+        Object sel = s.intVar('brk#sel' + (breakSelCounter++))
+        s.assertExpr(s.and([s.le(s.intLit(0L), sel), s.le(sel, s.intLit((long) breaks.size()))]))
+        Encoder.EncoderSnapshot h = enc.snapshotState()
+        List<Encoder.EncoderSnapshot> states = new ArrayList<Encoder.EncoderSnapshot>()
+        List<Object> sels = new ArrayList<Object>()
+        Object natural = s.eq(sel, s.intLit(0L))
+        s.pushAssertGuard(natural)
+        try {
+            s.assertExpr(conj(enc, s, inner.invariants))
+            s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
+        } finally { s.popAssertGuard() }
+        states.add(h); sels.add(natural)
+        for (int b = 0; b < breaks.size(); b++) {
+            int k = breaks.get(b)
+            enc.restoreState(h)
+            Object here = s.eq(sel, s.intLit((long) (b + 1)))
+            s.pushAssertGuard(here)
+            try {
+                s.assertExpr(conj(enc, s, inner.invariants))
+                s.assertExpr(tr(enc, inner.guard, "inner-loop guard"))
+                replay(new ArrayList<Statement>(inner.body.subList(0, k)), enc, s)
+                IfStatement bk = (IfStatement) inner.body.get(k)
+                s.assertExpr(tr(enc, bk.booleanExpression, "break condition"))
+                symExec(breakLead(bk), enc, s)
+            } finally { s.popAssertGuard() }
+            states.add(enc.snapshotState()); sels.add(here)
+        }
+        // Fold the alternatives into one state, last first: acc = sel == k ? state_k : acc.
+        Encoder.EncoderSnapshot acc = states.get(states.size() - 1)
+        enc.restoreState(acc)
+        for (int k = states.size() - 2; k >= 0; k--) {
+            mergeStates(states.get(k), acc, h, sels.get(k), enc, s)
+            acc = enc.snapshotState()
+        }
+    }
+
+    /** The lead of a top-level break exit — {@code if (c) break} (empty) or {@code if (c) { lead; break }} with no
+     *  else — or null. The lead may not itself exit or loop. */
+    static List<Statement> breakLead(Statement st) {
+        if (!(st instanceof IfStatement)) return null
+        IfStatement ifs = (IfStatement) st
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return null
+        Statement t = ifs.ifBlock
+        if (t instanceof BreakStatement) return ((BreakStatement) t).label == null ? Collections.<Statement> emptyList() : null
+        if (!(t instanceof BlockStatement)) return null
+        List<Statement> ss = ((BlockStatement) t).statements
+        if (ss.isEmpty() || !(ss.get(ss.size() - 1) instanceof BreakStatement) ||
+            ((BreakStatement) ss.get(ss.size() - 1)).label != null) return null
+        List<Statement> lead = new ArrayList<Statement>(ss.subList(0, ss.size() - 1))
+        for (Statement l : lead) if (leaves(l) || containsLoopBreak([l]) || l instanceof LoopingStatement) return null
+        lead
     }
 
     /** Partition a nested loop body's writes into scalar names and array names, or false if it writes
@@ -312,6 +396,7 @@ class LoopEncoder {
         // past the inner loop — the inner loop completed without returning, so the summary (inner_inv ∧
         // ¬inner_guard) is unaffected. The return's own @Ensures is discharged separately (verifyNestedLoops).
         if (st instanceof ReturnStatement) return true
+        if (st instanceof BreakStatement) return true       // Phase 324 — a break writes nothing
         return false   // nested loop / unknown statement → bail
     }
     private static boolean innerFrameExpr(Expression e, Set<String> scalars, Set<String> arrays) {
@@ -372,7 +457,13 @@ class LoopEncoder {
         if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
             symExec(asList(elseBlk), enc, s)
         }
-        Encoder.EncoderSnapshot afterElse = enc.snapshotState()
+        mergeStates(afterThen, enc.snapshotState(), entry, cond, enc, s)
+    }
+
+    /** ITE-combine two states into the encoder, which must currently hold {@code afterElse}: each binding that
+     *  differs becomes {@code cond ? then : else} (absent ones fall back to {@code entry}). */
+    private static void mergeStates(Encoder.EncoderSnapshot afterThen, Encoder.EncoderSnapshot afterElse,
+                                    Encoder.EncoderSnapshot entry, Object cond, Encoder enc, SmtSession s) {
         // ITE-combine: for each map, walk the union of keys touched in either branch.
         iteCombineMap(afterThen.env, afterElse.env, entry.env, cond, enc, s,
             { String n, Object h -> enc.bind(n, h) })

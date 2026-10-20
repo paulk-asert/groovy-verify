@@ -349,9 +349,13 @@ all desugaring to the same machinery (Phases 59 & 63; the for-in's index is synt
 `eachWithIndex`, where the developer named it — and the loop variable keeps its name). A loop may leave early by
 `return` (Phases 49/49b/49c) or by **`break`** (Phase 312: `if (c) break` / `if (c) { …; break }` at the top level of
 the body or ending a branch of its final `if`/`else` chain — the code after the loop is checked from each `break` as
-well as the natural exit, and the breaking iteration needn't preserve the invariant or decrease the variant); a
-`continue`, a `break` out of a nested loop, and a `return` inside a `.each` closure (which only ends that element)
-skip loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
+well as the natural exit, and the breaking iteration needn't preserve the invariant or decrease the variant). A
+nested loop may break too, by a top-level `if (c) break` / `if (c) { …; break }` (Phase 324): its summary then
+carries each break's exit state beside `inv ∧ ¬guard`. An unlabelled **`continue`** is desugared (Phase 324): what
+follows an `if` that may continue moves into its branches, so the continuing iteration must preserve the invariant
+(a `for` loop's update still runs), as in Dafny. A labelled `continue`, a rewrite that would move a loop into a
+branch or bury a top-level `break`, a nested loop's break buried in an `if`, and a `return` inside a `.each`
+closure (which only ends that element) skip loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
 loop never writes keeps that value at the loop head, in the body and after the loop (`int n = len - str.length()`
 needs no invariant restating it), and an allocation the loop only stores into keeps `x != null`, plus
 `x.length` for an array. A list's size, an array's contents, anything the loop or a closure reassigns, and every

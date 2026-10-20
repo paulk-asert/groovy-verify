@@ -14923,6 +14923,43 @@ The full suite's tallies were unchanged before the new cases.
 Docs: `examples/lemmascript.md` leads the `pruneWindow` section with the recursive port, two translation-table
 rows, and "Not ported yet" loses the entry; FRAGMENT's list bullet and a CAPABILITIES row.
 
+## Phase 324 — `continue`, and `break` out of a nested loop  *(shipped — engine change)*
+
+The last loop gap of the LemmaScript ports, both loud skips since Phase 312.
+
+- **`continue` is desugared, not modelled.** `ContractExpansionTransform.desugarContinue` rewrites the captured
+  loop body before a `for` loop's update is appended: what follows an `if` that may continue moves into both its
+  branches, and a `continue` drops the rest of its branch, so `P; if (c) { L; continue }; Q` is
+  `P; if (c) { L } else { Q }`. That is exactly a jump to the loop head: the continuing iteration runs the update
+  and has to re-establish the invariant, as in Dafny, and every downstream pass sees a continue-free body. It
+  applies to `while`, `for`, for-in and do-while. It refuses, leaving the body as it was (so the loud skip
+  stands), for a labelled `continue`, one under anything but blocks and `if`s, and a rewrite that would move a
+  loop into a branch (nested loops are verified as loops only at a body's top level). A top-level `break` after
+  the `continue` ends up inside the `else` and skips loudly as a buried break.
+- **A nested loop's `break`.** The inner loop's own preservation and progress already ran on the path where no
+  break fires (`symExecBodyWithExits`). What was missing was its summary in the outer VCs: `inner_inv ∧
+  ¬inner_guard` is only the natural exit. `LoopEncoder.summarizeWithBreaks` havocs the inner writes (state H) and
+  adds one alternative per top-level `if (c) break` / `if (c) { lead; break }`: H as the breaking iteration's
+  start, `inv ∧ guard`, the body to the break replayed with earlier exits not taken (`replay`, Phase 311), the
+  break's condition, then its lead. A fresh selector picks the alternative, and the bindings are merged as an
+  ite over it (`mergeStates`, factored out of `applyIf`). Each alternative runs under the new
+  `SmtSession.pushAssertGuard(sel == k)`, so everything its replay asserts holds only on that alternative,
+  including the encoder's own facts (a non-null fact, a mint-once axiom: at worst a lost completeness, never a
+  leak). A break's state needn't satisfy the invariant. `innerFrame` accepts a `BreakStatement` (it writes
+  nothing), and the Phase 109 inner-exit check skips break exits, which have no `@Ensures` of their own.
+
+**Shipped tests:**
+- group `P324 continue and nested break`, 13 cases: `continue` in `while`, `for` (the update still runs), for-in
+  and do-while, with a lead, from a nested `if`, a wrong one refuted, and one that would move a loop (loud skip);
+  a nested break, one whose exact postcondition needs the break's condition, a lead that leaves the inner invariant
+  behind, a wrong value from the break (refuted), and an inner `return` beside a break still checked against the
+  method's `@Ensures` (refuted);
+- `P312 break`: its two loud-skip cases for exactly these features became the shapes that still skip (a nested
+  loop's break buried in an `if`, a `continue` ahead of a top-level `break`).
+
+Docs: `examples/lemmascript.md` loses its "Not ported yet" entry and gains a `continue` row; FRAGMENT's loop
+paragraph, README's statement list, and a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment
