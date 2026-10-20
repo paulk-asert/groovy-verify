@@ -358,8 +358,10 @@ follows an `if` that may continue moves into its branches, so the continuing ite
 (a `for` loop's update still runs), as in Dafny. A top-level `if (c) continue` / `if (c) { …; continue }` ahead of
 a `break` or `return` is recorded in a flag instead, and what follows is guarded by it, so those exits stay
 top-level (Phase 325); a `continue` nested deeper in an `if` sets a flag that is false before that `if`
-(Phase 327). A labelled `continue`, a rewrite that would move a loop into a branch, a nested loop's break buried in an `if` elsewhere, and a `return` inside a `.each` closure
-(which only ends that element) skip loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
+(Phase 327). A `return` inside a `.each` / `.eachWithIndex` closure only ends that element, so a bare one, or one
+of a constant or variable, is that `continue` (Phase 328). A labelled `continue`, a rewrite that would move a loop
+into a branch, a nested loop's break buried in an `if` elsewhere, and any other `return` in a `.each` closure skip
+loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
 loop never writes keeps that value at the loop head, in the body and after the loop (`int n = len - str.length()`
 needs no invariant restating it), and an allocation the loop only stores into keeps `x != null`, plus
 `x.length` for an array. A list's size, an array's contents, anything the loop or a closure reassigns, and every

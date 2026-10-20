@@ -15041,6 +15041,33 @@ first case.
 
 Docs: FRAGMENT's loop paragraph, README's *Out:* list, a CAPABILITIES row.
 
+## Phase 328 — `return` in a `.each` closure  *(shipped — capture change)*
+
+Phase 310 made a `return` inside a `.each` closure a loud skip: it ends only that element's call, and reading it
+as a method return had "proved" false postconditions. It acts like `continue`, which Phases 324–327 now model.
+
+- **A `continue`, at capture.** `ContractExpansionTransform.eachReturnsAsContinue` copies the closure body's
+  if/block spine with each bare `return`, `return k` or `return v` replaced by a `continue`, before the for-in
+  spec is built (the real closure is untouched). `.each` discards the value, and a constant or variable has
+  nothing left to evaluate. Any other `return` (one that would evaluate an expression, with its own obligations)
+  and one inside a nested loop or closure are left alone, so Phase 310's skip still fires, with a message that now
+  says what is modelled.
+- **Fixed: an `assert` counted as a write.** `collectWritesStmt` didn't know `AssertStatement`, so a body with
+  one had an "unbounded" write set: an auto-bounds-only `.each` with an `assert` was taken as accumulating, and a
+  postcondition after it skipped loudly. An `assert` writes only what its condition does.
+- **Fixed: `eachWithIndex`'s index counted as a write.** The accumulation check removed only the synthetic
+  for-in index, not `eachWithIndex`'s user-named one, which its update steps. It now removes whatever the
+  update (`LoopSpec.update`, Phase 326) writes.
+
+**Shipped tests:** group `P328 return in a .each closure`, 9 cases: a bare return guarding an assert, a guard that
+misses a value (refuted), a constant return in an `eachWithIndex`, a list `.each` with the implicit `it`, a
+postcondition after a `.each` that returns, an assert body and an `eachWithIndex` body that are not
+accumulations, an accumulating `.each` with a return and a return of an expression (both loud skips). `P310`'s
+two `.each` return cases change from loud skips to a refutation (the false `result == 2`, on `f(new int[0], 0)`)
+and a proof (`result == 7`).
+
+Docs: FRAGMENT's loop paragraph, README's control-flow list, a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment

@@ -1030,11 +1030,42 @@ class ContractExpansionTransform implements ASTTransformation {
             else if (ps.length == 1) elem = ps[0]
             else return null
         }
-        ForStatement forIn = new ForStatement(elem, mce.objectExpression, cl.code)
+        // Phase 328 — a `return` in the closure ends that element's call, so the iteration goes on: it is a
+        // `continue`, which the loop capture desugars (Phases 324–327)
+        ForStatement forIn = new ForStatement(elem, mce.objectExpression, eachReturnsAsContinue(cl.code))
         forIn.setSourcePosition(st)
         LoopSpec spec = buildLoopSpec(forIn, source, inferLoops, mn, idxName)
         if (spec != null) spec.fromEach = true
         spec
+    }
+
+    /** Phase 328 — a copy of a {@code .each} closure's if/block spine with each {@code return}, {@code return k} or
+     *  {@code return v} (nothing left to evaluate, the value is discarded) as a {@code continue}. Any other
+     *  {@code return}, and one inside a loop or closure, is left as it is, so the loop site still skips loudly. */
+    private static Statement eachReturnsAsContinue(Statement st) {
+        if (st instanceof ReturnStatement) {
+            Expression e = ((ReturnStatement) st).expression
+            if (e == null || e instanceof EmptyExpression || e instanceof ConstantExpression || e instanceof VariableExpression) {
+                ContinueStatement c = new ContinueStatement()
+                c.setSourcePosition(st)
+                return c
+            }
+            return st
+        }
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            IfStatement r = new IfStatement(ifs.booleanExpression, eachReturnsAsContinue(ifs.ifBlock),
+                ifs.elseBlock == null ? EmptyStatement.INSTANCE : eachReturnsAsContinue(ifs.elseBlock))
+            r.setSourcePosition(ifs)
+            return r
+        }
+        if (st instanceof BlockStatement) {
+            BlockStatement b = (BlockStatement) st
+            BlockStatement r = new BlockStatement(b.statements.collect { Statement s -> eachReturnsAsContinue(s) }, b.variableScope)
+            r.setSourcePosition(b)
+            return r
+        }
+        st
     }
 
     /** True iff the class is checked by VerifyChecker with the {@code inferLoops: true} option, i.e.

@@ -10495,11 +10495,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 310 — in a `.each` closure, `return` ends that element's call and the iteration CONTINUES; the
         // early-exit machinery below would read it as a METHOD return, and checkUse would then assume its guard
         // false on the fall-through path — ruling out real runs (`a.each { if (n == 0) return 2 }; return n == 0 ? 5 : 2`
-        // "proved" result == 2, though f(new int[0], 0) returns 5). Skip loudly until `continue` is modelled.
+        // "proved" result == 2, though f(new int[0], 0) returns 5). Phase 328 — the capture turns a bare, constant or
+        // variable return into a `continue`; one that remains evaluates something, or sits in a loop, so skip loudly.
         if (site.spec.fromEach && site.spec.body.any { containsReturnOutsideClosures(it) }) {
             throw new UnsupportedConstructException(
-                "a `return` inside a `.each` closure ends only that element's call (it acts like `continue`), " +
-                "not the method — not yet modelled")
+                "a `return` inside a `.each` closure ends only that element's call (it acts like `continue`); " +
+                "it is modelled as one only as a bare `return`, `return` of a constant or variable, outside a nested loop")
         }
         site.originalPrefix = new ArrayList<Statement>(top.subList(0, idx))
         // Phase 59 — a desugared for-loop's init runs immediately before the loop, after any
@@ -11158,6 +11159,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!collectWritesStmts(site.spec.body, writes)) return true   // unbounded body effect → treat as accumulating
         writes.remove(site.spec.forInVar)
         writes.remove(ContractExpansionTransform.FOR_IN_INDEX)
+        // Phase 328 — and `eachWithIndex`'s user-named index, which its update steps
+        if (site.spec.forInVar != null && site.spec.update != null) {
+            Set<String> stepped = new HashSet<String>()
+            if (collectWritesStmt(site.spec.update, stepped)) writes.removeAll(stepped)
+        }
         return !writes.isEmpty()
     }
 
@@ -11191,6 +11197,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 312 — a `break` leaves the loop and writes nothing (without this, the write-set bailed to "unbounded"
         // and every loop-stable @Requires — `arr.isSorted()` for binary search — was dropped from preservation)
         if (st instanceof BreakStatement) return true
+        // Phase 328 — an `assert` writes only what its condition does (without this, a `.each` body with one was
+        // "unbounded", so read as accumulating, and any postcondition after it skipped loudly)
+        if (st instanceof AssertStatement) return collectWritesExpr(((AssertStatement) st).booleanExpression, ws)
         // Phase 91 — a nested loop writes whatever its guard + body do; recurse so the outer write-set
         // stays a sound over-approximation (and the inner-loop case below isn't dropped as "unknown").
         if (st instanceof LoopingStatement) {

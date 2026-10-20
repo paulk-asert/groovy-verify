@@ -22,7 +22,7 @@ import static cases.CaseDsl.*
 class G355_p310_early_exit_fallthrough {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'The path that leaves a loop normally no longer assumes an early-return guard was false in the post-loop state — a guard over the counter or a zero-iteration loop refutes — and a `return` inside a `.each` closure (which only ends that element) skips loudly instead of being read as a method return.'
+    static final String DESCRIPTION = 'The path that leaves a loop normally no longer assumes an early-return guard was false in the post-loop state — a guard over the counter or a zero-iteration loop refutes — and a `return` inside a `.each` closure (which only ends that element) is no longer read as a method return.'
 
     static final List<Map> CASES = [
         // ---------- Phase 310: early exits and the fall-through path ----------
@@ -92,16 +92,18 @@ class G355_p310_early_exit_fallthrough {
                         }
                     }''')],
         // In a `.each` closure `return` ends only that element's call — the iteration continues — so it must not
-        // be read as a method return. f(new int[0], 0) returns 5; this used to "prove" result == 2.
+        // be read as a method return. f(new int[0], 0) returns 5; this used to "prove" result == 2. Phase 310 skipped
+        // it loudly; since Phase 328 it is a `continue`, and the claim is refuted.
         [group: 'P310 early exits and the fall-through path', name: 'return inside a .each closure is not a method return',
-         expect: 'acts like `continue`',
+         expect: 'Cannot prove postcondition of f',
          src: tc('''class C {
                         @Ensures({ result == 2 })
                         static int f(int[] a, int n) { a.each { if (n == 0) return 2 }; return n == 0 ? 5 : 2 }
                     }''')],
-        // The same holds for .eachWithIndex, and for a true claim (previously a spurious refute with result = 8).
-        [group: 'P310 early exits and the fall-through path', name: 'return inside a .eachWithIndex closure skips loudly',
-         expect: 'acts like `continue`',
+        // The same holds for .eachWithIndex, and for a true claim (previously a spurious refute with result = 8;
+        // a loud skip from Phase 310 to Phase 328).
+        [group: 'P310 early exits and the fall-through path', name: 'return inside a .eachWithIndex closure is not a method return',
+         ok: true,
          src: tc('''class C {
                         @Ensures({ result == 7 })
                         static int f(int[] a) { a.eachWithIndex { int v, int i -> if (v == i) return }; return 7 }

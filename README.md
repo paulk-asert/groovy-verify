@@ -205,7 +205,8 @@ you write:
   `every` / `any` with no `.limit` (it never returns).
 - **Control flow** — `if` / `else`; `while`, `do-while`, `for`, and `for (x in xs)` loops (optionally one level
   nested) with `@Invariant` / `@Decreases`; the `xs.each { x -> … }` / `xs.eachWithIndex { x, i -> … }` iteration
-  forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant); early
+  forms (modelled as that same for-in — *safety-only*: per-element properties, no hand-written invariant; a
+  closure `return` is the `continue` it acts like); early
   `return`, `break` at the top level of a loop body or ending a branch of its final `if`/`else` (a nested loop's
   top-level `break` too), and `continue`; and `switch` *expressions* — the arrow form (`case 1 -> …`, a block with `yield` too) with literal /
   range labels (since Groovy 6.0.0-beta-3 static type checking requires a switch expression to be exhaustive —
