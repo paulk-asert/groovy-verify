@@ -40,7 +40,7 @@ dependencies {
     // JSR 385: the API + Indriya reference impl + US-customary units (MILE), so the extension methods resolve.
     implementation 'javax.measure:unit-api:2.2'
     implementation 'tech.units:indriya:2.2.4'
-    implementation 'systems.uom:systems-common:2.2'
+    implementation 'systems.uom:systems-common:2.2.1.1'
 
     testImplementation platform("org.junit:junit-bom:$junitVersion")
     testImplementation 'org.junit.jupiter:junit-jupiter'
