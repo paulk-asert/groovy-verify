@@ -2883,9 +2883,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 body = deChan
             }
 
+            // Phase 334 — an annotated loop inside a branch of a top-level `if`: verify each branch as its own body
+            // (the prefix, an assumed branch condition, the branch's statements, then the rest), so the loop sits at
+            // the top level of one variant. Together the variants cover every path.
+            List<Statement> variants = branchLoopVariants(body)
             List<LoopSite> sites
             try {
-                sites = findLoopSites(body)
+                sites = variants == null ? findLoopSites(body) : Collections.<LoopSite> emptyList()
+                if (variants != null) for (Statement v : variants) findLoopSites(v)
             } catch (UnsupportedConstructException e) {
                 addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), node)
                 return
@@ -2920,7 +2925,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // pass frames such calls. Restored after, so a method without loops/rely-steps is unaffected.
             LoopEncoder.LoopCallHandler prevHandler = LoopEncoder.callHandler.get()
             LoopEncoder.callHandler.set(relyCallHandler(node))
-            try {
+            if (variants != null) {
+                try {
+                    for (Statement v : variants) verifyBodyVariant(node, v, body)
+                } finally {
+                    LoopEncoder.callHandler.set(prevHandler)
+                    node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, body)
+                }
+            } else try {
                 try {
                     if (!sites.isEmpty()) verifyLoopObligations(node, sites)
                     else verifyImplicitObligations(node)
@@ -3441,6 +3453,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (e instanceof MethodCallExpression) {
                     steps.add(new LemmaCall(e))
                 }
+                continue
+            }
+            if (st instanceof AssertStatement && st.getNodeMetaData(ASSUME_ONLY_KEY) != null) {
+                steps.add(new Guard(((AssertStatement) st).booleanExpression, true))   // Phase 334 — assumed, not checked
                 continue
             }
             if (st instanceof AssertStatement) {
@@ -10510,6 +10526,101 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * Raises {@link UnsupportedConstructException} (→ "skipped") if the body has
      * more than one — the spike models a single loop.
      */
+    /**
+     * Phase 334 — the bodies a top-level {@code if} with an annotated loop in a branch splits into: for
+     * {@code P; if (c) T else E; R}, {@code P; assume c; T; R} and {@code P; assume !c; E; R} (a missing else is
+     * empty), each split again while a variant still has such an {@code if}. Null when the body has none. The assume
+     * is an assume-only {@code assert}: the replay takes it as a fact, and no obligation is raised for it.
+     */
+    private static List<Statement> branchLoopVariants(Statement body) {
+        List<Statement> top = topStatements(body)
+        int at = -1
+        for (int i = 0; i < top.size() && at < 0; i++) {
+            Statement st = top.get(i)
+            if (st instanceof IfStatement && (branchHoldsLoop(((IfStatement) st).ifBlock) || branchHoldsLoop(((IfStatement) st).elseBlock))) at = i
+        }
+        if (at < 0) return null
+        IfStatement ifs = (IfStatement) top.get(at)
+        Expression c = ifs.booleanExpression.expression
+        if (writesInCondition(c)) return null   // the split evaluates it as a fact, twice: its write would be lost
+        List<Statement> out = new ArrayList<Statement>()
+        for (boolean thenSide : [true, false]) {
+            List<Statement> stmts = new ArrayList<Statement>(top.subList(0, at))
+            AssertStatement assume = new AssertStatement(new BooleanExpression(thenSide ? c : new NotExpression(c)))
+            assume.setSourcePosition(ifs)
+            assume.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)
+            stmts.add(assume)
+            for (Statement b : topStatements(thenSide ? ifs.ifBlock : ifs.elseBlock)) if (!(b instanceof EmptyStatement)) stmts.add(b)
+            stmts.addAll(top.subList(at + 1, top.size()))
+            BlockStatement v = new BlockStatement(stmts, new VariableScope())
+            v.setSourcePosition(body)
+            List<Statement> deeper = branchLoopVariants(v)
+            if (deeper != null) out.addAll(deeper) else out.add(v)
+        }
+        out
+    }
+
+    /** Phase 334 — an assignment or {@code ++}/{@code --} inside a branch condition. */
+    private static boolean writesInCondition(Expression c) {
+        boolean[] found = [false] as boolean[]
+        c.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.ASSIGN || Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) found[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) { found[0] = true }
+            @Override void visitPostfixExpression(PostfixExpression pe) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
+    }
+
+    /** Phase 334 — an annotated loop inside a branch of an {@code if} among {@code body}'s statements, or of a nested loop's body. */
+    private static boolean branchLoopInBody(List<Statement> body) {
+        if (body == null) return false
+        for (Statement st : body) {
+            if (st instanceof IfStatement && (branchHoldsLoop(((IfStatement) st).ifBlock) || branchHoldsLoop(((IfStatement) st).elseBlock))) return true
+            LoopSpec inner = (LoopSpec) st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+            if (inner != null && branchLoopInBody(inner.body)) return true
+        }
+        false
+    }
+
+    /** Phase 334 — an annotated loop at the top of {@code branch}, or of a branch of an {@code if} there. */
+    private static boolean branchHoldsLoop(Statement branch) {
+        if (branch == null || branch instanceof EmptyStatement) return false
+        for (Statement st : topStatements(branch)) {
+            if (st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) return true
+            if (st instanceof IfStatement && (branchHoldsLoop(((IfStatement) st).ifBlock) || branchHoldsLoop(((IfStatement) st).elseBlock))) return true
+        }
+        false
+    }
+
+    /**
+     * Phase 334 — run the per-method checks (implicit obligations, loops or the straight-line postcondition) on one
+     * branch variant, published as the method's body while they run (the passes read it from ORIGINAL_BODY_KEY).
+     */
+    private void verifyBodyVariant(MethodNode node, Statement variant, Statement original) {
+        node.putNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY, variant)
+        List<LoopSite> sites = findLoopSites(variant)
+        try {
+            if (!sites.isEmpty()) verifyLoopObligations(node, sites)
+            else verifyImplicitObligations(node)
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (!sites.isEmpty()) {
+                for (int si = 0; si < sites.size(); si++) verifyLoop(node, sites.get(si), si == sites.size() - 1)
+            } else {
+                verifyPostcondition(node)
+            }
+        } catch (Throwable t) {
+            ConstantExpression at = new ConstantExpression(node.name)
+            at.setSourcePosition((ASTNode) node)
+            addStaticTypeError(Reporter.formatPostconditionSkipped(node.name, 'internal: ' + t.message), (ASTNode) at)
+        }
+    }
+
     private static List<LoopSite> findLoopSites(Statement body) {
         List<Statement> top = topStatements(body)
         List<Integer> idxs = new ArrayList<Integer>()
@@ -10520,6 +10631,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<LoopSite> sites = new ArrayList<LoopSite>()
         for (int s = 0; s < idxs.size(); s++) {
             LoopSite site = buildLoopSite(top, idxs.get(s))
+            // Phase 334 — a nested annotated loop inside a branch of the loop body would be summarised by its
+            // invariant without ever being checked (verifyNestedLoops sees only the body's top-level loops), and a
+            // wrong one made the outer proof vacuous. Loud until the branch split reaches loop bodies.
+            if (branchLoopInBody(site.spec.body)) {
+                throw new UnsupportedConstructException("an annotated loop inside a branch of a loop body — not yet supported")
+            }
             // Phase 207 — sequential loops: the trimmed segments (between neighbouring loops) own the
             // region obligations; the full prefix (earlier loops included, summarised by the replay)
             // carries establishment. Phase 329 — early exits too: the last site checks every prefix exit (its prefix
@@ -11049,6 +11166,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Statement st = pre.get(k)
             LoopSpec earlier = (LoopSpec) st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
             if (earlier != null) { frameEarlierLoop(earlier, pre.subList(k + 1, pre.size()), written, closureAssigned, out); continue }
+            if (st instanceof AssertStatement && st.getNodeMetaData(ASSUME_ONLY_KEY) != null) {
+                // Phase 334 — an assumed fact (the branch condition a loop inside an `if` runs under) holds at every
+                // iteration when neither the loop nor the prefix after it writes what it reads.
+                Set<String> unstable = new HashSet<String>(written)
+                unstable.addAll(writeTargetsOf(pre.subList(k + 1, pre.size()))); unstable.addAll(closureAssigned)
+                Expression c = ((AssertStatement) st).booleanExpression.expression
+                if (frameStable(c, unstable)) out.add(c)
+                continue
+            }
             if (!(st instanceof ExpressionStatement)) continue
             Expression e = ((ExpressionStatement) st).expression
             String x = null; Expression rhs = null

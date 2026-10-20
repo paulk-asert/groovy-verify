@@ -391,6 +391,14 @@ class BodyEncoder {
             return res
         }
 
+        if (s instanceof AssertStatement && s.getNodeMetaData(ChannelDesugar.ASSUME_ONLY_KEY) != null) {
+            // A synthetic assume-only assert (Phase 334's branch condition, the channel ghosts' facts): a plain fact.
+            Path np = copy(prefix)
+            np.steps.add(new Guard(((AssertStatement) s).booleanExpression, true))
+            res.live.add(np)
+            return res
+        }
+
         if (s instanceof AssertStatement) {
             // A user `assert P` carries through as an AssertAssume step: it never aborts the @Ensures proof (it
             // used to fall to the unsupported throw, silently skipping the postcondition). The assertion is

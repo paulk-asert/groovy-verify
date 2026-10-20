@@ -15195,6 +15195,35 @@ allocate bump loop's index refutation naming an in-range `k`.
 state `ws.sum() > 0` rules out. It is the sequential-loop repro weakness (the earlier loop's writes are havocked and
 the repro is built from them), not a range issue.
 
+## Phase 334 — a loop inside a branch  *(shipped — method-level split, plus one unsoundness closed)*
+
+An annotated loop in a branch of an `if` skipped the whole method. `findLoopSites` sees top-level statements only,
+so the loop never became a site and the straight-line pass rejected the `WhileStatement`.
+
+- **Split at the `if`.** `branchLoopVariants` finds the first top-level `if` with an annotated loop in a branch (at
+  any depth of `if`s inside it) and builds two bodies, `P; assume c; T; R` and `P; assume !c; E; R`, splitting each
+  again while one still has such an `if`, so else-if chains and nested ifs come apart too. `verifyBodyVariant` runs
+  the per-method checks on each (implicit obligations, then the loops or the straight-line postcondition) with the
+  variant published as `ORIGINAL_BODY_KEY`, restored after. The variants cover every path, so this is sound as long
+  as the condition is evaluated once with no effect; a condition with an assignment or `++`/`--` is not split.
+- **The assume** is an `assert` marked `ASSUME_ONLY_KEY` (the channel ghosts' marker). The loop replay already took it
+  as a fact. Three more passes now do: BodyEncoder's path walk and the value-flow scan (as a `Guard`, not an
+  obligation), and the post-loop replay.
+- **A frame fact.** `loopFrameFacts` keeps an assumed condition when neither the loop nor the prefix after it writes
+  what it reads, so preservation and in-body checks see it, and a broken invariant's repro reads `f(1, true)`, not
+  `f(1, false)`, which never reaches the loop.
+- **Unsoundness closed.** A loop inside a branch of a *loop body* was summarised by `summarizeInner` with its invariant
+  assumed, but `verifyNestedLoops` checks only a body's top-level loops, so that invariant was never checked. An inner
+  `@Invariant({ i <= 0 })` that contradicts its exit made the branch path vacuous, and `@Ensures({ result == 0 })`
+  proved although `f(1, true)` returns 1. `findLoopSites` now refuses that shape loudly.
+
+**Shipped tests:** group `P334 loop inside a branch`, 18 cases: a loop in a then-branch, an else, an else-if chain (two
+loops) and a nested if; establishment needing the condition, and failing when it is too weak; preservation, bounds
+and postcondition refutations with repros that take the branch, and one from the loop-free arm; loops before and
+after the `if`; an early-returning else; the writing condition and the loop-body shape skipping loudly.
+
+**Still out:** a loop inside a branch of a loop body (the same split, applied to the outer body); a writing condition.
+
 ---
 
 ## Definition of done, per increment

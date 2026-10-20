@@ -375,7 +375,10 @@ and since a statement-level `@Invariant` is a Groovy parse error on a `.each` ca
 (honest, not silently passed). The for-in / `.each` may have **a second loop nested inside it** (Phase 91, two
 levels, scalar accumulators or array-filling inner bodies — and the inner loop may **`return` a witness** on a
 match, so a doubly-nested search verifies, Phase 109 — see below; several nested loops may follow one another in
-a body, each verified in turn with the ones before it summarised, Phase 330). A `do … while` is `B; while (G) B` — its body runs once
+a body, each verified in turn with the ones before it summarised, Phase 330). An annotated loop may sit inside a
+branch of a top-level `if` (or an else-if chain, or an `if` nested in a branch): the method is verified once per
+branch, with the branch condition assumed, so the loop is checked at the top level of its branch's body (Phase 334).
+A condition that writes (`x++`) is not split, and a loop inside a branch of a *loop body* loud-skips. A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
 plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
 explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts

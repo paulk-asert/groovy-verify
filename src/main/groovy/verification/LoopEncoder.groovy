@@ -540,6 +540,10 @@ class LoopEncoder {
                     throw new UnsupportedConstructException(
                         "statement with no modelled effect after loop (line ${st.lineNumber})")
                 }
+            } else if (st instanceof AssertStatement && !last && st.getNodeMetaData(ChannelDesugar.ASSUME_ONLY_KEY) != null) {
+                // Phase 334 — an assume-only assert after the loop (a branch condition) is a fact from here on
+                Object c = enc.translate(((AssertStatement) st).booleanExpression)
+                if (c != null) s.assertExpr(c)
             } else if (last && st instanceof IfStatement && returnedBy(st) != null) {
                 result = returnedBy(st)   // Phase 319 — `if (c) return a else return b` is `return c ? a : b`
                 break
