@@ -2207,7 +2207,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         boolean intEmpty = r.counterexample == null || r.counterexample.isEmpty()
         boolean sortedEmpty = r.sortedCounterexample == null || r.sortedCounterexample.isEmpty()
         if (intEmpty && sortedEmpty) return r
+        reproBreaksRequires = false
         r.failingCall = buildFailingCall(r.counterexample, r.sortedCounterexample)
+        if (reproBreaksRequires && !r.notes.contains(REPRO_BREAKS_REQUIRES)) r.notes.add(REPRO_BREAKS_REQUIRES)
         // Phase 125 — array names whose Int-valued *elements* are meaningful to print: a parameter or instance
         // field reflects the actual input/entry state. A *local* array's model value is its arbitrary pre-state
         // (e.g. a loop-preservation check picks an unconstrained entry array), which would mislead — so those
@@ -2219,7 +2221,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (dc != null) for (FieldNode fld : dc.fields) if (fld.type?.isArray()) elementArrays.add(fld.name)
         }
         Map<String, Long> display = new LinkedHashMap<String, Long>()
+        // Phase 337 — a loop summary's havocked value `s$havoc$3` is s after some loop: shown under that name, the
+        // latest version of each variable only (the counter grows along the VC)
+        Map<String, Integer> latestHavoc = new HashMap<String, Integer>()
+        r.counterexample.keySet().each { String k ->
+            java.util.regex.Matcher m = HAVOC_KEY.matcher(k)
+            if (m.matches()) {
+                int n = Integer.parseInt(m.group(2))
+                Integer prev = latestHavoc.get(m.group(1))
+                if (prev == null || n > prev) latestHavoc.put(m.group(1), n)
+            }
+        }
         r.counterexample.each { String k, Long v ->
+            java.util.regex.Matcher hm = HAVOC_KEY.matcher(k)
+            if (hm.matches()) {
+                String base = hm.group(1)
+                if (latestHavoc.get(base) == Integer.parseInt(hm.group(2)) && !base.contains('#') && !base.startsWith('$')) {
+                    display.put(base + ' (after a loop)', v)
+                }
+                return
+            }
             // internal keys: nullity flag, SSA version, synthetic temps (`$snap…` index snapshots, `$self`) —
             // surfaced via failingCall / the base (entry) variable, not shown raw.
             if (k.endsWith('?null') || k.contains('#') || k.startsWith('$')) return
@@ -2251,6 +2272,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         r
     }
 
+    /** A loop summary's havocked scalar: {@code <name>$havoc$<n>}. */
+    private static final java.util.regex.Pattern HAVOC_KEY = java.util.regex.Pattern.compile('(.+)\\$havoc\\$(\\d+)')
+
     private static final List<String> INT_TYPE_NAMES = [
         'int', 'long', 'short', 'byte', 'char',
         'java.lang.Integer', 'java.lang.Long', 'java.lang.Short', 'java.lang.Byte', 'java.lang.Character']
@@ -2273,12 +2297,100 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Parameter p : currentMethod.parameters) {
             if ((p.type?.isArray() || isCollectionType(p.type)) && sizeOf(p.name, ce) > MAX_REPRO_SIZE) return null
         }
+        ce = reproUnderRequires(ce)
+        if (ce == null) { reproBreaksRequires = true; return null }
         List<String> args = new ArrayList<String>()
         for (Parameter p : currentMethod.parameters) {
             args.add(renderArg(p, ce, sortedCe))
         }
         "${currentMethod.name}(${args.join(', ')})"
     }
+
+    /**
+     * Phase 337 — the model a failing call is rendered from, checked against the method's own {@code @Requires}. A
+     * bounds check drops the quantified and aggregate precondition conjuncts (Phase 91b), and a loop VC knows an earlier
+     * loop's state only through its summary, so the model may break a precondition the check never saw: allocate's
+     * index refutation rendered allocate(1, new int[0]) under ws.sum() > 0. The full precondition is re-checked with
+     * the rendered arguments pinned (scalars, sizes, and elements up to {@link #MAX_PINNED_ELEMENTS}). If they break it,
+     * the scalars and sizes alone are tried, and the elements of a model that meets it replace the rendered ones
+     * (a.every { v > 5 } turns new int[2] into [6, 6] as int[]). Null when neither meets it; {@code ce} itself when
+     * they do, the check is UNKNOWN, or the precondition has no such conjunct (every VC assumes those whole).
+     */
+    private Map<String, Long> reproUnderRequires(Map<String, Long> ce) {
+        if (findRequires(currentMethod) == null) return ce
+        Expression reqAst = contractAstFor(currentMethod, 'requires')
+        if (reqAst == null || !hasQuantifier(reqAst)) return ce
+        List<String> shape = new ArrayList<String>(), elements = new ArrayList<String>()
+        for (Parameter p : currentMethod.parameters) {
+            String tn = p.type?.name
+            boolean nulled = ce.get(p.name + '?null') == 1L
+            if (tn in INT_TYPE_NAMES) {
+                Long v = ce.get(p.name)
+                shape.add("${p.name} == ${v != null ? v : 0L}".toString())
+            } else if (tn in BOOL_TYPE_NAMES) {
+                shape.add(ce.get(p.name) == 1L ? p.name : "!${p.name}".toString())
+            } else if (!nulled && (p.type?.isArray() || isCollectionType(p.type)) && !isSetType(p.type) && !isMapType(p.type)) {
+                long n = sizeOf(p.name, ce)
+                shape.add("${p.name} != null".toString())
+                shape.add("${p.name}.${p.type.isArray() ? 'length' : 'size()'} == ${n}".toString())
+                String comp = p.type.isArray() ? p.type.componentType.nameWithoutPackage : null
+                List<Long> elems = pinnedElements(p.name, n, ce)
+                boolean rendered = p.type.isArray() ? comp in NUMERIC_COMPONENT_NAMES : elems != null && elems.any { it != 0L }
+                if (rendered && n <= MAX_PINNED_ELEMENTS) {
+                    for (int k = 0; k < n; k++) elements.add("${p.name}[${k}] == ${elems != null ? elems.get(k) : 0L}".toString())
+                }
+            }
+        }
+        CheckResult whole = requiresWith(reqAst, shape + elements)
+        if (whole == null || whole.status != CheckResult.Status.VERIFIED) return ce   // met, or undecided: keep
+        if (elements.isEmpty()) return null
+        CheckResult shaped = requiresWith(reqAst, shape)
+        if (shaped == null || shaped.status != CheckResult.Status.REFUTED || shaped.counterexample == null) return null
+        Map<String, Long> repaired = new LinkedHashMap<String, Long>(ce)
+        shaped.counterexample.each { String k, Long v -> if (k.endsWith(']')) repaired.put(k, v) }
+        // the repaired elements must themselves meet the precondition (a model value the walk didn't pin reads as 0)
+        List<String> again = new ArrayList<String>(shape)
+        for (Parameter p : currentMethod.parameters) {
+            if (!(p.type?.isArray() || isCollectionType(p.type)) || ce.get(p.name + '?null') == 1L) continue
+            long n = sizeOf(p.name, repaired)
+            List<Long> elems = pinnedElements(p.name, n, repaired)
+            if (n <= MAX_PINNED_ELEMENTS) for (int k = 0; k < n; k++) again.add("${p.name}[${k}] == ${elems != null ? elems.get(k) : 0L}".toString())
+        }
+        CheckResult check = requiresWith(reqAst, again)
+        check != null && check.status == CheckResult.Status.REFUTED ? repaired : null
+    }
+
+    /** {@code ¬(req ∧ pins)}: VERIFIED when no state meets both, REFUTED with a model of both; null if untranslatable. */
+    private CheckResult requiresWith(Expression reqAst, List<String> pins) {
+        Expression pinned = pins.isEmpty() ? null : parseContract(pins.collect { "(${it})" }.join(' && '))
+        if (!pins.isEmpty() && pinned == null) return null
+        SmtSession s = backend.session()
+        if (s instanceof Z3Session) ((Z3Session) s).auxiliary(AUX_TIMEOUT_MS)
+        try {
+            Encoder enc = mkEncoder(s)
+            Object pre = enc.translateBool(reqAst)
+            Object pin = pinned != null ? enc.translateBool(pinned) : null
+            if (pre == null || (pinned != null && pin == null)) return null
+            assumeIntJvmBounds(s, enc)
+            s.assertExpr(pre)
+            if (pin != null) s.assertExpr(pin)
+            for (Parameter p : currentMethod.parameters) {   // name the elements so the model walk reports them
+                if (p.type?.isArray() || isCollectionType(p.type)) try { enc.arrayFor(p.name) } catch (Throwable ignored) { }
+            }
+            return s.check()   // the session reads "unsat" as VERIFIED: nothing meets both
+        } catch (Throwable ignored) {
+            return null
+        } finally { try { s.close() } catch (Throwable ignored) {} }
+    }
+
+    private static final long MAX_PINNED_ELEMENTS = 64L
+    /** Phase 337 — the timeout of a repro's precondition re-check, which decides only whether a call is shown. */
+    private static final int AUX_TIMEOUT_MS = 500
+
+    /** Set by {@link #buildFailingCall} when it withheld the call because its arguments break {@code @Requires}. */
+    private boolean reproBreaksRequires = false
+    static final String REPRO_BREAKS_REQUIRES =
+        'no failing call: these arguments break the @Requires, which this check assumed only in part (it may not be reachable)'
 
     /**
      * Render one parameter as a Groovy literal drawn from the counterexample. {@code sortedCe} holds

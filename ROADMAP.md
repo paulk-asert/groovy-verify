@@ -15280,7 +15280,32 @@ outer body overwrites, not assumed; the do-while first pass refuting with `f(0)`
 under a do-while verifying; an instance method with a field. G379's bounds case now reads `f(new int[0], 1, true)`.
 
 **Still weak:** the sequential-loop repro (Phase 333's `allocate(1, new int[0])`), where a later loop's state comes
-from an earlier loop's havoc.
+from an earlier loop's havoc. *(Phase 337.)*
+
+## Phase 337 — repros that meet `@Requires`, and loop-summary names  *(shipped — reporting)*
+
+The plain sequential cases already rendered good repros (`f(1)`, `f(new int[0], 1)`): the earlier loop's exit facts
+reach the later one. The weak ones had two causes. The allocate bump-loop refutation printed
+`allocate(1, new int[0])` beside `ws.length = 0`, under `@Requires({ … ws.sum() > 0 })`. The bounds check drops the
+quantified and aggregate conjuncts of the precondition to keep Z3 out of a quantifier+NIA dead end (Phase 91b;
+with them, this query is "incomplete quantifiers"), so the model was free to break them. A loop summary's havocked
+values showed under internal names: `s$havoc$0 = 1, i$havoc$1 = 1`.
+
+- **The repro is re-checked against the whole `@Requires`.** `reproUnderRequires` runs in `buildFailingCall` when the
+  precondition has a quantified or aggregate conjunct (the only ones a VC drops). It pins the rendered arguments
+  (scalars, booleans, array and list sizes, and elements up to 64) and checks the full precondition. Met, or
+  UNKNOWN: the call stands. Broken: the scalars and sizes alone are tried, and the elements of a model that meets
+  it replace the rendered ones, re-checked in turn (`new int[2]` under `a.every { v > 5 }` becomes `[44, 6] as int[]`).
+  Neither: no failing call, and the note "no failing call: these arguments break the @Requires, which this check
+  assumed only in part (it may not be reachable)". allocate in fact never fails there; the refutation means the
+  slack bound is missing.
+- **Auxiliary sessions.** These checks decide no obligation, so `Z3Session.auxiliary` gives them a 500 ms timeout,
+  no Phase 321 sliced retry, and no count as an UNKNOWN verdict (the check itself counts).
+- **Names after a loop.** `shown()` displays the latest `x$havoc$N` of each variable as `x (after a loop)`.
+
+**Shipped tests:** group `P337 sequential-loop repros`, 7 cases: allocate's repro withheld with the note; elements
+rebuilt from a precondition model; a quantified precondition whose repro already meets it, kept; `s (after a loop)
+= 1` in place of `s$havoc$0`; later-loop preservation, bounds and postcondition repros.
 
 ---
 

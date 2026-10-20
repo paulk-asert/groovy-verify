@@ -176,6 +176,19 @@ class Z3Session implements SmtSession {
         this.timeoutMs = timeoutMs
     }
 
+    /** Phase 337 — > 0 for an auxiliary session (see {@link #auxiliary}): its timeout. */
+    private int auxTimeoutMs = 0
+
+    /**
+     * Phase 337 — mark this session as an auxiliary query that decides no obligation, only how a result is reported
+     * (whether a repro meets the method's @Requires): a short timeout, no sliced retry on UNKNOWN, and an UNKNOWN
+     * is not counted as an undecided verdict. The check itself is still counted.
+     */
+    void auxiliary(int ms) {
+        auxTimeoutMs = ms
+        Params p = ctx.mkParams(); p.add('timeout', ms); solver.setParameters(p)
+    }
+
     @Override
     Object intVar(String name) {
         IntExpr cached = vars.get(name)
@@ -1525,12 +1538,13 @@ class Z3Session implements SmtSession {
      * guards against a hard-VC UNKNOWN being reused under a different bound.
      */
     private String vcKey() {
-        if (assertedExprs.isEmpty()) return "t:${timeoutMs}\n<empty>"
+        String t = auxTimeoutMs > 0 ? "a:${auxTimeoutMs}" : "t:${timeoutMs}"
+        if (assertedExprs.isEmpty()) return "${t}\n<empty>"
         List<String> reprs = new ArrayList<String>(assertedExprs.size())
         for (BoolExpr e : assertedExprs) reprs.add(e.toString())
         Collections.sort(reprs)
         StringBuilder sb = new StringBuilder()
-        sb.append('t:').append(timeoutMs).append('\n')
+        sb.append(t).append('\n')
         for (String s : reprs) sb.append(s).append('\n')
         sb.toString()
     }
@@ -1591,6 +1605,7 @@ class Z3Session implements SmtSession {
         }
         if (status == Status.UNKNOWN) {
             String reason = solver.getReasonUnknown()
+            if (auxTimeoutMs > 0) return CheckResult.unknown(reason)
             // Phase 321 — a query mixing nonlinear arithmetic with quantified axioms gets a second, sliced, attempt.
             if (mixedQuery() && nonlinearSliceProves()) return CheckResult.verified()
             Z3Backend.recordSolverCheck(0L, true)
