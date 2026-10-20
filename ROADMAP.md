@@ -15068,6 +15068,41 @@ and a proof (`result == 7`).
 
 Docs: FRAGMENT's loop paragraph, README's control-flow list, a CAPABILITIES row.
 
+## Phase 329 — early exits with sequential loops  *(shipped — loop-site change, and a soundness fix)*
+
+Phase 207 verified several annotated loops in sequence, but threw "early exits combined with multiple sequential
+annotated loops" as soon as one had a `return` or `break`, so a search loop followed by any other loop skipped
+the whole method.
+
+- **Fixed first (unsound before, with a single loop too).** Establishment, the do-while first iteration and the
+  prefix exit check assumed every prefix exit's guard false at method entry, then ran the prefix. A guard reads
+  the state where it is evaluated: after `x = x + 1`, `if (x == 2) return 0` was taken as `x0 != 2`, which ruled
+  out real runs, so `@Ensures({ result != 7 })` over `if (x == 3) return 7` proved (f(2) returns 7), and so did an
+  invariant `x != 3` on entry. `walkPrefix` runs the original prefix in order and assumes each exit's guard false
+  where it stands, symExec summarising any earlier loop on the way. That is what lets an exit sit after a loop.
+- **The skip is lifted.** The last site's prefix is the whole method's up to it, so it checks every prefix exit,
+  wherever it sits. An earlier site checks its own in-body returns against `@Ensures`. Its breaks continue into
+  the later loops, whose prefix replay summarises it with each break's exit state (Phase 324). Its prefix exits
+  are the last site's to check. Phase 310's rule holds: an in-body guard is never assumed false after its loop.
+- **An earlier loop that breaks keeps some facts.** Phase 319 dropped all of an earlier loop's exit facts when
+  it had a `break`. At a break the state is the iteration's start (`inv ∧ guard`) run through the body up to the
+  break and its lead, so a conjunct over nothing written there still holds. `frameEarlierLoop` now keeps those
+  conjuncts and drops only the negated guard.
+
+**Known, not new:** a refutation in this shape can print a weak repro. The last loop's use check summarises earlier
+loops without replaying the path to them, so the call shown may not reach the failing return, and its
+counterexample can name summary variables (`neg$havoc$0`). The verdict is right; the repro is the Phase 310
+use-context imprecision.
+
+**Shipped tests:** group `P329 early exits with sequential loops`, 11 cases: the two soundness fixes (a prefix
+guard read after the statements ahead of it, refuted on f(2); establishment reading it where it stands, refuted);
+a return in the first loop with a sum in the second, and a wrong one (refuted); an exit between the loops reading
+the first loop's state, and a wrong one (refuted); the second loop starting where the first broke off; a return in
+the second loop; an in-body guard not assumed after its loop (refuted on f(new int[2])); and the break framing's
+two limits, a lead that writes a conjunct and the negated guard, both refuted.
+
+Docs: FRAGMENT's loop paragraph, a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment

@@ -341,7 +341,9 @@ assignment — both the declaration `def (a, b) = [1, 2]` and the bare parallel 
 annotated loop — or **several in sequence** (Phase 207: each loop gets its own establishment /
 preservation / `@Decreases`, earlier loops summarised as havoc + `inv ∧ ¬guard` in the later ones'
 context. A later loop keeps every earlier loop's exit fact over state it leaves alone (Phase 319, as in Dafny),
-and must restate only a fact over state it writes, the OpenJML `maintaining` discipline; early exits combined with sequential loops stay a loud skip) — `while`, `do … while` (Phase 88), a classic
+and must restate only a fact over state it writes, the OpenJML `maintaining` discipline. Early exits may be anywhere among them (Phase 329): a return in any of the
+loops or between them, and a break out of an earlier loop, which keeps that loop's invariant conjuncts over
+state nothing before its breaks writes, but not its negated guard) — `while`, `do … while` (Phase 88), a classic
 `for (init; cond; update)`, `for (x in xs)` over a named collection, `xs.each { x -> … }` / `xs.each { … it … }`
 (Phase 161, modelled as that same for-in — the explicit element param *or* the implicit `it`), or
 `xs.eachWithIndex { x, i -> … }` (the closure's second param becomes the loop's *user-named* index, with `x = xs[i]`),

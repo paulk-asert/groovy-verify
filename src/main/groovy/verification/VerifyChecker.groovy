@@ -10473,16 +10473,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             LoopSite site = buildLoopSite(top, idxs.get(s))
             // Phase 207 — sequential loops: the trimmed segments (between neighbouring loops) own the
             // region obligations; the full prefix (earlier loops included, summarised by the replay)
-            // carries establishment. Early exits with multiple sequential loops stay a loud skip (v1).
+            // carries establishment. Phase 329 — early exits too: the last site checks every prefix exit (its prefix
+            // is the whole method's up to it), and each site its own in-body returns (see verifyLoop).
             int prevEnd = s == 0 ? 0 : idxs.get(s - 1) + 1
             site.segmentBefore = new ArrayList<Statement>(top.subList(prevEnd, idxs.get(s)))
             if (s == 0 && site.spec.init != null) site.segmentBefore.addAll(site.spec.init)
             int nextStart = s + 1 < idxs.size() ? idxs.get(s + 1) : top.size()
             site.segmentAfter = new ArrayList<Statement>(top.subList(idxs.get(s) + 1, nextStart))
-            if (idxs.size() > 1 && !site.earlyExits.isEmpty()) {
-                throw new UnsupportedConstructException(
-                    "early exits combined with multiple sequential annotated loops")
-            }
             sites.add(site)
         }
         sites
@@ -10862,6 +10859,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (EarlyExit ex : site.earlyExits) {
                     checkEarlyExit(node, site, ex, reqAst, postAst)
                 }
+            } else if (!tail && findEnsures(node) != null) {
+                // Phase 329 — an earlier of sequential loops: its in-body returns leave the method from here. Its
+                // prefix exits are the last site's too (checked there), and its breaks go on into the later loops,
+                // whose prefix replay summarises it with each break's exit state.
+                Expression ensAst = contractAstFor(node, 'ensures')
+                for (EarlyExit ex : site.earlyExits) {
+                    if (ex.region == 'inBody' && !ex.isBreak) checkEarlyExit(node, site, ex, reqAst, ensAst)
+                }
             }
         } catch (UnsupportedConstructException e) {
             addStaticTypeError(Reporter.formatLoopSkipped(node.name, e.message), site.loopStmt)
@@ -11034,15 +11039,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  across an implicit-this call (it may change a field the invariant reads). */
     private static void frameEarlierLoop(LoopSpec earlier, List<Statement> later, Set<String> written,
                                          Set<String> closureAssigned, List<Expression> out) {
-        if (LoopEncoder.containsLoopBreak(earlier.body)) return
+        // Phase 329 — a loop that breaks leaves with inv ∧ guard at the breaking iteration's start, then the body up to
+        // the break and its lead: an invariant conjunct over nothing those write still holds there; ¬guard doesn't
+        Set<String> beforeBreak = null
+        if (LoopEncoder.containsLoopBreak(earlier.body)) {
+            int last = -1
+            for (int k = 0; k < earlier.body.size(); k++) {
+                if (LoopEncoder.containsLoopBreak([earlier.body.get(k)] as List<Statement>)) last = k
+            }
+            beforeBreak = new HashSet<String>()
+            if (!collectWritesStmts(earlier.body.subList(0, last + 1), beforeBreak)) return
+        }
         boolean[] thisCall = [false]
         Set<String> unstable = writeTargetsOf(later, thisCall)
         if (thisCall[0]) return
         unstable.addAll(written); unstable.addAll(closureAssigned)
+        if (beforeBreak != null) unstable.addAll(beforeBreak)
         List<Expression> conjuncts = new ArrayList<Expression>()
         for (Expression inv : earlier.invariants) splitConjuncts(inv, conjuncts)
         for (Expression c : conjuncts) if (Collections.disjoint(freeNames(c), unstable)) out.add(c)
-        if (earlier.guard != null && Collections.disjoint(freeNames(earlier.guard), unstable)) out.add(new NotExpression(earlier.guard))
+        if (beforeBreak == null && earlier.guard != null && Collections.disjoint(freeNames(earlier.guard), unstable)) out.add(new NotExpression(earlier.guard))
     }
 
     /** Pure (no writes, only pure-read calls), over parameters and locals only, none of them {@code unstable}. */
@@ -11341,24 +11357,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             if (ex.region == 'prefix') {
-                // Assume each earlier prefix-exit's guard is false (we got here, not there).
-                for (Expression g : ex.priorGuards) {
-                    Object gh = enc.translate(g)
-                    if (gh != null) s.assertExpr(s.not(gh))
-                }
-                LoopEncoder.symExec(ex.priorStmts, enc, s)
+                // Each earlier prefix exit not taken, where its guard was evaluated (Phase 329)
+                walkPrefix(site, ex.node, enc, s)
             } else if (ex.region == 'inBody') {
                 if (doWhileFirstIter) {
                     // First iteration of a do-while: the body-entry state is the loop-*entry* state
                     // (prefix-exit guards false, then the prefix), exactly as checkEstablishment sets up.
                     // The invariant isn't established yet and the guard isn't checked, so assume neither.
-                    for (EarlyExit pe : site.earlyExits) {
-                        if (pe.beforeLoop) {
-                            Object gh = enc.translate(pe.guard)
-                            if (gh != null) s.assertExpr(s.not(gh))
-                        }
-                    }
-                    LoopEncoder.symExec(site.prefix, enc, s)
+                    walkPrefix(site, null, enc, s)
                 } else {
                     // Phase 49b — in-body exit on *some* (non-first) iteration. The body-entry state is
                     // whatever satisfies the invariant — NOT the post-prefix state (the invariant is the
@@ -11487,6 +11493,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** Phase 329 — run the loop's original prefix up to {@code stopAt} (all of it when null), assuming each prefix
+     *  exit's guard false in the state where it is evaluated. Assuming them all at method entry instead, as before,
+     *  read a guard against values the statements ahead of it hadn't produced yet: after {@code x = x + 1},
+     *  {@code if (x == 2) return 0} was taken as {@code x0 != 2}, ruling out real runs and "proving" false
+     *  postconditions and invariants. An earlier loop in the prefix is summarised by symExec. */
+    private static void walkPrefix(LoopSite site, Statement stopAt, Encoder enc, SmtSession s) {
+        Set<Statement> exitNodes = new HashSet<Statement>(site.earlyExits.findAll { it.region == 'prefix' }*.node)
+        List<Statement> run = new ArrayList<Statement>()
+        for (Statement st : site.originalPrefix) {
+            if (stopAt != null && st.is(stopAt)) break
+            if (exitNodes.contains(st)) {
+                LoopEncoder.symExec(run, enc, s)
+                run = new ArrayList<Statement>()
+                Object gh = enc.translate(((IfStatement) st).booleanExpression)
+                if (gh != null) s.assertExpr(s.not(gh))
+            } else run.add(st)
+        }
+        LoopEncoder.symExec(run, enc, s)
+    }
+
     /** Establishment: precondition ∧ class invariants ∧ prefix ⇒ invariant.
      *  Phase 49 — assume {@code ¬each prefix early-exit guard} (the loop is only reached on
      *  the no-exit-taken path). */
@@ -11497,13 +11523,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
-            for (EarlyExit ex : site.earlyExits) {
-                if (ex.beforeLoop) {
-                    Object gh = enc.translate(ex.guard)
-                    if (gh != null) s.assertExpr(s.not(gh))
-                }
-            }
-            LoopEncoder.symExec(site.prefix, enc, s)
+            walkPrefix(site, null, enc, s)
             // Phase 88 — a do-while (`do B while (G)` ≡ `B; while (G) B`) runs its body once before the
             // first guard/invariant check, so the invariant must hold AFTER that first iteration, not at
             // loop entry. Execute the body once here (no guard assumed — the first pass is unconditional)
