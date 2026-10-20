@@ -15307,6 +15307,53 @@ values showed under internal names: `s$havoc$0 = 1, i$havoc$1 = 1`.
 rebuilt from a precondition model; a quantified precondition whose repro already meets it, kept; `s (after a loop)
 = 1` in place of `s$havoc$0`; later-loop preservation, bounds and postcondition repros.
 
+## Phase 338 — a loop after a nested outer loop  *(shipped — loop-summary write set)*
+
+Phase 330's leftover: an annotated loop after an outer loop that holds a nested loop (a row-wise pass, then a plain
+one) skipped the method with "nested loop writes a field/collection or unbounded construct — not yet supported". A
+later loop replays the earlier ones as summaries, `summarizeInner`: havoc what the loop writes, assume its invariant
+and negated guard. Its write set comes from `innerFrame`, which bailed on any loop statement in the body.
+
+- **A nested loop's writes.** `innerFrameStmt` now accepts an annotated loop (one carrying a `LoopSpec`) as writing
+  what its init, guard and body write. The guard must write nothing (`guardWritesNothing`: no assignment or
+  `++`/`--`, read-only calls only), since `innerFrameExpr` reads assignments, not conditions. The nested loop's own
+  correctness is not assumed here: it is verified at its own site (Phase 330), and the summary only havocs.
+  An unannotated loop still bails, so it skips loudly as before.
+- Frame facts, `frameEarlierLoop` and the obligation replay share `innerFrame`, so a fact the nested loop overwrites
+  (`t = 5`, counted up inside) does not reach the later loop, while one nothing writes does.
+
+**Shipped tests:** group `P338 a loop after a nested outer loop`, 10 cases: a nested outer loop then a plain loop
+(nonlinear `s == n * m` reaching it), its wrong postcondition, a wrong inner invariant still caught, an overwritten
+fact refuting and an untouched one framed, array contents carried, an early return in the later loop, three loops,
+two nested outer loops in sequence, and an unannotated inner loop skipping loudly.
+
+## Phase 339 — a `break` inside a non-tail `if`  *(shipped — break flag, plus a branch-merge fix)*
+
+A `break` was modelled only as a top-level `if (c) break` / `if (c) { lead; break }`, or as a leaf of the body's
+tail `if`/`else` chain (Phases 312/326). One buried under another `if`, or followed by more of its branch, skipped
+the loop: "unsupported statement BreakStatement", or in a nested loop "a `break` in a nested loop is modelled only
+as a top-level …".
+
+- **The break becomes a flag** (`ContractExpansionTransform.desugarBreak`, after `desugarContinue` and before a
+  `for` update is appended). For an `if` that holds a loop `break` in any other shape: `boolean brk#L_C = false`
+  before it; inside, each `break` becomes `brk = true`, and what follows an inner `if` that may set it is guarded
+  by `if (brk) {} else s` (Phase 327's `flagged`, for breaks); then `if (brk) break` after the `if`. The iteration
+  leaves at the same point with the same state, and the `for` update is still skipped. Breaks inside a `switch`
+  belong to it and are left alone; an `if` that also returns is left to the tail lifting (rewriting a
+  return-and-break chain buried its returns); a labelled break leaves the body unchanged, a loud skip.
+- **Fixed: a write lost in the branch merge.** `iteCombineMap` skipped a name with no binding at the `if`'s
+  entry ("truly fresh on both sides"), even when one branch wrote it. A scalar unread before the `if` (`r`, outside
+  the invariant) has no entry binding, so `if (i == 1) { r = i }` merged to nothing and `r` read as its free value
+  afterwards: sound, since a free value over-approximates, but `r == 1` at a later `break` did not prove, with or
+  without the flag. The entry value is now the name's free value (`varFor`, what a later read gets) when its sort
+  matches, so the merge is `r = c ? i : r`.
+
+**Shipped tests:** group `P339 break inside a non-tail if`, 11 cases: a break under another `if` with more of the
+body after it, in a nested loop, in an `else` (nested and top-level, with statements after it); the postcondition
+from the break state, and one the break state misses; the rest of the branch after the break not run; a `for`
+update skipped; a write in an `if` before the exit reaching the break state; an inner break's state refuting the
+outer claim; a labelled break skipping loudly. G357's two "buried break skips loudly" cases now verify.
+
 ---
 
 ## Definition of done, per increment

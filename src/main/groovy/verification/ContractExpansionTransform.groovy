@@ -1218,7 +1218,7 @@ class ContractExpansionTransform implements ASTTransformation {
         spec.guard = guard
         List<Statement> body = new ArrayList<Statement>()
         if (bodyPrefix != null) body.addAll(bodyPrefix)             // for-in: x = xs[idx]; …
-        body.addAll(desugarContinue(loopBodyCopy(loop)))           // Phase 324 — before the update is appended
+        body.addAll(desugarBreak(desugarContinue(loopBodyCopy(loop))))   // Phases 324/339 — before the update is appended
         if (updateStmt != null) body.add(updateStmt)                // for/for-in: …; update
         spec.body = body
         spec.init = initStmts
@@ -1429,6 +1429,136 @@ class ContractExpansionTransform implements ASTTransformation {
             return out
         }
         out
+    }
+
+    /**
+     * Phase 339 — a {@code break} buried in an {@code if} (under another if, before more statements of its branch, or
+     * in an else) becomes a flag the exit lifting can see: {@code boolean brk#L_C = false} before the if, the break
+     * replaced by {@code brk = true} with the rest of its branch guarded, then {@code if (brk) break} after the if. The
+     * iteration leaves the loop at the same point with the same state, skipping a for loop's update (appended after
+     * this). An if already shaped {@code if (c) break} / {@code if (c) { lead; break }} is left alone. Returns
+     * {@code body} unchanged, so the loud skip stands, for a labelled break, one under anything but blocks and ifs,
+     * or a rewrite that would move a loop into a branch.
+     */
+    /* package */ static List<Statement> desugarBreak(List<Statement> body) {
+        if (!body.any { containsLoopBreak(it) }) return body
+        List<Statement> out = breakFree(body)
+        out != null ? out : body
+    }
+
+    private static List<Statement> breakFree(List<Statement> ss) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (int i = 0; i < ss.size(); i++) {
+            Statement st = ss.get(i)
+            if (!containsLoopBreak(st)) { out.add(st); continue }
+            if (st instanceof BreakStatement) {
+                if (((BreakStatement) st).label != null) return null
+                out.add(st)
+                return out                                   // the rest of the body is dead
+            }
+            if (st instanceof BlockStatement) {
+                List<Statement> flat = new ArrayList<Statement>(((BlockStatement) st).statements)
+                flat.addAll(ss.subList(i + 1, ss.size()))
+                List<Statement> tail = breakFree(flat)
+                if (tail == null) return null
+                out.addAll(tail)
+                return out
+            }
+            if (!(st instanceof IfStatement)) return null
+            IfStatement ifs = (IfStatement) st
+            // the exit shape already; or a chain that also returns, which the tail lifting takes whole (Phases 49c/326)
+            if (isBreakExitIf(ifs) || containsReturn(ifs)) { out.add(st); continue }
+            VariableExpression flag = new VariableExpression("brk#${ifs.lineNumber}_${ifs.columnNumber}".toString(), ClassHelper.boolean_TYPE)
+            List<Statement> t = breakFlagged(branchStatements(ifs.ifBlock), flag), e = breakFlagged(branchStatements(ifs.elseBlock), flag)
+            if (t == null || e == null) return null
+            DeclarationExpression decl = new DeclarationExpression(flag, Token.newSymbol(Types.ASSIGN, -1, -1), ConstantExpression.FALSE)
+            decl.setSourcePosition(ifs)
+            ExpressionStatement declSt = new ExpressionStatement(decl)
+            declSt.setSourcePosition(ifs)
+            out.add(declSt)
+            IfStatement rebuilt = new IfStatement(ifs.booleanExpression, block(t), e.isEmpty() ? EmptyStatement.INSTANCE : block(e))
+            rebuilt.setSourcePosition(ifs)
+            out.add(rebuilt)
+            BreakStatement brk = new BreakStatement()
+            brk.setSourcePosition(ifs)
+            IfStatement exit = new IfStatement(new BooleanExpression(flagRef(flag)), block([(Statement) brk]), EmptyStatement.INSTANCE)
+            exit.setSourcePosition(ifs)
+            out.add(exit)
+        }
+        out
+    }
+
+    /** Phase 339 — {@code ss} with each unlabelled loop {@code break} replaced by {@code flag = true} and what follows
+     *  an {@code if} that may set it guarded by {@code if (flag) {} else s}; null as {@link #flagged}. */
+    private static List<Statement> breakFlagged(List<Statement> ss, VariableExpression flag) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (int i = 0; i < ss.size(); i++) {
+            Statement st = ss.get(i)
+            if (st instanceof BreakStatement) {
+                if (((BreakStatement) st).label != null) return null
+                ExpressionStatement set = new ExpressionStatement(new BinaryExpression(flagRef(flag),
+                    Token.newSymbol(Types.ASSIGN, st.lineNumber, st.columnNumber), ConstantExpression.TRUE))
+                set.setSourcePosition(st)
+                out.add(set)
+                return out
+            }
+            if (!containsLoopBreak(st)) { out.add(st); continue }
+            List<Statement> rest = new ArrayList<Statement>(ss.subList(i + 1, ss.size()))
+            if (st instanceof BlockStatement) {
+                List<Statement> flat = new ArrayList<Statement>(((BlockStatement) st).statements)
+                flat.addAll(rest)
+                List<Statement> tail = breakFlagged(flat, flag)
+                if (tail == null) return null
+                out.addAll(tail)
+                return out
+            }
+            if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
+            IfStatement ifs = (IfStatement) st
+            List<Statement> t = breakFlagged(branchStatements(ifs.ifBlock), flag), e = breakFlagged(branchStatements(ifs.elseBlock), flag)
+            List<Statement> tail = breakFlagged(rest, flag)
+            if (t == null || e == null || tail == null) return null
+            IfStatement rebuilt = new IfStatement(ifs.booleanExpression, block(t), e.isEmpty() ? EmptyStatement.INSTANCE : block(e))
+            rebuilt.setSourcePosition(ifs)
+            out.add(rebuilt)
+            for (Statement r : tail) {
+                IfStatement guarded = new IfStatement(new BooleanExpression(flagRef(flag)), block(new ArrayList<Statement>()), r)
+                guarded.setSourcePosition(r)
+                out.add(guarded)
+            }
+            return out
+        }
+        out
+    }
+
+    /** Phase 339 — {@code if (c) break} or {@code if (c) { lead; break }}: no else, unlabelled, no other break in the lead. */
+    private static boolean isBreakExitIf(IfStatement ifs) {
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return false
+        List<Statement> ss = branchStatements(ifs.ifBlock)
+        if (ss.isEmpty() || !(ss.get(ss.size() - 1) instanceof BreakStatement) || ((BreakStatement) ss.get(ss.size() - 1)).label != null) return false
+        !ss.subList(0, ss.size() - 1).any { containsLoopBreak(it) }
+    }
+
+    private static boolean containsReturn(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement r) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
+    }
+
+    /** Phase 339 — a {@code break} for the enclosing loop: not inside a nested loop, a switch (its own break) or a closure. */
+    private static boolean containsLoopBreak(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitBreakStatement(BreakStatement b) { found[0] = true }
+            @Override void visitWhileLoop(WhileStatement w) { }
+            @Override void visitForLoop(ForStatement f) { }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { }
+            @Override void visitSwitch(SwitchStatement s) { }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
     }
 
     /** Phase 327 — {@code ss} with each unlabelled {@code continue} replaced by {@code flag = true} and what follows

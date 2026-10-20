@@ -23,6 +23,7 @@ import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
@@ -400,7 +401,15 @@ class LoopEncoder {
         // ¬inner_guard) is unaffected. The return's own @Ensures is discharged separately (verifyNestedLoops).
         if (st instanceof ReturnStatement) return true
         if (st instanceof BreakStatement) return true       // Phase 324 — a break writes nothing
-        return false   // nested loop / unknown statement → bail
+        // Phase 338 — an annotated loop inside the summarised one (an earlier outer loop that holds a nested loop,
+        // summarised for a later sequential loop) writes what its init, guard and body write. It is verified at its
+        // own site; here only its writes matter, havocked with the rest.
+        LoopSpec nested = (LoopSpec) st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (nested != null) {
+            if (nested.init != null && !innerFrame(nested.init, scalars, arrays, lists)) return false
+            return guardWritesNothing(nested.guard) && innerFrame(nested.body, scalars, arrays, lists)
+        }
+        return false   // an unannotated loop / unknown statement → bail
     }
     private static boolean innerFrameExpr(Expression e, Set<String> scalars, Set<String> arrays) {
         if (e == null) return true
@@ -419,6 +428,29 @@ class LoopEncoder {
         }
         return false   // method calls (mutators / unknown) → bail
     }
+    private static final Set<String> READ_ONLY_CALLS = ['size', 'length', 'isEmpty', 'get', 'getAt', 'contains'] as Set
+
+    /** Phase 338 — a loop guard that writes nothing: no assignment, no {@code ++}/{@code --}, only read-only calls. */
+    private static boolean guardWritesNothing(Expression g) {
+        if (g == null) return true
+        boolean[] ok = [true] as boolean[]
+        g.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) ok[0] = false
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) { ok[0] = false }
+            @Override void visitPrefixExpression(PrefixExpression pe) { ok[0] = false }
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if (!(m.methodAsString in READ_ONLY_CALLS)) ok[0] = false
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression m) { ok[0] = false }
+            @Override void visitClosureExpression(ClosureExpression c) { ok[0] = false }
+        })
+        ok[0]
+    }
+
     private static boolean innerFrameTarget(Expression t, Set<String> scalars, Set<String> arrays) {
         if (t instanceof VariableExpression) { scalars.add(((VariableExpression) t).name); return true }
         if (t instanceof BinaryExpression) {
@@ -469,7 +501,7 @@ class LoopEncoder {
                                     Encoder.EncoderSnapshot entry, Object cond, Encoder enc, SmtSession s) {
         // ITE-combine: for each map, walk the union of keys touched in either branch.
         iteCombineMap(afterThen.env, afterElse.env, entry.env, cond, enc, s,
-            { String n, Object h -> enc.bind(n, h) })
+            { String n, Object h -> enc.bind(n, h) }, true)
         iteCombineMap(afterThen.arrEnv, afterElse.arrEnv, entry.arrEnv, cond, enc, s,
             { String n, Object h -> enc.bindArray(n, h) })
         iteCombineMap(afterThen.sizeEnv, afterElse.sizeEnv, entry.sizeEnv, cond, enc, s,
@@ -495,7 +527,7 @@ class LoopEncoder {
      */
     private static void iteCombineMap(Map<String, Object> thenMap, Map<String, Object> elseMap,
                                       Map<String, Object> entryMap, Object cond, Encoder enc,
-                                      SmtSession s, Closure<Void> apply) {
+                                      SmtSession s, Closure<Void> apply, boolean scalars = false) {
         Set<String> names = new LinkedHashSet<String>()
         names.addAll(thenMap.keySet())
         names.addAll(elseMap.keySet())
@@ -503,6 +535,14 @@ class LoopEncoder {
             Object thenV = thenMap.get(n)
             Object elseV = elseMap.get(n)
             Object entryV = entryMap.get(n)
+            // Phase 339 — a scalar first written in one branch, unread before the if, has no entry binding: its
+            // entry value is the free value any later read gets (varFor), so `if (c) r = i` is `r = c ? i : r`. It
+            // used to be skipped, dropping the write (r read as its free value after the if: sound, but it lost r = i).
+            if (entryV == null && scalars && !n.contains('\$')) {
+                Object other = thenV != null ? thenV : elseV
+                Object free = enc.varFor(n)
+                if (other != null && free != null && s.isBool(other) == s.isBool(free) && s.isReal(other) == s.isReal(free)) entryV = free
+            }
             if (thenV == null) thenV = entryV
             if (elseV == null) elseV = entryV
             if (thenV == null || elseV == null) continue   // truly fresh on both sides — leave alone

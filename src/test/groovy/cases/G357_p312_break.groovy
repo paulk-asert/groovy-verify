@@ -183,8 +183,9 @@ class G357_p312_break {
                             return i
                         }
                     }''')],
-        // A nested loop's break is modelled at the top level of the inner body (Phase 324); one buried in an if skips.
-        [group: 'P312 break', name: 'buried break in a nested loop skips loudly', expect: 'a `break` in a nested loop is modelled only as a top-level',
+        // A nested loop's break is modelled at the top level of the inner body (Phase 324); one buried in an if is
+        // rewritten to that shape (Phase 339).
+        [group: 'P312 break', name: 'buried break in a nested loop verifies (Phase 339)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result >= 0 })
@@ -207,8 +208,8 @@ class G357_p312_break {
                             return s
                         }
                     }''')],
-        // A break buried in a nested if isn't one of the recognised shapes: loud skip, never a silent pass.
-        [group: 'P312 break', name: 'buried break skips loudly', expect: 'Skipped loop verification',
+        // A break buried in a nested if is rewritten to a flag and `if (brk) break` (Phase 339).
+        [group: 'P312 break', name: 'buried break verifies (Phase 339)', ok: true,
          src: tc('''class C {
                         @Ensures({ result >= 0 })
                         static int f(int[] a) {

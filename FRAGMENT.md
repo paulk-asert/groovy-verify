@@ -361,9 +361,10 @@ follows an `if` that may continue moves into its branches, so the continuing ite
 (a `for` loop's update still runs), as in Dafny. A top-level `if (c) continue` / `if (c) { …; continue }` ahead of
 a `break` or `return` is recorded in a flag instead, and what follows is guarded by it, so those exits stay
 top-level (Phase 325); a `continue` nested deeper in an `if` sets a flag that is false before that `if`
-(Phase 327). A `return` inside a `.each` / `.eachWithIndex` closure only ends that element, so a bare one, or one
+(Phase 327). A `break` buried under another `if`, in an `else`, or before more of its branch becomes a flag the same
+way, then a top-level `if (brk) break`, in a top-level or nested loop (Phase 339). A `return` inside a `.each` / `.eachWithIndex` closure only ends that element, so a bare one, or one
 of a constant or variable, is that `continue` (Phase 328). A labelled `continue`, a rewrite that would move a loop
-into a branch, a nested loop's break buried in an `if` elsewhere, and any other `return` in a `.each` closure skip
+into a branch, a labelled `break`, a buried `break` beside a `return` in a non-tail `if`, and any other `return` in a `.each` closure skip
 loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
 loop never writes keeps that value at the loop head, in the body and after the loop (`int n = len - str.length()`
 needs no invariant restating it), and an allocation the loop only stores into keeps `x != null`, plus
@@ -381,7 +382,8 @@ branch, with the branch condition assumed, so the loop is checked at the top lev
 A condition that writes (`x++`) is not split. A loop inside a branch of a *loop body* gets the nested-loop checks,
 entered along its path with the branch conditions assumed (Phase 335); one inside a branch of a nested loop's body
 loud-skips, as three-deep nesting does. A nested loop's checks hold the outer invariant and guard conjuncts nothing
-writes on the way, and the outer loop's frame facts (Phase 336). A `do … while` is `B; while (G) B` — its body runs once
+writes on the way, and the outer loop's frame facts (Phase 336). A loop may follow an outer loop that holds a
+nested loop: the earlier one is summarised with its nested loop's writes havocked (Phase 338). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
 plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
 explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts
