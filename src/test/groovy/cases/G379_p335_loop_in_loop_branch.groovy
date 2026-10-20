@@ -176,7 +176,7 @@ class G379_p335_loop_in_loop_branch {
                         }
                     }''')],
         // The body obligations are discharged under the inner invariant, guard and the branch condition b.
-        [group: 'P335 loop in a branch of a loop body', name: 'an out-of-bounds write in the branch loop refutes', expect: ['Possible IndexOutOfBoundsException', 'fails on: f(new int[0], 0, true)'],
+        [group: 'P335 loop in a branch of a loop body', name: 'an out-of-bounds write in the branch loop refutes', expect: ['Possible IndexOutOfBoundsException', 'fails on: f(new int[0], 1, true)'],
          src: tc('''class C {
                         @Requires({ a != null && n >= 0 })
                         static void f(int[] a, int n, boolean b) {

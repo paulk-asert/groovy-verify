@@ -4373,6 +4373,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
                 List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
                 innerAssumed.add(innerSpec.guard)
+                List<Statement> before = stmtsBefore(spec.body, innerLoop)
+                if (innerSpec.init != null) before.addAll(innerSpec.init)
+                innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
                 dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
             }
             // Phase 335 — and those of a nested loop inside a branch of the body, with its path's stable conditions
@@ -4381,6 +4384,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
                 innerAssumed.add(innerSpec.guard)
                 innerAssumed.addAll(assumedPathFacts((List<Statement>) bl[1], innerSpec))
+                List<Statement> before = new ArrayList<Statement>((List<Statement>) bl[1])
+                if (innerSpec.init != null) before.addAll(innerSpec.init)
+                innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
                 dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
             }
         }
@@ -10629,6 +10635,60 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /**
+     * Phase 336 — the outer loop's facts that hold at every iteration of a nested loop: the conjuncts of the outer
+     * invariant and guard (true at outer-body entry) over names nothing writes between there and the inner loop's
+     * iterations ({@code before}, the inner init, body and guard, a closure), plus the outer loop's own frame facts.
+     * Without them an inner VC's state is unrelated to the outer loop, so its repro could leave the outer loop
+     * unentered (f(0, 1) with n = 0). A do-while's first pass runs without its guard or invariant: frame facts only.
+     */
+    private List<Expression> outerFactsForInner(LoopSite outer, List<Statement> before, LoopSpec inner) {
+        List<Expression> out = new ArrayList<Expression>(loopFrameFacts(outer))
+        if (outer.spec.isDoWhile) return out
+        Set<String> written = new HashSet<String>()
+        if (!collectWritesStmts(before, written) || !collectWritesStmts(inner.body, written) ||
+            !collectWritesExpr(inner.guard, written)) return out
+        if (currentMethod?.code != null) written.addAll(closureAssignedNames(currentMethod.code))
+        List<Expression> conjuncts = new ArrayList<Expression>()
+        for (Expression inv : outer.spec.invariants) splitConjuncts(inv, conjuncts)
+        splitConjuncts(outer.spec.guard, conjuncts)
+        String x = outer.spec.forInVar
+        // The invariant is re-parsed contract text, its variables unresolved, so frameStable's resolution test would
+        // reject it: check by name instead, against the method's params and declared locals (a field could be
+        // written by a call the write-set doesn't see).
+        Set<String> locals = paramsAndLocals(currentMethod)
+        for (Expression c : conjuncts) {
+            Set<String> names = freeNames(c)
+            if (x != null && names.contains(x)) continue
+            Set<String> w = new HashSet<String>()
+            if (!collectWritesExpr(c, w) || !w.isEmpty() || hasClosure(c)) continue
+            if (locals.containsAll(names) && names.every { !written.contains(it) }) out.add(c)
+        }
+        out
+    }
+
+    /** Phase 336 — {@code m}'s parameter names and the names its body declares (closures excluded). */
+    private static Set<String> paramsAndLocals(MethodNode m) {
+        Set<String> out = new HashSet<String>()
+        if (m == null) return out
+        for (Parameter p : m.parameters) out.add(p.name)
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code
+        if (body != null) body.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                for (VariableExpression v : declaredTargets(de)) out.add(v.name)
+                super.visitDeclarationExpression(de)
+            }
+        })
+        out
+    }
+
+    private static boolean hasClosure(Expression e) {
+        boolean[] found = [false] as boolean[]
+        e.visit(new CodeVisitorSupport() { @Override void visitClosureExpression(ClosureExpression ce) { found[0] = true } })
+        found[0]
+    }
+
     /** Phase 334 — an assignment or {@code ++}/{@code --} inside a branch condition. */
     private static boolean writesInCondition(Expression c) {
         boolean[] found = [false] as boolean[]
@@ -11968,6 +12028,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<Expression> innerStable = new ArrayList<Expression>(loopStableRequires(reqAst, innerSite))
         // Phase 335 — the branch conditions on the path hold at every inner iteration when nothing after them writes them
         innerSite.frameFacts = path != null ? assumedPathFacts(before, innerSpec) : new ArrayList<Expression>()
+        // Phase 336 — and so do the outer loop's facts the path and the inner loop leave alone
+        innerSite.frameFacts.addAll(outerFactsForInner(site, before, innerSpec))
         innerStable.addAll(innerSite.frameFacts)
         checkPreservation(node, innerSite, innerStable)
         if (innerSpec.variant != null) checkProgress(node, innerSite, innerStable)
@@ -12007,14 +12069,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  where {@code before} are the outer-body statements that run before the inner loop is reached. */
     private void checkNestedEstablishment(MethodNode node, LoopSite outer, LoopSite innerSite,
                                           List<Statement> before, Expression reqAst) {
+        checkNestedEstablishmentFrom(node, outer, innerSite, before, reqAst, false)
+        // Phase 336 — a do-while's first pass runs its body from the loop-entry state, before its invariant or guard
+        // is checked: establish the inner loop from there too (Phase 88b's treatment, for nested establishment)
+        if (outer.spec.isDoWhile) checkNestedEstablishmentFrom(node, outer, innerSite, before, reqAst, true)
+    }
+
+    private void checkNestedEstablishmentFrom(MethodNode node, LoopSite outer, LoopSite innerSite,
+                                              List<Statement> before, Expression reqAst, boolean doWhileFirstPass) {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
             if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
-            s.assertExpr(LoopEncoder.conj(enc, s, outer.spec.invariants))
-            s.assertExpr(LoopEncoder.tr(enc, outer.spec.guard, "guard"))
+            if (doWhileFirstPass) {
+                walkPrefix(outer, null, enc, s)
+            } else {
+                s.assertExpr(LoopEncoder.conj(enc, s, outer.spec.invariants))
+                s.assertExpr(LoopEncoder.tr(enc, outer.spec.guard, "guard"))
+            }
             LoopEncoder.symExec(before, enc, s)
             s.assertExpr(s.not(LoopEncoder.conj(enc, s, innerSite.spec.invariants)))
             CheckResult r = shown(s.check())

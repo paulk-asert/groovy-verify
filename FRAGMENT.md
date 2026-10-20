@@ -380,7 +380,8 @@ branch of a top-level `if` (or an else-if chain, or an `if` nested in a branch):
 branch, with the branch condition assumed, so the loop is checked at the top level of its branch's body (Phase 334).
 A condition that writes (`x++`) is not split. A loop inside a branch of a *loop body* gets the nested-loop checks,
 entered along its path with the branch conditions assumed (Phase 335); one inside a branch of a nested loop's body
-loud-skips, as three-deep nesting does. A `do … while` is `B; while (G) B` — its body runs once
+loud-skips, as three-deep nesting does. A nested loop's checks hold the outer invariant and guard conjuncts nothing
+writes on the way, and the outer loop's frame facts (Phase 336). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
 plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
 explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts

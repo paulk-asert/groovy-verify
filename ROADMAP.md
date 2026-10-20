@@ -15252,6 +15252,35 @@ and the three-deep shape skipping loudly.
 
 **Seen, not fixed:** an inner preservation refutation's repro can leave the outer loop unentered (`f(0, 1)`, `n = 0`):
 the inner VCs know neither the outer guard nor the path. That holds for top-level inner loops too.
+*(Fixed in Phase 336.)*
+
+## Phase 336 — nested-loop repros enter the outer loop  *(shipped — reporting, plus a do-while unsoundness)*
+
+A nested loop's preservation, progress, in-body returns and body obligations run at an arbitrary inner iteration,
+from the inner invariant and guard plus the stable `@Requires`. Nothing tied that state to the outer loop, so a
+refutation could pick `n = 0` and render `f(0, 1)`, a call that never enters the outer loop and so doesn't fail.
+
+- **Outer facts at inner iterations.** `outerFactsForInner` returns the outer loop's frame facts (Phase 318: true at
+  every outer iteration, so at every inner one) and the conjuncts of the outer invariant and guard, true at outer-body
+  entry, over names nothing writes on the way: the statements before the inner loop (its Phase 335 path for one in a
+  branch), its init, body and guard, a closure. The invariant is re-parsed contract text with unresolved variables,
+  so stability is by name, against the method's params and declared locals only (a field may be written by a call).
+  A for-in's per-element clauses (over the loop variable) are left out. They are added to the inner stable facts, so
+  they reach preservation, progress and the in-body returns, and to the assumptions of the inner body obligations
+  (top-level and branch inner loops). Assuming more true facts can only turn a refutation into a proof the facts
+  support, and the outer guard does prove some inner clauses that failed before.
+- **Unsoundness closed: do-while nested establishment.** `checkNestedEstablishment` assumed outer_inv ∧ outer_guard,
+  but a do-while's first pass runs before either is checked. `@Invariant({ k < n })` on an inner loop under
+  `do { … } while (k < n)` proved with `n = 0`. It is now also checked from the loop entry (`walkPrefix`, as Phase 88b
+  does for in-body exits). The outer facts above are frame facts only under a do-while.
+
+**Shipped tests:** group `P336 nested-loop repros`, 7 cases: inner preservation and bounds refutations whose repros
+enter the outer loop (`f(1, 1)`, `f(new int[0], 1)`); the outer guard proving an inner clause; an outer fact the
+outer body overwrites, not assumed; the do-while first pass refuting with `f(0)` and a correct inner invariant
+under a do-while verifying; an instance method with a field. G379's bounds case now reads `f(new int[0], 1, true)`.
+
+**Still weak:** the sequential-loop repro (Phase 333's `allocate(1, new int[0])`), where a later loop's state comes
+from an earlier loop's havoc.
 
 ---
 
