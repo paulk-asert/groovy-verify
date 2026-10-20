@@ -2230,6 +2230,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      */
     private String buildFailingCall(Map<String, Long> ce, Map<String, String> sortedCe) {
         if (currentMethod == null) return null
+        // A model may size an array or list near 2^31: rendering it element by element exhausted the heap (and
+        // `new int[2147483647]` is no repro anyone can run), so such a counterexample gets no failing call
+        for (Parameter p : currentMethod.parameters) {
+            if ((p.type?.isArray() || isCollectionType(p.type)) && sizeOf(p.name, ce) > MAX_REPRO_SIZE) return null
+        }
         List<String> args = new ArrayList<String>()
         for (Parameter p : currentMethod.parameters) {
             args.add(renderArg(p, ce, sortedCe))
@@ -2302,6 +2307,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+    /** The largest array or list a failing call is rendered with. */
+    private static final long MAX_REPRO_SIZE = 1000L
+
     private static long sizeOf(String name, Map<String, Long> ce) {
         Long sz = ce.get(name + '.size')
         (sz != null && sz > 0L) ? sz : 0L
@@ -2316,7 +2324,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (n <= 0L) return null
         boolean any = false
         List<Long> out = new ArrayList<Long>()
-        for (int k = 0; k < n; k++) {
+        for (long k = 0; k < n; k++) {
             Long v = ce.get(name + '[' + k + ']')
             if (v != null) any = true
             out.add(v != null ? v : 0L)

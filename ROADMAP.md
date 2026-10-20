@@ -15127,6 +15127,26 @@ a return in the second, and a wrong one (refuted); a nested return in an earlier
 
 Docs: FRAGMENT's loop paragraph, README's control-flow list, a CAPABILITIES row.
 
+## Phase 331 — the `test` gate: a repro size cap, and re-based perf ceilings  *(shipped — maintenance)*
+
+The JUnit `test` task (what CI's `check` runs) had been red locally since before Phase 313, while `verify` stayed
+green: three failures, none from a loop phase.
+
+- **A counterexample sized near 2^31 exhausted the heap.** `buildFailingCall` renders each array or list
+  parameter element by element (`pinnedElements`), and a model is free to size an array at `2147483038`. Under
+  `test`'s 2 GB worker heap that threw `OutOfMemoryError`, caught as "internal: Java heap space", so `P202 …
+  fulcrum refutes when the best cut is never updated` skipped instead of refuting, and the GC thrash timed out
+  `LemmaScript port :: allocate without the leftover lemma`. `verify` passed both only because its JVM takes a
+  quarter of physical RAM (16 GB on a 64 GB laptop); `-Xmx2g` on `verify` reproduced it, a bigger `test` heap
+  (3 GB, 8 GB) didn't help. CI's Linux Z3 happened to pick smaller models. A failing call is now rendered only when
+  every array and list parameter is at most `MAX_REPRO_SIZE` (1000): `new int[2147483647]` is no repro anyone can
+  run. `pinnedElements` also indexes with a `long`, so a size past `Integer.MAX_VALUE` can't loop forever.
+- **The perf ceilings, re-based.** Phases 313–330 (about 110 cases) took `test` to 8,212 solver checks and 4,910
+  distinct VCs, past `MAX_CHECK_CALLS = 8,000` and within 90 of `MAX_DISTINCT_VCS = 5,000`. Re-based ~28–30%
+  above, as `PerfBudget` prescribes: 10,500 and 6,400. `MAX_UNKNOWN` stays 40 (36 measured).
+- Also: Gradle crashed before running any test, out of memory reading a corrupt previous-results store
+  (`build/test-results/test/binary`, from 2026-10-19). That is a regenerable build cache; deleting it fixed it.
+
 ---
 
 ## Definition of done, per increment
