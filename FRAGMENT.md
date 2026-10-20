@@ -173,6 +173,11 @@ a coverage metric. In expressions the fragment is:
   `0 <= size <= src.size()` whose every element passes `p` and is drawn from `src`, so `result.every { … }`
   claims and size bounds prove. Not modelled: completeness (every passing element is kept), order and
   duplicates, so a claim needing them doesn't prove;
+- list values over `Int` elements (Phase 323): `src.drop(k)` for a literal `k >= 0` (size `max(0, n - k)`,
+  `d[j] == src[j + k]`), and a concatenation of list literals and named lists, spelt `a + b` or as the spread
+  literal `[x, *rest]` (each segment at its offset). Bound to a local, returned, or passed as an argument (hoisted
+  to a named list), so a recursion over `xs.drop(1)` that rebuilds with `[x] + rest` proves, termination
+  included. `xs + 1` (append), `xs - ys`, `xs * n` and `xs << x` on a named list skip loudly;
 - immutable container factories — `List.of(args)` / `Set.of(args)` / `Map.of(k,v,…)` and Groovy
   literals `[a, b, c]` / `[k: v]` (and `as Set` casts) peephole-fold to ground SMT terms on
   `.size()`, `.contains` / `containsKey` / `containsValue` / `in`, and `.get(literal_i)` —

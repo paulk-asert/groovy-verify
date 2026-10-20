@@ -51,6 +51,7 @@ import org.codehaus.groovy.ast.expr.ElvisOperatorExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.SpreadExpression
+import org.codehaus.groovy.ast.expr.SpreadMapExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
@@ -1751,6 +1752,16 @@ class Encoder implements TheoryApi {
     Object peekSize(String name) { sizeEnv.get(name) }
     Object peekNullity(String name) { nullEnv.get(name) }
 
+    /** Phase 323 — the list oracles bound under {@code name} (contents, size, nullity), for a save/restore around a
+     *  temporary alias; {@link #restoreListOracles} puts them back, removing any the name didn't have. */
+    Object[] saveListOracles(String name) { [arrEnv.get(name), sizeEnv.get(name + '.size'), nullEnv.get(name)] as Object[] }
+
+    void restoreListOracles(String name, Object[] saved) {
+        if (saved[0] != null) arrEnv.put(name, saved[0]) else arrEnv.remove(name)
+        if (saved[1] != null) sizeEnv.put(name + '.size', saved[1]) else sizeEnv.remove(name + '.size')
+        if (saved[2] != null) nullEnv.put(name, saved[2]) else nullEnv.remove(name)
+    }
+
     /**
      * Phase 45c — snapshot the encoder's mutable binding state so it can be restored after
      * exploring a side branch. Used by {@code LoopEncoder}'s {@code if}-statement handling to
@@ -2839,6 +2850,10 @@ class Encoder implements TheoryApi {
             }
         }
         if (target instanceof ListExpression) {
+            // Phase 323 — a spread element (`[x, *rest]`) contributes rest.size() entries, not one: counting it as a
+            // single slot proved `[x, *xs].size() == 2` for every xs. Spread literals are concatenations
+            // (tryRecordListDerivedAssign); a range spread `[*lo..hi]` is tryRecordRangeAssign's.
+            if (((ListExpression) target).expressions.any { it instanceof SpreadExpression }) return null
             return new FactoryContainer(kind: kindOverride ?: 'list', args: ((ListExpression) target).expressions)
         }
         // `new int[]{a, b, …}` — an array literal with an initializer is the array dual of a list literal:
@@ -2877,6 +2892,7 @@ class Encoder implements TheoryApi {
         // list-factory below would otherwise count the single spread element as size 1.
         if (tryRecordRangeAssign(name, rhs)) return true
         if (tryRecordFindAllAssign(name, rhs)) return true                // Phase 320
+        if (tryRecordListDerivedAssign(name, rhs)) return true            // Phase 323
         FactoryContainer f = factoryContainerFor(rhs)
         if (f == null) return tryRecordSizedArrayAssign(name, rhs)
         localFactories.put(name, f)
@@ -2948,6 +2964,133 @@ class Encoder implements TheoryApi {
             return false
         }
     }
+
+    /**
+     * Phase 323 — the list values a recursion that rebuilds a list is made of (LemmaScript's recursive
+     * {@code pruneWindow}: {@code rest = pruneWindow(log.drop(1), …)}, then {@code [log[0]] + rest}), each bound to
+     * {@code name} as a fresh non-null list over Int elements:
+     * <ul>
+     *   <li>{@code src.drop(k)}, {@code k} a non-negative literal — size {@code max(0, n - k)}, and
+     *       {@code d[j] == src[j + k]} for every {@code j} in range;</li>
+     *   <li>a concatenation, spelt {@code a + b} (both operands lists: a literal or a named list, nested freely) or
+     *       as a spread literal {@code [x, *rest]} — each segment's elements at its running offset, the size their
+     *       sum. A named segment contributes {@code ∀j. o <= j < o + m ⟹ c[j] == seg[j - o]}, triggered on
+     *       {@code c[j]}; a scalar element is the ground {@code c[o] == x}.</li>
+     * </ul>
+     * Anything else (a symbolic or negative {@code drop}, {@code list + element}, a non-Int element) returns false
+     * and stays the skip it was. {@link #isListDerivedExpr} lets the call-site paths hoist such an actual argument
+     * into a synthetic local first.
+     */
+    boolean tryRecordListDerivedAssign(String name, Expression rhs) {
+        Expression e = rhs instanceof CastExpression ? ((CastExpression) rhs).expression : rhs
+        if (!isListDerivedExpr(e)) return false
+        try {
+            int n = quantCounter++
+            Object zero = session.intLit(0L)
+            Object arr = session.arrayVar(name + '$list' + n)
+            Object size
+            if (e instanceof MethodCallExpression) {                       // src.drop(k)
+                MethodCallExpression m = (MethodCallExpression) e
+                String src = receiverArrayName(m.objectExpression)
+                long k = (long) constIntOrNull(argList(m).get(0))
+                Object srcArr = arrayFor(src), srcSize = sizeOf(src), kH = session.intLit(k)
+                size = session.ite(session.le(srcSize, kH), zero, session.minus(srcSize, kH))
+                Object j = session.boundIntVar('drop$j' + n)
+                Object elem = session.select(arr, j)
+                session.assertExpr(session.forall([j], session.implies(session.and([session.le(zero, j), session.lt(j, size)]),
+                    session.eq(elem, session.select(srcArr, session.plus(j, kH)))), [elem]))
+            } else {                                                         // a concatenation
+                List<Expression> segs = new ArrayList<Expression>()
+                if (!concatSegments(e, segs)) return false
+                Object off = zero
+                for (Expression seg : segs) {
+                    if (seg instanceof SpreadExpression) {
+                        String sn = receiverArrayName(((SpreadExpression) seg).expression)
+                        Object segArr = arrayFor(sn), segSize = sizeOf(sn)
+                        session.assertExpr(session.not(nullityOf(sn)))   // spreading null throws; a reached point has it non-null
+                        Object j = session.boundIntVar('cat$j' + (quantCounter++))
+                        Object elem = session.select(arr, j)
+                        Object inSeg = session.and([session.le(off, j), session.lt(j, session.plus(off, segSize))])
+                        session.assertExpr(session.forall([j], session.implies(inSeg,
+                            session.eq(elem, session.select(segArr, session.minus(j, off)))), [elem]))
+                        off = session.plus(off, segSize)
+                    } else {
+                        Object x = translate(seg)
+                        if (x == null) return false
+                        session.assertExpr(session.eq(session.select(arr, off), x))
+                        off = session.plus(off, session.intLit(1L))
+                    }
+                }
+                size = off
+            }
+            localFactories.remove(name)
+            registerListName(name)
+            bindArray(name, arr)
+            bindSize(name, size)
+            session.assertExpr(session.not(nullityOf(name)))
+            return true
+        } catch (UnsupportedConstructException ignored) {
+            return false
+        }
+    }
+
+    /** True for the list values {@link #tryRecordListDerivedAssign} models: a literal-count {@code drop} on an Int
+     *  list, or a concatenation of Int list literals and named Int lists (spelt {@code +} or as a spread literal). */
+    boolean isListDerivedExpr(Expression e) {
+        if (e instanceof CastExpression) e = ((CastExpression) e).expression
+        if (e instanceof MethodCallExpression) {
+            MethodCallExpression m = (MethodCallExpression) e
+            if (m.methodAsString != 'drop' || argList(m).size() != 1) return false
+            Integer k = constIntOrNull(argList(m).get(0))
+            String src = receiverArrayName(m.objectExpression)
+            return k != null && k >= 0 && src != null && isListName(stripOld(src)) && intElements(src)
+        }
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS) {
+            return concatSegments(e, new ArrayList<Expression>())
+        }
+        if (e instanceof ListExpression && ((ListExpression) e).expressions.any { it instanceof SpreadExpression }) {
+            return concatSegments(e, new ArrayList<Expression>())
+        }
+        false
+    }
+
+    /** Flattens a list concatenation into segments: a scalar element expression, or a {@link SpreadExpression} over
+     *  a named Int list. False when an operand isn't a list (so {@code xs + 1}, an append, is refused). */
+    private boolean concatSegments(Expression e, List<Expression> out) {
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.PLUS) {
+            BinaryExpression be = (BinaryExpression) e
+            return concatSegments(be.leftExpression, out) && concatSegments(be.rightExpression, out)
+        }
+        if (e instanceof ListExpression) {
+            for (Expression x : ((ListExpression) e).expressions) {
+                if (x instanceof SpreadExpression) {
+                    if (!isNamedIntList(((SpreadExpression) x).expression)) return false
+                    out.add(x)
+                } else if (x instanceof SpreadMapExpression || x instanceof RangeExpression) {
+                    return false
+                } else {
+                    out.add(x)
+                }
+            }
+            return true
+        }
+        if (isNamedIntList(e)) { out.add(new SpreadExpression(e)); return true }
+        false
+    }
+
+    private boolean isNamedListOperand(Expression e) {
+        String n = receiverArrayName(e)
+        n != null && isListName(n)
+    }
+
+    private boolean isNamedIntList(Expression e) {
+        String n = receiverArrayName(e)
+        n != null && isListName(stripOld(n)) && intElements(n)
+    }
+
+    private static String stripOld(String n) { n.startsWith('old$') ? n.substring('old$'.length()) : n }
+
+    private boolean intElements(String n) { listElementTypes.get(stripOld(n)) == null && arraySortsFor(n)[1] == session.intSort() }
 
     /**
      * A range-derived collection assignment. A Groovy {@code Range} is immutable — `(4..8)[2] = -1` throws
@@ -5355,6 +5498,13 @@ class Encoder implements TheoryApi {
             }
             return asFp(be)   // arithmetic (or null → skip)
         }
+
+        // Phase 323 — `xs + 1` (append), `xs - ys`, `xs * 2` (repeat), `xs << x` on a named list are list operations,
+        // not arithmetic: translating the list as an Int shadow left the result unconstrained, and `return xs + 1`
+        // was "refuted" on inputs where it holds. The modelled list forms (tryRecordListDerivedAssign) don't come
+        // through here, so the rest skip loudly.
+        if ((op == Types.PLUS || op == Types.MINUS || op == Types.MULTIPLY || op == Types.LEFT_SHIFT) &&
+                (isNamedListOperand(be.leftExpression) || isNamedListOperand(be.rightExpression))) return null
 
         Object L = translate(be.leftExpression)
         Object R = translate(be.rightExpression)

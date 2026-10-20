@@ -23,7 +23,7 @@ import static cases.CaseDsl.*
 class G354_lemmascript_port {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter, money splitting (allocate, nonlinear) — loops leaving by `break` as LemmaScript\'s do, with the overflow LemmaScript\'s unbounded `number` cannot see.'
+    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter, money splitting (allocate, nonlinear), recursive pruneWindow — loops leaving by `break` as LemmaScript\'s do, with the overflow LemmaScript\'s unbounded `number` cannot see.'
 
     static final List<Map> CASES = [
         // ---------- LemmaScript port (lemmascript.org front page + examples/*.ts) ----------
@@ -302,6 +302,22 @@ class G354_lemmascript_port {
                                 i = i + 1
                             }
                             return out
+                        }
+                    }''')],
+        // pruneWindow as LemmaScript writes it: recurse on the tail, rebuild with the head. log.slice(1) is
+        // log.drop(1), and [log[0], ...rest] is [log[0]] + rest (Phase 323).
+        [group: 'LemmaScript port', name: 'pruneWindow recursive', ok: true,
+         src: tc('''class C {
+                        /** Keeps only the requests still inside the sliding time window. */
+                        @Requires({ log != null && log.every { int t -> t <= now } })
+                        @Ensures({ result.size() <= log.size() })
+                        @Ensures({ result.every { int t -> now - w < t && t <= now } })
+                        @Decreases({ log.size() })
+                        static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
+                            if (log.isEmpty()) return []
+                            List<Integer> rest = pruneWindow(log.drop(1), now, w)
+                            if (log[0] > now - w) return [log[0]] + rest
+                            return rest
                         }
                     }''')],
         // allocate (the front page's second story), fixed: floor each share, then hand the leftover back out. The

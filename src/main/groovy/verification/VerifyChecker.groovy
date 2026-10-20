@@ -12115,6 +12115,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             //    otherwise be the same constant, asserting the garbled `u == next[u]` (or `n == n-1` for
             //    `sumUp(n-1)`) and checking the precondition in a corrupt/vacuous context. The `#arg` keeps
             //    the fresh symbol out of the displayed counterexample (which filters `#`).
+            argExprs = hoistListActuals(enc, argExprs)   // Phase 323 — a list-valued actual becomes a named list
             for (int i = 0; i < formals.length; i++) {
                 Object argHandle = enc.translate(argExprs[i])
                 // Phase 145 — a carrier-typed argument that is itself a call (`plus(Quantity.mile(1))` in a chain):
@@ -12496,15 +12497,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
             List<Expression> actuals = collectArgumentExpressions((MethodCall) callExpr)
+            if (actuals != null) actuals = hoistListActuals(enc, actuals)   // Phase 323 — `f(log.drop(1))`
             Parameter[] formals = node.parameters
             Map<String, Object> bindings = new LinkedHashMap<String, Object>()
+            // Phase 323 — a list formal bound to a different named list reads that list's oracles in the measure
+            // (`log.size()` at the call is the dropped list's size); the formal's own are restored after.
+            Map<String, Object[]> savedListOracles = new LinkedHashMap<String, Object[]>()
             boolean modelled = actuals != null
             for (int i = 0; modelled && i < formals.length && i < actuals.size(); i++) {
-                Object h = enc.translate(actuals.get(i))
+                Expression ai = actuals.get(i)
+                if (ai instanceof VariableExpression && isListType(formals[i].type) &&
+                        ((VariableExpression) ai).name != formals[i].name) {
+                    String an = ((VariableExpression) ai).name
+                    savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
+                    enc.bindArray(formals[i].name, enc.arrayFor(an))
+                    enc.bindSize(formals[i].name, enc.sizeOf(an))
+                    enc.bindNullity(formals[i].name, enc.nullityOf(an))
+                }
+                Object h = enc.translate(ai)
                 if (h == null) { modelled = false; break }
                 bindings.put(formals[i].name, h)
             }
             Object callMeasure = modelled ? enc.translateWith(measureAst, bindings) : null
+            savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }
             if (entry == null || callMeasure == null) {
                 // Can't model the measure → don't silently accept the inductive hypothesis.
                 addStaticTypeError(Reporter.formatTerminationSkipped(node.name, measureAst.text), callExpr as ASTNode)
@@ -12582,6 +12597,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         callee.returnType?.name in ['List', 'ArrayList'] || isListType(callee.returnType)
     }
 
+    /** Phase 323 — a list-valued actual argument the encoder can model ({@code log.drop(1)}, {@code [x] + rest}) is
+     *  bound to a synthetic list local, and the call reads it as that variable: the precondition check and the
+     *  callee's assumed {@code @Ensures} then alias the formal's list oracles to it, as for any named list actual.
+     *  Returns {@code actuals} itself (the live AST list, never mutated) when nothing was hoisted. */
+    private List<Expression> hoistListActuals(Encoder enc, List<Expression> actuals) {
+        List<Expression> out = null
+        for (int i = 0; i < actuals.size(); i++) {
+            if (!enc.isListDerivedExpr(actuals.get(i))) continue
+            String tmp = '$arg' + (havocCounter++) + '#list'
+            if (!enc.tryRecordListDerivedAssign(tmp, actuals.get(i))) continue
+            if (out == null) out = new ArrayList<Expression>(actuals)
+            out.set(i, new VariableExpression(tmp))
+        }
+        out != null ? out : actuals
+    }
+
     /** Phase 225 — a list-typed local assigned from a contracted call: mint the local's fresh list
      *  oracles (nullity, size, element array) so the callee's renamed {@code @Ensures} can constrain
      *  them, then assume it. Returns false (caller falls through) when the callee has nothing usable. */
@@ -12593,7 +12624,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         enc.bindNullity(name, s.boolVar(name + '?null#lfc' + v))
         enc.bindSize(name, s.intVar(name + '#size#lfc' + v))
         enc.bindArray(name, s.arrayVar(name + '#arr#lfc' + v))
-        if (assumeCalleeEnsures(s, enc, call, caller, null, hasDecreases(caller), name)) return true
+        if (assumeCalleeEnsures(s, enc, call, caller, null, hasDecreases(caller), name)) {
+            enc.registerListName(name)   // Phase 323 — so it can be spread or concatenated (`[x] + rest`)
+            return true
+        }
         // nothing assumable: restore, so the fresh-handle fallback behaves exactly as before
         if (savedNull != null) enc.bindNullity(name, savedNull)
         if (savedSize != null) enc.bindSize(name, savedSize)
@@ -13225,7 +13259,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (ensuresAst == null && (modSet == null || modSet.isEmpty()) && specArms.isEmpty()) return false
 
         Parameter[] formals = callee.parameters
+        actuals = hoistListActuals(enc, actuals)   // Phase 323 — `f(log.drop(1))` reads as `f($arg)`
         Map<String, Object> bindings = new LinkedHashMap<String, Object>()
+        // Phase 323 — the caller's own list oracles under a formal's name, restored once the @Ensures is translated:
+        // a self-call's formal `log` IS the caller's `log`, so aliasing it to the actual (`log.drop(1)`) must not
+        // outlive the call.
+        Map<String, Object[]> savedListOracles = new LinkedHashMap<String, Object[]>()
         for (int i = 0; i < formals.length; i++) {
             ClassNode ft = formals[i].type
             // A decimal (BigDecimal) actual needs the Real path — plain translate is Int-oriented and returns null
@@ -13247,6 +13286,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     !(modSet != null && formals[i].name in modSet) &&
                     actuals.get(i) instanceof VariableExpression) {
                 String an = ((VariableExpression) actuals.get(i)).name
+                if (an != formals[i].name && !savedListOracles.containsKey(formals[i].name)) {
+                    savedListOracles.put(formals[i].name, enc.saveListOracles(formals[i].name))
+                }
                 // sizeOf/arrayFor/nullityOf MINT on demand (a lazy peek misses oracles the session
                 // hasn't touched yet), so the formal is aliased to the actual's canonical oracles
                 enc.bindArray(formals[i].name, enc.arrayFor(an))
@@ -13258,7 +13300,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 enc.registerListName(formals[i].name)
                 if (h == null) h = enc.varFor(formals[i].name)   // placeholder scalar; the oracles carry the facts
             }
-            if (h == null) return false   // can't faithfully substitute → don't assume
+            if (h == null) {   // can't faithfully substitute → don't assume
+                savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }
+                return false
+            }
             bindings.put(formals[i].name, h)
             // Phase 185 — alias a Function-typed formal to its named actual, so the callee's @Ensures over
             // `g.apply(…)` is assumed onto the caller's own `apply$<actual>` symbol (the other half of the
@@ -13279,7 +13324,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (receiverType != null && callExpr instanceof MethodCallExpression) {
             Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
             Object recvH = carrierValueOf(s, enc, recvExpr, caller)            // Phase 145 — receiver may itself be a call
-            if (recvH == null) return false
+            if (recvH == null) {
+                savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }
+                return false
+            }
             bindings.put('this', recvH)
             typeReg.put('this', receiverType)
             for (FieldNode f : instanceFields(receiverType)) {
@@ -13363,6 +13411,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
 
         // Restore the caller's own `old$X` bindings; the havoced locations stay havoced.
+        savedListOracles.each { String k, Object[] v -> enc.restoreListOracles(k, v) }   // Phase 323
         savedVar.each { String k, Object v -> if (v != null) enc.bind(k, v) }
         savedArr.each { String k, Object v -> if (v != null) enc.bindArray(k, v) }
         savedSet.each { String k, Object v -> if (v != null) enc.bindSet(k, v) }

@@ -42,6 +42,8 @@ and are © their authors, used under LemmaScript's MIT licence.
 | `break` plus `//@ done_with` | `break` (the exit condition needs no annotation) |
 | a recursive pure count, `occOf(arr, x, n)` | the prefix count `arr[0..<n].count(x)` |
 | `forall(y: int, P)`, `exists(x: nat, P)` over all values | `arr.every { y -> P }`, `arr.any { x -> P }` over the values that occur |
+| `log.slice(1)` | `log.drop(1)` |
+| `[x, ...rest]` | `[x] + rest`, or `[x, *rest]` |
 | `sum(arr)` | `arr.sum()`, or `arr[0..<i].sum(0)` for a prefix that may be empty (a Groovy `[].sum()` is `null`) |
 | `Math.floor(a / b)` | `a.intdiv(b)` (the same for `a >= 0`, `b > 0`; `intdiv` truncates toward zero) |
 
@@ -124,9 +126,30 @@ export function pruneWindow(log: number[], now: number, W: number): number[] {
 }
 ```
 
-Both postconditions port. LemmaScript recurses over `log.slice(1)` and rebuilds with `[log[0], ...rest]`; as a
-loop that appends with `add`, the Groovy keeps the same contract, and an element invariant carries the window
-bound:
+Both postconditions port, and so does the recursion. `log.slice(1)` is `log.drop(1)`, and `[log[0], ...rest]` is
+`[log[0]] + rest` (or the spread literal `[log[0], *rest]`):
+
+<!-- doclint:case lemmascript-port/prunewindow-recursive -->
+```groovy
+/** Keeps only the requests still inside the sliding time window. */
+@Requires({ log != null && log.every { int t -> t <= now } })
+@Ensures({ result.size() <= log.size() })
+@Ensures({ result.every { int t -> now - w < t && t <= now } })
+@Decreases({ log.size() })
+static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
+    if (log.isEmpty()) return []
+    List<Integer> rest = pruneWindow(log.drop(1), now, w)
+    if (log[0] > now - w) return [log[0]] + rest
+    return rest
+}
+```
+
+The recursive call is the inductive hypothesis: its precondition holds because every element of `log.drop(1)`
+is an element of `log`, its result satisfies both postconditions, and `@Decreases` shows `log.drop(1)` is shorter.
+Prepending `log[0]`, which is inside the window on that branch, keeps both.
+
+As a loop that appends with `add`, the Groovy keeps the same contract, and an element invariant carries the
+window bound:
 
 <!-- doclint:case lemmascript-port/prunewindow -->
 ```groovy
@@ -166,9 +189,7 @@ static List<Integer> pruneWindow(List<Integer> log, int now, int w) {
 
 `findAll` is modelled as a list no longer than its source whose every element passes the predicate and comes
 from the source. That's what these claims need. It isn't modelled to keep *every* passing element, or to keep
-their order, so a claim that depends on either doesn't prove. The recursive original is still out of reach:
-`log.drop(1)` as a list value, `[x] + rest`, and a list returned by a recursive call are each outside the
-fragment.
+their order, so a claim that depends on either doesn't prove.
 
 ### Splitting money
 
@@ -685,9 +706,6 @@ These examples hit the edges of what groovy-verify proves today:
 - **`continue`, and `break` from a nested loop.** A `break` at the top level of a loop body, or ending a branch of
   the body's final `if`/`else` chain, is supported. A `continue`, or a `break` out of an inner loop, still skips
   loudly.
-- **Recursion that rebuilds a list.** LemmaScript's `pruneWindow` recurses over `log.slice(1)` and rebuilds with
-  `[log[0], ...rest]`. `log.drop(1)` as a list value, `[x] + rest`, and a list a recursive call returns are each
-  outside the fragment, so the port is a loop (or `findAll`) instead.
 - **Refuting nonlinear sums.** [`allocate`](#splitting-money) proves, but a wrong claim in the same territory (the
   first attempt, a bump by two) is "could not decide" rather than a counterexample.
 

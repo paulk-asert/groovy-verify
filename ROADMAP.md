@@ -14878,6 +14878,51 @@ under `PerfBudget.MAX_UNKNOWN` is down to a handful.
 Docs: `examples/lemmascript.md` gains the `arr.count(x)` form of the majority postconditions, and the "Not ported
 yet" entry is removed; FRAGMENT's count bullet and a CAPABILITIES row.
 
+## Phase 323 — recursion that rebuilds a list  *(shipped — engine change)*
+
+The last list gap of the LemmaScript ports: `pruneWindow` as LemmaScript writes it, recursing on `log.slice(1)`
+and rebuilding with `[log[0], ...rest]`. A list-valued call result bound to a local already worked (Phase 225),
+so the missing pieces were the list values themselves and how they cross a call.
+
+- **List values.** `Encoder.tryRecordListDerivedAssign`, hooked into `tryRecordFactoryAssign` (so locals,
+  returns and loop bodies see it), binds a fresh non-null Int list for `src.drop(k)` (literal `k >= 0`: size
+  `max(0, n - k)`, `∀j. d[j] == src[j + k]`) and for a concatenation (`a + b` of list literals and named lists,
+  nested freely, or a spread literal `[x, *rest]`): a scalar element is the ground `c[o] == x`, a named segment
+  `∀j. o <= j < o + m ⟹ c[j] == seg[j - o]` triggered on `c[j]`, and the size is the segments' sum.
+  `listLocalFromCall` now registers its local as a list name, so a call result can be spread or concatenated.
+- **List-valued arguments.** `hoistListActuals` binds such an actual to a synthetic list local and passes the
+  variable, at the precondition check, in `assumeCalleeEnsures`, and in `dischargeTermination`, where a list
+  formal now reads its actual's oracles, so `@Decreases({ log.size() })` sees the dropped list's size.
+- **A self-call's list formal clobbered the caller's list.** Phase 226 aliases a list formal's oracles to the
+  named actual *by name*, and never restored them. On a self-call the formal `log` is the caller's `log`, so
+  after `pruneWindow(log.drop(1), …)` the caller's `log` read as the dropped list (`log[0]` "may be out of
+  bounds"). It was harmless while the actual was the same name. The caller's oracles are now saved
+  (`Encoder.saveListOracles`) and restored after the `@Ensures` is translated, and on the early returns.
+
+Two soundness fixes found on the way:
+- **A spread literal counted as one slot.** `factoryContainerFor` read `[x, *xs]` as a two-element list, so
+  `[x, *xs].size() == 2` *proved*. It now refuses a literal with a spread element, which the concatenation model
+  takes instead.
+- **List arithmetic translated the list as an Int.** `xs + 1` (append), `xs - ys`, `xs * 2`, `xs << x` went
+  through the integer dispatch with the list as an `Int` shadow, leaving the result unconstrained, so
+  `return xs + 1` was refuted with a counterexample on which it holds. It's now a loud skip.
+
+Not done: `drop` by a symbolic count, `tail()` (which throws on an empty list), and `xs + element`. Also noted:
+`listLocalFromCall`'s restore uses `peekSize(name)`, which reads key `name` where `bindSize` writes
+`name.size`, so its size restore never fires. Not investigated further.
+
+**Shipped tests:**
+- group `P323 list recursion`, 13 cases: `drop` and concatenation values and a wrong `drop` claim, the spread
+  literal's size and the claim it used to prove, append still skipping, a recursive length, the caller's list
+  after a self-call, recursive `pruneWindow` with a spread rebuild and with an append, a stale entry kept
+  (refuted) and `drop(0)` (the measure doesn't decrease);
+- `LemmaScript port` gains `pruneWindow recursive`.
+
+The full suite's tallies were unchanged before the new cases.
+
+Docs: `examples/lemmascript.md` leads the `pruneWindow` section with the recursive port, two translation-table
+rows, and "Not ported yet" loses the entry; FRAGMENT's list bullet and a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment
