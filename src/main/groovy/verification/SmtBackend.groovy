@@ -692,6 +692,15 @@ class CheckResult {
      */
     List<String> notes = []
 
+    /** An independent copy: callers render a result in place (counterexample, failing call, notes), so a cached
+     *  verdict hands each one its own. */
+    CheckResult copy() {
+        new CheckResult(status: status, reason: reason, failingCall: failingCall,
+            counterexample: counterexample == null ? null : new LinkedHashMap<String, Long>(counterexample),
+            sortedCounterexample: sortedCounterexample == null ? null : new LinkedHashMap<String, String>(sortedCounterexample),
+            notes: notes == null ? null : new ArrayList<String>(notes))
+    }
+
     static CheckResult verified() {
         new CheckResult(status: Status.VERIFIED)
     }

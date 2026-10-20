@@ -15147,6 +15147,28 @@ green: three failures, none from a loop phase.
 - Also: Gradle crashed before running any test, out of memory reading a corrupt previous-results store
   (`build/test-results/test/binary`, from 2026-10-19). That is a regenerable build cache; deleting it fixed it.
 
+## Phase 332 — a repro per caller  *(shipped — reporting fix)*
+
+`allocate without the leftover lemma` reported the same bounds failure twice (the read and the write of
+`result[k]`), and the second carried `fails on: allocate(1073751393, new int[0])` beside a counterexample with
+`weights.length = 1073741820`. Two identical VCs hit the VC cache, and `Z3Session.check` returned the cached
+`CheckResult` object itself. Callers render a result in place: `shown()` swaps the raw counterexample for its
+display form (`.size` keys read `.length`, the `?null` flags dropped) and sets `failingCall`. The second caller
+rebuilt its repro from the first one's display map, found no `.size` key, and rendered every array parameter as
+`new int[0]`. It wasn't just this case: any identical obligation, in the same method or another (the cache is
+global), got a wrong repro, and with Phase 331's cap a sound "no repro" was overwritten by a bogus one.
+
+- **The cache keeps a pristine verdict.** `CheckResult.copy()` copies the counterexample maps and notes; the cache
+  stores a copy on a miss and hands out a copy on every hit, so each caller renders its own. The verdict, and the
+  check counts, are unchanged.
+
+**Shipped tests:** group `P332 a repro per caller`, 3 cases: the read and the write of one element (`f(new int[3],
+3)` both times, never `new int[0]`), the same obligation in two methods (each its own call), and an array sized
+past the cap getting no failing call (Phase 331). The first two fail against the old cache.
+
+**Seen, not fixed:** that counterexample has `k = 2147483650`, past `int` range, for an `int` local in the second
+loop's body; the refutation is genuine (`k` does reach `result.length`), but the value shown can't occur.
+
 ---
 
 ## Definition of done, per increment

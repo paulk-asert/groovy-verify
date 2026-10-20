@@ -1541,13 +1541,16 @@ class Z3Session implements SmtSession {
         String key = vcKey()
         CheckResult cached = Z3Backend.vcCache.get(key)
         CheckResult result
+        // The cache keeps a pristine verdict and every caller gets its own copy: a caller renders its result in place
+        // (shown() replaces the counterexample with its display form and sets the failing call), so handing out the
+        // cached object let a second identical VC rebuild its repro from the first one's display map (Phase 332)
         if (cached != null) {
             Z3Backend.recordVCCacheHit()
-            result = cached
+            result = cached.copy()
         } else {
             Z3Backend.recordVCCacheMiss()
             result = computeCheck()
-            Z3Backend.vcCache.put(key, result)
+            Z3Backend.vcCache.put(key, result.copy())
         }
         if (Reporter.DUMP_SMT) println("; groovy-verify/Z3 verdict: ${result.status}".toString())
         return result
