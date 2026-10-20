@@ -41,6 +41,7 @@ dependencies {
     implementation 'javax.measure:unit-api:2.2'
     implementation 'tech.units:indriya:2.2.4'
     implementation 'systems.uom:systems-common:2.2.1.1'
+    implementation 'si.uom:si-quantity:2.2.3'   // systems-common 2.2.1.1 still uses si.uom.quantity but no longer depends on it
 
     testImplementation platform("org.junit:junit-bom:$junitVersion")
     testImplementation 'org.junit.jupiter:junit-jupiter'

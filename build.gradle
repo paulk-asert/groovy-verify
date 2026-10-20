@@ -133,6 +133,7 @@ dependencies {
     // US-customary units (USCustomary.MILE, …) for the metric-vs-imperial scale examples. Test-only; the engine
     // reads MILE's scale from its own curated table, and UnitScaleTest pins that table against this library.
     testImplementation 'systems.uom:systems-common:2.2.1.1'
+    testImplementation 'si.uom:si-quantity:2.2.3'   // systems-common 2.2.1.1 still uses si.uom.quantity but no longer depends on it
 
     // The sibling @TypeChecked extensions (NullChecker / RegexChecker / FormatStringChecker /
     // PurityChecker / ModifiesChecker). Test-only: a consumer supplies these themselves when they
