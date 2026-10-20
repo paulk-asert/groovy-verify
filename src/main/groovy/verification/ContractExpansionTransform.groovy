@@ -48,12 +48,14 @@ import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.BreakStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -71,6 +73,7 @@ import org.codehaus.groovy.control.messages.SyntaxErrorMessage
 import org.codehaus.groovy.syntax.SyntaxException
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.WhileStatement
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.Janitor
@@ -1346,6 +1349,26 @@ class ContractExpansionTransform implements ASTTransformation {
             }
             if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
             IfStatement ifs = (IfStatement) st
+            List<Statement> cLead = continueExitLead(ifs)
+            if (cLead != null && rest.any { containsLoopExit(it) }) {
+                // Phase 325 — a break or return after the continue would be buried in the else branch, where the
+                // exit lifting can't see it: record the continue in a flag instead, and guard what follows by it
+                List<Statement> tail = continueFree(new ArrayList<Statement>(rest))
+                if (tail == null) return null
+                VariableExpression flag = new VariableExpression("cont#${ifs.lineNumber}_${ifs.columnNumber}".toString(), ClassHelper.boolean_TYPE)
+                DeclarationExpression decl = new DeclarationExpression(flag, Token.newSymbol(Types.ASSIGN, -1, -1), ifs.booleanExpression.expression)
+                decl.setSourcePosition(ifs)
+                ExpressionStatement declSt = new ExpressionStatement(decl)
+                declSt.setSourcePosition(ifs)
+                out.add(declSt)
+                if (!cLead.isEmpty()) {
+                    IfStatement leadIf = new IfStatement(new BooleanExpression(flagRef(flag)), block(cLead), EmptyStatement.INSTANCE)
+                    leadIf.setSourcePosition(ifs)
+                    out.add(leadIf)
+                }
+                for (Statement t : tail) out.add(unlessContinued(flag, t))
+                return out
+            }
             List<Statement> thenSs = branchStatements(ifs.ifBlock), elseSs = branchStatements(ifs.elseBlock)
             thenSs.addAll(rest); elseSs.addAll(rest)
             List<Statement> t = continueFree(thenSs), e = continueFree(elseSs)
@@ -1356,6 +1379,74 @@ class ContractExpansionTransform implements ASTTransformation {
             return out
         }
         out
+    }
+
+    /** Phase 325 — the lead of {@code if (c) continue} ({@code []}) or {@code if (c) { lead; continue }} (no else,
+     *  unlabelled, no other exit or loop in the lead); otherwise null. */
+    private static List<Statement> continueExitLead(IfStatement ifs) {
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return null
+        List<Statement> ss = branchStatements(ifs.ifBlock)
+        if (ss.isEmpty() || !(ss.get(ss.size() - 1) instanceof ContinueStatement) ||
+            ((ContinueStatement) ss.get(ss.size() - 1)).label != null) return null
+        List<Statement> lead = new ArrayList<Statement>(ss.subList(0, ss.size() - 1))
+        lead.any { containsLoopContinue(it) || containsLoopExit(it) || containsLoop(it) } ? null : lead
+    }
+
+    /** Phase 325 — {@code t} run only on an iteration that didn't continue at {@code flag}: an exit
+     *  {@code if (d) X} becomes {@code if (!flag && d) X} and a later flag {@code g = e} becomes
+     *  {@code g = !flag && e}, so both stay where the exit lifting finds them; anything else is
+     *  {@code if (flag) {} else t}, which keeps a tail if-chain a chain. */
+    private static Statement unlessContinued(VariableExpression flag, Statement t) {
+        Statement r
+        if (t instanceof ExpressionStatement && ((ExpressionStatement) t).expression instanceof DeclarationExpression &&
+            ((DeclarationExpression) ((ExpressionStatement) t).expression).leftExpression instanceof VariableExpression &&
+            ((VariableExpression) ((DeclarationExpression) ((ExpressionStatement) t).expression).leftExpression).name.startsWith('cont#')) {
+            DeclarationExpression d = (DeclarationExpression) ((ExpressionStatement) t).expression
+            DeclarationExpression nd = new DeclarationExpression(d.leftExpression, d.operation, andNot(flag, d.rightExpression))
+            nd.setSourcePosition(d)
+            r = new ExpressionStatement(nd)
+        } else if (t instanceof IfStatement && isExitIf((IfStatement) t)) {
+            IfStatement ifs = (IfStatement) t
+            r = new IfStatement(new BooleanExpression(andNot(flag, ifs.booleanExpression.expression)), ifs.ifBlock, EmptyStatement.INSTANCE)
+        } else {
+            r = new IfStatement(new BooleanExpression(flagRef(flag)), block(new ArrayList<Statement>()), t)
+        }
+        r.setSourcePosition(t)
+        r
+    }
+
+    /** An {@code if} with no else whose then-branch is a bare {@code return} or ends in an unlabelled {@code break}. */
+    private static boolean isExitIf(IfStatement ifs) {
+        if (ifs.elseBlock != null && !(ifs.elseBlock instanceof EmptyStatement)) return false
+        List<Statement> ss = branchStatements(ifs.ifBlock)
+        if (ss.size() == 1 && ss.get(0) instanceof ReturnStatement) return true
+        !ss.isEmpty() && ss.get(ss.size() - 1) instanceof BreakStatement && ((BreakStatement) ss.get(ss.size() - 1)).label == null
+    }
+
+    private static Expression andNot(VariableExpression flag, Expression e) {
+        BinaryExpression be = new BinaryExpression(new NotExpression(flagRef(flag)), Token.newSymbol(Types.LOGICAL_AND, -1, -1), e)
+        be.setSourcePosition(e)
+        be
+    }
+
+    private static VariableExpression flagRef(VariableExpression flag) {
+        VariableExpression v = new VariableExpression(flag.name, ClassHelper.boolean_TYPE)
+        v.accessedVariable = flag
+        v
+    }
+
+    /** True iff {@code st} has a {@code return}, or a {@code break} for the enclosing loop (closures aside). */
+    private static boolean containsLoopExit(Statement st) {
+        boolean[] found = [false]
+        st.visit(new CodeVisitorSupport() {
+            @Override void visitReturnStatement(ReturnStatement r) { found[0] = true }
+            @Override void visitBreakStatement(BreakStatement b) { found[0] = true }
+            @Override void visitWhileLoop(WhileStatement w) { }
+            @Override void visitForLoop(ForStatement f) { }
+            @Override void visitDoWhileLoop(DoWhileStatement d) { }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
     }
 
     private static List<Statement> branchStatements(Statement st) {

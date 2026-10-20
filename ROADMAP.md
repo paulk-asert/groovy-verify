@@ -14960,6 +14960,36 @@ The last loop gap of the LemmaScript ports, both loud skips since Phase 312.
 Docs: `examples/lemmascript.md` loses its "Not ported yet" entry and gains a `continue` row; FRAGMENT's loop
 paragraph, README's statement list, and a CAPABILITIES row.
 
+## Phase 325 — `continue` ahead of a `break` or `return`  *(shipped — capture change)*
+
+Phase 324's loud boundary that matters most: the search loop that skips some elements and stops at the one it
+wants. Moving what follows `if (c) continue` into the `else` buried a later `if (d) break` / `if (d) return e`,
+where neither the Phase 312 break lifting nor the nested-loop break summary looks.
+
+- **A flag, not a branch.** In `ContractExpansionTransform.continueFree`, a top-level `if (c) continue` /
+  `if (c) { lead; continue }` (no else, a lead with no exit or loop) whose rest has a `break` or `return` becomes
+  `boolean cont#<line>_<col> = c; if (cont) { lead }`, and each later statement is guarded by the flag: an exit
+  `if (d) X` becomes `if (!cont && d) X`, a later flag `g = e` becomes `g = !cont && e`, and anything else becomes
+  `if (cont) {} else s`, which keeps a tail `if`/`else` chain a chain for Phase 49c's lifting. The `&&`
+  short-circuits, so `d` is only evaluated, and its obligations only checked, on an iteration that didn't
+  continue. The rest is made continue-free first, so several continues chain. The flag is a body-local, so it is
+  re-declared each iteration and needs no invariant, and its `#` keeps it out of counterexamples. Without an exit
+  in the rest, Phase 324's branch rewrite stands unchanged.
+- **Still out:** a `continue` nested in an `if` ahead of an exit (the old rewrite buries the exit, so loud skip).
+  Separately, and not new: a `for` loop whose body ends in an `if`/`else` chain with a `return` or `break` has its
+  update appended after that chain, so the Phase 49c tail lifting doesn't find it (loud skip, with or without a
+  `continue`; the `while` form proves).
+
+**Shipped tests:**
+- group `P325 continue ahead of an exit`, 10 cases: a continue ahead of a break, a search whose break condition
+  reaches the postcondition, a return after a continue, two continues ahead of a return/break chain, an exit
+  condition that is in bounds only on a non-continuing iteration, a wrong break value and a non-preserving
+  continuing iteration (both refuted), a continue ahead of a nested loop's break and a wrong value from it
+  (refuted), and a continue nested in an `if` ahead of a break (loud skip);
+- `P312 break` drops its "a continue ahead of a break skips loudly" case, which now proves (the first P325 case).
+
+Docs: FRAGMENT's loop paragraph, README's *Out:* list, a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment

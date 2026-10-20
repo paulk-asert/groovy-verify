@@ -222,23 +222,5 @@ class G357_p312_break {
                             return i
                         }
                     }''')],
-        // continue is desugared (Phase 324), but moving the rest of the body into a branch buries a top-level break,
-        // which then skips loudly.
-        [group: 'P312 break', name: 'a continue ahead of a break skips loudly', expect: 'Skipped loop verification',
-         src: tc('''class C {
-                        @Requires({ a != null })
-                        @Ensures({ result >= 0 })
-                        static int f(int[] a, int t) {
-                            int i = 0
-                            @Invariant({ 0 <= i && i <= a.length })
-                            @Decreases({ a.length - i })
-                            while (i < a.length) {
-                                if (a[i] < 0) { i = i + 1; continue }
-                                if (a[i] == t) break
-                                i = i + 1
-                            }
-                            return i
-                        }
-                    }''')],
     ]
 }
