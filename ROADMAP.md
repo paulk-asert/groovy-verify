@@ -15217,12 +15217,41 @@ so the loop never became a site and the straight-line pass rejected the `WhileSt
   `@Invariant({ i <= 0 })` that contradicts its exit made the branch path vacuous, and `@Ensures({ result == 0 })`
   proved although `f(1, true)` returns 1. `findLoopSites` now refuses that shape loudly.
 
-**Shipped tests:** group `P334 loop inside a branch`, 18 cases: a loop in a then-branch, an else, an else-if chain (two
+**Shipped tests:** group `P334 loop inside a branch`, 18 cases (17 since Phase 335 moved the loop-body one): a loop in a then-branch, an else, an else-if chain (two
 loops) and a nested if; establishment needing the condition, and failing when it is too weak; preservation, bounds
 and postcondition refutations with repros that take the branch, and one from the loop-free arm; loops before and
 after the `if`; an early-returning else; the writing condition and the loop-body shape skipping loudly.
 
 **Still out:** a loop inside a branch of a loop body (the same split, applied to the outer body); a writing condition.
+*(The loop-body shape is Phase 335.)*
+
+## Phase 335 — a loop in a branch of a loop body  *(shipped — nested-loop checks along a path)*
+
+Phase 334 made this shape loud: the outer loop's VCs summarise the inner loop by its invariant (`summarizeInner`, via
+`applyIf`), but `verifyNestedLoops` checked only a body's top-level loops, so nothing proved that invariant. Its
+body's obligations went undischarged too: `dischargeRegion` skips annotated loops at every depth, and step 5 of
+`verifyLoopObligations` covered top-level inner loops only.
+
+- **The loop and its path.** `branchInnerLoops` walks the outer body into each `if` whose branches hold an annotated
+  loop, at any depth of ifs, and returns each loop with its path: the statements before it, with an assume-only
+  assert of each branch condition taken (negated on the else side). A writing condition throws, as in Phase 334.
+- **The nested checks, along the path.** `verifyNestedLoop` takes the path in place of `stmtsBefore`, so
+  establishment runs from outer_inv ∧ outer_guard through the path, branch conditions included. Preservation,
+  progress and the inner returns are unchanged.
+- **Frame facts.** `assumedPathFacts` keeps each assumed condition that neither the rest of the path, the inner loop
+  nor a closure writes. Those are added to the inner loop's stable facts (preservation, progress, in-body returns) and
+  to the assumptions its body obligations are discharged under, now also done for these loops.
+- **Three deep stays out.** A loop in a branch of a nested loop's body would again be summarised unchecked, so
+  `findLoopSites` reports it as "loops nested 3+ deep".
+
+**Shipped tests:** group `P335 loop in a branch of a loop body`, 12 cases: loops in a then-branch, an else and a
+nested if; establishment needing the condition; the outer invariant kept through the summary; Phase 334's vacuity
+case, now a refutation with repro `f(1, true)`; a broken inner invariant; an out-of-bounds write with a repro that
+takes the branch; an inner return against `@Ensures`; a condition the loop writes, not assumed; the writing condition
+and the three-deep shape skipping loudly.
+
+**Seen, not fixed:** an inner preservation refutation's repro can leave the outer loop unentered (`f(0, 1)`, `n = 0`):
+the inner VCs know neither the outer guard nor the path. That holds for top-level inner loops too.
 
 ---
 

@@ -4375,6 +4375,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 innerAssumed.add(innerSpec.guard)
                 dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
             }
+            // Phase 335 — and those of a nested loop inside a branch of the body, with its path's stable conditions
+            for (Object[] bl : branchInnerLoops(spec.body)) {
+                LoopSpec innerSpec = (LoopSpec) ((Statement) bl[0]).getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                List<Expression> innerAssumed = new ArrayList<Expression>(innerSpec.invariants)
+                innerAssumed.add(innerSpec.guard)
+                innerAssumed.addAll(assumedPathFacts((List<Statement>) bl[1], innerSpec))
+                dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
+            }
         }
     }
 
@@ -10560,6 +10568,67 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
+    /**
+     * Phase 335 — the annotated loops inside a branch of an {@code if} among {@code body}'s statements (at any depth of
+     * ifs), each with its path from the body's entry: the statements before it, with an assume-only assert of each
+     * branch condition taken (negated on the else side). Throws on a writing branch condition, which the path would
+     * evaluate as a fact.
+     */
+    private static List<Object[]> branchInnerLoops(List<Statement> body) {
+        List<Object[]> out = new ArrayList<Object[]>()
+        if (body != null) collectBranchLoops(body, new ArrayList<Statement>(), false, out)
+        out
+    }
+
+    private static void collectBranchLoops(List<Statement> stmts, List<Statement> before, boolean inBranch, List<Object[]> out) {
+        for (int i = 0; i < stmts.size(); i++) {
+            Statement st = stmts.get(i)
+            List<Statement> pre = new ArrayList<Statement>(before)
+            pre.addAll(stmts.subList(0, i))
+            if (inBranch && st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
+                out.add([st, pre] as Object[])
+            } else if (st instanceof IfStatement && (branchHoldsLoop(((IfStatement) st).ifBlock) || branchHoldsLoop(((IfStatement) st).elseBlock))) {
+                IfStatement ifs = (IfStatement) st
+                Expression c = ifs.booleanExpression.expression
+                if (writesInCondition(c)) {
+                    throw new UnsupportedConstructException("a branch condition that writes, around an annotated loop (line ${ifs.lineNumber})")
+                }
+                for (boolean thenSide : [true, false]) {
+                    List<Statement> side = new ArrayList<Statement>()
+                    for (Statement b : topStatements(thenSide ? ifs.ifBlock : ifs.elseBlock)) if (!(b instanceof EmptyStatement)) side.add(b)
+                    collectBranchLoops(side, withAssumeOnly(pre, thenSide ? c : new NotExpression(c), ifs), true, out)
+                }
+            }
+        }
+    }
+
+    /** {@code preceding} followed by an assume-only assert of {@code cond} (a new list). */
+    private static List<Statement> withAssumeOnly(List<Statement> preceding, Expression cond, ASTNode at) {
+        AssertStatement assume = new AssertStatement(new BooleanExpression(cond))
+        assume.setSourcePosition(at)
+        assume.putNodeMetaData(ASSUME_ONLY_KEY, Boolean.TRUE)
+        List<Statement> out = new ArrayList<Statement>(preceding)
+        out.add(assume)
+        out
+    }
+
+    /** Phase 335 — the assumed branch conditions on {@code path} that the rest of the path and the loop leave alone. */
+    private List<Expression> assumedPathFacts(List<Statement> path, LoopSpec loop) {
+        List<Expression> out = new ArrayList<Expression>()
+        Set<String> written = new HashSet<String>()
+        if (!collectWritesStmts(loop.body, written) || !collectWritesExpr(loop.guard, written)) return out
+        if (currentMethod?.code != null) written.addAll(closureAssignedNames(currentMethod.code))
+        for (int k = 0; k < path.size(); k++) {
+            Statement st = path.get(k)
+            if (!(st instanceof AssertStatement) || st.getNodeMetaData(ASSUME_ONLY_KEY) == null) continue
+            Set<String> unstable = new HashSet<String>(written)
+            unstable.addAll(writeTargetsOf(path.subList(k + 1, path.size())))
+            Expression c = ((AssertStatement) st).booleanExpression.expression
+            if (frameStable(c, unstable)) out.add(c)
+        }
+        out
+    }
+
     /** Phase 334 — an assignment or {@code ++}/{@code --} inside a branch condition. */
     private static boolean writesInCondition(Expression c) {
         boolean[] found = [false] as boolean[]
@@ -10631,11 +10700,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<LoopSite> sites = new ArrayList<LoopSite>()
         for (int s = 0; s < idxs.size(); s++) {
             LoopSite site = buildLoopSite(top, idxs.get(s))
-            // Phase 334 — a nested annotated loop inside a branch of the loop body would be summarised by its
-            // invariant without ever being checked (verifyNestedLoops sees only the body's top-level loops), and a
-            // wrong one made the outer proof vacuous. Loud until the branch split reaches loop bodies.
-            if (branchLoopInBody(site.spec.body)) {
-                throw new UnsupportedConstructException("an annotated loop inside a branch of a loop body — not yet supported")
+            // Phase 335 — a nested annotated loop inside a branch of the loop body is verified with its entry path
+            // (branchInnerLoops, which refuses a writing branch condition). One level only: a loop in a branch of a
+            // NESTED loop's body would again be summarised by an invariant nothing checks.
+            branchInnerLoops(site.spec.body)
+            for (Statement inner : annotatedInnerLoops(site.spec.body) + branchInnerLoops(site.spec.body).collect { (Statement) it[0] }) {
+                LoopSpec innerSpec = (LoopSpec) inner.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+                if (branchLoopInBody(innerSpec.body)) {
+                    throw new UnsupportedConstructException("loops nested 3+ deep — not yet supported")
+                }
             }
             // Phase 207 — sequential loops: the trimmed segments (between neighbouring loops) own the
             // region obligations; the full prefix (earlier loops included, summarised by the replay)
@@ -11865,9 +11938,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // Phase 330 — each nested loop in turn: its establishment runs the outer body up to it, where symExec
         // summarises the nested loops before it; its own preservation, progress and returns don't depend on them
         for (Statement innerLoop : annotatedInnerLoops(site.spec.body)) verifyNestedLoop(node, site, innerLoop, reqAst, postAst)
+        // Phase 335 — and those inside a branch of the body, entered along their path (the assumed branch conditions)
+        for (Object[] bl : branchInnerLoops(site.spec.body)) {
+            verifyNestedLoop(node, site, (Statement) bl[0], reqAst, postAst, (List<Statement>) bl[1])
+        }
     }
 
-    private void verifyNestedLoop(MethodNode node, LoopSite site, Statement innerLoop, Expression reqAst, Expression postAst) {
+    private void verifyNestedLoop(MethodNode node, LoopSite site, Statement innerLoop, Expression reqAst, Expression postAst,
+                                  List<Statement> path = null) {
         LoopSpec innerSpec = (LoopSpec) innerLoop.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
         // ≤ 2 levels for this slice: the inner body must not itself contain a loop we'd have to summarise.
         if (!annotatedInnerLoops(innerSpec.body).isEmpty()) {
@@ -11883,11 +11961,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         innerSite.suffix = Collections.<Statement> emptyList()
         innerSite.originalPrefix = Collections.<Statement> emptyList()
         innerSite.originalSuffix = Collections.<Statement> emptyList()
-        List<Statement> before = stmtsBefore(site.spec.body, innerLoop)
+        List<Statement> before = path != null ? new ArrayList<Statement>(path) : stmtsBefore(site.spec.body, innerLoop)
         // Phase 326 — a nested for loop's init (`int j = 0`) runs before its invariant is first checked
         if (innerSpec.init != null) before.addAll(innerSpec.init)
         checkNestedEstablishment(node, site, innerSite, before, reqAst)
-        List<Expression> innerStable = loopStableRequires(reqAst, innerSite)
+        List<Expression> innerStable = new ArrayList<Expression>(loopStableRequires(reqAst, innerSite))
+        // Phase 335 — the branch conditions on the path hold at every inner iteration when nothing after them writes them
+        innerSite.frameFacts = path != null ? assumedPathFacts(before, innerSpec) : new ArrayList<Expression>()
+        innerStable.addAll(innerSite.frameFacts)
         checkPreservation(node, innerSite, innerStable)
         if (innerSpec.variant != null) checkProgress(node, innerSite, innerStable)
         // Phase 109 — an inner loop may carry its own early `return` (an in-inner-body exit). Collect those

@@ -23,13 +23,13 @@ import static cases.CaseDsl.*
  * it, the branch condition (or its negation) as an assume-only assert, the branch's statements, then the rest. Each
  * is verified as a method body of its own (VerifyChecker.branchLoopVariants), so the loop sits at the top level of
  * one of them; together they cover every path. The condition is also a frame fact of the loop when nothing writes
- * what it reads, so in-loop refutations get repros that take the branch. En route: a loop inside a branch of a loop
- * body was summarised by an invariant nothing checked, a silent unsoundness; it now skips loudly.
+ * what it reads, so in-loop refutations get repros that take the branch. A loop inside a branch of a loop body is
+ * Phase 335 (G379).
  */
 class G378_p334_loop_in_branch {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 334 loop inside a branch: an annotated loop inside a branch of a top-level if (or else-if chain, or an if nested in a branch) is verified. The method splits into one body per branch, with the branch condition assumed, so each loop is checked at the top level of its body, under the condition, with the other branches checked as loop-free code. Its counterexamples take the branch. A condition that writes (x++) is not split, and a loop inside a branch of a loop body skips loudly (it was summarised by an unchecked invariant before).'
+    static final String DESCRIPTION = 'Phase 334 loop inside a branch: an annotated loop inside a branch of a top-level if (or else-if chain, or an if nested in a branch) is verified. The method splits into one body per branch, with the branch condition assumed, so each loop is checked at the top level of its body, under the condition, with the other branches checked as loop-free code. Its counterexamples take the branch. A condition that writes (x++) is not split. A loop inside a branch of a loop body is Phase 335.'
 
     static final List<Map> CASES = [
 
@@ -315,28 +315,6 @@ class G378_p334_loop_in_branch {
                                 while (i < n) { s = s + i; i = i + 1 }
                             }
                             return s + x - x
-                        }
-                    }''')],
-        // Unsound before: the inner invariant was never checked, and this one contradicts the exit, so result == 0 proved although f(1, true) returns 1.
-        [group: 'P334 loop inside a branch', name: 'a loop in a branch inside a loop body skips loudly', expect: 'an annotated loop inside a branch of a loop body',
-         src: tc('''class C {
-                        @Requires({ n >= 1 })
-                        @Ensures({ result == 0 })
-                        static int f(int n, boolean b) {
-                            int s = 0
-                            int k = 0
-                            @Invariant({ 0 <= k && k <= n && s == 0 })
-                            @Decreases({ n - k })
-                            while (k < n) {
-                                if (b) {
-                                    int i = 0
-                                    @Invariant({ 0 <= i && i <= 0 })
-                                    @Decreases({ n - i })
-                                    while (i < n) { s = s + 1; i = i + 1 }
-                                }
-                                k = k + 1
-                            }
-                            return s
                         }
                     }''')],
     ]
