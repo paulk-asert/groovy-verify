@@ -85,7 +85,8 @@ a coverage metric. In expressions the fragment is:
   `n < 2 || …` guard also works but reads worst. The **prefix count**
   `xs[0..<k].count(v)` is the counting sibling (Phase 208): a bounded range count with base/step axioms and a
   quantified range-store law (a store at `k` provably leaves the `[0,k)` count untouched) — the permutation
-  spelling a merge/fill loop's invariant carries; whole-array `xs.count(v)` keeps its per-store law. The recurrence spec helpers
+  spelling a merge/fill loop's invariant carries; whole-array `xs.count(v)` keeps its per-store law, and on an array the
+  two agree at the full length, `a.count(v) == a[0..<a.length].count(v)` for every `v` (Phase 322). The recurrence spec helpers
   `Fib.of(i)` / `Trib.of(i)` / `Gcd.of(a, b)` / `Lcm.of(a, b)` lower to axiomatised primitives (Phases 55/56/87);
 - `String` on Z3's native theory of strings (Phase 47): predicates (`startsWith` / `endsWith` / `contains` /
   `isEmpty`), `length` / `size` / `charAt` / `substring` / `indexOf`, composition (`+` / `concat` /

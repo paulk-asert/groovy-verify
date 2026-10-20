@@ -14845,6 +14845,39 @@ Docs: the "Splitting money" section of `examples/lemmascript.md` (the port, the 
 translation-table rows, "Not ported yet" narrowed to refutation, FRAGMENT's arithmetic and aggregation bullets,
 README, and a CAPABILITIES row.
 
+## Phase 322 — the whole-array count meets the prefix count  *(shipped — engine change)*
+
+From the LemmaScript "Not ported yet" list. An array's `a.count(v)` is Phase 12's `count` (an uninterpreted
+occurrence count kept by the per-store count law, with no tie to the length), and `a[0..<n].count(v)` is Phase 208's
+range oracle `bcount` with base/step axioms. Nothing linked them at `n == a.length`, so a loop that maintained
+`c == a[0..<j].count(v)` couldn't conclude `result == a.count(v)` (it timed out), and the majority vote had to state
+its postconditions as full-length prefix counts. Lists were never affected: `xs.count(v)` already lowers to
+`bcount(xs, v, 0, xs.size())`.
+
+`Encoder.flushCountBridges` asserts `∀v. count(a, v) == bcount(a, v, 0, a.length)` once per array handle,
+triggered on either side, so it serves a bound `v` (`a.every { y -> … a.count(y) … }`) and each post-store handle.
+It's gated on both spellings meeting in the encoder: a whole count seen first waits (`noteWholeCount`) until a
+range count appears. A whole count on its own keeps its historic quantifier profile, which matters because
+pulling the range axioms into whole-count-only refutations is what made Phase 208's refutes time out. The
+full suite's tallies are unchanged (no existing VC has both spellings).
+
+Seen in passing, not addressed: a whole count with no range count beside it is still unconstrained by the
+length, so `@Requires({ a.count(v) == 0 })` doesn't give `a[k] != v`, and the counterexample offered for that is
+one the precondition rules out. And the `old.a.count(v)` form across a straight-line store stays undecided:
+the store executes before any range count is translated, so Phase 208's range-store law isn't emitted for it.
+
+**Shipped tests (group `P322 count bridge`, 7 cases):**
+- the two directions, a bound value, and after a store;
+- a counting loop concluding the whole count, and the majority vote with `arr.count(x)` postconditions;
+- not over-claimed: a wrong whole count (undecided).
+
+A range count in a `@Requires` makes the precondition-satisfiability check UNKNOWN (no model through the
+recursive axioms, as for refutations), so the cases keep range counts out of their preconditions; UNKNOWN headroom
+under `PerfBudget.MAX_UNKNOWN` is down to a handful.
+
+Docs: `examples/lemmascript.md` gains the `arr.count(x)` form of the majority postconditions, and the "Not ported
+yet" entry is removed; FRAGMENT's count bullet and a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment

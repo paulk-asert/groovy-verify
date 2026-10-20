@@ -566,6 +566,18 @@ One boundary shows here. A *wrong* claim about `majority`, such as `result != -1
 counterexample: Z3 can't build a model through the quantified count axioms, so the verdict is "could not
 decide". That's loud, and never a false proof, but it gives no failing input.
 
+Since `occOf(arr, x, arr.length)` counts the whole array, the postconditions can also be written in the more
+idiomatic Groovy `arr.count(x)`, with the invariants unchanged:
+
+<!-- doclint:case p322-count-bridge/majority-vote-with-whole-array-counts -->
+```groovy
+@Ensures({ result == -1 || (result >= 0 && 2 * arr.count(result) > arr.length) })
+@Ensures({ arr.any { int x -> 2 * arr.count(x) > arr.length } ==> result != -1 })
+```
+
+The verifier treats an array's `count(x)` and its prefix count over the full length as the same quantity, so the
+loops' prefix counts reach the whole-array claim.
+
 ### Zigzag encoding
 
 Protocol Buffers' trick for storing signed integers as small unsigned numbers folds the number line onto the
@@ -673,10 +685,6 @@ These examples hit the edges of what groovy-verify proves today:
 - **`continue`, and `break` from a nested loop.** A `break` at the top level of a loop body, or ending a branch of
   the body's final `if`/`else` chain, is supported. A `continue`, or a `break` out of an inner loop, still skips
   loudly.
-- **Whole-array counts beside prefix counts.** `arr.count(x)` on an array and `arr[0..<arr.length].count(x)` are
-  modelled by different functions with no bridge between them, so a loop that maintains the prefix form can't
-  conclude the whole-array form (the [majority vote](#majority-vote) states its postconditions as prefix counts
-  over the full length, which is what `occOf(arr, x, arr.length)` is anyway).
 - **Recursion that rebuilds a list.** LemmaScript's `pruneWindow` recurses over `log.slice(1)` and rebuilds with
   `[log[0], ...rest]`. `log.drop(1)` as a list value, `[x] + rest`, and a list a recursive call returns are each
   outside the fragment, so the port is a loop (or `findAll`) instead.

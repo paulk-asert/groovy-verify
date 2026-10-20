@@ -3442,6 +3442,7 @@ class Encoder implements TheoryApi {
 
     Object bcountRangeOf(Object arr, Object vH, Object loH, Object hiH) {
         rangeCountsUsed = true
+        flushCountBridges()
         if (bcountRangeConstrained.add(arr)) {
             Object zero = session.intLit(0L)
             Object one = session.intLit(1L)
@@ -3462,6 +3463,38 @@ class Encoder implements TheoryApi {
                 session.implies(session.lt(sl, sh), session.eq(sterm, srhs)), [sterm]))
         }
         session.bcount(arr, vH, loH, hiH)
+    }
+
+    /**
+     * Phase 322 — the bridge between an array's two counts. The whole-array {@code a.count(v)} is Phase 12's
+     * {@code count} (kept by the per-store count law, unrelated to the length), and {@code a[0..<n].count(v)} is
+     * Phase 208's range oracle {@code bcount}; nothing said they agree at {@code n == a.length}, so a loop maintaining
+     * the prefix form couldn't conclude the whole form. The bridge is {@code ∀v. count(a, v) == bcount(a, v, 0,
+     * a.length)}, once per array handle, triggered on either side, so it serves a {@code v} that is itself bound
+     * ({@code arr.every { y -> … arr.count(y) … }}). It is emitted only once both spellings are in play in this
+     * encoder: a whole count alone keeps its historic quantifier profile (pulling in the range axioms there is what
+     * made Phase 208's refutations time out), so a whole count seen first waits here until a range count appears.
+     */
+    private final Map<Object, Object> countBridgesPending = new LinkedHashMap<Object, Object>()
+    private final Set<Object> countBridged = new HashSet<Object>()
+
+    private void noteWholeCount(Object arr, Object len) {
+        if (len == null || countBridged.contains(arr) || countBridgesPending.containsKey(arr)) return
+        countBridgesPending.put(arr, len)
+        if (rangeCountsUsed) flushCountBridges()
+    }
+
+    private void flushCountBridges() {
+        if (countBridgesPending.isEmpty()) return
+        Map<Object, Object> todo = new LinkedHashMap<Object, Object>(countBridgesPending)
+        countBridgesPending.clear()
+        todo.each { Object arr, Object len ->
+            if (!countBridged.add(arr)) return
+            Object bv = session.boundIntVar('cbr$v' + (quantCounter++))
+            Object whole = session.count(arr, bv)
+            Object prefix = bcountRangeOf(arr, bv, session.intLit(0L), len)
+            session.assertExpr(session.forall([bv], session.eq(whole, prefix), [whole, prefix]))
+        }
     }
 
     /** Array handles whose Real-sum base/step axioms have been asserted (mint-once, per array). */
@@ -6383,6 +6416,9 @@ class Encoder implements TheoryApi {
                 if (rname != null && isListName(rname)) {
                     return session.bcount(arr, v, session.intLit(0L), sizeOf(rname))
                 }
+                // Phase 322 — an array's whole count meets its prefix count over the full length (an array's length
+                // is fixed, so old.a's is a's).
+                if (rname != null) noteWholeCount(arr, sizeOf(rname.startsWith('old$') ? rname.substring('old$'.length()) : rname))
                 return session.count(arr, v)
             }
         }
