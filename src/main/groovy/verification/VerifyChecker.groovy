@@ -313,6 +313,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** Names of {@code AtomicInteger}/{@code AtomicLong} fields/params/locals — modelled as int cells
      *  ({@code a.get()} reads, {@code a.incrementAndGet()}/{@code set}/{@code compareAndSet} write). */
     private Set<String> currentAtomicNames = new HashSet<String>()
+    /** Phase 333 — {@code int}/{@code long} params, fields and locals → bit width (see {@link #collectIntegralNames}). */
+    private Map<String, Integer> currentIntegralNames = new HashMap<String, Integer>()
     /** Phase 113 — tuple-typed locals (`Tuple2<…> r = callee(…)`), name → the {@code TupleN} type. */
     private Map<String, ClassNode> currentTupleTypes = new HashMap<String, ClassNode>()
     /** Phase 116 — equational combiners in scope: `name/arity` → `[formalNames, ensuresRhs]` (see Encoder). */
@@ -372,6 +374,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             functionReturnTypes: currentFunctionReturnTypes,
             biFunctionReturnTypes: currentBiFunctionReturnTypes,
             atomicNames        : currentAtomicNames,
+            integralNames      : currentIntegralNames,
             method             : currentMethod))
     }
 
@@ -1906,6 +1909,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
 
     /** Names visible to {@code node} of {@code AtomicInteger}/{@code AtomicLong} type — fields, parameters and
      *  explicitly-typed locals. The verifier models each as an int cell (see {@link Encoder#atomicNames}). */
+    /**
+     * Phase 333 — the method's {@code int}/{@code long} params, fields and typed locals, by bit width. A name declared
+     * with two different types (or one of them not integral) in different scopes is dropped: its free value could be either.
+     * Contract closures are skipped (their params are bound, not free).
+     */
+    private static Map<String, Integer> collectIntegralNames(MethodNode node) {
+        Map<String, Integer> out = new HashMap<String, Integer>()
+        Set<String> conflicted = new HashSet<String>()
+        Closure note = { String name, ClassNode t ->
+            Integer bits = isJvmInt(t) ? 32 : isJvmLong(t) ? 64 : null
+            if (conflicted.contains(name)) return
+            if (bits == null) { if (out.remove(name) != null) conflicted.add(name); return }
+            Integer prev = out.putIfAbsent(name, bits)
+            if (prev != null && prev != bits) { out.remove(name); conflicted.add(name) }
+        }
+        for (Parameter p : node.parameters) note(p.name, p.type)
+        ClassNode dc = node.declaringClass
+        if (dc != null) for (FieldNode f : dc.fields) note(f.name, f.type)
+        Statement cleanBody = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (cleanBody == null) cleanBody = node.code
+        if (cleanBody != null) try {
+            cleanBody.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override
+                void visitClosureExpression(ClosureExpression ce) { }
+                @Override
+                void visitDeclarationExpression(DeclarationExpression de) {
+                    for (VariableExpression v : declaredTargets(de)) note(v.name, v.originType ?: v.type)
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {}
+        out
+    }
+
     private static Set<String> collectAtomicNames(MethodNode node) {
         Set<String> out = new HashSet<String>()
         for (Parameter p : node.parameters) if (isAtomicIntType(p.type)) out.add(p.name)
@@ -2643,6 +2681,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentListElementTypes = collectListElementTypes(node)
         currentScalarTypes = collectScalarTypes(node)
         currentAtomicNames = collectAtomicNames(node)
+        currentIntegralNames = collectIntegralNames(node)
         collectChannelContracts(node)
         currentTupleTypes = collectTupleTypes(node)
         currentCombiners = collectCombiners(node)
@@ -2996,6 +3035,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentListElementTypes = new HashMap<String, ClassNode>()
             currentScalarTypes = new HashMap<String, ClassNode>()
             currentAtomicNames = new HashSet<String>()
+            currentIntegralNames = new HashMap<String, Integer>()
             currentTupleTypes = new HashMap<String, ClassNode>()
             currentCombiners = new HashMap<String, Object[]>()
             currentCarrierTypes = new HashMap<String, ClassNode>()
@@ -3666,7 +3706,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * Phase 44c — assert {@code INT_MIN ≤ x ≤ INT_MAX} for every Int-typed parameter and
      * declaring-class field. Sound by the JVM's {@code int} contract; needed under
      * {@code @CheckOverflow} so the verifier's math-int counterexamples match the values the
-     * runtime can actually exhibit. Locals are bounded transitively via their assignment rhs.
+     * runtime can actually exhibit. A local's free value (a loop-written one at an arbitrary iteration)
+     * is bounded where it is minted, in the Encoder (Phase 333).
      */
     /**
      * Phase 45b — when a method returns a list-typed local, alias {@code result}'s size and

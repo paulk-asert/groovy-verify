@@ -371,7 +371,11 @@ class Encoder implements TheoryApi {
         this.functionReturnTypes = env.functionReturnTypes
         this.biFunctionReturnTypes = env.biFunctionReturnTypes
         this.atomicNames = env.atomicNames
+        this.integralNames = env.integralNames
     }
+
+    /** Phase 333 — {@code int}/{@code long} names → bit width; see {@link #assumeIntegralRange}. */
+    private final Map<String, Integer> integralNames
 
     /** Phase 73 — {@code double}/{@code float} names mapped to precision ({@code true} = double/Float64,
      *  {@code false} = float/Float32). Modelled with Z3's faithful IEEE-754 FP theory in straight-line
@@ -1644,8 +1648,23 @@ class Encoder implements TheoryApi {
         Object cached = env.get(name)
         if (cached != null) return cached
         Object v = session.intVar(name)
+        assumeIntegralRange(name, v)
         env.put(name, v)
         v
+    }
+
+    /**
+     * Phase 333 — a free value of an {@code int}/{@code long} name (its first mint, or a havoc) lies in the JVM range.
+     * The loop VCs read a loop-written local at an arbitrary iteration as a fresh value constrained only by the
+     * invariant, so without this a counterexample could pick {@code k = 2147483648}, which no {@code int} holds
+     * (a false refutation, and a repro nobody can run). Sound by the JVM's type contract, like the size oracle's bound.
+     */
+    private void assumeIntegralRange(String name, Object v) {
+        Integer bits = integralNames?.get(name)
+        if (bits == null) return
+        long lo = bits == 64 ? Long.MIN_VALUE : (long) Integer.MIN_VALUE
+        long hi = bits == 64 ? Long.MAX_VALUE : (long) Integer.MAX_VALUE
+        session.assertExpr(session.and([session.le(session.intLit(lo), v), session.le(v, session.intLit(hi))]))
     }
 
     /** Per-sort variable bindings (Phase 27), keyed by {@code name + ':' + sortHandle.toString()}. */
@@ -1852,7 +1871,7 @@ class Encoder implements TheoryApi {
         Object v
         if (prev != null && session.isBool(prev)) v = session.boolVar(hn)
         else if (prev != null && session.isReal(prev)) v = session.realVar(hn)
-        else v = session.intVar(hn)
+        else { v = session.intVar(hn); assumeIntegralRange(name, v) }
         env.put(name, v)
         v
     }

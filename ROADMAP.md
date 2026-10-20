@@ -15168,6 +15168,32 @@ past the cap getting no failing call (Phase 331). The first two fail against the
 
 **Seen, not fixed:** that counterexample has `k = 2147483650`, past `int` range, for an `int` local in the second
 loop's body; the refutation is genuine (`k` does reach `result.length`), but the value shown can't occur.
+*(Fixed in Phase 333.)*
+
+## Phase 333 — loop-written locals in `int` range  *(shipped — soundness of reporting, and two false refutations)*
+
+Phase 332's leftover: `k = 2147483650` for an `int` local. Phase 44c bounds every `int`/`long` parameter and field
+to its JVM range, and locals were said to be "bounded transitively via their assignment rhs". That holds in
+straight-line code, but not in a loop VC. Preservation, the in-body exits, the post-loop state and the bounds checks
+inside the body read a loop-written local at an arbitrary iteration as a fresh value that only the invariant
+constrains. With `@Invariant({ k >= 0 })` the solver could pick `k = 2147483648`. That made the counterexample
+unreal, and it was a false refutation of claims true for every `int`: `@Ensures({ result <= Integer.MAX_VALUE })`
+after a counting loop refuted with `k = 2147483648` (and its `long` twin with a value past `Long.MAX_VALUE`).
+
+- **Bounded at the source.** `collectIntegralNames` records each `int`/`long` param, field and typed local by bit width
+  (a name declared with two types in different scopes is dropped). The Encoder asserts the type's range whenever such a
+  name's free value is minted: `varForRaw`'s first mint and every `havoc`, so every VC gets it, including preservation,
+  which never called `assumeIntJvmBounds`. It is an assumption the JVM guarantees, like the size oracle's
+  `0 ≤ size ≤ INT_MAX`. Arithmetic stays mathematical, so the existing gap with wrap-around is unchanged: the bound
+  sits on free values, not on `k + 1`.
+
+**Shipped tests:** group `P333 int-range loop locals`, 5 cases: an `int` and a `long` loop local in range after the
+loop, an `int` in range at an in-body return (the three refuted before), a wrong bound that still refutes, and the
+allocate bump loop's index refutation naming an in-range `k`.
+
+**Seen, not fixed:** that bump-loop refutation now reads `allocate(1, new int[0])` beside `p = 5`, `ws.length = 0`, a
+state `ws.sum() > 0` rules out. It is the sequential-loop repro weakness (the earlier loop's writes are havocked and
+the repro is built from them), not a range issue.
 
 ---
 

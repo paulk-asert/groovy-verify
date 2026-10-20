@@ -31,7 +31,8 @@ a coverage metric. In expressions the fragment is:
   closed subterms folded first; Phase 48 — a query that also carries quantified axioms, such as a prefix sum beside
   `s * W <= total * p`, and times out is retried on sound slices that can only turn it into a proof, Phase 321 — and **`BigInteger`**, Groovy's arbitrary-precision integer, flows in
   this same unbounded Int sort, the *most* faithful integer type since Z3's `Int` has no width or overflow, modulo
-  a literal wider than 64 bits which skips loudly; Phase 124), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
+  a literal wider than 64 bits which skips loudly; Phase 124; the free value of an `int`/`long` parameter, field or
+  local, including a loop-written local read at an arbitrary iteration, is assumed in its JVM range, Phases 44c/333), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
   `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) **only when the divisor
   terminates** — a constant whose unscaled integer has just the prime factors 2 and 5 (`/2`, `/1000`, `/0.25`), so
   `5 / 2 == 2.5` and a `metres / 1000` unit conversion prove exactly; a non-terminating divisor (`/3`, `/7`, a

@@ -96,4 +96,7 @@ class TypeEnvironment {
 
     /** Names modelled as atomic int cells — {@code AtomicInteger}/{@code AtomicLong} fields (Phase 162). */
     final Set<String> atomicNames = new HashSet<String>()
+
+    /** Phase 333 — {@code int}/{@code long} params, fields and locals → bit width (32 / 64): their free values are JVM-bounded. */
+    final Map<String, Integer> integralNames = new HashMap<String, Integer>()
 }
