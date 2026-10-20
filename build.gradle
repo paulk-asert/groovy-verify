@@ -50,12 +50,13 @@ plugins {
 group = 'io.github.paulk-asert'
 version = '0.1.0'
 
-// Apache RAT: don't license-check generated output, IDE metadata, or the wrapper.
+// Apache RAT: don't license-check generated output, IDE/agent metadata, or the wrapper. The plugin walks its
+// own Gradle file tree, so .gitignore is not consulted — ignored local dirs need listing here too.
 // The stderr demotion hides the JDK 25.0.3+ "three-letter time zone ID is deprecated" chatter RAT's
 // internals trigger (upstream, cosmetic) without hiding real failures — the task still fails the build.
 tasks.named('rat') {
     logging.captureStandardError(LogLevel.INFO)
-    excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**']
+        excludes = ['**/build/**', '**/.idea/**', 'gradle/**', '**/.gradle/**', '**/.claude/**']
 }
 
 // Everything this project needs from Groovy 6 has been on Central since the 6.0.0-beta-1 release
