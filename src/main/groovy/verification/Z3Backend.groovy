@@ -34,9 +34,11 @@ import com.microsoft.z3.Model
 import com.microsoft.z3.SeqExpr
 import com.microsoft.z3.Params
 import com.microsoft.z3.Pattern
+import com.microsoft.z3.Quantifier
 import com.microsoft.z3.Solver
 import com.microsoft.z3.Sort
 import com.microsoft.z3.Status
+import com.microsoft.z3.enumerations.Z3_decl_kind
 import groovy.transform.CompileStatic
 
 import java.util.concurrent.ConcurrentHashMap
@@ -1295,12 +1297,200 @@ class Z3Session implements SmtSession {
     @Override
     boolean explainHadGap() { explainGap }
 
+    /**
+     * Phase 321 — Z3 copes with nonlinear integer arithmetic, and with quantified axioms, but rarely with both in one
+     * query: a loop that floors {@code total * w / W} while also carrying {@code p == ws[0..<i].sum(0)} times out even
+     * though the arithmetic needs little of the axioms and the sum needs none of the arithmetic. So an UNKNOWN query
+     * that mixes the two is retried on two slices of its top-level conjuncts:
+     * <ul>
+     *   <li><b>ground</b>: the quantifier-free conjuncts, plus a few rounds of each top-level universal's instances at
+     *       the ground terms its trigger matches there (the e-matching Z3 would do, done up front and bounded, so the
+     *       slice is quantifier-free and the nonlinear solver gets it whole);</li>
+     *   <li><b>linear</b>: the conjuncts with no nonlinear term, quantifiers kept.</li>
+     * </ul>
+     * Failing both, the negated goal {@code ¬(g1 ∧ … ∧ gn)} is split and each {@code gi} must discharge on one slice
+     * or the other. A slice only drops hypotheses or adds instances of them (any substitution into a universal is
+     * implied by it, so a poor match costs completeness, never soundness), so its UNSAT is an UNSAT of the whole
+     * query; a slice's SAT means nothing (a dropped fact may rule the model out), so only VERIFIED ever comes back.
+     * A retry is at most {@link #MAX_SLICE_CHECKS} checks of at most {@link #SLICE_TIMEOUT_MS} each.
+     */
+    private boolean mixedQuery() {
+        Map<Integer, Boolean> quantMemo = new HashMap<Integer, Boolean>(), nlMemo = new HashMap<Integer, Boolean>()
+        boolean anyQuant = false, anyNl = false
+        for (BoolExpr e : assertedExprs) {
+            if (!anyQuant && hasQuantifier(e, quantMemo)) anyQuant = true
+            if (!anyNl && hasNonlinear(e, nlMemo)) anyNl = true
+        }
+        anyQuant && anyNl
+    }
+
+    private boolean nonlinearSliceProves() {
+        sliceChecksLeft = MAX_SLICE_CHECKS
+        List<BoolExpr> conj = new ArrayList<BoolExpr>()
+        for (BoolExpr e : assertedExprs) flattenAnd(e, conj)
+        Map<Integer, Boolean> quantMemo = new HashMap<Integer, Boolean>(), nlMemo = new HashMap<Integer, Boolean>()
+        if (sliceUnsat(groundSlice(conj, quantMemo)) || sliceUnsat(conj.findAll { BoolExpr c -> !hasNonlinear(c, nlMemo) })) return true
+        // Split the negated goal: the last assertion, when it is ¬(g1 ∧ … ∧ gn).
+        BoolExpr last = assertedExprs.get(assertedExprs.size() - 1)
+        if (!last.isNot() || !((BoolExpr) last.getArgs()[0]).isAnd()) return false
+        List<BoolExpr> goals = new ArrayList<BoolExpr>()
+        flattenAnd((BoolExpr) last.getArgs()[0], goals)
+        if (goals.size() < 2 || goals.size() > 12) return false
+        List<BoolExpr> hyps = new ArrayList<BoolExpr>()
+        for (int k = 0; k < assertedExprs.size() - 1; k++) flattenAnd(assertedExprs.get(k), hyps)
+        for (BoolExpr g : goals) {
+            List<BoolExpr> q = new ArrayList<BoolExpr>(hyps); q.add(ctx.mkNot(g))
+            List<BoolExpr> n = hyps.findAll { BoolExpr c -> !hasNonlinear(c, nlMemo) }; n.add(ctx.mkNot(g))
+            boolean ok = (!hasQuantifier(g, quantMemo) && sliceUnsat(groundSlice(q, quantMemo))) ||
+                         (!hasNonlinear(g, nlMemo) && sliceUnsat(n))
+            if (!ok) return false
+        }
+        true
+    }
+
+    /** The quantifier-free conjuncts of {@code conj}, plus each top-level universal's single-trigger instances at the
+     *  matching ground terms — {@link #GROUND_ROUNDS} rounds, capped. A quantifier under another connective is dropped. */
+    private List<BoolExpr> groundSlice(List<BoolExpr> conj, Map<Integer, Boolean> quantMemo) {
+        List<BoolExpr> out = new ArrayList<BoolExpr>()
+        List<Quantifier> foralls = new ArrayList<Quantifier>()
+        for (BoolExpr c : conj) {
+            if (!hasQuantifier(c, quantMemo)) out.add(c)
+            else if (c.isQuantifier() && ((Quantifier) c).isUniversal()) foralls.add((Quantifier) c)
+        }
+        Map<Integer, Expr> ground = new LinkedHashMap<Integer, Expr>()
+        for (BoolExpr c : out) collectApps(c, ground)
+        int budget = 400
+        Set<String> seen = new HashSet<String>()
+        // A few rounds: an instance's own terms can feed the next (a store law yields sum(a, 0, i+1), whose step
+        // instance then exposes the new slot).
+        for (int round = 0; round < GROUND_ROUNDS; round++) {
+            List<BoolExpr> fresh = new ArrayList<BoolExpr>()
+            List<Expr> terms0 = new ArrayList<Expr>(ground.values())
+            for (Quantifier q : foralls) {
+                int nb = q.getNumBound()
+                for (Expr trig : sliceTriggers(q)) {
+                    for (Expr t : terms0) {
+                        if (!t.isApp() || t.getFuncDecl() != trig.getFuncDecl()) continue
+                        Expr[] bind = new Expr[nb]
+                        if (!matchPattern(trig, t, bind) || bind.any { it == null }) continue
+                        if (!seen.add(System.identityHashCode(q) + ':' + t.getId())) continue
+                        fresh.add((BoolExpr) q.getBody().substituteVars(bind))
+                        if (--budget <= 0) { out.addAll(fresh); return out }
+                    }
+                }
+            }
+            if (fresh.isEmpty()) break
+            out.addAll(fresh)
+            for (BoolExpr f : fresh) collectApps(f, ground)
+        }
+        out
+    }
+
+    private static final int GROUND_ROUNDS = 3
+
+    /** The single-term triggers to match {@code q} by: its own patterns, or — when it has none (a trigger that
+     *  {@link #containsForbiddenPattern} turned away, say a sum over {@code store(a, i, x / W)}) — each uninterpreted
+     *  application in its body that mentions every bound variable, as Z3's own auto-patterning would pick. */
+    private static List<Expr> sliceTriggers(Quantifier q) {
+        List<Expr> out = new ArrayList<Expr>()
+        for (Pattern pat : q.getPatterns()) {
+            Expr[] terms = pat.getTerms()
+            if (terms.length == 1 && terms[0].isApp()) out.add(terms[0])
+        }
+        if (q.getNumPatterns() == 0) autoTriggers(q.getBody(), q.getNumBound(), out, new HashSet<Integer>())
+        out
+    }
+
+    private static void autoTriggers(Expr e, int nb, List<Expr> out, Set<Integer> seen) {
+        if (!e.isApp() || !seen.add(e.getId())) return
+        if (e.getFuncDecl().getDeclKind() == Z3_decl_kind.Z3_OP_UNINTERPRETED && e.getNumArgs() > 0) {
+            Set<Integer> vs = new HashSet<Integer>()
+            varsOf(e, vs)
+            if (vs.size() == nb) out.add(e)
+        }
+        for (Expr a : e.getArgs()) autoTriggers(a, nb, out, seen)
+    }
+
+    private static void varsOf(Expr e, Set<Integer> out) {
+        if (e.isVar()) { out.add(e.getIndex()); return }
+        if (e.isApp()) for (Expr a : e.getArgs()) varsOf(a, out)
+    }
+
+    private static boolean matchPattern(Expr pat, Expr t, Expr[] bind) {
+        if (pat == t) return true   // a ground subterm (hash-consed); numerals aren't apps, so this is their only route
+        if (pat.isVar()) {
+            int idx = pat.getIndex()
+            if (idx >= bind.length) return false
+            if (bind[idx] == null) { bind[idx] = t; return true }
+            return bind[idx] == t
+        }
+        if (!pat.isApp() || !t.isApp() || pat.getFuncDecl() != t.getFuncDecl()) return false
+        Expr[] pa = pat.getArgs(), ta = t.getArgs()
+        if (pa.length != ta.length) return false
+        for (int k = 0; k < pa.length; k++) if (!matchPattern(pa[k], ta[k], bind)) return false
+        true
+    }
+
+    private static void collectApps(Expr e, Map<Integer, Expr> out) {
+        if (!e.isApp() || out.containsKey(e.getId())) return
+        out.put(e.getId(), e)
+        for (Expr a : e.getArgs()) collectApps(a, out)
+    }
+
+    /** Slice checks left in the current retry: a failed retry costs a bounded number of short checks. */
+    private int sliceChecksLeft = 0
+    private static final int MAX_SLICE_CHECKS = 8
+    private static final int SLICE_TIMEOUT_MS = 1000
+
+    private boolean sliceUnsat(List<BoolExpr> terms) {
+        if (sliceChecksLeft-- <= 0) return false
+        long t0 = System.nanoTime()
+        boolean unsat = provesUnsat(terms, Math.min(timeoutMs, SLICE_TIMEOUT_MS))
+        Z3Backend.recordSolverCheck((long) ((System.nanoTime() - t0) / 1_000_000L), false)
+        unsat
+    }
+
+    private static void flattenAnd(BoolExpr e, List<BoolExpr> out) {
+        if (e.isAnd()) { for (Expr a : e.getArgs()) flattenAnd((BoolExpr) a, out) }
+        else out.add(e)
+    }
+
+    private static boolean hasQuantifier(Expr e, Map<Integer, Boolean> memo) {
+        if (e.isQuantifier()) return true
+        if (!e.isApp()) return false
+        Boolean seen = memo.get(e.getId())
+        if (seen != null) return seen
+        boolean r = false
+        for (Expr a : e.getArgs()) if (hasQuantifier(a, memo)) { r = true; break }
+        memo.put(e.getId(), r)
+        r
+    }
+
+    /** A product of two non-literal terms, or a div / mod / rem by a non-literal: outside linear arithmetic. */
+    private static boolean hasNonlinear(Expr e, Map<Integer, Boolean> memo) {
+        if (!e.isApp()) return false
+        Boolean seen = memo.get(e.getId())
+        if (seen != null) return seen
+        Expr[] args = e.getArgs()
+        boolean r = false
+        if (e.isMul()) {
+            int vars = 0
+            for (Expr a : args) if (!a.isNumeral()) vars++
+            r = vars >= 2
+        } else if ((e.isIDiv() || e.isModulus() || e.isRemainder()) && args.length == 2) {
+            r = !args[1].isNumeral()
+        }
+        if (!r) for (Expr a : args) if (hasNonlinear(a, memo)) { r = true; break }
+        memo.put(e.getId(), r)
+        r
+    }
+
     /** A fresh, full-strength solver over {@code terms} — same timeout as the real proof, never the weaker
-     *  {@code unsat_core} mode — where UNSAT means the goal still discharges. Used only by the EXPLAIN ablation;
-     *  it never touches {@code solver}, so it cannot change a verify/refute. */
-    private boolean provesUnsat(List<BoolExpr> terms) {
+     *  {@code unsat_core} mode — where UNSAT means the goal still discharges. Used by the EXPLAIN ablation and the
+     *  Phase 321 slices; it never touches {@code solver}. */
+    private boolean provesUnsat(List<BoolExpr> terms, int timeout = timeoutMs) {
         Solver sub = ctx.mkSolver()
-        Params p = ctx.mkParams(); p.add('timeout', timeoutMs); sub.setParameters(p)
+        Params p = ctx.mkParams(); p.add('timeout', timeout); sub.setParameters(p)
         for (BoolExpr t : terms) sub.add(t)
         sub.check() == Status.UNSATISFIABLE
     }
@@ -1378,7 +1568,7 @@ class Z3Session implements SmtSession {
         long t0 = System.nanoTime()
         Status status = solver.check()
         long elapsedMs = (long)((System.nanoTime() - t0) / 1_000_000L)
-        Z3Backend.recordSolverCheck(elapsedMs, status == Status.UNKNOWN)
+        Z3Backend.recordSolverCheck(elapsedMs, false)
         if (System.getenv('Z3_TIMING') == '1' && elapsedMs > 500) {
             System.err.println("[Z3] check ${status} in ${elapsedMs}ms")
         }
@@ -1386,7 +1576,11 @@ class Z3Session implements SmtSession {
             return CheckResult.verified()
         }
         if (status == Status.UNKNOWN) {
-            return CheckResult.unknown(solver.getReasonUnknown())
+            String reason = solver.getReasonUnknown()
+            // Phase 321 — a query mixing nonlinear arithmetic with quantified axioms gets a second, sliced, attempt.
+            if (mixedQuery() && nonlinearSliceProves()) return CheckResult.verified()
+            Z3Backend.recordSolverCheck(0L, true)
+            return CheckResult.unknown(reason)
         }
         // SATISFIABLE: extract counterexample for variables we declared
         Model m = solver.getModel()

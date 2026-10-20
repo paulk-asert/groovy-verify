@@ -9227,6 +9227,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // count would conflict with the bcount-based @Ensures translation. Arrays
                         // keep using count (fixed size, no semantic mismatch).
                         enc.emitStoreCountLaw(st.arr, oldA, newA, idx, val, valSort, countVals)
+                        enc.emitStoreSumLaw(oldA, newA, idx, val, valSort)   // Phase 321 — the range form, below
                         // Phase 69/70 — per-store SUM law (the additive analogue of the count law): for
                         // the array's whole-range sum, 0 <= idx < N ⟹ sum(newA,0,N) == sum(oldA,0,N) -
                         // oldA[idx] + val (== sum(oldA) otherwise). Int elements use `sum`, decimal (Real)

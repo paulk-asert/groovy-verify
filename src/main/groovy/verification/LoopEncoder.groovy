@@ -536,6 +536,7 @@ class LoopEncoder {
                     // count and a permutation invariant is preserved across the body (shared with the method-body
                     // executor; the loop pass previously omitted this).
                     enc.emitStoreCountLaw(arr, oldA, newA, idx, val, enc.listElementSort(arr), translatedCountVals(enc))
+                    enc.emitStoreSumLaw(oldA, newA, idx, val, enc.listElementSort(arr))   // Phase 321
                 }
                 return
             }

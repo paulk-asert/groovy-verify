@@ -14797,6 +14797,54 @@ Docs: the `pruneWindow` section of `examples/lemmascript.md` (both postcondition
 two linked cases), its "Not ported yet" narrowed to the recursion, FRAGMENT and README collections, and a
 CAPABILITIES row.
 
+## Phase 321 — nonlinear arithmetic beside quantified sums  *(shipped — engine change)*
+
+Gap 6 of the LemmaScript ports, the front page's money-splitting `allocate`: floor each share
+`total * w / W`, then hand the leftover back out one at a time, with `ensures sum(\result) === total`. The doc
+recorded it as "the solver times out on the nonlinear arithmetic". Probing showed the arithmetic alone was fine:
+the floor bracket `q * W <= total * w < q * W + W` proved, and so did a flooring loop's
+`s * W <= total * p <= s * W + i * (W - 1)` when nothing else was in the query. Two things were missing.
+
+- **Nonlinear arithmetic beside quantified axioms.** Add `p == ws[0..<i].sum(0)` (the recursive sum axioms are
+  universals) and the same loop timed out on preservation and on the postcondition. Z3's nonlinear reasoning and
+  its quantifier instantiation don't combine well. `Z3Session.computeCheck` now retries an UNKNOWN query that has
+  both (`mixedQuery`) on slices of its top-level conjuncts (`nonlinearSliceProves`):
+  - *ground*: the quantifier-free conjuncts plus up to three rounds of each top-level universal's instances at
+    the ground terms its trigger matches (`groundSlice`), so the slice is quantifier-free. A universal with no
+    pattern (the trigger over `store(a, i, x.intdiv(W))` is refused by `containsForbiddenPattern`) is matched
+    by the uninterpreted applications in its body that cover every bound variable, as Z3's auto-patterning would;
+  - *linear*: the conjuncts with no nonlinear term, quantifiers kept;
+  - failing both, the negated goal is split and each conjunct must discharge on one slice or the other.
+
+  A slice only drops hypotheses or adds instances of universals (any substitution is implied), so its UNSAT is
+  the whole query's. Its SAT means nothing, so the retry only ever turns UNKNOWN into VERIFIED. The UNKNOWN
+  counter now counts the final verdict. One trap: Z3 numerals are not `APP_AST`s, so the matcher compares
+  ground subterms by AST equality first.
+- **The range-store sum law.** A store into an array lost every sum over it in a loop body (Phase 69's
+  whole-range law is method-body only, and gated on a contract's `.sum()`). Even the linear fill loop
+  `r[i] = ws[i]; s += r[i]` with `s == r[0..<i].sum(0)` timed out. `Encoder.emitStoreSumLaw` asserts
+  `∀ l, h. sum(store(a, j, v), l, h) == sum(a, l, h) + (l <= j < h ? v - a[j] : 0)`, triggered on the
+  post-store sum, from both store executors, gated on a sum term being in play and on `Int` elements.
+
+Not reached: refutation. A model for the recursive sum axioms needs a total `sumArr` satisfying the step for
+every range, which Z3's finite models can't express even with every array size pinned small (tried, dropped).
+So the first attempt, and other wrong claims in this class, are "could not decide", as Phase 69's skim already
+was.
+
+**Shipped tests:**
+- group `P321 nonlinear`, 7 cases: the floor bracket and its inexactness (a counterexample, scalar), the flooring
+  loop and a too-tight slack (not proved), the fill and bump loops, and a bump by two;
+- `LemmaScript port` gains `allocate`, its first attempt (could not decide), and the port without the leftover
+  lemma (`result[k]` may be out of bounds).
+
+No existing case changed verdict. UNKNOWN goes from 28 to 35 (the new cases' "could not decide" obligations, and the
+precondition-satisfiability checks over their sums), within the ceiling of 40; each obligation the slices prove first
+pays the full 2 s timeout, which is most of the added Z3 time.
+
+Docs: the "Splitting money" section of `examples/lemmascript.md` (the port, the lemma, the boundary), two
+translation-table rows, "Not ported yet" narrowed to refutation, FRAGMENT's arithmetic and aggregation bullets,
+README, and a CAPABILITIES row.
+
 ---
 
 ## Definition of done, per increment

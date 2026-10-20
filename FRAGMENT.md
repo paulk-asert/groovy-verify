@@ -28,7 +28,8 @@ write (bounds, aggregation, sortedness, state machines, recurrences), not to cha
 a coverage metric. In expressions the fragment is:
 
 - integer `+`, `-`, `*` (variable products dispatch to Z3's NIA solver under a per-VC timeout, with
-  closed subterms folded first; Phase 48 — and **`BigInteger`**, Groovy's arbitrary-precision integer, flows in
+  closed subterms folded first; Phase 48 — a query that also carries quantified axioms, such as a prefix sum beside
+  `s * W <= total * p`, and times out is retried on sound slices that can only turn it into a proof, Phase 321 — and **`BigInteger`**, Groovy's arbitrary-precision integer, flows in
   this same unbounded Int sort, the *most* faithful integer type since Z3's `Int` has no width or overflow, modulo
   a literal wider than 64 bits which skips loudly; Phase 124), and Groovy-faithful `.intdiv`/`%`/`.mod` (Phase 50); the
   `/` operator is `BigDecimal` division, modelled with Z3's exact **Real** sort (Phase 61) **only when the divisor
@@ -61,7 +62,9 @@ a coverage metric. In expressions the fragment is:
   stays Int/`BigDecimal` only — FP comparisons are bit-blasted, so a quantified FP loop invariant doesn't close);
 - aggregation specs carried by a loop invariant: `xs.sum()` and the `inject(1){ a, x -> a * x }` product fold
   (Phases 51/52) over Int and `String` (concatenation on the `str.++` monoid), and `List<BigDecimal>` decimal
-  sums with N-account *conservation* (`bal.sum() == old.bal.sum()`; Phases 68–70) — with Groovy's duck-typed
+  sums with N-account *conservation* (`bal.sum() == old.bal.sum()`; Phases 68–70), and a store into an `Int` array
+  shifts every range sum over it by the stored delta, in loop bodies as well as method bodies, so a fill loop keeps
+  `s == r[0..<i].sum(0)` and a bump loop keeps `r.sum() + left` (Phase 321) — with Groovy's duck-typed
   empty-fold honoured: a numeric **array**'s `[].sum()` is `0`, but a **List**/sublist's `[].sum()` is *`null`*
   (the no-arg fold has no zero element, the way `['', 1, 2, 3].sum() == '123'`), so a bare `a[0..<k].sum()` over a
   possibly-empty sublist is modelled as unconstrained at empty and a spec like `int == a[0..<k].sum()` *refuses*

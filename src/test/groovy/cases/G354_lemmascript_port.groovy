@@ -23,7 +23,7 @@ import static cases.CaseDsl.*
 class G354_lemmascript_port {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter — loops leaving by `break` as LemmaScript\'s do, with the overflow LemmaScript\'s unbounded `number` cannot see.'
+    static final String DESCRIPTION = 'LemmaScript\'s verified TypeScript examples ported to Groovy contracts — binary and linear search, max, sortedness, sum, swap, leftPad, duplicate detection, zigzag encoding, a bounded counter, money splitting (allocate, nonlinear) — loops leaving by `break` as LemmaScript\'s do, with the overflow LemmaScript\'s unbounded `number` cannot see.'
 
     static final List<Map> CASES = [
         // ---------- LemmaScript port (lemmascript.org front page + examples/*.ts) ----------
@@ -302,6 +302,104 @@ class G354_lemmascript_port {
                                 i = i + 1
                             }
                             return out
+                        }
+                    }''')],
+        // allocate (the front page's second story), fixed: floor each share, then hand the leftover back out. The
+        // first loop's invariant is the lemma LemmaScript needs separately: flooring loses at most W - 1 per share, so
+        // the leftover is below weights.length and result[k] stays in bounds. Nonlinear (total * w / W) beside the
+        // quantified sums — Phase 321's sliced retry — plus the range-store sum law for both loops' stores.
+        [group: 'LemmaScript port', name: 'allocate', ok: true,
+         src: tc('''class C {
+                        /** Splits total across the weights without losing any of it. */
+                        @Requires({ weights != null && total >= 0 && weights.every { int w -> w >= 0 } && weights.sum() > 0 })
+                        @Ensures({ result.sum() == total })
+                        static int[] allocate(int total, int[] weights) {
+                            int W = weights.sum()
+                            int[] result = new int[weights.length]
+                            int s = 0
+                            int p = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= weights.length && result.length == weights.length })
+                            @Invariant({ s == result[0..<i].sum(0) && p == weights[0..<i].sum(0) })
+                            @Invariant({ s * W <= total * p && total * p <= s * W + i * (W - 1) })
+                            @Decreases({ weights.length - i })
+                            while (i < weights.length) {
+                                result[i] = (total * weights[i]).intdiv(W)
+                                s = s + result[i]
+                                p = p + weights[i]
+                                i = i + 1
+                            }
+                            int left = total - s
+                            int k = 0
+                            @Invariant({ 0 <= k && 0 <= left && result.length == weights.length })
+                            @Invariant({ k + left < weights.length + (left == 0 ? 1 : 0) })
+                            @Invariant({ result.sum() + left == total })
+                            @Decreases({ left })
+                            while (left > 0) {
+                                result[k] = result[k] + 1
+                                k = k + 1
+                                left = left - 1
+                            }
+                            return result
+                        }
+                    }''')],
+        // The agent's first attempt stops after flooring: allocate(10, [1, 1, 1]) is [3, 3, 3]. Not proved; the
+        // solver can't build a counterexample through the recursive sum axioms, so it is "could not decide".
+        [group: 'LemmaScript port', name: 'allocate first attempt loses the remainder', expect: 'Could not decide postcondition of allocate',
+         src: tc('''class C {
+                        @Requires({ weights != null && total >= 0 && weights.every { int w -> w >= 0 } && weights.sum() > 0 })
+                        @Ensures({ result.sum() == total })
+                        static int[] allocate(int total, int[] weights) {
+                            int W = weights.sum()
+                            int[] result = new int[weights.length]
+                            int s = 0
+                            int p = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= weights.length && result.length == weights.length })
+                            @Invariant({ s == result[0..<i].sum(0) && p == weights[0..<i].sum(0) })
+                            @Invariant({ s * W <= total * p && total * p <= s * W + i * (W - 1) })
+                            @Decreases({ weights.length - i })
+                            while (i < weights.length) {
+                                result[i] = (total * weights[i]).intdiv(W)
+                                s = s + result[i]
+                                p = p + weights[i]
+                                i = i + 1
+                            }
+                            return result
+                        }
+                    }''')],
+        // Without the leftover lemma (drop the W - 1 slack), nothing bounds k, and result[k] may be out of bounds.
+        [group: 'LemmaScript port', name: 'allocate without the leftover lemma', expect: 'index may be out of bounds',
+         src: tc('''class C {
+                        @Requires({ weights != null && total >= 0 && weights.every { int w -> w >= 0 } && weights.sum() > 0 })
+                        @Ensures({ result.sum() == total })
+                        static int[] allocate(int total, int[] weights) {
+                            int W = weights.sum()
+                            int[] result = new int[weights.length]
+                            int s = 0
+                            int p = 0
+                            int i = 0
+                            @Invariant({ 0 <= i && i <= weights.length && result.length == weights.length })
+                            @Invariant({ s == result[0..<i].sum(0) && p == weights[0..<i].sum(0) })
+                            @Invariant({ s * W <= total * p })
+                            @Decreases({ weights.length - i })
+                            while (i < weights.length) {
+                                result[i] = (total * weights[i]).intdiv(W)
+                                s = s + result[i]
+                                p = p + weights[i]
+                                i = i + 1
+                            }
+                            int left = total - s
+                            int k = 0
+                            @Invariant({ 0 <= k && 0 <= left && result.length == weights.length })
+                            @Invariant({ result.sum() + left == total })
+                            @Decreases({ left })
+                            while (left > 0) {
+                                result[k] = result[k] + 1
+                                k = k + 1
+                                left = left - 1
+                            }
+                            return result
                         }
                     }''')],
     ]

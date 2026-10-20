@@ -42,6 +42,8 @@ and are © their authors, used under LemmaScript's MIT licence.
 | `break` plus `//@ done_with` | `break` (the exit condition needs no annotation) |
 | a recursive pure count, `occOf(arr, x, n)` | the prefix count `arr[0..<n].count(x)` |
 | `forall(y: int, P)`, `exists(x: nat, P)` over all values | `arr.every { y -> P }`, `arr.any { x -> P }` over the values that occur |
+| `sum(arr)` | `arr.sum()`, or `arr[0..<i].sum(0)` for a prefix that may be empty (a Groovy `[].sum()` is `null`) |
+| `Math.floor(a / b)` | `a.intdiv(b)` (the same for `a >= 0`, `b > 0`; `intdiv` truncates toward zero) |
 
 LemmaScript's `//@ contract` line is a plain-English statement of intent that sits beside the formal contract, so a
 reviewer can check one against the other. Groovy doesn't have an annotation for that yet, so the ports carry the
@@ -185,10 +187,59 @@ function allocate(total, weights) {
 }
 ```
 
-This is beyond the verifier today, in both directions. Each share is `total * w / W`, a product of two
-variables divided by a third, and the solver times out on that nonlinear arithmetic. It can't refute the first
-attempt any more than it can prove the fix. The fix also needs a lemma that the leftover is smaller than the
-number of weights, so that `result[k]` stays in bounds.
+It ports, with LemmaScript's postcondition unchanged. TypeScript's `Math.floor(total * w / W)` is Groovy's
+`(total * w).intdiv(W)`, and the `map` and the leftover loop become two `while` loops:
+
+<!-- doclint:case lemmascript-port/allocate -->
+```groovy
+/** Splits total across the weights without losing any of it. */
+@Requires({ weights != null && total >= 0 && weights.every { int w -> w >= 0 } && weights.sum() > 0 })
+@Ensures({ result.sum() == total })
+static int[] allocate(int total, int[] weights) {
+    int W = weights.sum()
+    int[] result = new int[weights.length]
+    int s = 0
+    int p = 0
+    int i = 0
+    @Invariant({ 0 <= i && i <= weights.length && result.length == weights.length })
+    @Invariant({ s == result[0..<i].sum(0) && p == weights[0..<i].sum(0) })
+    @Invariant({ s * W <= total * p && total * p <= s * W + i * (W - 1) })
+    @Decreases({ weights.length - i })
+    while (i < weights.length) {
+        result[i] = (total * weights[i]).intdiv(W)
+        s = s + result[i]
+        p = p + weights[i]
+        i = i + 1
+    }
+    int left = total - s
+    int k = 0
+    @Invariant({ 0 <= k && 0 <= left && result.length == weights.length })
+    @Invariant({ k + left < weights.length + (left == 0 ? 1 : 0) })
+    @Invariant({ result.sum() + left == total })
+    @Decreases({ left })
+    while (left > 0) {
+        result[k] = result[k] + 1
+        k = k + 1
+        left = left - 1
+    }
+    return result
+}
+```
+
+The third invariant of the first loop is the lemma LemmaScript needs separately. Each floored share loses less
+than one whole unit, at most `W - 1` out of `total * w`, so after all the shares the leftover is below
+`weights.length`. That's what keeps `result[k]` in bounds in the second loop. Drop the `i * (W - 1)` slack and
+the verifier reports that `result[k]` may be out of bounds.
+
+The arithmetic is nonlinear: `s * W`, `total * p` and `(total * w).intdiv(W)` multiply and divide variables by
+each other. Z3 proves this sort of thing on its own, and it proves the prefix sums on their own, but with both
+in the same query it times out. groovy-verify now retries such a query on slices of it (only the arithmetic
+with the sum facts it needs, or only the sums), each of which can prove the obligation but never refute it.
+
+The first attempt, which stops after flooring, doesn't prove. It isn't refuted either: the verifier reports
+"could not decide", since a counterexample would have to satisfy the recursive sum axioms and the solver can't
+build one. That's the same outcome as LemmaScript's, which rejects the attempt rather than printing
+`[3, 3, 3]`.
 
 ## From the examples folder
 
@@ -629,8 +680,8 @@ These examples hit the edges of what groovy-verify proves today:
 - **Recursion that rebuilds a list.** LemmaScript's `pruneWindow` recurses over `log.slice(1)` and rebuilds with
   `[log[0], ...rest]`. `log.drop(1)` as a list value, `[x] + rest`, and a list a recursive call returns are each
   outside the fragment, so the port is a loop (or `findAll`) instead.
-- **Nonlinear arithmetic.** The money-splitting `allocate`, and the largest-remainder allocation behind the
-  bill-splitting case studies, multiply and divide variables by each other.
+- **Refuting nonlinear sums.** [`allocate`](#splitting-money) proves, but a wrong claim in the same territory (the
+  first attempt, a bump by two) is "could not decide" rather than a counterexample.
 
 ## The case studies
 
@@ -639,4 +690,4 @@ examples: a collaborative to-do app on React and Supabase, verified fixes for CV
 expense splitters that prove money is never lost, an ESLint plugin whose reachability check is proven sound and
 complete. They carry hundreds of proof obligations each, with helper lemmas and, in some, Lean proofs
 alongside the Dafny. They're a good guide to what verifying a real TypeScript codebase looks like, but they
-aren't small enough to port one-to-one, and several depend on the arithmetic and list reasoning listed above.
+aren't small enough to port one-to-one, and several depend on the reasoning listed above.

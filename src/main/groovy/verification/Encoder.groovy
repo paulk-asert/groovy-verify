@@ -2013,6 +2013,27 @@ class Encoder implements TheoryApi {
     }
 
     /**
+     * Phase 321 — the per-store RANGE-sum law, the additive sibling of the range-store count law above: for any
+     * range, a store at {@code idx} shifts the sum by {@code val - oldA[idx]} when {@code idx} lies inside it, and
+     * leaves it alone otherwise. Ground in the arrays, index and value, quantified over {@code (l, h)}, triggered on
+     * the post-store sum. It is what lets a fill loop carry {@code s == r[0..<i].sum(0)} across {@code r[i] = v}
+     * (the prefix is untouched, the step axiom adds the new slot) and a bump loop carry {@code r.sum() + left}
+     * across {@code r[k] += 1}. Gated on a sum term already being in play in this encoder, and on Int elements, so
+     * ordinary stores pay nothing. Shared by the method-body and loop-body store executors.
+     */
+    void emitStoreSumLaw(Object oldA, Object newA, Object idx, Object val, Object valSort) {
+        if (sumConstrained.isEmpty() || valSort != session.intSort()) return
+        Object zero = session.intLit(0L)
+        Object rl = session.boundIntVar('srs$l' + storeLawCounter)
+        Object rh = session.boundIntVar('srs$h' + (storeLawCounter++))
+        Object newTerm = session.sum(newA, rl, rh)
+        Object inRange = session.and([session.le(rl, idx), session.lt(idx, rh)])
+        Object adj = session.minus(val, session.select(oldA, idx))
+        session.assertExpr(session.forall([rl, rh],
+            session.eq(newTerm, session.plus(session.sum(oldA, rl, rh), session.ite(inRange, adj, zero))), [newTerm]))
+    }
+
+    /**
      * Get-or-declare the set handle for a name / {@code old$name} — a characteristic
      * {@code Array <elem-sort> -> Int}. Element sort comes from the receiver type collected by
      * {@link VerifyChecker}: Int-element sets keep the existing {@link SmtSession#setVar} storage
