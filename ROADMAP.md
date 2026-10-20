@@ -15382,7 +15382,25 @@ built in a nested loop, a list field, a map `put`, list `set` in bounds; an over
 refuting the old value; an out-of-bounds `set` refuting in a nested loop and in straight-line code; a field array;
 a void `@Ensures` after a loop, and a wrong one refuting.
 
-**Still out:** `xs << v` in a loop body ("unsupported statement in loop region"), in any loop.
+**Still out:** `xs << v` in a loop body ("unsupported statement in loop region"), in any loop. *(Phase 341.)*
+
+## Phase 341 — `xs << v` on a list  *(shipped — the left shift as the add it is)*
+
+A statement `out << k` skipped in any loop ("unsupported statement in loop region") and in straight-line code
+("statement with no modelled effect"); `out.add(k)` worked in both.
+
+- **The adds it makes.** `Encoder.leftShiftAdds` reads a left-nested chain `xs << a << b` on a variable as
+  `xs.add(a)`, then `xs.add(b)`. The loop engine applies them through `applyListMutationInLoop` when `xs` is
+  list-typed (`isListTyped`: a list parameter or field, or a local declared with a `List` type, which `listNames`
+  did not include). The straight-line walk emits them as the mutation steps a written `add` makes, when the
+  receiver's declared type is a `Collection`, so a `Set`'s `<<` inserts (the replay dispatches on the receiver).
+  `innerFrame` counts the chain as a list write, so an outer loop's summary havocs the list's contents and size.
+- **Not an add.** A `StringBuilder`'s `<<` appends text, a `File`'s writes, an `int`'s is a shift whose value the
+  statement discards: none is rewritten, and each still skips loudly.
+
+**Shipped tests:** group `P341 list << in a loop body`, 12 cases: appending in a loop (sizes and elements), a wrong
+size refuting, a chain, a nested loop, the outer summary havocking the list, straight-line code, a list parameter, a
+set parameter inserting and a wrong set claim refuting, and a `StringBuilder` and an `int` shift skipping loudly.
 
 ---
 

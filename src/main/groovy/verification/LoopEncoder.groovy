@@ -426,6 +426,8 @@ class LoopEncoder {
         if (st instanceof AssertStatement) return true      // Phase 252 — an in-loop assert writes nothing
         if (st instanceof ExpressionStatement) {
             Expression e = ((ExpressionStatement) st).expression
+            List<MethodCallExpression> adds = Encoder.leftShiftAdds(e)   // Phase 341 — xs << v appends
+            if (adds != null) { lists.add(((VariableExpression) adds.get(0).objectExpression).name); return true }
             if (e instanceof MethodCallExpression) {          // Phase 252 — a list mutator statement
                 MethodCallExpression m = (MethodCallExpression) e
                 if (m.objectExpression instanceof VariableExpression && m.methodAsString in LIST_MUTATORS) {
@@ -680,6 +682,16 @@ class LoopEncoder {
         if (Encoder.isIncDec(e)) e = Encoder.desugarIncDec(e)
         else if (Encoder.isCompoundAssign(e)) e = Encoder.desugarCompoundAssign((BinaryExpression) e)
         e = asStore(e, enc)   // Phase 340 — this.f = v, m.put(k, v), xs.set(i, v)
+        // Phase 341 — xs << a << b on a list: xs.add(a), then xs.add(b)
+        List<MethodCallExpression> adds = Encoder.leftShiftAdds(e)
+        if (adds != null && enc.isListTyped(((VariableExpression) adds.get(0).objectExpression).name)) {
+            for (MethodCallExpression add : adds) {
+                if (!applyListMutationInLoop(add, enc, s)) {
+                    throw new UnsupportedConstructException("unsupported statement in loop region (line ${st.lineNumber})")
+                }
+            }
+            return
+        }
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
             if (!(de.leftExpression instanceof VariableExpression)) {

@@ -612,6 +612,16 @@ class BodyEncoder {
                 }
             }
 
+            // Phase 341 — a statement xs << a << b on a declared List/Set is xs.add(a); xs.add(b), each a mutation step
+            // like a written add (the replay dispatches on the receiver: a list appends, a set inserts)
+            List<MethodCallExpression> adds = !tail ? Encoder.leftShiftAdds(e, true) : null
+            if (adds != null) {
+                Path np = copy(prefix)
+                for (MethodCallExpression add : adds) np.steps.add(new LemmaCall(add))
+                res.live.add(np)
+                return res
+            }
+
             // A standalone (non-tail) call is a lemma-style fact injection; a tail call is the
             // method's implicit return value.
             if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) {

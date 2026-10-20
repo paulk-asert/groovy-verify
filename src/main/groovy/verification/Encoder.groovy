@@ -18,6 +18,7 @@ package verification
 import groovy.transform.CompileStatic
 import org.apache.groovy.ast.tools.ExpressionUtils
 import org.codehaus.groovy.ast.ClassHelper
+import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.AnnotationNode
@@ -923,6 +924,46 @@ class Encoder implements TheoryApi {
     /** Phase 228 — register a name as list-typed mid-session (a spec formal aliased to a list actual),
      *  so list-name-dispatched translations (`count` → bounded {@code bcount}) match the caller's. */
     void registerListName(String name) { if (name != null) listNames.add(name) }
+
+    private static boolean declaredCollection(VariableExpression v) {
+        ClassNode t = v.accessedVariable != null ? v.accessedVariable.originType : v.originType
+        try {
+            return t != null && (t.name in ['java.util.List', 'java.util.Set', 'java.util.Collection'] ||
+                                 t.implementsInterface(ClassHelper.make(Collection)))
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
+
+    /** Phase 341 — a list-typed parameter or field, or a local declared with a List type ({@code List<Integer> out = []}). */
+    boolean isListTyped(String name) {
+        if (name == null) return false
+        if (isListName(name) || listElementTypes.containsKey(name)) return true
+        if (listLocals == null) listLocals = declaredListLocals(vcMethod)
+        listLocals.contains(name)
+    }
+    private Set<String> listLocals
+
+    /** The locals {@code m}'s body declares with a {@code java.util.List} type (closures aside). */
+    private static Set<String> declaredListLocals(MethodNode m) {
+        Set<String> out = new HashSet<String>()
+        Statement body = m == null ? null : ((Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: m.code)
+        if (body == null) return out
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    VariableExpression v = (VariableExpression) de.leftExpression
+                    ClassNode t = v.originType ?: v.type
+                    try {
+                        if (t != null && (t.name == 'java.util.List' || t.implementsInterface(ClassHelper.make(List)))) out.add(v.name)
+                    } catch (Throwable ignored) { }
+                }
+                super.visitDeclarationExpression(de)
+            }
+        })
+        out
+    }
 
     boolean isListName(String name) {
         if (name == null) return false
@@ -7355,6 +7396,31 @@ class Encoder implements TheoryApi {
     }
 
     /** True if {@code e} is an increment/decrement {@code i++} / {@code ++i} / {@code i--} / {@code --i}. */
+    /**
+     * Phase 341 — a statement {@code xs << a << b} (a left-nested chain of left shifts on a variable) as the calls it
+     * makes on a list, {@code xs.add(a)} then {@code xs.add(b)}; null for any other expression. Whether {@code xs} is a
+     * list is the caller's to check (on an int it is a shift whose value a statement discards), or, with
+     * {@code collectionOnly}, the receiver's declared type must be a {@code java.util.Collection} (a StringBuilder's or
+     * a File's {@code <<} is no add).
+     */
+    static List<MethodCallExpression> leftShiftAdds(Expression e, boolean collectionOnly = false) {
+        List<Expression> pushed = new ArrayList<Expression>()
+        Expression cur = e
+        while (cur instanceof BinaryExpression && ((BinaryExpression) cur).operation.type == Types.LEFT_SHIFT) {
+            pushed.add(0, ((BinaryExpression) cur).rightExpression)
+            cur = ((BinaryExpression) cur).leftExpression
+        }
+        if (pushed.isEmpty() || !(cur instanceof VariableExpression)) return null
+        if (collectionOnly && !declaredCollection((VariableExpression) cur)) return null
+        List<MethodCallExpression> out = new ArrayList<MethodCallExpression>()
+        for (Expression v : pushed) {
+            MethodCallExpression add = new MethodCallExpression(cur, 'add', new ArgumentListExpression(v))
+            add.setSourcePosition(v)
+            out.add(add)
+        }
+        out
+    }
+
     static boolean isIncDec(Expression e) {
         Object[] p = incDecParts(e)
         if (p == null) return false
