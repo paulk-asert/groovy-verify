@@ -25,7 +25,7 @@ import static cases.CaseDsl.*
 class G369_p324_continue_break {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 324 continue and nested break (the last loop gap of the LemmaScript ports): an unlabelled continue is desugared at capture — what follows an if that may continue moves into its branches, a continue drops the rest of its branch — before a for loop\'s update is appended, so while, for, for-in and do-while all take it, and the continuing iteration preserves the invariant as in Dafny; a rewrite that would move a loop into a branch, or bury a top-level break, skips loudly. A top-level if (c) break / if (c) { lead; break } in a nested loop adds one exit state per break to the inner summary (inv && guard at the iteration start, the body to the break, its condition and lead), merged with the natural exit under a selector whose alternatives assert only under their own guard (SmtSession.pushAssertGuard).'
+    static final String DESCRIPTION = 'Phase 324 continue and nested break (the last loop gap of the LemmaScript ports): an unlabelled continue is desugared at capture — what follows an if that may continue moves into its branches, a continue drops the rest of its branch — before a for loop\'s update is appended, so while, for, for-in and do-while all take it, and the continuing iteration preserves the invariant as in Dafny; a rewrite that would bury a top-level break skips loudly (one before a nested loop is Phase 344). A top-level if (c) break / if (c) { lead; break } in a nested loop adds one exit state per break to the inner summary (inv && guard at the iteration start, the body to the break, its condition and lead), merged with the natural exit under a selector whose alternatives assert only under their own guard (SmtSession.pushAssertGuard).'
 
     static final List<Map> CASES = [
 
@@ -144,7 +144,7 @@ class G369_p324_continue_break {
                             return s
                         }
                     }''')],
-        [group: 'P324 continue and nested break', name: 'a continue that would move a loop into a branch skips loudly', expect: 'Skipped loop verification',
+        [group: 'P324 continue and nested break', name: 'a continue before a nested loop verifies (Phase 344)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result >= 0 })

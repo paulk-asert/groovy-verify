@@ -10768,7 +10768,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (int i = 0; i < stmts.size(); i++) {
             Statement st = stmts.get(i)
             List<Statement> pre = new ArrayList<Statement>(before)
-            pre.addAll(stmts.subList(0, i))
+            pre.addAll(pastExits(stmts.subList(0, i)))
             if (inBranch && st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY) != null) {
                 out.add([st, pre] as Object[])
             } else if (st instanceof IfStatement && (branchHoldsLoop(((IfStatement) st).ifBlock) || branchHoldsLoop(((IfStatement) st).elseBlock))) {
@@ -12384,10 +12384,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         out
     }
 
-    /** The statements of {@code body} that precede {@code target} (by identity). */
+    /** The statements of {@code body} that precede {@code target} (by identity), each exit {@code if} on the way
+     *  as the assumption that it wasn't taken ({@link #pastExits}). */
     private static List<Statement> stmtsBefore(List<Statement> body, Statement target) {
         List<Statement> out = new ArrayList<Statement>()
         for (Statement st : body) { if (st.is(target)) break; out.add(st) }
+        pastExits(out)
+    }
+
+    /** Phase 344 — {@code ss} with each top-level exit {@code if (c) return e} / {@code if (c) break} replaced by an
+     *  assume-only {@code !c}: a point after it is reached only when the exit wasn't taken (the walks to a nested
+     *  loop replay this with symExec, which refuses an exit). */
+    private static List<Statement> pastExits(List<Statement> ss) {
+        List<Statement> out = new ArrayList<Statement>()
+        for (Statement st : ss) {
+            if (isExitIf(st)) out = withAssumeOnly(out, new NotExpression(((IfStatement) st).booleanExpression.expression), st)
+            else out.add(st)
+        }
         out
     }
 

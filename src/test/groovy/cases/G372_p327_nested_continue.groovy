@@ -27,7 +27,7 @@ import static cases.CaseDsl.*
 class G372_p327_nested_continue {
 
     /** The one-line capability description for this group — harvested into catalog.json (see Harvester). */
-    static final String DESCRIPTION = 'Phase 327 nested continue ahead of an exit: an if whose branches continue at any depth, followed by a break or return, declares a body-local flag false before it, replaces each continue by setting the flag and guards the rest of that branch by it, then guards what follows the if as Phase 325 does, so the exits stay top-level; in an outer loop and a nested one. A guard that would move a loop into a branch still skips loudly.'
+    static final String DESCRIPTION = 'Phase 327 nested continue ahead of an exit: an if whose branches continue at any depth, followed by a break or return, declares a body-local flag false before it, replaces each continue by setting the flag and guards the rest of that branch by it, then guards what follows the if as Phase 325 does, so the exits stay top-level; in an outer loop and a nested one. A guard ahead of a nested loop puts it in a branch (Phase 344).'
 
     static final List<Map> CASES = [
 
@@ -156,7 +156,7 @@ class G372_p327_nested_continue {
                     }''')],
 
         // ---------- still out ----------
-        [group: 'P327 nested continue ahead of an exit', name: 'a nested continue ahead of a loop skips loudly', expect: 'Skipped loop verification',
+        [group: 'P327 nested continue ahead of an exit', name: 'a nested continue ahead of a loop verifies (Phase 344)', ok: true,
          src: tc('''class C {
                         @Requires({ n >= 0 })
                         @Ensures({ result >= 0 })

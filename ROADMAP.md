@@ -15476,6 +15476,36 @@ an array stored into keeping its length and nullness.
 syntactic write set misses (as Phase 64's filter always did); an uncontracted call in a loop body skips loudly, so
 it cannot carry a stale fact through.
 
+## Phase 344 — `break` and `continue` before a nested loop  *(shipped — exit rewrites, plus an unsoundness closed)*
+
+A `continue`, or a `break` buried in an `if`, that a nested loop followed left the body unchanged ("unsupported
+statement ContinueStatement/BreakStatement in loop region"): the rewrite would have put the loop in a branch, and
+nested loops were verified only at a body's top level. Phase 335 changed that, so the refusal was stale. A top-level
+`if (c) break` or `if (c) return e` before a nested loop skipped the same way.
+
+- **The flag guards the loop.** `continueFree` sends an `if` that a nested loop follows down the flag route (Phases
+  325/327) rather than copying what follows into both branches, which would duplicate the loop; `flagged` and
+  `breakFlagged` drop their `containsLoop` refusal. The loop lands in the `else` of `if (flag) {} else`, a loop in a
+  branch of a loop body.
+- **An exit before the loop isn't taken on the way in.** The walks to a nested loop (its establishment, the outer
+  facts it inherits, its body's obligations, the branch-loop paths) replay the outer body with `symExec`, which
+  refuses an exit. `pastExits` turns each top-level exit `if` on the way into an assume-only `!c`.
+- **Fixed (unsound before, since Phase 335): a branch's assumptions held on both paths.** `LoopEncoder.applyIf` ran
+  each branch's statements with plain `assertExpr`, so a nested loop's summary (`inv ∧ ¬guard`) or an `assert` in one
+  branch constrained the other path too. A loop in the then-branch whose invariant says `k == 1` made the
+  else-branch's `s = -5` "preserve" `s >= 0`, and an `assert k == 1` in a branch did the same. Each branch now runs
+  under `pushAssertGuard` of its condition (Phase 324's mechanism for break summaries).
+
+**Changed cases:** G369's "a continue that would move a loop into a branch" and G372's "a nested continue ahead of a
+loop" verify now (both claims are true).
+
+**Shipped tests:** group `P344 break or continue before a nested loop`, 14 cases: a continue before a nested loop, its
+wrong count refuting, the continuing iteration skipping the nested loop and a claim that it ran refuting; a continue
+nested in an `if`; one followed by a break; a buried break before a nested loop in its branch, and a claim as if the
+loop ran on the breaking iteration refuting; a top-level break and a return before a nested loop, and a wrong claim
+at that return; the two fixed unsoundnesses (a loop and an `assert` in one branch); three-deep nesting still
+skipping loudly.
+
 ---
 
 ## Definition of done, per increment

@@ -532,17 +532,21 @@ class LoopEncoder {
                 "if-condition '${ifs.booleanExpression.text}' is outside fragment in loop body")
         }
         Encoder.EncoderSnapshot entry = enc.snapshotState()
+        // Phase 344 — what a branch assumes (a nested loop's inv ∧ ¬guard, an assert) holds only on its path: unguarded,
+        // a loop in one branch whose invariant the other path breaks made that path vacuous
         // Then branch.
         Statement thenBlk = ifs.ifBlock
         if (thenBlk != null && !(thenBlk instanceof EmptyStatement)) {
-            symExec(asList(thenBlk), enc, s)
+            s.pushAssertGuard(cond)
+            try { symExec(asList(thenBlk), enc, s) } finally { s.popAssertGuard() }
         }
         Encoder.EncoderSnapshot afterThen = enc.snapshotState()
         // Restore + else branch.
         enc.restoreState(entry)
         Statement elseBlk = ifs.elseBlock
         if (elseBlk != null && !(elseBlk instanceof EmptyStatement)) {
-            symExec(asList(elseBlk), enc, s)
+            s.pushAssertGuard(s.not(cond))
+            try { symExec(asList(elseBlk), enc, s) } finally { s.popAssertGuard() }
         }
         mergeStates(afterThen, enc.snapshotState(), entry, cond, enc, s)
     }

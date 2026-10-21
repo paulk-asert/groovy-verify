@@ -1355,8 +1355,9 @@ class ContractExpansionTransform implements ASTTransformation {
      * {@code continue} disappears. That is the jump to the loop head exactly, since an iteration that continues
      * still runs a {@code for} loop's update (appended after this) and must re-establish the invariant, as in Dafny.
      * Returns {@code body} unchanged, so the downstream loud skip stands, when a {@code continue} is labelled or sits
-     * under anything but blocks and {@code if}s, or when the rewrite would move a loop into a branch (nested loops
-     * are verified as loops only at the top level of a body).
+     * under anything but blocks and {@code if}s. A nested loop after the {@code if} isn't copied into both branches:
+     * the continue goes through a flag (Phases 325/327) and the loop lands in the else of {@code if (flag) {} else},
+     * a loop in a branch of a loop body (Phases 335/344).
      */
     /* package */ static List<Statement> desugarContinue(List<Statement> body) {
         if (!body.any { containsLoopContinue(it) }) return body
@@ -1379,10 +1380,12 @@ class ContractExpansionTransform implements ASTTransformation {
                 out.addAll(tail)
                 return out
             }
-            if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
+            if (!(st instanceof IfStatement)) return null
             IfStatement ifs = (IfStatement) st
             List<Statement> cLead = continueExitLead(ifs)
-            if (cLead != null && rest.any { containsLoopExit(it) }) {
+            // Phase 344 — a nested loop after the if takes the flag route too, so it isn't duplicated into both branches
+            boolean viaFlag = rest.any { containsLoopExit(it) || containsLoop(it) }
+            if (cLead != null && viaFlag) {
                 // Phase 325 — a break or return after the continue would be buried in the else branch, where the
                 // exit lifting can't see it: record the continue in a flag instead, and guard what follows by it
                 List<Statement> tail = continueFree(new ArrayList<Statement>(rest))
@@ -1401,7 +1404,7 @@ class ContractExpansionTransform implements ASTTransformation {
                 for (Statement t : tail) out.add(unlessContinued(flag, t))
                 return out
             }
-            if (rest.any { containsLoopExit(it) }) {
+            if (viaFlag) {
                 // Phase 327 — the continue is nested in this if: a flag false at the if, set where it continues
                 // (the rest of that branch guarded by it), then guards what follows the if as in Phase 325
                 VariableExpression flag = new VariableExpression("cont#${ifs.lineNumber}_${ifs.columnNumber}".toString(), ClassHelper.boolean_TYPE)
@@ -1437,8 +1440,9 @@ class ContractExpansionTransform implements ASTTransformation {
      * replaced by {@code brk = true} with the rest of its branch guarded, then {@code if (brk) break} after the if. The
      * iteration leaves the loop at the same point with the same state, skipping a for loop's update (appended after
      * this). An if already shaped {@code if (c) break} / {@code if (c) { lead; break }} is left alone. Returns
-     * {@code body} unchanged, so the loud skip stands, for a labelled break, one under anything but blocks and ifs,
-     * or a rewrite that would move a loop into a branch.
+     * {@code body} unchanged, so the loud skip stands, for a labelled break or one under anything but blocks and ifs.
+     * A nested loop after a flag-setting if lands in the else of {@code if (brk) {} else}, a loop in a branch of a
+     * loop body (Phases 335/344).
      */
     /* package */ static List<Statement> desugarBreak(List<Statement> body) {
         if (!body.any { containsLoopBreak(it) }) return body
@@ -1512,7 +1516,7 @@ class ContractExpansionTransform implements ASTTransformation {
                 out.addAll(tail)
                 return out
             }
-            if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
+            if (!(st instanceof IfStatement)) return null
             IfStatement ifs = (IfStatement) st
             List<Statement> t = breakFlagged(branchStatements(ifs.ifBlock), flag), e = breakFlagged(branchStatements(ifs.elseBlock), flag)
             List<Statement> tail = breakFlagged(rest, flag)
@@ -1563,7 +1567,7 @@ class ContractExpansionTransform implements ASTTransformation {
 
     /** Phase 327 — {@code ss} with each unlabelled {@code continue} replaced by {@code flag = true} and what follows
      *  an {@code if} that may set it guarded by {@code if (flag) {} else s}; null for a labelled {@code continue},
-     *  one under anything but blocks and {@code if}s, or a guard that would move a loop into a branch. */
+     *  or one under anything but blocks and {@code if}s. */
     private static List<Statement> flagged(List<Statement> ss, VariableExpression flag) {
         List<Statement> out = new ArrayList<Statement>()
         for (int i = 0; i < ss.size(); i++) {
@@ -1586,7 +1590,7 @@ class ContractExpansionTransform implements ASTTransformation {
                 out.addAll(tail)
                 return out
             }
-            if (!(st instanceof IfStatement) || rest.any { containsLoop(it) }) return null
+            if (!(st instanceof IfStatement)) return null
             IfStatement ifs = (IfStatement) st
             List<Statement> t = flagged(branchStatements(ifs.ifBlock), flag), e = flagged(branchStatements(ifs.elseBlock), flag)
             List<Statement> tail = flagged(rest, flag)

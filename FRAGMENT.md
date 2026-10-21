@@ -355,7 +355,8 @@ of what it writes + `inv ∧ ¬guard` wherever later code sees it.
   (Phases 338/340); a nested loop is checked under the outer invariant and guard conjuncts nothing on the way
   writes, and the outer loop's frame facts (Phase 336). A loop may sit in a branch of a top-level `if` — the method
   is verified once per branch, with its condition assumed (Phase 334) — or in a branch of a loop body, where it
-  gets the nested-loop checks along its path (Phase 335). *Loud skips:* nesting three deep (a loop in a branch
+  gets the nested-loop checks along its path (Phase 335); what a branch assumes, a nested loop's summary or an
+  `assert`, holds only on that branch's path (Phase 344). *Loud skips:* nesting three deep (a loop in a branch
   of a nested loop's body included), an unannotated nested loop, and a branch condition that writes (`x++`).
 - **Leaving early.** A loop may leave by `return` (Phases 49/49b/49c; from a nested loop, Phase 109; in any of
   several sequential loops or between them, Phase 329) or by an unlabelled **`break`** under any nesting of `if`s
@@ -366,9 +367,10 @@ of what it writes + `inv ∧ ¬guard` wherever later code sees it.
   unlabelled **`continue`** at any depth of `if`s (Phases 324/325/327) jumps to the loop head: the continuing
   iteration must preserve the invariant (a `for` loop's update still runs), as in Dafny. A `return` inside a
   `.each` / `.eachWithIndex` closure only ends that element, so a bare one, or one of a constant or variable, is
-  that `continue` (Phase 328). *Loud skips:* a labelled `break` or `continue`; a `break`/`continue` under a
-  `try`/`switch`, or in an `if` that a nested loop follows; a buried `break` beside a `return` in a non-tail `if`;
-  any other `.each` return, or one in a nested loop.
+  that `continue` (Phase 328). An exit may come before a nested loop: a flagged `continue` or `break` puts the loop
+  in a branch, and a top-level exit before it is not taken on the way in (Phase 344). *Loud skips:* a labelled
+  `break` or `continue`; a `break`/`continue` under a `try`/`switch`; a buried `break` beside a `return` in a
+  non-tail `if`; any other `.each` return, or one in a nested loop.
 - **What a loop changes and keeps.** A loop body may assign locals and `this.f`, store into arrays, `put` into a
   map, `set` and `add` (or `<<`) list elements, and `add`/`remove`/`<<` set elements, which update membership and
   cardinality (Phases 340–342; a set's `clear` skips loudly). What the loop can't change is **framed**, as in
