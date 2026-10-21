@@ -15790,7 +15790,8 @@ same-named method on both, `c.incr()` was A's `incr` — A's field havoced, Coun
 **Probed, not changed:** a contract-free helper whose body declares a local (`int n = x; return n + 1`) doesn't
 unfold as a function, so a postcondition over its result refutes; and a field named `count` with `old.count` in a
 caller's contract shows a stray `count.size()` in counterexamples (the `.count` list dispatch). Both are older than
-this slice, recorded as follow-ups. *(The stray size is Phase 352 — not the `.count` dispatch after all.)*
+this slice, recorded as follow-ups. *(The stray size is Phase 352 — not the `.count` dispatch after all; the helper
+with a local is Phase 353.)*
 
 **Shipped tests:** group `P351 a call through any receiver lands on that receiver`, 19 cases: a field call
 havocing the field object's state, its callee's `@Ensures` reaching the caller, and not landing on the caller's
@@ -15818,6 +15819,38 @@ a `Boolean` or a `Character` is skipped; anything else (a List, an array, a Stri
 **Shipped tests:** group `P352 an old scalar field has no size`, 5 cases: an `int`, a boxed `Integer` and a field
 named `size` read through `old` refuting with no stray size, and a List field's `old.xs.size()` still proving, with
 a wrong claim about it still refuting.
+
+## Phase 353 — a helper with locals unfolds  *(shipped — Phase 8a's bounded unfolding beyond one expression)*
+
+Phase 351's other follow-up. Phase 8a defines a contract-free helper to the solver by inlining its body
+(`f#(args) == body[params ↦ args]`, fuel-bounded) — but only a single-expression body: `{ e }` or `{ return e }`.
+Anything else left the call an uninterpreted function, so `inc(x) { int n = x; return n + 1 }` refuted
+`result == k + 1`, as did the statement form of `factorial` (`if (n <= 0) return 1; return n * fact(n - 1)`), which
+the code's own comment named as not inlined.
+
+- **The fold** (`PureEvaluator.foldStatements`): the body runs forward under a substitution — formals ↦ actuals,
+  then each local ↦ its current value, already substituted. A declaration or a plain reassignment (of a local or a
+  parameter) updates it; `return e`, or a trailing expression (Groovy's implicit return), is the value; an `if` is a
+  ternary over its two continuations (each branch's statements, then the rest), so an `if`/`return` chain and an
+  `if`/`else` that assigns a local both fold. A nested block flattens. `int r;` binds `r` to a hidden unknown, so a
+  read before assignment never captures a name from the caller's scope. Anything else — a loop, a `switch`, a
+  `throw`, a compound assignment, a path that falls off the end — refuses, and the call stays uninterpreted (sound),
+  as before. A budget of 64 statement visits bounds the `if` duplication.
+- **The collector** reads `int r;` (an empty initialiser) as writing nothing, in infer mode: it used to give up, so
+  such a helper wasn't even a function (and Phase 348's reason text was a raw `<not implemented yet…>`).
+- **A soundness fix found on the way** (since Phase 350): an inlined body is translated in the CALLER's scope, so
+  a sibling class's helper reading its own static (`Util.tweak(x) { x + base }`) read the caller's `base` — with
+  `A.base == 0`, `result == k` verified, the truth being `k + 5`. A sibling helper whose unfolded body names a field
+  of its class is no longer inlined (`mentionsField`); one over its parameters still is.
+
+**Shipped tests:** group `P353 a helper with locals unfolds`, 13 cases: a local copy, a reassigned local and a
+reassigned parameter unfolding, and a wrong claim refuting; an `if`/`return` chain proving and its counterexample
+the missed branch; an `if`/`else` assigning an uninitialised local; the statement-form factorial by fuel and its
+symbolic recursive step; a folded helper in a caller's contract; a loop still opaque; the sibling helper reading its
+own static refuting, and one over its parameters unfolding.
+
+**Still out:** a loop, `switch` or compound assignment (`n += 1`) in a helper body; a sibling helper over its own
+fields (opaque, not inlined).
 
 ---
 

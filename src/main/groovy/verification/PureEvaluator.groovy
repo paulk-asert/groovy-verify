@@ -28,6 +28,8 @@ import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
+import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.EmptyExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.MethodCallExpression
@@ -38,6 +40,7 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
@@ -95,22 +98,123 @@ class PureEvaluator {
      * body is a <em>single expression</em>, return that body with the formals substituted by the
      * call's argument expressions (a faithful inline of the definition; cf. F\*'s unfolding). The
      * encoder translates the result, re-entering for any nested calls, so recursion unfolds one level
-     * per call up to a fuel bound. Returns null for a call that doesn't resolve to a single-expression
-     * body — {@code if}/{@code return} chains (e.g. the statement form of {@code factorial}) are not
-     * inlined, so the encoder leaves such a call to the uninterpreted-function bottom.
+     * per call up to a fuel bound. Phase 353 — a body that is not a single expression is FOLDED into one
+     * ({@link #foldStatements}): local declarations and reassignments become substitutions, {@code return e}
+     * (or a trailing expression) the value, and an {@code if} a ternary over the two continuations — so
+     * {@code int n = x; n = n + 1; return n} unfolds to {@code (x + 1)} and the statement form of
+     * {@code factorial} to {@code n <= 0 ? 1 : n * factorial(n - 1)}. Any other statement (a loop, a
+     * {@code switch}, a {@code throw}, a compound assignment) refuses: null, and the encoder leaves the call
+     * to the uninterpreted-function bottom, as before.
      */
     Expression unfoldBody(Call c) {
         MethodNode m = resolve(c.name, c.args.size())
         if (m == null) return null
         Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
         if (body == null) body = m.getCode()
-        Expression expr = singleExpr(body)
-        if (expr == null) return null
         Parameter[] ps = m.parameters
         if (ps.length != c.args.size()) return null
         Map<String, Expression> sub = new HashMap<String, Expression>()
         for (int i = 0; i < ps.length; i++) sub.put(ps[i].name, c.args.get(i))
-        return substitute(expr, sub)
+        Expression expr = singleExpr(body)
+        Expression out
+        if (expr != null) {
+            out = substitute(expr, sub)
+        } else {
+            int[] budget = [FOLD_BUDGET] as int[]
+            out = foldStatements(statementsOf(body), 0, sub, budget)
+        }
+        // Phase 353 — the unfolded body is translated in the CALLER's scope, where a sibling class's field name means
+        // the caller's same-named field (or nothing): a sibling helper reading its own state (`x + base` on Util) is
+        // not inlined — the call stays an uninterpreted function, a sound over-approximation
+        if (out != null && m.declaringClass != null && owner != null && m.declaringClass.name != owner.name &&
+                mentionsField(out, m.declaringClass)) return null
+        out
+    }
+
+    /** Phase 353 — does {@code e} read (bare or as {@code this.f}) a field of {@code cls} or a superclass? */
+    private static boolean mentionsField(Expression e, ClassNode cls) {
+        Set<String> fields = new HashSet<String>()
+        for (ClassNode c = cls; c != null; c = c.superClass) for (org.codehaus.groovy.ast.FieldNode f : c.fields) fields.add(f.name)
+        if (fields.isEmpty()) return false
+        boolean[] hit = [false] as boolean[]
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitVariableExpression(VariableExpression v) { if (fields.contains(v.name)) hit[0] = true }
+            @Override void visitPropertyExpression(org.codehaus.groovy.ast.expr.PropertyExpression pe) {
+                if (fields.contains(pe.propertyAsString)) hit[0] = true
+                super.visitPropertyExpression(pe)
+            }
+        })
+        hit[0]
+    }
+
+    /** Phase 353 — the most statements one fold may visit (an {@code if} visits its continuation twice). */
+    private static final int FOLD_BUDGET = 64
+
+    private static List<Statement> statementsOf(Statement s) {
+        if (s == null || s instanceof EmptyStatement) return Collections.<Statement> emptyList()
+        if (s instanceof BlockStatement) return ((BlockStatement) s).statements
+        Collections.singletonList(s)
+    }
+
+    /**
+     * Phase 353 — the value of running {@code stmts[i..]} under {@code env} (formals ↦ actuals, locals ↦ their
+     * current value, both already substituted), as one expression; null when a statement can't be folded or
+     * the path falls off the end without a value.
+     */
+    private static Expression foldStatements(List<Statement> stmts, int i, Map<String, Expression> env, int[] budget) {
+        if (--budget[0] < 0 || i >= stmts.size()) return null
+        Statement st = stmts.get(i)
+        if (st instanceof EmptyStatement) return foldStatements(stmts, i + 1, env, budget)
+        if (st instanceof BlockStatement) {   // a nested block: its statements, then the rest
+            List<Statement> rest = new ArrayList<Statement>(((BlockStatement) st).statements)
+            rest.addAll(stmts.subList(i + 1, stmts.size()))
+            return foldStatements(rest, 0, env, budget)
+        }
+        if (st instanceof ReturnStatement) return substitute(((ReturnStatement) st).expression, env)
+        if (st instanceof IfStatement) {
+            IfStatement ifs = (IfStatement) st
+            Expression cond = substitute(ifs.booleanExpression, env)
+            if (cond == null) return null
+            List<Statement> rest = stmts.subList(i + 1, stmts.size())
+            List<Statement> thenL = new ArrayList<Statement>(statementsOf(ifs.ifBlock))
+            thenL.addAll(rest)
+            List<Statement> elseL = new ArrayList<Statement>(statementsOf(ifs.elseBlock))
+            elseL.addAll(rest)
+            Expression t = foldStatements(thenL, 0, env, budget)
+            if (t == null) return null
+            Expression f = foldStatements(elseL, 0, env, budget)
+            if (f == null) return null
+            BooleanExpression be = cond instanceof BooleanExpression ? (BooleanExpression) cond : new BooleanExpression(cond)
+            TernaryExpression te = new TernaryExpression(be, t, f)
+            te.setSourcePosition(ifs)
+            return te
+        }
+        if (!(st instanceof ExpressionStatement)) return null
+        Expression e = ((ExpressionStatement) st).expression
+        String bound = null
+        Expression value = null
+        if (e instanceof DeclarationExpression) {
+            DeclarationExpression de = (DeclarationExpression) e
+            if (!(de.leftExpression instanceof VariableExpression)) return null
+            bound = ((VariableExpression) de.leftExpression).name
+            // `int r;` — read before any assignment it is an unknown (hidden, `$`-prefixed) value, never a name the
+            // caller's scope could capture
+            value = de.rightExpression instanceof EmptyExpression ? new VariableExpression('$unassigned$' + bound) : de.rightExpression
+        } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN &&
+                ((BinaryExpression) e).leftExpression instanceof VariableExpression) {
+            bound = ((VariableExpression) ((BinaryExpression) e).leftExpression).name
+            value = ((BinaryExpression) e).rightExpression
+        }
+        if (bound != null) {
+            Expression v = substitute(value, env)
+            if (v == null) return null
+            Map<String, Expression> next = new HashMap<String, Expression>(env)
+            next.put(bound, v)
+            return foldStatements(stmts, i + 1, next, budget)
+        }
+        // a trailing expression is the method's value (Groovy's implicit return); anywhere else it is a statement
+        // whose effect the fold can't see
+        i == stmts.size() - 1 ? substitute(e, env) : null
     }
 
     /** The single expression a body reduces to — {@code { expr }} or {@code { return expr }}; else null. */

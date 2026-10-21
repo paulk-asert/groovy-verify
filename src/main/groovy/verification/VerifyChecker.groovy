@@ -12307,6 +12307,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (e == null) return true
         if (e instanceof ConstantExpression || e instanceof VariableExpression ||
             e instanceof ClassExpression) return true
+        // Phase 353 — `int r;` declares with no initialiser: nothing written (callee inference only, see INFER_MODE)
+        if (e instanceof org.codehaus.groovy.ast.expr.EmptyExpression) return inferMode() || unbounded('an empty expression')
         if (e instanceof BooleanExpression) return collectWritesExpr(((BooleanExpression) e).expression, ws)
         if (e instanceof NotExpression) return collectWritesExpr(((NotExpression) e).expression, ws)
         if (e instanceof UnaryMinusExpression) return collectWritesExpr(((UnaryMinusExpression) e).expression, ws)
