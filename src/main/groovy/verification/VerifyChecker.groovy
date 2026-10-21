@@ -1919,6 +1919,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** True for {@code int}/{@code Integer} and the other Int-modelled scalar types. */
+    /** Phase 352 — is {@code name} a field of {@code cls} (or a superclass) of a sizeless scalar type: a primitive, a boxed
+     *  number, a {@code Boolean} or {@code Character}? Unknown fields answer false (the size snapshot stays). */
+    private static boolean isScalarField(ClassNode cls, String name) {
+        for (ClassNode c = cls; c != null; c = c.superClass) {
+            FieldNode f = c.getDeclaredField(name)
+            if (f == null) continue
+            ClassNode t = f.type
+            if (t == null) return false
+            if (ClassHelper.isPrimitiveType(t) || isIntElement(t)) return true
+            return t.name in ['java.lang.Boolean', 'java.lang.Double', 'java.lang.Float', 'java.math.BigInteger',
+                              'java.math.BigDecimal']
+        }
+        false
+    }
+
     private static boolean isIntElement(ClassNode t) {
         String n = t?.name
         n == 'int' || n == 'long' || n == 'short' || n == 'byte' || n == 'char' ||
@@ -9606,9 +9621,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 enc.bind('old$' + fld, enc.varFor(fld))
                 enc.bindArray('old$' + fld, enc.arrayFor(fld))
                 // Phase 40 — pin the entry-time size of fld so {@code old.fld.size()} survives
-                // size-changing list mutations in the body. The bind is harmless for non-sized
-                // fields (their sizeOf is just an unrelated int variable, unaffected by anyone).
-                enc.bindSize('old$' + fld, enc.sizeOf(fld))
+                // size-changing list mutations in the body. Phase 352 — only for a field that can HAVE
+                // a size: minting the oracle declares an `fld.size` variable, which a counterexample
+                // then shows as a stray `count.size() = 0` beside a scalar `count`.
+                if (!isScalarField(node.declaringClass, fld)) enc.bindSize('old$' + fld, enc.sizeOf(fld))
                 // A set field's entry snapshot too, so `old.s.size()` / `x in old.s` read the value at entry.
                 if (currentSetElementTypes.containsKey(fld)) enc.bindSet('old$' + fld, enc.setFor(fld))
                 // A map field's entry snapshot — both value array and key-set — for `old.m[k]` / `old.m.size()`.

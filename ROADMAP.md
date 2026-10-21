@@ -15790,7 +15790,7 @@ same-named method on both, `c.incr()` was A's `incr` — A's field havoced, Coun
 **Probed, not changed:** a contract-free helper whose body declares a local (`int n = x; return n + 1`) doesn't
 unfold as a function, so a postcondition over its result refutes; and a field named `count` with `old.count` in a
 caller's contract shows a stray `count.size()` in counterexamples (the `.count` list dispatch). Both are older than
-this slice, recorded as follow-ups.
+this slice, recorded as follow-ups. *(The stray size is Phase 352 — not the `.count` dispatch after all.)*
 
 **Shipped tests:** group `P351 a call through any receiver lands on that receiver`, 19 cases: a field call
 havocing the field object's state, its callee's `@Ensures` reaching the caller, and not landing on the caller's
@@ -15803,6 +15803,21 @@ a helper copying a value and one reassigning its int parameter leaving the calle
 **Still out:** a fresh object as a receiver (`new Counter().incr()`, `Counter d = new Counter()`: a constructor's
 effect isn't modelled, so loud); an alias through any other expression (`T d = cond ? a : b`, a getter); a field
 the method reassigns; aliasing in general, which stays the documented non-goal behind Phase 194's boundary.
+
+## Phase 352 — an old scalar field has no size  *(shipped — counterexample hygiene)*
+
+Phase 351's recorded follow-up, and the diagnosis there was wrong: the name `count` had nothing to do with it. Any
+field read as `old.f` showed a stray `f.size() = 0` (`hits.size()`, `size.size()`). The Phase 40 entry snapshot pins
+`old.f.size()` for every field the postcondition's `old` names, so `old.xs.size()` survives an `xs.add(…)`; its
+comment called the bind "harmless for non-sized fields", and for proofs it is. But minting the size oracle
+declares an `f.size` variable, and the counterexample display lists every model variable it can name.
+
+The snapshot now pins the size only for a field that can have one (`isScalarField`): a primitive, a boxed number,
+a `Boolean` or a `Character` is skipped; anything else (a List, an array, a String, an unknown type) keeps it.
+
+**Shipped tests:** group `P352 an old scalar field has no size`, 5 cases: an `int`, a boxed `Integer` and a field
+named `size` read through `old` refuting with no stray size, and a List field's `old.xs.size()` still proving, with
+a wrong claim about it still refuting.
 
 ---
 
