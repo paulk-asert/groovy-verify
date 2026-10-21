@@ -15802,7 +15802,7 @@ caller's static alone, and loud with an `@Ensures` over its own; helpers aliasin
 a helper copying a value and one reassigning its int parameter leaving the caller's argument alone.
 
 **Still out:** a fresh object as a receiver (`new Counter().incr()`, `Counter d = new Counter()`: a constructor's
-effect isn't modelled, so loud); an alias through any other expression (`T d = cond ? a : b`, a getter); a field
+effect isn't modelled, so loud); an alias through any other expression (`T d = cond ? a : b`, a getter — Phase 357); a field
 the method reassigns; aliasing in general, which stays the documented non-goal behind Phase 194's boundary.
 
 ## Phase 352 — an old scalar field has no size  *(shipped — counterexample hygiene)*
@@ -15948,6 +15948,45 @@ using up the budget for a later call.
 
 **Still out:** a loop over a collection, or one that mutates one, in a closed evaluation (the evaluator's values are
 integers and booleans only); a labelled `break`/`continue`.
+
+## Phase 357 — an alias through an expression  *(shipped — soundness: two silent frame holes closed)*
+
+A contract-free helper's frame is inferred from its body (Phase 347), and a write through a local counts for what
+the local holds (Phase 351) — but only a local assigned a parameter or field **by name**. `int[] b = f ? a : c;
+b[0] = 5` left the frame empty, so a caller's `@Ensures({ a[0] == 0 })` across `put0(a, c, true)` verified, falsely;
+so did a cast, an elvis and a `def` local. A probe for the wrap-up of Phase 356 found it.
+
+- **A local's sources come from any right-hand side** (`aliasSources`): a variable; both branches of a ternary or
+  elvis; a cast's operand; the owner of a field or element read (`h.arr` → `h`, `xss[i]` → `xss`). A fresh value —
+  a literal, `new`, a list/map/array literal, or a call returning a new collection (`collect`, `findAll`, `toList`,
+  `clone`, …) — aliases nothing. A for-in variable aliases its collection's elements. A local of value type (`int n =
+  f ? x : y`) copies, so aliases nothing.
+- **A source the inference can't name is loud:** a call's result (`int[] b = id(a)`) or a view (`xs.subList(0, 1)`)
+  may be any parameter or field, so a write through such a local makes the frame unbounded, with the reason "a write
+  through the local 'b', assigned from 'xs.subList(0, 1)', which may alias a parameter or field" (Phase 348's loud
+  skip at the call site, and its unchecked-frame report on a declared `@Modifies`).
+- **Rebinding is not writing through:** in callee inference a plain `b = v`, a declaration and a for-in variable are
+  recorded as rebindings (`REBIND`). A rebound field or parameter is still written, as before; a rebound local is
+  not, so `List rest = pruneWindow(…)`, only read, keeps the recursive LemmaScript port's frame empty — without this
+  the loud rule above made it unbounded. The aliasing is flow-insensitive: a local ever assigned an opaque source and
+  ever written through is loud even if rebound in between.
+- **Fixed, older: a helper's write to an object parameter's field was dropped.** `recordTarget` recorded `h.n = 5`
+  (and `h.n++`, `h.n += 1`) as a write of a field `n` of the helper's own class — which has none, so the write fell
+  out of the frame, and the caller kept `h.n == 0` across the call. In callee inference a field write through any
+  base other than `this` or a class now records the base, recursively (`h.inner.n`, `xs[0].n` → `h`, `xs`), and the
+  caller havocs the object's fields (Phase 350). A declared `@Modifies({ k })` on such a helper now fails its check.
+  Phase 351's `Box b = h; b.n = 5` had worked only because the declaration of `b` was itself counted as a write of `b`.
+
+**Shipped tests:** group `P357 an alias through an expression`, 16 cases, 11 of which compiled cleanly before: a
+ternary alias refuting the caller and an array outside both branches staying framed; an elvis, a cast and a `def`
+alias; a view and a call's result loud; a call's result only read keeping the frame; a value-typed local copying; an
+object parameter's field written, incremented and written through a local; an object ternary meeting the Phase 194
+boundary; a declared frame missing the written object and one naming it; a for-in variable aliasing its collection.
+
+**Still out:** `a.clone()` and other unknown methods on a receiver are still read as writing it (sound, imprecise);
+flow-sensitive aliasing; aliasing in general, the non-goal behind Phase 194's boundary. A local array alias in a
+method's own body (`int[] b = a; b[0] = 5; return a[0]`) is unchanged: not linked, so a spurious bounds warning, not
+a false proof.
 
 ---
 

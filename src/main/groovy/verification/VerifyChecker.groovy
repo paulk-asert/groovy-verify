@@ -3002,15 +3002,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // a parameter of immutable type can only be REASSIGNED (`x = x + 1`), which never reaches the caller
             Set<String> valueParams = new HashSet<String>()
             for (Parameter p : m.parameters) if (isImmutableType(p.type)) valueParams.add(p.name)
-            for (String w : ws) {
+            for (String w0 : ws) {
+                boolean rebound = w0.startsWith(REBIND)
+                String w = rebound ? w0.substring(REBIND.length()) : w0
                 if (valueParams.contains(w)) continue
                 if (visible.contains(w)) out.add(w)
+                else if (rebound) continue   // a local rebound — no write through it
                 else if (held.containsKey(w)) out.addAll(held.get(w))
             }
             outSizes = new LinkedHashSet<String>()
             for (String w : sizes) {
                 if (visible.contains(w)) outSizes.add(w)
                 else if (held.containsKey(w)) outSizes.addAll(held.get(w))
+            }
+            // Phase 357 — a written local whose source the inference can't name (`int[] b = pick(a)`) may be any
+            // parameter or field: unbounded, loudly, rather than a frame that silently misses the one it aliases
+            String opaque = ((out + outSizes) as List<String>).find { it.startsWith(OPAQUE_ALIAS) }
+            if (opaque != null) {
+                String local = ws.find { held.get(it)?.contains(opaque) } ?: sizes.find { held.get(it)?.contains(opaque) }
+                reason = "a write through the local '${local}', assigned from '${opaque.substring(OPAQUE_ALIAS.length())}', which may alias a parameter or field"
+                out = null; outSizes = null
             }
         }
         // memoise only once the whole walk is done (a nested computation during a cycle is partial)
@@ -12277,7 +12288,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (g != null && !collectWritesExpr(g, ws)) return false
             if (ls instanceof ForStatement && inferMode()) {
                 ForStatement fs = (ForStatement) ls
-                if (fs.variable != null && fs.variable != ForStatement.FOR_LOOP_DUMMY) ws.add(fs.variable.name)
+                if (fs.variable != null && fs.variable != ForStatement.FOR_LOOP_DUMMY) recordRebind(fs.variable.name, ws)
                 if (!collectWritesExpr(fs.collectionExpression, ws)) return false
             }
             return collectWritesStmt(ls.loopBlock, ws)
@@ -12372,13 +12383,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
             if (!(de.leftExpression instanceof VariableExpression)) return unbounded("multiple assignment '${clip(de.text)}'")
-            ws.add(((VariableExpression) de.leftExpression).name)
+            recordRebind(((VariableExpression) de.leftExpression).name, ws)
             return collectWritesExpr(de.rightExpression, ws)
         }
         if (e instanceof BinaryExpression) {
             BinaryExpression be = (BinaryExpression) e
             int t = be.operation.type
             if (Types.ofType(t, Types.ASSIGNMENT_OPERATOR)) {
+                if (t == Types.ASSIGN && be.leftExpression instanceof VariableExpression) {
+                    recordRebind(((VariableExpression) be.leftExpression).name, ws)
+                    return collectWritesExpr(be.rightExpression, ws)
+                }
                 return recordTarget(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
             }
             switch (t) {
@@ -12545,21 +12560,65 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         false
     }
 
+    /** Phase 357 — the prefix of an alias source the inference can't name (followed by the expression's text). */
+    private static final String OPAQUE_ALIAS = '*'
+
+    /** Phase 357 — methods that return a fresh collection or array, never a view of their receiver. */
+    private static final Set<String> FRESH_RESULT_METHODS = ['clone', 'collect', 'findAll', 'toList', 'toSorted',
+        'toUnique', 'plus', 'minus', 'toArray', 'collectEntries', 'grep', 'toSet'] as Set
+
+    /** Phase 357 — the names a reference-typed value may share state with: a variable itself, either branch of a
+     *  ternary or elvis, a cast's operand, the owner of a field or element read ({@code h.arr}, {@code xss[i]});
+     *  nothing for a fresh value; otherwise {@link #OPAQUE_ALIAS} with the expression's text. */
+    private static Set<String> aliasSources(Expression e) {
+        Set<String> out = new LinkedHashSet<String>()
+        if (e instanceof VariableExpression) {
+            String n = ((VariableExpression) e).name
+            out.add(n == 'this' || n == 'super' ? OPAQUE_ALIAS + n : n)
+        } else if (e instanceof TernaryExpression) {
+            TernaryExpression t = (TernaryExpression) e
+            out.addAll(aliasSources(t.trueExpression)); out.addAll(aliasSources(t.falseExpression))
+        } else if (e instanceof CastExpression) {
+            out.addAll(aliasSources(((CastExpression) e).expression))
+        } else if (e instanceof PropertyExpression && !(((PropertyExpression) e).objectExpression instanceof ClassExpression)) {
+            out.addAll(aliasSources(((PropertyExpression) e).objectExpression))
+        } else if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.LEFT_SQUARE_BRACKET) {
+            out.addAll(aliasSources(((BinaryExpression) e).leftExpression))
+        } else if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString in FRESH_RESULT_METHODS) {
+            // a fresh result
+        } else if (!(e instanceof ConstantExpression || e instanceof ConstructorCallExpression || e instanceof ArrayExpression ||
+                     e instanceof ListExpression || e instanceof MapExpression || e instanceof RangeExpression ||
+                     e instanceof GStringExpression || e instanceof ClosureExpression || e instanceof EmptyExpression)) {
+            out.add(OPAQUE_ALIAS + clip(e.text))
+        }
+        out
+    }
+
     /** Phase 351 — for each local assigned a plain visible name ({@code T d = v} / {@code d = v}), those names —
-     *  transitively, so {@code b = a; c = b} gives {@code c → {a}}. */
+     *  transitively, so {@code b = a; c = b} gives {@code c → {a}}. Phase 357 — any right-hand side, by
+     *  {@link #aliasSources} (a ternary, a cast, a field read…), and a for-in variable aliases its collection's
+     *  elements; a local of immutable type copies its value, so it aliases nothing. */
     private static Map<String, Set<String>> localAliasSources(Statement body, Set<String> visible) {
         Map<String, Set<String>> direct = new HashMap<String, Set<String>>()
         try {
             body.visit(new ClassCodeVisitorSupport() {
                 protected SourceUnit getSourceUnit() { null }
                 @Override void visitBinaryExpression(BinaryExpression be) {
-                    if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof VariableExpression &&
-                            be.rightExpression instanceof VariableExpression) {
-                        String d = ((VariableExpression) be.leftExpression).name
-                        String v = ((VariableExpression) be.rightExpression).name
-                        if (!visible.contains(d)) direct.computeIfAbsent(d) { new LinkedHashSet<String>() }.add(v)
+                    if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof VariableExpression) {
+                        VariableExpression lhs = (VariableExpression) be.leftExpression
+                        String d = lhs.name
+                        ClassNode t = be instanceof DeclarationExpression ? lhs.originType : lhs.accessedVariable?.originType
+                        if (!visible.contains(d) && !isImmutableType(t)) {
+                            direct.computeIfAbsent(d) { new LinkedHashSet<String>() }.addAll(aliasSources(be.rightExpression))
+                        }
                     }
                     super.visitBinaryExpression(be)
+                }
+                @Override void visitForLoop(ForStatement fs) {
+                    if (fs.variable != null && fs.variable != ForStatement.FOR_LOOP_DUMMY && !isImmutableType(fs.variable.originType)) {
+                        direct.computeIfAbsent(fs.variable.name) { new LinkedHashSet<String>() }.addAll(aliasSources(fs.collectionExpression))
+                    }
+                    super.visitForLoop(fs)
                 }
             })
         } catch (Throwable ignored) {
@@ -12572,7 +12631,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String x = todo.pop()
                 if (!seen.add(x)) continue
                 for (String v : (direct.get(x) ?: Collections.<String> emptySet())) {
-                    if (visible.contains(v)) res.add(v) else todo.push(v)
+                    if (visible.contains(v) || v.startsWith(OPAQUE_ALIAS)) res.add(v) else todo.push(v)
                 }
             }
             if (!res.isEmpty()) out.put(d, res)
@@ -12622,10 +12681,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         true
     }
 
+    /** Phase 357 — the prefix {@link #calleeWrites} reads as "rebound, not written through" (callee inference only). */
+    private static final String REBIND = '='
+
+    /** Phase 357 — a plain {@code n = v}, a declaration or a for-in variable REBINDS {@code n}: a field or parameter
+     *  so assigned is still written, but a local is not written through, so what it aliased isn't either (only a
+     *  write through it — an element, a field, a mutator, an argument a callee writes — counts for its sources). */
+    private static void recordRebind(String n, Set<String> ws) {
+        ws.add(inferMode() ? REBIND + n : n)
+    }
+
     /** Record an assignment/mutation target's base name (a local, a `this.field`, or `a[i]`'s array). */
     private static boolean recordTarget(Expression lhs, Set<String> ws) {
         if (lhs instanceof VariableExpression) { ws.add(((VariableExpression) lhs).name); return true }
-        if (lhs instanceof PropertyExpression) { ws.add(((PropertyExpression) lhs).propertyAsString); return true }
+        if (lhs instanceof PropertyExpression) {
+            Expression obj = ((PropertyExpression) lhs).objectExpression
+            // Phase 357 — `h.n = v` writes through `h` (its base, recursively: `h.inner.n`, `xs[0].n`), not a field of
+            // the method's own class named `n` (which a parameter's field write was recorded as, so dropped)
+            if (inferMode() && !(obj instanceof ClassExpression) &&
+                    !(obj instanceof VariableExpression && ((VariableExpression) obj).name in ['this', 'super'])) {
+                return recordTarget(obj, ws)
+            }
+            ws.add(((PropertyExpression) lhs).propertyAsString); return true
+        }
         if (lhs instanceof BinaryExpression &&
                 ((BinaryExpression) lhs).operation.type == Types.LEFT_SQUARE_BRACKET) {
             Expression recv = ((BinaryExpression) lhs).leftExpression
