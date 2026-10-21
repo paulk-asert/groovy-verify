@@ -336,6 +336,21 @@ class Reporter {
         "A method may modify only the locations it declares (@Modifies({ [] }) means none)."
     }
 
+    /** Phase 348 — a declared frame the body's writes can't be checked against: loud, since callers trust it. The
+     *  {@code offenders} are what the partial (assignment/mutator) visitor could still see outside the clause. */
+    static String formatModifiesUnchecked(String methodName, String reason, Collection<String> declared, List<String> offenders) {
+        StringBuilder sb = new StringBuilder()
+        sb.append("Cannot check the @Modifies clause ${new TreeSet<>(declared)} of '${methodName}': its body's writes can't be bounded")
+        if (reason) sb.append(" — ").append(reason)
+        sb.append(". Callers trust the declared frame, so make the body one whose writes can be read off it " +
+                  "(declare @Modifies on the callee it uses, or rewrite the construct).")
+        if (offenders) {
+            sb.append(" The partial check already sees it write ")
+              .append(new TreeSet<>(offenders).collect { "'${it}'" }.join(', ')).append(', outside the clause.')
+        }
+        sb.toString()
+    }
+
     // ---- Dimensional analysis (Phase 131) ----
 
     /** Phase 213 — an @ThrowsIf direction refuted, with the concrete witness input. */

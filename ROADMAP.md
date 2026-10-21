@@ -15614,6 +15614,51 @@ an unbounded body skipping loudly.
 
 **Still out:** the frame of a cross-class call (`obj.m()` on an object parameter, Phase 194's demote-to-skip
 boundary), and aliasing. A frame check that can't bound the body is silent (the old partial visitor), as before.
+*(The silent frame check is Phase 348.)*
+
+## Phase 348 — an unchecked frame is loud  *(shipped — the one silent corner of Phase 347's rule)*
+
+Phase 347's rule trusts a declared `@Modifies` at every call site because the frame check stands behind it. But
+when the body's writes couldn't be bounded, that check fell back to the old partial visitor and said nothing — so
+a `@Modifies({ this.count })` over a body with `l << x` passed, and every caller went through the declaration
+unchecked. The loud-unsoundness tenet says the gap must announce itself.
+
+- **The collector records why it gave up.** `unbounded(why)` is the write collector's exit for every construct it
+  can't follow: the first reason wins, it is kept only while a callee's frame is being inferred (`INFER_MODE`; a
+  loop's write set is a plain `false`, as before), and `calleeWrites` memoises it beside the write set
+  (`INFERRED_WRITES_REASON_KEY`, kept even for a walk nested in another's, since it names a real construct). The
+  reasons name the construct in the developer's spelling: `the operator '<<' in '(l << x)', which could mutate its left operand`;
+  `multiple assignment 'def (a, b) = [x, x]'`; `a synchronized statement`; `static call 'Util.tweak(…)' with no
+  @Pure or @Modifies spec`; `call 'fill(…)' writes its parameter 'a', but the argument 'new int[1]' isn't a named
+  variable`; and a helper's own reason rides up through the call that uses it: `call 'weird(…)': the operator
+  '<<' …`.
+- **The frame check reports it.** `Reporter.formatModifiesUnchecked`: "Cannot check the @Modifies clause [count]
+  of 'bump': its body's writes can't be bounded — ‹reason›. Callers trust the declared frame, so make the body one
+  whose writes can be read off it (declare @Modifies on the callee it uses, or rewrite the construct)." The partial
+  visitor still runs, and what it can see outside the clause rides in the same message ("The partial check already
+  sees it write 'other', outside the clause") — one message, because STC keeps one error per anchor position, so a
+  second error on the method node is dropped silently. (That dedup is also why the inferred route reports the
+  first offender only; the next appears once it is fixed.)
+- **The call-site skip names it too.** Phase 347's "call 'weird(…)' whose writes can't be bounded from its body —
+  declare @Modifies on weird" now carries the construct between: "… from its body: the operator '<<' in '(l << x)',
+  which could mutate its left operand — declare …".
+- **A collector gap the flag found at once:** the whole-corpus run flagged every DFS body in the suite (G155, G172)
+  — `if (u !in visited)` bailed, since Phase 347 taught the collector `in` but not `!in`. The negations and the
+  other pure comparisons (`!instanceof`, `<=>`, `===`, `!==`, `=~`, `==~`) are now followed in infer mode. Five
+  frames that had passed in silence are checked.
+- **Posture, unchanged:** the declaration is what callers go through. The last shipped case has `weird` declare
+  `@Modifies({ [] })` over a `<<` body: `weird` is flagged, and its caller still proves `count == 0` past the call.
+  Sound by declaration, with the flag as the one place a wrong declaration would be caught.
+
+**Shipped tests:** group `P348 an unchecked frame is loud`, 10 cases: the `<<` body flagged with the operator
+named, and the same body with `add` bounded and checked; a helper's reason carried up; the partial check's offender
+in the same message; a sibling-class static; a writer passed `new int[1]`; a `synchronized` block; a multiple
+assignment; the Phase 347 call-site skip naming the construct; the declared frame trusted by the caller while the
+body is flagged. G391's unbounded-callee case expects the new wording.
+
+**Still out:** the Phase 347 items (cross-class frames, aliasing). A bounded reading of `<<` on a nameable
+receiver (an append writes its receiver; an int shift writes nothing, so "writes the receiver" over-approximates
+both soundly) would turn the commonest flag into a checked frame — a small follow-up.
 
 ---
 

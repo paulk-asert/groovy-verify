@@ -2772,6 +2772,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  be unbounded adds its loop-stable facts to every loop VC, which changed refutations tuned without them. */
     private static final ThreadLocal<Boolean> INFER_MODE = new ThreadLocal<Boolean>()
     private static boolean inferMode() { INFER_MODE.get() == Boolean.TRUE }
+    /** Phase 348 — why the body being inferred can't be bounded: the FIRST construct the collector gave up on (set
+     *  by {@link #unbounded}, infer mode only), memoised beside the write set under {@link #INFERRED_WRITES_REASON_KEY}
+     *  so the frame check and the call-site skip can name it. */
+    private static final ThreadLocal<String> WRITE_UNBOUNDED = new ThreadLocal<String>()
+    private static final String INFERRED_WRITES_REASON_KEY = 'verification.inferredWritesReason'
+
+    /** Phase 348 — the collector's "can't bound this" exit: records {@code why} (the first one wins) while a callee's
+     *  frame is being inferred, and is a plain {@code false} for a loop's write set. */
+    private static boolean unbounded(String why) {
+        if (inferMode() && WRITE_UNBOUNDED.get() == null && why != null) WRITE_UNBOUNDED.set(why)
+        return false
+    }
+
+    /** A construct named for a {@link #unbounded} reason: its source text, clipped. */
+    private static String clip(String text) {
+        if (text == null) return '…'
+        String t = text.replace('\n', ' ').replaceAll(/\s+/, ' ').trim()
+        t.length() > 48 ? t.substring(0, 45) + '…' : t
+    }
+
+    /** Phase 348 — the reason {@link #calleeWrites} returned null for {@code m}, or null when bounded (or unknown). */
+    static String calleeWritesReason(MethodNode m) {
+        if (calleeWrites(m) != null) return null
+        (String) m.getNodeMetaData(INFERRED_WRITES_REASON_KEY)
+    }
 
     /**
      * Phase 347 — the caller-visible locations {@code m}'s body may write: its class's fields (bare or
@@ -2794,17 +2819,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         ClassNode prevOwner = WRITE_OWNER.get()
         Set<String> prevImmutable = WRITE_IMMUTABLE.get()
         Boolean prevMode = INFER_MODE.get()
+        String prevReason = WRITE_UNBOUNDED.get()
         WRITE_OWNER.set(m.declaringClass)
         WRITE_IMMUTABLE.set(immutableNames(m))
         INFER_MODE.set(Boolean.TRUE)
+        WRITE_UNBOUNDED.set(null)
         Set<String> ws = new HashSet<String>()
         boolean bounded
+        String reason
         try {
             bounded = collectWritesStmt(body, ws)
         } finally {
+            reason = WRITE_UNBOUNDED.get()
             WRITE_OWNER.set(prevOwner)
             WRITE_IMMUTABLE.set(prevImmutable)
             INFER_MODE.set(prevMode)
+            WRITE_UNBOUNDED.set(prevReason)
             visiting.remove(m)
         }
         Set<String> out = null
@@ -2817,7 +2847,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (String w : ws) if (visible.contains(w)) out.add(w)
         }
         // memoise only once the whole walk is done (a nested computation during a cycle is partial)
-        if (visiting.isEmpty()) m.putNodeMetaData(INFERRED_WRITES_KEY, out != null ? out : UNBOUNDED_WRITES)
+        if (visiting.isEmpty()) {
+            m.putNodeMetaData(INFERRED_WRITES_KEY, out != null ? out : UNBOUNDED_WRITES)
+        }
+        // the reason names a real construct even when the walk ran inside another's (Phase 348): keep it regardless
+        if (out == null && reason != null && m.getNodeMetaData(INFERRED_WRITES_REASON_KEY) == null) {
+            m.putNodeMetaData(INFERRED_WRITES_REASON_KEY, reason)
+        }
         out
     }
 
@@ -2837,17 +2873,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (m.parameters.length != actuals.size()) continue
             any = true
             Set<String> writes = modifiedNames(m)
-            if (writes == null) return false
+            if (writes == null) {
+                // Phase 348 — carry the callee's own reason up, so the report names the construct, not just the call
+                String why = calleeWritesReason(m)
+                return unbounded("call '${name}(…)'" + (why != null ? ": ${why}" : " whose writes can't be bounded"))
+            }
             for (String w : writes) {
                 int fi = -1
                 for (int i = 0; i < m.parameters.length; i++) if (m.parameters[i].name == w) { fi = i; break }
                 if (fi < 0) { ws.add(w); continue }                       // a field (same class, same name)
                 Expression act = actuals.get(fi)
-                if (!(act instanceof VariableExpression)) return false    // can't name what is written
+                if (!(act instanceof VariableExpression)) {               // can't name what is written
+                    return unbounded("call '${name}(…)' writes its parameter '${w}', but the argument '${clip(act.text)}' isn't a named variable")
+                }
                 ws.add(((VariableExpression) act).name)
             }
         }
-        any
+        any || unbounded("call '${name}(…)' matches no ${actuals.size()}-parameter overload")
     }
 
     private static void addModifiedLocation(Expression e, Set<String> out) {
@@ -2876,8 +2918,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (body == null) body = node.code
         if (body == null) return
         // Phase 347 — the declared frame is trusted at every call site, so it is checked against the inferred
-        // write set (transitive through same-class calls, list mutators and `++` included); a body whose writes
-        // can't be bounded says so loudly rather than pass on the partial visitor alone
+        // write set (transitive through same-class calls, list mutators and `++` included)
         Set<String> inferred = calleeWrites(node)
         if (inferred != null) {
             for (String loc : inferred) if (!declared.contains(loc)) {
@@ -2885,8 +2926,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             return
         }
-        // unbounded (a construct the inference doesn't follow): the partial assignment/mutator visitor below, as
-        // before — best-effort, the documented limit of the frame check
+        // Phase 348 — unbounded (a construct the inference doesn't follow): say so, naming the construct, since the
+        // declared frame is still trusted wherever the method is called; the partial assignment/mutator visitor
+        // below keeps whatever teeth it has (a violation it can see is named in the same message)
         Set<String> visible = new HashSet<String>()
         if (node.declaringClass != null) node.declaringClass.fields.each { visible.add(it.name) }
         node.parameters.each { Parameter p -> visible.add(p.name) }
@@ -2923,9 +2965,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             })
         } catch (Throwable ignored) {
         }
-        for (String loc : offenders) {
-            addStaticTypeError(Reporter.formatModifiesViolation(node.name, loc, declared), node)
-        }
+        // one message: STC keeps one error per anchor position, so a second one on the node would be dropped
+        addStaticTypeError(Reporter.formatModifiesUnchecked(node.name, calleeWritesReason(node), declared, offenders), node)
     }
 
     /** The caller-visible location written by an assignment LHS, or null (e.g. a local). */
@@ -12053,7 +12094,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (CatchStatement cs : tc.catchStatements) if (!collectWritesStmt(cs.code, ws)) return false
             return collectWritesStmt(tc.finallyStatement, ws)
         }
-        false   // unknown statement → bail
+        unbounded("a ${st.class.simpleName.replace('Statement', '').toLowerCase()} statement")   // unknown statement → bail
     }
 
     private static boolean collectWritesExpr(Expression e, Set<String> ws) {
@@ -12122,7 +12163,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
-            if (!(de.leftExpression instanceof VariableExpression)) return false
+            if (!(de.leftExpression instanceof VariableExpression)) return unbounded("multiple assignment '${clip(de.text)}'")
             ws.add(((VariableExpression) de.leftExpression).name)
             return collectWritesExpr(de.rightExpression, ws)
         }
@@ -12144,11 +12185,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 case Types.LOGICAL_AND: case Types.LOGICAL_OR:
                     return collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
                 case Types.KEYWORD_INSTANCEOF: case Types.KEYWORD_IN:   // Phase 347, callee inference only
+                // Phase 348 — their negations and the other pure comparisons (`!in` made every DFS body unbounded)
+                case Types.COMPARE_NOT_IN: case Types.COMPARE_NOT_INSTANCEOF: case Types.COMPARE_TO:
+                case Types.COMPARE_IDENTICAL: case Types.COMPARE_NOT_IDENTICAL: case Types.FIND_REGEX: case Types.MATCH_REGEX:
                     return inferMode() && collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
                 default:
                     // groovy-contracts' implication `a ==> b` (Phase 347) is pure; the rest (`<<`, …) could mutate
                     if (inferMode() && be.operation.text == '==>') return collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
-                    return false   // shift/membership/etc. → bail (could be a collection mutation)
+                    // shift/membership/etc. → bail (could be a collection mutation)
+                    return unbounded("the operator '${be.operation.text}' in '${clip(be.text)}', which could mutate its left operand")
             }
         }
         if (e instanceof MethodCallExpression) {
@@ -12175,7 +12220,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             } else if (isSameClassCall(mce)) {
                 // Phase 347 — a same-class call writes what its callee's frame says, mapped onto the actuals
                 List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
-                if (as == null || !collectCallWrites(m, as, ws)) return false
+                if (as == null) return unbounded("call '${m}(…)' with unusual arguments")
+                if (!collectCallWrites(m, as, ws)) return false
             } else if (mce.objectExpression instanceof ClassExpression) {
                 // Phase 347 — a static call on another class: through the registry (a @Pure spec, or its declared
                 // frame onto the actuals), else every nameable argument may be written
@@ -12189,7 +12235,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             return collectWritesArgs(mce.arguments, ws)
         }
-        false   // unknown expression kind → bail
+        unbounded("expression '${clip(e.text)}'")   // unknown expression kind → bail
     }
 
     /** Phase 347 — an unknown method's receiver may be mutated in place: record its base name (a field, a parameter
@@ -12209,7 +12255,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  can't be bounded. */
     private static boolean collectStaticCallWrites(String ownerFqn, String m, Expression args, Set<String> ws) {
         List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : null
-        if (as == null) return false
+        String shown = (ownerFqn != null ? ownerFqn.substring(ownerFqn.lastIndexOf('.') + 1) + '.' : '') + m + '(…)'
+        if (as == null) return unbounded("call '${shown}' with unusual arguments")
         if (pureStaticClass(ownerFqn)) return collectWritesArgs(args, ws)
         MethodNode spec = ownerFqn != null && SpecRegistry.hasSpec(ownerFqn) ? SpecRegistry.lookup(ownerFqn, m, as.size(), null) : null
         if (spec != null) {
@@ -12219,7 +12266,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 for (String w : declared) {
                     int fi = -1
                     for (int i = 0; i < spec.parameters.length; i++) if (spec.parameters[i].name == w) { fi = i; break }
-                    if (fi < 0 || !(as.get(fi) instanceof VariableExpression)) return false
+                    if (fi < 0 || !(as.get(fi) instanceof VariableExpression)) {
+                        return unbounded("call '${shown}' writes its parameter '${w}', but the argument isn't a named variable")
+                    }
                     ws.add(((VariableExpression) as.get(fi)).name)
                 }
                 return collectWritesArgs(args, ws)
@@ -12227,7 +12276,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         // an unknown static (a library call with no spec) is unbounded, as before: reading it as "writes its
         // arguments" bounded loops that lean on such calls and changed their VCs (a P253 refutation timed out)
-        false
+        unbounded("static call '${shown}' with no @Pure or @Modifies spec")
     }
 
     /** Phase 347 — an implicit-this, {@code this.m(…)} or {@code Owner.m(…)} call on {@link #WRITE_OWNER}. */
@@ -12255,7 +12304,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression recv = ((BinaryExpression) lhs).leftExpression
             if (recv instanceof VariableExpression) { ws.add(((VariableExpression) recv).name); return true }
         }
-        false   // unusual target → bail
+        unbounded("the write target '${clip(lhs.text)}'")   // unusual target → bail
     }
 
     /**
@@ -14414,8 +14463,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> modSet = modifiedNames(callee)
         // Phase 347 — no @Modifies and a body whose writes can't be bounded: the state after the call is unknown
         if (modSet == null) {
+            String why = calleeWritesReason(callee)   // Phase 348 — name the construct
             throw new UnsupportedConstructException(
-                "call '${name}(…)' whose writes can't be bounded from its body — declare @Modifies on ${callee.name}")
+                "call '${name}(…)' whose writes can't be bounded from its body" + (why != null ? ": ${why}" : '') +
+                " — declare @Modifies on ${callee.name}")
         }
         // Phase 222 — a spec callee's @ThrowsIf arms yield the normal-return contrapositive below.
         List<Map<String, Object>> specArms = callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null ?

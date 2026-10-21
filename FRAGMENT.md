@@ -427,7 +427,8 @@ carries its `@Ensures` as the induction hypothesis; Phase 206) — a method-leve
 `@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a
 `void` lemma proven once then applied by calling it), and a call is **framed by what it may write** (Phase 347):
 a declared `@Modifies` wins (it is frame-checked, so trusting it is sound; `@Modifies({ [] })` declares that nothing
-is written), a callee with a body and no `@Modifies` has its frame inferred from the body — the fields it assigns,
+is written; a declaration whose body the check can't bound is reported, naming the construct — Phase 348),
+a callee with a body and no `@Modifies` has its frame inferred from the body — the fields it assigns,
 the parameters it stores into or mutates, transitively through same-class calls — and a body whose writes can't be
 bounded makes the call skip loudly. The caller havocs exactly that frame, in straight-line code, inside expressions
 and in loop bodies, while `old.x` snapshots pre-state field and array contents; a contract-free method is a pure
