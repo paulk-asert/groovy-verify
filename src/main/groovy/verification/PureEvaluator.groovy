@@ -70,10 +70,12 @@ class PureEvaluator {
 
     private final ClassNode owner
     private int budget
+    private final int stepBudget
 
     PureEvaluator(ClassNode owner, int budget = 20000) {
         this.owner = owner
         this.budget = budget
+        this.stepBudget = budget
     }
 
     /**
@@ -81,6 +83,9 @@ class PureEvaluator {
      * otherwise null. This is the entry point the encoder uses.
      */
     Long tryEvaluate(Expression e) {
+        // Phase 356 — each closed evaluation gets the whole step budget: it was one per evaluator (per method), so a
+        // single call that exhausted it — easy once loops run — left every later call in the method unevaluable
+        budget = stepBudget
         try {
             Call c = callInfo(e)
             if (c == null) return null
@@ -688,6 +693,35 @@ class PureEvaluator {
     }
 
     private void execStmt(Statement st, Map<String, Long> env, boolean last) {
+        if (--budget < 0) throw new NotEvaluable()
+        // Phase 356 — loops run for real, bounded by the step budget (a budget exhausted is "not evaluable", and the
+        // call falls back to the symbolic routes: the Phase 355 loop summary, or an uninterpreted function). An
+        // annotated loop runs from its LoopSpec — the raw statement carries groovy-contracts' woven checks.
+        Object spec = st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (spec instanceof LoopSpec) { execSpecLoop((LoopSpec) spec, env); return }
+        if (st instanceof org.codehaus.groovy.ast.stmt.WhileStatement) {
+            org.codehaus.groovy.ast.stmt.WhileStatement ws = (org.codehaus.groovy.ast.stmt.WhileStatement) st
+            while (evalBool(ws.booleanExpression, env)) { if (!iterate(ws.loopBlock, env)) break }
+            return
+        }
+        if (st instanceof org.codehaus.groovy.ast.stmt.DoWhileStatement) {
+            org.codehaus.groovy.ast.stmt.DoWhileStatement ds = (org.codehaus.groovy.ast.stmt.DoWhileStatement) st
+            while (true) {
+                if (!iterate(ds.loopBlock, env)) break
+                if (!evalBool(ds.booleanExpression, env)) break
+            }
+            return
+        }
+        if (st instanceof org.codehaus.groovy.ast.stmt.ForStatement) { execFor((org.codehaus.groovy.ast.stmt.ForStatement) st, env); return }
+        if (st instanceof org.codehaus.groovy.ast.stmt.BreakStatement) {
+            if (((org.codehaus.groovy.ast.stmt.BreakStatement) st).label != null) throw new NotEvaluable()
+            throw new BreakSignal()
+        }
+        if (st instanceof org.codehaus.groovy.ast.stmt.ContinueStatement) {
+            if (((org.codehaus.groovy.ast.stmt.ContinueStatement) st).label != null) throw new NotEvaluable()
+            throw new ContinueSignal()
+        }
+        if (st instanceof EmptyStatement) return
         if (st instanceof ReturnStatement) {
             throw new ReturnSignal(evalLong(((ReturnStatement) st).expression, env))
         }
@@ -703,16 +737,111 @@ class PureEvaluator {
         }
         if (st instanceof ExpressionStatement) {
             Expression e = ((ExpressionStatement) st).expression
-            // single-assignment local: def x = <expr>  (x usable later in the body)
-            if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN
-                    && ((BinaryExpression) e).leftExpression instanceof VariableExpression) {
-                BinaryExpression be = (BinaryExpression) e
-                env.put(((VariableExpression) be.leftExpression).name, evalLong(be.rightExpression, env))
-                return
-            }
+            if (execBinding(e, env)) return
             if (last) {
                 throw new ReturnSignal(evalLong(e, env))   // Groovy implicit return
             }
+        }
+        throw new NotEvaluable()
+    }
+
+    /** A binding expression run for its effect on {@code env}: a declaration (`int r;` leaves {@code r} unbound, so a
+     *  read before assignment is not evaluable), a plain or (Phase 356) compound assignment to a variable, or
+     *  {@code x++} / {@code --x}. False when {@code e} is none of those. */
+    private boolean execBinding(Expression e, Map<String, Long> env) {
+        if (e instanceof DeclarationExpression && ((DeclarationExpression) e).rightExpression instanceof EmptyExpression) {
+            if (!(((DeclarationExpression) e).leftExpression instanceof VariableExpression)) throw new NotEvaluable()
+            env.remove(((VariableExpression) ((DeclarationExpression) e).leftExpression).name)
+            return true
+        }
+        if (e instanceof BinaryExpression && ((BinaryExpression) e).leftExpression instanceof VariableExpression) {
+            BinaryExpression be = (BinaryExpression) e
+            String n = ((VariableExpression) be.leftExpression).name
+            if (be.operation.type == Types.ASSIGN) { env.put(n, evalLong(be.rightExpression, env)); return true }
+            int base = compoundBase(be.operation.type)
+            if (base >= 0) {
+                BinaryExpression comb = new BinaryExpression(be.leftExpression, Token.newSymbol(base, -1, -1), be.rightExpression)
+                env.put(n, evalLong(comb, env))
+                return true
+            }
+        }
+        if (e instanceof PostfixExpression || e instanceof PrefixExpression) {
+            Expression operand = e instanceof PostfixExpression ? ((PostfixExpression) e).expression : ((PrefixExpression) e).expression
+            int t = (e instanceof PostfixExpression ? ((PostfixExpression) e).operation : ((PrefixExpression) e).operation).type
+            if (operand instanceof VariableExpression && (t == Types.PLUS_PLUS || t == Types.MINUS_MINUS)) {
+                String n = ((VariableExpression) operand).name
+                env.put(n, evalLong(operand, env) + (t == Types.PLUS_PLUS ? 1L : -1L))
+                return true
+            }
+        }
+        false
+    }
+
+    /** Phase 356 — one iteration of a loop body: false when it broke out ({@code continue} just ends the iteration). */
+    private boolean iterate(Statement body, Map<String, Long> env) {
+        if (--budget < 0) throw new NotEvaluable()
+        try {
+            execBlock(body, env)
+        } catch (ContinueSignal ignored) {
+        } catch (BreakSignal ignored) {
+            return false
+        }
+        true
+    }
+
+    /** Phase 356 — an annotated loop, from the specification CET captured: its init, then the guard and the body (a
+     *  {@code for}'s update runs after a {@code continue} too, as in Java). A collection for-in and an {@code .each}
+     *  aren't evaluated; a range for-in whose range would run backwards isn't either (the desugar models forwards). */
+    private void execSpecLoop(LoopSpec spec, Map<String, Long> env) {
+        if (spec.forInBind != null || spec.fromEach || spec.guard == null) throw new NotEvaluable()
+        for (Statement s0 : (spec.init ?: Collections.<Statement> emptyList())) execStmt(s0, env, false)
+        if (spec.rangeForward != null && !evalBool(spec.rangeForward, env)) throw new NotEvaluable()
+        boolean first = spec.isDoWhile
+        while (first || evalBool(spec.guard, env)) {
+            first = false
+            if (--budget < 0) throw new NotEvaluable()
+            boolean broke = false
+            try {
+                for (Statement s : spec.body) {
+                    if (spec.update != null && s.is(spec.update)) continue
+                    execStmt(s, env, false)
+                }
+            } catch (ContinueSignal ignored) {
+            } catch (BreakSignal ignored) {
+                broke = true
+            }
+            if (broke) break
+            if (spec.update != null) execStmt(spec.update, env, false)
+        }
+    }
+
+    /** Phase 356 — an unannotated {@code for}: the classic {@code (init; cond; update)} form, or {@code for (x in lo..hi)}
+     *  over a forwards range. */
+    private void execFor(org.codehaus.groovy.ast.stmt.ForStatement fs, Map<String, Long> env) {
+        Expression coll = fs.collectionExpression
+        if (coll instanceof org.codehaus.groovy.ast.expr.ClosureListExpression) {
+            List<Expression> parts = ((org.codehaus.groovy.ast.expr.ClosureListExpression) coll).expressions
+            if (parts.size() != 3) throw new NotEvaluable()
+            if (!(parts[0] instanceof EmptyExpression) && !execBinding(parts[0], env)) throw new NotEvaluable()
+            while (parts[1] instanceof EmptyExpression || evalBool(parts[1], env)) {
+                if (!iterate(fs.loopBlock, env)) break
+                if (!(parts[2] instanceof EmptyExpression) && !execBinding(parts[2], env)) throw new NotEvaluable()
+            }
+            return
+        }
+        if (coll instanceof org.codehaus.groovy.ast.expr.RangeExpression && fs.variable != null &&
+                fs.variable != org.codehaus.groovy.ast.stmt.ForStatement.FOR_LOOP_DUMMY) {
+            org.codehaus.groovy.ast.expr.RangeExpression re = (org.codehaus.groovy.ast.expr.RangeExpression) coll
+            if (re.exclusiveLeft) throw new NotEvaluable()
+            long lo = evalLong(re.from, env)
+            long hi = evalLong(re.to, env)
+            if (re.exclusiveRight) hi = hi - 1
+            if (lo > hi + (re.exclusiveRight ? 1L : 0L)) throw new NotEvaluable()   // a backwards range
+            for (long v = lo; v <= hi; v++) {
+                env.put(fs.variable.name, v)
+                if (!iterate(fs.loopBlock, env)) break
+            }
+            return
         }
         throw new NotEvaluable()
     }
@@ -758,6 +887,26 @@ class PureEvaluator {
             return evalBool(te.booleanExpression, env) ? eval(te.trueExpression, env) : eval(te.falseExpression, env)
         }
         if (e instanceof BinaryExpression) return evalBinary((BinaryExpression) e, env)
+        // Phase 356 — `n.intdiv(d)`: Groovy's integer division, truncating towards zero like Java's `/` on ints
+        if (e instanceof MethodCallExpression && ((MethodCallExpression) e).methodAsString == 'intdiv' &&
+                !((MethodCallExpression) e).implicitThis && argList((MethodCallExpression) e).size() == 1) {
+            long l = evalLong(((MethodCallExpression) e).objectExpression, env)
+            long r = evalLong(argList((MethodCallExpression) e).get(0), env)
+            if (r == 0L) throw new NotEvaluable()
+            return l.intdiv(r) as long
+        }
+        // Phase 356 — `Math.max` / `min` / `abs` on integers (the clamp idiom a helper's bounds use)
+        if (e instanceof MethodCallExpression && ((MethodCallExpression) e).objectExpression instanceof ClassExpression &&
+                ((MethodCallExpression) e).objectExpression.type?.name == 'java.lang.Math') {
+            String mm = ((MethodCallExpression) e).methodAsString
+            List<Expression> as = argList((MethodCallExpression) e)
+            if ((mm == 'max' || mm == 'min') && as.size() == 2) {
+                long a = evalLong(as.get(0), env), b = evalLong(as.get(1), env)
+                return mm == 'max' ? Math.max(a, b) : Math.min(a, b)
+            }
+            if (mm == 'abs' && as.size() == 1) return Math.abs(evalLong(as.get(0), env))
+            throw new NotEvaluable()
+        }
         if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) {
             Call c = callInfo(e)                        // same-class call (this/owner/static)
             if (c == null) throw new NotEvaluable()
@@ -781,6 +930,8 @@ class PureEvaluator {
             case Types.MINUS:                      return l - r
             case Types.MULTIPLY:                   return l * r
             case Types.MOD:                        if (r == 0L) throw new NotEvaluable(); return l % r
+            // Phase 356 — Groovy 6 parses `%` as REMAINDER (Phase 343): Java's remainder, sign of the dividend
+            case Types.REMAINDER:                  if (r == 0L) throw new NotEvaluable(); return l % r
             case Types.COMPARE_EQUAL:              return l == r
             case Types.COMPARE_NOT_EQUAL:          return l != r
             case Types.COMPARE_LESS_THAN:          return l < r
@@ -813,6 +964,17 @@ class PureEvaluator {
     private static class ReturnSignal extends RuntimeException {
         final long value
         ReturnSignal(long value) { super(null, null, false, false); this.value = value }
+    }
+
+    /** Phase 356 — an unlabelled {@code break} / {@code continue}, caught by the innermost loop. */
+    @CompileStatic
+    private static class BreakSignal extends RuntimeException {
+        BreakSignal() { super(null, null, false, false) }
+    }
+
+    @CompileStatic
+    private static class ContinueSignal extends RuntimeException {
+        ContinueSignal() { super(null, null, false, false) }
     }
 
     /** Raised when an expression/statement is outside the evaluable fragment. */

@@ -5927,6 +5927,7 @@ class Encoder implements TheoryApi {
         r = tmcSamApply           (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcCarrierBindMap     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcInlineCombiner     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
+        r = tmcOwnHelper          (mce); if (!NO_MATCH.is(r)) return r
         r = tmcIntegralNarrow     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcReferenceIdentity  (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
         r = tmcTupleAccessors     (mce, m, recv, args); if (!NO_MATCH.is(r)) return r
@@ -6296,6 +6297,19 @@ class Encoder implements TheoryApi {
             return (a == null || b == null) ? null : session.implies(a, b)
         }
         return NO_MATCH
+    }
+
+    /** Phase 356 — a call that resolves to a contract-free helper of this class (or a sibling's static) IS that helper,
+     *  ahead of the GDK built-ins below: in a contract `sum(4)` reads `this.sum(4)`, which the aggregation handler took
+     *  for a list fold over `this` (heavy axioms; a timeout), so a helper named `sum`, `max` or `count` was shadowed.
+     *  A translation that fails hands on to the other handlers, as before. */
+    private Object tmcOwnHelper(MethodCallExpression mce) {
+        if (pureEvaluator == null) return NO_MATCH
+        Expression recv = mce.objectExpression
+        boolean own = mce.implicitThis || (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this')
+        if (!own || pureEvaluator.callInfo(mce) == null) return NO_MATCH
+        Object h = translateCall(mce)
+        h != null ? h : NO_MATCH
     }
 
     /** translateMethodCall registry — see {@link #NO_MATCH} for the return convention. */

@@ -15910,6 +15910,44 @@ wrong invariant, a non-decreasing variant and an invariant failing for some inpu
 
 **Still out:** a loop that breaks or mutates a collection, a nested loop, and a `switch` in a helper; closed
 evaluation (`PureEvaluator.tryEvaluate`) still doesn't run loops, so a constant argument goes through the summary.
+*(Closed evaluation of loops is Phase 356.)*
+
+## Phase 356 — a helper loop evaluated at constants  *(shipped — the closed evaluator runs loops; two older bugs fixed)*
+
+Phase 355's follow-up. The closed evaluator (Phase 8a, `PureEvaluator.tryEvaluate`) turns a contract-free helper call
+whose arguments are all constants into its value by running the body. It ran straight-line code, `if` and recursion;
+a loop was not evaluable, so `total(4)` stayed an uninterpreted function unless a Phase 355 invariant summarised it —
+and an unannotated loop has none.
+
+- **Loops run for real:** `while`, `do`/`while`, a classic `for (init; cond; update)`, a `for (x in lo..hi)` over a
+  forwards range, and an annotated loop from its `LoopSpec` (init, guard, body, update — the raw statement carries
+  groovy-contracts' woven invariant checks, which the evaluator can't run). Unlabelled `break` and `continue` are
+  control signals caught by the innermost loop; a `for`'s update runs after a `continue`, as in Java. A collection
+  for-in, an `.each`, a backwards range and a labelled jump are not evaluable. Termination needs no argument here:
+  the step budget bounds every iteration, and running out is "not evaluable", so the call falls back to the symbolic
+  routes (the Phase 355 summary, or an uninterpreted function) — sound either way.
+- **The statement forms the fold already had** (Phases 353/354) evaluate too: compound assignments, `x++` / `--x` as
+  statements, and `int r;` (unbound until assigned, so a read before is not evaluable). And `n.intdiv(d)` (truncating,
+  as Java's `/` on ints) and `Math.max` / `min` / `abs` — the clamp idiom Phase 355 recommends for a helper's bounds.
+- **`%` was not evaluable:** Groovy 6 parses it as `REMAINDER` (the Phase 343 spelling), which the evaluator didn't
+  know — `x % 7` with `x` constant was an uninterpreted call.
+- **The step budget was one per method:** the evaluator is built once per method and `tryEvaluate` never reset its
+  20,000-step budget, so one call that exhausted it — easy once loops run — left every later call in the method
+  unevaluable. Each top-level evaluation now gets the whole budget.
+- **A helper named like a GDK built-in was shadowed in contracts:** a contract's `sum(4)` reads `this.sum(4)`, and
+  the method-call dispatch tried its GDK aggregation handler first, taking it for a list fold over `this` — heavy
+  axioms and a solver timeout. A new first-tier handler, `tmcOwnHelper`, routes a call on implicit-this or `this`
+  that resolves to a contract-free helper of the class (or a sibling's static) to the helper, ahead of the built-ins;
+  a translation that fails hands on to them, as before.
+
+**Shipped tests:** group `P356 a helper loop evaluated at constants`, 12 cases: an unannotated loop at a constant and
+a wrong constant refuting; a `while` with a `break`; a `continue` in a classic `for`; a `do`/`while`; a range for-in
+with a `Math.max` bound; an annotated loop from its specification; a digit sum with `%` and `intdiv`; a call in a
+caller's precondition; a helper named `sum` in a contract; an argument past the budget falling back, and not
+using up the budget for a later call.
+
+**Still out:** a loop over a collection, or one that mutates one, in a closed evaluation (the evaluator's values are
+integers and booleans only); a labelled `break`/`continue`.
 
 ---
 
