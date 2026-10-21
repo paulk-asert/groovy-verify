@@ -178,7 +178,8 @@ a coverage metric. In expressions the fragment is:
   `d[j] == src[j + k]`), and a concatenation of list literals and named lists, spelt `a + b` or as the spread
   literal `[x, *rest]` (each segment at its offset). Bound to a local, returned, or passed as an argument (hoisted
   to a named list), so a recursion over `xs.drop(1)` that rebuilds with `[x] + rest` proves, termination
-  included. `xs + 1` (append), `xs - ys`, `xs * n` and `xs << x` on a named list skip loudly;
+  included. `xs + 1` (append), `xs - ys`, `xs * n` and `xs << x` used as a value skip loudly (the statement
+  `xs << x` is `xs.add(x)`, Phase 341);
 - immutable container factories — `List.of(args)` / `Set.of(args)` / `Map.of(k,v,…)` and Groovy
   literals `[a, b, c]` / `[k: v]` (and `as Set` casts) peephole-fold to ground SMT terms on
   `.size()`, `.contains` / `containsKey` / `containsValue` / `in`, and `.get(literal_i)` —
@@ -338,56 +339,52 @@ tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -
 `x = a[i++]` — the side-effecting inc/dec is hoisted to its old/new value plus the increment, so the array-fill
 loop `while (i < n) a[i++] = 0` verifies and an out-of-bounds `a[i++]` refutes; Phases 85/86), multiple
 assignment — both the declaration `def (a, b) = [1, 2]` and the bare parallel **swap** `(a, b) = [b, a]`
-(the right-hand side is snapshotted before any target is written; Phases 79 / 90), and an
-annotated loop — or **several in sequence** (Phase 207: each loop gets its own establishment /
-preservation / `@Decreases`, earlier loops summarised as havoc + `inv ∧ ¬guard` in the later ones'
-context. A later loop keeps every earlier loop's exit fact over state it leaves alone (Phase 319, as in Dafny),
-and must restate only a fact over state it writes, the OpenJML `maintaining` discipline. Early exits may be anywhere among them (Phase 329): a return in any of the
-loops or between them, and a break out of an earlier loop, which keeps that loop's invariant conjuncts over
-state nothing before its breaks writes, but not its negated guard) — `while`, `do … while` (Phase 88), a classic
-`for (init; cond; update)`, `for (x in xs)` over a named collection, `xs.each { x -> … }` / `xs.each { … it … }`
-(Phase 161, modelled as that same for-in — the explicit element param *or* the implicit `it`), or
-`xs.eachWithIndex { x, i -> … }` (the closure's second param becomes the loop's *user-named* index, with `x = xs[i]`),
-all desugaring to the same machinery (Phases 59 & 63; the for-in's index is synthesised and hidden — except for
-`eachWithIndex`, where the developer named it — and the loop variable keeps its name). A loop may leave early by
-`return` (Phases 49/49b/49c) or by **`break`** (Phase 312: `if (c) break` / `if (c) { …; break }` at the top level of
-the body or ending a branch of its final `if`/`else` chain, in a `for` loop too, where the update follows the
-chain (Phase 326) — the code after the loop is checked from each `break` as
-well as the natural exit, and the breaking iteration needn't preserve the invariant or decrease the variant). A
-nested loop may break too, by a top-level `if (c) break` / `if (c) { …; break }` (Phase 324) or from its final
-chain (Phase 326): its summary then
-carries each break's exit state beside `inv ∧ ¬guard`. An unlabelled **`continue`** is desugared (Phase 324): what
-follows an `if` that may continue moves into its branches, so the continuing iteration must preserve the invariant
-(a `for` loop's update still runs), as in Dafny. A top-level `if (c) continue` / `if (c) { …; continue }` ahead of
-a `break` or `return` is recorded in a flag instead, and what follows is guarded by it, so those exits stay
-top-level (Phase 325); a `continue` nested deeper in an `if` sets a flag that is false before that `if`
-(Phase 327). A `break` buried under another `if`, in an `else`, or before more of its branch becomes a flag the same
-way, then a top-level `if (brk) break`, in a top-level or nested loop (Phase 339). A `return` inside a `.each` / `.eachWithIndex` closure only ends that element, so a bare one, or one
-of a constant or variable, is that `continue` (Phase 328). A labelled `continue`, a rewrite that would move a loop
-into a branch, a labelled `break`, a buried `break` beside a `return` in a non-tail `if`, and any other `return` in a `.each` closure skip
-loudly. What the loop can't change is **framed**, as in Dafny (Phase 318): a local the prefix assigns and the
-loop never writes keeps that value at the loop head, in the body and after the loop (`int n = len - str.length()`
-needs no invariant restating it), and an allocation the loop only stores into keeps `x != null`, plus
-`x.length` for an array. A list's size, an array's contents, anything the loop or a closure reassigns, and every
-fact when the loop's writes can't be bounded are not framed. A for-in / `.each` carries an auto **bounds
-invariant** (`0 <= idx <= size`) and a `size - idx` **variant**, so a body asserting a **per-element property**
-(or reading bounded slots) verifies with no hand-written `@Invariant` — only an *accumulating* body needs one,
-and since a statement-level `@Invariant` is a Groovy parse error on a `.each` call, such a body **loud-skips**
-(honest, not silently passed). The for-in / `.each` may have **a second loop nested inside it** (Phase 91, two
-levels, scalar accumulators or array-filling inner bodies — and the inner loop may **`return` a witness** on a
-match, so a doubly-nested search verifies, Phase 109 — see below; several nested loops may follow one another in
-a body, each verified in turn with the ones before it summarised, Phase 330). An annotated loop may sit inside a
-branch of a top-level `if` (or an else-if chain, or an `if` nested in a branch): the method is verified once per
-branch, with the branch condition assumed, so the loop is checked at the top level of its branch's body (Phase 334).
-A condition that writes (`x++`) is not split. A loop inside a branch of a *loop body* gets the nested-loop checks,
-entered along its path with the branch conditions assumed (Phase 335); one inside a branch of a nested loop's body
-loud-skips, as three-deep nesting does. A nested loop's checks hold the outer invariant and guard conjuncts nothing
-writes on the way, and the outer loop's frame facts (Phase 336). A loop may follow an outer loop that holds a
-nested loop: the earlier one is summarised with its nested loop's writes havocked (Phase 338). A loop body may
-assign `this.f`, `put` into a map and `set` a list element, as the stores they are; a nested loop's are havocked by
-its outer loop's summary (Phase 340), and `xs << v` on a list is `xs.add(v)` (Phase 341); a set's `add`/`remove`/`<<` updates the set (Phase 342). `@Requires` describes the entry state: inside a loop
-and after it, only the conjuncts nothing written so far can have changed are assumed (a never-reassigned value
-parameter's, a parameter's nullness, an array's length; Phase 343). A `do … while` is `B; while (G) B` — its body runs once
+(the right-hand side is snapshotted before any target is written; Phases 79 / 90), and annotated
+loops — `while`, `do … while` (Phase 88), a classic `for (init; cond; update)`, `for (x in xs)` over a named
+collection, `xs.each { x -> … }` / `xs.each { … it … }` (Phase 161, modelled as that same for-in — the explicit
+element param *or* the implicit `it`), or `xs.eachWithIndex { x, i -> … }` (the closure's second param becomes the
+loop's *user-named* index, with `x = xs[i]`), all desugaring to the same machinery (Phases 59 & 63; the for-in's
+index is synthesised and hidden — except for `eachWithIndex`, where the developer named it — and the loop variable
+keeps its name). Each loop gets its own establishment, preservation and `@Decreases`, and is summarised as havoc
+of what it writes + `inv ∧ ¬guard` wherever later code sees it.
+
+- **Where a loop may sit.** Loops may follow one another (Phase 207); a later loop keeps every earlier loop's exit
+  fact over state it leaves alone (Phase 319, as in Dafny) and must restate only a fact over state it writes, the
+  OpenJML `maintaining` discipline. A loop body may hold nested loops, any number in sequence (Phases 91/330),
+  and the outer loop's summary havocs everything they write — scalars, array contents, fields and collections
+  (Phases 338/340); a nested loop is checked under the outer invariant and guard conjuncts nothing on the way
+  writes, and the outer loop's frame facts (Phase 336). A loop may sit in a branch of a top-level `if` — the method
+  is verified once per branch, with its condition assumed (Phase 334) — or in a branch of a loop body, where it
+  gets the nested-loop checks along its path (Phase 335). *Loud skips:* nesting three deep (a loop in a branch
+  of a nested loop's body included), an unannotated nested loop, and a branch condition that writes (`x++`).
+- **Leaving early.** A loop may leave by `return` (Phases 49/49b/49c; from a nested loop, Phase 109; in any of
+  several sequential loops or between them, Phase 329) or by an unlabelled **`break`** under any nesting of `if`s
+  and blocks, in a top-level or nested loop (Phases 312/324/326/339). The code after the loop is checked from
+  each `break` as well as the natural exit, a nested loop's summary carries each break's exit state, and the
+  breaking iteration needn't preserve the invariant or decrease the variant; an earlier sequential loop that
+  breaks keeps the invariant conjuncts over state nothing before its breaks writes, but not its negated guard. An
+  unlabelled **`continue`** at any depth of `if`s (Phases 324/325/327) jumps to the loop head: the continuing
+  iteration must preserve the invariant (a `for` loop's update still runs), as in Dafny. A `return` inside a
+  `.each` / `.eachWithIndex` closure only ends that element, so a bare one, or one of a constant or variable, is
+  that `continue` (Phase 328). *Loud skips:* a labelled `break` or `continue`; a `break`/`continue` under a
+  `try`/`switch`, or in an `if` that a nested loop follows; a buried `break` beside a `return` in a non-tail `if`;
+  any other `.each` return, or one in a nested loop.
+- **What a loop changes and keeps.** A loop body may assign locals and `this.f`, store into arrays, `put` into a
+  map, `set` and `add` (or `<<`) list elements, and `add`/`remove`/`<<` set elements, which update membership and
+  cardinality (Phases 340–342; a set's `clear` skips loudly). What the loop can't change is **framed**, as in
+  Dafny (Phase 318): a local the prefix assigns and the loop never writes keeps that value at the loop head, in
+  the body and after the loop (`int n = len - str.length()` needs no invariant restating it), and an allocation
+  the loop only stores into keeps `x != null`, plus `x.length` for an array. A list's size, an array's contents,
+  anything the loop or a closure reassigns, and every fact when the loop's writes can't be bounded are not
+  framed. `@Requires` describes the entry state: inside a loop and after it, only the conjuncts nothing written
+  so far can have changed are assumed (a never-reassigned value parameter's, a parameter's nullness, an array's
+  length; Phase 343). A for-in / `.each` carries an auto **bounds invariant** (`0 <= idx <= size`) and a
+  `size - idx` **variant**, so a body asserting a **per-element property** (or reading bounded slots) verifies
+  with no hand-written `@Invariant` — only an *accumulating* body needs one, and since a statement-level
+  `@Invariant` is a Groovy parse error on a `.each` call, such a body **loud-skips** (honest, not silently
+  passed).
+
+A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
 plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
 explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts
