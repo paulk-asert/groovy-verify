@@ -278,6 +278,7 @@ class Encoder implements TheoryApi {
      * the project takes as a non-goal.
      */
     private final Map<String, ClassNode> objectParams
+    private final Map<String, String> objectAliases
     /**
      * Phase 80 — tuple-typed parameters/fields ({@code Tuple2<Integer,String> t}), name → the {@code TupleN}
      * {@link ClassNode}. Unlike a constructed/returned tuple (a factory container with known slot
@@ -363,6 +364,7 @@ class Encoder implements TheoryApi {
         this.nestedSetValueTypes = env.nestedSetValueTypes
         this.listNames = env.listNames
         this.objectParams = env.objectParams
+        this.objectAliases = env.objectAliases
         this.booleanLocals = env.booleanLocals
         this.decimalNames = env.decimalNames
         this.fpNames = env.fpNames
@@ -4413,6 +4415,8 @@ class Encoder implements TheoryApi {
             // misinterpreting a property name as a field).
             if (obj instanceof VariableExpression) {
                 String recvName = ((VariableExpression) obj).name
+                // Phase 351 — a local alias of a modelled receiver reads the receiver's fields
+                if (!objectParams.containsKey(recvName) && objectAliases.containsKey(recvName)) recvName = objectAliases.get(recvName)
                 if (objectParams.containsKey(recvName)) {
                     Set<String> fields = fieldsOfObjectParam(recvName)
                     if (fields.contains(prop)) {

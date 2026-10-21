@@ -274,6 +274,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * lists, and the primitive wrappers have their own dispatch (collectSetElementTypes etc.).
      */
     private Map<String, ClassNode> currentObjectParams = new LinkedHashMap<String, ClassNode>()
+    /** Phase 351 — locals that only ever hold a modelled receiver → its name (see {@link #collectObjectAliases}). */
+    private Map<String, String> currentObjectAliases = new LinkedHashMap<String, String>()
     private Map<String, ClassNode> currentTupleParams = new LinkedHashMap<String, ClassNode>()
 
     /**
@@ -369,6 +371,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             nestedSetValueTypes: currentNestedSetValueTypes,
             listNames          : currentListNames,
             objectParams       : currentObjectParams,
+            objectAliases      : currentObjectAliases,
             booleanLocals      : currentBooleanLocals,
             decimalNames       : currentDecimalNames,
             fpNames            : currentFpNames,
@@ -1456,7 +1459,99 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (Parameter p : node.parameters) {
             if (isCrossClassObjectType(p.type, declaring)) out.put(p.name, p.type)
         }
+        // Phase 351 — an object FIELD of another class is a receiver too (`c.incr()` on `Counter c`), modelled like
+        // a parameter (`c$count`), as long as this method never reassigns it (a reassignment would need the new
+        // object's state) and no parameter shadows it. A static method sees only static fields.
+        Set<String> assigned = assignedNames(node)
+        for (ClassNode dc = declaring; dc != null; dc = dc.superClass) {
+            for (FieldNode f : dc.fields) {
+                if (out.containsKey(f.name) || node.parameters.any { Parameter p -> p.name == f.name }) continue
+                if (node.isStatic() && !f.isStatic()) continue
+                if (assigned.contains(f.name)) continue
+                if (isCrossClassObjectType(f.type, declaring)) out.put(f.name, f.type)
+            }
+        }
         out
+    }
+
+    /** Phase 351 — the names a method's body assigns ({@code x = …}, {@code x op= …}, {@code x++}), declarations not
+     *  counted. */
+    private static Set<String> assignedNames(MethodNode node) {
+        Set<String> out = new HashSet<String>()
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return out
+        try {
+            body.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (!(be instanceof DeclarationExpression) && Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) {
+                        String w = writtenLocation(be.leftExpression)
+                        if (w != null && !(be.leftExpression instanceof BinaryExpression)) out.add(w)
+                    }
+                    super.visitBinaryExpression(be)
+                }
+                @Override void visitPostfixExpression(PostfixExpression pe) {
+                    if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name)
+                    super.visitPostfixExpression(pe)
+                }
+                @Override void visitPrefixExpression(PrefixExpression pe) {
+                    if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name)
+                    super.visitPrefixExpression(pe)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        out
+    }
+
+    /** Phase 351 — a local declared {@code T d = r}, {@code r} a modelled receiver (an object parameter or field),
+     *  and never assigned again: {@code d} IS {@code r}, so calls and reads through it go to {@code r}. */
+    private static Map<String, String> collectObjectAliases(MethodNode node, Map<String, ClassNode> receivers) {
+        Map<String, String> out = new LinkedHashMap<String, String>()
+        if (receivers.isEmpty()) return out
+        Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = node.code
+        if (body == null) return out
+        Set<String> assigned = assignedNames(node)
+        Map<String, Integer> decls = new HashMap<String, Integer>()
+        try {
+            body.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitDeclarationExpression(DeclarationExpression de) {
+                    if (de.leftExpression instanceof VariableExpression) {
+                        String d = ((VariableExpression) de.leftExpression).name
+                        decls.put(d, (decls.get(d) ?: 0) + 1)
+                        Expression r = de.rightExpression
+                        if (r instanceof VariableExpression && receivers.containsKey(((VariableExpression) r).name)) {
+                            out.put(d, ((VariableExpression) r).name)
+                        }
+                    }
+                    super.visitDeclarationExpression(de)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        out.keySet().removeAll(out.keySet().findAll { String d -> assigned.contains(d) || decls.get(d) != 1 || receivers.containsKey(d) })
+        out
+    }
+
+    /** Phase 351 — the modelled receiver an expression names: an object parameter or field, a local alias of one,
+     *  or {@code this.f} for an unshadowed object field; null otherwise. */
+    private String modelledReceiver(Expression recv) {
+        if (recv instanceof VariableExpression) {
+            String n = ((VariableExpression) recv).name
+            if (currentObjectParams.containsKey(n)) return n
+            String a = currentObjectAliases.get(n)
+            return a != null && currentObjectParams.containsKey(a) ? a : null
+        }
+        if (recv instanceof PropertyExpression && ((PropertyExpression) recv).objectExpression instanceof VariableExpression &&
+                ((VariableExpression) ((PropertyExpression) recv).objectExpression).name == 'this') {
+            String f = ((PropertyExpression) recv).propertyAsString
+            if (f != null && currentObjectParams.containsKey(f) && currentMethod != null &&
+                    !currentMethod.parameters.any { Parameter p -> p.name == f }) return f
+        }
+        null
     }
 
     /** Tuple-typed (`TupleN<...>`) parameters and declaring-class fields → the tuple {@link ClassNode}. */
@@ -2290,6 +2385,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // internal keys: nullity flag, SSA version, synthetic temps (`$snap…` index snapshots, `$self`) —
             // surfaced via failingCall / the base (entry) variable, not shown raw.
             if (k.endsWith('?null') || k.contains('#') || k.startsWith('$')) return
+            // Phase 351 — an object receiver's own handle (its fields show as `c$count`) is an internal value
+            if (currentObjectParams.containsKey(k) || currentObjectAliases.containsKey(k)) return
             if (k.endsWith(']')) {
                 int br = k.indexOf('[')
                 String base = br >= 0 ? k.substring(0, br) : k
@@ -2831,7 +2928,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * {@code this.f}), static fields, and parameters whose contents it stores into or mutates ({@code a[i] = v},
      * {@code xs.add(x)}), transitively through same-class calls (a formal's write maps to the actual, which must
      * be a plain variable). Locals don't count. Null when the body has a construct whose writes can't be bounded.
-     * Syntactic and conservative; an alias ({@code int[] b = a; b[0] = 5}) is the known blind spot. A recursive
+     * Syntactic and conservative; a local assigned a parameter or field by name ({@code int[] b = a; b[0] = 5}) writes
+     * it (Phase 351), an alias through any other expression is the known blind spot. A recursive
      * call contributes nothing beyond the set being computed.
      */
     static Set<String> calleeWrites(MethodNode m) {
@@ -2879,10 +2977,26 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ClassNode dc = m.declaringClass
             while (dc != null) { for (FieldNode f : dc.fields) visible.add(f.name); dc = dc.superClass }
             for (Parameter p : m.parameters) visible.add(p.name)
+            // Phase 351 — a local that holds a parameter or field (`int[] b = a`, `Counter d = c`) writes it: a write
+            // recorded under the local's name counts for each visible name it was assigned from
+            // (only a reference: `int n = x` copies the value, so an immutable-typed source is no alias)
+            Set<String> refs = new HashSet<String>(visible)
+            refs.removeAll(immutableNames(m))
+            Map<String, Set<String>> held = localAliasSources(body, refs)
             out = new LinkedHashSet<String>()
-            for (String w : ws) if (visible.contains(w)) out.add(w)
+            // a parameter of immutable type can only be REASSIGNED (`x = x + 1`), which never reaches the caller
+            Set<String> valueParams = new HashSet<String>()
+            for (Parameter p : m.parameters) if (isImmutableType(p.type)) valueParams.add(p.name)
+            for (String w : ws) {
+                if (valueParams.contains(w)) continue
+                if (visible.contains(w)) out.add(w)
+                else if (held.containsKey(w)) out.addAll(held.get(w))
+            }
             outSizes = new LinkedHashSet<String>()
-            for (String w : sizes) if (visible.contains(w)) outSizes.add(w)
+            for (String w : sizes) {
+                if (visible.contains(w)) outSizes.add(w)
+                else if (held.containsKey(w)) outSizes.addAll(held.get(w))
+            }
         }
         // memoise only once the whole walk is done (a nested computation during a cycle is partial)
         if (visiting.isEmpty()) {
@@ -3147,6 +3261,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         currentIsConstructor = (node instanceof ConstructorNode)
         currentOverflowChecking = methodOrClassHasAnnotation(node, 'CheckOverflow')
         currentObjectParams = collectObjectParams(node)
+        currentObjectAliases = collectObjectAliases(node, currentObjectParams)
         currentTupleParams = collectTupleParams(node)
         currentCatchCoverage = collectCatchCoverage(node)
         buildSizeAccessors(node)
@@ -3489,6 +3604,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             currentOverflowChecking = false
             currentAssertsTrusted = false
             currentObjectParams = new LinkedHashMap<String, ClassNode>()
+            currentObjectAliases = new LinkedHashMap<String, String>()
             currentTupleParams = new LinkedHashMap<String, ClassNode>()
             currentSetElementTypes = new HashMap<String, ClassNode>()
             currentMapTypes = new HashMap<String, ClassNode[]>()
@@ -10171,9 +10287,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (!(call instanceof MethodCallExpression)) return false
         MethodCallExpression mce = (MethodCallExpression) call
         Expression recv = mce.objectExpression
-        if (!(recv instanceof VariableExpression)) return false
-        String recvName = ((VariableExpression) recv).name
-        if (!currentObjectParams.containsKey(recvName)) return false
+        if (mce.implicitThis) return false
+        String recvName = modelledReceiver(recv)   // Phase 351 — an object param, field, or an alias of one
+        if (recvName == null) return false
         ClassNode recvType = currentObjectParams.get(recvName)
 
         // Phase 194 — demote-to-skip at the no-aliasing boundary: with ANOTHER parameter of the same
@@ -12372,6 +12488,29 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         unbounded("static call '${shown}' with no @Pure or @Modifies spec")
     }
 
+    /** Phase 351 — the first of {@code names} an expression reads bare, as {@code this.f} or as {@code old.f}; null if none. */
+    private static String mentionedName(Expression e, Set<String> names) {
+        if (e == null || names.isEmpty()) return null
+        String[] hit = [null] as String[]
+        try {
+            e.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitVariableExpression(VariableExpression v) {
+                    if (hit[0] == null && names.contains(v.name)) hit[0] = v.name
+                }
+                @Override void visitPropertyExpression(PropertyExpression pe) {
+                    Expression o = pe.objectExpression
+                    if (hit[0] == null && o instanceof VariableExpression && (((VariableExpression) o).name in ['this', 'old']) &&
+                            names.contains(pe.propertyAsString)) hit[0] = pe.propertyAsString
+                    super.visitPropertyExpression(pe)
+                }
+                @Override void visitClosureExpression(ClosureExpression ce) { ce.code?.visit(this) }
+            })
+        } catch (Throwable ignored) {
+        }
+        hit[0]
+    }
+
     /** Phase 350 — is {@code cls} {@code t} itself or one of its superclasses (by name)? */
     private static boolean isClassOrSuper(ClassNode t, ClassNode cls) {
         for (ClassNode c = t; c != null; c = c.superClass) if (c.name == cls.name) return true
@@ -12386,6 +12525,41 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (f != null) return f.type.isArray()
         }
         false
+    }
+
+    /** Phase 351 — for each local assigned a plain visible name ({@code T d = v} / {@code d = v}), those names —
+     *  transitively, so {@code b = a; c = b} gives {@code c → {a}}. */
+    private static Map<String, Set<String>> localAliasSources(Statement body, Set<String> visible) {
+        Map<String, Set<String>> direct = new HashMap<String, Set<String>>()
+        try {
+            body.visit(new ClassCodeVisitorSupport() {
+                protected SourceUnit getSourceUnit() { null }
+                @Override void visitBinaryExpression(BinaryExpression be) {
+                    if (be.operation.type == Types.ASSIGN && be.leftExpression instanceof VariableExpression &&
+                            be.rightExpression instanceof VariableExpression) {
+                        String d = ((VariableExpression) be.leftExpression).name
+                        String v = ((VariableExpression) be.rightExpression).name
+                        if (!visible.contains(d)) direct.computeIfAbsent(d) { new LinkedHashSet<String>() }.add(v)
+                    }
+                    super.visitBinaryExpression(be)
+                }
+            })
+        } catch (Throwable ignored) {
+        }
+        Map<String, Set<String>> out = new HashMap<String, Set<String>>()
+        for (String d : direct.keySet()) {
+            Set<String> seen = new HashSet<String>(); Set<String> res = new LinkedHashSet<String>()
+            Deque<String> todo = new ArrayDeque<String>([d])
+            while (!todo.isEmpty()) {
+                String x = todo.pop()
+                if (!seen.add(x)) continue
+                for (String v : (direct.get(x) ?: Collections.<String> emptySet())) {
+                    if (visible.contains(v)) res.add(v) else todo.push(v)
+                }
+            }
+            if (!res.isEmpty()) out.put(d, res)
+        }
+        out
     }
 
     /** Phase 350 — another class of {@link #WRITE_OWNER}'s compilation unit, by fully-qualified or simple name. */
@@ -13436,10 +13610,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // receiver context so {@code count} in the contract resolves to {@code b$count}.
             String crossClassRecv = null
             Set<String> crossClassFields = Collections.<String>emptySet()
-            if (callExpr instanceof MethodCallExpression) {
+            if (callExpr instanceof MethodCallExpression && !((MethodCallExpression) callExpr).implicitThis) {
                 Expression recvExpr = ((MethodCallExpression) callExpr).objectExpression
-                if (recvExpr instanceof VariableExpression) {
-                    String rn = ((VariableExpression) recvExpr).name
+                String rn = modelledReceiver(recvExpr)   // Phase 351
+                if (rn != null) {
                     if (currentObjectParams.containsKey(rn)) {
                         crossClassRecv = rn
                         ClassNode rt = currentObjectParams.get(rn)
@@ -13878,12 +14052,18 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static MethodNode resolveContractedCallee(MethodNode caller, String name, int arity, boolean allowSelf,
                                                       ClassNode receiverType = null, List<String> actualTypeNames = null) {
         if (name == null) return null
-        MethodNode m = resolveContractedIn(caller?.declaringClass, caller, name, arity, allowSelf)
+        // Phase 351 — a receiver of ANOTHER class resolves on that class (and its superclasses) only: the caller's
+        // same-named method is a different method (`b.incr()` is not the caller's `incr()`)
+        boolean foreignReceiver = receiverType != null && caller?.declaringClass != null && receiverType.name != caller.declaringClass.name
+        MethodNode m = foreignReceiver ? null : resolveContractedIn(caller?.declaringClass, caller, name, arity, allowSelf)
         if (m != null) return m
         // Phase 133 — an instance call `recv.m(args)` whose method lives on the *receiver's* (carrier) type rather
         // than the caller's class — e.g. a record's `plus`. Search there too (a different class, so no self-call).
         if (receiverType != null && !receiverType.is(caller?.declaringClass)) {
-            m = resolveContractedIn(receiverType, null, name, arity, true)
+            for (ClassNode c = receiverType; c != null && m == null; c = c.superClass) {
+                boolean own = caller?.declaringClass != null && c.name == caller.declaringClass.name
+                m = resolveContractedIn(c, own ? caller : null, name, arity, own ? allowSelf : true)
+            }
             if (m != null) return m
             // Phase 215 — the external-spec registry: a trusted skeleton contract for a library class
             // (`Math.abs` from META-INF/groovy-verify/specs/java.lang.Math.groovy). Same consumption as
@@ -14604,10 +14784,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String crossRecv = null
         Set<String> crossFields = null
         if (callExpr instanceof MethodCallExpression && !((MethodCallExpression) callExpr).implicitThis &&
-                ((MethodCallExpression) callExpr).objectExpression instanceof VariableExpression &&
                 callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null && callee.declaringClass != null) {
-            String rn = ((VariableExpression) ((MethodCallExpression) callExpr).objectExpression).name
-            ClassNode rt = currentObjectParams.get(rn)
+            String rn = modelledReceiver(((MethodCallExpression) callExpr).objectExpression)   // Phase 351
+            ClassNode rt = rn != null ? currentObjectParams.get(rn) : null
             if (rt != null && !callee.declaringClass.is(caller?.declaringClass) && isClassOrSuper(rt, callee.declaringClass)) {
                 for (Map.Entry<String, ClassNode> e : currentObjectParams.entrySet()) {
                     if (e.key != rn && e.value?.name == rt.name) {
@@ -14619,6 +14798,44 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 crossRecv = rn
                 crossFields = new LinkedHashSet<String>()
                 for (ClassNode c = rt; c != null; c = c.superClass) for (FieldNode f : c.fields) if (!f.isStatic()) crossFields.add(f.name)
+            }
+        }
+        // Phase 351 — the callee's fields are the CALLER's same-named locations only when the receiver is the caller
+        // itself (implicit `this`, `this.m()`, or the caller's own class / a superclass). Any other explicit receiver
+        // that isn't modelled (an object parameter, field, or a local alias of one) — a parameter of the caller's own
+        // class (which may be `this`), a fresh object, a call result, a reassigned local — has fields the caller can't
+        // name: framing them, or binding the callee's @Ensures over them, would land on the wrong variables. Loud.
+        // A STATIC callee on another class writes that class's statics, no location of the caller's: its field
+        // writes are dropped from the frame, and an @Ensures that reads them is loud for the same reason.
+        boolean foreignStatic = false
+        if (modSet != null && crossRecv == null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null &&
+                callee.declaringClass != null && caller?.declaringClass != null && receiverType == null) {
+            Set<String> formalNames = new HashSet<String>(callee.parameters*.name)
+            boolean selfReceiver = !(callExpr instanceof MethodCallExpression) || ((MethodCallExpression) callExpr).implicitThis ||
+                (((MethodCallExpression) callExpr).objectExpression instanceof VariableExpression &&
+                 ((VariableExpression) ((MethodCallExpression) callExpr).objectExpression).name == 'this') ||
+                ((MethodCallExpression) callExpr).objectExpression instanceof ClassExpression
+            boolean sameHierarchy = isClassOrSuper(caller.declaringClass, callee.declaringClass)
+            foreignStatic = callee.isStatic() && !sameHierarchy
+            if (!selfReceiver || foreignStatic) {
+                Set<String> calleeFields = new LinkedHashSet<String>()
+                for (ClassNode c = callee.declaringClass; c != null; c = c.superClass) {
+                    for (FieldNode f : c.fields) if (!formalNames.contains(f.name)) calleeFields.add(f.name)
+                }
+                String written = foreignStatic ? null : modSet.find { String l -> !formalNames.contains(l) }
+                String read = mentionedName(ensuresAst, calleeFields)
+                String recvText = callExpr instanceof MethodCallExpression ? ((MethodCallExpression) callExpr).objectExpression.text : callee.declaringClass.nameWithoutPackage
+                if (written != null) {
+                    throw new UnsupportedConstructException(
+                        "call '${recvText}.${name}(…)' writes its receiver's field '${written}', but '${recvText}' isn't a receiver " +
+                        "the verifier models (an object parameter or field, or a local holding one) — the caller can't name that field")
+                }
+                if (read != null) {
+                    throw new UnsupportedConstructException(
+                        "call '${recvText}.${name}(…)' has an @Ensures over its " + (foreignStatic ? "class's" : "receiver's") +
+                        " field '${read}', which the caller can't name" + (foreignStatic ? '' :
+                        " ('${recvText}' isn't an object parameter or field, or a local holding one)"))
+                }
             }
         }
         // Phase 347 — no @Modifies and a body whose writes can't be bounded: the state after the call is unknown
@@ -14735,9 +14952,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object> savedSize = new LinkedHashMap<String, Object>()   // Phase 349
         if (modSet != null) {
             for (String loc : modSet) {
+                // Phase 351 — another class's static field: not a location of the caller's (see foreignStatic above)
+                if (foreignStatic && !formals.any { Parameter fp -> fp.name == loc }) continue
                 String callerLoc = callerSideLocation(loc, formals, actuals)
                 if (crossRecv != null && callerLoc == loc && !formals.any { Parameter fp -> fp.name == loc }) {
                     callerLoc = crossRecv + '$' + loc   // Phase 350 — the receiver's field
+                }
+                if (callerLoc != null) {   // Phase 351 — a local alias of an object receiver is that receiver
+                    String al = currentObjectAliases.get(callerLoc)
+                    if (al != null && currentObjectParams.containsKey(al)) callerLoc = al
                 }
                 // Phase 350 — a written OBJECT parameter (`h(c) { c.incr() }` has the frame {c}): the callee wrote
                 // through it, so its fields are havoced and its class invariants re-assumed, as for a direct call

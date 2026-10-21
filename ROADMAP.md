@@ -15742,7 +15742,67 @@ writes its own class, and one storing into an array argument.
 
 **Still out:** a call on an object FIELD or LOCAL (`this.c.incr()`, `Counter d = c; d.bump()`) — the receiver
 context is per object parameter; aliasing; a cross-class call in a loop body keeps its opaque reading (the loop's
-write set is unbounded there, so the loop skips loudly anyway).
+write set is unbounded there, so the loop skips loudly anyway). *(The field and the local are Phase 351.)*
+
+## Phase 351 — a call through any receiver lands on that receiver  *(shipped — soundness: four mislocated frames)*
+
+Phase 350's follow-up, and a soundness fix as much as a feature. The call framing reads a callee's fields as the
+CALLER's same-named locations unless the receiver is a modelled object parameter — right only when the receiver is
+the caller itself. The probe found it proving false claims four ways:
+
+- **an object field** — `c.incr()` on `Counter c` assumed Counter's `hits == old.hits + 1` about A's own `hits`;
+- **a local alias** — `Counter d = c; d.bump()` havoced the caller's `count` (if any) and left `c$count` at its
+  entry value, so `c.count == 3` held past the increment;
+- **a parameter of the caller's own class** — `o.incr()` on `A o` framed and assumed `count == old.count + 1`
+  about `this.count`, true only when `o` is `this`;
+- **another class's static** — `Util.set7()` with `@Ensures({ total == 7 })` was assumed about A's `total`.
+
+And a fifth, quieter one: a receiver of another class resolved its callee on the CALLER's class first, so with a
+same-named method on both, `c.incr()` was A's `incr` — A's field havoced, Counter's `@Ensures` never assumed.
+
+**What changed.**
+
+- **An object field is a receiver** (`collectObjectParams`): a field of another class's type — static only, in a
+  static method — that this method never reassigns and no parameter shadows is modelled like an object parameter:
+  `c.count` reads `c$count` (it was outside the fragment), its class invariants are assumed on entry, calls through
+  it are framed onto it (Phase 350), and the Phase 194 alias boundary covers it (a field and a parameter of the same
+  class may be one object). `this.c.incr()` is the same receiver.
+- **A local alias is its receiver** (`collectObjectAliases`, `TypeEnvironment.objectAliases`): a local declared
+  `T d = r`, `r` a modelled receiver, declared once and never reassigned, IS `r` — for calls (statement and value),
+  the callee's `@Requires` discharge, field reads in the encoder, and a written object at a call site.
+- **Every other explicit receiver is loud** when its callee writes or reads its own fields (a parameter of the
+  caller's class, a fresh object, a call result, a reassigned field or local): "call 'o.incr(…)' writes its
+  receiver's field 'count', but 'o' isn't a receiver the verifier models (an object parameter or field, or a local
+  holding one) — the caller can't name that field", or "… has an @Ensures over its receiver's field …". A callee
+  that touches no field of its own stays framed as before. Carrier receivers (Phase 133) bind their own fields and
+  registry specs are receiver-independent (Phase 220); neither is affected.
+- **A foreign static writes its own statics:** they are no location of the caller's, so they drop out of the frame;
+  an `@Ensures` over them is loud (the caller can't name `Util.total`). A static of a superclass is the caller's.
+- **A receiver of another class resolves on that class** and its superclasses before anything else
+  (`resolveContractedCallee`); the caller's class is searched only for `this`, implicit-this and its own statics.
+- **The write collector follows a local reference** (`localAliasSources`): a local assigned a parameter or field by
+  name, transitively (`b = a; c = b`), writes it, so `put0(a) { int[] b = a; b[0] = 5 }` has the frame `{a}` (the
+  collector's recorded blind spot, now down to aliases through other expressions). Only a reference counts: `int
+  n = x` copies a value. And a parameter of immutable type in the frame is dropped — it can only be reassigned
+  (`x = x + 1`), which never reaches the caller (before, the caller's argument was havoced: imprecise, not unsound).
+- **Display:** an object receiver's own handle (`c = 0`) is hidden; its fields show as `c$count`.
+
+**Probed, not changed:** a contract-free helper whose body declares a local (`int n = x; return n + 1`) doesn't
+unfold as a function, so a postcondition over its result refutes; and a field named `count` with `old.count` in a
+caller's contract shows a stray `count.size()` in counterexamples (the `.count` list dispatch). Both are older than
+this slice, recorded as follow-ups.
+
+**Shipped tests:** group `P351 a call through any receiver lands on that receiver`, 19 cases: a field call
+havocing the field object's state, its callee's `@Ensures` reaching the caller, and not landing on the caller's
+same-named field; `this.c`; a reassigned field loud; a field and a parameter of one class at the alias boundary; a
+local alias as a value call, a statement call, with the `@Ensures` off the caller's field, and as a read; a
+same-class parameter loud; a fresh object loud; the receiver's class resolving first; a foreign static leaving the
+caller's static alone, and loud with an `@Ensures` over its own; helpers aliasing an array and an object parameter;
+a helper copying a value and one reassigning its int parameter leaving the caller's argument alone.
+
+**Still out:** a fresh object as a receiver (`new Counter().incr()`, `Counter d = new Counter()`: a constructor's
+effect isn't modelled, so loud); an alias through any other expression (`T d = cond ? a : b`, a getter); a field
+the method reassigns; aliasing in general, which stays the documented non-goal behind Phase 194's boundary.
 
 ---
 

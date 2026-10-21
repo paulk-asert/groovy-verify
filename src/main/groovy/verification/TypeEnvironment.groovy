@@ -70,6 +70,9 @@ class TypeEnvironment {
     /** Object-typed (reference) parameters → declared type, for the nullity oracle. */
     final Map<String, ClassNode> objectParams = new LinkedHashMap<String, ClassNode>()
 
+    /** Phase 351 — a local that only ever holds a modelled receiver ({@code Counter d = c}) → that receiver's name. */
+    final Map<String, String> objectAliases = new LinkedHashMap<String, String>()
+
     /** Names of boolean-sorted locals. */
     final Set<String> booleanLocals = new HashSet<String>()
 
