@@ -335,7 +335,7 @@ discharges `s.length()` and `@NonNull Function g` discharges `g.apply(x)`, with 
 call sites (Phase 146). It does not replace `@Requires`, which additionally emits a GContracts *runtime* check.
 
 For method bodies: straight-line code, `if`/`else`, locals and instance fields (re-assignable,
-tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`) and pre/post
+tracked in SSA so a mutator's pre/post state differ), compound assignment (`+= -= *= /= %=`, and since Phase 354 `**=`, the shift and the bitwise compounds — also inside a pure helper) and pre/post
 `++`/`--` both as statements and **in expression position** (`x = i++` / `x = ++i` / `a[i++] = v` /
 `x = a[i++]` — the side-effecting inc/dec is hoisted to its old/new value plus the increment, so the array-fill
 loop `while (i < n) a[i++] = 0` verifies and an out-of-bounds `a[i++]` refutes; Phases 85/86), multiple

@@ -15850,7 +15850,29 @@ symbolic recursive step; a folded helper in a caller's contract; a loop still op
 own static refuting, and one over its parameters unfolding.
 
 **Still out:** a loop, `switch` or compound assignment (`n += 1`) in a helper body; a sibling helper over its own
-fields (opaque, not inlined).
+fields (opaque, not inlined). *(The compound assignment is Phase 354.)*
+
+## Phase 354 — compound assignment in a helper and a body  *(shipped — the fold's last plain-statement gap; `%=` fixed)*
+
+Phase 353's fold refused `x op= e`, `n++` and `--x`, so a helper using one stayed an uninterpreted function.
+
+- **The fold** reads `x op= e` as `x = x op e` (`+ - * / intdiv % ** << >> >>> & | ^`; Groovy's `?=` is not folded)
+  and `x++` / `--x` as a statement as `x = x ± 1`. An expression that still assigns or increments once substituted
+  (`return n++`, `(n = 5) + 1`) refuses (`hasEffect`): its value isn't a pure term without the evaluation-order
+  semantics the body encoder gives statements, so the call stays uninterpreted — sound, and for `return n++`
+  incomplete. A closure's own statements are left to the closure.
+- **A Groovy 6 spelling bug in bodies:** `%=` is `REMAINDER_EQUAL` (as `%` is `REMAINDER`, Phase 343), which
+  `Encoder.compoundBaseOp` didn't know, so `r %= 3` in a method or a loop body was "a statement with no modelled
+  effect" and the method skipped. The body desugar now takes the same operators as the fold (`%=`, `intdiv`'s
+  compound, `**=`, the shifts and the bitwise compounds), each lowered through the binary operator's existing
+  translation. Whole corpus unchanged.
+
+**Shipped tests:** group `P354 compound assignment in a helper and a body`, 13 cases: `n += 2` unfolding and a wrong
+claim refuting; `x *= 3` on the parameter; `n++` / `--x` statements; a compound assignment in a branch; `%=`, `&=`
+and String `+=` in helpers; `return n++` staying opaque; `%=` and `&=` in method bodies; `%=` in a loop body with
+an invariant proving, and a wrong bound refuting.
+
+**Still out:** a loop or `switch` in a helper body; `?=` (elvis-assign).
 
 ---
 

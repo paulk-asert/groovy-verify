@@ -7397,10 +7397,21 @@ class Encoder implements TheoryApi {
         if (t == Types.MULTIPLY_EQUAL) return Types.MULTIPLY
         if (t == Types.DIVIDE_EQUAL)   return Types.DIVIDE
         if (t == Types.MOD_EQUAL)      return Types.MOD
+        // Phase 354 — Groovy 6 spells `%=` REMAINDER_EQUAL (as `%` is REMAINDER, Phase 343): `r %= 3` was a
+        // "statement with no modelled effect"; and the rest of the operators the encoder translates
+        if (t == Types.REMAINDER_EQUAL)            return Types.REMAINDER
+        if (t == Types.INTDIV_EQUAL)               return Types.INTDIV
+        if (t == Types.POWER_EQUAL)                return Types.POWER
+        if (t == Types.LEFT_SHIFT_EQUAL)           return Types.LEFT_SHIFT
+        if (t == Types.RIGHT_SHIFT_EQUAL)          return Types.RIGHT_SHIFT
+        if (t == Types.RIGHT_SHIFT_UNSIGNED_EQUAL) return Types.RIGHT_SHIFT_UNSIGNED
+        if (t == Types.BITWISE_AND_EQUAL)          return Types.BITWISE_AND
+        if (t == Types.BITWISE_OR_EQUAL)           return Types.BITWISE_OR
+        if (t == Types.BITWISE_XOR_EQUAL)          return Types.BITWISE_XOR
         -1
     }
 
-    /** True if {@code e} is a compound assignment {@code lhs += rhs} (or {@code -= *= /= %=}). */
+    /** True if {@code e} is a compound assignment {@code lhs += rhs} (or {@code -= *= /= %= **= &= |= ^= <<= >>=} …). */
     static boolean isCompoundAssign(Expression e) {
         e instanceof BinaryExpression && compoundBaseOp(((BinaryExpression) e).operation.type) >= 0
     }

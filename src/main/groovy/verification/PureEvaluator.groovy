@@ -34,6 +34,8 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
+import org.codehaus.groovy.ast.expr.PostfixExpression
+import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
@@ -45,6 +47,7 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.IfStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.Statement
+import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
 
 /**
@@ -170,10 +173,10 @@ class PureEvaluator {
             rest.addAll(stmts.subList(i + 1, stmts.size()))
             return foldStatements(rest, 0, env, budget)
         }
-        if (st instanceof ReturnStatement) return substitute(((ReturnStatement) st).expression, env)
+        if (st instanceof ReturnStatement) return pure(substitute(((ReturnStatement) st).expression, env))
         if (st instanceof IfStatement) {
             IfStatement ifs = (IfStatement) st
-            Expression cond = substitute(ifs.booleanExpression, env)
+            Expression cond = pure(substitute(ifs.booleanExpression, env))
             if (cond == null) return null
             List<Statement> rest = stmts.subList(i + 1, stmts.size())
             List<Statement> thenL = new ArrayList<Statement>(statementsOf(ifs.ifBlock))
@@ -205,16 +208,73 @@ class PureEvaluator {
             bound = ((VariableExpression) ((BinaryExpression) e).leftExpression).name
             value = ((BinaryExpression) e).rightExpression
         }
+        // Phase 354 — `x op= e` is `x = x op e`; `x++` / `--x` as a statement is `x = x ± 1`
+        if (bound == null && e instanceof BinaryExpression && ((BinaryExpression) e).leftExpression instanceof VariableExpression) {
+            int base = compoundBase(((BinaryExpression) e).operation.type)
+            if (base >= 0) {
+                BinaryExpression be = (BinaryExpression) e
+                bound = ((VariableExpression) be.leftExpression).name
+                value = new BinaryExpression(be.leftExpression, Token.newSymbol(base, be.operation.startLine, be.operation.startColumn), be.rightExpression)
+            }
+        }
+        if (bound == null && (e instanceof PostfixExpression || e instanceof PrefixExpression)) {
+            Expression operand = e instanceof PostfixExpression ? ((PostfixExpression) e).expression : ((PrefixExpression) e).expression
+            Token op = e instanceof PostfixExpression ? ((PostfixExpression) e).operation : ((PrefixExpression) e).operation
+            if (operand instanceof VariableExpression && (op.type == Types.PLUS_PLUS || op.type == Types.MINUS_MINUS)) {
+                bound = ((VariableExpression) operand).name
+                value = new BinaryExpression(operand, Token.newSymbol(op.type == Types.PLUS_PLUS ? Types.PLUS : Types.MINUS,
+                    op.startLine, op.startColumn), new ConstantExpression(1, true))
+            }
+        }
         if (bound != null) {
             Expression v = substitute(value, env)
-            if (v == null) return null
+            if (v == null || hasEffect(v)) return null
             Map<String, Expression> next = new HashMap<String, Expression>(env)
             next.put(bound, v)
             return foldStatements(stmts, i + 1, next, budget)
         }
         // a trailing expression is the method's value (Groovy's implicit return); anywhere else it is a statement
         // whose effect the fold can't see
-        i == stmts.size() - 1 ? substitute(e, env) : null
+        i == stmts.size() - 1 ? pure(substitute(e, env)) : null
+    }
+
+    /** Phase 354 — the compound-assignment op type's base binary op, or -1 (`?=` and the rest aren't folded). */
+    private static int compoundBase(int t) {
+        switch (t) {
+            case Types.PLUS_EQUAL: return Types.PLUS
+            case Types.MINUS_EQUAL: return Types.MINUS
+            case Types.MULTIPLY_EQUAL: return Types.MULTIPLY
+            case Types.DIVIDE_EQUAL: return Types.DIVIDE
+            case Types.INTDIV_EQUAL: return Types.INTDIV
+            case Types.MOD_EQUAL: return Types.MOD
+            case Types.REMAINDER_EQUAL: return Types.REMAINDER
+            case Types.POWER_EQUAL: return Types.POWER
+            case Types.LEFT_SHIFT_EQUAL: return Types.LEFT_SHIFT
+            case Types.RIGHT_SHIFT_EQUAL: return Types.RIGHT_SHIFT
+            case Types.RIGHT_SHIFT_UNSIGNED_EQUAL: return Types.RIGHT_SHIFT_UNSIGNED
+            case Types.BITWISE_AND_EQUAL: return Types.BITWISE_AND
+            case Types.BITWISE_OR_EQUAL: return Types.BITWISE_OR
+            case Types.BITWISE_XOR_EQUAL: return Types.BITWISE_XOR
+            default: return -1
+        }
+    }
+
+    /** Phase 354 — {@code e}, or null when it still holds an assignment or an increment ({@code return n++},
+     *  {@code (n = 5) + 1}): a folded value is a pure term, and such an expression's value isn't one. */
+    private static Expression pure(Expression e) { e == null || hasEffect(e) ? null : e }
+
+    private static boolean hasEffect(Expression e) {
+        boolean[] hit = [false] as boolean[]
+        e.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) hit[0] = true
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) { hit[0] = true }
+            @Override void visitPrefixExpression(PrefixExpression pe) { hit[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }   // a closure's own statements are its own
+        })
+        hit[0]
     }
 
     /** The single expression a body reduces to — {@code { expr }} or {@code { return expr }}; else null. */
