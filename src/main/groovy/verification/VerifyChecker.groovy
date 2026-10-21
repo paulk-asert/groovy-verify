@@ -2798,6 +2798,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         (String) m.getNodeMetaData(INFERRED_WRITES_REASON_KEY)
     }
 
+    /** Phase 349 — of the locations a body writes, those whose SIZE may change (an append `xs << v`, `add`,
+     *  `clear`, an unknown method on the receiver), as opposed to an element store or an in-place `sort`. Collected
+     *  beside the write set in infer mode, memoised under {@link #INFERRED_SIZE_KEY}; a caller havocs the size
+     *  oracle of exactly these (Phase 229's size stability stays for a registry spec's size-preserving mutators). */
+    private static final ThreadLocal<Set<String>> WRITE_SIZE = new ThreadLocal<Set<String>>()
+    private static final String INFERRED_SIZE_KEY = 'verification.inferredSizeWrites'
+    /** In-place mutators that keep the receiver's size: a recorded mutation by any other name may change it. */
+    private static final Set<String> SIZE_PRESERVING = ['sort', 'swap', 'fill', 'reverse', 'shuffle', 'set', 'putAt',
+        'setLength'] as Set
+    private static void noteSizeChange(Expression recv) {
+        Set<String> sz = WRITE_SIZE.get()
+        if (sz == null || !inferMode()) return
+        Set<String> tmp = new HashSet<String>()
+        if (!recordTarget(recv, tmp)) return
+        Set<String> immutable = WRITE_IMMUTABLE.get()
+        for (String n : tmp) if (immutable == null || !immutable.contains(n)) sz.add(n)
+    }
+
+    /** Phase 349 — the caller-visible locations whose size {@code m}'s body may change; null when the body's writes
+     *  can't be bounded (then every collection it declares is taken as resized). */
+    static Set<String> calleeSizeWrites(MethodNode m) {
+        if (calleeWrites(m) == null) return null
+        Set<String> sz = (Set<String>) m.getNodeMetaData(INFERRED_SIZE_KEY)
+        sz != null ? sz : Collections.<String> emptySet()
+    }
+
     /**
      * Phase 347 — the caller-visible locations {@code m}'s body may write: its class's fields (bare or
      * {@code this.f}), static fields, and parameters whose contents it stores into or mutates ({@code a[i] = v},
@@ -2820,10 +2846,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Set<String> prevImmutable = WRITE_IMMUTABLE.get()
         Boolean prevMode = INFER_MODE.get()
         String prevReason = WRITE_UNBOUNDED.get()
+        Set<String> prevSize = WRITE_SIZE.get()
         WRITE_OWNER.set(m.declaringClass)
         WRITE_IMMUTABLE.set(immutableNames(m))
         INFER_MODE.set(Boolean.TRUE)
         WRITE_UNBOUNDED.set(null)
+        Set<String> sizes = new HashSet<String>()
+        WRITE_SIZE.set(sizes)
         Set<String> ws = new HashSet<String>()
         boolean bounded
         String reason
@@ -2835,9 +2864,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             WRITE_IMMUTABLE.set(prevImmutable)
             INFER_MODE.set(prevMode)
             WRITE_UNBOUNDED.set(prevReason)
+            WRITE_SIZE.set(prevSize)
             visiting.remove(m)
         }
         Set<String> out = null
+        Set<String> outSizes = null
         if (bounded) {
             Set<String> visible = new HashSet<String>()
             ClassNode dc = m.declaringClass
@@ -2845,10 +2876,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (Parameter p : m.parameters) visible.add(p.name)
             out = new LinkedHashSet<String>()
             for (String w : ws) if (visible.contains(w)) out.add(w)
+            outSizes = new LinkedHashSet<String>()
+            for (String w : sizes) if (visible.contains(w)) outSizes.add(w)
         }
         // memoise only once the whole walk is done (a nested computation during a cycle is partial)
         if (visiting.isEmpty()) {
             m.putNodeMetaData(INFERRED_WRITES_KEY, out != null ? out : UNBOUNDED_WRITES)
+            if (outSizes != null) m.putNodeMetaData(INFERRED_SIZE_KEY, outSizes)
         }
         // the reason names a real construct even when the walk ran inside another's (Phase 348): keep it regardless
         if (out == null && reason != null && m.getNodeMetaData(INFERRED_WRITES_REASON_KEY) == null) {
@@ -2878,15 +2912,22 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 String why = calleeWritesReason(m)
                 return unbounded("call '${name}(…)'" + (why != null ? ": ${why}" : " whose writes can't be bounded"))
             }
+            Set<String> sizes = calleeSizeWrites(m)   // Phase 349 — a resized formal resizes its actual
+            Set<String> sz = WRITE_SIZE.get()
             for (String w : writes) {
                 int fi = -1
                 for (int i = 0; i < m.parameters.length; i++) if (m.parameters[i].name == w) { fi = i; break }
-                if (fi < 0) { ws.add(w); continue }                       // a field (same class, same name)
+                if (fi < 0) {                                             // a field (same class, same name)
+                    ws.add(w)
+                    if (sz != null && (sizes == null || sizes.contains(w))) sz.add(w)
+                    continue
+                }
                 Expression act = actuals.get(fi)
                 if (!(act instanceof VariableExpression)) {               // can't name what is written
                     return unbounded("call '${name}(…)' writes its parameter '${w}', but the argument '${clip(act.text)}' isn't a named variable")
                 }
                 ws.add(((VariableExpression) act).name)
+                if (sz != null && (sizes == null || sizes.contains(w))) sz.add(((VariableExpression) act).name)
             }
         }
         any || unbounded("call '${name}(…)' matches no ${actuals.size()}-parameter overload")
@@ -12189,10 +12230,17 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 case Types.COMPARE_NOT_IN: case Types.COMPARE_NOT_INSTANCEOF: case Types.COMPARE_TO:
                 case Types.COMPARE_IDENTICAL: case Types.COMPARE_NOT_IDENTICAL: case Types.FIND_REGEX: case Types.MATCH_REGEX:
                     return inferMode() && collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
+                case Types.LEFT_SHIFT:
+                    // Phase 349 — `xs << v` appends to (writes) its left operand; on an int it is a shift and writes
+                    // nothing, which "writes the receiver, unless of immutable type" over-approximates soundly. The
+                    // operand's base name is recorded (a local is filtered out later); a chained `log << a << b` or
+                    // a call result on the left contributes its own writes instead. Callee inference only.
+                    if (!inferMode()) return false
+                    noteSizeChange(be.leftExpression)
+                    return recordReceiverWrite(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
                 default:
-                    // groovy-contracts' implication `a ==> b` (Phase 347) is pure; the rest (`<<`, …) could mutate
+                    // groovy-contracts' implication `a ==> b` (Phase 347) is pure; anything else left could mutate
                     if (inferMode() && be.operation.text == '==>') return collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
-                    // shift/membership/etc. → bail (could be a collection mutation)
                     return unbounded("the operator '${be.operation.text}' in '${clip(be.text)}', which could mutate its left operand")
             }
         }
@@ -12217,6 +12265,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             }
             if (LOOP_MUTATORS.contains(m) || INFER_MUTATORS.contains(m)) {
                 if (!recordTarget(mce.objectExpression, ws)) return false
+                if (!SIZE_PRESERVING.contains(m)) noteSizeChange(mce.objectExpression)   // Phase 349
             } else if (isSameClassCall(mce)) {
                 // Phase 347 — a same-class call writes what its callee's frame says, mapped onto the actuals
                 List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
@@ -12230,6 +12279,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // Phase 347 — an unknown method may mutate its receiver in place (`xs.sort()`), and nothing else
                 // nameable: record the receiver (unless its type is immutable), rather than give up
                 if (!recordReceiverWrite(mce.objectExpression, ws)) return false
+                noteSizeChange(mce.objectExpression)   // Phase 349 — and it may resize it
             } else {
                 if (!collectWritesExpr(mce.objectExpression, ws)) return false
             }
@@ -12277,6 +12327,16 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // an unknown static (a library call with no spec) is unbounded, as before: reading it as "writes its
         // arguments" bounded loops that lean on such calls and changed their VCs (a P253 refutation timed out)
         unbounded("static call '${shown}' with no @Pure or @Modifies spec")
+    }
+
+    /** Phase 349 — is {@code loc} (a formal or a field of {@code m}'s class) array-typed? An array's length is fixed. */
+    private static boolean isArrayLocation(MethodNode m, String loc) {
+        for (Parameter p : m.parameters) if (p.name == loc) return p.type.isArray()
+        for (ClassNode c = m.declaringClass; c != null; c = c.superClass) {
+            FieldNode f = c.getDeclaredField(loc)
+            if (f != null) return f.type.isArray()
+        }
+        false
     }
 
     /** Phase 347 — an implicit-this, {@code this.m(…)} or {@code Owner.m(…)} call on {@link #WRITE_OWNER}. */
@@ -14572,6 +14632,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, Object> savedSet = new LinkedHashMap<String, Object>()
         Map<String, Object> savedMapVals = new LinkedHashMap<String, Object>()
         Map<String, Object> savedMapKeys = new LinkedHashMap<String, Object>()
+        Map<String, Object> savedSize = new LinkedHashMap<String, Object>()   // Phase 349
         if (modSet != null) {
             for (String loc : modSet) {
                 String callerLoc = callerSideLocation(loc, formals, actuals)
@@ -14604,6 +14665,21 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     enc.putMapKeys(oldKey, enc.mapKeysFor(callerLoc))
                     enc.putMapVals(callerLoc, s.arrayVar('havoc$' + callerLoc + '$' + (havocCounter++)))
                     enc.putMapKeys(callerLoc, s.setVar('havoc$' + callerLoc + '$' + (havocCounter++)))
+                }
+                // Phase 349 — a bodied callee that may RESIZE a collection (`xs << v`, `add`, `clear`, an unknown
+                // method on it) havocs the caller's size oracle too, with `old.<loc>.size()` pinned at the call. A
+                // registry spec keeps Phase 229's size stability (its mutators are size-preserving); an array's
+                // length never changes; a body that can't be bounded resizes every collection it declares.
+                if (callee.code != null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null &&
+                        enc.hasSizeOracle(callerLoc) && !isArrayLocation(callee, loc)) {
+                    Set<String> resized = calleeSizeWrites(callee)
+                    if (resized == null || resized.contains(loc)) {
+                        if (!savedSize.containsKey(oldKey)) savedSize.put(oldKey, enc.peekSize(oldKey + '.size'))
+                        enc.bindSize(oldKey, enc.sizeOf(callerLoc))
+                        Object fresh = s.intVar('havoc$' + callerLoc + '.size()$' + (havocCounter++))   // shown "xs.size() (after a call)"
+                        s.assertExpr(s.and([s.ge(fresh, s.intLit(0L)), s.le(fresh, s.intLit(2147483647L))]))
+                        enc.bindSize(callerLoc, fresh)
+                    }
                 }
                 // Phase 229 — a MODIFIED collection-typed formal (Collections.sort's `list`) aliases the
                 // actual's POST-havoc handles, so the spec's post-state ensures (`list.indices.every …`)
@@ -14640,6 +14716,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         savedSet.each { String k, Object v -> if (v != null) enc.bindSet(k, v) }
         savedMapVals.each { String k, Object v -> if (v != null) enc.putMapVals(k, v) }
         savedMapKeys.each { String k, Object v -> if (v != null) enc.putMapKeys(k, v) }
+        savedSize.each { String k, Object v -> if (v != null) enc.bindSizeRaw(k + '.size', v) }   // Phase 349
 
         if (ensuresAst != null && post == null) return false   // @Ensures outside the fragment → skip
         boolean fromRegistry = callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null

@@ -429,9 +429,12 @@ carries its `@Ensures` as the induction hypothesis; Phase 206) — a method-leve
 a declared `@Modifies` wins (it is frame-checked, so trusting it is sound; `@Modifies({ [] })` declares that nothing
 is written; a declaration whose body the check can't bound is reported, naming the construct — Phase 348),
 a callee with a body and no `@Modifies` has its frame inferred from the body — the fields it assigns,
-the parameters it stores into or mutates, transitively through same-class calls — and a body whose writes can't be
-bounded makes the call skip loudly. The caller havocs exactly that frame, in straight-line code, inside expressions
-and in loop bodies, while `old.x` snapshots pre-state field and array contents; a contract-free method is a pure
+the parameters it stores into or mutates (`xs << v` included, Phase 349), transitively through same-class calls —
+and a body whose writes can't be bounded makes the call skip loudly. A location the body may RESIZE (an append,
+`add`, `clear`, an unknown method on it) loses its size at the call too; an element store, an in-place `sort` and a
+registry spec keep it, and an array's length never changes. The caller havocs exactly that frame, in straight-line
+code, inside expressions and in loop bodies, while `old.x` snapshots pre-state field and array contents (and a
+resized location's size); a contract-free method is a pure
 function only when its frame is empty. A bodiless callee (a registry skeleton, an interface method) keeps the
 trusted reading "writes nothing" unless it declares otherwise, and a cross-class call's frame is still outside the
 fragment. A class-level

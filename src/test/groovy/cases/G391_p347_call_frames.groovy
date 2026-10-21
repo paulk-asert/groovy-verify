@@ -263,12 +263,12 @@ class G391_p347_call_frames {
                             }
                         }
                     }''')],
-        // `l << x` is a left shift to the collector, which could be an append or an int shift: it gives up, and the
-        // caller is told so rather than given an opaque result (whose frame would be a guess).
-        [group: 'P347 a call is framed by its writes', name: 'a callee whose writes can\'t be bounded skips loudly', expect: ["whose writes can't be bounded from its body: the operator '<<' in '(l << x)'", "declare @Modifies on weird"],
+        // A multiple assignment is a construct the collector doesn't follow: it gives up, and the caller is told so rather
+        // than given an opaque result (whose frame would be a guess). (Used `l << x` until Phase 349 bounded `<<`.)
+        [group: 'P347 a call is framed by its writes', name: 'a callee whose writes can\'t be bounded skips loudly', expect: ["whose writes can't be bounded from its body: multiple assignment 'def (a, b) = [x, x]'", "declare @Modifies on weird"],
          src: tc('''class C {
                         static int count = 0
-                        static int weird(int x) { List<Integer> l = [x]; l << x; count = l.size(); return x }
+                        static int weird(int x) { def (a, b) = [x, x]; count = a + b; return x }
                         @Requires({ n >= 0 })
                         @Ensures({ result == n })
                         static int f(int n) {

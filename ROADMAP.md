@@ -10435,7 +10435,7 @@ lacked: a spec that *changes* the caller's state.
   collection formal aliases the actual's POST-havoc handles** (the Phase 226 pre-havoc aliasing would
   have pinned the spec's post-state sortedness to the stale array; the formal now re-aliases inside
   the framing loop, after the havoc, with `old.<formal>` captured before it).
-- **Size is deliberately not havoced** — the shipped mutators are size-preserving, and the implicit
+- **Size is deliberately not havoced** *(for a registry spec; a bodied callee that appends resizes since Phase 349)* — the shipped mutators are size-preserving, and the implicit
   stability is load-bearing: it is `reverse`'s *only* stated fact (content honestly unknown — the
   elementwise reversal over `old.list` is the recorded refinement), and it is what lets `sort`'s
   sortedness quantifier range over the right bounds.
@@ -15650,15 +15650,49 @@ unchecked. The loud-unsoundness tenet says the gap must announce itself.
   `@Modifies({ [] })` over a `<<` body: `weird` is flagged, and its caller still proves `count == 0` past the call.
   Sound by declaration, with the flag as the one place a wrong declaration would be caught.
 
-**Shipped tests:** group `P348 an unchecked frame is loud`, 10 cases: the `<<` body flagged with the operator
-named, and the same body with `add` bounded and checked; a helper's reason carried up; the partial check's offender
-in the same message; a sibling-class static; a writer passed `new int[1]`; a `synchronized` block; a multiple
-assignment; the Phase 347 call-site skip naming the construct; the declared frame trusted by the caller while the
-body is flagged. G391's unbounded-callee case expects the new wording.
+**Shipped tests:** group `P348 an unchecked frame is loud`, 9 cases: an unbounded body flagged with the construct
+named, and the same body with plain assignments bounded and checked; a helper's reason carried up; the partial
+check's offender in the same message; a sibling-class static; a writer passed `new int[1]`; a `synchronized` block;
+the Phase 347 call-site skip naming the construct; the declared frame trusted by the caller while the body is
+flagged. G391's unbounded-callee case expects the new wording. *(The unbounded construct in these cases was `l << x`
+until Phase 349 gave `<<` a bounded reading; it is a multiple assignment now.)*
 
 **Still out:** the Phase 347 items (cross-class frames, aliasing). A bounded reading of `<<` on a nameable
 receiver (an append writes its receiver; an int shift writes nothing, so "writes the receiver" over-approximates
-both soundly) would turn the commonest flag into a checked frame — a small follow-up.
+both soundly) would turn the commonest flag into a checked frame — a small follow-up. *(Phase 349.)*
+
+## Phase 349 — `<<` writes its receiver  *(shipped — the commonest flag becomes a checked frame; an append resizes)*
+
+Phase 348's follow-up. `xs << v` is an append on a collection and a shift on an int; "writes its left operand,
+unless that is of immutable type" covers both soundly (the shift writes nothing, so recording it is a harmless
+over-approximation), and is the rule the collector already applied to an unknown method's receiver. So, while a
+callee's frame is inferred (`INFER_MODE`; a loop's own write set is untouched), `Types.LEFT_SHIFT` goes through
+`recordReceiverWrite`: the operand's base name is recorded (a local is filtered out later), a chained `log << a << b`
+or a call result on the left contributes its own writes. `@Modifies({ this.log })` over `log << x` is now checked
+and passes; `@Modifies({ [] })` over it is a violation; a contract-free `push(xs, v) { xs << v }` has the frame
+`{xs}`.
+
+**An append resizes.** Phase 229 deliberately kept a collection's size across a call ("the shipped mutators are
+size-preserving, and the implicit size stability is a true, load-bearing fact") — true of a registry spec, and
+false of a body that appends: with the frame alone, a caller kept `xs.size() == 0` past `push(xs, n)`, by `<<` or
+by `add`, contract-free or under a declared frame. The collector now notes the size-changing writes beside the frame
+(`WRITE_SIZE` → `INFERRED_SIZE_KEY`, read by `calleeSizeWrites`): `<<`, any recorded mutator not in
+`SIZE_PRESERVING` (`sort`, `swap`, `fill`, `reverse`, `shuffle`, `set`, `putAt`, `setLength`), an unknown method on
+the receiver, and a same-class callee's resized formal mapped onto the actual. At the call site, a bodied callee
+that may resize a location whose size oracle exists havocs it — `havoc$xs.size()$n`, shown `xs.size() (after a
+call)` — with `old.xs.size()` pinned at the call and the caller's own `old$…` size restored after. A registry spec
+keeps the Phase 229 reading (no body to read; its mutators preserve size), an array's length is never havoced, a
+body that can't be bounded resizes every collection its declared frame names. A declared frame says WHAT is
+written; whether the body resizes it is still read off the body.
+
+**Shipped tests:** group ``P349 `<<` writes its receiver``, 16 cases: a list field appended within / outside the
+frame; chained appends; a `StringBuilder` field; an appended `Set` parameter as a write; a shift on an int parameter
+and on an int local as no write; a helper appending to a local writing nothing visible; a contract-free appender
+framed by the caller, with the list's size and elements unknown after; a contract-free `add` and a declared-frame
+`add` resizing; a declared-frame element store and a registry sort keeping the size; an append in a helper's loop.
+
+**Still out:** the Phase 347 items (cross-class frames, aliasing). A map's size is havoced with the rest of the map
+(its key set is), so nothing new there; a `StringBuilder`'s `length()` has no size oracle to havoc.
 
 ---
 
