@@ -663,6 +663,9 @@ class PureEvaluator {
             // assigns a field or stores into a parameter is framed at its call site instead (VerifyChecker.calleeWrites)
             if (m.parameters.length == arity) {
                 if (hasContract(m)) return null
+                // Phase 359 — an instance method a subclass of the unit overrides is a virtual call: its body is the
+                // value only for an exact-class receiver, so it is no function to inline or evaluate
+                if (!m.isStatic() && !VerifyChecker.overriders(m).isEmpty()) return null
                 Set<String> writes = VerifyChecker.calleeWrites(m)
                 return (writes != null && writes.isEmpty()) ? m : null
             }

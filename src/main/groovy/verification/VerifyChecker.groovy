@@ -30,6 +30,7 @@ import org.codehaus.groovy.ast.ClassNode
 import org.codehaus.groovy.transform.stc.StaticTypesMarker
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.CodeVisitorSupport
 import org.codehaus.groovy.ast.Variable
@@ -2865,6 +2866,51 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * body gets the frame INFERRED from it ({@link #calleeWrites}), null when that can't be bounded; a bodiless
      * callee — a registry skeleton, an interface or abstract method — keeps the trusted reading "nothing".
      */
+    /** Phase 359 — the methods a virtual call on {@code m} may dispatch to besides {@code m} itself: an instance
+     *  method of the same name and arity declared by a class of the compilation unit that extends or implements
+     *  {@code m}'s class. The world is closed over the unit — a class compiled elsewhere is a library class, read by
+     *  its supertype's contract like any other. */
+    static List<MethodNode> overriders(MethodNode m) {
+        List<MethodNode> out = new ArrayList<MethodNode>()
+        ClassNode dc = m?.declaringClass
+        if (dc == null || m.isStatic() || m.isPrivate()) return out
+        ModuleNode mod = WRITE_OWNER.get()?.module ?: dc.module
+        if (mod == null) return out
+        for (ClassNode cn : mod.classes) {
+            if (cn.name == dc.name || !(cn.isDerivedFrom(dc) || cn.implementsInterface(dc))) continue
+            for (MethodNode om : cn.getDeclaredMethods(m.name)) {
+                if (!om.isStatic() && om.parameters.length == m.parameters.length && om.code != null) out.add(om)
+            }
+        }
+        out
+    }
+
+    /** Phase 359 — for a call by a read-list name on a named receiver of a library (non-source) type, the unit's
+     *  overrides of it; null when the receiver isn't such, or no override has the call's arity. */
+    private static List<MethodNode> libraryReceiverOverrides(Expression recv, String m, List<Expression> as) {
+        if (!(recv instanceof VariableExpression) || as == null || !(m in LOOP_PURE_READS || m in INFER_PURE_READS)) return null
+        VariableExpression ve = (VariableExpression) recv
+        ClassNode t = (ve.accessedVariable?.originType ?: ve.originType)?.redirect()
+        ModuleNode mod = WRITE_OWNER.get()?.module
+        if (t == null || t == ClassHelper.OBJECT_TYPE || t.isPrimaryClassNode() || mod == null) return null
+        List<MethodNode> out = new ArrayList<MethodNode>()
+        for (ClassNode cn : mod.classes) {
+            if (cn.name == t.name || !(cn.isDerivedFrom(t) || cn.implementsInterface(t))) continue
+            for (MethodNode om : cn.getDeclaredMethods(m)) if (!om.isStatic() && om.parameters.length == as.size() && om.code != null) out.add(om)
+        }
+        out.isEmpty() ? null : out
+    }
+
+    /** Phase 359 — a class of the compilation unit other than {@code t} that is a subtype of it and declares {@code m}. */
+    private static boolean unitSubtypeDeclares(ClassNode t, String m) {
+        ModuleNode mod = WRITE_OWNER.get()?.module
+        if (t == null || mod == null) return false
+        for (ClassNode cn : mod.classes) {
+            if (cn.name != t.name && (cn.isDerivedFrom(t) || cn.implementsInterface(t)) && !cn.getDeclaredMethods(m).isEmpty()) return true
+        }
+        false
+    }
+
     private static Set<String> modifiedNames(MethodNode node) {
         Set<String> declared = declaredModifies(node)
         if (declared != null) return declared
@@ -2992,6 +3038,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             ClassNode dc = m.declaringClass
             while (dc != null) { for (FieldNode f : dc.fields) visible.add(f.name); dc = dc.superClass }
             for (Parameter p : m.parameters) visible.add(p.name)
+            // Phase 359 — a field only a subclass of the unit declares, written by an override a same-class call
+            // dispatches to: the receiver's, so still caller-visible (a caller holding the subclass havocs it)
+            ModuleNode mod = m.declaringClass?.module
+            if (mod != null && !m.isStatic()) for (ClassNode cn : mod.classes) {
+                if (cn.name != m.declaringClass.name && cn.isDerivedFrom(m.declaringClass)) for (FieldNode f : cn.fields) visible.add(f.name)
+            }
             // Phase 351 — a local that holds a parameter or field (`int[] b = a`, `Counter d = c`) writes it: a write
             // recorded under the local's name counts for each visible name it was assigned from
             // (only a reference: `int n = x` copies the value, so an immutable-typed source is no alias)
@@ -3047,6 +3099,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // no such method anywhere up the hierarchy: the SAM / closure call shorthand on a callable in scope
         // (`cs(r)` on a Function parameter), whose own body's writes count where it is defined — its arguments' do here
         if (candidates.isEmpty()) return true
+        for (MethodNode c : new ArrayList<MethodNode>(candidates)) candidates.addAll(overriders(c))   // Phase 359
         collectCallWritesAmong(candidates, name, actuals, ws, null)
     }
 
@@ -3061,6 +3114,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             for (MethodNode m : c.getMethods(name)) if (m.isStatic() == isStatic && m.code != null) candidates.add(m)
         }
         if (candidates.isEmpty()) return unbounded("call '${sib.nameWithoutPackage}.${name}(…)' has no body to read")
+        // Phase 359 — a parameter typed `Base` may hold a `Sub`: its overrides' frames count too
+        if (!isStatic) for (MethodNode c : new ArrayList<MethodNode>(candidates)) candidates.addAll(overriders(c))
         collectCallWritesAmong(candidates, name, actuals, ws, recv != null ? recv : sib.name + '$')
     }
 
@@ -11856,7 +11911,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (ClassNode c = t.redirect(); c != null; c = c.superClass) {
             if (c.isPrimaryClassNode() && !c.getDeclaredMethods(m).isEmpty()) return true
         }
-        false
+        // Phase 359 — `Comparable<Box> c` may hold a Box, whose own compareTo is the one that runs
+        unitSubtypeDeclares(t.redirect(), m)
     }
 
     /**
@@ -12498,6 +12554,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
                 if (sib != null && as != null && !sib.getMethods(m).isEmpty()) {
                     return collectSiblingCallWrites(sib, m, as, ws, ((VariableExpression) mce.objectExpression).name, false) &&
+                           collectWritesArgs(mce.arguments, ws)
+                }
+                // Phase 359 — a receiver of a LIBRARY type that classes of the unit implement (`Comparable<Box> c`):
+                // the library's own method is read by its contract (a read: the name is on the read lists), and each
+                // unit override by its frame onto the receiver
+                List<MethodNode> unitImpls = libraryReceiverOverrides(mce.objectExpression, m, as)
+                if (unitImpls != null) {
+                    return collectCallWritesAmong(unitImpls, m, as, ws, ((VariableExpression) mce.objectExpression).name) &&
                            collectWritesArgs(mce.arguments, ws)
                 }
                 // Phase 347 — an unknown method may mutate its receiver in place (`xs.sort()`), and nothing else
@@ -14914,6 +14978,25 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
+        // Phase 359 — the call may dispatch to an override in a subclass of the unit: its writes count too, its
+        // formals renamed to the callee's by position; one that can't be bounded leaves the call unmodelled, loudly
+        if (modSet != null && callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null) {
+            for (MethodNode om : overriders(callee)) {
+                Set<String> ow = modifiedNames(om)
+                if (ow == null) {
+                    String why = calleeWritesReason(om)
+                    throw new UnsupportedConstructException(
+                        "call '${name}(…)' may dispatch to ${om.declaringClass.nameWithoutPackage}.${om.name}(…), whose writes " +
+                        "can't be bounded from its body" + (why != null ? ": ${why}" : '') + " — declare @Modifies on it")
+                }
+                if (ow.isEmpty()) continue
+                modSet = new LinkedHashSet<String>(modSet)
+                for (String w : ow) {
+                    int fi = om.parameters.findIndexOf { Parameter fp -> fp.name == w }
+                    modSet.add(fi >= 0 ? callee.parameters[fi].name : w)
+                }
+            }
+        }
         // Phase 350 — a call on a class-typed PARAMETER whose callee lives on that class (`c.bump()`): the callee's
         // fields are the receiver's, `c$field` (Phase 45's naming), not the caller's same-named ones. Its frame
         // havocs those, its @Ensures binds under the receiver context, and the receiver's class invariants are

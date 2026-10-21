@@ -16025,8 +16025,53 @@ loop and through a `def` local (each compiled cleanly before); a call on a call'
 before); a sibling's own writing `clone()`; a sibling's reading `size()` framed by its body.
 
 **Still out:** a receiver declared as an interface or library type that a source class implements (`List<T> xs`
-holding a user `List`) is still read by the library's contract; `reverse()` and the other receiver-type-dependent
+holding a user `List`) is still read by the library's contract (Phase 359); `reverse()` and the other receiver-type-dependent
 names stay writes.
+
+## Phase 359 — a call is framed by what it may dispatch to  *(shipped — soundness: virtual dispatch in frames and values)*
+
+Phase 358's follow-up. A call's frame came from the method its receiver's DECLARED type names — a library read by
+name, or a source method by its body (Phases 347, 350). A virtual call runs the receiver's runtime override, so:
+
+- a `Comparable<Box> c` parameter holding a `Box` whose `compareTo` writes `n` was the library's read — nothing
+  written — and a caller's `@Ensures({ b.n == 0 })` across `cmp(b, b)` verified, falsely;
+- a `Base h` parameter holding a `Sub` was framed by `Base.get()`'s body, missing `Sub.get()`'s write — in a
+  helper's inferred frame, through a same-class call inside `Base` (`twice()` calling `get()`), and at a call in the
+  caller's own body (`h.get()`).
+
+The world is closed over the compilation unit, as for sibling frames (Phase 350): a class compiled elsewhere is a
+library class, read by its supertype's contract. `overriders(m)` lists the instance methods of the same name and
+arity that a class of the unit extending or implementing `m`'s class declares, and:
+
+- **the collector** adds them to a call's candidates (same-class and sibling calls), so their frames are unioned in,
+  formals mapped to actuals by position; a field only a subclass declares stays caller-visible in the base method's
+  frame;
+- **a library-typed receiver** with unit overrides (`libraryReceiverOverrides`) is framed by those overrides onto
+  the receiver — the library's own method by its contract, a read — so a reading `compareTo` keeps the frame; in a
+  loop's write set it is not a pure read (Phase 358's `userDeclared` takes unit subtypes too), so the loop bails;
+- **the call site** (`assumeCalleeEnsures`) unions the overrides' frames into the callee's, an override's formals
+  renamed to the callee's by position (`Sub.put(int[] b)` overriding `Base.put(int[] a)`); an override whose writes
+  can't be bounded leaves the call unmodelled, loudly: "call 'get(…)' may dispatch to Sub.get(…), whose writes can't
+  be bounded from its body".
+
+The `@Ensures` assumed at the call stays the callee's: an override inherits it (groovy-contracts), and one that
+redeclares it is held to Phase 120's behavioural-subtyping check.
+
+- **Fixed, older: an overridden helper's body was its value.** The closed evaluator (Phase 8a, `PureEvaluator.resolve`)
+  inlined a contract-free, frame-empty same-class helper as its call's value — `foo() { get() }` proved
+  `result == 0` from `Base.get() { 0 }`, though a `Sub` receiver runs `Sub.get() { 1 }`. An instance method a class
+  of the unit overrides is no function now: its call is opaque (or, in a contract, outside the fragment, loudly).
+
+**Shipped tests:** group `P359 a call is framed by what it may dispatch to`, 10 cases, 7 compiling cleanly
+before: a `Comparable` holding a class whose `compareTo` writes; a base-class parameter holding a writing subclass,
+directly and through a same-class call in the base; a call on a base-class parameter in the caller; an override
+writing its differently-named parameter; an unbounded override loud; a reading override, and a reading `compareTo`,
+keeping the frame; an overridden helper's body not its value (compiled cleanly before), and one never overridden
+still inlined.
+
+**Still out:** a subclass compiled in another unit (the closed world); a collection subclass with fields (`class Bag
+extends ArrayList`) is outside the fragment, so loud. A subclass in another unit may override a helper the closed
+evaluator inlines, by the same closed-world boundary.
 
 ---
 
