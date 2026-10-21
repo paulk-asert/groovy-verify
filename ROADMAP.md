@@ -15872,7 +15872,44 @@ claim refuting; `x *= 3` on the parameter; `n++` / `--x` statements; a compound 
 and String `+=` in helpers; `return n++` staying opaque; `%=` and `&=` in method bodies; `%=` in a loop body with
 an invariant proving, and a wrong bound refuting.
 
-**Still out:** a loop or `switch` in a helper body; `?=` (elvis-assign).
+**Still out:** a loop or `switch` in a helper body; `?=` (elvis-assign). *(The loop is Phase 355.)*
+
+## Phase 355 — a loop in a helper  *(shipped — a helper's loop summarised by its own verified invariant)*
+
+Phases 353/354 fold a contract-free helper's straight-line body into its defining expression; a loop still left the
+call an uninterpreted function. A loop can't fold into a closed expression, but its exit state can be described.
+
+- **The summary** (`PureEvaluator.foldLoop`): a loop carrying `LoopSpec` (an `@Invariant`) and a variant (an explicit
+  `@Decreases`, or a range for-in's automatic one) runs its `for` init into the substitution, then gives each
+  variable the body writes a fresh name (`$loopK$c`, hidden from counterexamples). The facts at exit — every invariant
+  and the negated guard, over those names — go out beside the defining expression (`unfoldBody(c, facts)`), and the
+  encoder asserts each it can translate with the call's definition. The fold continues after the loop, so
+  sequential loops and a loop followed by more code compose.
+- **Why it is sound.** Loop verification runs for every method with an annotated loop, contracted or not, so the
+  helper's own checks prove the invariant established and preserved and the variant decreasing — for every input,
+  since a contract-free helper has no `@Requires` (one would make it a contracted method, whose `@Ensures` is the
+  route). So an exit state exists and satisfies the facts. The VARIANT is the load-bearing part: without proven
+  termination there may be no exit state, and `¬guard` over a variable the loop doesn't write (`while (x > 0) {}`)
+  would contradict, making every caller proof vacuous — so a loop with no variant keeps the call opaque.
+- **Path conditions.** Establishment is proven only on the path that reaches the loop, so each fact is guarded by
+  the fold's path condition (`¬pc ∨ fact`): a loop in `if (x > 0)` adds nothing at `pos(-3)`. Asserted
+  unconditionally, its `0 <= i ∧ i ≥ x … i == x` would contradict there.
+- **What refuses** (the call stays opaque): a loop that breaks, returns or throws (the exit isn't `inv ∧ ¬guard`);
+  writes anything but plain `int`/`long` variables (`a[i] = v`, `xs.add(v)`: only scalars get fresh names, so a
+  list's contents would be read at entry); calls a method on an object; nests a loop or a `switch`/`try`; comes from
+  `.each`; or a collection for-in.
+- **The posture this exposes.** A helper's loop is verified for every argument, so its invariant must hold for all
+  of them: `i <= x` fails on entry for a negative `x`, and the helper reports it. `hi = Math.max(x, 0)` is the idiom
+  (a contracted helper with `@Requires({ x >= 0 })` and an `@Ensures` is the other route).
+
+**Shipped tests:** group `P355 a loop in a helper`, 15 cases: a summed loop's result non-negative, and a claim the
+invariant doesn't give refuting; an exact invariant's closed form, symbolically and at a constant; two sequential
+loops; a `while` counting down; a range for-in with its automatic variant; a loop in a branch guarded by it, and the
+other branch proving nothing extra; no variant, a `break` and a list mutation each leaving the call opaque; and a
+wrong invariant, a non-decreasing variant and an invariant failing for some input each reported at the helper.
+
+**Still out:** a loop that breaks or mutates a collection, a nested loop, and a `switch` in a helper; closed
+evaluation (`PureEvaluator.tryEvaluate`) still doesn't run loops, so a constant argument goes through the summary.
 
 ---
 

@@ -109,7 +109,7 @@ class PureEvaluator {
      * {@code switch}, a {@code throw}, a compound assignment) refuses: null, and the encoder leaves the call
      * to the uninterpreted-function bottom, as before.
      */
-    Expression unfoldBody(Call c) {
+    Expression unfoldBody(Call c, List<Expression> facts = null) {
         MethodNode m = resolve(c.name, c.args.size())
         if (m == null) return null
         Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
@@ -120,17 +120,51 @@ class PureEvaluator {
         for (int i = 0; i < ps.length; i++) sub.put(ps[i].name, c.args.get(i))
         Expression expr = singleExpr(body)
         Expression out
+        FoldCtx ctx = new FoldCtx()
         if (expr != null) {
             out = substitute(expr, sub)
         } else {
-            int[] budget = [FOLD_BUDGET] as int[]
-            out = foldStatements(statementsOf(body), 0, sub, budget)
+            ctx.types = declaredTypes(m, body)
+            out = foldStatements(statementsOf(body), 0, sub, ctx, null)
         }
         // Phase 353 — the unfolded body is translated in the CALLER's scope, where a sibling class's field name means
         // the caller's same-named field (or nothing): a sibling helper reading its own state (`x + base` on Util) is
         // not inlined — the call stays an uninterpreted function, a sound over-approximation
         if (out != null && m.declaringClass != null && owner != null && m.declaringClass.name != owner.name &&
-                mentionsField(out, m.declaringClass)) return null
+                (mentionsField(out, m.declaringClass) || ctx.facts.any { Expression f -> mentionsField(f, m.declaringClass) })) return null
+        if (out != null && facts != null) facts.addAll(ctx.facts)
+        out
+    }
+
+    /** Phase 353/355 — one fold's state: its statement budget, the loop-exit facts it has gathered (Phase 355), and the
+     *  helper's declared local and parameter types. */
+    private static class FoldCtx {
+        int budget = FOLD_BUDGET
+        List<Expression> facts = new ArrayList<Expression>()
+        Map<String, ClassNode> types = new HashMap<String, ClassNode>()
+    }
+
+    /** Phase 355 — a fresh suffix per loop summary, so each ground call term's exit state has its own names. */
+    private static final java.util.concurrent.atomic.AtomicInteger LOOP_SEQ = new java.util.concurrent.atomic.AtomicInteger()
+
+    /** Phase 355 — the declared type of each parameter and local of {@code m}. */
+    private static Map<String, ClassNode> declaredTypes(MethodNode m, Statement body) {
+        Map<String, ClassNode> out = new HashMap<String, ClassNode>()
+        for (Parameter p : m.parameters) out.put(p.name, p.type)
+        body?.visit(new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) {
+                    out.put(((VariableExpression) de.leftExpression).name, ((VariableExpression) de.leftExpression).originType)
+                }
+                super.visitDeclarationExpression(de)
+            }
+            @Override void visitForLoop(org.codehaus.groovy.ast.stmt.ForStatement fs) {
+                if (fs.variable != null && fs.variable != org.codehaus.groovy.ast.stmt.ForStatement.FOR_LOOP_DUMMY) {
+                    out.put(fs.variable.name, fs.variable.originType)
+                }
+                super.visitForLoop(fs)
+            }
+        })
         out
     }
 
@@ -162,16 +196,23 @@ class PureEvaluator {
     /**
      * Phase 353 — the value of running {@code stmts[i..]} under {@code env} (formals ↦ actuals, locals ↦ their
      * current value, both already substituted), as one expression; null when a statement can't be folded or
-     * the path falls off the end without a value.
+     * the path falls off the end without a value. {@code pc} is the path condition reaching here (null: true),
+     * which guards the loop-exit facts a summarised loop adds to {@code ctx} (Phase 355).
      */
-    private static Expression foldStatements(List<Statement> stmts, int i, Map<String, Expression> env, int[] budget) {
-        if (--budget[0] < 0 || i >= stmts.size()) return null
+    private static Expression foldStatements(List<Statement> stmts, int i, Map<String, Expression> env, FoldCtx ctx, Expression pc) {
+        if (--ctx.budget < 0 || i >= stmts.size()) return null
         Statement st = stmts.get(i)
-        if (st instanceof EmptyStatement) return foldStatements(stmts, i + 1, env, budget)
+        if (st instanceof EmptyStatement) return foldStatements(stmts, i + 1, env, ctx, pc)
+        // Phase 355 — a loop with a proven variant is summarised by its exit state (see foldLoop)
+        Object spec = st.getNodeMetaData(ContractExpansionTransform.LOOP_SPEC_KEY)
+        if (spec instanceof LoopSpec) {
+            Map<String, Expression> after = foldLoop((LoopSpec) spec, env, ctx, pc)
+            return after == null ? null : foldStatements(stmts, i + 1, after, ctx, pc)
+        }
         if (st instanceof BlockStatement) {   // a nested block: its statements, then the rest
             List<Statement> rest = new ArrayList<Statement>(((BlockStatement) st).statements)
             rest.addAll(stmts.subList(i + 1, stmts.size()))
-            return foldStatements(rest, 0, env, budget)
+            return foldStatements(rest, 0, env, ctx, pc)
         }
         if (st instanceof ReturnStatement) return pure(substitute(((ReturnStatement) st).expression, env))
         if (st instanceof IfStatement) {
@@ -183,22 +224,34 @@ class PureEvaluator {
             thenL.addAll(rest)
             List<Statement> elseL = new ArrayList<Statement>(statementsOf(ifs.elseBlock))
             elseL.addAll(rest)
-            Expression t = foldStatements(thenL, 0, env, budget)
-            if (t == null) return null
-            Expression f = foldStatements(elseL, 0, env, budget)
-            if (f == null) return null
             BooleanExpression be = cond instanceof BooleanExpression ? (BooleanExpression) cond : new BooleanExpression(cond)
+            Expression t = foldStatements(thenL, 0, env, ctx, conj(pc, be))
+            if (t == null) return null
+            Expression f = foldStatements(elseL, 0, env, ctx, conj(pc, new NotExpression(be)))
+            if (f == null) return null
             TernaryExpression te = new TernaryExpression(be, t, f)
             te.setSourcePosition(ifs)
             return te
         }
+        Map<String, Expression> next = bindStatement(st, env)
+        if (next != null) return next.is(env) ? null : foldStatements(stmts, i + 1, next, ctx, pc)
+        // a trailing expression is the method's value (Groovy's implicit return); anywhere else it is a statement
+        // whose effect the fold can't see
+        Expression e = st instanceof ExpressionStatement ? ((ExpressionStatement) st).expression : null
+        e != null && i == stmts.size() - 1 ? pure(substitute(e, env)) : null
+    }
+
+    /** Phase 353/354 — {@code env} updated by a binding statement (a declaration, a plain or compound assignment to a
+     *  variable, or {@code x++} / {@code --x}); {@code env} itself when it is one but its value can't be folded;
+     *  null when it isn't a binding statement. */
+    private static Map<String, Expression> bindStatement(Statement st, Map<String, Expression> env) {
         if (!(st instanceof ExpressionStatement)) return null
         Expression e = ((ExpressionStatement) st).expression
         String bound = null
         Expression value = null
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
-            if (!(de.leftExpression instanceof VariableExpression)) return null
+            if (!(de.leftExpression instanceof VariableExpression)) return env
             bound = ((VariableExpression) de.leftExpression).name
             // `int r;` — read before any assignment it is an unknown (hidden, `$`-prefixed) value, never a name the
             // caller's scope could capture
@@ -226,16 +279,109 @@ class PureEvaluator {
                     op.startLine, op.startColumn), new ConstantExpression(1, true))
             }
         }
-        if (bound != null) {
-            Expression v = substitute(value, env)
-            if (v == null || hasEffect(v)) return null
-            Map<String, Expression> next = new HashMap<String, Expression>(env)
-            next.put(bound, v)
-            return foldStatements(stmts, i + 1, next, budget)
+        if (bound == null) return null
+        Expression v = substitute(value, env)
+        if (v == null || hasEffect(v)) return env
+        Map<String, Expression> next = new HashMap<String, Expression>(env)
+        next.put(bound, v)
+        next
+    }
+
+    /**
+     * Phase 355 — a helper's loop, summarised by its exit state: each variable the loop writes becomes a fresh name
+     * (`$loopK$s`), and the facts at exit — every invariant and the negated guard, over those names — are added to
+     * {@code ctx}, guarded by the path condition {@code pc}. The fold then continues after the loop.
+     *
+     * Sound because the helper's own loop verification proves the invariant established and preserved, and its
+     * variant decreasing, for every input reaching the loop (a contract-free helper has no @Requires): so an exit
+     * state exists and satisfies them. The VARIANT is required — without proven termination there may be no exit
+     * state, and `¬guard` over a variable the loop doesn't write would contradict (a vacuous caller proof). A loop
+     * the summary can't describe — one that breaks, returns or throws; writes anything but plain variables
+     * (`a[i] = v`, `xs.add(v)`); calls a method on an object; nests a loop; or comes from `.each` — refuses (null),
+     * and the call stays uninterpreted.
+     */
+    private static Map<String, Expression> foldLoop(LoopSpec spec, Map<String, Expression> env, FoldCtx ctx, Expression pc) {
+        if (spec.variant == null || spec.fromEach || spec.forInBind != null || spec.guard == null) return null
+        Map<String, Expression> cur = env
+        for (Statement s0 : (spec.init ?: Collections.<Statement> emptyList())) {
+            Map<String, Expression> nx = bindStatement(s0, cur)
+            if (nx == null || nx.is(cur)) return null
+            cur = nx
         }
-        // a trailing expression is the method's value (Groovy's implicit return); anywhere else it is a statement
-        // whose effect the fold can't see
-        i == stmts.size() - 1 ? pure(substitute(e, env)) : null
+        Set<String> declared = new HashSet<String>()
+        Set<String> written = loopWrites(spec.body, declared)
+        if (written == null || hasEffect(spec.guard)) return null
+        written.removeAll(declared)   // body-locals die with the iteration
+        int k = LOOP_SEQ.incrementAndGet()
+        Map<String, Expression> exit = new HashMap<String, Expression>(cur)
+        for (String w : written) {
+            if (!cur.containsKey(w)) return null                     // a name the summary can't own (a field)
+            ClassNode t = ctx.types.get(w)
+            if (t == null || !(t.name in ['int', 'long', 'java.lang.Integer', 'java.lang.Long'])) return null
+            exit.put(w, new VariableExpression('$loop' + k + '$' + w))
+        }
+        List<Expression> got = new ArrayList<Expression>()
+        for (Expression inv : spec.invariants) {
+            Expression f = pure(substitute(inv, exit))
+            if (f != null) got.add(f)                                 // an invariant it can't carry is just left out
+        }
+        Expression g = pure(substitute(spec.guard, exit))
+        if (g != null) got.add(new NotExpression(g instanceof BooleanExpression ? (BooleanExpression) g : new BooleanExpression(g)))
+        for (Expression f : got) {
+            ctx.facts.add(pc == null ? f : new BinaryExpression(new NotExpression(pc instanceof BooleanExpression ? (BooleanExpression) pc :
+                new BooleanExpression(pc)), Token.newSymbol(Types.LOGICAL_OR, -1, -1), f))
+        }
+        exit
+    }
+
+    /** Phase 355 — the variables a loop body writes (declarations go to {@code declared}); null when it does anything
+     *  the exit summary can't describe (see {@link #foldLoop}). */
+    private static Set<String> loopWrites(List<Statement> body, Set<String> declared) {
+        Set<String> out = new LinkedHashSet<String>()
+        boolean[] bad = [false] as boolean[]
+        org.codehaus.groovy.ast.CodeVisitorSupport v = new org.codehaus.groovy.ast.CodeVisitorSupport() {
+            @Override void visitDeclarationExpression(DeclarationExpression de) {
+                if (de.leftExpression instanceof VariableExpression) declared.add(((VariableExpression) de.leftExpression).name)
+                else bad[0] = true
+                de.rightExpression.visit(this)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR)) {
+                    if (be.leftExpression instanceof VariableExpression) out.add(((VariableExpression) be.leftExpression).name)
+                    else bad[0] = true
+                }
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPostfixExpression(PostfixExpression pe) {
+                if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name) else bad[0] = true
+            }
+            @Override void visitPrefixExpression(PrefixExpression pe) {
+                if (pe.expression instanceof VariableExpression) out.add(((VariableExpression) pe.expression).name) else bad[0] = true
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                Expression r = mce.objectExpression
+                boolean ownOrStatic = mce.implicitThis || r instanceof ClassExpression ||
+                    (r instanceof VariableExpression && ((VariableExpression) r).name == 'this')
+                if (!ownOrStatic) bad[0] = true
+                super.visitMethodCallExpression(mce)
+            }
+            @Override void visitClosureExpression(ClosureExpression ce) { bad[0] = true }
+            @Override void visitBreakStatement(org.codehaus.groovy.ast.stmt.BreakStatement s) { bad[0] = true }
+            @Override void visitReturnStatement(ReturnStatement s) { bad[0] = true }
+            @Override void visitThrowStatement(org.codehaus.groovy.ast.stmt.ThrowStatement s) { bad[0] = true }
+            @Override void visitWhileLoop(org.codehaus.groovy.ast.stmt.WhileStatement s) { bad[0] = true }
+            @Override void visitDoWhileLoop(org.codehaus.groovy.ast.stmt.DoWhileStatement s) { bad[0] = true }
+            @Override void visitForLoop(org.codehaus.groovy.ast.stmt.ForStatement s) { bad[0] = true }
+            @Override void visitSwitch(org.codehaus.groovy.ast.stmt.SwitchStatement s) { bad[0] = true }
+            @Override void visitTryCatchFinally(org.codehaus.groovy.ast.stmt.TryCatchStatement s) { bad[0] = true }
+        }
+        for (Statement st : body) st.visit(v)
+        bad[0] ? null : out
+    }
+
+    /** {@code a && b}, with a null {@code a} read as true. */
+    private static Expression conj(Expression a, Expression b) {
+        a == null ? b : new BinaryExpression(a, Token.newSymbol(Types.LOGICAL_AND, -1, -1), b)
     }
 
     /** Phase 354 — the compound-assignment op type's base binary op, or -1 (`?=` and the rest aren't folded). */

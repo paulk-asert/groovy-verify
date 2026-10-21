@@ -6959,7 +6959,8 @@ class Encoder implements TheoryApi {
         // (Phase 8a, the recursive-defs-in-contracts upgrade). When fuel runs out, or the body is un-encodable,
         // f#(args) is left fully uninterpreted — a sound over-approximation.
         if (unfoldDepth > 0 && definedCalls.add(fSharp)) {
-            Expression body = pureEvaluator.unfoldBody(c)
+            List<Expression> loopFacts = new ArrayList<Expression>()
+            Expression body = pureEvaluator.unfoldBody(c, loopFacts)
             if (body != null) {
                 int prev = unfoldDepth
                 unfoldDepth = prev - 1
@@ -6970,6 +6971,12 @@ class Encoder implements TheoryApi {
                         ? translateInSort(body, session.declareSort('String'))
                         : translate(body)
                     if (bodyH != null) session.assertExpr(session.eq(fSharp, bodyH))
+                    // Phase 355 — a summarised loop's exit facts over its fresh `$loopK$…` names (each one it can't
+                    // translate is left out: weaker, still sound)
+                    if (bodyH != null) for (Expression lf : loopFacts) {
+                        Object fh = translate(lf)
+                        if (fh != null) session.assertExpr(fh)
+                    }
                 } finally {
                     unfoldDepth = prev
                 }
