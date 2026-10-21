@@ -2766,6 +2766,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     /** The class whose same-class calls {@link #collectWritesExpr} may follow (null: such a call is unbounded). */
     private static final ThreadLocal<ClassNode> WRITE_OWNER = new ThreadLocal<ClassNode>()
     private static final ThreadLocal<Set<MethodNode>> WRITES_VISITING = new ThreadLocal<Set<MethodNode>>()
+    /** Phase 350 — the method whose frame is being inferred (its parameters' types resolve a sibling-class receiver). */
+    private static final ThreadLocal<MethodNode> WRITE_METHOD = new ThreadLocal<MethodNode>()
     /** Phase 347 — true while {@link #calleeWrites} walks a callee's body. The collector's Phase 347 extensions (the
      *  statement and expression shapes helper bodies use, same-class and registry calls, the unknown-method rule)
      *  apply only then: a LOOP's write set keeps its earlier, narrower reading, since bounding a loop that used to
@@ -2847,6 +2849,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Boolean prevMode = INFER_MODE.get()
         String prevReason = WRITE_UNBOUNDED.get()
         Set<String> prevSize = WRITE_SIZE.get()
+        MethodNode prevMethod = WRITE_METHOD.get()
+        WRITE_METHOD.set(m)
         WRITE_OWNER.set(m.declaringClass)
         WRITE_IMMUTABLE.set(immutableNames(m))
         INFER_MODE.set(Boolean.TRUE)
@@ -2865,6 +2869,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             INFER_MODE.set(prevMode)
             WRITE_UNBOUNDED.set(prevReason)
             WRITE_SIZE.set(prevSize)
+            WRITE_METHOD.set(prevMethod)
             visiting.remove(m)
         }
         Set<String> out = null
@@ -2902,6 +2907,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         // no such method anywhere up the hierarchy: the SAM / closure call shorthand on a callable in scope
         // (`cs(r)` on a Function parameter), whose own body's writes count where it is defined — its arguments' do here
         if (candidates.isEmpty()) return true
+        collectCallWritesAmong(candidates, name, actuals, ws, null)
+    }
+
+    /** Phase 350 — a call on a SIBLING class of the compilation unit, by its callees' frames: a written formal maps
+     *  to the actual; a written field is the receiver {@code recv} (an instance call on a parameter of that class)
+     *  or, for a static, the sibling's own state — named {@code Sib$field}, which no caller location is, so it
+     *  drops out of the frame as invisible. Null {@code candidates} (no such method) is unbounded. */
+    private static boolean collectSiblingCallWrites(ClassNode sib, String name, List<Expression> actuals, Set<String> ws,
+                                                    String recv, boolean isStatic) {
+        List<MethodNode> candidates = new ArrayList<MethodNode>()
+        for (ClassNode c = sib; c != null; c = c.superClass) {
+            for (MethodNode m : c.getMethods(name)) if (m.isStatic() == isStatic && m.code != null) candidates.add(m)
+        }
+        if (candidates.isEmpty()) return unbounded("call '${sib.nameWithoutPackage}.${name}(…)' has no body to read")
+        collectCallWritesAmong(candidates, name, actuals, ws, recv != null ? recv : sib.name + '$')
+    }
+
+    /** The shared tail of {@link #collectCallWrites} / {@link #collectSiblingCallWrites}: {@code fieldAs} is null for a
+     *  same-class field (recorded under its own name), a receiver name (recorded as that), or a {@code Sib$} prefix. */
+    private static boolean collectCallWritesAmong(List<MethodNode> candidates, String name, List<Expression> actuals,
+                                                  Set<String> ws, String fieldAs) {
         boolean any = false
         for (MethodNode m : candidates) {
             if (m.parameters.length != actuals.size()) continue
@@ -2918,8 +2944,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 int fi = -1
                 for (int i = 0; i < m.parameters.length; i++) if (m.parameters[i].name == w) { fi = i; break }
                 if (fi < 0) {                                             // a field (same class, same name)
-                    ws.add(w)
-                    if (sz != null && (sizes == null || sizes.contains(w))) sz.add(w)
+                    String rec = fieldAs == null ? w : fieldAs.endsWith('$') ? fieldAs + w : fieldAs
+                    ws.add(rec)
+                    if (sz != null && (sizes == null || sizes.contains(w))) sz.add(rec)
                     continue
                 }
                 Expression act = actuals.get(fi)
@@ -9803,7 +9830,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     } else if (!applySetMutation(session, enc, call) &&
                         !applyMapPut(session, enc, call) &&
                         !applyListMutation(session, enc, call, countVals) &&
-                        !applyCrossClassCall(session, enc, call) &&
+                        !applyCrossClassCall(session, enc, call, node) &&
                         !assumeCalleeEnsures(session, enc, call, node, null, hasDecreases(node))) {
                         throw new UnsupportedConstructException(
                             "standalone call '${call.text}' has no usable @Ensures")
@@ -10140,7 +10167,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * receiver type has no invariants (the havoc still happens — it's the conservative
      * effect of "we don't know what the callee did to b's fields").
      */
-    private boolean applyCrossClassCall(SmtSession s, Encoder enc, Expression call) {
+    private boolean applyCrossClassCall(SmtSession s, Encoder enc, Expression call, MethodNode node = null) {
         if (!(call instanceof MethodCallExpression)) return false
         MethodCallExpression mce = (MethodCallExpression) call
         Expression recv = mce.objectExpression
@@ -10162,6 +10189,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     "and the per-name field model would miss the shared mutation (heap aliasing is a non-goal)")
             }
         }
+
+        // Phase 350 — the precise route first: a callee with a body or a contract on the receiver's class is framed
+        // by what it writes (its fields as `b$field`, its formals as the actuals) and its @Ensures is assumed under
+        // the receiver context, exactly as a value call is. Only an unresolvable callee (no body, no contract)
+        // takes the conservative all-fields havoc below.
+        if (node != null && assumeCalleeEnsures(s, enc, call, node, null, false)) return true
 
         // Step 1 — havoc every declared instance field of the receiver: rebind {@code b$field}
         // to a fresh SMT constant. Subsequent reads of {@code b.field} pick up the fresh value,
@@ -12276,6 +12309,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 // frame onto the actuals), else every nameable argument may be written
                 return collectStaticCallWrites(((ClassExpression) mce.objectExpression).type?.name, m, mce.arguments, ws)
             } else if (!LOOP_PURE_READS.contains(m) && !INFER_PURE_READS.contains(m)) {
+                // Phase 350 — a call on a parameter of a SIBLING class (`c.bump()`): the callee's own frame says what
+                // it writes — the receiver, when a field; the actuals, when a formal; nothing, when nothing
+                ClassNode sib = siblingReceiverClass(mce.objectExpression)
+                List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
+                if (sib != null && as != null && !sib.getMethods(m).isEmpty()) {
+                    return collectSiblingCallWrites(sib, m, as, ws, ((VariableExpression) mce.objectExpression).name, false) &&
+                           collectWritesArgs(mce.arguments, ws)
+                }
                 // Phase 347 — an unknown method may mutate its receiver in place (`xs.sort()`), and nothing else
                 // nameable: record the receiver (unless its type is immutable), rather than give up
                 if (!recordReceiverWrite(mce.objectExpression, ws)) return false
@@ -12308,6 +12349,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         String shown = (ownerFqn != null ? ownerFqn.substring(ownerFqn.lastIndexOf('.') + 1) + '.' : '') + m + '(…)'
         if (as == null) return unbounded("call '${shown}' with unusual arguments")
         if (pureStaticClass(ownerFqn)) return collectWritesArgs(args, ws)
+        ClassNode sib = moduleClass(ownerFqn)   // Phase 350 — a sibling class's static, by its inferred frame
+        if (sib != null) return collectSiblingCallWrites(sib, m, as, ws, null, true) && collectWritesArgs(args, ws)
         MethodNode spec = ownerFqn != null && SpecRegistry.hasSpec(ownerFqn) ? SpecRegistry.lookup(ownerFqn, m, as.size(), null) : null
         if (spec != null) {
             if (SpecRegistry.isPure(spec)) return collectWritesArgs(args, ws)
@@ -12329,6 +12372,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         unbounded("static call '${shown}' with no @Pure or @Modifies spec")
     }
 
+    /** Phase 350 — is {@code cls} {@code t} itself or one of its superclasses (by name)? */
+    private static boolean isClassOrSuper(ClassNode t, ClassNode cls) {
+        for (ClassNode c = t; c != null; c = c.superClass) if (c.name == cls.name) return true
+        false
+    }
+
     /** Phase 349 — is {@code loc} (a formal or a field of {@code m}'s class) array-typed? An array's length is fixed. */
     private static boolean isArrayLocation(MethodNode m, String loc) {
         for (Parameter p : m.parameters) if (p.name == loc) return p.type.isArray()
@@ -12337,6 +12386,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             if (f != null) return f.type.isArray()
         }
         false
+    }
+
+    /** Phase 350 — another class of {@link #WRITE_OWNER}'s compilation unit, by fully-qualified or simple name. */
+    private static ClassNode moduleClass(String n) {
+        ClassNode owner = WRITE_OWNER.get()
+        if (n == null || owner == null || owner.module == null || n == owner.name) return null
+        for (ClassNode cn : owner.module.classes) if (!cn.is(owner) && (cn.name == n || cn.nameWithoutPackage == n)) return cn
+        null
+    }
+
+    /** Phase 350 — the sibling class a receiver names, when it is a parameter of the method being inferred whose
+     *  declared type is (or extends) a class of the compilation unit; null otherwise. */
+    private static ClassNode siblingReceiverClass(Expression recv) {
+        if (!(recv instanceof VariableExpression)) return null
+        MethodNode m = WRITE_METHOD.get()
+        if (m == null) return null
+        String rn = ((VariableExpression) recv).name
+        for (Parameter p : m.parameters) {
+            if (p.name != rn) continue
+            for (ClassNode t = p.type; t != null; t = t.superClass) {
+                ClassNode sib = moduleClass(t.name)
+                if (sib != null) return sib
+            }
+            return null
+        }
+        null
     }
 
     /** Phase 347 — an implicit-this, {@code this.m(…)} or {@code Owner.m(…)} call on {@link #WRITE_OWNER}. */
@@ -14521,6 +14596,31 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
+        // Phase 350 — a call on a class-typed PARAMETER whose callee lives on that class (`c.bump()`): the callee's
+        // fields are the receiver's, `c$field` (Phase 45's naming), not the caller's same-named ones. Its frame
+        // havocs those, its @Ensures binds under the receiver context, and the receiver's class invariants are
+        // re-assumed after the havoc. The Phase 194 alias boundary stands: another parameter of the same class
+        // may alias the receiver, which the per-name model can't see.
+        String crossRecv = null
+        Set<String> crossFields = null
+        if (callExpr instanceof MethodCallExpression && !((MethodCallExpression) callExpr).implicitThis &&
+                ((MethodCallExpression) callExpr).objectExpression instanceof VariableExpression &&
+                callee.getNodeMetaData(SpecRegistry.SPEC_KEY) == null && callee.declaringClass != null) {
+            String rn = ((VariableExpression) ((MethodCallExpression) callExpr).objectExpression).name
+            ClassNode rt = currentObjectParams.get(rn)
+            if (rt != null && !callee.declaringClass.is(caller?.declaringClass) && isClassOrSuper(rt, callee.declaringClass)) {
+                for (Map.Entry<String, ClassNode> e : currentObjectParams.entrySet()) {
+                    if (e.key != rn && e.value?.name == rt.name) {
+                        throw new UnsupportedConstructException(
+                            "call through '${rn}' — parameter '${e.key}' of the same class may alias the receiver, " +
+                            "and the per-name field model would miss the shared mutation (heap aliasing is a non-goal)")
+                    }
+                }
+                crossRecv = rn
+                crossFields = new LinkedHashSet<String>()
+                for (ClassNode c = rt; c != null; c = c.superClass) for (FieldNode f : c.fields) if (!f.isStatic()) crossFields.add(f.name)
+            }
+        }
         // Phase 347 — no @Modifies and a body whose writes can't be bounded: the state after the call is unknown
         if (modSet == null) {
             String why = calleeWritesReason(callee)   // Phase 348 — name the construct
@@ -14636,6 +14736,32 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (modSet != null) {
             for (String loc : modSet) {
                 String callerLoc = callerSideLocation(loc, formals, actuals)
+                if (crossRecv != null && callerLoc == loc && !formals.any { Parameter fp -> fp.name == loc }) {
+                    callerLoc = crossRecv + '$' + loc   // Phase 350 — the receiver's field
+                }
+                // Phase 350 — a written OBJECT parameter (`h(c) { c.incr() }` has the frame {c}): the callee wrote
+                // through it, so its fields are havoced and its class invariants re-assumed, as for a direct call
+                if (callerLoc != null && currentObjectParams.containsKey(callerLoc)) {
+                    ClassNode ot = currentObjectParams.get(callerLoc)
+                    for (Map.Entry<String, ClassNode> e : currentObjectParams.entrySet()) {
+                        if (e.key != callerLoc && e.value?.name == ot?.name) {
+                            throw new UnsupportedConstructException(
+                                "call '${name}(…)' writes through '${callerLoc}' — parameter '${e.key}' of the same class may alias it, " +
+                                "and the per-name field model would miss the shared mutation (heap aliasing is a non-goal)")
+                        }
+                    }
+                    Set<String> ofs = new LinkedHashSet<String>()
+                    for (ClassNode c = ot; c != null; c = c.superClass) for (FieldNode f : c.fields) if (!f.isStatic()) ofs.add(f.name)
+                    for (String f : ofs) {
+                        String key = callerLoc + '$' + f
+                        enc.bind(key, s.intVar('havoc$' + key + '$' + (havocCounter++)))
+                    }
+                    for (Expression inv : classInvariantTexts(ot)) {
+                        Object h = enc.translateUnderReceiver(inv, callerLoc, ofs)
+                        if (h != null) s.assertExpr(h)
+                    }
+                    continue
+                }
                 // Phase 347 — a modified parameter whose actual has no name can't be havocked: the call isn't modelled
                 if (callerLoc == null) {
                     throw new UnsupportedConstructException(
@@ -14695,6 +14821,14 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     }
                 }
             }
+            // Phase 350 — the callee maintained its class's invariants on exit (Phase 15a/b, when its class was
+            // compiled): re-assume them over the havoced fields, the caller-side companion of that proof (Phase 45)
+            if (crossRecv != null && !modSet.isEmpty()) {
+                for (Expression inv : classInvariantTexts(currentObjectParams.get(crossRecv))) {
+                    Object h = enc.translateUnderReceiver(inv, crossRecv, crossFields)
+                    if (h != null) s.assertExpr(h)
+                }
+            }
         }
 
         // Phase 113 — for a tuple result, rename `result` → the caller's tuple local so `result.vN` becomes
@@ -14704,7 +14838,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         Map<String, ClassNode> savedTypes = enc.pushScalarTypes(typeReg)
         Object post
         try {
-            post = effEnsures != null ? enc.translateWith(effEnsures, bindings) : null
+            post = effEnsures == null ? null :
+                crossRecv != null ? enc.translateWithUnderReceiver(effEnsures, bindings, crossRecv, crossFields) :   // Phase 350
+                enc.translateWith(effEnsures, bindings)
         } finally {
             enc.popScalarTypes(savedTypes)
         }

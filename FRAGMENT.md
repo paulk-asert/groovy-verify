@@ -436,8 +436,9 @@ registry spec keep it, and an array's length never changes. The caller havocs ex
 code, inside expressions and in loop bodies, while `old.x` snapshots pre-state field and array contents (and a
 resized location's size); a contract-free method is a pure
 function only when its frame is empty. A bodiless callee (a registry skeleton, an interface method) keeps the
-trusted reading "writes nothing" unless it declares otherwise, and a cross-class call's frame is still outside the
-fragment. A class-level
+trusted reading "writes nothing" unless it declares otherwise. A call on a class-typed parameter (`c.bump()`) is
+framed the same way onto the receiver's fields, its `@Ensures` assumed under the receiver and the receiver's
+invariants re-assumed (Phase 350); a call on an object field or local is still outside the fragment. A class-level
 `@Invariant` on a mutable object is **assumed on entry and checked preserved on exit** of every method, so a
 data structure verifies as a unit — a mutator that breaks it refutes (Phases 45 / 107, the ring buffer). When the
 solver returns *UNKNOWN* on a

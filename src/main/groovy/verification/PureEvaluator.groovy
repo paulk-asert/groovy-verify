@@ -238,6 +238,10 @@ class PureEvaluator {
             if (owner != null && sce.ownerType != null && sce.ownerType.name == owner.name) {
                 return pureCall(sce.method, argsOf(sce.arguments))
             }
+            // Phase 350 — a static on a SIBLING class of the compilation unit (`Util.tweak(x)`): its body is at hand,
+            // so a contract-free function there unfolds like a same-class one, under a class-qualified symbol
+            ClassNode sib = sce.ownerType != null ? siblingClass(sce.ownerType.name) : null
+            if (sib != null) return pureCall(sib.nameWithoutPackage + '$' + sce.method, argsOf(sce.arguments))
             return null
         }
         if (e instanceof MethodCallExpression) {
@@ -247,6 +251,10 @@ class PureEvaluator {
                 (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this') ||
                 (recv instanceof ClassExpression && owner != null && recv.type?.name == owner.name)
             if (sameClass) return pureCall(mce.methodAsString, argList(mce))
+            if (recv instanceof ClassExpression) {   // Phase 350 — `Util.tweak(x)` on a sibling class
+                ClassNode sib = siblingClass(recv.type?.name)
+                if (sib != null) return pureCall(sib.nameWithoutPackage + '$' + mce.methodAsString, argList(mce))
+            }
             return null
         }
         return null
@@ -256,6 +264,15 @@ class PureEvaluator {
     private Call pureCall(String name, List<Expression> args) {
         if (resolve(name, args.size()) == null) return null
         new Call(name: name, args: args)
+    }
+
+    /** Phase 350 — another class of the owner's compilation unit, by fully-qualified or simple name; null otherwise. */
+    private ClassNode siblingClass(String n) {
+        if (n == null || owner == null || owner.module == null || n == owner.name) return null
+        for (ClassNode cn : owner.module.classes) {
+            if (!cn.is(owner) && (cn.name == n || cn.nameWithoutPackage == n)) return cn
+        }
+        null
     }
 
     /** Fold a closed expression to a {@code long}, or null if it isn't an integral constant. */
@@ -313,7 +330,17 @@ class PureEvaluator {
 
     private MethodNode resolve(String name, int arity) {
         if (owner == null || name == null) return null
-        for (MethodNode m : owner.getMethods(name)) {
+        ClassNode in = owner
+        int q = name.indexOf('$')   // Phase 350 — `Util$tweak`: a sibling class's STATIC, found under its own name
+        boolean sibling = false
+        if (q > 0) {
+            in = siblingClass(name.substring(0, q))
+            if (in == null) return null
+            name = name.substring(q + 1)
+            sibling = true
+        }
+        for (MethodNode m : in.getMethods(name)) {
+            if (sibling && !m.isStatic()) continue
             // A contracted method is the inter-procedural/induction path's territory (its @Ensures is
             // assumed, or its inductive hypothesis applied); evaluating or unfolding it here would steal
             // the call from that machinery, so treat only contract-free methods as pure functions.

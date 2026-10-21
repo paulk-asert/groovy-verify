@@ -9022,7 +9022,7 @@ Honest residuals: (a) the implicit-obligation replays (`dischargeVfObligation`'s
 narrower version of the cross-receiver exposure — an obligation proved from a stale sibling field after a
 cross-class call; (b) an *assigned* cross-class call (`x = b.get()`) routes through `assumeCalleeEnsures`,
 which doesn't model cross-class receiver effects at all (pre-existing known limit, now adjacent to a loud
-boundary); (c) array aliasing through non-parameter references (fields, locals aliased to params) is out of
+boundary — *closed in Phase 350*); (c) array aliasing through non-parameter references (fields, locals aliased to params) is out of
 scope — the fragment's arrays are parameters.
 
 Root suite **1499/0** (+4), runtime rung **561/580** clean / 0 need review, `examples-dsl` green, docLint
@@ -15693,6 +15693,56 @@ framed by the caller, with the list's size and elements unknown after; a contrac
 
 **Still out:** the Phase 347 items (cross-class frames, aliasing). A map's size is havoced with the rest of the map
 (its key set is), so nothing new there; a `StringBuilder`'s `length()` has no size oracle to havoc.
+*(The cross-class frame is Phase 350.)*
+
+## Phase 350 — a cross-class call is framed by its writes  *(shipped — soundness: the receiver's state after a call)*
+
+The last "still out" of Phase 347. A call on a class-typed PARAMETER, `c.bump()`, had two readings, neither
+right. As a statement, Phase 45 havoced every field of the receiver and never assumed the callee's `@Ensures` (its
+recorded limit). As a value, `int x = c.bump()`, it took the generic call framing: the callee resolved on the
+receiver's class (Phase 133's lookup), but its frame was read as if same-class — its field `count` became the
+CALLER's `count` (havoced, when there was one; its `@Ensures` `count == old.count + 1` asserted about that
+variable), and the receiver's own `c$count` stayed at its entry value, so `c.count == 3` verified past the
+increment. The probe showed both; the second is Phase 194's residual (b).
+
+- **The receiver context.** In `assumeCalleeEnsures`, a call whose receiver names an object parameter and whose
+  callee lives on that parameter's class (or a superclass) is a cross-class call: a written field maps to the
+  receiver's entity `c$field` (Phase 45's naming, so the caller's reads of `c.field` see the havoc), a written
+  formal to its actual as before, and the callee's `@Ensures` is translated under the receiver
+  (`Encoder.translateWithUnderReceiver`: bare `count` is `c$count`, `old.count` the snapshot pinned at the call,
+  `result` and the formals from the bindings). After the havoc the receiver's class invariants are re-assumed
+  (Phase 45's step 2 — the callee preserved them on exit). A callee without `@Ensures` gives an opaque result
+  and exactly its frame; a getter's `@Ensures({ result == count })` reads the receiver's field.
+- **The statement form goes the same way.** `applyCrossClassCall` tries this route first; its all-fields havoc
+  remains the fallback for a callee with no body and no contract (a library type). Phase 45's "the callee's
+  `@Ensures` is currently not assumed cross-class" is closed.
+- **Through a helper.** The collector reads a call on a sibling-typed parameter by its callee's frame
+  (`siblingReceiverClass` / `collectSiblingCallWrites`): a written field is the receiver, a written formal the
+  actual, an empty frame nothing. So `twice(c) { c.incr(); c.incr() }` has the frame `{c}`, and a written OBJECT
+  parameter at a call site means its fields: they are havoced and its invariants re-assumed. `peek(c) { c.get() }`
+  has an empty frame and leaves them alone.
+- **A sibling class's static.** A contract-free static on another class of the compilation unit unfolds as a
+  function when its frame is empty (`PureEvaluator.siblingClass`, symbol `Util$tweak`); a writer stays opaque. The
+  collector reads such a static by its frame too (a written formal maps to the actual; the sibling's own fields
+  are named `Sib$field`, no caller location, so they drop out as invisible). A library static with no spec is
+  unbounded as before.
+- **The Phase 194 alias boundary stands,** in both routes and for a helper writing through an object parameter:
+  another parameter of the same class demotes to the loud skip.
+
+**Changed case:** G392's "a static call on another class has no frame" used a sibling class's static, now bounded;
+it uses `System.identityHashCode` (no registry spec).
+
+**Shipped tests:** group `P350 a cross-class call is framed by its writes`, 18 cases: the value call and the
+statement call havocing the fields the callee writes; the callee's `@Ensures` reaching the caller and a wrong claim
+against it refuting; a same-named caller field left alone, and the callee's `@Ensures` binding to the receiver;
+a getter's result; an opaque result without `@Ensures`; the invariant re-assumed after a contract-free writer, and
+refuting without it; a callee writing only its formal; an unbounded callee loud; the alias boundary; a same-class
+helper writing through an object parameter, and one only reading it; a sibling static unfolding, not when it
+writes its own class, and one storing into an array argument.
+
+**Still out:** a call on an object FIELD or LOCAL (`this.c.incr()`, `Counter d = c; d.bump()`) — the receiver
+context is per object parameter; aliasing; a cross-class call in a loop body keeps its opaque reading (the loop's
+write set is unbounded there, so the loop skips loudly anyway).
 
 ---
 

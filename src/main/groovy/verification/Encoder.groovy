@@ -430,6 +430,22 @@ class Encoder implements TheoryApi {
         }
     }
 
+    /** Phase 350 — {@link #translateWith} under a receiver context: a cross-class callee's {@code @Ensures}, whose
+     *  bare field names are the RECEIVER's ({@code recv$field}) while its formals and {@code result} come from
+     *  {@code bindings}. */
+    Object translateWithUnderReceiver(Expression e, Map<String, Object> bindings, String recvName, Set<String> fieldNames) {
+        String savedPrefix = receiverPrefix
+        Set<String> savedFields = receiverFields
+        try {
+            receiverPrefix = recvName
+            receiverFields = fieldNames ?: Collections.<String>emptySet()
+            return translateWith(e, bindings)
+        } finally {
+            receiverPrefix = savedPrefix
+            receiverFields = savedFields
+        }
+    }
+
     /** Phase 45 — true if {@code name} is a known class-typed parameter visible to the current method. */
     boolean isObjectParam(String name) { objectParams.containsKey(name) }
 

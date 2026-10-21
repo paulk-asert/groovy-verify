@@ -62,14 +62,14 @@ class G392_p348_frame_unchecked {
                         @Modifies({ this.count })
                         void bump(int x) { def (a, b) = [x, x]; count = a + b; other = 1 }
                     }''')],
-        // The cross-class frame is still out (Phase 347): a sibling class's static is unbounded, and now says so.
-        [group: 'P348 an unchecked frame is loud', name: 'a static call on another class has no frame', expect: ["Cannot check the @Modifies clause [count] of 'bump': its body's writes can't be bounded", "static call 'Util.tweak(…)' with no @Pure or @Modifies spec"],
+        // A library static with no registry spec is unbounded, and says so. (A sibling class's static was the example
+        // until Phase 350 read it by its body.)
+        [group: 'P348 an unchecked frame is loud', name: 'a static call on another class has no frame', expect: ["Cannot check the @Modifies clause [count] of 'bump': its body's writes can't be bounded", "static call 'System.identityHashCode(…)' with no @Pure or @Modifies spec"],
          src: tc('''class C {
                         int count = 0
                         @Modifies({ this.count })
-                        void bump(int x) { count = Util.tweak(x) }
-                    }
-                    class Util { static int tweak(int x) { x + 1 } }''')],
+                        void bump(int x) { count = System.identityHashCode(x) }
+                    }''')],
         [group: 'P348 an unchecked frame is loud', name: 'a writer passed an argument that isn\'t a named variable', expect: ["Cannot check the @Modifies clause [count] of 'bump': its body's writes can't be bounded", "call 'fill(…)' writes its parameter 'a', but the argument 'new int[1]' isn't a named variable"],
          src: tc('''class C {
                         int count = 0
