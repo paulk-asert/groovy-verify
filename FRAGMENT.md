@@ -425,8 +425,15 @@ call bound to a local, whose slots then carry the callee's postcondition into th
 local is minted in the callee's return sort, so a String-returning recursion — the functional leftpad —
 carries its `@Ensures` as the induction hypothesis; Phase 206) — a method-level
 `@Decreases` lets the method's own `@Ensures` be assumed at a recursive call (proof by induction — and a
-`void` lemma proven once then applied by calling it), and `@Modifies` frames what a call may change so the
-caller havocs only those locations while `old.x` snapshots pre-state field and array contents. A class-level
+`void` lemma proven once then applied by calling it), and a call is **framed by what it may write** (Phase 347):
+a declared `@Modifies` wins (it is frame-checked, so trusting it is sound; `@Modifies({ [] })` declares that nothing
+is written), a callee with a body and no `@Modifies` has its frame inferred from the body — the fields it assigns,
+the parameters it stores into or mutates, transitively through same-class calls — and a body whose writes can't be
+bounded makes the call skip loudly. The caller havocs exactly that frame, in straight-line code, inside expressions
+and in loop bodies, while `old.x` snapshots pre-state field and array contents; a contract-free method is a pure
+function only when its frame is empty. A bodiless callee (a registry skeleton, an interface method) keeps the
+trusted reading "writes nothing" unless it declares otherwise, and a cross-class call's frame is still outside the
+fragment. A class-level
 `@Invariant` on a mutable object is **assumed on entry and checked preserved on exit** of every method, so a
 data structure verifies as a unit — a mutator that breaks it refutes (Phases 45 / 107, the ring buffer). When the
 solver returns *UNKNOWN* on a

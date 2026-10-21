@@ -317,7 +317,13 @@ class PureEvaluator {
             // A contracted method is the inter-procedural/induction path's territory (its @Ensures is
             // assumed, or its inductive hypothesis applied); evaluating or unfolding it here would steal
             // the call from that machinery, so treat only contract-free methods as pure functions.
-            if (m.parameters.length == arity) return hasContract(m) ? null : m
+            // Phase 347 — and only a method whose body writes nothing caller-visible is a FUNCTION: one that
+            // assigns a field or stores into a parameter is framed at its call site instead (VerifyChecker.calleeWrites)
+            if (m.parameters.length == arity) {
+                if (hasContract(m)) return null
+                Set<String> writes = VerifyChecker.calleeWrites(m)
+                return (writes != null && writes.isEmpty()) ? m : null
+            }
         }
         null
     }

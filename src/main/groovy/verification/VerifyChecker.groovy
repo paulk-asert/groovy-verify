@@ -51,6 +51,7 @@ import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MapEntryExpression
 import org.codehaus.groovy.ast.expr.MapExpression
 import org.codehaus.groovy.ast.expr.MethodCall
+import org.codehaus.groovy.ast.expr.SpreadExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
@@ -68,11 +69,14 @@ import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
+import org.codehaus.groovy.ast.expr.GStringExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.AssertStatement
 import org.codehaus.groovy.ast.stmt.BreakStatement
 import org.codehaus.groovy.ast.stmt.ContinueStatement
+import org.codehaus.groovy.ast.stmt.SwitchStatement
+import org.codehaus.groovy.ast.stmt.CaseStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -399,6 +403,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<String> formals = new ArrayList<String>()
             for (Parameter p : mn.parameters) formals.add(p.name)
             if (!isPureOver(e, formals)) continue
+            // Phase 347 — inlining the equation drops the call, so the combiner must write nothing caller-visible
+            // (its declared frame, else the inferred one); a writer is framed at its call site instead
+            Set<String> writes = modifiedNames(mn)
+            if (writes == null || !writes.isEmpty()) continue
             out.put(mn.name + '/' + mn.parameters.length, [formals, e] as Object[])
         }
         out
@@ -2248,10 +2256,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 if (prev == null || n > prev) latestHavoc.put(m.group(1), n)
             }
         }
+        Map<String, Integer> latestCallHavoc = new HashMap<String, Integer>()
+        r.counterexample.keySet().each { String k ->
+            java.util.regex.Matcher m = CALL_HAVOC_KEY.matcher(k)
+            if (m.matches()) {
+                int n = Integer.parseInt(m.group(2))
+                Integer prev = latestCallHavoc.get(m.group(1))
+                if (prev == null || n > prev) latestCallHavoc.put(m.group(1), n)
+            }
+        }
         r.counterexample.each { String k, Long v ->
             if (UNMODELLED_KEY.matcher(k).matches()) {
                 String base = unmodelledBase(k)
                 if (!base.contains('#') && !base.startsWith('$')) display.put(base + ' (unmodelled)', v)
+                return
+            }
+            java.util.regex.Matcher cm = CALL_HAVOC_KEY.matcher(k)   // Phase 347 — a callee's framed location
+            if (cm.matches()) {
+                String base = cm.group(1)
+                if (latestCallHavoc.get(base) == Integer.parseInt(cm.group(2)) && !base.contains('#') && !base.startsWith('$')) {
+                    display.put(base + ' (after a call)', v)
+                }
                 return
             }
             java.util.regex.Matcher hm = HAVOC_KEY.matcher(k)
@@ -2297,6 +2322,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static final java.util.regex.Pattern HAVOC_KEY = java.util.regex.Pattern.compile('(.+)\\$havoc\\$(\\d+)')
     /** Phase 346 — a value the encoder couldn't translate, havocked: {@code <name>$unmodelled$<n>}. */
     private static final java.util.regex.Pattern UNMODELLED_KEY = java.util.regex.Pattern.compile('(.+)\\$unmodelled\\$(\\d+)')
+
+    /** Phase 13's caller-side havoc of a location a callee modifies: {@code havoc$<name>$<n>}. */
+    private static final java.util.regex.Pattern CALL_HAVOC_KEY = java.util.regex.Pattern.compile('havoc\\$(.+)\\$(\\d+)')
 
     private static String unmodelledBase(String k) {
         java.util.regex.Matcher m = UNMODELLED_KEY.matcher(k)
@@ -2711,12 +2739,115 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     }
 
     /** The locations a method declares it modifies via {@code @Modifies}; null when it has none. */
-    private Set<String> modifiedNames(MethodNode node) {
+    private static Set<String> declaredModifies(MethodNode node) {
         Expression e = contractAstFor(node, 'modifies')
         if (e == null) return null
         Set<String> out = new HashSet<String>()
         addModifiedLocation(e, out)
         out
+    }
+
+    /**
+     * Phase 347 — the caller-visible locations a callee may write. A declared {@code @Modifies} wins (it is
+     * frame-checked, so trusting it is sound; {@code @Modifies({})} is "nothing"). Without one, a method with a
+     * body gets the frame INFERRED from it ({@link #calleeWrites}), null when that can't be bounded; a bodiless
+     * callee — a registry skeleton, an interface or abstract method — keeps the trusted reading "nothing".
+     */
+    private static Set<String> modifiedNames(MethodNode node) {
+        Set<String> declared = declaredModifies(node)
+        if (declared != null) return declared
+        if (node.getNodeMetaData(SpecRegistry.SPEC_KEY) != null || node.code == null) return Collections.<String> emptySet()
+        calleeWrites(node)
+    }
+
+    /** Phase 347 — memoised on the node: the inferred caller-visible write set, or {@link #UNBOUNDED_WRITES}. */
+    private static final String INFERRED_WRITES_KEY = 'verification.inferredWrites'
+    private static final Object UNBOUNDED_WRITES = new Object()
+    /** The class whose same-class calls {@link #collectWritesExpr} may follow (null: such a call is unbounded). */
+    private static final ThreadLocal<ClassNode> WRITE_OWNER = new ThreadLocal<ClassNode>()
+    private static final ThreadLocal<Set<MethodNode>> WRITES_VISITING = new ThreadLocal<Set<MethodNode>>()
+    /** Phase 347 — true while {@link #calleeWrites} walks a callee's body. The collector's Phase 347 extensions (the
+     *  statement and expression shapes helper bodies use, same-class and registry calls, the unknown-method rule)
+     *  apply only then: a LOOP's write set keeps its earlier, narrower reading, since bounding a loop that used to
+     *  be unbounded adds its loop-stable facts to every loop VC, which changed refutations tuned without them. */
+    private static final ThreadLocal<Boolean> INFER_MODE = new ThreadLocal<Boolean>()
+    private static boolean inferMode() { INFER_MODE.get() == Boolean.TRUE }
+
+    /**
+     * Phase 347 — the caller-visible locations {@code m}'s body may write: its class's fields (bare or
+     * {@code this.f}), static fields, and parameters whose contents it stores into or mutates ({@code a[i] = v},
+     * {@code xs.add(x)}), transitively through same-class calls (a formal's write maps to the actual, which must
+     * be a plain variable). Locals don't count. Null when the body has a construct whose writes can't be bounded.
+     * Syntactic and conservative; an alias ({@code int[] b = a; b[0] = 5}) is the known blind spot. A recursive
+     * call contributes nothing beyond the set being computed.
+     */
+    static Set<String> calleeWrites(MethodNode m) {
+        Object memo = m.getNodeMetaData(INFERRED_WRITES_KEY)
+        if (memo != null) return memo.is(UNBOUNDED_WRITES) ? null : (Set<String>) memo
+        Statement body = (Statement) m.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
+        if (body == null) body = m.code
+        if (body == null) return null
+        Set<MethodNode> visiting = WRITES_VISITING.get()
+        if (visiting == null) { visiting = new HashSet<MethodNode>(); WRITES_VISITING.set(visiting) }
+        if (visiting.contains(m)) return Collections.<String> emptySet()   // a cycle: nothing beyond the set in progress
+        visiting.add(m)
+        ClassNode prevOwner = WRITE_OWNER.get()
+        Set<String> prevImmutable = WRITE_IMMUTABLE.get()
+        Boolean prevMode = INFER_MODE.get()
+        WRITE_OWNER.set(m.declaringClass)
+        WRITE_IMMUTABLE.set(immutableNames(m))
+        INFER_MODE.set(Boolean.TRUE)
+        Set<String> ws = new HashSet<String>()
+        boolean bounded
+        try {
+            bounded = collectWritesStmt(body, ws)
+        } finally {
+            WRITE_OWNER.set(prevOwner)
+            WRITE_IMMUTABLE.set(prevImmutable)
+            INFER_MODE.set(prevMode)
+            visiting.remove(m)
+        }
+        Set<String> out = null
+        if (bounded) {
+            Set<String> visible = new HashSet<String>()
+            ClassNode dc = m.declaringClass
+            while (dc != null) { for (FieldNode f : dc.fields) visible.add(f.name); dc = dc.superClass }
+            for (Parameter p : m.parameters) visible.add(p.name)
+            out = new LinkedHashSet<String>()
+            for (String w : ws) if (visible.contains(w)) out.add(w)
+        }
+        // memoise only once the whole walk is done (a nested computation during a cycle is partial)
+        if (visiting.isEmpty()) m.putNodeMetaData(INFERRED_WRITES_KEY, out != null ? out : UNBOUNDED_WRITES)
+        out
+    }
+
+    /** Phase 347 — a same-class call's writes in the CALLER's vocabulary: the callee's inferred (or declared)
+     *  frame with each written formal mapped to its actual, which must be a plain variable. Null when unbounded
+     *  or unresolvable; every same-arity overload is taken (their union). */
+    private static boolean collectCallWrites(String name, List<Expression> actuals, Set<String> ws) {
+        ClassNode owner = WRITE_OWNER.get()
+        if (owner == null || name == null) return false
+        List<MethodNode> candidates = new ArrayList<MethodNode>()
+        for (ClassNode c = owner; c != null; c = c.superClass) candidates.addAll(c.getMethods(name))
+        // no such method anywhere up the hierarchy: the SAM / closure call shorthand on a callable in scope
+        // (`cs(r)` on a Function parameter), whose own body's writes count where it is defined — its arguments' do here
+        if (candidates.isEmpty()) return true
+        boolean any = false
+        for (MethodNode m : candidates) {
+            if (m.parameters.length != actuals.size()) continue
+            any = true
+            Set<String> writes = modifiedNames(m)
+            if (writes == null) return false
+            for (String w : writes) {
+                int fi = -1
+                for (int i = 0; i < m.parameters.length; i++) if (m.parameters[i].name == w) { fi = i; break }
+                if (fi < 0) { ws.add(w); continue }                       // a field (same class, same name)
+                Expression act = actuals.get(fi)
+                if (!(act instanceof VariableExpression)) return false    // can't name what is written
+                ws.add(((VariableExpression) act).name)
+            }
+        }
+        any
     }
 
     private static void addModifiedLocation(Expression e, Set<String> out) {
@@ -2739,11 +2870,23 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      * means *nothing* is modified (pure). A write outside the declared set is a loud error.
      */
     private void frameCheck(MethodNode node) {
-        Set<String> declared = modifiedNames(node)
+        Set<String> declared = declaredModifies(node)
         if (declared == null) return
         Statement body = (Statement) node.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY)
         if (body == null) body = node.code
         if (body == null) return
+        // Phase 347 — the declared frame is trusted at every call site, so it is checked against the inferred
+        // write set (transitive through same-class calls, list mutators and `++` included); a body whose writes
+        // can't be bounded says so loudly rather than pass on the partial visitor alone
+        Set<String> inferred = calleeWrites(node)
+        if (inferred != null) {
+            for (String loc : inferred) if (!declared.contains(loc)) {
+                addStaticTypeError(Reporter.formatModifiesViolation(node.name, loc, declared), node)
+            }
+            return
+        }
+        // unbounded (a construct the inference doesn't follow): the partial assignment/mutator visitor below, as
+        // before — best-effort, the documented limit of the frame check
         Set<String> visible = new HashSet<String>()
         if (node.declaringClass != null) node.declaringClass.fields.each { visible.add(it.name) }
         node.parameters.each { Parameter p -> visible.add(p.name) }
@@ -2869,6 +3012,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     boolean beforeVisitMethod(MethodNode node) {
         currentFacts = new PathFacts()
         currentMethod = node
+        WRITE_OWNER.set(node.declaringClass)
+        WRITE_IMMUTABLE.set(immutableNames(node))
         currentEvaluator = node.declaringClass != null ? new PureEvaluator(node.declaringClass) : null
         currentSetElementTypes = collectSetElementTypes(node)
         currentMapTypes = collectMapTypes(node)
@@ -9403,6 +9548,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                     if (rhs == null && isDecimal) {
                         rhs = enc.asRealValue(hoistCarrierCalls(a.rhs, enc, session, node))
                     }
+                    // Phase 347 — `s = s + f(x)`: a call inside the right-hand side is hoisted to a framed local (its
+                    // writes havocked, its @Ensures assumed), as a return expression's calls are
+                    if (rhs == null && !isDecimal && !isCallExpr(rhsE) && exprContainsCall(rhsE)) {
+                        Expression hv = hoistValueCalls(rhsE, enc, session, node)
+                        if (hv != null) rhs = enc.translate(hv)
+                    }
                     ClassNode declaredType = currentScalarTypes.get(a.name)
                     Object fresh
                     if (isDecimal) {
@@ -9619,57 +9770,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                         // whose call can't be faithfully modelled still skips loudly rather than mis-binds.
                         // The callee's @Requires is still discharged by the obligation pass over the original
                         // return expression, so soundness of the precondition check is unaffected.
-                        boolean[] hoistedAny = [false]
-                        ExpressionTransformer tr = null
-                        tr = { Expression e ->
-                            if (isCallExpr(e)) {
-                                // Phase 309 — inside-out: hoist calls in the ARGUMENTS first, so `decode(encode(n))`
-                                // sees `decode(ret$call$local$k)` (an argument assumeCalleeEnsures can translate).
-                                // Unhoistable inner calls leave the outer as it was, which then skips loudly as before.
-                                // Arguments only — a call RECEIVER (`a.f().g()`) keeps its carrier-chain route.
-                                Expression inner = null
-                                if (e instanceof MethodCallExpression) {
-                                    MethodCallExpression mce = (MethodCallExpression) e
-                                    Expression args = mce.arguments.transformExpression(tr)
-                                    if (args != mce.arguments) {
-                                        MethodCallExpression r = new MethodCallExpression(mce.objectExpression, mce.method, args)
-                                        r.implicitThis = mce.implicitThis
-                                        inner = r
-                                    }
-                                } else if (e instanceof StaticMethodCallExpression) {
-                                    StaticMethodCallExpression sce = (StaticMethodCallExpression) e
-                                    Expression args = sce.arguments.transformExpression(tr)
-                                    if (args != sce.arguments) inner = new StaticMethodCallExpression(sce.ownerType, sce.method, args)
-                                }
-                                if (inner != null && hoistedAny[0]) {
-                                    inner.setSourcePosition(e)
-                                    e = inner
-                                }
-                                // Phase 206 — mint the hoist local in the CALLEE's return sort: a String- (or
-                                // otherwise non-Int-) returning recursive call previously got an Int handle,
-                                // and the callee's @Ensures over result.length() crashed the seq sort
-                                // ("seq.len: given domain Int") — the functional-leftpad shape.
-                                MethodNode hoistCallee = (e instanceof MethodCall) ? resolveContractedCallee(node,
-                                    ((MethodCall) e).methodAsString,
-                                    collectArgumentExpressions((MethodCall) e)?.size() ?: -1,
-                                    hasDecreases(node), null) : null
-                                ClassNode hrt = hoistCallee?.returnType
-                                Object hSort = (hrt != null && !isIntElement(hrt)) ? enc.sortForType(hrt) : null
-                                Object fresh = hSort != null ?
-                                    session.varOfSort('ret$call#' + (++ssaVersion), hSort) :
-                                    session.intVar('ret$call#' + (++ssaVersion))
-                                if (assumeCalleeEnsures(session, enc, e, node, fresh, hasDecreases(node))) {
-                                    String nm = 'ret$call$local$' + ssaVersion
-                                    enc.bind(nm, fresh)
-                                    hoistedAny[0] = true
-                                    return new VariableExpression(nm)
-                                }
-                                return e
-                            }
-                            return e.transformExpression(tr)
-                        } as ExpressionTransformer
-                        Expression rewritten = tr.transform(retExpr)
-                        if (hoistedAny[0]) resHandle = enc.translate(rewritten)
+                        Expression rewritten = hoistValueCalls(retExpr, enc, session, node)
+                        if (rewritten != null) resHandle = enc.translate(rewritten)
                     }
                     if (resHandle == null && p.result instanceof ConstantExpression &&
                         ((ConstantExpression) p.result).value == null) {
@@ -11396,6 +11498,27 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     // might be written, and *all* conjuncts are dropped if the body has a construct whose writes can't
     // be bounded (an unrecognised call/statement → loopWriteSet returns null).
 
+    /** Phase 347 — in-place list / builder mutators a helper body may use (callee inference only). */
+    private static final Set<String> INFER_MUTATORS = [
+        'sort','unique','shuffle','removeIf','fill','swap','putAt','leftShift','append','insert','setLength',
+        'delete','deleteCharAt','compute','computeIfAbsent','merge','replace'] as Set
+    /** Phase 347 — the reads a helper body uses (callee inference only; a name that is an in-place mutator on some
+     *  receiver is NOT here: an unknown method is read as writing its receiver, see collectWritesExpr). */
+    private static final Set<String> INFER_PURE_READS = [
+        'apply','implies','toString','valueOf','drop','take','init','subList','toList','asImmutable','asList',
+        'iterator','stream','filter','map','limit','allMatch','anyMatch','noneMatch','inject','isSorted','plus',
+        'minus','multiply','div','power','negative','positive','hashCode','toInteger','toLong','toBigDecimal',
+        'toBigInteger','setScale','negate','signum','sqrt','floorDiv','floorMod','getValue','doubleValue',
+        'floatValue','byteValue','charValue','booleanValue','concat','matches','format','equalsIgnoreCase','trim',
+        'join','split','isDigit','isLetter','isWhitespace','containsAll','getOrDefault','isCase','chars',
+        'toCharArray','findIndexOf','findLastIndexOf','withIndex','each','eachWithIndex','times','upto','downto',
+        'collectMany','collectEntries','groupBy','flatten','transpose','zip','average','toArray','toSet','asType',
+        'is','asBoolean','getV1','getV2','getV3','getV4','getFirst','getSecond','getThird','isPresent','orElse',
+        'getClass','compareToIgnoreCase','codePointAt','isBlank','isAllWhitespace','padLeft','padRight','center',
+        'multiply','intdiv','tuple','getAt','size','isNaN','isInfinite','max','min','floor','ceil','round',
+        // `cs(r)` on a Function / Closure in scope is `cs.call(r)`: applying a callable doesn't write the callable
+        'call'] as Set
+
     private static final Set<String> LOOP_MUTATORS = [
         'add','remove','put','clear','set','addAll','removeAll','retainAll','putAll','push','pop',
         'poll','offer','removeLast','removeFirst','addFirst','addLast','removeAt','putIfAbsent'] as Set
@@ -11403,6 +11526,39 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private static final Set<String> PURE_STATIC_CLASSES = [
         'groovy.lang.Tuple', 'java.lang.Math', 'java.lang.Integer', 'java.lang.Long', 'java.lang.String',
         'java.lang.Character', 'java.lang.Boolean'] as Set
+    /** Phase 347 — more classes with no mutable statics, for callee inference only (see INFER_MODE). */
+    private static final Set<String> INFER_PURE_STATIC_CLASSES = [
+        'java.lang.Double', 'java.lang.Float', 'java.lang.Short', 'java.lang.Byte', 'java.math.BigDecimal',
+        'java.math.BigInteger', 'java.util.Objects', 'java.util.List', 'java.util.Set', 'java.util.Map',
+        'java.util.Optional',
+        // the spec helpers (a contract-free predicate over them stays a pure function)
+        'verification.Forall', 'verification.Sets', 'verification.Fib', 'verification.Trib', 'verification.Gcd',
+        'verification.Lcm', 'Forall', 'Sets', 'Fib', 'Trib', 'Gcd', 'Lcm'] as Set
+
+    private static boolean pureStaticClass(String fqn) {
+        fqn in PURE_STATIC_CLASSES || (inferMode() && fqn in INFER_PURE_STATIC_CLASSES)
+    }
+
+    /** Phase 347 — names whose declared type is immutable (a param or field of a primitive, boxed, String, big-number
+     *  or tuple type): a method called on one can't write it in place, so an unknown call on it is a read. */
+    private static final ThreadLocal<Set<String>> WRITE_IMMUTABLE = new ThreadLocal<Set<String>>()
+
+    private static boolean isImmutableType(ClassNode t) {
+        if (t == null) return false
+        if (ClassHelper.isPrimitiveType(t) || ClassHelper.isNumberType(t) || t == ClassHelper.STRING_TYPE ||
+            t == ClassHelper.Boolean_TYPE || t == ClassHelper.Character_TYPE) return true
+        String n = t.name
+        n in ['java.lang.String', 'java.math.BigDecimal', 'java.math.BigInteger', 'java.lang.Boolean', 'java.lang.Character'] ||
+            n.startsWith('groovy.lang.Tuple')
+    }
+
+    private static Set<String> immutableNames(MethodNode m) {
+        Set<String> out = new HashSet<String>()
+        for (Parameter p : m.parameters) if (isImmutableType(p.type)) out.add(p.name)
+        ClassNode dc = m.declaringClass
+        while (dc != null) { for (FieldNode f : dc.fields) if (isImmutableType(f.type)) out.add(f.name); dc = dc.superClass }
+        out
+    }
 
     private static final Set<String> LOOP_PURE_READS = [
         'size','length','get','getAt','contains','containsKey','containsValue','isEmpty','indexOf',
@@ -11872,7 +12028,30 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             Expression g = (ls instanceof WhileStatement) ? ((WhileStatement) ls).booleanExpression :
                            (ls instanceof DoWhileStatement) ? ((DoWhileStatement) ls).booleanExpression : null
             if (g != null && !collectWritesExpr(g, ws)) return false
+            if (ls instanceof ForStatement && inferMode()) {
+                ForStatement fs = (ForStatement) ls
+                if (fs.variable != null && fs.variable != ForStatement.FOR_LOOP_DUMMY) ws.add(fs.variable.name)
+                if (!collectWritesExpr(fs.collectionExpression, ws)) return false
+            }
             return collectWritesStmt(ls.loopBlock, ws)
+        }
+        // Phase 347 — the shapes a helper method's body uses, so a callee's frame can be inferred from it
+        if (!inferMode()) return false
+        if (st instanceof ThrowStatement) return collectWritesExpr(((ThrowStatement) st).expression, ws)
+        if (st instanceof ContinueStatement) return true
+        if (st instanceof SwitchStatement) {
+            SwitchStatement sw = (SwitchStatement) st
+            if (!collectWritesExpr(sw.expression, ws)) return false
+            for (CaseStatement cs : sw.caseStatements) {
+                if (!collectWritesExpr(cs.expression, ws) || !collectWritesStmt(cs.code, ws)) return false
+            }
+            return collectWritesStmt(sw.defaultStatement, ws)
+        }
+        if (st instanceof TryCatchStatement) {
+            TryCatchStatement tc = (TryCatchStatement) st
+            if (!collectWritesStmt(tc.tryStatement, ws)) return false
+            for (CatchStatement cs : tc.catchStatements) if (!collectWritesStmt(cs.code, ws)) return false
+            return collectWritesStmt(tc.finallyStatement, ws)
         }
         false   // unknown statement → bail
     }
@@ -11911,6 +12090,36 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         if (e instanceof PostfixExpression) return recordTarget(((PostfixExpression) e).expression, ws)
         if (e instanceof PrefixExpression)  return recordTarget(((PrefixExpression) e).expression, ws)
+        // Phase 347 — pure wrappers: their effects are their operands' (callee inference only, see INFER_MODE)
+        if (!inferMode() && (e instanceof CastExpression || e instanceof RangeExpression || e instanceof GStringExpression ||
+            e instanceof TupleExpression || e instanceof ConstructorCallExpression || e instanceof ClosureExpression ||
+            e instanceof SpreadExpression || e instanceof StaticMethodCallExpression)) return false
+        if (e instanceof CastExpression) return collectWritesExpr(((CastExpression) e).expression, ws)
+        if (e instanceof SpreadExpression) return collectWritesExpr(((SpreadExpression) e).expression, ws)
+        if (e instanceof RangeExpression) {
+            return collectWritesExpr(((RangeExpression) e).from, ws) && collectWritesExpr(((RangeExpression) e).to, ws)
+        }
+        if (e instanceof GStringExpression) {
+            for (Expression x : ((GStringExpression) e).values) if (!collectWritesExpr(x, ws)) return false
+            return true
+        }
+        if (e instanceof TupleExpression) {   // ArgumentListExpression too
+            for (Expression x : ((TupleExpression) e).expressions) if (!collectWritesExpr(x, ws)) return false
+            return true
+        }
+        // a constructor builds a fresh object: it can write only what its arguments do
+        if (e instanceof ConstructorCallExpression) return collectWritesArgs(((ConstructorCallExpression) e).arguments, ws)
+        // a closure passed to an iterator (`xs.every { … }`) runs now: its body's writes count, its params are locals
+        if (e instanceof ClosureExpression) return collectWritesStmt(((ClosureExpression) e).code, ws)
+        if (e instanceof StaticMethodCallExpression) {
+            StaticMethodCallExpression sce = (StaticMethodCallExpression) e
+            ClassNode owner = WRITE_OWNER.get()
+            if (owner != null && sce.ownerType?.name == owner.name) {
+                List<Expression> as = sce.arguments instanceof TupleExpression ? ((TupleExpression) sce.arguments).expressions : null
+                return as != null && collectCallWrites(sce.method, as, ws) && collectWritesArgs(sce.arguments, ws)
+            }
+            return collectStaticCallWrites(sce.ownerType?.name, sce.method, sce.arguments, ws)
+        }
         if (e instanceof DeclarationExpression) {
             DeclarationExpression de = (DeclarationExpression) e
             if (!(de.leftExpression instanceof VariableExpression)) return false
@@ -11934,8 +12143,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 case Types.COMPARE_GREATER_THAN: case Types.COMPARE_GREATER_THAN_EQUAL:
                 case Types.LOGICAL_AND: case Types.LOGICAL_OR:
                     return collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
+                case Types.KEYWORD_INSTANCEOF: case Types.KEYWORD_IN:   // Phase 347, callee inference only
+                    return inferMode() && collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
                 default:
-                    return false   // shift/power/membership/etc. → bail (could be a collection mutation)
+                    // groovy-contracts' implication `a ==> b` (Phase 347) is pure; the rest (`<<`, …) could mutate
+                    if (inferMode() && be.operation.text == '==>') return collectWritesExpr(be.leftExpression, ws) && collectWritesExpr(be.rightExpression, ws)
+                    return false   // shift/membership/etc. → bail (could be a collection mutation)
             }
         }
         if (e instanceof MethodCallExpression) {
@@ -11943,19 +12156,88 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             String m = mce.methodAsString
             // Phase 343 — a static call on a class with no mutable statics (Tuple.tuple, Math.max, Integer.valueOf)
             // writes only what its arguments do
-            if (mce.objectExpression instanceof ClassExpression && ((ClassExpression) mce.objectExpression).type?.name in PURE_STATIC_CLASSES) {
+            if (mce.objectExpression instanceof ClassExpression && pureStaticClass(((ClassExpression) mce.objectExpression).type?.name)) {
                 return collectWritesArgs(mce.arguments, ws)
             }
-            if (LOOP_MUTATORS.contains(m)) {
+            if (!inferMode()) {
+                // a loop's write set: the earlier reading, unchanged by Phase 347
+                if (LOOP_MUTATORS.contains(m)) {
+                    if (!recordTarget(mce.objectExpression, ws)) return false
+                } else if (!LOOP_PURE_READS.contains(m)) {
+                    return false   // unknown call → can't bound effects → bail
+                } else {
+                    if (!collectWritesExpr(mce.objectExpression, ws)) return false
+                }
+                return collectWritesArgs(mce.arguments, ws)
+            }
+            if (LOOP_MUTATORS.contains(m) || INFER_MUTATORS.contains(m)) {
                 if (!recordTarget(mce.objectExpression, ws)) return false
-            } else if (!LOOP_PURE_READS.contains(m)) {
-                return false   // unknown call → can't bound effects → bail
+            } else if (isSameClassCall(mce)) {
+                // Phase 347 — a same-class call writes what its callee's frame says, mapped onto the actuals
+                List<Expression> as = mce.arguments instanceof TupleExpression ? ((TupleExpression) mce.arguments).expressions : null
+                if (as == null || !collectCallWrites(m, as, ws)) return false
+            } else if (mce.objectExpression instanceof ClassExpression) {
+                // Phase 347 — a static call on another class: through the registry (a @Pure spec, or its declared
+                // frame onto the actuals), else every nameable argument may be written
+                return collectStaticCallWrites(((ClassExpression) mce.objectExpression).type?.name, m, mce.arguments, ws)
+            } else if (!LOOP_PURE_READS.contains(m) && !INFER_PURE_READS.contains(m)) {
+                // Phase 347 — an unknown method may mutate its receiver in place (`xs.sort()`), and nothing else
+                // nameable: record the receiver (unless its type is immutable), rather than give up
+                if (!recordReceiverWrite(mce.objectExpression, ws)) return false
             } else {
                 if (!collectWritesExpr(mce.objectExpression, ws)) return false
             }
             return collectWritesArgs(mce.arguments, ws)
         }
         false   // unknown expression kind → bail
+    }
+
+    /** Phase 347 — an unknown method's receiver may be mutated in place: record its base name (a field, a parameter
+     *  or a local), skipping a name of immutable type; a receiver with no name contributes its own writes. */
+    private static boolean recordReceiverWrite(Expression recv, Set<String> ws) {
+        Set<String> tmp = new HashSet<String>()
+        if (recordTarget(recv, tmp)) {
+            Set<String> immutable = WRITE_IMMUTABLE.get()
+            for (String n : tmp) if (immutable == null || !immutable.contains(n)) ws.add(n)
+            return true
+        }
+        collectWritesExpr(recv, ws)
+    }
+
+    /** Phase 347 — a static call on another class: a {@code @Pure} registry spec or one of the known pure classes
+     *  writes only what its arguments do; a spec with a declared frame writes those formals' actuals; anything else
+     *  can't be bounded. */
+    private static boolean collectStaticCallWrites(String ownerFqn, String m, Expression args, Set<String> ws) {
+        List<Expression> as = args instanceof TupleExpression ? ((TupleExpression) args).expressions : null
+        if (as == null) return false
+        if (pureStaticClass(ownerFqn)) return collectWritesArgs(args, ws)
+        MethodNode spec = ownerFqn != null && SpecRegistry.hasSpec(ownerFqn) ? SpecRegistry.lookup(ownerFqn, m, as.size(), null) : null
+        if (spec != null) {
+            if (SpecRegistry.isPure(spec)) return collectWritesArgs(args, ws)
+            Set<String> declared = declaredModifies(spec)
+            if (declared != null) {
+                for (String w : declared) {
+                    int fi = -1
+                    for (int i = 0; i < spec.parameters.length; i++) if (spec.parameters[i].name == w) { fi = i; break }
+                    if (fi < 0 || !(as.get(fi) instanceof VariableExpression)) return false
+                    ws.add(((VariableExpression) as.get(fi)).name)
+                }
+                return collectWritesArgs(args, ws)
+            }
+        }
+        // an unknown static (a library call with no spec) is unbounded, as before: reading it as "writes its
+        // arguments" bounded loops that lean on such calls and changed their VCs (a P253 refutation timed out)
+        false
+    }
+
+    /** Phase 347 — an implicit-this, {@code this.m(…)} or {@code Owner.m(…)} call on {@link #WRITE_OWNER}. */
+    private static boolean isSameClassCall(MethodCallExpression mce) {
+        ClassNode owner = WRITE_OWNER.get()
+        if (owner == null) return false
+        if (mce.implicitThis) return true
+        Expression recv = mce.objectExpression
+        if (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this') return true
+        recv instanceof ClassExpression && ((ClassExpression) recv).type?.name == owner.name
     }
 
     private static boolean collectWritesArgs(Expression args, Set<String> ws) {
@@ -13082,6 +13364,76 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
     }
 
+
+    /** Phase 309 / 347 — {@code e0} with each call the encoder can't translate as a function replaced by a fresh
+     *  local bound to its framed, {@code @Ensures}-constrained result (inside-out over arguments); null when nothing
+     *  was hoisted. Shared by the return-expression and assignment-RHS paths of the postcondition walk. */
+    private int hoistSeq = 0   // Phase 347 — hoisted-call locals (`ret$call$local$k`), per checker
+
+    private Expression hoistValueCalls(Expression e0, Encoder enc, SmtSession session, MethodNode node) {
+                        boolean[] hoistedAny = [false]
+                        ExpressionTransformer tr = null
+                        tr = { Expression e ->
+                            if (isCallExpr(e)) {
+                                // Phase 309 — inside-out: hoist calls in the ARGUMENTS first, so `decode(encode(n))`
+                                // sees `decode(ret$call$local$k)` (an argument assumeCalleeEnsures can translate).
+                                // Unhoistable inner calls leave the outer as it was, which then skips loudly as before.
+                                // Arguments only — a call RECEIVER (`a.f().g()`) keeps its carrier-chain route.
+                                Expression inner = null
+                                if (e instanceof MethodCallExpression) {
+                                    MethodCallExpression mce = (MethodCallExpression) e
+                                    Expression args = mce.arguments.transformExpression(tr)
+                                    if (args != mce.arguments) {
+                                        MethodCallExpression r = new MethodCallExpression(mce.objectExpression, mce.method, args)
+                                        r.implicitThis = mce.implicitThis
+                                        inner = r
+                                    }
+                                } else if (e instanceof StaticMethodCallExpression) {
+                                    StaticMethodCallExpression sce = (StaticMethodCallExpression) e
+                                    Expression args = sce.arguments.transformExpression(tr)
+                                    if (args != sce.arguments) inner = new StaticMethodCallExpression(sce.ownerType, sce.method, args)
+                                }
+                                if (inner != null && hoistedAny[0]) {
+                                    inner.setSourcePosition(e)
+                                    e = inner
+                                }
+                                // Phase 206 — mint the hoist local in the CALLEE's return sort: a String- (or
+                                // otherwise non-Int-) returning recursive call previously got an Int handle,
+                                // and the callee's @Ensures over result.length() crashed the seq sort
+                                // ("seq.len: given domain Int") — the functional-leftpad shape.
+                                MethodNode hoistCallee = (e instanceof MethodCall) ? resolveContractedCallee(node,
+                                    ((MethodCall) e).methodAsString,
+                                    collectArgumentExpressions((MethodCall) e)?.size() ?: -1,
+                                    hasDecreases(node), null) : null
+                                ClassNode hrt = hoistCallee?.returnType
+                                Object hSort = (hrt != null && !isIntElement(hrt)) ? enc.sortForType(hrt) : null
+                                Object fresh = hSort != null ?
+                                    session.varOfSort('ret$call#' + (++hoistSeq), hSort) :
+                                    session.intVar('ret$call#' + (++hoistSeq))
+                                if (assumeCalleeEnsures(session, enc, e, node, fresh, hasDecreases(node))) {
+                                    String nm = 'ret$call$local$' + hoistSeq
+                                    enc.bind(nm, fresh)
+                                    hoistedAny[0] = true
+                                    return new VariableExpression(nm)
+                                }
+                                return e
+                            }
+                            return e.transformExpression(tr)
+                        } as ExpressionTransformer
+                        Expression rewritten = tr.transform(e0)
+                        return hoistedAny[0] ? rewritten : null
+    }
+
+    private static boolean exprContainsCall(Expression e) {
+        boolean[] found = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) { found[0] = true }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
+    }
+
     private static boolean isCallExpr(Expression e) {
         e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression
     }
@@ -13567,8 +13919,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // termination measure (@Decreases) — its well-foundedness is checked separately.
             if (m.is(caller) && !allowSelf) continue
             if (m.parameters.length != arity) continue
-            // Usable if it has an @Ensures to assume, or an @Modifies whose effect (a havoc) we model.
-            if (findEnsures(m) == null && contractAstFor(m, 'modifies') == null) continue
+            // Usable if it has an @Ensures to assume, or an @Modifies whose effect (a havoc) we model — or, Phase 347,
+            // a body the frame is inferred from (a contract-free writer; a contract-free FUNCTION never gets here,
+            // the encoder evaluates it)
+            if (findEnsures(m) == null && contractAstFor(m, 'modifies') == null && m.code == null) continue
             return m
         }
         null
@@ -13990,8 +14344,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  its {@code @Ensures}. Returns false for an uncontracted call (→ the loop still loud-skips it). */
     private LoopEncoder.LoopCallHandler relyCallHandler(MethodNode node) {
         return new LoopEncoder.LoopCallHandler() {
-            @Override boolean handle(MethodCallExpression call, Encoder enc, SmtSession s) {
+            @Override boolean handle(Expression call, Encoder enc, SmtSession s) {
                 return assumeCalleeEnsures(s, enc, call, node, null, false)
+            }
+            @Override Object handleValue(Expression call, Encoder enc, SmtSession s) {
+                // Phase 347 — the result in the callee's return sort (a String-returning `glue(acc, x)` needs a String
+                // handle for its @Ensures to bind), as the straight-line hoist does (Phase 206)
+                MethodNode callee = (call instanceof MethodCall) ? resolveContractedCallee(node, ((MethodCall) call).methodAsString,
+                    collectArgumentExpressions((MethodCall) call)?.size() ?: -1, hasDecreases(node), null) : null
+                ClassNode rt = callee?.returnType
+                Object sort = (rt != null && !isIntElement(rt)) ? enc.sortForType(rt) : null
+                String nm = '$call$' + (hoistSeq++)
+                Object fresh = sort != null ? s.varOfSort(nm, sort) : s.intVar(nm)
+                return assumeCalleeEnsures(s, enc, call, node, fresh, hasDecreases(node)) ? fresh : null
             }
         }
     }
@@ -14047,11 +14412,19 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         Expression ensuresAst = specEnsuresOverride != null ? specEnsuresOverride : contractAstFor(callee, 'ensures')
         Set<String> modSet = modifiedNames(callee)
+        // Phase 347 — no @Modifies and a body whose writes can't be bounded: the state after the call is unknown
+        if (modSet == null) {
+            throw new UnsupportedConstructException(
+                "call '${name}(…)' whose writes can't be bounded from its body — declare @Modifies on ${callee.name}")
+        }
         // Phase 222 — a spec callee's @ThrowsIf arms yield the normal-return contrapositive below.
         List<Map<String, Object>> specArms = callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null ?
             SpecRegistry.throwsIfArms(callee) : Collections.<Map<String, Object>> emptyList()
-        // Nothing to model — no @Ensures, no @Modifies, no arms — so we can't account for the call's effect.
-        if (ensuresAst == null && (modSet == null || modSet.isEmpty()) && specArms.isEmpty()) return false
+        // Nothing to assume — no @Ensures, no arms — and nothing to frame: a registry skeleton is then outside what
+        // this models (false, so the caller tries its other routes); a same-class body is modelled exactly, as a
+        // call that changes nothing visible and returns an opaque value (Phase 347)
+        if (ensuresAst == null && modSet.isEmpty() && specArms.isEmpty() &&
+            (callee.getNodeMetaData(SpecRegistry.SPEC_KEY) != null || callee.code == null)) return false
 
         Parameter[] formals = callee.parameters
         actuals = hoistListActuals(enc, actuals)   // Phase 323 — `f(log.drop(1))` reads as `f($arg)`
@@ -14151,7 +14524,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (modSet != null) {
             for (String loc : modSet) {
                 String callerLoc = callerSideLocation(loc, formals, actuals)
-                if (callerLoc == null) continue
+                // Phase 347 — a modified parameter whose actual has no name can't be havocked: the call isn't modelled
+                if (callerLoc == null) {
+                    throw new UnsupportedConstructException(
+                        "call '${name}(…)' modifies its parameter '${loc}', but the argument passed isn't a named variable")
+                }
                 String oldKey = 'old$' + loc   // the callee's @Ensures spells old.<field>
                 if (!savedVar.containsKey(oldKey)) {
                     savedVar.put(oldKey, enc.peekVar(oldKey))

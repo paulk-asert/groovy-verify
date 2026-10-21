@@ -36,8 +36,10 @@ class G048_p5a_short_circuit {
         // Still sound: with the guard removed, the access is genuinely unprotected → refuted.
         [group: 'P5a short-circuit', name: 'unguarded access still refuted', expect: 'IndexOutOfBoundsException',
          src: tc('class C { static int g(int[] a, int i) { (a[i - 1] > 0) ? 1 : 0 } }')],
-        // The natural (single-&&) recursive insert now verifies — no nested-if workaround needed.
-        [group: 'P5a short-circuit', name: 'natural insert guard verifies', ok: true,
+        // The natural (single-&&) recursive insert: the guard discharges the `a[i - 1]` bound with no nested-if
+        // workaround. Phase 347 — its Phase 7 contract (no @Modifies) is too weak once the recursive call's frame is
+        // inferred (see G047): the postcondition refutes, the bounds obligation still doesn't.
+        [group: 'P5a short-circuit', name: 'natural insert guard verifies (the bound), its weak contract refutes', expect: 'Cannot prove postcondition of insert', refute: 'IndexOutOfBoundsException',
          src: tc('''class C {
                        @Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
                        @Ensures({ (0..<i).every { a[it] <= a[it + 1] } })

@@ -29,7 +29,11 @@ class G047_p7_recursive_sort {
         // ---------- Phase 7: recursive insertion sort (sortedness, end-to-end) ----------
         // insert places a[i] into the sorted prefix; sort composes it under induction. The driver
         // relies on the @Ensures of the `sort(a, n-1)` call immediately before `insert(a, n-1)`.
-        [group: 'P7 recursive sort', name: 'recursive insertion sort (sortedness)', ok: true,
+        // Phase 347 — this Phase 7 contract has no @Modifies, and it proved only because a call was then read as
+        // writing nothing: the recursive `insert(a, i - 1)` now havocs `a` (its inferred frame), and its @Ensures
+        // says nothing about a[i], so `a[i - 1] <= a[i]` is unprovable. Honest: the contract is too weak for a
+        // framed recursion. The version with the frame and the bound lemma is Phases 14/24 (P14 / P24 groups).
+        [group: 'P7 recursive sort', name: 'recursive insertion sort (sortedness) — too weak a contract under a sound frame', expect: 'Cannot prove postcondition of insert',
          src: tc('''class C {
                        @Requires({ 0 <= i && i < a.length && (0..<i - 1).every { a[it] <= a[it + 1] } })
                        @Ensures({ (0..<i).every { a[it] <= a[it + 1] } })

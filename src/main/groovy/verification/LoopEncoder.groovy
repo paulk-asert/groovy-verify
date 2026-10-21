@@ -26,8 +26,11 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.ExpressionTransformer
 import org.codehaus.groovy.ast.expr.PrefixExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.EmptyStatement
 import org.codehaus.groovy.ast.stmt.AssertStatement
@@ -112,7 +115,10 @@ class LoopEncoder {
      *  frame and assume its {@code @Ensures}. Returns true if it handled the call. {@link VerifyChecker} installs
      *  one (delegating to {@code assumeCalleeEnsures}) around a method's loop verification; null elsewhere. */
     interface LoopCallHandler {
-        boolean handle(MethodCallExpression call, Encoder enc, SmtSession s)
+        boolean handle(Expression call, Encoder enc, SmtSession s)
+        /** Phase 347 — the call as a VALUE: frame its writes and assume its {@code @Ensures} over a fresh result
+         *  handle in the callee's return sort, which is returned; null when the call isn't modelled. */
+        Object handleValue(Expression call, Encoder enc, SmtSession s)
     }
 
     /** Installed by {@link VerifyChecker} around the loop verification of a method; read by {@link #applyAssign}.
@@ -707,13 +713,13 @@ class LoopEncoder {
                     "multi-variable declaration unsupported (line ${st.lineNumber})")
             }
             String name = ((VariableExpression) de.leftExpression).name
-            rebind(enc, name, de.rightExpression)
+            rebind(enc, s, name, de.rightExpression)
             return
         }
         if (e instanceof BinaryExpression && ((BinaryExpression) e).operation.type == Types.ASSIGN) {
             BinaryExpression be = (BinaryExpression) e
             if (be.leftExpression instanceof VariableExpression) {
-                rebind(enc, ((VariableExpression) be.leftExpression).name, be.rightExpression)
+                rebind(enc, s, ((VariableExpression) be.leftExpression).name, be.rightExpression)
                 return
             }
             // a[i] = v  ->  a := (store a i v): the array's contents are threaded
@@ -757,13 +763,13 @@ class LoopEncoder {
         // {@code positive.add(x)} inside the loop body. Thread the same SMT effects
         // {@code VerifyChecker.applyListMutation} does, sans count-law tracking (the loop
         // pass doesn't carry countVals).
-        if (e instanceof MethodCallExpression) {
-            if (applyListMutationInLoop((MethodCallExpression) e, enc, s)) return
-            // A rely-step call (havoc the shared frame + assume its @Ensures): handed off to VerifyChecker's
-            // caller-side framing via the installed handler, so a loop body under @UnderRely is modelled with the
-            // environment running per iteration. Returns false for any other (uncontracted) call → loud skip below.
+        if (e instanceof MethodCallExpression && applyListMutationInLoop((MethodCallExpression) e, enc, s)) return
+        if (e instanceof MethodCallExpression || e instanceof StaticMethodCallExpression) {
+            // A call statement (a rely-step, or Phase 347 any same-class call): handed off to VerifyChecker's
+            // caller-side framing via the installed handler — havoc the callee's frame, assume its @Ensures. A call
+            // it can't model → loud skip below. (STC resolves a same-class static call to a StaticMethodCallExpression.)
             LoopCallHandler h = callHandler.get()
-            if (h != null && h.handle((MethodCallExpression) e, enc, s)) return
+            if (h != null && h.handle(e, enc, s)) return
         }
         throw new UnsupportedConstructException(
             "unsupported statement in loop region (line ${st.lineNumber})")
@@ -833,7 +839,7 @@ class LoopEncoder {
      * variables — and thus its invariant and any bounds obligation that depends
      * only on them — can still be reasoned about.
      */
-    private static void rebind(Encoder enc, String name, Expression rhs) {
+    private static void rebind(Encoder enc, SmtSession s, String name, Expression rhs) {
         // Phase 38b/35 — try the materialised-set and factory-record paths first, so a loop
         // prefix like {@code List<Integer> positive = []} pins the size/nullity oracles the
         // invariant check sees. Without this, the assign would havoc {@code positive} and the
@@ -841,7 +847,69 @@ class LoopEncoder {
         if (enc.tryMaterialiseSetBinopAssign(name, rhs)) return
         if (enc.tryRecordFactoryAssign(name, rhs)) return
         Object h = enc.translate(rhs)
+        if (h == null && containsCall(rhs)) {
+            // Phase 347 — a call the encoder can't translate as a function (a contracted one, or one that writes):
+            // each is framed and its result bound to a fresh handle, then the right-hand side reads that handle.
+            // Any call left unmodelled makes the loop skip loudly: its writes are unknown, so is the state after it.
+            h = enc.translate(hoistCalls(rhs, enc, s))
+        }
         if (h == null) enc.havoc(name, 'unmodelled')   // Phase 346 — no run is known to give the value it takes
         else enc.bind(name, h)
+    }
+
+    private static boolean containsCall(Expression e) {
+        boolean[] found = [false]
+        e.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression mce) { found[0] = true }
+            @Override void visitStaticMethodCallExpression(StaticMethodCallExpression sce) { found[0] = true }
+            @Override void visitClosureExpression(ClosureExpression ce) { }
+        })
+        found[0]
+    }
+
+    private static int hoistCounter = 0
+
+    /** Phase 347 — a call on the method's own class: implicit {@code this}, {@code this.m()}, {@code Owner.m()}. */
+    private static boolean isOwnerCall(Expression x, Encoder enc) {
+        ClassNode owner = enc.currentMethod()?.declaringClass
+        if (owner == null) return false
+        if (x instanceof StaticMethodCallExpression) return ((StaticMethodCallExpression) x).ownerType?.name == owner.name
+        MethodCallExpression mce = (MethodCallExpression) x
+        if (mce.implicitThis) return true
+        Expression recv = mce.objectExpression
+        if (recv instanceof VariableExpression && ((VariableExpression) recv).name == 'this') return true
+        recv instanceof ClassExpression && ((ClassExpression) recv).type?.name == owner.name
+    }
+
+    /** Phase 347 — {@code e} with each outermost call the encoder can't translate replaced by a fresh variable bound
+     *  to the call's framed result (via the installed {@link LoopCallHandler}), in evaluation order. */
+    private static Expression hoistCalls(Expression e, Encoder enc, SmtSession s) {
+        LoopCallHandler h = callHandler.get()
+        ExpressionTransformer t
+        t = new ExpressionTransformer() {
+            @Override Expression transform(Expression x) {
+                if (x == null) return null
+                if (x instanceof ClosureExpression) return x
+                if ((x instanceof MethodCallExpression || x instanceof StaticMethodCallExpression) && enc.translate(x) == null) {
+                    Object fresh = h != null ? h.handleValue(x, enc, s) : null
+                    if (fresh == null) {
+                        // a same-class call the handler can't model has unknown writes: loud. Any other call (a
+                        // library or cross-class one) keeps the earlier reading, an opaque value — the cross-class
+                        // frame is outside this slice
+                        if (isOwnerCall(x, enc)) {
+                            throw new UnsupportedConstructException(
+                                "call '${x.text}' in a loop body has no modelled effect (its writes can't be bounded, or it is " +
+                                "outside the fragment — declare @Modifies / @Ensures)")
+                        }
+                        fresh = s.intVar('$call$' + (hoistCounter++))   // `$`-prefixed: internal, not displayed
+                    }
+                    String nm = '$call$local$' + (hoistCounter++)
+                    enc.bind(nm, fresh)
+                    return new VariableExpression(nm)
+                }
+                x.transformExpression(this)
+            }
+        }
+        t.transform(e)
     }
 }

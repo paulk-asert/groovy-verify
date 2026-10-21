@@ -427,7 +427,12 @@ class ContractExpansionTransform implements ASTTransformation {
             if (kind == null) continue
             if (kind == 'requires') addClosureText(an, source, requiresTexts)
             else if (kind == 'ensures') addClosureText(an, source, ensuresTexts)
-            else if (kind == 'modifies') addClosureText(an, source, modifiesTexts)
+            else if (kind == 'modifies') {
+                // Phase 347 — `@Modifies({})` declares that NOTHING is modified (frame-checked), which is not the
+                // same as no @Modifies (the frame is then inferred from the body); an empty closure has no text
+                String t = closureText(an, source)
+                modifiesTexts.add(t ?: '[]')
+            }
             else if (kind == 'requiresContainer') addContainerTexts(an, source, requiresTexts)
             else if (kind == 'ensuresContainer') addContainerTexts(an, source, ensuresTexts)
             else if (kind == 'modifiesContainer') addContainerTexts(an, source, modifiesTexts)

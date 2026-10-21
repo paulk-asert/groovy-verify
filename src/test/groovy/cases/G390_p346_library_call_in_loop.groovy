@@ -165,8 +165,9 @@ class G390_p346_library_call_in_loop {
                             return s
                         }
                     }''')],
-        // g's @Ensures isn't assumed in a loop body yet: its result is havocked, and since no run is known to give the value the model picked, no call is printed.
-        [group: 'P346 a library call in a loop body', name: 'an unmodelled call result withholds the failing call', expect: ['s (unmodelled)', 'no failing call: the failure rests on s'],
+        // Phase 346 havocked g's result here (and withheld the failing call); since Phase 347 a same-class call in a loop
+        // body is framed and its @Ensures assumed, so `result == x` under `0 <= i` keeps `s >= 0`.
+        [group: 'P346 a library call in a loop body', name: "a contracted call's @Ensures reaches a loop body (Phase 347)", ok: true,
          src: tc('''class C {
                         @Requires({ 0 <= x })
                         @Ensures({ result == x })

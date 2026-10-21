@@ -333,7 +333,7 @@ class Reporter {
 
     static String formatModifiesViolation(String methodName, String location, Collection<String> declared) {
         "Method '${methodName}' writes '${location}', which is not in its @Modifies clause ${new TreeSet<>(declared)}. " +
-        "A method may modify only the locations it declares (an empty @Modifies({}) means none)."
+        "A method may modify only the locations it declares (@Modifies({ [] }) means none)."
     }
 
     // ---- Dimensional analysis (Phase 131) ----

@@ -15562,9 +15562,58 @@ is modelled without its writes:
 - a contracted method with no `@Modifies` is assumed to write nothing, and nothing checks it does: `int s =
   clobber(a)`, with `clobber` storing `a[0] = -1`, keeps `a[0] == 0`.
 
-Only a call as a statement in a loop body skips loudly. The fix is a design choice: infer a callee's write set from
-its body at each call (havocking it, or skipping loudly when it can't be bounded), or make "no `@Modifies`" mean
-"modifies nothing" and check that at the callee, as Dafny does. It is its own phase.
+Only a call as a statement in a loop body skips loudly. *(Fixed in Phase 347, the hybrid: a declared frame wins,
+an absent one is inferred, an unbounded one skips loudly.)*
+
+## Phase 347 — a call is framed by its writes  *(shipped — soundness: the call-frame hole closed, the hybrid rule)*
+
+Phase 346's finding. A same-class call used as a value dropped its side effects three ways: `PureEvaluator.resolve`
+made any contract-free method a pure function; `assumeCalleeEnsures` read a callee with no `@Modifies` as writing
+nothing ("a null @Modifies frames everything"); and the Phase 116 combiner inlining replaced a call to a method with
+`@Ensures({ result == E })` by `E` whatever its body did. The rule now, Paul's hybrid:
+
+- **A declared `@Modifies` wins.** It is frame-checked, so trusting it at call sites is sound. `@Modifies({ [] })`
+  declares that nothing is written; groovy-contracts rejects an empty closure (`@Modifies({})`: "must contain a
+  field reference, parameter reference, or list of references"), an upstream tweak worth making. The frame check
+  now compares the declaration with the inferred write set (transitive, list mutators and `++` included), falling
+  back to the old partial visitor when that can't be bounded.
+- **Absent, the frame is inferred** (`calleeWrites`, memoised on the node): the loop engine's write collector run
+  over the callee's body, filtered to its fields and parameters. It follows same-class calls (a written formal
+  maps to the actual, which must be a plain variable), a closure's body, `switch`/`try`/`throw`, casts, GStrings,
+  spreads, ranges, groovy-contracts' `==>`; an unknown method is read as writing its receiver (unless the
+  receiver's type is immutable — a `String` parameter can't be mutated), a registry spec by its `@Pure` or declared
+  frame, the SAM shorthand `cs(r)` on a callable in scope as pure, and an unknown static call (a library call with
+  no spec) as unbounded. These extensions apply only while a callee's frame is inferred (`INFER_MODE`): a loop's
+  own write set keeps its earlier, narrower reading, because bounding a loop that used to be unbounded puts its
+  loop-stable facts into every loop VC, and that changed a refutation tuned without them (P253's merge order timed
+  out at 8 s with the channel facts in scope). A bodiless callee — a registry skeleton, an interface method — keeps the trusted reading
+  "nothing" unless it declares otherwise.
+- **Unbounded is loud.** A call whose frame can't be bounded (`xs << x`, a multiple assignment, a written formal
+  passed `this.a`) skips with "call 'm(…)' whose writes can't be bounded from its body — declare @Modifies on m".
+- **Where calls are framed now.** Straight-line `int s = f()`, `s = s + f()` and `2 + f()` (the Phase 309
+  return-expression hoist, `hoistValueCalls`, shared with assignment right-hand sides), call statements, and loop
+  bodies: `LoopEncoder.rebind` hoists each call the encoder can't translate through the `LoopCallHandler`, which
+  mints the result in the callee's return sort (a `String`-returning `glue(acc, x)` keeps its `@Ensures`) — a
+  same-class call it can't model is loud, a library or cross-class call keeps its opaque reading. A same-class
+  static call statement is a `StaticMethodCallExpression` after STC, which the loop engine now takes too.
+- **Purity is "writes nothing".** `PureEvaluator.resolve` and the combiner registration both require an empty
+  frame; a contract-free writer is framed at its call site and its result is opaque.
+- **Display:** a callee's framed location shows as `count (after a call)`; hoist temporaries are hidden.
+
+**Changed cases:** G047's Phase 7 insertion sort and G048's natural-guard twin proved only through the hole (their
+`insert` has no `@Modifies`, and its `@Ensures` says nothing about `a[i]`): under the inferred frame the
+postcondition refutes, honestly — the version with the frame and the bound lemma is Phases 14/24. G390's "unmodelled
+call result" case now verifies (the call's `@Ensures` reaches the loop body).
+
+**Shipped tests:** group `P347 a call is framed by its writes`, 19 cases: a pure helper still unfolds; a writer
+leaves the fields it doesn't write alone (straight-line and loop); `@Modifies({ [] })`; a `@Requires`-only helper as
+an opaque value; the contracted writer as a declaration, a statement, inside an expression, a reassignment, and
+through a helper it calls; array-parameter stores by contract-free and contracted callees; a declared frame
+honoured, and one the body breaks refused; writers in loop bodies as values and statements, instance and static;
+an unbounded body skipping loudly.
+
+**Still out:** the frame of a cross-class call (`obj.m()` on an object parameter, Phase 194's demote-to-skip
+boundary), and aliasing. A frame check that can't bound the body is silent (the old partial visitor), as before.
 
 ---
 
