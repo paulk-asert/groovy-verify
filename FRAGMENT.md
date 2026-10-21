@@ -385,7 +385,7 @@ loud-skips, as three-deep nesting does. A nested loop's checks hold the outer in
 writes on the way, and the outer loop's frame facts (Phase 336). A loop may follow an outer loop that holds a
 nested loop: the earlier one is summarised with its nested loop's writes havocked (Phase 338). A loop body may
 assign `this.f`, `put` into a map and `set` a list element, as the stores they are; a nested loop's are havocked by
-its outer loop's summary (Phase 340), and `xs << v` on a list is `xs.add(v)` (Phase 341). A `do … while` is `B; while (G) B` — its body runs once
+its outer loop's summary (Phase 340), and `xs << v` on a list is `xs.add(v)` (Phase 341); a set's `add`/`remove`/`<<` updates the set (Phase 342). A `do … while` is `B; while (G) B` — its body runs once
 unconditionally, so the invariant is checked *after* that first iteration, not at entry (modelling it as a
 plain `while` was silently unsound — a false invariant established pre-body could prove a wrong spec). An
 explicit **`throw`** ends its path — a postcondition is vacuous on a non-returning path (groovy-contracts

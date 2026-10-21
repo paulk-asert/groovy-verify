@@ -15402,6 +15402,40 @@ A statement `out << k` skipped in any loop ("unsupported statement in loop regio
 size refuting, a chain, a nested loop, the outer summary havocking the list, straight-line code, a list parameter, a
 set parameter inserting and a wrong set claim refuting, and a `StringBuilder` and an `int` shift skipping loudly.
 
+## Phase 342 — a set mutated in a loop body  *(shipped — set semantics in loops; an unsoundness closed, a bigger one found)*
+
+`st << k` in a loop body skipped. The probe showed worse: `st.add(k)` in a loop was accepted and modelled as a list
+append. `applyListMutationInLoop` stored into the list oracles (`arrayFor`, `sizeOf`) and the set model
+(`setFor`, its membership and cardinality) never changed. So `@Invariant({ st.isEmpty() })` was preserved through
+`st.add(k)`, and `!st.contains(0)` through `st.add(0)`: silent false proofs. A true `contains` invariant failed.
+
+- **A set's own store.** For a set name (`Encoder.isSetName`), `add`/`remove` apply the straight-line replay's
+  encoding: `store(s, e, 1/0)` and the cardinality law (`|s'| = |s| + (e ∈ s ? 0 : 1)`). `clear`, `addAll` and the
+  rest return false (a loud skip); `clear` had set the list size to 0 and left the set alone. `xs << v` takes the
+  same path for a set. `summarizeInner` havocs a mutated set's own model too, so an outer loop's summary of a nested
+  loop that adds to it does not keep its old contents.
+
+**Shipped tests:** group `P342 set << in a loop body`, 11 cases: membership kept after `add` and `<<`, the size
+bound, the two false proofs now refuting, a duplicate add not growing the set, a wrong claim, `remove`, a set field
+(kept and refuting), and `clear` skipping loudly.
+
+**Found, not fixed: `@Requires` assumed in non-entry states.** Probing the nested case turned up a long-standing,
+general false proof (present at `8c1ff8f`, about 80 commits back). The post-loop check (`checkUse`'s coarse
+context), the in-body exit checks (`checkEarlyExitPath`) and the loop-region obligations (`dischargeSeeded`)
+assert the whole `@Requires` over the current state's symbols. A parameter, field or collection the prefix or the
+loop writes is then tied to its entry value. With `@Requires({ x == 0 })`:
+  - a loop doing `x = x + 1`, then `return x`, proves `result == 0` (`f(0, 1)` returns 1);
+  - `x = 5` before the loop contradicts the entry fact (a frame fact `x == 5` against `x == 0`), so every claim
+    after the loop proves (`result == 99`);
+  - an in-body `if (k == 1) return x` proves `result == 0` (it returns 1);
+  - a body bounds check `a[x]` reads `x == 0` and misses the overrun;
+  - `@Requires({ st.isEmpty() })` / `xs.isEmpty()` survives a loop's `add`.
+Preservation and progress filter `@Requires` to the conjuncts the loop cannot invalidate (Phase 64,
+`loopStableRequires`); these contexts do not, and none of them filters the prefix's writes. The fix is to assume,
+in every non-entry context, only the conjuncts over names nothing between entry and that point writes (the prefix,
+earlier loops, the loop itself), keeping a content-only write's shape facts (`a.length`, `a != null`). It costs
+proofs that lean on a written parameter's `@Requires`, so it is its own phase.
+
 ---
 
 ## Definition of done, per increment

@@ -287,7 +287,7 @@ class LoopEncoder {
         // Phase 252 — a LIST-BUILDING loop (`q.add(x)` / `clear` / `removeLast` / `pop`) changes both the
         // contents and the length: havoc both oracles, then its invariant ∧ ¬guard characterises the list
         // (a producer loop's `q.size() == i - a` and its element relation survive into the loop after it).
-        for (String nm : lists) { enc.havocArray(nm); enc.havocSize(nm) }
+        for (String nm : lists) { enc.havocArray(nm); enc.havocSize(nm); if (enc.isSetName(nm)) enc.havocSet(nm) }   // Phase 342 — a set's own model too
         if (breaks.isEmpty()) {
             s.assertExpr(conj(enc, s, inner.invariants))
             s.assertExpr(s.not(tr(enc, inner.guard, "inner-loop guard")))
@@ -684,7 +684,8 @@ class LoopEncoder {
         e = asStore(e, enc)   // Phase 340 — this.f = v, m.put(k, v), xs.set(i, v)
         // Phase 341 — xs << a << b on a list: xs.add(a), then xs.add(b)
         List<MethodCallExpression> adds = Encoder.leftShiftAdds(e)
-        if (adds != null && enc.isListTyped(((VariableExpression) adds.get(0).objectExpression).name)) {
+        String shiftRecv = adds != null ? ((VariableExpression) adds.get(0).objectExpression).name : null
+        if (adds != null && (enc.isListTyped(shiftRecv) || enc.isSetName(shiftRecv))) {   // Phase 342 — a set's << inserts
             for (MethodCallExpression add : adds) {
                 if (!applyListMutationInLoop(add, enc, s)) {
                     throw new UnsupportedConstructException("unsupported statement in loop region (line ${st.lineNumber})")
@@ -777,6 +778,22 @@ class LoopEncoder {
             ((ArgumentListExpression) mce.arguments).expressions :
             Collections.<Expression>emptyList()
         Object one = s.intLit(1L), zero = s.intLit(0L)
+        // Phase 342 — a set is not a list: its add/remove went down the append path below, which wrote only the list
+        // oracles, so the set model saw no change (an add left st.isEmpty() provable). Its own store and
+        // cardinality law, as the straight-line replay does; any other set mutation (clear, addAll) is refused.
+        if (enc.isSetName(name)) {
+            if ((m != 'add' && m != 'remove') || args.size() != 1) return false
+            Object elem = enc.translateInSort(args.get(0), enc.setElementSort(name))
+            if (elem == null) return false
+            boolean adding = m == 'add'
+            Object oldS = enc.setFor(name)
+            Object newS = s.store(oldS, elem, adding ? one : zero)
+            Object memOld = enc.member(oldS, elem)
+            Object delta = adding ? s.ite(memOld, zero, one) : s.ite(memOld, one, zero)
+            s.assertExpr(s.eq(enc.cardOf(newS), adding ? s.plus(enc.cardOf(oldS), delta) : s.minus(enc.cardOf(oldS), delta)))
+            enc.bindSet(name, newS)
+            return true
+        }
         if (m == 'add' && args.size() == 1) {
             Object x = enc.translate(args.get(0))
             if (x == null) return false

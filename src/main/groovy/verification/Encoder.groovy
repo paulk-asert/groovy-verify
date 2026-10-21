@@ -3506,6 +3506,9 @@ class Encoder implements TheoryApi {
     /** Current set binding, or null — for save/restore around a call's framing. */
     Object peekSet(String key) { setEnv.get(key) }
 
+    /** Phase 342 — a set-typed name (parameter, field or local), modelled by the set env, not the list oracles. */
+    boolean isSetName(String n) { n != null && setElementTypes.containsKey(n) }
+
     /** Set analogue of {@link #havocArray}: re-bind a set name's contents to a fresh, unconstrained set. */
     Object havocSet(String key) {
         Object v = session.setVar(key + '$havoc$' + (havocCounter++))
