@@ -2319,20 +2319,58 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
     private Map<String, Long> reproUnderRequires(Map<String, Long> ce) {
         if (findRequires(currentMethod) == null) return ce
         Expression reqAst = contractAstFor(currentMethod, 'requires')
-        if (reqAst == null || !hasQuantifier(reqAst)) return ce
+        if (reqAst == null) return ce
+        // Phase 343 — a parameter the method writes shows its value at the failure, not its input: a precondition
+        // over one is re-checked too (P337's re-check covered only the quantified conjuncts a VC drops)
+        Map<String, Boolean> written = writtenParams()
+        boolean overWritten = !Collections.disjoint(freeNames(reqAst), written.keySet())
+        if (!hasQuantifier(reqAst) && !overWritten) return ce
         List<String> shape = new ArrayList<String>(), elements = new ArrayList<String>()
+        reproPins(ce, Collections.<String, Boolean> emptyMap(), shape, elements)
+        CheckResult whole = requiresWith(reqAst, shape + elements)
+        if (whole == null || whole.status != CheckResult.Status.VERIFIED) return ce   // met, or undecided: keep
+        if (elements.isEmpty() && !overWritten) return null
+        // pin what the failure fixes (an unwritten parameter's value and size, a written array's length and nullness)
+        // and take the rest from a model of the precondition: the elements, and a written parameter's input value
+        List<String> loose = new ArrayList<String>(), ignored = new ArrayList<String>()
+        reproPins(ce, written, loose, ignored)
+        CheckResult shaped = requiresWith(reqAst, loose)
+        if (shaped == null || shaped.status != CheckResult.Status.REFUTED || shaped.counterexample == null) return null
+        Map<String, Long> repaired = new LinkedHashMap<String, Long>(ce)
+        shaped.counterexample.each { String k, Long v ->
+            String base = k.contains('[') ? k.substring(0, k.indexOf('[')) : k.endsWith('.size') ? k.substring(0, k.length() - 5) : k
+            if (k.endsWith(']') || written.containsKey(base)) repaired.put(k, v)
+        }
+        // the repaired call must itself meet the precondition (a model value the walk didn't pin reads as 0)
+        List<String> again = new ArrayList<String>(), againElems = new ArrayList<String>()
+        reproPins(repaired, Collections.<String, Boolean> emptyMap(), again, againElems)
+        CheckResult check = requiresWith(reqAst, again + againElems)
+        check != null && check.status == CheckResult.Status.REFUTED ? repaired : null
+    }
+
+    /**
+     * The pins of a rendered failing call: each parameter's value, nullness and size into {@code shape}, the elements
+     * it renders into {@code elements}. A parameter in {@code loose} (written by the method: true when reassigned,
+     * false when only its contents are) is pinned only as far as its writes cannot change it: nothing when
+     * reassigned, its nullness otherwise, and an array's length too.
+     */
+    private void reproPins(Map<String, Long> ce, Map<String, Boolean> loose, List<String> shape, List<String> elements) {
         for (Parameter p : currentMethod.parameters) {
             String tn = p.type?.name
             boolean nulled = ce.get(p.name + '?null') == 1L
+            Boolean reassigned = loose.get(p.name)
+            if (reassigned == Boolean.TRUE) continue
             if (tn in INT_TYPE_NAMES) {
                 Long v = ce.get(p.name)
                 shape.add("${p.name} == ${v != null ? v : 0L}".toString())
             } else if (tn in BOOL_TYPE_NAMES) {
                 shape.add(ce.get(p.name) == 1L ? p.name : "!${p.name}".toString())
-            } else if (!nulled && (p.type?.isArray() || isCollectionType(p.type)) && !isSetType(p.type) && !isMapType(p.type)) {
+            } else if (!nulled && (p.type?.isArray() || isCollectionType(p.type)) && !isMapType(p.type)) {
                 long n = sizeOf(p.name, ce)
                 shape.add("${p.name} != null".toString())
+                if (reassigned != null && !p.type.isArray()) continue   // a mutated collection: its size and contents moved
                 shape.add("${p.name}.${p.type.isArray() ? 'length' : 'size()'} == ${n}".toString())
+                if (reassigned != null || isSetType(p.type)) continue   // a written array's contents moved; a set has none to pin
                 String comp = p.type.isArray() ? p.type.componentType.nameWithoutPackage : null
                 List<Long> elems = pinnedElements(p.name, n, ce)
                 boolean rendered = p.type.isArray() ? comp in NUMERIC_COMPONENT_NAMES : elems != null && elems.any { it != 0L }
@@ -2341,23 +2379,42 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
             }
         }
-        CheckResult whole = requiresWith(reqAst, shape + elements)
-        if (whole == null || whole.status != CheckResult.Status.VERIFIED) return ce   // met, or undecided: keep
-        if (elements.isEmpty()) return null
-        CheckResult shaped = requiresWith(reqAst, shape)
-        if (shaped == null || shaped.status != CheckResult.Status.REFUTED || shaped.counterexample == null) return null
-        Map<String, Long> repaired = new LinkedHashMap<String, Long>(ce)
-        shaped.counterexample.each { String k, Long v -> if (k.endsWith(']')) repaired.put(k, v) }
-        // the repaired elements must themselves meet the precondition (a model value the walk didn't pin reads as 0)
-        List<String> again = new ArrayList<String>(shape)
-        for (Parameter p : currentMethod.parameters) {
-            if (!(p.type?.isArray() || isCollectionType(p.type)) || ce.get(p.name + '?null') == 1L) continue
-            long n = sizeOf(p.name, repaired)
-            List<Long> elems = pinnedElements(p.name, n, repaired)
-            if (n <= MAX_PINNED_ELEMENTS) for (int k = 0; k < n; k++) again.add("${p.name}[${k}] == ${elems != null ? elems.get(k) : 0L}".toString())
+    }
+
+    /** Phase 343 — the parameters the method body writes: true when reassigned, false when only mutated in place. */
+    private Map<String, Boolean> writtenParams() {
+        Map<String, Boolean> out = new HashMap<String, Boolean>()
+        if (currentMethod == null) return out
+        Statement body = (Statement) currentMethod.getNodeMetaData(ContractExpansionTransform.ORIGINAL_BODY_KEY) ?: currentMethod.code
+        if (body == null) return out
+        Set<String> params = new HashSet<String>(currentMethod.parameters*.name)
+        Set<String> reassigned = reassignedNames([body])
+        Set<String> mutated = new HashSet<String>()
+        body.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if (m.objectExpression instanceof VariableExpression && !(m.methodAsString in LOOP_PURE_READS)) {
+                    mutated.add(((VariableExpression) m.objectExpression).name)
+                }
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if ((Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) || be.operation.type == Types.LEFT_SHIFT) &&
+                    be.leftExpression instanceof BinaryExpression &&
+                    ((BinaryExpression) be.leftExpression).operation.type == Types.LEFT_SQUARE_BRACKET &&
+                    ((BinaryExpression) be.leftExpression).leftExpression instanceof VariableExpression) {
+                    mutated.add(((VariableExpression) ((BinaryExpression) be.leftExpression).leftExpression).name)
+                }
+                if (be.operation.type == Types.LEFT_SHIFT && be.leftExpression instanceof VariableExpression) {
+                    mutated.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        for (String p : params) {
+            if (reassigned.contains(p)) out.put(p, Boolean.TRUE)
+            else if (mutated.contains(p)) out.put(p, Boolean.FALSE)
         }
-        CheckResult check = requiresWith(reqAst, again)
-        check != null && check.status == CheckResult.Status.REFUTED ? repaired : null
+        out
     }
 
     /** {@code ¬(req ∧ pins)}: VERIFIED when no state meets both, REFUTED with a model of both; null if untranslatable. */
@@ -4445,6 +4502,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         for (int si = 0; si < sites.size(); si++) {
             LoopSite site = sites.get(si)
             LoopSpec spec = site.spec
+            // Phase 343 — every region below is a state the prefix and the loop have written to: only the @Requires
+            // they leave standing holds there (the region before the first loop, above, replays from entry)
+            Expression stableReq = loopStableRequiresExpr(reqAst, site)
             // 1b. Phase 207 — the region between the previous loop and this one is the previous site's
             // segmentAfter (discharged below under ITS inv ∧ ¬guard); nothing extra here.
             // 2. Guard expression: evaluated whenever the invariant holds.
@@ -4452,15 +4512,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             List<Expression> framed = new ArrayList<Expression>(spec.invariants)
             framed.addAll(loopFrameFacts(site))
             for (Object s : sitesInExpression(spec.guard)) {
-                dischargeSeeded(s, reqAst, framed, null, Collections.<Statement>emptyList())
+                dischargeSeeded(s, stableReq, framed, null, Collections.<Statement>emptyList())
             }
             // 3. Body: invariant ∧ guard, threaded through the (straight-line) body. handleAsserts=true so an
             // in-loop `assert` (the masking-fix class-invariant assert after a shared write) is discharged here.
             List<Expression> bodyAssumed = new ArrayList<Expression>(framed)
             bodyAssumed.add(spec.guard)
-            dischargeRegion(spec.body, reqAst, bodyAssumed, null, Collections.<Statement>emptyList(), true)
+            dischargeRegion(spec.body, stableReq, bodyAssumed, null, Collections.<Statement>emptyList(), true)
             // 4. The region after this loop up to the next one (or the method end): inv ∧ ¬guard.
-            dischargeRegion(site.segmentAfter, reqAst, framed, spec.guard)
+            dischargeRegion(site.segmentAfter, stableReq, framed, spec.guard)
             // 4b. Phase 312 — and from each `break`: an arbitrary iteration (inv ∧ guard), the body up to the break
             // with earlier exits not taken, the break's condition, its lead. The after-loop code must be safe from
             // every state the loop can be left in, not just inv ∧ ¬guard.
@@ -4476,7 +4536,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 }
                 atBreak = withAssume(atBreak, ex.guard)
                 atBreak.addAll(ex.lead)
-                dischargeRegion(site.segmentAfter, reqAst, iterEntry, null, atBreak)
+                dischargeRegion(site.segmentAfter, stableReq, iterEntry, null, atBreak)
             }
             // 5. Phase 91 — a nested annotated loop's index/bounds obligations (e.g. `a[k] = …`) are
             // discharged in the INNER loop's own context (inner_inv ∧ inner_guard), where the inner index is
@@ -4488,7 +4548,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Statement> before = stmtsBefore(spec.body, innerLoop)
                 if (innerSpec.init != null) before.addAll(innerSpec.init)
                 innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
-                dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
+                dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
             }
             // Phase 335 — and those of a nested loop inside a branch of the body, with its path's stable conditions
             for (Object[] bl : branchInnerLoops(spec.body)) {
@@ -4499,7 +4559,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
                 List<Statement> before = new ArrayList<Statement>((List<Statement>) bl[1])
                 if (innerSpec.init != null) before.addAll(innerSpec.init)
                 innerAssumed.addAll(outerFactsForInner(site, before, innerSpec))   // Phase 336
-                dischargeRegion(innerSpec.body, reqAst, innerAssumed, null, Collections.<Statement>emptyList(), true)
+                dischargeRegion(innerSpec.body, stableReq, innerAssumed, null, Collections.<Statement>emptyList(), true)
             }
         }
     }
@@ -10626,6 +10686,8 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         List<EarlyExit> earlyExits = new ArrayList<EarlyExit>()
         /** Phase 318 — the prefix facts the loop can't invalidate (computed once by {@code loopFrameFacts}). */
         List<Expression> frameFacts
+        /** Phase 343 — for a nested loop's site, the loop it is nested in (whose writers decide what of @Requires holds). */
+        LoopSite outer
     }
 
     /**
@@ -11309,6 +11371,10 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         'add','remove','put','clear','set','addAll','removeAll','retainAll','putAll','push','pop',
         'poll','offer','removeLast','removeFirst','addFirst','addLast','removeAt','putIfAbsent'] as Set
 
+    private static final Set<String> PURE_STATIC_CLASSES = [
+        'groovy.lang.Tuple', 'java.lang.Math', 'java.lang.Integer', 'java.lang.Long', 'java.lang.String',
+        'java.lang.Character', 'java.lang.Boolean'] as Set
+
     private static final Set<String> LOOP_PURE_READS = [
         'size','length','get','getAt','contains','containsKey','containsValue','isEmpty','indexOf',
         'lastIndexOf','charAt','substring','keySet','values','entrySet','sum','max','min','count',
@@ -11364,18 +11430,135 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         } finally { try { s.close() } catch (Throwable ignored) {} }
     }
 
-    /** The @Requires conjuncts referencing only loop-stable state — sound to assume mid-loop. */
-    private static List<Expression> loopStableRequires(Expression reqAst, LoopSite site) {
+    /**
+     * The @Requires conjuncts that still hold at any point of the loop or after it — sound to assume wherever the
+     * state is not the method's entry state. @Requires is a fact about the entry values; a conjunct over a name the
+     * prefix (earlier loops included) or the loop writes is a fact about a value that may be gone. Phase 343 — a
+     * nested loop is judged by its outer loop's writes (its own prefix is empty), and a name written only in its
+     * contents keeps the facts those writes cannot change: an array stored into keeps {@code a.length} and its
+     * nullness, a list, set or map mutated in place keeps its nullness.
+     */
+    private List<Expression> loopStableRequires(Expression reqAst, LoopSite site) {
         if (reqAst == null) return Collections.<Expression>emptyList()
-        Set<String> writes = loopWriteSet(site)
-        if (writes == null) return Collections.<Expression>emptyList()   // unbounded writes → assume nothing
+        LoopSite base = site.outer ?: site
+        Set<String> writes = loopWriteSet(base)   // null: some write (an unknown call) can't be bounded
+        // A callee can mutate what a parameter refers to but never reassign the caller's parameter: a parameter the
+        // method doesn't reassign keeps its nullness, an array's length, and a value type's (int, String, ...) every
+        // fact, whatever the loop calls. Contents, sizes and fields need a bounded write set they are absent from.
+        List<Statement> all = new ArrayList<Statement>(base.prefix ?: Collections.<Statement>emptyList())
+        all.add(base.loopStmt)
+        Set<String> reassigned = reassignedNames(all)
+        reassigned.addAll(thisAssignedNames(all))
+        if (currentMethod?.code != null) reassigned.addAll(closureAssignedNames(currentMethod.code))
+        Set<String> sizeKept = sizePreservingOnly(all)
+        Map<String, ClassNode> params = new HashMap<String, ClassNode>()
+        if (currentMethod != null) for (Parameter p : currentMethod.parameters) params.put(p.name, p.type)
         List<Expression> conjuncts = new ArrayList<Expression>()
         splitConjuncts(reqAst, conjuncts)
         List<Expression> stable = new ArrayList<Expression>()
         for (Expression c : conjuncts) {
-            if (Collections.disjoint(freeNames(c), writes)) stable.add(c)
+            Set<String> names = freeNames(c)
+            boolean ok = names.every { String x ->
+                if (reassigned.contains(x)) return false
+                ClassNode pt = params.get(x)
+                if (pt == null && !isFieldName(x)) return true                       // a class reference, not state
+                if (pt != null && isValueType(pt)) return true                       // a value no call can change
+                if (writes != null && !writes.contains(x) && (pt != null || isFieldName(x))) return true   // untouched
+                if (pt == null) {   // a field: with no unknown call to reassign it, its contents' writes keep its shape
+                    ClassNode ft = currentMethod?.declaringClass?.getField(x)?.type
+                    return writes != null && onlyShapeUses(c, x, ft != null && ft.isArray())
+                }
+                // a parameter written in its contents (or by a call): the facts no such write can change
+                onlyShapeUses(c, x, pt.isArray() || (writes != null && sizeKept.contains(x)))
+            }
+            if (ok) stable.add(c)
         }
         stable
+    }
+
+    private boolean isFieldName(String x) { currentMethod?.declaringClass?.getField(x) != null }
+
+    /** Phase 343 — names whose only mutations in {@code stmts} keep their size: {@code xs.set(i, v)} on a list. */
+    private static Set<String> sizePreservingOnly(List<Statement> stmts) {
+        Set<String> kept = new HashSet<String>(), changed = new HashSet<String>()
+        for (Statement st : stmts) st.visit(new CodeVisitorSupport() {
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if (m.objectExpression instanceof VariableExpression && !(m.methodAsString in LOOP_PURE_READS)) {
+                    String n = ((VariableExpression) m.objectExpression).name
+                    (m.methodAsString == 'set' ? kept : changed).add(n)
+                }
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (be.operation.type == Types.LEFT_SHIFT && be.leftExpression instanceof VariableExpression) {
+                    changed.add(((VariableExpression) be.leftExpression).name)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        kept.removeAll(changed)
+        kept
+    }
+
+    /** Phase 343 — fields assigned as {@code this.f = v} (or {@code op=}) anywhere in {@code stmts}. */
+    private static Set<String> thisAssignedNames(List<Statement> stmts) {
+        Set<String> out = new HashSet<String>()
+        for (Statement st : stmts) st.visit(new CodeVisitorSupport() {
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                if (Types.ofType(be.operation.type, Types.ASSIGNMENT_OPERATOR) && be.leftExpression instanceof PropertyExpression &&
+                    isThisRef(((PropertyExpression) be.leftExpression).objectExpression)) {
+                    out.add(((PropertyExpression) be.leftExpression).propertyAsString)
+                }
+                super.visitBinaryExpression(be)
+            }
+        })
+        out
+    }
+
+    /** {@link #loopStableRequires} as one expression (null when nothing is stable), for the region discharges. */
+    private Expression loopStableRequiresExpr(Expression reqAst, LoopSite site) {
+        List<Expression> stable = loopStableRequires(reqAst, site)
+        if (stable.isEmpty()) return null
+        Expression r = stable.get(0)
+        for (int i = 1; i < stable.size(); i++) r = bin(r, Types.LOGICAL_AND, stable.get(i))
+        r
+    }
+
+    /** Phase 343 — {@code x} occurs in {@code c} only as {@code x == null} / {@code x != null}, or, with
+     *  {@code lengthOk}, as {@code x.length} / {@code x.size()}: facts a content write leaves alone. */
+    private static boolean onlyShapeUses(Expression c, String x, boolean lengthOk) {
+        boolean[] ok = [true] as boolean[]
+        c.visit(new CodeVisitorSupport() {
+            private boolean isX(Expression e) { e instanceof VariableExpression && ((VariableExpression) e).name == x }
+            @Override void visitBinaryExpression(BinaryExpression be) {
+                int t = be.operation.type
+                if ((t == Types.COMPARE_EQUAL || t == Types.COMPARE_NOT_EQUAL) &&
+                    ((isX(be.leftExpression) && isNullConst(be.rightExpression)) || (isX(be.rightExpression) && isNullConst(be.leftExpression)))) return
+                super.visitBinaryExpression(be)
+            }
+            @Override void visitPropertyExpression(PropertyExpression pe) {
+                if (lengthOk && isX(pe.objectExpression) && pe.propertyAsString == 'length') return
+                super.visitPropertyExpression(pe)
+            }
+            @Override void visitMethodCallExpression(MethodCallExpression m) {
+                if (lengthOk && isX(m.objectExpression) && m.methodAsString == 'size' &&
+                    (!(m.arguments instanceof TupleExpression) || ((TupleExpression) m.arguments).expressions.isEmpty())) return
+                super.visitMethodCallExpression(m)
+            }
+            @Override void visitVariableExpression(VariableExpression v) { if (v.name == x) ok[0] = false }
+            @Override void visitClosureExpression(ClosureExpression ce) { ok[0] = false }
+        })
+        ok[0]
+    }
+
+    private static boolean isNullConst(Expression e) { e instanceof ConstantExpression && ((ConstantExpression) e).value == null }
+
+    /** Phase 343 — {@code x} is an array-typed parameter or field of the current method. */
+    private boolean isArrayName(String x) {
+        if (currentMethod == null) return false
+        for (Parameter p : currentMethod.parameters) if (p.name == x) return p.type?.isArray()
+        FieldNode f = currentMethod.declaringClass?.getField(x)
+        f != null && f.type?.isArray()
     }
 
     private static void assumeStableRequires(SmtSession s, Encoder enc, List<Expression> stable) {
@@ -11714,6 +11897,9 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             switch (t) {
                 case Types.PLUS: case Types.MINUS: case Types.MULTIPLY: case Types.DIVIDE:
                 case Types.MOD: case Types.LEFT_SQUARE_BRACKET:
+                // Phase 343 — `%` is REMAINDER in Groovy 6 (MOD bailed nothing it parsed); the rest write nothing either
+                case Types.REMAINDER: case Types.POWER: case Types.RIGHT_SHIFT: case Types.RIGHT_SHIFT_UNSIGNED:
+                case Types.BITWISE_AND: case Types.BITWISE_OR: case Types.BITWISE_XOR:
                 case Types.COMPARE_EQUAL: case Types.COMPARE_NOT_EQUAL:
                 case Types.COMPARE_LESS_THAN: case Types.COMPARE_LESS_THAN_EQUAL:
                 case Types.COMPARE_GREATER_THAN: case Types.COMPARE_GREATER_THAN_EQUAL:
@@ -11726,6 +11912,11 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         if (e instanceof MethodCallExpression) {
             MethodCallExpression mce = (MethodCallExpression) e
             String m = mce.methodAsString
+            // Phase 343 — a static call on a class with no mutable statics (Tuple.tuple, Math.max, Integer.valueOf)
+            // writes only what its arguments do
+            if (mce.objectExpression instanceof ClassExpression && ((ClassExpression) mce.objectExpression).type?.name in PURE_STATIC_CLASSES) {
+                return collectWritesArgs(mce.arguments, ws)
+            }
             if (LOOP_MUTATORS.contains(m)) {
                 if (!recordTarget(mce.objectExpression, ws)) return false
             } else if (!LOOP_PURE_READS.contains(m)) {
@@ -11790,7 +11981,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
-            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            // Phase 343 — the prefix region and a do-while's first pass replay from the entry state, where all of
+            // @Requires holds; an in-body exit on some iteration sees only what of it the writes leave standing
+            if (ex.region == 'prefix' || doWhileFirstIter) {
+                if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            } else {
+                assumeStableRequires(s, enc, loopStableRequires(reqAst, site))
+            }
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             if (ex.region == 'prefix') {
@@ -12145,6 +12342,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         LoopSite innerSite = new LoopSite()
         innerSite.loopStmt = innerLoop
         innerSite.spec = innerSpec
+        innerSite.outer = site   // Phase 343 — @Requires judged by the outer loop's writes
         innerSite.prefix = Collections.<Statement> emptyList()
         innerSite.suffix = Collections.<Statement> emptyList()
         innerSite.originalPrefix = Collections.<Statement> emptyList()
@@ -12208,7 +12406,12 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
-            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            // Phase 343 — at an outer iteration only the @Requires the outer loop's writers leave standing holds
+            if (doWhileFirstPass) {
+                if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            } else {
+                assumeStableRequires(s, enc, loopStableRequires(reqAst, outer))
+            }
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             if (doWhileFirstPass) {
@@ -12253,7 +12456,15 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         SmtSession s = backend.session()
         try {
             Encoder enc = mkEncoder(s)
-            if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            // Phase 343 — the precise context replays the prefix from the entry state, where all of @Requires holds;
+            // the coarse one reads the post-loop state directly, where only what the writes leave standing does
+            // (asserting all of it tied a written x to its entry value: x = x + 1 in the loop "proved" x == 0 after)
+            boolean replay = prefixReplayable(site)
+            if (replay) {
+                if (reqAst != null) s.assertExpr(LoopEncoder.tr(enc, reqAst, "precondition"))
+            } else {
+                assumeStableRequires(s, enc, loopStableRequires(reqAst, site))
+            }
             assumeIntJvmBounds(s, enc)
             assumeClassInvariants(s, enc)
             // Phase 49 — on the natural return-after-loop path no early exit fired; each exit's @Ensures is
@@ -12262,7 +12473,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
             // may never have run (a zero-iteration loop) or ran against earlier values of what it reads (`if (i == 3)
             // return` never sees the exit value i == n), so asserting ¬guard here ruled out real runs and "proved"
             // false postconditions. Only a prefix-exit guard whose inputs provably can't change afterwards carries.
-            if (!assumePrefixThenSummary(site, enc, s)) {
+            if (!replay || !assumePrefixThenSummary(site, enc, s)) {
                 for (EarlyExit ex : site.earlyExits) {
                     if (ex.region != 'prefix' || !prefixGuardStable(ex, site)) continue
                     Object gh = enc.translate(ex.guard)
@@ -12305,9 +12516,7 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
      *  the session untouched. A prefix statement symExec can't model throws part-way — that propagates as the
      *  loop's loud skip, never a half-built context that's then checked. */
     private boolean assumePrefixThenSummary(LoopSite site, Encoder enc, SmtSession s) {
-        boolean needed = site.earlyExits.any { it.region == 'prefix' && !prefixGuardStable(it, site) }
-        if (!needed || site.spec.forInVar != null || site.spec.isDoWhile || site.spec.fromEach) return false
-        if (!LoopEncoder.innerFrame(site.spec.body, new HashSet<String>(), new HashSet<String>(), new HashSet<String>())) return false
+        if (!prefixReplayable(site)) return false
         Set<Statement> exitNodes = new HashSet<Statement>(site.earlyExits.findAll { it.region == 'prefix' }*.node)
         for (Statement st : site.originalPrefix) {
             if (exitNodes.contains(st)) {
@@ -12319,6 +12528,13 @@ class VerifyChecker extends TypeCheckingExtension implements CheckerApi {
         }
         LoopEncoder.summarizeInner(site.spec, enc, s)
         true
+    }
+
+    /** Phase 343 — whether {@link #assumePrefixThenSummary} will replay the prefix (decided before anything is asserted). */
+    private boolean prefixReplayable(LoopSite site) {
+        boolean needed = site.earlyExits.any { it.region == 'prefix' && !prefixGuardStable(it, site) }
+        if (!needed || site.spec.forInVar != null || site.spec.isDoWhile || site.spec.fromEach) return false
+        LoopEncoder.innerFrame(site.spec.body, new HashSet<String>(), new HashSet<String>(), new HashSet<String>())
     }
 
     /** Phase 310 — may a prefix early-exit's {@code ¬guard} be assumed in the post-loop state? Only when nothing

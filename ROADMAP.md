@@ -15434,7 +15434,47 @@ Preservation and progress filter `@Requires` to the conjuncts the loop cannot in
 `loopStableRequires`); these contexts do not, and none of them filters the prefix's writes. The fix is to assume,
 in every non-entry context, only the conjuncts over names nothing between entry and that point writes (the prefix,
 earlier loops, the loop itself), keeping a content-only write's shape facts (`a.length`, `a != null`). It costs
-proofs that lean on a written parameter's `@Requires`, so it is its own phase.
+proofs that lean on a written parameter's `@Requires`, so it is its own phase. *(Fixed in Phase 343.)*
+
+## Phase 343 — `@Requires` is about the entry state  *(shipped — soundness: a long-standing false proof closed)*
+
+Phase 342's finding. `@Requires` constrains the entry values; three contexts asserted all of it over the symbols of
+a later state: `checkUse`'s coarse post-loop context, `checkEarlyExitPath` for an in-body exit, and the loop-region
+discharges of `verifyLoopObligations` (guard, body, after-loop, break regions, nested bodies), plus the nested
+establishment at an outer iteration. Preservation and progress used Phase 64's `loopStableRequires`, but a nested
+loop's site had an empty prefix, so it saw only its own writes.
+
+- **One filter, everywhere it applies.** Each non-entry context assumes `loopStableRequires(req, site)`; the entry
+  contexts (establishment, the prefix replay, a do-while's first pass, the region before the first loop) keep the
+  whole precondition. A nested site carries its `outer`, whose prefix and body are the writers that matter.
+  `checkUse` decides first (`prefixReplayable`) whether it replays the prefix from entry, then asserts accordingly.
+- **What survives a write.** A conjunct is kept when each of its names is one of:
+  - a class reference;
+  - a value-type parameter (primitive, boxed, `String`) never reassigned. A callee can mutate what a parameter refers
+    to but never reassign the caller's variable, so this holds even past unknown calls;
+  - a parameter or field the (bounded) write set misses;
+  - a parameter never reassigned, used only for its nullness, an array's `length`, or a list's `size()` when only
+    `set` mutates it (`onlyShapeUses`). A field needs a bounded write set for that too, since a call could reassign it.
+  "Reassigned" is syntactic: `=`, `op=`, `++`/`--`, a declaration, `this.f = v`, or any assignment in a closure.
+- **The write set was too eager to give up.** `%` is `Types.REMAINDER` in Groovy 6, not `MOD`, so every loop body
+  using it had an "unbounded" write set and no loop-stable `@Requires` at all. The remaining pure operators and
+  static calls on `Tuple`, `Math` and the boxed types now write nothing but their arguments.
+- **Repros for written parameters.** The failure model holds a written parameter's value at the failure, not its
+  input (`f(1, 1)` for the post-loop `x = 1`). `reproUnderRequires` now also runs when `@Requires` mentions a written
+  parameter: it pins what the writes can't have changed and takes the rest from a model of `@Requires` (`f(0, 1)`,
+  `f([], 1)`), or withholds the call with Phase 337's note.
+
+**Changed case:** P-ring's "loop body with framed write verifies" leaned on the entry `head < tail` at every
+iteration; its invariant now carries it (`head + 1 - done <= tail`).
+
+**Shipped tests:** group `P343 @Requires is about the entry state`, 10 cases: a parameter incremented in the loop, one
+set before it, an in-body return, a body bounds check, a set and a list a loop adds to, a set a nested loop adds to, a
+reassigned array parameter, preservation after a prefix write (all refuting with repros that meet `@Requires`), and
+an array stored into keeping its length and nullness.
+
+**Noted, not fixed:** an alias (`int[] b = a; b[0] = 5`) writes `a`'s contents under another name, which the
+syntactic write set misses (as Phase 64's filter always did); an uncontracted call in a loop body skips loudly, so
+it cannot carry a stale fact through.
 
 ---
 

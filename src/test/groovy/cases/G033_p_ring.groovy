@@ -137,7 +137,9 @@ class G033_p_ring {
                        @UnderRely('Writer')
                        void consumeOne() {
                            int done = 0
-                           @Invariant({ 0 <= done && done <= 1 && 0 <= head && head <= tail && tail <= values.length })
+                           // Phase 343 — head + 1 - done <= tail carries the entry fact head < tail into the iteration:
+                           // @Requires is about the entry head, which the loop writes (it used to be assumed of every one)
+                           @Invariant({ 0 <= done && done <= 1 && 0 <= head && head + 1 - done <= tail && tail <= values.length })
                            @Decreases({ 1 - done })
                            while (done < 1) {
                                head = head + 1
